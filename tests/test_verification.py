@@ -7,10 +7,12 @@ from pydantic_ai import ModelRequest, ModelResponse, ToolCallPart
 from pydantic_ai.messages import UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
+from okf_wiki.bundle import verification_blockers
 from okf_wiki.knowledge_contracts import WorkerProposal
 from okf_wiki.verifier import VerifierAgent
 from okf_wiki.verification import (
     REQUIRED_PERSPECTIVES,
+    AcceptanceDecision,
     AcceptancePolicy,
     VerificationStore,
     VerificationFinding,
@@ -82,6 +84,76 @@ def test_verification_store_persists_staged_candidate_findings_and_decision(tmp_
 
     assert store.get_findings("run-1", "candidate-1") == list(stored_findings)
     assert store.get_decision("run-1", "candidate-1") == decision
+
+
+def test_later_accepted_candidate_supersedes_historical_review_finding(tmp_path) -> None:
+    store = VerificationStore(tmp_path / "runs.db")
+    disputed = finding("contradiction", verdict="disputed", severity="warning")
+    store.stage(
+        "run-1",
+        "candidate-review",
+        "task-1",
+        {"obligation_ids": ["obligation-1"]},
+    )
+    store.record_findings("run-1", "candidate-review", (disputed,))
+    store.record_decision(
+        "run-1",
+        "candidate-review",
+        AcceptanceDecision(outcome="review_required"),
+    )
+    store.stage(
+        "run-1",
+        "candidate-accepted",
+        "task-2",
+        {"obligation_ids": ["obligation-1"]},
+    )
+    store.record_findings(
+        "run-1",
+        "candidate-accepted",
+        tuple(finding(perspective) for perspective in REQUIRED_PERSPECTIVES),
+    )
+    store.record_decision(
+        "run-1",
+        "candidate-accepted",
+        AcceptanceDecision(outcome="accepted"),
+    )
+
+    records = store.list_run_findings("run-1")
+
+    historical = next(item for item in records if item["candidate_id"] == "candidate-review")
+    assert historical["blocking"] is False
+
+
+def test_risk_only_review_uses_policy_reason_instead_of_pass_findings(tmp_path) -> None:
+    database = tmp_path / "runs.db"
+    store = VerificationStore(database)
+    store.stage(
+        "run-1",
+        "candidate-risk",
+        "task-1",
+        {"obligation_ids": ["obligation-1"]},
+    )
+    store.record_findings(
+        "run-1",
+        "candidate-risk",
+        tuple(finding(perspective) for perspective in REQUIRED_PERSPECTIVES),
+    )
+    store.record_decision(
+        "run-1",
+        "candidate-risk",
+        AcceptanceDecision(
+            outcome="review_required",
+            reasons=("high-risk knowledge: security",),
+        ),
+    )
+
+    records = store.list_run_findings("run-1")
+
+    assert all(item["active_review"] for item in records)
+    assert not any(item["blocking"] for item in records)
+    assert verification_blockers(database, "run-1") == [
+        "candidate-risk:acceptance_policy:high-risk knowledge: security"
+    ]
 
 
 def test_fresh_verifier_agents_reread_original_snapshot_evidence(tmp_path) -> None:

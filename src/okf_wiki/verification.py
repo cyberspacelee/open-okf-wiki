@@ -122,8 +122,10 @@ class SemanticVerifier(Protocol):
 
 
 class VerificationStore:
-    def __init__(self, database: Path) -> None:
+    def __init__(self, database: Path, *, initialize: bool = True) -> None:
         self.database = database
+        if not initialize:
+            return
         with self._connect() as connection:
             connection.executescript(
                 """
@@ -209,3 +211,55 @@ class VerificationStore:
                 (run_id, candidate_id),
             ).fetchone()
         return AcceptanceDecision.model_validate_json(row[0]) if row and row[0] else None
+
+    def list_run_findings(self, run_id: str) -> list[dict]:
+        with self._connect() as connection:
+            tables = {
+                row[0]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+            if not {"verification_candidates", "verification_findings"} <= tables:
+                return []
+            candidates = list(
+                connection.execute(
+                    """SELECT rowid, candidate_id, status, proposal_json, decision_json
+                       FROM verification_candidates WHERE run_id = ? ORDER BY rowid""",
+                    (run_id,),
+                )
+            )
+            findings = list(
+                connection.execute(
+                    """SELECT c.rowid, c.candidate_id, c.status, c.proposal_json,
+                              c.decision_json, f.finding_json
+                       FROM verification_candidates c JOIN verification_findings f
+                         ON f.run_id = c.run_id AND f.candidate_id = c.candidate_id
+                       WHERE c.run_id = ? ORDER BY c.rowid, f.perspective""",
+                    (run_id,),
+                )
+            )
+        accepted = [
+            (rowid, set(json.loads(proposal_json).get("obligation_ids", [])))
+            for rowid, _candidate_id, status, proposal_json, _decision_json in candidates
+            if status == "accepted"
+        ]
+        records = []
+        for rowid, candidate_id, status, proposal_json, decision_json, finding_json in findings:
+            obligations = set(json.loads(proposal_json).get("obligation_ids", []))
+            superseded = any(
+                accepted_rowid > rowid and obligations <= accepted_obligations
+                for accepted_rowid, accepted_obligations in accepted
+            )
+            finding = json.loads(finding_json)
+            decision_reasons = json.loads(decision_json).get("reasons", []) if decision_json else []
+            active_review = status == "review_required" and not superseded
+            records.append(
+                {
+                    "candidate_id": candidate_id,
+                    "candidate_status": status,
+                    "active_review": active_review,
+                    "blocking": active_review and finding["verdict"] != "pass",
+                    "decision_reasons": decision_reasons,
+                    **finding,
+                }
+            )
+        return records

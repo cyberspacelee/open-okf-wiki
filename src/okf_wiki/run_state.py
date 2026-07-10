@@ -11,7 +11,7 @@ RUN_TRANSITIONS = {
     "verifying": {"exploring", "rendering", "failed", "cancelled"},
     "rendering": {"checking", "failed", "cancelled"},
     "checking": {"review_required", "failed", "cancelled"},
-    "review_required": {"publishing", "failed", "cancelled"},
+    "review_required": {"exploring", "publishing", "failed", "cancelled"},
     "publishing": {"published", "failed"},
 }
 

@@ -603,6 +603,34 @@ class AcceptedKnowledgeStore:
             ]
         return [concept for concept_id in ids if (concept := self.get_concept(run_id, concept_id))]
 
+    def renderable_claims(self, run_id: str, concept_id: str) -> list[ClaimRecord]:
+        concept = self.get_concept(run_id, concept_id)
+        if concept is None:
+            raise ValueError(f"Unknown Concept: {concept_id}")
+        claim_ids = [*concept["defining_claim_ids"], *concept["supporting_claim_ids"]]
+        return [
+            claim
+            for claim_id in claim_ids
+            if (claim := self.get_claim(run_id, claim_id))
+            and claim["epistemic_status"] == "supported"
+        ]
+
+    def reject_run(self, connection: sqlite3.Connection, run_id: str) -> None:
+        for table in (
+            "relation_evidence",
+            "concept_relations",
+            "page_plans",
+            "concept_claims",
+            "accepted_concepts",
+            "claim_links",
+            "obligation_claims",
+            "claim_evidence",
+            "accepted_claims",
+            "accepted_evidence",
+            "accepted_candidates",
+        ):
+            connection.execute(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
+
     def get_relations(self, run_id: str, concept_id: str) -> list[RelationRecord]:
         with self._connect() as connection:
             rows = list(
@@ -703,15 +731,24 @@ class AcceptedKnowledgeStore:
         concept = self.get_concept(run_id, concept_id)
         if concept is None:
             raise ValueError(f"Unknown Concept: {concept_id}")
-        claim_ids = [*concept["defining_claim_ids"], *concept["supporting_claim_ids"]]
-        claims = [self.get_claim(run_id, claim_id) for claim_id in claim_ids]
+        claims = self.renderable_claims(run_id, concept_id)
+        paragraphs = "\n\n".join(
+            f"{' '.join(claim['statement'].split())}\n\n<!-- claims: {claim['id']} -->"
+            for claim in claims
+        )
+        citations = "\n".join(
+            f"* `{claim['id']}` — "
+            + ", ".join(
+                f"`repo://{evidence['source_id']}@{evidence['revision']}/"
+                f"{evidence['path']}#L{evidence['start_line']}-L{evidence['end_line']}`"
+                for evidence in claim["evidence"]
+            )
+            for claim in claims
+        )
         return (
             f"# {concept['canonical_name']}\n\n"
-            "## Claims\n\n"
-            + "\n".join(
-                f"* [{claim['epistemic_status']}] {claim['statement']} (`{claim['id']}`)"
-                for claim in claims
-                if claim
-            )
+            + (paragraphs or "No supported Claims.")
+            + "\n\n# Citations\n\n"
+            + (citations or "No citations.")
             + "\n"
         )

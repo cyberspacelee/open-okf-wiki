@@ -12,6 +12,12 @@ import pytest
 import okf_wiki.cli as cli
 from okf_wiki.accepted_knowledge import AcceptedKnowledgeStore
 from okf_wiki.cli import UserError, transition
+from okf_wiki.coverage import refresh_run_coverage
+from okf_wiki.verification import (
+    AcceptanceDecision,
+    VerificationFinding,
+    VerificationStore,
+)
 
 
 def run(command: list[str], cwd: Path, expected: int = 0) -> dict:
@@ -138,15 +144,58 @@ def test_build_check_and_approve_a_fixed_revision(tmp_path: Path) -> None:
 
     staging = Path(status_before["staging_bundle"])
     assert {path.relative_to(staging).as_posix() for path in staging.rglob("*.md")} == {
+        "architecture/index.md",
+        "concepts/index.md",
+        "decisions/index.md",
+        "flows/index.md",
+        "guides/index.md",
         "index.md",
         "log.md",
+        "modules/index.md",
         "overview.md",
         "reports/coverage.md",
+        "reports/index.md",
+        "reports/review.md",
+        "requirements/index.md",
+        "references/index.md",
     }
     assert revision in (staging / "overview.md").read_text(encoding="utf-8")
+    document_ids = [
+        next(
+            line.removeprefix("id: ")
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.startswith("id: ")
+        )
+        for path in staging.rglob("*.md")
+        if path.name not in {"index.md", "log.md"}
+    ]
+    assert len(document_ids) == len(set(document_ids))
+    review_report = (staging / "reports" / "review.md").read_text(encoding="utf-8")
+    assert all(
+        heading in review_report
+        for heading in (
+            "# Review Report",
+            "## Coverage",
+            "## Exclusions",
+            "## Changed Claims",
+            "## Concept Changes",
+            "## Verification Findings",
+            "## Bundle Diff",
+        )
+    )
+    assert status_before["review"]["state"] == "review_required"
+    assert status_before["review"]["report"] == "reports/review.md"
+    assert status_before["review"]["blocking_findings"] == []
+    assert status_before["review"]["knowledge_changes"] == {
+        "claims": {"added": [], "changed": [], "excluded": [], "removed": []},
+        "concepts": {"added": [], "changed": [], "excluded": [], "removed": []},
+    }
 
     checked = run(["check", run_id], workspace)
-    assert checked == {"errors": [], "ok": True, "target": run_id}
+    assert checked["errors"] == []
+    assert checked["ok"] is True
+    assert checked["target"] == run_id
+    assert checked["review"] == status_before["review"]
     assert run(["status", run_id], workspace)["events"] == status_before["events"]
 
     approved = run(["review", run_id, "--approve"], workspace)
@@ -208,10 +257,10 @@ def test_reject_cancel_and_failure_leave_the_published_bundle_unchanged(tmp_path
         "decision": "rejected",
         "ok": True,
         "run_id": rejected["run_id"],
-        "state": "cancelled",
+        "state": "exploring",
     }
     rejected_status = run(["status", rejected["run_id"]], workspace)
-    assert rejected_status["state"] == "cancelled"
+    assert rejected_status["state"] == "exploring"
     assert rejected_status["events"][-1]["details"] == {"decision": "rejected"}
     assert published.resolve() == original_release
     assert (published / "overview.md").read_bytes() == original_overview
@@ -402,6 +451,86 @@ def test_staged_source_revision_must_match_the_run_and_bundle(tmp_path: Path) ->
     assert not (workspace / "published").exists()
 
 
+def test_review_rejects_edits_to_derived_markdown(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    revision = make_source(source)
+    built = build_run(workspace, source, revision)
+    status = run(["status", built["run_id"]], workspace)
+    overview = Path(status["staging_bundle"], "overview.md")
+    overview.write_text(
+        overview.read_text(encoding="utf-8") + "\nReviewer edit.\n", encoding="utf-8"
+    )
+
+    checked = run(["check", built["run_id"]], workspace, expected=1)
+    assert any("authoritative rendering" in error for error in checked["errors"])
+    approval = run(["review", built["run_id"], "--approve"], workspace, expected=1)
+    assert approval["state"] == "failed"
+    assert not (workspace / "published").exists()
+
+
+def test_review_report_and_machine_state_include_persisted_verification_findings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    revision = make_source(source)
+    built = build_run(workspace, source, revision)
+    run_id = built["run_id"]
+    run(["review", run_id, "--reject"], workspace)
+    database = workspace / ".okf-wiki" / "runs.db"
+    with sqlite3.connect(database) as connection:
+        connection.row_factory = sqlite3.Row
+        with connection:
+            connection.execute(
+                "UPDATE coverage_obligations SET disposition = 'covered' WHERE run_id = ?",
+                (run_id,),
+            )
+            refresh_run_coverage(connection, run_id)
+        transition(connection, run_id, "exploring", "verifying")
+    store = VerificationStore(database)
+    store.stage(run_id, "candidate-review", "task-review", {})
+    finding = VerificationFinding(
+        target_id="candidate-review",
+        perspective="contradiction",
+        verdict="disputed",
+        severity="warning",
+        evidence=("claim:one",),
+        rationale="Requirements and implementation disagree.",
+    )
+    store.record_findings(run_id, "candidate-review", (finding,))
+    store.record_decision(
+        run_id,
+        "candidate-review",
+        AcceptanceDecision(outcome="review_required", reasons=("disputed knowledge",)),
+    )
+    monkeypatch.chdir(workspace)
+
+    cli.finish_run(run_id)
+
+    status = run(["status", run_id], workspace)
+    assert status["review"]["verification_findings"][0]["rationale"] == finding.rationale
+    assert status["review"]["blocking_findings"] == [
+        "candidate-review:contradiction:disputed:warning"
+    ]
+    assert run(["check", run_id], workspace)["review"] == status["review"]
+    report = Path(status["staging_bundle"], status["review"]["report"]).read_text(encoding="utf-8")
+    assert finding.rationale in report
+    approved = run(["review", run_id, "--approve"], workspace)
+    assert approved["state"] == "published"
+    published_status = run(["status", run_id], workspace)
+    assert published_status["review"]["blocking_findings"] == []
+    publishing_event = next(
+        event for event in published_status["events"] if event["state"] == "publishing"
+    )
+    assert publishing_event["details"] == {
+        "decision": "approved",
+        "resolved_findings": ["candidate-review:contradiction:disputed:warning"],
+    }
+
+
 @pytest.mark.parametrize("reserved_file", ["index.md", "log.md"])
 def test_reserved_files_reject_unstructured_text(tmp_path: Path, reserved_file: str) -> None:
     workspace = tmp_path / "workspace"
@@ -432,7 +561,7 @@ def test_index_accepts_multiple_sections_with_link_bullets(tmp_path: Path) -> No
         encoding="utf-8",
     )
 
-    assert run(["check", built["run_id"]], workspace)["ok"] is True
+    assert run(["check", status["staging_bundle"]], workspace)["ok"] is True
 
 
 def test_coverage_counts_must_be_nonnegative_and_complete(tmp_path: Path) -> None:
@@ -959,6 +1088,30 @@ def test_java_data_carriers_are_aggregated_and_constraints_stay_visible(tmp_path
     assert "domain_interface" in page
     assert "state" in page
     assert "non_trivial_behavior" in page
+    assert "id: concept:" in page
+    for claim_id in status["accepted_knowledge"][0]["defining_claim_ids"]:
+        assert f"<!-- claims: {claim_id} -->" in page
+    review = status["review"]
+    assert (
+        review["knowledge_changes"]["claims"]["added"]
+        == status["accepted_knowledge"][0]["defining_claim_ids"]
+    )
+    assert review["knowledge_changes"]["concepts"]["added"] == [
+        status["accepted_knowledge"][0]["id"]
+    ]
+    assert contract_page in review["bundle_diff"]["added"]
+    review_report = Path(status["staging_bundle"], review["report"]).read_text(encoding="utf-8")
+    assert exclusion["id"] in review_report
+    assert status["accepted_knowledge"][0]["id"] in review_report
+    assert status["accepted_knowledge"][0]["defining_claim_ids"][0] in review_report
+    assert contract_page in review_report
+    markers = re.findall(r"<!-- claims: claim:[0-9a-f]{64} -->", page)
+    without_markers = re.sub(r"\n\n<!-- claims: claim:[0-9a-f]{64} -->", "", page)
+    tampered = without_markers + "\n\n" + "\n\n".join(markers) + "\n"
+    Path(status["staging_bundle"], contract_page).write_text(tampered, encoding="utf-8")
+    grounding = run(["check", status["staging_bundle"]], workspace, expected=1)
+    assert any("factual paragraphs" in error for error in grounding["errors"])
+    Path(status["staging_bundle"], contract_page).write_text(page, encoding="utf-8")
     overview = Path(status["staging_bundle"], "overview.md").read_text(encoding="utf-8")
     assert "tracked source file(s)" in overview
 
@@ -972,6 +1125,12 @@ def test_java_data_carriers_are_aggregated_and_constraints_stay_visible(tmp_path
                 source_unit = universe[evidence["source_unit"]]
                 assert evidence["digest"] == f"sha256:{source_unit['content_digest']}"
                 assert source_unit["source_unit_kind"] != "java_data_contract"
+    run(["review", built["run_id"], "--reject"], workspace)
+    rejected = run(["status", built["run_id"]], workspace)
+    assert rejected["accepted_knowledge"] == []
+    assert {item["disposition"] for item in rejected["obligations"]} == {"open"}
+    assert knowledge.list_claims(built["run_id"]) == []
+    assert knowledge.list_concepts(built["run_id"]) == []
 
 
 def test_java_exclusions_and_priorities_are_resolved_from_the_producer_profile(

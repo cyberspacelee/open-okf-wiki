@@ -9,14 +9,27 @@ import sqlite3
 import subprocess
 import tomllib
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import quote_from_bytes, unquote, urlsplit
-
-import yaml
+from urllib.parse import quote_from_bytes
 
 from .accepted_knowledge import AcceptedKnowledgeStore
-from .coverage import DISPOSITIONS, major_blockers, obligation_rows, summarize_obligations
+from .bundle import (
+    authoritative_digest,
+    file_manifest,
+    published_run_id,
+    render_bundle,
+    review_status,
+    validate_bundle,
+    verification_blockers,
+)
+from .coverage import (
+    DISPOSITIONS,
+    major_blockers,
+    obligation_rows,
+    refresh_run_coverage,
+    summarize_obligations,
+)
 from .java_analysis import (
     DEFAULT_JAVA_EXCLUDED_PATHS,
     JAVA_DEFAULT_PRIORITIES,
@@ -27,16 +40,11 @@ from .java_analysis import (
     is_java_input,
 )
 from .source_identity import source_unit_id, stable_span_id
-from .run_events import append_run_event
+from .run_events import append_entity_event, append_run_event
 from .run_state import RunTransitionError, transition_run
 
 
 TERMINAL_STATES = {"published", "failed", "cancelled"}
-REQUIRED_BUNDLE_FILES = {"index.md", "log.md", "overview.md", "reports/coverage.md"}
-LINK_RE = re.compile(r"(?<!!)\[[^]]+\]\(([^)]+)\)")
-INDEX_ENTRY_RE = re.compile(r"^[*-] \[[^]]+\]\([^)]+\)(?: - .+)?$")
-LOG_DATE_RE = re.compile(r"^## \d{4}-\d{2}-\d{2}$")
-LOG_ENTRY_RE = re.compile(r"^[*-] .+$")
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 SETEXT_RE = re.compile(r"^\s*(=+|-+)\s*$")
 NUMBERED_REQUIREMENT_RE = re.compile(
@@ -625,356 +633,81 @@ def producer_profile_id(profile: dict) -> str:
     return f"profile:{digest}"
 
 
-def report_metadata(coverage: dict) -> dict:
-    major = coverage.get("by_priority", {}).get("major", {}).get("dispositions", {})
-    return {
-        "blocked_major_obligations": major.get("blocked", 0),
-        "blocked_obligations": coverage["blocked"],
-        "covered_major_obligations": major.get("covered", 0),
-        "covered_obligations": coverage["covered"],
-        "deferred_obligations": coverage["deferred"],
-        "excluded_major_obligations": major.get("excluded", 0),
-        "excluded_obligations": coverage["excluded"],
-        "failed_major_obligations": major.get("failed", 0),
-        "failed_obligations": coverage["failed"],
-        "major_obligations": coverage["major"],
-        "open_major_obligations": major.get("open", 0),
-        "open_obligations": coverage["open"],
-        "supporting_obligations": coverage["supporting"],
-        "total_obligations": coverage["total"],
-    }
-
-
-def frontmatter(
-    type_name: str,
-    title: str,
-    description: str,
-    revision: str,
-    **metadata: int,
-) -> str:
-    return (
-        "---\n"
-        + yaml.safe_dump(
-            {
-                "type": type_name,
-                "title": title,
-                "description": description,
-                "source_revision": revision,
-                **metadata,
-            },
-            allow_unicode=True,
-            sort_keys=False,
-        )
-        + "---\n"
-    )
-
-
-def render_coverage_group(title: str, groups: dict) -> str:
-    rows = [f"## {title}", "", "| Value | Total | Dispositions |", "| --- | ---: | --- |"]
-    rows.extend(
-        f"| `{value}` | {group['total']} | "
-        + ", ".join(
-            f"`{disposition}`: {count}" for disposition, count in group["dispositions"].items()
-        )
-        + " |"
-        for value, group in groups.items()
-    )
-    return "\n".join(rows)
-
-
-def render_bundle(
-    staging: Path,
-    project_id: str,
-    revision: str,
-    sources: list[dict],
-    evidence: list[dict],
-    obligations: list[dict],
-    coverage: dict,
-    commit_date: str,
-    accepted_knowledge: list[dict] | None = None,
-    database: Path | None = None,
-    run_id: str | None = None,
-) -> None:
-    accepted_knowledge = accepted_knowledge or []
-    if staging.exists():
-        shutil.rmtree(staging)
-    (staging / "reports").mkdir(parents=True)
-    knowledge_links = "".join(
-        f"* [{concept['canonical_name']}]({concept['page']}) - Accepted source knowledge.\n"
-        for concept in sorted(accepted_knowledge, key=lambda item: item["page"])
-    )
-    (staging / "index.md").write_text(
-        f"# {project_id} Knowledge Bundle\n\n"
-        "* [Overview](overview.md) - Fixed-revision source overview.\n"
-        "* [Coverage Report](reports/coverage.md) - Major obligation disposition.\n"
-        + knowledge_links,
-        encoding="utf-8",
-    )
-    (staging / "log.md").write_text(
-        "# Bundle Update Log\n\n"
-        f"## {commit_date}\n"
-        f"* **Creation**: Staged the bundle for Source Set `{revision}`.\n",
-        encoding="utf-8",
-    )
-    source_summary = "\n".join(
-        f"* `{source['id']}` ({source['role']}) at revision `{source['revision']}` "
-        f"with tree digest `{source['digest']}`."
-        for source in sources
-    )
-    (staging / "overview.md").write_text(
-        frontmatter(
-            "Overview",
-            f"{project_id} Overview",
-            "Overview of the fixed source revision.",
-            revision,
-        )
-        + f"\n# Overview\n\nProducer Project `{project_id}` covers "
-        f"{len(evidence)} tracked source file(s) from {len(sources)} source(s).\n\n"
-        + source_summary
-        + "\n",
-        encoding="utf-8",
-    )
-    obligation_lines = []
-    for item in obligations:
-        span = item["span"]
-        reason = f" — {item['reason']}" if item["reason"] else ""
-        obligation_lines.append(
-            f"* `{item['id']}` — `{item['source']}/{item['path']}` "
-            f"lines {span['start_line']}-{span['end_line']}; `{item['kind']}`, "
-            f"`{item['priority']}`, `{item['disposition']}`{reason}"
-        )
-    source_lines = [
-        f"* `{source['id']}` ({source['role']}) at revision `{source['revision']}` "
-        f"with tree digest `{source['digest']}`."
-        for source in sources
-    ]
-    (staging / "reports" / "coverage.md").write_text(
-        frontmatter(
-            "Coverage Report",
-            "Coverage Report",
-            "Disposition of Coverage Obligations.",
-            revision,
-            **report_metadata(coverage),
-        )
-        + "\n# Coverage Report\n\n"
-        + "## Sources\n\n"
-        + "\n".join(source_lines)
-        + "\n\n"
-        + render_coverage_group("By Source", coverage["by_source"])
-        + "\n\n"
-        + render_coverage_group("By Role", coverage["by_role"])
-        + "\n\n"
-        + render_coverage_group("By Priority", coverage["by_priority"])
-        + "\n\n## Obligations\n\n"
-        + ("\n".join(obligation_lines) if obligation_lines else "No Coverage Obligations.")
-        + "\n",
-        encoding="utf-8",
-    )
-    if accepted_knowledge and database is not None and run_id is not None:
-        store = AcceptedKnowledgeStore(database)
-        for concept in accepted_knowledge:
-            path = staging / concept["page"]
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                frontmatter(
-                    "Concept",
-                    concept["canonical_name"],
-                    "Accepted source-grounded knowledge.",
-                    revision,
-                )
-                + "\n"
-                + store.derive_concept_page(run_id, concept["id"]),
-                encoding="utf-8",
-            )
-
-
-def parse_frontmatter(path: Path, text: str) -> tuple[dict | None, list[str]]:
-    errors = []
-    if not text.startswith("---\n"):
-        return None, [f"{path}: missing YAML frontmatter"]
-    end = text.find("\n---\n", 4)
-    if end == -1:
-        return None, [f"{path}: unterminated YAML frontmatter"]
-    try:
-        data = yaml.safe_load(text[4:end])
-    except yaml.YAMLError as error:
-        return None, [f"{path}: invalid YAML frontmatter: {error}"]
-    if not isinstance(data, dict):
-        errors.append(f"{path}: frontmatter must be a mapping")
-        return None, errors
-    elif not isinstance(data.get("type"), str) or not data["type"].strip():
-        errors.append(f"{path}: frontmatter type must be non-empty")
-    return data, errors
-
-
-def validate_index(text: str) -> list[str]:
-    lines = text.splitlines()
-    if not lines:
-        return ["index.md: must contain a section"]
-    seen_section = False
-    entries = 0
-    for line in lines:
-        if line == "":
-            continue
-        if line.startswith("# ") and line != "# ":
-            if seen_section and not entries:
-                return ["index.md: every section must contain a Markdown link bullet"]
-            seen_section = True
-            entries = 0
-        elif seen_section and INDEX_ENTRY_RE.fullmatch(line):
-            entries += 1
-        else:
-            return ["index.md: only sections, blank lines, and Markdown link bullets are allowed"]
-    return (
-        [] if seen_section and entries else ["index.md: every section must contain a link bullet"]
-    )
-
-
-def validate_log(text: str) -> list[str]:
-    lines = text.splitlines()
-    if not lines or not lines[0].startswith("# ") or lines[0] == "# ":
-        return ["log.md: must start with a non-empty title"]
-    seen_date = False
-    entries = 0
-    for line in lines[1:]:
-        if line == "":
-            continue
-        if LOG_DATE_RE.fullmatch(line):
-            try:
-                date.fromisoformat(line.removeprefix("## "))
-            except ValueError:
-                return ["log.md: date sections must use valid ISO dates"]
-            if seen_date and not entries:
-                return ["log.md: every ISO date section must contain a bullet"]
-            seen_date = True
-            entries = 0
-        elif seen_date and LOG_ENTRY_RE.fullmatch(line):
-            entries += 1
-        else:
-            return ["log.md: only a title, ISO date sections, and bullets are allowed"]
-    return [] if seen_date and entries else ["log.md: must contain a dated bullet entry"]
-
-
-def validate_bundle(
-    bundle: Path,
-    expected_revision: str | None = None,
-    expected_coverage: dict | None = None,
-) -> list[str]:
-    if not bundle.is_dir():
-        return [f"Bundle does not exist: {bundle}"]
-    errors = []
-    documents = {}
-    present = {path.relative_to(bundle).as_posix() for path in bundle.rglob("*.md")}
-    for missing in sorted(REQUIRED_BUNDLE_FILES - present):
-        errors.append(f"Missing required Bundle file: {missing}")
-    for relative in sorted(present):
-        path = bundle / relative
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as error:
-            errors.append(f"{relative}: cannot read UTF-8 Markdown: {error}")
-            continue
-        if path.name == "index.md":
-            errors.extend(
-                f"{relative}: {error.removeprefix('index.md: ')}" for error in validate_index(text)
-            )
-        elif path.name == "log.md":
-            errors.extend(
-                f"{relative}: {error.removeprefix('log.md: ')}" for error in validate_log(text)
-            )
-        else:
-            data, frontmatter_errors = parse_frontmatter(Path(relative), text)
-            errors.extend(frontmatter_errors)
-            if data is not None:
-                documents[relative] = data
-                if (
-                    expected_revision is not None
-                    and data.get("source_revision") != expected_revision
-                ):
-                    errors.append(
-                        f"{relative}: source_revision does not match Production Run revision"
-                    )
-        for raw_target in LINK_RE.findall(text):
-            target = unquote(urlsplit(raw_target.strip().split()[0]).path)
-            if not target or urlsplit(raw_target).scheme or target.startswith("#"):
-                continue
-            resolved = (
-                (bundle / target.lstrip("/")) if target.startswith("/") else path.parent / target
-            )
-            try:
-                resolved.resolve().relative_to(bundle.resolve())
-            except ValueError:
-                errors.append(f"{relative}: link escapes Bundle: {raw_target}")
-                continue
-            if not resolved.exists():
-                errors.append(f"{relative}: broken internal link: {raw_target}")
-    if expected_revision is None:
-        overview_revision = documents.get("overview.md", {}).get("source_revision")
-        coverage_revision = documents.get("reports/coverage.md", {}).get("source_revision")
-        if not isinstance(overview_revision, str) or overview_revision != coverage_revision:
-            errors.append("overview.md and reports/coverage.md source_revision must match")
-    coverage = documents.get("reports/coverage.md", {})
-    metadata_fields = (
-        "blocked_major_obligations",
-        "blocked_obligations",
-        "covered_major_obligations",
-        "covered_obligations",
-        "deferred_obligations",
-        "excluded_major_obligations",
-        "excluded_obligations",
-        "failed_major_obligations",
-        "failed_obligations",
-        "major_obligations",
-        "open_major_obligations",
-        "open_obligations",
-        "supporting_obligations",
-        "total_obligations",
-    )
-    for field in metadata_fields:
-        value = coverage.get(field)
-        if type(value) is not int or value < 0:
-            errors.append(f"reports/coverage.md: {field} must be a non-negative integer")
-    if all(type(coverage.get(field)) is int for field in metadata_fields):
-        if coverage["total_obligations"] != (
-            coverage["major_obligations"] + coverage["supporting_obligations"]
-        ):
-            errors.append("reports/coverage.md: priority totals must equal total_obligations")
-        if coverage["total_obligations"] != sum(
-            coverage[f"{disposition}_obligations"]
-            for disposition in ("blocked", "covered", "deferred", "excluded", "failed", "open")
-        ):
-            errors.append("reports/coverage.md: disposition totals must equal total_obligations")
-    major_obligations = coverage.get("major_obligations")
-    covered_major = coverage.get("covered_major_obligations")
-    excluded_major = coverage.get("excluded_major_obligations")
+def run_validation_errors(row: sqlite3.Row, source_set: dict, obligations: list[dict]) -> list[str]:
+    coverage = json.loads(row["coverage_json"]) if row["coverage_json"] else None
+    staging = Path(row["staging_dir"])
+    errors = validate_bundle(staging, row["revision"], coverage)
+    expected_manifest = source_set.get("bundle_manifest")
+    if expected_manifest is not None and file_manifest(staging) != expected_manifest:
+        errors.append("Staged Bundle differs from the authoritative rendering")
+    expected_digest = source_set.get("authoritative_digest")
     if (
-        type(major_obligations) is int
-        and type(covered_major) is int
-        and type(excluded_major) is int
-        and major_obligations != covered_major + excluded_major
+        expected_digest is not None
+        and authoritative_digest(db_path(), row["id"], obligations) != expected_digest
     ):
-        errors.append("reports/coverage.md: all Major Obligations must be covered or excluded")
-    for field in (
-        "blocked_major_obligations",
-        "failed_major_obligations",
-        "open_major_obligations",
-    ):
-        if coverage.get(field) != 0:
-            errors.append(f"reports/coverage.md: {field} must be the integer 0")
-    if expected_coverage is not None:
-        expected_metadata = (
-            report_metadata(expected_coverage)
-            if "total" in expected_coverage
-            else {
-                "covered_obligations": expected_coverage.get("covered"),
-                "major_obligations": expected_coverage.get("major"),
-                "open_obligations": expected_coverage.get("open"),
-            }
-        )
-        for report_field, expected in expected_metadata.items():
-            if coverage.get(report_field) != expected:
-                errors.append(f"reports/coverage.md: {report_field} does not match run coverage")
+        errors.append("Authoritative knowledge changed after the Bundle was rendered")
     return errors
+
+
+def accepted_knowledge_summary(database: Path, run_id: str) -> list[dict]:
+    store = AcceptedKnowledgeStore(database)
+    return [
+        {**concept, "page": store.get_page_plan(run_id, concept["id"])["path"]}
+        for concept in store.list_concepts(run_id)
+    ]
+
+
+def finish_run(run_id: str) -> None:
+    connection = connect()
+    row = get_run(connection, run_id)
+    state = row["state"]
+    if state != "verifying":
+        connection.close()
+        raise UserError(f"Run {run_id} is not ready to render")
+    source_set = json.loads(row["source_set_json"])
+    obligations = obligation_rows(connection, run_id)
+    coverage = json.loads(row["coverage_json"])
+    accepted_knowledge = accepted_knowledge_summary(db_path(), run_id)
+    source_set["accepted_knowledge"] = accepted_knowledge
+    try:
+        transition(connection, run_id, state, "rendering", coverage=coverage)
+        state = "rendering"
+        review = render_bundle(
+            Path(row["staging_dir"]),
+            row["project_id"],
+            row["revision"],
+            source_set["sources"],
+            source_set["evidence"],
+            obligations,
+            coverage,
+            source_set["bundle_date"],
+            accepted_knowledge,
+            db_path(),
+            run_id,
+            source_set.get("base_run_id"),
+            Path(row["publish_dir"]),
+        )
+        source_set["authoritative_digest"] = authoritative_digest(db_path(), run_id, obligations)
+        source_set["bundle_manifest"] = file_manifest(Path(row["staging_dir"]))
+        source_set["review"] = review
+        with connection:
+            connection.execute(
+                "UPDATE runs SET source_set_json = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(source_set, sort_keys=True), now(), run_id),
+            )
+        transition(connection, run_id, state, "checking")
+        state = "checking"
+        errors = run_validation_errors(get_run(connection, run_id), source_set, obligations)
+        if errors:
+            raise UserError("; ".join(errors))
+        transition(connection, run_id, state, "review_required")
+    except Exception as error:
+        current = get_run(connection, run_id)["state"]
+        if current != "failed":
+            transition(connection, run_id, current, "failed", error=str(error))
+        raise
+    finally:
+        connection.close()
 
 
 def build(config_path: str) -> int:
@@ -986,10 +719,12 @@ def build(config_path: str) -> int:
     )
     run_id = uuid.uuid4().hex
     staging = state_dir() / "runs" / run_id / "staging"
+    base_run_id = published_run_id(publish_dir)
     connection = connect()
     initialize(connection)
     source_set = {
         "digest": configured_digest,
+        "base_run_id": base_run_id,
         "evidence": [],
         "producer_profile_id": profile_id,
         "source_universe": [],
@@ -1082,6 +817,8 @@ def build(config_path: str) -> int:
                     [item for item in obligations if item["source"] == source["id"]], [source]
                 )
             source_set = {
+                "base_run_id": base_run_id,
+                "bundle_date": max(commit_dates),
                 "digest": digest,
                 "evidence": sorted(evidence, key=lambda item: (item["source_id"], item["path"])),
                 "producer_profile_id": profile_id,
@@ -1142,36 +879,12 @@ def build(config_path: str) -> int:
             return 1
         transition(connection, run_id, state, "verifying", coverage=coverage)
         state = "verifying"
-        accepted_knowledge = accept_data_contracts(db_path(), run_id, source_universe, obligations)
-        source_set["accepted_knowledge"] = accepted_knowledge
-        with connection:
-            connection.execute(
-                "UPDATE runs SET source_set_json = ?, updated_at = ? WHERE id = ?",
-                (json.dumps(source_set, sort_keys=True), now(), run_id),
-            )
-        transition(connection, run_id, state, "rendering", coverage=coverage)
-        state = "rendering"
-        render_bundle(
-            staging,
-            project_id,
-            bundle_revision,
-            sources,
-            evidence,
-            obligations,
-            coverage,
-            max(commit_dates),
-            accepted_knowledge,
-            db_path(),
-            run_id,
-        )
-        transition(connection, run_id, state, "checking")
-        state = "checking"
-        errors = validate_bundle(staging, bundle_revision, coverage)
-        if errors:
-            raise UserError("; ".join(errors))
-        transition(connection, run_id, state, "review_required")
+        accept_data_contracts(db_path(), run_id, source_universe, obligations)
+        finish_run(run_id)
     except Exception as error:
-        transition(connection, run_id, state, "failed", error=str(error))
+        current = get_run(connection, run_id)["state"]
+        if current != "failed":
+            transition(connection, run_id, current, "failed", error=str(error))
         emit({"errors": [str(error)], "ok": False, "run_id": run_id, "state": "failed"})
         return 1
     finally:
@@ -1219,6 +932,7 @@ def status(run_id: str) -> int:
             "sources": [legacy_source],
         }
     coverage = json.loads(row["coverage_json"]) if row["coverage_json"] else None
+    blocking_findings = run_validation_errors(row, source_set, obligations)
     payload = {
         "blocked": bool(coverage and "total" in coverage and major_blockers(coverage)),
         "accepted_knowledge": source_set.get("accepted_knowledge", []),
@@ -1231,6 +945,12 @@ def status(run_id: str) -> int:
         "project_id": row["project_id"],
         "producer_profile_id": source_set.get("producer_profile_id"),
         "published_bundle": row["publish_dir"],
+        "review": review_status(
+            row["state"],
+            blocking_findings,
+            source_set.get("review"),
+            [] if row["state"] == "published" else verification_blockers(db_path(), run_id),
+        ),
         "run_id": row["id"],
         "source_set_digest": source_set["digest"],
         "source_universe": source_set["source_universe"],
@@ -1249,12 +969,25 @@ def check(target: str) -> int:
     bundle = Path(target)
     if bundle.is_dir():
         errors = validate_bundle(bundle.resolve())
+        review = review_status("published", errors)
     else:
         with connect(read_only=True) as connection:
             row = get_run(connection, target)
-        expected_coverage = json.loads(row["coverage_json"]) if row["coverage_json"] else None
-        errors = validate_bundle(Path(row["staging_dir"]), row["revision"], expected_coverage)
-    emit({"errors": errors, "ok": not errors, "target": target})
+            has_obligations = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'coverage_obligations'"
+            ).fetchone()
+            obligations = obligation_rows(connection, target) if has_obligations else []
+        source_set_json = row["source_set_json"] if "source_set_json" in row.keys() else None
+        source_set = json.loads(source_set_json) if source_set_json else {}
+        errors = run_validation_errors(row, source_set, obligations)
+        snapshot = source_set.get("review")
+        review = review_status(
+            row["state"],
+            errors,
+            snapshot,
+            [] if row["state"] == "published" else verification_blockers(db_path(), target),
+        )
+    emit({"errors": errors, "ok": not errors, "review": review, "target": target})
     return bool(errors)
 
 
@@ -1305,24 +1038,67 @@ def review(run_id: str, approve: bool) -> int:
         connection.close()
         raise UserError(f"Run {run_id} is not Review Required")
     if not approve:
-        transition(
-            connection,
-            run_id,
-            "review_required",
-            "cancelled",
-            details={"decision": "rejected"},
-        )
+        knowledge = AcceptedKnowledgeStore(db_path())
+        with connection:
+            source_set = json.loads(row["source_set_json"]) if row["source_set_json"] else {}
+            transition_run(
+                connection,
+                run_id,
+                "review_required",
+                "exploring",
+                details={"decision": "rejected"},
+            )
+            reopened = [
+                (item[0], item[1])
+                for item in connection.execute(
+                    """SELECT id, disposition FROM coverage_obligations
+                       WHERE run_id = ?
+                         AND disposition IN ('covered', 'excluded', 'deferred')
+                       ORDER BY id""",
+                    (run_id,),
+                )
+            ]
+            connection.execute(
+                """UPDATE coverage_obligations SET disposition = 'open', reason = NULL
+                   WHERE run_id = ?
+                     AND disposition IN ('covered', 'excluded', 'deferred')""",
+                (run_id,),
+            )
+            for obligation_id, previous in reopened:
+                append_entity_event(
+                    connection,
+                    run_id,
+                    "coverage_obligation",
+                    obligation_id,
+                    previous,
+                    "open",
+                )
+            knowledge.reject_run(connection, run_id)
+            source_set["accepted_knowledge"] = []
+            connection.execute(
+                "UPDATE runs SET source_set_json = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(source_set, sort_keys=True), now(), run_id),
+            )
+            refresh_run_coverage(connection, run_id)
         connection.close()
-        emit({"decision": "rejected", "ok": True, "run_id": run_id, "state": "cancelled"})
+        emit({"decision": "rejected", "ok": True, "run_id": run_id, "state": "exploring"})
         return 0
-    expected_coverage = json.loads(row["coverage_json"]) if row["coverage_json"] else None
-    errors = validate_bundle(Path(row["staging_dir"]), row["revision"], expected_coverage)
+    source_set = json.loads(row["source_set_json"]) if row["source_set_json"] else {}
+    obligations = obligation_rows(connection, run_id)
+    errors = run_validation_errors(row, source_set, obligations)
     if errors:
         transition(connection, run_id, "review_required", "failed", error="; ".join(errors))
         connection.close()
         emit({"errors": errors, "ok": False, "run_id": run_id, "state": "failed"})
         return 1
-    transition(connection, run_id, "review_required", "publishing")
+    blockers = verification_blockers(db_path(), run_id)
+    transition(
+        connection,
+        run_id,
+        "review_required",
+        "publishing",
+        details={"decision": "approved", "resolved_findings": blockers},
+    )
     publication_changed = False
     try:
         previous_target = publish(Path(row["staging_dir"]), Path(row["publish_dir"]), run_id)
@@ -1427,8 +1203,16 @@ def explore(run_id: str) -> int:
                 await client.close()
 
     outcome = asyncio.run(execute())
-    emit({"ok": outcome.status == "complete", "run_id": run_id, **outcome.model_dump(mode="json")})
-    return 0 if outcome.status == "complete" else 1
+    if outcome.status == "complete":
+        try:
+            finish_run(run_id)
+        except Exception as error:
+            emit({"errors": [str(error)], "ok": False, "run_id": run_id, "state": "failed"})
+            return 1
+        emit({"ok": True, "run_id": run_id, "state": "review_required"})
+        return 0
+    emit({"ok": False, "run_id": run_id, **outcome.model_dump(mode="json")})
+    return 1
 
 
 def parser() -> argparse.ArgumentParser:

@@ -556,4 +556,6 @@ def test_acceptance_preserves_concept_roles_conflicts_and_supersession(tmp_path:
     assert len(knowledge.get_claims_for_obligation("run-1", "obligation-1")) == 3
     assert receipt.concept_ids
     worker_page = knowledge.derive_concept_page("run-1", worker["id"])
-    assert "* [disputed] Workers only read fixed snapshots." in worker_page
+    assert "Workers only read fixed snapshots." not in worker_page
+    assert "Fixed snapshots replace working-tree reads." in worker_page
+    assert f"<!-- claims: {supporting['id']} -->" in worker_page
