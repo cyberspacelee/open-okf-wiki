@@ -247,6 +247,33 @@ def test_duplicate_disposition_for_one_obligation_is_rejected(tmp_path: Path) ->
     assert result.errors == ["Each assigned obligation must have only one Disposition proposal"]
 
 
+def test_worker_structural_validation_allows_stable_cross_candidate_links(tmp_path: Path) -> None:
+    repository = tmp_path / "source"
+    revision = make_repository(repository)
+    output = proposal(revision)
+    output["claims"][0]["conflicts_with"] = [f"claim:{'a' * 64}"]
+    output["claims"][0]["supersedes"] = [f"claim:{'b' * 64}"]
+    output["relations"] = [
+        {
+            "subject_concept_id": "concept-1",
+            "predicate": "refines",
+            "object_concept_id": f"concept:{'c' * 64}",
+            "evidence_ids": ["evidence-1"],
+        }
+    ]
+    worker = WorkerAgent(
+        TestModel(call_tools=[], custom_output_args=output),
+        audit_path=tmp_path / "audit.db",
+        gateway_id="test",
+        model_name="test",
+        max_concurrency=1,
+    )
+
+    result = asyncio.run(worker.run(task(repository, revision)))
+
+    assert result.status == "accepted"
+
+
 def test_snapshot_reader_uses_git_objects_and_enforces_scope(tmp_path: Path) -> None:
     repository = tmp_path / "source"
     make_repository(repository)
@@ -345,7 +372,7 @@ def test_function_model_records_tool_retry_usage_and_trajectory(tmp_path: Path) 
         "function",
         "worker-v1",
         "git-snapshot-v1",
-        "worker-proposal-v1",
+        "worker-proposal-v2",
         "function:function:",
         None,
     )

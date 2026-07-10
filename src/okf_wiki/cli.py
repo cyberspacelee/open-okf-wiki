@@ -1156,7 +1156,7 @@ def status(run_id: str) -> int:
         row = get_run(connection, run_id)
         events = [
             {
-                "details": json.loads(event["details"]),
+                "details": details,
                 "occurred_at": event["occurred_at"],
                 "previous_state": event["previous_state"],
                 "sequence": event["sequence"],
@@ -1165,6 +1165,7 @@ def status(run_id: str) -> int:
             for event in connection.execute(
                 "SELECT * FROM run_events WHERE run_id = ? ORDER BY sequence", (run_id,)
             )
+            if (details := json.loads(event["details"])).get("entity_type") != "coverage_obligation"
         ]
         has_obligations = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'coverage_obligations'"

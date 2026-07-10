@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import re
 import sqlite3
 import subprocess
 import time
@@ -8,7 +9,6 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Literal
 from urllib.parse import quote_from_bytes, unquote_to_bytes
 
 import httpx
@@ -30,69 +30,20 @@ from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
+from .knowledge_contracts import (
+    ClaimProposal as ClaimProposal,
+    ConceptProposal as ConceptProposal,
+    DispositionProposal as DispositionProposal,
+    EvidenceProposal as EvidenceProposal,
+    RelationProposal as RelationProposal,
+    WorkerProposal,
+    WorkerRunResult,
+)
+
 
 PROMPT_VERSION = "worker-v1"
 TOOL_VERSION = "git-snapshot-v1"
-SCHEMA_VERSION = "worker-proposal-v1"
-
-
-class EvidenceProposal(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    id: str = Field(min_length=1)
-    source_id: str = Field(min_length=1)
-    path: str = Field(min_length=1)
-    revision: str = Field(min_length=1)
-    start_line: int = Field(ge=1)
-    end_line: int = Field(ge=1)
-    digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
-
-
-class ClaimProposal(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    id: str = Field(min_length=1)
-    text: str = Field(min_length=1)
-    evidence_ids: list[str] = Field(min_length=1)
-
-
-class ConceptProposal(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    id: str = Field(min_length=1)
-    name: str = Field(min_length=1)
-    description: str = Field(min_length=1)
-    claim_ids: list[str] = Field(min_length=1)
-
-
-class RelationProposal(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    subject_concept_id: str = Field(min_length=1)
-    predicate: str = Field(min_length=1)
-    object_concept_id: str = Field(min_length=1)
-    evidence_ids: list[str] = Field(min_length=1)
-
-
-class DispositionProposal(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    obligation_id: str = Field(min_length=1)
-    disposition: Literal["covered", "deferred", "excluded", "blocked", "failed"]
-    reason: str = Field(min_length=1)
-    evidence_ids: list[str] = Field(min_length=1)
-
-
-class WorkerProposal(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    task_id: str = Field(min_length=1)
-    obligation_ids: list[str] = Field(min_length=1)
-    evidence: list[EvidenceProposal] = Field(min_length=1)
-    claims: list[ClaimProposal] = Field(min_length=1)
-    concepts: list[ConceptProposal] = Field(min_length=1)
-    relations: list[RelationProposal]
-    dispositions: list[DispositionProposal] = Field(min_length=1)
+SCHEMA_VERSION = "worker-proposal-v2"
 
 
 class WorkerBudgets(BaseModel):
@@ -324,14 +275,6 @@ async def read_text(ctx: RunContext[WorkerDeps], path: str, start_line: int, end
         )
 
 
-class WorkerRunResult(BaseModel):
-    status: Literal["accepted", "rejected"]
-    candidate_id: str
-    proposal: WorkerProposal | None
-    errors: list[str]
-    error_type: str | None = None
-
-
 def _unique(values: list[str]) -> bool:
     return len(values) == len(set(values))
 
@@ -383,17 +326,38 @@ async def validate_candidate(
         if item.digest != digest:
             errors.append(f"Evidence {item.id} digest does not match the resolved span")
 
-    def missing(references: list[str], known: Mapping[str, object], owner: str) -> None:
+    def missing(
+        references: list[str],
+        known: Mapping[str, object],
+        owner: str,
+        external_prefix: str | None = None,
+    ) -> None:
         for reference in references:
-            if reference not in known:
+            external = external_prefix and re.fullmatch(
+                rf"{external_prefix}:[0-9a-f]{{64}}", reference
+            )
+            if reference not in known and not external:
                 errors.append(f"{owner} references missing ID {reference}")
 
     for item in proposal.claims:
         missing(item.evidence_ids, evidence, f"Claim {item.id}")
+        missing(item.conflicts_with, claims, f"Claim {item.id}", "claim")
+        missing(item.supersedes, claims, f"Claim {item.id}", "claim")
+        if item.id in item.conflicts_with or item.id in item.supersedes:
+            errors.append(f"Claim {item.id} cannot conflict with or supersede itself")
     for item in proposal.concepts:
         missing(item.claim_ids, claims, f"Concept {item.id}")
+        missing(item.defining_claim_ids, claims, f"Concept {item.id}")
+        missing(item.supporting_claim_ids, claims, f"Concept {item.id}")
+        explicit = set(item.defining_claim_ids) | set(item.supporting_claim_ids)
+        if explicit - set(item.claim_ids):
+            errors.append(f"Concept {item.id} Claim roles must be included in claim_ids")
+        if set(item.defining_claim_ids) & set(item.supporting_claim_ids):
+            errors.append(f"Concept {item.id} Claims cannot be both defining and supporting")
+        if item.supporting_claim_ids and not item.defining_claim_ids:
+            errors.append(f"Concept {item.id} explicit Claim roles require a defining Claim")
     for item in proposal.relations:
-        missing([item.subject_concept_id, item.object_concept_id], concepts, "Relation")
+        missing([item.subject_concept_id, item.object_concept_id], concepts, "Relation", "concept")
         missing(item.evidence_ids, evidence, "Relation")
     for item in proposal.dispositions:
         if item.obligation_id not in task.obligation_ids:
