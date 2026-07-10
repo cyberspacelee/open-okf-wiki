@@ -4,6 +4,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from okf_wiki.cli import UserError, transition
+
 
 def run(command: list[str], cwd: Path, expected: int = 0) -> dict:
     result = subprocess.run(
@@ -107,7 +111,7 @@ def test_build_check_and_approve_a_fixed_revision(tmp_path: Path) -> None:
 
     approved = run(["review", run_id, "--approve"], workspace)
     assert approved["ok"] is True
-    assert approved["state"] == "succeeded"
+    assert approved["state"] == "published"
     assert (workspace / "published" / "overview.md").read_text(encoding="utf-8") == (
         staging / "overview.md"
     ).read_text(encoding="utf-8")
@@ -127,8 +131,16 @@ def test_reject_cancel_and_failure_leave_the_published_bundle_unchanged(tmp_path
 
     second_revision = commit_source(source, "# Example\n\nChanged source knowledge.\n")
     rejected = build_run(workspace, source, second_revision)
-    run(["review", rejected["run_id"], "--reject"], workspace)
-    assert run(["status", rejected["run_id"]], workspace)["state"] == "rejected"
+    rejection = run(["review", rejected["run_id"], "--reject"], workspace)
+    assert rejection == {
+        "decision": "rejected",
+        "ok": True,
+        "run_id": rejected["run_id"],
+        "state": "cancelled",
+    }
+    rejected_status = run(["status", rejected["run_id"]], workspace)
+    assert rejected_status["state"] == "cancelled"
+    assert rejected_status["events"][-1]["details"] == {"decision": "rejected"}
     assert published.resolve() == original_release
     assert (published / "overview.md").read_bytes() == original_overview
 
@@ -161,7 +173,8 @@ def test_final_check_failure_does_not_publish_and_success_atomically_replaces_bu
     invalid_status = run(["status", invalid["run_id"]], workspace)
     coverage = Path(invalid_status["staging_bundle"]) / "reports" / "coverage.md"
     coverage.write_text(
-        coverage.read_text(encoding="utf-8").replace("open_obligations: 0", "open_obligations: 1"),
+        coverage.read_text(encoding="utf-8").replace("open_obligations: 0", "open_obligations: 1")
+        + "\n# open_obligations: 0\n",
         encoding="utf-8",
     )
     checked = run(["check", invalid["run_id"]], workspace, expected=1)
@@ -213,3 +226,79 @@ def test_state_transition_and_run_event_roll_back_together(tmp_path: Path) -> No
             assert "immutable" in str(error)
         else:
             raise AssertionError("Run Events must be immutable")
+
+
+def test_illegal_transition_and_publishing_cancellation_are_rejected(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    revision = make_source(source)
+    built = build_run(workspace, source, revision)
+    database = workspace / ".okf-wiki" / "runs.db"
+
+    with sqlite3.connect(database) as connection:
+        with pytest.raises(UserError, match="review_required -> rendering"):
+            transition(connection, built["run_id"], "review_required", "rendering")
+        transition(connection, built["run_id"], "review_required", "publishing")
+
+    for _ in range(3):
+        cancelled = run(["cancel", built["run_id"]], workspace, expected=1)
+        assert "publishing -> cancelled" in cancelled["errors"][0]
+    status = run(["status", built["run_id"]], workspace)
+    assert status["state"] == "publishing"
+    assert "cancelled" not in [event["state"] for event in status["events"]]
+    assert not (workspace / "published").exists()
+
+
+def test_staged_source_revision_must_match_the_run_and_bundle(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    revision = make_source(source)
+    built = build_run(workspace, source, revision)
+    status = run(["status", built["run_id"]], workspace)
+    staging = Path(status["staging_bundle"])
+    overview = staging / "overview.md"
+    overview.write_text(
+        overview.read_text(encoding="utf-8").replace(revision, "0" * len(revision)),
+        encoding="utf-8",
+    )
+
+    assert run(["check", built["run_id"]], workspace, expected=1)["ok"] is False
+    assert run(["check", str(staging)], workspace, expected=1)["ok"] is False
+    approval = run(["review", built["run_id"], "--approve"], workspace, expected=1)
+    assert approval["state"] == "failed"
+    assert not (workspace / "published").exists()
+
+
+@pytest.mark.parametrize("reserved_file", ["index.md", "log.md"])
+def test_reserved_files_reject_unstructured_text(tmp_path: Path, reserved_file: str) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    revision = make_source(source)
+    built = build_run(workspace, source, revision)
+    status = run(["status", built["run_id"]], workspace)
+    (Path(status["staging_bundle"]) / reserved_file).write_text("# x\njunk\n", encoding="utf-8")
+
+    checked = run(["check", built["run_id"]], workspace, expected=1)
+    assert checked["ok"] is False
+    assert any(reserved_file in error for error in checked["errors"])
+
+
+def test_index_accepts_multiple_sections_with_link_bullets(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    revision = make_source(source)
+    built = build_run(workspace, source, revision)
+    status = run(["status", built["run_id"]], workspace)
+    (Path(status["staging_bundle"]) / "index.md").write_text(
+        "# Start\n\n"
+        "* [Overview](overview.md) - Source overview.\n\n"
+        "# Reports\n\n"
+        "* [Coverage](reports/coverage.md) - Coverage report.\n",
+        encoding="utf-8",
+    )
+
+    assert run(["check", built["run_id"]], workspace)["ok"] is True

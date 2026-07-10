@@ -7,28 +7,26 @@ import sqlite3
 import subprocess
 import tomllib
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 import yaml
 
 
-STATES = {
-    "preparing",
-    "rendering",
-    "checking",
-    "review_required",
-    "publishing",
-    "succeeded",
-    "rejected",
-    "failed",
-    "cancelled",
+ALLOWED_TRANSITIONS = {
+    "preparing": {"rendering", "failed", "cancelled"},
+    "rendering": {"checking", "failed", "cancelled"},
+    "checking": {"review_required", "failed", "cancelled"},
+    "review_required": {"publishing", "failed", "cancelled"},
+    "publishing": {"published", "failed"},
 }
-TERMINAL_STATES = {"succeeded", "rejected", "failed", "cancelled"}
+TERMINAL_STATES = {"published", "failed", "cancelled"}
 REQUIRED_BUNDLE_FILES = {"index.md", "log.md", "overview.md", "reports/coverage.md"}
 LINK_RE = re.compile(r"(?<!!)\[[^]]+\]\(([^)]+)\)")
-LOG_DATE_RE = re.compile(r"^## \d{4}-\d{2}-\d{2}$", re.MULTILINE)
+INDEX_ENTRY_RE = re.compile(r"^[*-] \[[^]]+\]\([^)]+\)(?: - .+)?$")
+LOG_DATE_RE = re.compile(r"^## \d{4}-\d{2}-\d{2}$")
+LOG_ENTRY_RE = re.compile(r"^[*-] .+$")
 
 
 class UserError(Exception):
@@ -143,9 +141,13 @@ def transition(
     *,
     coverage: dict | None = None,
     error: str | None = None,
+    details: dict | None = None,
 ) -> None:
-    if next_state not in STATES:
-        raise RuntimeError(f"Unknown state: {next_state}")
+    if next_state not in ALLOWED_TRANSITIONS.get(previous_state, set()):
+        raise UserError(f"Illegal Production Run transition: {previous_state} -> {next_state}")
+    event_details = dict(details or {})
+    if error:
+        event_details["error"] = error
     timestamp = now()
     with connection:
         changed = connection.execute(
@@ -172,7 +174,7 @@ def transition(
                 previous_state,
                 next_state,
                 timestamp,
-                json.dumps({"error": error} if error else {}, sort_keys=True),
+                json.dumps(event_details, sort_keys=True),
             ),
         )
 
@@ -308,28 +310,78 @@ def render_bundle(
     )
 
 
-def parse_frontmatter(path: Path, text: str) -> list[str]:
+def parse_frontmatter(path: Path, text: str) -> tuple[dict | None, list[str]]:
     errors = []
     if not text.startswith("---\n"):
-        return [f"{path}: missing YAML frontmatter"]
+        return None, [f"{path}: missing YAML frontmatter"]
     end = text.find("\n---\n", 4)
     if end == -1:
-        return [f"{path}: unterminated YAML frontmatter"]
+        return None, [f"{path}: unterminated YAML frontmatter"]
     try:
         data = yaml.safe_load(text[4:end])
     except yaml.YAMLError as error:
-        return [f"{path}: invalid YAML frontmatter: {error}"]
+        return None, [f"{path}: invalid YAML frontmatter: {error}"]
     if not isinstance(data, dict):
         errors.append(f"{path}: frontmatter must be a mapping")
+        return None, errors
     elif not isinstance(data.get("type"), str) or not data["type"].strip():
         errors.append(f"{path}: frontmatter type must be non-empty")
-    return errors
+    return data, errors
 
 
-def validate_bundle(bundle: Path) -> list[str]:
+def validate_index(text: str) -> list[str]:
+    lines = text.splitlines()
+    if not lines:
+        return ["index.md: must contain a section"]
+    seen_section = False
+    entries = 0
+    for line in lines:
+        if line == "":
+            continue
+        if line.startswith("# ") and line != "# ":
+            if seen_section and not entries:
+                return ["index.md: every section must contain a Markdown link bullet"]
+            seen_section = True
+            entries = 0
+        elif seen_section and INDEX_ENTRY_RE.fullmatch(line):
+            entries += 1
+        else:
+            return ["index.md: only sections, blank lines, and Markdown link bullets are allowed"]
+    return (
+        [] if seen_section and entries else ["index.md: every section must contain a link bullet"]
+    )
+
+
+def validate_log(text: str) -> list[str]:
+    lines = text.splitlines()
+    if not lines or not lines[0].startswith("# ") or lines[0] == "# ":
+        return ["log.md: must start with a non-empty title"]
+    seen_date = False
+    entries = 0
+    for line in lines[1:]:
+        if line == "":
+            continue
+        if LOG_DATE_RE.fullmatch(line):
+            try:
+                date.fromisoformat(line.removeprefix("## "))
+            except ValueError:
+                return ["log.md: date sections must use valid ISO dates"]
+            if seen_date and not entries:
+                return ["log.md: every ISO date section must contain a bullet"]
+            seen_date = True
+            entries = 0
+        elif seen_date and LOG_ENTRY_RE.fullmatch(line):
+            entries += 1
+        else:
+            return ["log.md: only a title, ISO date sections, and bullets are allowed"]
+    return [] if seen_date and entries else ["log.md: must contain a dated bullet entry"]
+
+
+def validate_bundle(bundle: Path, expected_revision: str | None = None) -> list[str]:
     if not bundle.is_dir():
         return [f"Bundle does not exist: {bundle}"]
     errors = []
+    documents = {}
     present = {path.relative_to(bundle).as_posix() for path in bundle.rglob("*.md")}
     for missing in sorted(REQUIRED_BUNDLE_FILES - present):
         errors.append(f"Missing required Bundle file: {missing}")
@@ -341,13 +393,25 @@ def validate_bundle(bundle: Path) -> list[str]:
             errors.append(f"{relative}: cannot read UTF-8 Markdown: {error}")
             continue
         if path.name == "index.md":
-            if not text.startswith("# "):
-                errors.append(f"{relative}: index.md must start with a heading")
+            errors.extend(
+                f"{relative}: {error.removeprefix('index.md: ')}" for error in validate_index(text)
+            )
         elif path.name == "log.md":
-            if not text.startswith("# ") or LOG_DATE_RE.search(text) is None:
-                errors.append(f"{relative}: log.md must contain a heading and ISO date section")
+            errors.extend(
+                f"{relative}: {error.removeprefix('log.md: ')}" for error in validate_log(text)
+            )
         else:
-            errors.extend(parse_frontmatter(Path(relative), text))
+            data, frontmatter_errors = parse_frontmatter(Path(relative), text)
+            errors.extend(frontmatter_errors)
+            if data is not None:
+                documents[relative] = data
+                if (
+                    expected_revision is not None
+                    and data.get("source_revision") != expected_revision
+                ):
+                    errors.append(
+                        f"{relative}: source_revision does not match Production Run revision"
+                    )
         for raw_target in LINK_RE.findall(text):
             target = unquote(urlsplit(raw_target.strip().split()[0]).path)
             if not target or urlsplit(raw_target).scheme or target.startswith("#"):
@@ -362,10 +426,14 @@ def validate_bundle(bundle: Path) -> list[str]:
                 continue
             if not resolved.exists():
                 errors.append(f"{relative}: broken internal link: {raw_target}")
-    if (bundle / "reports/coverage.md").is_file():
-        coverage = (bundle / "reports/coverage.md").read_text(encoding="utf-8")
-        if "open_obligations: 0" not in coverage:
-            errors.append("reports/coverage.md: Major Obligations remain open")
+    if expected_revision is None:
+        overview_revision = documents.get("overview.md", {}).get("source_revision")
+        coverage_revision = documents.get("reports/coverage.md", {}).get("source_revision")
+        if not isinstance(overview_revision, str) or overview_revision != coverage_revision:
+            errors.append("overview.md and reports/coverage.md source_revision must match")
+    open_obligations = documents.get("reports/coverage.md", {}).get("open_obligations")
+    if type(open_obligations) is not int or open_obligations != 0:
+        errors.append("reports/coverage.md: open_obligations must be the integer 0")
     return errors
 
 
@@ -385,7 +453,7 @@ def build(config_path: str) -> int:
         render_bundle(staging, project_id, revision, markdown_files, commit_date)
         transition(connection, run_id, state, "checking")
         state = "checking"
-        errors = validate_bundle(staging)
+        errors = validate_bundle(staging, revision)
         if errors:
             raise UserError("; ".join(errors))
         transition(connection, run_id, state, "review_required")
@@ -438,7 +506,7 @@ def check(target: str) -> int:
     else:
         with connect(read_only=True) as connection:
             row = get_run(connection, target)
-        errors = validate_bundle(Path(row["staging_dir"]))
+        errors = validate_bundle(Path(row["staging_dir"]), row["revision"])
     emit({"errors": errors, "ok": not errors, "target": target})
     return bool(errors)
 
@@ -475,11 +543,17 @@ def review(run_id: str, approve: bool) -> int:
         connection.close()
         raise UserError(f"Run {run_id} is not Review Required")
     if not approve:
-        transition(connection, run_id, "review_required", "rejected")
+        transition(
+            connection,
+            run_id,
+            "review_required",
+            "cancelled",
+            details={"decision": "rejected"},
+        )
         connection.close()
-        emit({"ok": True, "run_id": run_id, "state": "rejected"})
+        emit({"decision": "rejected", "ok": True, "run_id": run_id, "state": "cancelled"})
         return 0
-    errors = validate_bundle(Path(row["staging_dir"]))
+    errors = validate_bundle(Path(row["staging_dir"]), row["revision"])
     if errors:
         transition(connection, run_id, "review_required", "failed", error="; ".join(errors))
         connection.close()
@@ -493,9 +567,9 @@ def review(run_id: str, approve: bool) -> int:
         connection.close()
         emit({"errors": [str(error)], "ok": False, "run_id": run_id, "state": "failed"})
         return 1
-    transition(connection, run_id, "publishing", "succeeded")
+    transition(connection, run_id, "publishing", "published")
     connection.close()
-    emit({"ok": True, "run_id": run_id, "state": "succeeded"})
+    emit({"ok": True, "run_id": run_id, "state": "published"})
     return 0
 
 
@@ -505,8 +579,10 @@ def cancel(run_id: str) -> int:
     if row["state"] in TERMINAL_STATES:
         connection.close()
         raise UserError(f"Run {run_id} is already terminal")
-    transition(connection, run_id, row["state"], "cancelled")
-    connection.close()
+    try:
+        transition(connection, run_id, row["state"], "cancelled")
+    finally:
+        connection.close()
     emit({"ok": True, "run_id": run_id, "state": "cancelled"})
     return 0
 
