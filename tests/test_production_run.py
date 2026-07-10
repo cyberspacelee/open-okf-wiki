@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from okf_wiki.accepted_knowledge import AcceptedKnowledgeStore
 from okf_wiki.cli import UserError, transition
 
 
@@ -653,19 +654,19 @@ def test_java_only_source_can_join_a_source_set_with_markdown(tmp_path: Path) ->
 
     built = run(["build", str(config)], workspace)
     status = run(["status", built["run_id"]], workspace)
-    assert status["coverage"]["total"] == 0
-    assert status["coverage"]["covered"] == 0
-    assert status["coverage"]["major"] == 0
+    assert status["coverage"]["total"] == 1
+    assert status["coverage"]["covered"] == 1
+    assert status["coverage"]["major"] == 1
     assert status["coverage"]["open"] == 0
     assert {source["id"]: source["coverage"]["major"] for source in status["sources"]} == {
         "requirements": 0,
-        "service": 0,
+        "service": 1,
     }
     assert {(entry["source_id"], entry["path"]) for entry in status["source_universe"]} == {
         ("requirements", "README.md"),
         ("service", "Service.java"),
     }
-    assert [item["source_id"] for item in status["evidence"]] == ["requirements"]
+    assert [item["source_id"] for item in status["evidence"]] == ["requirements", "service"]
     run(["review", built["run_id"], "--approve"], workspace)
     assert run(["check", str(workspace / "published")], workspace)["ok"] is True
 
@@ -738,3 +739,350 @@ def test_non_utf8_git_path_is_percent_encoded_in_the_source_universe(tmp_path: P
         ("source", "%FF.bin"),
         ("source", "README.md"),
     }
+
+
+def test_java_data_carriers_are_aggregated_and_constraints_stay_visible(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    implementation = tmp_path / "implementation"
+    requirements = tmp_path / "requirements"
+    make_source(implementation)
+    (implementation / "README.md").unlink()
+    java = implementation / "src" / "main" / "java" / "example"
+    java.mkdir(parents=True)
+    (implementation / "pom.xml").write_text("<project><artifactId>orders</artifactId></project>\n")
+    (java / "OrderController.java").write_text(
+        "package example;\n"
+        "@RestController\n"
+        "final class OrderController {\n"
+        '  @PostMapping("/orders")\n'
+        "  OrderResponse create(@Valid CreateOrderRequest request, SecuredPayload auth, "
+        "DomainRequest command, StatefulResponse state, BehaviorDto behavior, "
+        "LegacyPayload legacy) { return null; }\n"
+        "}\n"
+    )
+    for index in range(14):
+        name = (
+            "CreateOrderRequest"
+            if index == 0
+            else ("OrderResponse" if index == 1 else f"Line{index}Dto")
+        )
+        annotation = "  @NotBlank String customer;\n" if index == 0 else "  String value;\n"
+        (java / f"{name}.java").write_text(
+            f"package example;\nrecord {name}(String value) {{\n{annotation}}}\n"
+        )
+    (java / "SecuredPayload.java").write_text(
+        "package example;\n"
+        '@RolesAllowed("admin")\n'
+        "record SecuredPayload(String token) {\n"
+        '  @JsonProperty("access_token") String token() { return token; }\n'
+        "}\n"
+    )
+    (java / "DomainRequest.java").write_text(
+        "package example;\n"
+        "record DomainRequest(String value) implements OrderCommand {}\n"
+        "interface OrderCommand {}\n"
+    )
+    (java / "StatefulResponse.java").write_text(
+        "package example;\n"
+        "record StatefulResponse(Status status) { enum Status { OPEN, CLOSED } }\n"
+    )
+    (java / "BehaviorDto.java").write_text(
+        "package example;\n"
+        "final class BehaviorDto {\n"
+        "  int amount;\n"
+        "  int total() { return amount * 2; }\n"
+        "}\n"
+    )
+    (java / "LegacyPayload.java").write_text(
+        "package example;\nrecord LegacyPayload(String value) implements java.io.Serializable {}\n"
+    )
+    generated = implementation / "target" / "generated-sources"
+    generated.mkdir(parents=True)
+    (generated / "GeneratedDto.java").write_text("record GeneratedDto(String value) {}\n")
+    subprocess.run(["git", "add", "-A"], cwd=implementation, check=True)
+    subprocess.run(["git", "commit", "-qm", "java fixture"], cwd=implementation, check=True)
+    implementation_revision = head_revision(implementation)
+    requirements_revision = make_source(
+        requirements, "# Orders\n\nREQ-1 Orders MUST accept a customer.\n"
+    )
+    config = write_source_set_config(
+        workspace,
+        [
+            {
+                "id": "orders",
+                "role": "implementation",
+                "repository": str(implementation),
+                "revision": implementation_revision,
+            },
+            {
+                "id": "requirements",
+                "role": "requirements",
+                "repository": str(requirements),
+                "revision": requirements_revision,
+            },
+        ],
+    )
+
+    built = run(["build", str(config)], workspace)
+    status = run(["status", built["run_id"]], workspace)
+    java_units = [
+        unit for unit in status["source_universe"] if unit["source_unit_kind"].startswith("java_")
+    ]
+    assert {unit["source_unit_kind"] for unit in java_units} >= {
+        "java_annotation",
+        "java_manifest",
+        "java_method",
+        "java_package",
+        "java_type",
+    }
+    controller = next(
+        unit
+        for unit in java_units
+        if unit["source_unit_kind"] == "java_type" and unit.get("name") == "OrderController"
+    )
+    assert (controller["java_role"], controller["priority"]) == ("controller", "major")
+    secured = next(
+        unit
+        for unit in java_units
+        if unit["source_unit_kind"] == "java_type" and unit.get("name") == "SecuredPayload"
+    )
+    assert (secured["java_role"], secured["priority"], secured["promoted"]) == (
+        "data_carrier",
+        "major",
+        True,
+    )
+    promoted = {
+        unit["name"]: unit["promotion_reasons"]
+        for unit in java_units
+        if unit["source_unit_kind"] == "java_type" and unit.get("promoted")
+    }
+    assert "domain_interface" in promoted["DomainRequest"]
+    assert "state" in promoted["StatefulResponse"]
+    assert "non_trivial_behavior" in promoted["BehaviorDto"]
+    assert promoted["LegacyPayload"] == ["serialization"]
+    exclusion = next(
+        obligation for obligation in status["obligations"] if obligation["kind"] == "java_exclusion"
+    )
+    assert exclusion["disposition"] == "excluded"
+    assert "generated" in exclusion["reason"].casefold()
+
+    java_types = [unit for unit in java_units if unit["source_unit_kind"] == "java_type"]
+    java_major = [
+        obligation
+        for obligation in status["obligations"]
+        if obligation["source"] == "orders" and obligation["priority"] == "major"
+    ]
+    assert len(java_major) < len(java_types) / 2
+    contract = next(
+        obligation for obligation in status["obligations"] if obligation["kind"] == "data_contract"
+    )
+    assert contract["data_carriers"] == [
+        "BehaviorDto",
+        "CreateOrderRequest",
+        "DomainRequest",
+        "LegacyPayload",
+        "OrderResponse",
+        "SecuredPayload",
+        "StatefulResponse",
+    ]
+    assert "NotBlank" in contract["constraints"]
+    assert {"JsonProperty", "RolesAllowed"} <= set(contract["constraints"])
+    assert {"domain_interface", "state", "non_trivial_behavior"} <= set(
+        contract["promotion_reasons"]
+    )
+    assert contract["carrier_promotion_reasons"]["LegacyPayload"] == ["serialization"]
+    assert contract["data_contract_name"] == "OrderController Data Contract"
+    assert not any(unit["source_unit_kind"] == "java_data_contract" for unit in java_units)
+    assert [concept["canonical_name"] for concept in status["accepted_knowledge"]] == [
+        "OrderController Data Contract"
+    ]
+    contract_page = next(
+        concept["page"]
+        for concept in status["accepted_knowledge"]
+        if concept["canonical_name"] == "OrderController Data Contract"
+    )
+    page = Path(status["staging_bundle"], contract_page).read_text(encoding="utf-8")
+    assert "CreateOrderRequest" in page
+    assert "OrderResponse" in page
+    assert "NotBlank" in page
+    assert "RolesAllowed" in page
+    assert "domain_interface" in page
+    assert "state" in page
+    assert "non_trivial_behavior" in page
+    overview = Path(status["staging_bundle"], "overview.md").read_text(encoding="utf-8")
+    assert "tracked source file(s)" in overview
+
+    universe = {unit["source_unit"]: unit for unit in status["source_universe"]}
+    knowledge = AcceptedKnowledgeStore(workspace / ".okf-wiki" / "runs.db")
+    for concept in status["accepted_knowledge"]:
+        for claim_id in concept["defining_claim_ids"]:
+            claim = knowledge.get_claim(built["run_id"], claim_id)
+            assert claim is not None
+            for evidence in claim["evidence"]:
+                source_unit = universe[evidence["source_unit"]]
+                assert evidence["digest"] == f"sha256:{source_unit['content_digest']}"
+                assert source_unit["source_unit_kind"] != "java_data_contract"
+
+
+def test_java_exclusions_and_priorities_are_resolved_from_the_producer_profile(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    revision = make_source(source)
+    (source / "README.md").unlink()
+    (source / "pom.xml").write_text("<project/>\n")
+    vendor = source / "third_party" / "acme"
+    vendor.mkdir(parents=True)
+    (vendor / "VendorDto.java").write_text("record VendorDto(String value) {}\n")
+    generated = source / "target" / "generated-sources"
+    generated.mkdir(parents=True)
+    (generated / "GeneratedDto.java").write_text("record GeneratedDto(String value) {}\n")
+    subprocess.run(["git", "add", "-A"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-qm", "profile rules"], cwd=source, check=True)
+    revision = head_revision(source)
+    config = write_source_set_config(
+        workspace,
+        [
+            {
+                "id": "source",
+                "role": "implementation",
+                "repository": str(source),
+                "revision": revision,
+            }
+        ],
+        """
+[profile]
+java_excluded_paths = ["third_party/**"]
+
+[profile.priorities]
+java_manifest = "supporting"
+""",
+    )
+
+    built = run(["build", str(config)], workspace)
+    status = run(["status", built["run_id"]], workspace)
+    exclusion = next(item for item in status["obligations"] if item["kind"] == "java_exclusion")
+    assert exclusion["matched_rule"] == "third_party/**"
+    assert "third_party/**" in exclusion["reason"]
+    assert not any(
+        item["kind"] == "java_exclusion" and "GeneratedDto" in item["text"]
+        for item in status["obligations"]
+    )
+    manifest = next(item for item in status["obligations"] if item["kind"] == "java_manifest")
+    assert manifest["priority"] == "supporting"
+
+
+def test_java_type_spans_ignore_braces_in_comments_and_literals(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    make_source(source)
+    (source / "README.md").unlink()
+    (source / "BraceController.java").write_text(
+        "package example;\n"
+        "@RestController\n"
+        "final class BraceController {\n"
+        '  String json = "}";\n'
+        "  /* } is data, not structure */\n"
+        "  @PostMapping\n"
+        "  Response handle(Request request) { return null; }\n"
+        "}\n"
+        "record Request(String value) {}\n"
+        "record Response(String value) {}\n"
+    )
+    subprocess.run(["git", "add", "-A"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-qm", "brace fixture"], cwd=source, check=True)
+    revision = head_revision(source)
+
+    built = build_run(workspace, source, revision)
+    status = run(["status", built["run_id"]], workspace)
+    units = status["source_universe"]
+    controller = next(unit for unit in units if unit.get("name") == "BraceController")
+    method = next(
+        unit
+        for unit in units
+        if unit["source_unit_kind"] == "java_method" and unit["name"] == "handle"
+    )
+    annotation = next(
+        unit
+        for unit in units
+        if unit["source_unit_kind"] == "java_annotation" and unit["name"] == "PostMapping"
+    )
+    assert controller["span"] == {"start_line": 2, "end_line": 8}
+    assert (
+        controller["span"]["start_line"]
+        <= method["span"]["start_line"]
+        <= controller["span"]["end_line"]
+    )
+    assert (
+        controller["span"]["start_line"]
+        <= annotation["span"]["start_line"]
+        <= controller["span"]["end_line"]
+    )
+
+
+def test_java_inventory_covers_load_bearing_roles_and_declarations(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    make_source(source)
+    (source / "README.md").unlink()
+    files = {
+        "src/main/java/module-info.java": "module example.orders { exports example; }\n",
+        "src/main/java/example/OrderHandler.java": (
+            "package example;\n@RestController\nfinal class OrderHandler {\n"
+            "  @PostMapping void handle() {}\n}\n"
+        ),
+        "src/main/java/example/OrderService.java": (
+            "package example;\n@Service\nfinal class OrderService { void place() {} }\n"
+        ),
+        "src/main/java/example/domain/Order.java": (
+            "package example.domain;\nfinal class Order { void pay() {} }\n"
+        ),
+        "src/main/java/example/OrderState.java": (
+            "package example;\nenum OrderState { OPEN, PAID }\n"
+        ),
+        "src/main/java/example/AccessSecurity.java": (
+            "package example;\n@EnableWebSecurity\nfinal class AccessSecurity {}\n"
+        ),
+        "src/main/java/example/AppConfiguration.java": (
+            "package example;\n@Configuration\nfinal class AppConfiguration {}\n"
+        ),
+        "src/main/java/example/OrderRepository.java": (
+            "package example;\n@Repository\ninterface OrderRepository { Order load(); }\n"
+        ),
+    }
+    for relative, content in files.items():
+        path = source / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    subprocess.run(["git", "add", "-A"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-qm", "role fixture"], cwd=source, check=True)
+    revision = head_revision(source)
+
+    built = build_run(workspace, source, revision)
+    status = run(["status", built["run_id"]], workspace)
+    units = status["source_universe"]
+    roles = {
+        unit["name"]: unit["java_role"] for unit in units if unit["source_unit_kind"] == "java_type"
+    }
+    assert {
+        "AccessSecurity": "security",
+        "AppConfiguration": "configuration",
+        "Order": "domain",
+        "OrderHandler": "controller",
+        "OrderRepository": "persistence",
+        "OrderService": "service",
+        "OrderState": "state_machine",
+    }.items() <= roles.items()
+    assert all(
+        unit["priority"] == "major"
+        for unit in units
+        if unit["source_unit_kind"] == "java_type" and unit["name"] in roles
+    )
+    assert any(unit["source_unit_kind"] == "java_module" for unit in units)
+    assert any(unit["source_unit_kind"] == "java_method" for unit in units)
+    assert any(unit["source_unit_kind"] == "java_annotation" for unit in units)

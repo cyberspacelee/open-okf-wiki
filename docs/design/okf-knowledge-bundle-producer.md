@@ -190,6 +190,8 @@ The classifier assigns source roles before an Agent sees work.
 
 A Data Carrier is promoted when it contains validation, serialization, security, state, domain-interface, or non-trivial behavioral semantics. The Planner Agent receives prioritized Coverage Obligations rather than a flat file list, so DTO volume cannot dominate attention.
 
+The default Producer Profile excludes tracked Java paths matching `generated/**`, `vendor/**`, `**/generated/**`, `**/generated-sources/**`, or `**/vendor/**`. Projects may replace these `java_excluded_paths`; every match records the resolved rule in the exclusion reason.
+
 The MVP begins with manifest, path, name, annotation, and structural rules. A focused Java parser may be introduced when the Benchmark Corpus proves the simpler classifier insufficient; this does not imply a universal AST platform.
 
 ## Coverage contract

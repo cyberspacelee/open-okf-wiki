@@ -14,6 +14,18 @@ from urllib.parse import quote_from_bytes, unquote, urlsplit
 
 import yaml
 
+from .accepted_knowledge import AcceptedKnowledgeStore
+from .java_analysis import (
+    DEFAULT_JAVA_EXCLUDED_PATHS,
+    JAVA_DEFAULT_PRIORITIES,
+    JAVA_OBLIGATION_KINDS,
+    accept_data_contracts,
+    aggregate_data_contracts,
+    analyze_java_source,
+    is_java_input,
+)
+from .source_identity import source_unit_id, stable_span_id
+
 
 ALLOWED_TRANSITIONS = {
     "preparing": {"rendering", "failed", "cancelled"},
@@ -37,7 +49,7 @@ NUMBERED_REQUIREMENT_RE = re.compile(
 NORMATIVE_RE = re.compile(r"\b(?:MUST|SHALL|SHOULD|MAY)(?: NOT)?\b", re.IGNORECASE)
 LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)]\s+).+$")
 GLOSSARY_RE = re.compile(r"^\s*(?:[-*+]\s+)?[^:#\n][^:\n]{0,100}:\s+.+$")
-OBLIGATION_KINDS = {
+OBLIGATION_KINDS = JAVA_OBLIGATION_KINDS | {
     "acceptance_criterion",
     "glossary_definition",
     "normative_statement",
@@ -50,6 +62,7 @@ DEFAULT_PRIORITIES = {
     "normative_statement": "major",
     "numbered_requirement": "major",
     "table": "supporting",
+    **JAVA_DEFAULT_PRIORITIES,
 }
 DEFAULT_DISPOSITIONS = {
     "major": {"disposition": "covered", "reason": None},
@@ -130,6 +143,7 @@ def initialize(connection: sqlite3.Connection) -> None:
             reason TEXT,
             span TEXT NOT NULL,
             text TEXT NOT NULL,
+            details TEXT NOT NULL DEFAULT '{}',
             PRIMARY KEY (run_id, id)
         );
         CREATE TRIGGER IF NOT EXISTS run_events_no_update
@@ -145,6 +159,13 @@ def initialize(connection: sqlite3.Connection) -> None:
     columns = {row["name"] for row in connection.execute("PRAGMA table_info(runs)")}
     if "source_set_json" not in columns:
         connection.execute("ALTER TABLE runs ADD COLUMN source_set_json TEXT")
+    obligation_columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(coverage_obligations)")
+    }
+    if "details" not in obligation_columns:
+        connection.execute(
+            "ALTER TABLE coverage_obligations ADD COLUMN details TEXT NOT NULL DEFAULT '{}'"
+        )
 
 
 def create_run(
@@ -249,28 +270,6 @@ def git_bytes(repository: Path, *arguments: str) -> bytes:
 
 def git(repository: Path, *arguments: str) -> str:
     return git_bytes(repository, *arguments).decode()
-
-
-def source_unit_id(source_id: str, revision: str, path: str) -> str:
-    identity = f"{source_id}\0{revision}\0{path}".encode()
-    return f"file:{hashlib.sha256(identity).hexdigest()}"
-
-
-def stable_span_id(
-    prefix: str,
-    source_id: str,
-    revision: str,
-    path: str,
-    kind: str,
-    start_line: int,
-    end_line: int,
-    text: str,
-) -> str:
-    digest = hashlib.sha256(text.encode()).hexdigest()
-    identity = (
-        f"{source_id}\0{revision}\0{path}\0{kind}\0{start_line}:{end_line}\0{digest}".encode()
-    )
-    return f"{prefix}:{hashlib.sha256(identity).hexdigest()}"
 
 
 def is_table_separator(line: str) -> bool:
@@ -442,6 +441,7 @@ def inspect_source(
     universe = []
     evidence = []
     obligations = []
+    java_facts: dict[str, dict] = {}
     for record in tree.split(b"\0"):
         if not record:
             continue
@@ -458,13 +458,18 @@ def inspect_source(
                 "source_unit_kind": "file",
             }
         )
-        if object_type != b"blob" or not path_bytes.lower().endswith(b".md"):
+        if object_type != b"blob":
+            continue
+        is_markdown = path_bytes.lower().endswith(b".md")
+        is_java = is_java_input(path)
+        if not (is_markdown or is_java):
             continue
         content = git_bytes(repository, "cat-file", "blob", object_id.decode())
         try:
             text = content.decode("utf-8")
         except UnicodeDecodeError as error:
-            raise UserError(f"Tracked Markdown is not UTF-8: {path}") from error
+            kind = "Markdown" if is_markdown else "Java source"
+            raise UserError(f"Tracked {kind} is not UTF-8: {path}") from error
         evidence.append(
             {
                 "content_digest": hashlib.sha256(content).hexdigest(),
@@ -476,11 +481,24 @@ def inspect_source(
                 "span": {"end_line": max(1, len(text.splitlines())), "start_line": 1},
             }
         )
-        sections, markdown_obligations = markdown_inventory(
-            source, revision, path, text, unit_id, profile
-        )
-        universe.extend(sections)
-        obligations.extend(markdown_obligations)
+        if is_markdown:
+            sections, markdown_obligations = markdown_inventory(
+                source, revision, path, text, unit_id, profile
+            )
+            universe.extend(sections)
+            obligations.extend(markdown_obligations)
+        else:
+            java_units, java_obligations, facts = analyze_java_source(
+                source, revision, path, text, profile
+            )
+            universe.extend(java_units)
+            obligations.extend(java_obligations)
+            java_facts.update(facts)
+    contract_units, contract_obligations = aggregate_data_contracts(
+        source, revision, java_facts, profile
+    )
+    universe.extend(contract_units)
+    obligations.extend(contract_obligations)
     commit_date = git(repository, "show", "-s", "--format=%cs", revision).strip()
     return snapshot, universe, evidence, obligations, commit_date
 
@@ -489,7 +507,7 @@ def load_profile(config: dict) -> dict:
     raw = config.get("profile", {})
     if not isinstance(raw, dict):
         raise UserError("Producer Profile must be a table")
-    unknown = sorted(set(raw) - {"dispositions", "priorities"})
+    unknown = sorted(set(raw) - {"dispositions", "java_excluded_paths", "priorities"})
     if unknown:
         raise UserError(f"Unknown Producer Profile fields: {', '.join(unknown)}")
 
@@ -503,6 +521,17 @@ def load_profile(config: dict) -> dict:
         if not isinstance(priority, str) or priority.casefold() not in DEFAULT_DISPOSITIONS:
             raise UserError(f"Producer Profile priority for {kind} must be major or supporting")
         priorities[kind] = priority.casefold()
+
+    java_excluded_paths = raw.get("java_excluded_paths", DEFAULT_JAVA_EXCLUDED_PATHS)
+    if (
+        not isinstance(java_excluded_paths, list | tuple)
+        or not java_excluded_paths
+        or any(not isinstance(rule, str) or not rule.strip() for rule in java_excluded_paths)
+    ):
+        raise UserError("Producer Profile java_excluded_paths must be a non-empty string array")
+    for rule in java_excluded_paths:
+        if rule.startswith("/") or ".." in Path(rule).parts:
+            raise UserError("Producer Profile java_excluded_paths rules must stay relative")
 
     dispositions = {priority: dict(value) for priority, value in DEFAULT_DISPOSITIONS.items()}
     raw_dispositions = raw.get("dispositions", {})
@@ -532,7 +561,12 @@ def load_profile(config: dict) -> dict:
         if disposition == "deferred" and priority != "supporting":
             raise UserError("DEFERRED is available only to Supporting Obligations")
         settings.update(disposition=disposition, reason=reason)
-    return {"dispositions": dispositions, "priorities": priorities}
+    return {
+        "dispositions": dispositions,
+        "java_excluded_paths": list(java_excluded_paths),
+        "priorities": priorities,
+        "priority_overrides": set(raw_priorities),
+    }
 
 
 def load_config(path_text: str) -> tuple[str, list[dict], Path, dict]:
@@ -617,10 +651,11 @@ def obligation_rows(connection: sqlite3.Connection, run_id: str) -> list[dict]:
         {
             **dict(row),
             "span": json.loads(row["span"]),
+            **json.loads(row["details"]),
         }
         for row in connection.execute(
             """SELECT id, source, role, path, source_unit, kind, priority, disposition,
-                      reason, span, text
+                      reason, span, text, details
                FROM coverage_obligations WHERE run_id = ? ORDER BY id""",
             (run_id,),
         )
@@ -735,14 +770,23 @@ def render_bundle(
     obligations: list[dict],
     coverage: dict,
     commit_date: str,
+    accepted_knowledge: list[dict] | None = None,
+    database: Path | None = None,
+    run_id: str | None = None,
 ) -> None:
+    accepted_knowledge = accepted_knowledge or []
     if staging.exists():
         shutil.rmtree(staging)
     (staging / "reports").mkdir(parents=True)
+    knowledge_links = "".join(
+        f"* [{concept['canonical_name']}]({concept['page']}) - Accepted source knowledge.\n"
+        for concept in sorted(accepted_knowledge, key=lambda item: item["page"])
+    )
     (staging / "index.md").write_text(
         f"# {project_id} Knowledge Bundle\n\n"
         "* [Overview](overview.md) - Fixed-revision source overview.\n"
-        "* [Coverage Report](reports/coverage.md) - Major obligation disposition.\n",
+        "* [Coverage Report](reports/coverage.md) - Major obligation disposition.\n"
+        + knowledge_links,
         encoding="utf-8",
     )
     (staging / "log.md").write_text(
@@ -764,7 +808,7 @@ def render_bundle(
             revision,
         )
         + f"\n# Overview\n\nProducer Project `{project_id}` covers "
-        f"{len(evidence)} tracked Markdown document(s) from {len(sources)} source(s).\n\n"
+        f"{len(evidence)} tracked source file(s) from {len(sources)} source(s).\n\n"
         + source_summary
         + "\n",
         encoding="utf-8",
@@ -805,6 +849,22 @@ def render_bundle(
         + "\n",
         encoding="utf-8",
     )
+    if accepted_knowledge and database is not None and run_id is not None:
+        store = AcceptedKnowledgeStore(database)
+        for concept in accepted_knowledge:
+            path = staging / concept["page"]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                frontmatter(
+                    "Concept",
+                    concept["canonical_name"],
+                    "Accepted source-grounded knowledge.",
+                    revision,
+                )
+                + "\n"
+                + store.derive_concept_page(run_id, concept["id"]),
+                encoding="utf-8",
+            )
 
 
 def parse_frontmatter(path: Path, text: str) -> tuple[dict | None, list[str]]:
@@ -1055,8 +1115,8 @@ def build(config_path: str) -> int:
             connection.executemany(
                 """INSERT INTO coverage_obligations
                    (id, run_id, source, role, path, source_unit, kind, priority,
-                    disposition, reason, span, text)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    disposition, reason, span, text, details)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [
                     (
                         item["id"],
@@ -1071,6 +1131,23 @@ def build(config_path: str) -> int:
                         item["reason"],
                         json.dumps(item["span"], sort_keys=True),
                         item["text"],
+                        json.dumps(
+                            {
+                                key: item[key]
+                                for key in (
+                                    "constraints",
+                                    "carrier_promotion_reasons",
+                                    "data_carriers",
+                                    "data_contract_name",
+                                    "evidence_source_units",
+                                    "matched_rule",
+                                    "promoted",
+                                    "promotion_reasons",
+                                )
+                                if key in item
+                            },
+                            sort_keys=True,
+                        ),
                     )
                     for item in obligations
                 ],
@@ -1108,7 +1185,7 @@ def build(config_path: str) -> int:
                 ),
             )
         if not evidence:
-            raise UserError("Fixed Source Set contains no tracked Markdown files")
+            raise UserError("Fixed Source Set contains no tracked Java or Markdown files")
         if major_blockers(coverage):
             error = "Major Coverage Obligations are open, blocked, or failed"
             transition(connection, run_id, state, "failed", coverage=coverage, error=error)
@@ -1123,6 +1200,13 @@ def build(config_path: str) -> int:
                 }
             )
             return 1
+        accepted_knowledge = accept_data_contracts(db_path(), run_id, source_universe, obligations)
+        source_set["accepted_knowledge"] = accepted_knowledge
+        with connection:
+            connection.execute(
+                "UPDATE runs SET source_set_json = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(source_set, sort_keys=True), now(), run_id),
+            )
         transition(connection, run_id, state, "rendering", coverage=coverage)
         state = "rendering"
         render_bundle(
@@ -1134,6 +1218,9 @@ def build(config_path: str) -> int:
             obligations,
             coverage,
             max(commit_dates),
+            accepted_knowledge,
+            db_path(),
+            run_id,
         )
         transition(connection, run_id, state, "checking")
         state = "checking"
@@ -1191,6 +1278,7 @@ def status(run_id: str) -> int:
     coverage = json.loads(row["coverage_json"]) if row["coverage_json"] else None
     payload = {
         "blocked": bool(coverage and "total" in coverage and major_blockers(coverage)),
+        "accepted_knowledge": source_set.get("accepted_knowledge", []),
         "coverage": coverage,
         "evidence": source_set["evidence"],
         "error": row["error"],
