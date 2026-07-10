@@ -1,5 +1,7 @@
+import hashlib
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -22,21 +24,25 @@ def run(command: list[str], cwd: Path, expected: int = 0) -> dict:
     return json.loads(result.stdout)
 
 
-def make_source(path: Path) -> str:
-    path.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
-    (path / "README.md").write_text("# Example\n\nFixed source knowledge.\n", encoding="utf-8")
-    subprocess.run(["git", "add", "README.md"], cwd=path, check=True)
-    subprocess.run(["git", "commit", "-qm", "source"], cwd=path, check=True)
+def head_revision(source: Path) -> str:
     return subprocess.run(
         ["git", "rev-parse", "HEAD"],
-        cwd=path,
+        cwd=source,
         check=True,
         text=True,
         capture_output=True,
     ).stdout.strip()
+
+
+def make_source(path: Path, text: str = "# Example\n\nFixed source knowledge.\n") -> str:
+    path.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
+    (path / "README.md").write_text(text, encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-qm", "source"], cwd=path, check=True)
+    return head_revision(path)
 
 
 def write_config(workspace: Path, source: Path, revision: str) -> Path:
@@ -60,6 +66,24 @@ def build_run(workspace: Path, source: Path, revision: str, expected: int = 0) -
     return run(["build", str(write_config(workspace, source, revision))], workspace, expected)
 
 
+def write_source_set_config(workspace: Path, sources: list[dict[str, str]]) -> Path:
+    config = workspace / "source-set.toml"
+    lines = ['project_id = "combined"', 'publish_dir = "published"', ""]
+    for source in sources:
+        lines.extend(
+            [
+                "[[sources]]",
+                f'id = "{source["id"]}"',
+                f'role = "{source["role"]}"',
+                f'repository = "{source["repository"]}"',
+                f'revision = "{source["revision"]}"',
+                "",
+            ]
+        )
+    config.write_text("\n".join(lines), encoding="utf-8")
+    return config
+
+
 def commit_source(source: Path, text: str | None) -> str:
     readme = source / "README.md"
     if text is None:
@@ -68,13 +92,7 @@ def commit_source(source: Path, text: str | None) -> str:
         readme.write_text(text, encoding="utf-8")
     subprocess.run(["git", "add", "-A"], cwd=source, check=True)
     subprocess.run(["git", "commit", "-qm", "change"], cwd=source, check=True)
-    return subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=source,
-        check=True,
-        text=True,
-        capture_output=True,
-    ).stdout.strip()
+    return head_revision(source)
 
 
 def test_build_check_and_approve_a_fixed_revision(tmp_path: Path) -> None:
@@ -229,6 +247,65 @@ def test_state_transition_and_run_event_roll_back_together(tmp_path: Path) -> No
             raise AssertionError("Run Events must be immutable")
 
 
+def test_status_reads_an_issue01_ledger_without_source_set_columns(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    database = workspace / ".okf-wiki" / "runs.db"
+    database.parent.mkdir(parents=True)
+    revision = "a" * 40
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE runs (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                repository TEXT NOT NULL,
+                revision TEXT NOT NULL,
+                publish_dir TEXT NOT NULL,
+                staging_dir TEXT NOT NULL,
+                state TEXT NOT NULL,
+                coverage_json TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE run_events (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL REFERENCES runs(id),
+                previous_state TEXT,
+                state TEXT NOT NULL,
+                occurred_at TEXT NOT NULL,
+                details TEXT NOT NULL DEFAULT '{}'
+            );
+            """
+        )
+        connection.execute(
+            """INSERT INTO runs VALUES
+               ('old-run', 'old-project', '/gone/repository', ?, '/published', '/staging',
+                'review_required', '{"covered": 1, "major": 1, "open": 0}', NULL,
+                '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')""",
+            (revision,),
+        )
+        connection.execute(
+            """INSERT INTO run_events
+               (run_id, previous_state, state, occurred_at, details)
+               VALUES ('old-run', NULL, 'review_required', '2026-01-01T00:00:00Z', '{}')"""
+        )
+
+    status = run(["status", "old-run"], workspace)
+    assert status["source"] == {"repository": "/gone/repository", "revision": revision}
+    assert status["sources"] == [
+        {
+            "id": "source",
+            "repository": "/gone/repository",
+            "revision": revision,
+            "role": "implementation",
+        }
+    ]
+    assert re.fullmatch(r"[0-9a-f]{64}", status["source_set_digest"])
+    assert status["source_universe"] == []
+    assert status["evidence"] == []
+
+
 def test_illegal_transition_and_publishing_cancellation_are_rejected(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -354,3 +431,183 @@ def test_failed_published_event_restores_the_previous_bundle(tmp_path: Path) -> 
     assert "published" not in [event["state"] for event in status["events"]]
     assert os.readlink(published) == previous_target
     assert (published / "overview.md").read_bytes() == previous_overview
+
+
+def test_two_named_sources_build_and_publish_one_bundle(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    implementation = tmp_path / "implementation"
+    requirements = tmp_path / "requirements"
+    implementation_revision = make_source(
+        implementation, "# Service\n\nImplementation knowledge.\n"
+    )
+    requirements_revision = make_source(requirements, "# Requirements\n\nRequired behavior.\n")
+    config = write_source_set_config(
+        workspace,
+        [
+            {
+                "id": "service",
+                "role": "implementation",
+                "repository": str(implementation),
+                "revision": implementation_revision,
+            },
+            {
+                "id": "requirements",
+                "role": "requirements",
+                "repository": str(requirements),
+                "revision": requirements_revision,
+            },
+        ],
+    )
+
+    built = run(["build", str(config)], workspace)
+    status = run(["status", built["run_id"]], workspace)
+    assert status["state"] == "review_required"
+    assert status["coverage"] == {"covered": 2, "major": 2, "open": 0}
+    assert [source["id"] for source in status["sources"]] == ["requirements", "service"]
+    assert {source["role"] for source in status["sources"]} == {
+        "implementation",
+        "requirements",
+    }
+    assert {source["revision"] for source in status["sources"]} == {
+        implementation_revision,
+        requirements_revision,
+    }
+    assert all(re.fullmatch(r"[0-9a-f]{64}", source["digest"]) for source in status["sources"])
+    assert re.fullmatch(r"[0-9a-f]{64}", status["source_set_digest"])
+    assert {(entry["source_id"], entry["path"]) for entry in status["source_universe"]} == {
+        ("service", "README.md"),
+        ("requirements", "README.md"),
+    }
+    assert {evidence["source_id"] for evidence in status["evidence"]} == {
+        "service",
+        "requirements",
+    }
+    assert len({evidence["source_unit"] for evidence in status["evidence"]}) == 2
+    for evidence in status["evidence"]:
+        assert re.fullmatch(r"file:[0-9a-f]{64}", evidence["source_unit"])
+        assert evidence["source_unit_kind"] == "file"
+        assert evidence["span"] == {"end_line": 3, "start_line": 1}
+        assert evidence["revision"] in {implementation_revision, requirements_revision}
+        assert re.fullmatch(r"[0-9a-f]{64}", evidence["content_digest"])
+
+    staging = Path(status["staging_bundle"])
+    coverage = (staging / "reports" / "coverage.md").read_text(encoding="utf-8")
+    assert "service" in coverage and implementation_revision in coverage
+    assert "requirements" in coverage and requirements_revision in coverage
+    run(["review", built["run_id"], "--approve"], workspace)
+    assert run(["check", str(workspace / "published")], workspace)["ok"] is True
+
+
+def test_java_only_source_can_join_a_source_set_with_markdown(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    implementation = tmp_path / "implementation"
+    requirements = tmp_path / "requirements"
+    make_source(implementation)
+    (implementation / "README.md").unlink()
+    (implementation / "Service.java").write_text("final class Service {}\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=implementation, check=True)
+    subprocess.run(["git", "commit", "-qm", "java only"], cwd=implementation, check=True)
+    implementation_revision = head_revision(implementation)
+    requirements_revision = make_source(requirements)
+    config = write_source_set_config(
+        workspace,
+        [
+            {
+                "id": "service",
+                "role": "implementation",
+                "repository": str(implementation),
+                "revision": implementation_revision,
+            },
+            {
+                "id": "requirements",
+                "role": "requirements",
+                "repository": str(requirements),
+                "revision": requirements_revision,
+            },
+        ],
+    )
+
+    built = run(["build", str(config)], workspace)
+    status = run(["status", built["run_id"]], workspace)
+    assert status["coverage"] == {"covered": 1, "major": 1, "open": 0}
+    assert {source["id"]: source["coverage"]["major"] for source in status["sources"]} == {
+        "requirements": 1,
+        "service": 0,
+    }
+    assert {(entry["source_id"], entry["path"]) for entry in status["source_universe"]} == {
+        ("requirements", "README.md"),
+        ("service", "Service.java"),
+    }
+    assert [item["source_id"] for item in status["evidence"]] == ["requirements"]
+    run(["review", built["run_id"], "--approve"], workspace)
+    assert run(["check", str(workspace / "published")], workspace)["ok"] is True
+
+
+def test_fixed_snapshots_ignore_worktree_content_but_keep_tracked_ignored_files(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    committed = b"# Example\n\nFixed source knowledge.\n"
+    make_source(source, committed.decode())
+    (source / ".gitignore").write_text("README.md\nignored.md\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitignore"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-qm", "ignore tracked file later"], cwd=source, check=True)
+    revision = head_revision(source)
+
+    (source / "README.md").write_text("# Dirty\n\nNot in the snapshot.\n", encoding="utf-8")
+    (source / "untracked.md").write_text("# Untracked\n", encoding="utf-8")
+    (source / "ignored.md").write_text("# Ignored and untracked\n", encoding="utf-8")
+
+    first = build_run(workspace, source, revision)
+    first_status = run(["status", first["run_id"]], workspace)
+    assert [(entry["source_id"], entry["path"]) for entry in first_status["source_universe"]] == [
+        ("source", ".gitignore"),
+        ("source", "README.md"),
+    ]
+    assert first_status["coverage"] == {"covered": 1, "major": 1, "open": 0}
+    evidence = first_status["evidence"]
+    assert len(evidence) == 1
+    assert evidence[0]["content_digest"] == hashlib.sha256(committed).hexdigest()
+    assert evidence[0]["span"] == {"end_line": 3, "start_line": 1}
+
+    (source / "README.md").write_text("# Dirtier\n", encoding="utf-8")
+    (source / "another-untracked.md").write_text("# Also absent\n", encoding="utf-8")
+    second = build_run(workspace, source, revision.upper())
+    second_status = run(["status", second["run_id"]], workspace)
+    assert second_status["sources"] == first_status["sources"]
+    assert second_status["source_set_digest"] == first_status["source_set_digest"]
+    assert second_status["source_universe"] == first_status["source_universe"]
+    assert second_status["evidence"] == first_status["evidence"]
+
+
+def test_non_utf8_git_path_is_percent_encoded_in_the_source_universe(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    make_source(source)
+    raw_path = os.path.join(os.fsencode(source), b"\xff.bin")
+    descriptor = os.open(raw_path, os.O_CREAT | os.O_WRONLY, 0o644)
+    try:
+        os.write(descriptor, b"binary source\n")
+    finally:
+        os.close(descriptor)
+    (source / "%FF.bin").write_bytes(b"literal percent source\n")
+    subprocess.run(
+        [b"git", b"add", b"--", b"\xff.bin", b"%FF.bin"],
+        cwd=os.fsencode(source),
+        check=True,
+    )
+    subprocess.run(["git", "commit", "-qm", "byte path"], cwd=source, check=True)
+    revision = head_revision(source)
+
+    built = build_run(workspace, source, revision)
+    status = run(["status", built["run_id"]], workspace)
+    assert {(entry["source_id"], entry["path"]) for entry in status["source_universe"]} == {
+        ("source", "%25FF.bin"),
+        ("source", "%FF.bin"),
+        ("source", "README.md"),
+    }

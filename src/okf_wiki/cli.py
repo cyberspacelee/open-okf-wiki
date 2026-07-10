@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -9,7 +10,7 @@ import tomllib
 import uuid
 from datetime import UTC, date, datetime
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote_from_bytes, unquote, urlsplit
 
 import yaml
 
@@ -75,6 +76,7 @@ def initialize(connection: sqlite3.Connection) -> None:
             staging_dir TEXT NOT NULL,
             state TEXT NOT NULL,
             coverage_json TEXT,
+            source_set_json TEXT,
             error TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
@@ -97,6 +99,9 @@ def initialize(connection: sqlite3.Connection) -> None:
         END;
         """
     )
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(runs)")}
+    if "source_set_json" not in columns:
+        connection.execute("ALTER TABLE runs ADD COLUMN source_set_json TEXT")
 
 
 def create_run(
@@ -107,14 +112,15 @@ def create_run(
     revision: str,
     publish_dir: Path,
     staging_dir: Path,
+    source_set: dict,
 ) -> None:
     timestamp = now()
     with connection:
         connection.execute(
             """INSERT INTO runs
                (id, project_id, repository, revision, publish_dir, staging_dir, state,
-                created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, 'preparing', ?, ?)""",
+                source_set_json, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, 'preparing', ?, ?, ?)""",
             (
                 run_id,
                 project_id,
@@ -122,6 +128,7 @@ def create_run(
                 revision,
                 str(publish_dir),
                 str(staging_dir),
+                json.dumps(source_set, sort_keys=True),
                 timestamp,
                 timestamp,
             ),
@@ -186,53 +193,153 @@ def get_run(connection: sqlite3.Connection, run_id: str) -> sqlite3.Row:
     return row
 
 
-def git(repository: Path, *arguments: str) -> str:
+def git_bytes(repository: Path, *arguments: str) -> bytes:
     result = subprocess.run(
         ["git", "-C", str(repository), *arguments],
         check=False,
         capture_output=True,
-        text=True,
     )
     if result.returncode:
-        raise UserError(result.stderr.strip() or "Git command failed")
+        raise UserError(result.stderr.decode(errors="replace").strip() or "Git command failed")
     return result.stdout
 
 
-def inspect_source(repository: Path, revision: str) -> tuple[list[str], str]:
+def git(repository: Path, *arguments: str) -> str:
+    return git_bytes(repository, *arguments).decode()
+
+
+def source_unit_id(source_id: str, revision: str, path: str) -> str:
+    identity = f"{source_id}\0{revision}\0{path}".encode()
+    return f"file:{hashlib.sha256(identity).hexdigest()}"
+
+
+def inspect_source(source: dict) -> tuple[dict, list[dict], list[dict], str]:
+    repository = Path(source["repository"])
+    requested_revision = source["revision"]
     if not repository.is_dir():
         raise UserError(f"Repository does not exist: {repository}")
-    if re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", revision) is None:
+    if re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", requested_revision) is None:
         raise UserError("Revision must be a full Git commit ID")
-    resolved = git(repository, "rev-parse", "--verify", f"{revision}^{{commit}}").strip()
-    if resolved.lower() != revision.lower():
+    revision = git(repository, "rev-parse", "--verify", f"{requested_revision}^{{commit}}").strip()
+    if revision.lower() != requested_revision.lower():
         raise UserError("Revision does not resolve to the exact requested commit")
-    files = git(repository, "ls-tree", "-r", "--name-only", "-z", revision).split("\0")
-    markdown = sorted(path for path in files if path.lower().endswith(".md"))
-    if not markdown:
-        raise UserError("Fixed source revision contains no tracked Markdown files")
+    tree = git_bytes(repository, "ls-tree", "-r", "--full-tree", "-z", revision)
+    snapshot = {**source, "digest": hashlib.sha256(tree).hexdigest(), "revision": revision}
+    universe = []
+    evidence = []
+    for record in tree.split(b"\0"):
+        if not record:
+            continue
+        metadata, path_bytes = record.split(b"\t", 1)
+        _mode, object_type, object_id = metadata.split(b" ", 2)
+        path = quote_from_bytes(path_bytes, safe="/")
+        unit_id = source_unit_id(source["id"], revision, path)
+        universe.append(
+            {
+                "path": path,
+                "revision": revision,
+                "source_id": source["id"],
+                "source_unit": unit_id,
+                "source_unit_kind": "file",
+            }
+        )
+        if object_type != b"blob" or not path_bytes.lower().endswith(b".md"):
+            continue
+        content = git_bytes(repository, "cat-file", "blob", object_id.decode())
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise UserError(f"Tracked Markdown is not UTF-8: {path}") from error
+        evidence.append(
+            {
+                "content_digest": hashlib.sha256(content).hexdigest(),
+                "path": path,
+                "revision": revision,
+                "source_id": source["id"],
+                "source_unit": unit_id,
+                "source_unit_kind": "file",
+                "span": {"end_line": max(1, len(text.splitlines())), "start_line": 1},
+            }
+        )
+    snapshot["coverage"] = {"covered": len(evidence), "major": len(evidence), "open": 0}
     commit_date = git(repository, "show", "-s", "--format=%cs", revision).strip()
-    return markdown, commit_date
+    return snapshot, universe, evidence, commit_date
 
 
-def load_config(path_text: str) -> tuple[str, Path, str, Path]:
+def load_config(path_text: str) -> tuple[str, list[dict], Path]:
     path = Path(path_text).resolve()
     try:
         config = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise UserError(f"Cannot read Producer Project config: {error}") from error
-    required = {"project_id", "repository", "revision", "publish_dir"}
+    required = {"project_id", "publish_dir"}
     missing = sorted(required - config.keys())
     if missing:
         raise UserError(f"Missing config fields: {', '.join(missing)}")
     if any(not isinstance(config[key], str) or not config[key].strip() for key in required):
         raise UserError("Producer Project config fields must be non-empty strings")
-    repository = Path(config["repository"])
     publish_dir = Path(config["publish_dir"])
-    if not repository.is_absolute():
-        repository = path.parent / repository
     if not publish_dir.is_absolute():
         publish_dir = path.parent / publish_dir
-    return config["project_id"], repository.resolve(), config["revision"], publish_dir.absolute()
+    if "sources" not in config:
+        source_required = {"repository", "revision"}
+        source_missing = sorted(source_required - config.keys())
+        if source_missing:
+            raise UserError(f"Missing config fields: {', '.join(source_missing)}")
+        raw_sources = [
+            {
+                "id": "source",
+                "role": "implementation",
+                "repository": config["repository"],
+                "revision": config["revision"],
+            }
+        ]
+    else:
+        if "repository" in config or "revision" in config:
+            raise UserError("Use either sources or repository/revision config fields")
+        raw_sources = config["sources"]
+        if not isinstance(raw_sources, list) or not raw_sources:
+            raise UserError("Producer Project sources must be a non-empty array")
+    sources = []
+    for raw_source in raw_sources:
+        if not isinstance(raw_source, dict):
+            raise UserError("Each Producer Project source must be a table")
+        source_required = {"id", "role", "repository", "revision"}
+        source_missing = sorted(source_required - raw_source.keys())
+        if source_missing:
+            raise UserError(f"Missing source fields: {', '.join(source_missing)}")
+        if any(
+            not isinstance(raw_source[field], str) or not raw_source[field].strip()
+            for field in source_required
+        ):
+            raise UserError("Producer Project source fields must be non-empty strings")
+        repository = Path(raw_source["repository"])
+        if not repository.is_absolute():
+            repository = path.parent / repository
+        sources.append(
+            {
+                "id": raw_source["id"],
+                "repository": str(repository.resolve()),
+                "revision": raw_source["revision"],
+                "role": raw_source["role"],
+            }
+        )
+    if len({source["id"] for source in sources}) != len(sources):
+        raise UserError("Producer Project source IDs must be unique")
+    return (
+        config["project_id"],
+        sorted(sources, key=lambda source: source["id"]),
+        publish_dir.absolute(),
+    )
+
+
+def source_set_digest(sources: list[dict]) -> str:
+    identity = [
+        {key: source.get(key) for key in ("digest", "id", "revision", "role")} for source in sources
+    ]
+    return hashlib.sha256(
+        json.dumps(identity, separators=(",", ":"), sort_keys=True).encode()
+    ).hexdigest()
 
 
 def frontmatter(
@@ -263,7 +370,8 @@ def render_bundle(
     staging: Path,
     project_id: str,
     revision: str,
-    markdown_files: list[str],
+    sources: list[dict],
+    evidence: list[dict],
     commit_date: str,
 ) -> None:
     if staging.exists():
@@ -278,8 +386,13 @@ def render_bundle(
     (staging / "log.md").write_text(
         "# Bundle Update Log\n\n"
         f"## {commit_date}\n"
-        f"* **Creation**: Staged the bundle for source revision `{revision}`.\n",
+        f"* **Creation**: Staged the bundle for Source Set `{revision}`.\n",
         encoding="utf-8",
+    )
+    source_summary = "\n".join(
+        f"* `{source['id']}` ({source['role']}) at revision `{source['revision']}` "
+        f"with tree digest `{source['digest']}`."
+        for source in sources
     )
     (staging / "overview.md").write_text(
         frontmatter(
@@ -289,22 +402,36 @@ def render_bundle(
             revision,
         )
         + f"\n# Overview\n\nProducer Project `{project_id}` covers "
-        f"{len(markdown_files)} tracked Markdown document(s) at revision `{revision}`.\n",
+        f"{len(evidence)} tracked Markdown document(s) from {len(sources)} source(s).\n\n"
+        + source_summary
+        + "\n",
         encoding="utf-8",
     )
-    covered = "\n".join(f"* `{path}` — covered" for path in markdown_files)
+    coverage_sections = []
+    for source in sources:
+        covered = "\n".join(
+            f"* `{item['path']}` — covered"
+            for item in evidence
+            if item["source_id"] == source["id"]
+        )
+        coverage_sections.append(
+            f"## `{source['id']}` ({source['role']})\n\n"
+            f"* Revision: `{source['revision']}`\n"
+            f"* Tree digest: `{source['digest']}`\n"
+            f"{covered}"
+        )
     (staging / "reports" / "coverage.md").write_text(
         frontmatter(
             "Coverage Report",
             "Coverage Report",
             "Disposition of Major Coverage Obligations.",
             revision,
-            major_obligations=len(markdown_files),
-            covered_obligations=len(markdown_files),
+            major_obligations=len(evidence),
+            covered_obligations=len(evidence),
             open_obligations=0,
         )
         + "\n# Coverage Report\n\n"
-        + covered
+        + "\n\n".join(coverage_sections)
         + "\n",
         encoding="utf-8",
     )
@@ -463,22 +590,74 @@ def validate_bundle(
 
 
 def build(config_path: str) -> int:
-    project_id, repository, revision, publish_dir = load_config(config_path)
+    project_id, configured_sources, publish_dir = load_config(config_path)
+    configured_digest = source_set_digest(configured_sources)
+    provisional_revision = (
+        configured_sources[0]["revision"] if len(configured_sources) == 1 else configured_digest
+    )
     run_id = uuid.uuid4().hex
     staging = state_dir() / "runs" / run_id / "staging"
     connection = connect()
     initialize(connection)
-    create_run(connection, run_id, project_id, repository, revision, publish_dir, staging)
+    source_set = {
+        "digest": configured_digest,
+        "evidence": [],
+        "source_universe": [],
+        "sources": configured_sources,
+    }
+    create_run(
+        connection,
+        run_id,
+        project_id,
+        Path(configured_sources[0]["repository"]),
+        provisional_revision,
+        publish_dir,
+        staging,
+        source_set,
+    )
     state = "preparing"
     try:
-        markdown_files, commit_date = inspect_source(repository, revision)
-        coverage = {"covered": len(markdown_files), "major": len(markdown_files), "open": 0}
+        sources = []
+        source_universe = []
+        evidence = []
+        commit_dates = []
+        for configured_source in configured_sources:
+            try:
+                source, source_files, source_evidence, commit_date = inspect_source(
+                    configured_source
+                )
+            except UserError as error:
+                raise UserError(f"Source {configured_source['id']}: {error}") from error
+            sources.append(source)
+            source_universe.extend(source_files)
+            evidence.extend(source_evidence)
+            commit_dates.append(commit_date)
+        digest = source_set_digest(sources)
+        bundle_revision = sources[0]["revision"] if len(sources) == 1 else digest
+        source_set = {
+            "digest": digest,
+            "evidence": sorted(evidence, key=lambda item: (item["source_id"], item["path"])),
+            "source_universe": sorted(
+                source_universe, key=lambda item: (item["source_id"], item["path"])
+            ),
+            "sources": sources,
+        }
+        with connection:
+            connection.execute(
+                """UPDATE runs
+                   SET revision = ?, source_set_json = ?, updated_at = ?
+                   WHERE id = ?""",
+                (bundle_revision, json.dumps(source_set, sort_keys=True), now(), run_id),
+            )
+        if not evidence:
+            raise UserError("Fixed Source Set contains no tracked Markdown files")
+        coverage = {"covered": len(evidence), "major": len(evidence), "open": 0}
         transition(connection, run_id, state, "rendering", coverage=coverage)
         state = "rendering"
-        render_bundle(staging, project_id, revision, markdown_files, commit_date)
+        render_bundle(staging, project_id, bundle_revision, sources, evidence, max(commit_dates))
         transition(connection, run_id, state, "checking")
         state = "checking"
-        errors = validate_bundle(staging, revision, coverage)
+        errors = validate_bundle(staging, bundle_revision, coverage)
         if errors:
             raise UserError("; ".join(errors))
         transition(connection, run_id, state, "review_required")
@@ -507,20 +686,42 @@ def status(run_id: str) -> int:
                 "SELECT * FROM run_events WHERE run_id = ? ORDER BY sequence", (run_id,)
             )
         ]
-    emit(
-        {
-            "coverage": json.loads(row["coverage_json"]) if row["coverage_json"] else None,
-            "error": row["error"],
-            "events": events,
-            "ok": True,
-            "project_id": row["project_id"],
-            "published_bundle": row["publish_dir"],
-            "run_id": row["id"],
-            "source": {"repository": row["repository"], "revision": row["revision"]},
-            "staging_bundle": row["staging_dir"],
-            "state": row["state"],
+    source_set_json = row["source_set_json"] if "source_set_json" in row.keys() else None
+    source_set: dict
+    if source_set_json:
+        source_set = json.loads(source_set_json)
+    else:
+        legacy_source = {
+            "id": "source",
+            "repository": row["repository"],
+            "revision": row["revision"],
+            "role": "implementation",
         }
-    )
+        source_set = {
+            "digest": source_set_digest([legacy_source]),
+            "evidence": [],
+            "source_universe": [],
+            "sources": [legacy_source],
+        }
+    payload = {
+        "coverage": json.loads(row["coverage_json"]) if row["coverage_json"] else None,
+        "evidence": source_set["evidence"],
+        "error": row["error"],
+        "events": events,
+        "ok": True,
+        "project_id": row["project_id"],
+        "published_bundle": row["publish_dir"],
+        "run_id": row["id"],
+        "source_set_digest": source_set["digest"],
+        "source_universe": source_set["source_universe"],
+        "sources": source_set["sources"],
+        "staging_bundle": row["staging_dir"],
+        "state": row["state"],
+    }
+    if len(source_set["sources"]) == 1:
+        source = source_set["sources"][0]
+        payload["source"] = {"repository": source["repository"], "revision": source["revision"]}
+    emit(payload)
     return 0
 
 
