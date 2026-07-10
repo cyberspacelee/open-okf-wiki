@@ -66,7 +66,9 @@ def build_run(workspace: Path, source: Path, revision: str, expected: int = 0) -
     return run(["build", str(write_config(workspace, source, revision))], workspace, expected)
 
 
-def write_source_set_config(workspace: Path, sources: list[dict[str, str]]) -> Path:
+def write_source_set_config(
+    workspace: Path, sources: list[dict[str, str]], profile: str = ""
+) -> Path:
     config = workspace / "source-set.toml"
     lines = ['project_id = "combined"', 'publish_dir = "published"', ""]
     for source in sources:
@@ -80,7 +82,7 @@ def write_source_set_config(workspace: Path, sources: list[dict[str, str]]) -> P
                 "",
             ]
         )
-    config.write_text("\n".join(lines), encoding="utf-8")
+    config.write_text("\n".join(lines) + profile, encoding="utf-8")
     return config
 
 
@@ -107,7 +109,11 @@ def test_build_check_and_approve_a_fixed_revision(tmp_path: Path) -> None:
     status_before = run(["status", run_id], workspace)
     assert status_before["state"] == "review_required"
     assert status_before["source"] == {"repository": str(source), "revision": revision}
-    assert status_before["coverage"] == {"covered": 1, "major": 1, "open": 0}
+    assert status_before["coverage"]["total"] == 0
+    assert status_before["coverage"]["covered"] == 0
+    assert status_before["coverage"]["major"] == 0
+    assert status_before["coverage"]["open"] == 0
+    assert status_before["obligations"] == []
     assert [event["state"] for event in status_before["events"]] == [
         "preparing",
         "rendering",
@@ -386,14 +392,14 @@ def test_coverage_counts_must_be_nonnegative_and_complete(tmp_path: Path) -> Non
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     source = tmp_path / "source"
-    revision = make_source(source)
+    revision = make_source(source, "# Requirements\n\nREQ-1 Orders MUST be paid.\n")
     built = build_run(workspace, source, revision)
     status = run(["status", built["run_id"]], workspace)
     coverage = Path(status["staging_bundle"]) / "reports" / "coverage.md"
     coverage.write_text(
         coverage.read_text(encoding="utf-8")
-        .replace("major_obligations: 1", "major_obligations: 9")
-        .replace("covered_obligations: 1", "covered_obligations: 9"),
+        .replace("major_obligations: 2", "major_obligations: 9")
+        .replace("covered_obligations: 2", "covered_obligations: 9"),
         encoding="utf-8",
     )
 
@@ -433,70 +439,186 @@ def test_failed_published_event_restores_the_previous_bundle(tmp_path: Path) -> 
     assert (published / "overview.md").read_bytes() == previous_overview
 
 
-def test_two_named_sources_build_and_publish_one_bundle(tmp_path: Path) -> None:
+def test_markdown_obligations_are_durable_stable_and_gate_publication(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     implementation = tmp_path / "implementation"
     requirements = tmp_path / "requirements"
     implementation_revision = make_source(
-        implementation, "# Service\n\nImplementation knowledge.\n"
+        implementation, "Service | Notes\n---\n\nImplementation.\n"
     )
-    requirements_revision = make_source(requirements, "# Requirements\n\nRequired behavior.\n")
+    requirements_revision = make_source(
+        requirements,
+        "# Glossary\n\n"
+        "Order: A purchase request.\n\n"
+        "REQ-1 Orders must be paid.\n\n"
+        "## Acceptance Criteria\n\n"
+        "- Payment is accepted.\n\n"
+        "| State | Meaning |\n"
+        "| --- | --- |\n"
+        "| paid | Payment received |\n",
+    )
+    sources = [
+        {
+            "id": "service",
+            "role": "implementation",
+            "repository": str(implementation),
+            "revision": implementation_revision,
+        },
+        {
+            "id": "requirements",
+            "role": "requirements",
+            "repository": str(requirements),
+            "revision": requirements_revision,
+        },
+    ]
+    priorities = """
+[profile.priorities]
+numbered_requirement = "major"
+acceptance_criterion = "major"
+normative_statement = "major"
+table = "supporting"
+glossary_definition = "major"
+"""
     config = write_source_set_config(
         workspace,
-        [
-            {
-                "id": "service",
-                "role": "implementation",
-                "repository": str(implementation),
-                "revision": implementation_revision,
-            },
-            {
-                "id": "requirements",
-                "role": "requirements",
-                "repository": str(requirements),
-                "revision": requirements_revision,
-            },
-        ],
+        sources,
+        priorities
+        + """
+[profile.dispositions.major]
+disposition = "covered"
+
+[profile.dispositions.supporting]
+disposition = "covered"
+""",
     )
 
     built = run(["build", str(config)], workspace)
     status = run(["status", built["run_id"]], workspace)
     assert status["state"] == "review_required"
-    assert status["coverage"] == {"covered": 2, "major": 2, "open": 0}
+    assert {obligation["kind"] for obligation in status["obligations"]} == {
+        "acceptance_criterion",
+        "glossary_definition",
+        "normative_statement",
+        "numbered_requirement",
+        "table",
+    }
+    assert status["coverage"]["total"] == 5
+    assert status["coverage"]["by_source"] == {
+        "requirements": {"dispositions": {"covered": 5}, "total": 5},
+        "service": {"dispositions": {}, "total": 0},
+    }
+    assert status["coverage"]["by_role"] == {
+        "implementation": {"dispositions": {}, "total": 0},
+        "requirements": {"dispositions": {"covered": 5}, "total": 5},
+    }
+    assert status["coverage"]["by_priority"] == {
+        "major": {"dispositions": {"covered": 4}, "total": 4},
+        "supporting": {"dispositions": {"covered": 1}, "total": 1},
+    }
     assert [source["id"] for source in status["sources"]] == ["requirements", "service"]
-    assert {source["role"] for source in status["sources"]} == {
-        "implementation",
-        "requirements",
+    sections = {
+        unit["source_unit"]
+        for unit in status["source_universe"]
+        if unit["source_unit_kind"] == "markdown_section"
     }
-    assert {source["revision"] for source in status["sources"]} == {
-        implementation_revision,
-        requirements_revision,
-    }
-    assert all(re.fullmatch(r"[0-9a-f]{64}", source["digest"]) for source in status["sources"])
-    assert re.fullmatch(r"[0-9a-f]{64}", status["source_set_digest"])
-    assert {(entry["source_id"], entry["path"]) for entry in status["source_universe"]} == {
-        ("service", "README.md"),
-        ("requirements", "README.md"),
-    }
-    assert {evidence["source_id"] for evidence in status["evidence"]} == {
-        "service",
-        "requirements",
-    }
-    assert len({evidence["source_unit"] for evidence in status["evidence"]}) == 2
-    for evidence in status["evidence"]:
-        assert re.fullmatch(r"file:[0-9a-f]{64}", evidence["source_unit"])
-        assert evidence["source_unit_kind"] == "file"
-        assert evidence["span"] == {"end_line": 3, "start_line": 1}
-        assert evidence["revision"] in {implementation_revision, requirements_revision}
-        assert re.fullmatch(r"[0-9a-f]{64}", evidence["content_digest"])
+    assert len(sections) == 3
+    assert all(re.fullmatch(r"section:[0-9a-f]{64}", unit) for unit in sections)
+    assert all(obligation["source_unit"] in sections for obligation in status["obligations"])
+
+    database = workspace / ".okf-wiki" / "runs.db"
+    with sqlite3.connect(database) as connection:
+        durable = connection.execute(
+            "SELECT id, source_unit, kind FROM coverage_obligations WHERE run_id = ? ORDER BY id",
+            (built["run_id"],),
+        ).fetchall()
+    assert len(durable) == 5
+    assert {row[2] for row in durable} == {item["kind"] for item in status["obligations"]}
 
     staging = Path(status["staging_bundle"])
     coverage = (staging / "reports" / "coverage.md").read_text(encoding="utf-8")
-    assert "service" in coverage and implementation_revision in coverage
-    assert "requirements" in coverage and requirements_revision in coverage
+    assert "By Source" in coverage
+    assert "By Role" in coverage
+    assert "By Priority" in coverage
+    assert "requirements" in coverage and "supporting" in coverage
+    assert implementation_revision in coverage and requirements_revision in coverage
+
+    repeated = run(["build", str(config)], workspace)
+    repeated_status = run(["status", repeated["run_id"]], workspace)
+    assert {item["id"] for item in repeated_status["obligations"]} == {
+        item["id"] for item in status["obligations"]
+    }
+    assert {
+        unit["source_unit"]
+        for unit in repeated_status["source_universe"]
+        if unit["source_unit_kind"] == "markdown_section"
+    } == sections
+
     run(["review", built["run_id"], "--approve"], workspace)
     assert run(["check", str(workspace / "published")], workspace)["ok"] is True
+
+    blocked_config = write_source_set_config(
+        workspace,
+        sources,
+        priorities
+        + """
+[profile.dispositions.major]
+disposition = "open"
+
+[profile.dispositions.supporting]
+disposition = "covered"
+""",
+    )
+    blocked = run(["build", str(blocked_config)], workspace, expected=1)
+    blocked_status = run(["status", blocked["run_id"]], workspace)
+    assert blocked["blocked"] is True
+    assert blocked_status["state"] == "failed"
+    assert blocked_status["coverage"]["by_priority"]["major"] == {
+        "dispositions": {"open": 4},
+        "total": 4,
+    }
+
+    deferred_config = write_source_set_config(
+        workspace,
+        sources,
+        priorities
+        + """
+[profile.dispositions.major]
+disposition = "covered"
+
+[profile.dispositions.supporting]
+disposition = "deferred"
+reason = "Document the table later"
+""",
+    )
+    deferred = run(["build", str(deferred_config)], workspace)
+    deferred_status = run(["status", deferred["run_id"]], workspace)
+    assert deferred_status["coverage"]["by_priority"]["supporting"] == {
+        "dispositions": {"deferred": 1},
+        "total": 1,
+    }
+    assert "Document the table later" in Path(
+        deferred_status["staging_bundle"], "reports", "coverage.md"
+    ).read_text(encoding="utf-8")
+    assert run(["review", deferred["run_id"], "--approve"], workspace)["state"] == "published"
+
+    for disposition, priority, reason in [
+        ("excluded", "major", ""),
+        ("deferred", "supporting", ""),
+        ("deferred", "major", "later"),
+    ]:
+        invalid = write_source_set_config(
+            workspace,
+            sources,
+            priorities
+            + f"""
+[profile.dispositions.{priority}]
+disposition = "{disposition}"
+reason = "{reason}"
+""",
+        )
+        result = run(["build", str(invalid)], workspace, expected=1)
+        assert any("reason" in error or "Supporting" in error for error in result["errors"])
 
 
 def test_java_only_source_can_join_a_source_set_with_markdown(tmp_path: Path) -> None:
@@ -531,9 +653,12 @@ def test_java_only_source_can_join_a_source_set_with_markdown(tmp_path: Path) ->
 
     built = run(["build", str(config)], workspace)
     status = run(["status", built["run_id"]], workspace)
-    assert status["coverage"] == {"covered": 1, "major": 1, "open": 0}
+    assert status["coverage"]["total"] == 0
+    assert status["coverage"]["covered"] == 0
+    assert status["coverage"]["major"] == 0
+    assert status["coverage"]["open"] == 0
     assert {source["id"]: source["coverage"]["major"] for source in status["sources"]} == {
-        "requirements": 1,
+        "requirements": 0,
         "service": 0,
     }
     assert {(entry["source_id"], entry["path"]) for entry in status["source_universe"]} == {
@@ -564,11 +689,13 @@ def test_fixed_snapshots_ignore_worktree_content_but_keep_tracked_ignored_files(
 
     first = build_run(workspace, source, revision)
     first_status = run(["status", first["run_id"]], workspace)
-    assert [(entry["source_id"], entry["path"]) for entry in first_status["source_universe"]] == [
-        ("source", ".gitignore"),
-        ("source", "README.md"),
-    ]
-    assert first_status["coverage"] == {"covered": 1, "major": 1, "open": 0}
+    assert [
+        (entry["source_id"], entry["path"])
+        for entry in first_status["source_universe"]
+        if entry["source_unit_kind"] == "file"
+    ] == [("source", ".gitignore"), ("source", "README.md")]
+    assert first_status["coverage"]["total"] == 0
+    assert first_status["coverage"]["open"] == 0
     evidence = first_status["evidence"]
     assert len(evidence) == 1
     assert evidence[0]["content_digest"] == hashlib.sha256(committed).hexdigest()

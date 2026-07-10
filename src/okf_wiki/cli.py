@@ -28,6 +28,34 @@ LINK_RE = re.compile(r"(?<!!)\[[^]]+\]\(([^)]+)\)")
 INDEX_ENTRY_RE = re.compile(r"^[*-] \[[^]]+\]\([^)]+\)(?: - .+)?$")
 LOG_DATE_RE = re.compile(r"^## \d{4}-\d{2}-\d{2}$")
 LOG_ENTRY_RE = re.compile(r"^[*-] .+$")
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
+SETEXT_RE = re.compile(r"^\s*(=+|-+)\s*$")
+NUMBERED_REQUIREMENT_RE = re.compile(
+    r"^\s*(?:[-*+]\s+)?(?:REQ(?:UIREMENT)?[- _]?\d+[:.]?|\d+[.)])\s+.+$",
+    re.IGNORECASE,
+)
+NORMATIVE_RE = re.compile(r"\b(?:MUST|SHALL|SHOULD|MAY)(?: NOT)?\b", re.IGNORECASE)
+LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)]\s+).+$")
+GLOSSARY_RE = re.compile(r"^\s*(?:[-*+]\s+)?[^:#\n][^:\n]{0,100}:\s+.+$")
+OBLIGATION_KINDS = {
+    "acceptance_criterion",
+    "glossary_definition",
+    "normative_statement",
+    "numbered_requirement",
+    "table",
+}
+DEFAULT_PRIORITIES = {
+    "acceptance_criterion": "major",
+    "glossary_definition": "major",
+    "normative_statement": "major",
+    "numbered_requirement": "major",
+    "table": "supporting",
+}
+DEFAULT_DISPOSITIONS = {
+    "major": {"disposition": "covered", "reason": None},
+    "supporting": {"disposition": "covered", "reason": None},
+}
+DISPOSITIONS = {"blocked", "covered", "deferred", "excluded", "failed", "open"}
 
 
 class UserError(Exception):
@@ -88,6 +116,21 @@ def initialize(connection: sqlite3.Connection) -> None:
             state TEXT NOT NULL,
             occurred_at TEXT NOT NULL,
             details TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE TABLE IF NOT EXISTS coverage_obligations (
+            id TEXT NOT NULL,
+            run_id TEXT NOT NULL REFERENCES runs(id),
+            source TEXT NOT NULL,
+            role TEXT NOT NULL,
+            path TEXT NOT NULL,
+            source_unit TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            priority TEXT NOT NULL,
+            disposition TEXT NOT NULL,
+            reason TEXT,
+            span TEXT NOT NULL,
+            text TEXT NOT NULL,
+            PRIMARY KEY (run_id, id)
         );
         CREATE TRIGGER IF NOT EXISTS run_events_no_update
         BEFORE UPDATE ON run_events BEGIN
@@ -213,7 +256,178 @@ def source_unit_id(source_id: str, revision: str, path: str) -> str:
     return f"file:{hashlib.sha256(identity).hexdigest()}"
 
 
-def inspect_source(source: dict) -> tuple[dict, list[dict], list[dict], str]:
+def stable_span_id(
+    prefix: str,
+    source_id: str,
+    revision: str,
+    path: str,
+    kind: str,
+    start_line: int,
+    end_line: int,
+    text: str,
+) -> str:
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    identity = (
+        f"{source_id}\0{revision}\0{path}\0{kind}\0{start_line}:{end_line}\0{digest}".encode()
+    )
+    return f"{prefix}:{hashlib.sha256(identity).hexdigest()}"
+
+
+def is_table_separator(line: str) -> bool:
+    cells = line.strip().strip("|").split("|")
+    return "|" in line and all(re.fullmatch(r":?-{3,}:?", cell.strip()) for cell in cells)
+
+
+def markdown_inventory(
+    source: dict,
+    revision: str,
+    path: str,
+    text: str,
+    file_unit: str,
+    profile: dict,
+) -> tuple[list[dict], list[dict]]:
+    lines = text.splitlines()
+    headings = []
+    code_lines = set()
+    setext_lines = set()
+    fence = None
+    for index, line in enumerate(lines):
+        marker = re.match(r"^\s*(`{3,}|~{3,})", line)
+        if marker:
+            token = marker.group(1)[0]
+            if fence is None:
+                fence = token
+            elif fence == token:
+                fence = None
+            code_lines.add(index)
+            continue
+        if fence is not None:
+            code_lines.add(index)
+            continue
+        match = HEADING_RE.fullmatch(line)
+        if match:
+            headings.append((index, len(match.group(1)), match.group(2)))
+    for index in range(len(lines) - 1):
+        marker = SETEXT_RE.fullmatch(lines[index + 1])
+        if (
+            marker
+            and index not in code_lines
+            and index + 1 not in code_lines
+            and lines[index].strip()
+            and not HEADING_RE.fullmatch(lines[index])
+        ):
+            headings.append((index, 1 if marker.group(1)[0] == "=" else 2, lines[index].strip()))
+            setext_lines.update((index, index + 1))
+    headings.sort()
+
+    sections: list[dict] = []
+    for position, (start, level, heading) in enumerate(headings):
+        end = headings[position + 1][0] if position + 1 < len(headings) else len(lines)
+        section_text = "\n".join(lines[start:end])
+        sections.append(
+            {
+                "content_digest": hashlib.sha256(section_text.encode()).hexdigest(),
+                "heading": heading,
+                "level": level,
+                "path": path,
+                "revision": revision,
+                "source_id": source["id"],
+                "source_unit": stable_span_id(
+                    "section",
+                    source["id"],
+                    revision,
+                    path,
+                    "markdown_section",
+                    start + 1,
+                    end,
+                    section_text,
+                ),
+                "source_unit_kind": "markdown_section",
+                "span": {"end_line": end, "start_line": start + 1},
+            }
+        )
+
+    def section_for(index: int) -> dict | None:
+        return next(
+            (
+                section
+                for section in reversed(sections)
+                if section["span"]["start_line"] <= index + 1 <= section["span"]["end_line"]
+            ),
+            None,
+        )
+
+    table_ranges = []
+    index = 1
+    while index < len(lines):
+        if index not in code_lines and "|" in lines[index - 1] and is_table_separator(lines[index]):
+            end = index + 1
+            while end < len(lines) and end not in code_lines and "|" in lines[end]:
+                end += 1
+            table_ranges.append((index - 1, end))
+            index = end
+        else:
+            index += 1
+    table_lines = {line for start, end in table_ranges for line in range(start, end)}
+
+    obligations = []
+
+    def add(kind: str, start: int, end: int, obligation_text: str) -> None:
+        section = section_for(start)
+        priority = profile["priorities"][kind]
+        disposition = profile["dispositions"][priority]
+        obligations.append(
+            {
+                "disposition": disposition["disposition"],
+                "id": stable_span_id(
+                    "obligation",
+                    source["id"],
+                    revision,
+                    path,
+                    kind,
+                    start + 1,
+                    end,
+                    obligation_text,
+                ),
+                "kind": kind,
+                "path": path,
+                "priority": priority,
+                "reason": disposition["reason"],
+                "role": source["role"],
+                "source": source["id"],
+                "source_unit": section["source_unit"] if section else file_unit,
+                "span": {"end_line": end, "start_line": start + 1},
+                "text": obligation_text,
+            }
+        )
+
+    for start, end in table_ranges:
+        add("table", start, end, "\n".join(lines[start:end]))
+    for index, line in enumerate(lines):
+        if (
+            index in code_lines
+            or index in table_lines
+            or index in setext_lines
+            or not line.strip()
+            or HEADING_RE.fullmatch(line)
+        ):
+            continue
+        section = section_for(index)
+        heading = section["heading"].casefold() if section else ""
+        if NUMBERED_REQUIREMENT_RE.fullmatch(line):
+            add("numbered_requirement", index, index + 1, line)
+        if NORMATIVE_RE.search(line):
+            add("normative_statement", index, index + 1, line)
+        if "acceptance criter" in heading and LIST_ITEM_RE.fullmatch(line):
+            add("acceptance_criterion", index, index + 1, line)
+        if "glossary" in heading and GLOSSARY_RE.fullmatch(line):
+            add("glossary_definition", index, index + 1, line)
+    return sections, obligations
+
+
+def inspect_source(
+    source: dict, profile: dict
+) -> tuple[dict, list[dict], list[dict], list[dict], str]:
     repository = Path(source["repository"])
     requested_revision = source["revision"]
     if not repository.is_dir():
@@ -227,6 +441,7 @@ def inspect_source(source: dict) -> tuple[dict, list[dict], list[dict], str]:
     snapshot = {**source, "digest": hashlib.sha256(tree).hexdigest(), "revision": revision}
     universe = []
     evidence = []
+    obligations = []
     for record in tree.split(b"\0"):
         if not record:
             continue
@@ -261,12 +476,66 @@ def inspect_source(source: dict) -> tuple[dict, list[dict], list[dict], str]:
                 "span": {"end_line": max(1, len(text.splitlines())), "start_line": 1},
             }
         )
-    snapshot["coverage"] = {"covered": len(evidence), "major": len(evidence), "open": 0}
+        sections, markdown_obligations = markdown_inventory(
+            source, revision, path, text, unit_id, profile
+        )
+        universe.extend(sections)
+        obligations.extend(markdown_obligations)
     commit_date = git(repository, "show", "-s", "--format=%cs", revision).strip()
-    return snapshot, universe, evidence, commit_date
+    return snapshot, universe, evidence, obligations, commit_date
 
 
-def load_config(path_text: str) -> tuple[str, list[dict], Path]:
+def load_profile(config: dict) -> dict:
+    raw = config.get("profile", {})
+    if not isinstance(raw, dict):
+        raise UserError("Producer Profile must be a table")
+    unknown = sorted(set(raw) - {"dispositions", "priorities"})
+    if unknown:
+        raise UserError(f"Unknown Producer Profile fields: {', '.join(unknown)}")
+
+    priorities = dict(DEFAULT_PRIORITIES)
+    raw_priorities = raw.get("priorities", {})
+    if not isinstance(raw_priorities, dict):
+        raise UserError("Producer Profile priorities must be a table")
+    for kind, priority in raw_priorities.items():
+        if kind not in OBLIGATION_KINDS:
+            raise UserError(f"Unknown Coverage Obligation kind: {kind}")
+        if not isinstance(priority, str) or priority.casefold() not in DEFAULT_DISPOSITIONS:
+            raise UserError(f"Producer Profile priority for {kind} must be major or supporting")
+        priorities[kind] = priority.casefold()
+
+    dispositions = {priority: dict(value) for priority, value in DEFAULT_DISPOSITIONS.items()}
+    raw_dispositions = raw.get("dispositions", {})
+    if not isinstance(raw_dispositions, dict):
+        raise UserError("Producer Profile dispositions must be a table")
+    for priority, settings in raw_dispositions.items():
+        if priority not in dispositions or not isinstance(settings, dict):
+            raise UserError("Producer Profile dispositions must define major or supporting tables")
+        unknown = sorted(set(settings) - {"disposition", "reason"})
+        if unknown:
+            raise UserError(f"Unknown {priority} disposition fields: {', '.join(unknown)}")
+        dispositions[priority].update(settings)
+
+    for priority, settings in dispositions.items():
+        disposition = settings["disposition"]
+        reason = settings["reason"]
+        if not isinstance(disposition, str) or disposition.casefold() not in DISPOSITIONS:
+            raise UserError(f"Invalid {priority} Coverage Obligation disposition")
+        disposition = disposition.casefold()
+        if reason is not None and not isinstance(reason, str):
+            raise UserError("Coverage Obligation reason must be a string")
+        reason = reason.strip() if isinstance(reason, str) else None
+        if disposition in {"deferred", "excluded"} and not reason:
+            raise UserError(
+                f"{disposition.upper()} Coverage Obligations require a non-empty reason"
+            )
+        if disposition == "deferred" and priority != "supporting":
+            raise UserError("DEFERRED is available only to Supporting Obligations")
+        settings.update(disposition=disposition, reason=reason)
+    return {"dispositions": dispositions, "priorities": priorities}
+
+
+def load_config(path_text: str) -> tuple[str, list[dict], Path, dict]:
     path = Path(path_text).resolve()
     try:
         config = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -330,6 +599,7 @@ def load_config(path_text: str) -> tuple[str, list[dict], Path]:
         config["project_id"],
         sorted(sources, key=lambda source: source["id"]),
         publish_dir.absolute(),
+        load_profile(config),
     )
 
 
@@ -340,6 +610,83 @@ def source_set_digest(sources: list[dict]) -> str:
     return hashlib.sha256(
         json.dumps(identity, separators=(",", ":"), sort_keys=True).encode()
     ).hexdigest()
+
+
+def obligation_rows(connection: sqlite3.Connection, run_id: str) -> list[dict]:
+    return [
+        {
+            **dict(row),
+            "span": json.loads(row["span"]),
+        }
+        for row in connection.execute(
+            """SELECT id, source, role, path, source_unit, kind, priority, disposition,
+                      reason, span, text
+               FROM coverage_obligations WHERE run_id = ? ORDER BY id""",
+            (run_id,),
+        )
+    ]
+
+
+def summarize_obligations(obligations: list[dict], sources: list[dict] | None = None) -> dict:
+    sources = sources or []
+    summary = {
+        "total": len(obligations),
+        "major": sum(item["priority"] == "major" for item in obligations),
+        "supporting": sum(item["priority"] == "supporting" for item in obligations),
+        **{
+            disposition: sum(item["disposition"] == disposition for item in obligations)
+            for disposition in sorted(DISPOSITIONS)
+        },
+    }
+    for output, field in {
+        "by_source": "source",
+        "by_role": "role",
+        "by_priority": "priority",
+    }.items():
+        groups = {}
+        values = {item[field] for item in obligations}
+        if field == "source":
+            values.update(source["id"] for source in sources)
+        elif field == "role":
+            values.update(source["role"] for source in sources)
+        else:
+            values.update(DEFAULT_DISPOSITIONS)
+        for value in sorted(values):
+            members = [item for item in obligations if item[field] == value]
+            groups[value] = {
+                "dispositions": {
+                    disposition: sum(item["disposition"] == disposition for item in members)
+                    for disposition in sorted({item["disposition"] for item in members})
+                },
+                "total": len(members),
+            }
+        summary[output] = groups
+    return summary
+
+
+def major_blockers(coverage: dict) -> int:
+    dispositions = coverage.get("by_priority", {}).get("major", {}).get("dispositions", {})
+    return sum(dispositions.get(state, 0) for state in ("blocked", "failed", "open"))
+
+
+def report_metadata(coverage: dict) -> dict:
+    major = coverage.get("by_priority", {}).get("major", {}).get("dispositions", {})
+    return {
+        "blocked_major_obligations": major.get("blocked", 0),
+        "blocked_obligations": coverage["blocked"],
+        "covered_major_obligations": major.get("covered", 0),
+        "covered_obligations": coverage["covered"],
+        "deferred_obligations": coverage["deferred"],
+        "excluded_major_obligations": major.get("excluded", 0),
+        "excluded_obligations": coverage["excluded"],
+        "failed_major_obligations": major.get("failed", 0),
+        "failed_obligations": coverage["failed"],
+        "major_obligations": coverage["major"],
+        "open_major_obligations": major.get("open", 0),
+        "open_obligations": coverage["open"],
+        "supporting_obligations": coverage["supporting"],
+        "total_obligations": coverage["total"],
+    }
 
 
 def frontmatter(
@@ -366,12 +713,27 @@ def frontmatter(
     )
 
 
+def render_coverage_group(title: str, groups: dict) -> str:
+    rows = [f"## {title}", "", "| Value | Total | Dispositions |", "| --- | ---: | --- |"]
+    rows.extend(
+        f"| `{value}` | {group['total']} | "
+        + ", ".join(
+            f"`{disposition}`: {count}" for disposition, count in group["dispositions"].items()
+        )
+        + " |"
+        for value, group in groups.items()
+    )
+    return "\n".join(rows)
+
+
 def render_bundle(
     staging: Path,
     project_id: str,
     revision: str,
     sources: list[dict],
     evidence: list[dict],
+    obligations: list[dict],
+    coverage: dict,
     commit_date: str,
 ) -> None:
     if staging.exists():
@@ -407,31 +769,39 @@ def render_bundle(
         + "\n",
         encoding="utf-8",
     )
-    coverage_sections = []
-    for source in sources:
-        covered = "\n".join(
-            f"* `{item['path']}` — covered"
-            for item in evidence
-            if item["source_id"] == source["id"]
+    obligation_lines = []
+    for item in obligations:
+        span = item["span"]
+        reason = f" — {item['reason']}" if item["reason"] else ""
+        obligation_lines.append(
+            f"* `{item['id']}` — `{item['source']}/{item['path']}` "
+            f"lines {span['start_line']}-{span['end_line']}; `{item['kind']}`, "
+            f"`{item['priority']}`, `{item['disposition']}`{reason}"
         )
-        coverage_sections.append(
-            f"## `{source['id']}` ({source['role']})\n\n"
-            f"* Revision: `{source['revision']}`\n"
-            f"* Tree digest: `{source['digest']}`\n"
-            f"{covered}"
-        )
+    source_lines = [
+        f"* `{source['id']}` ({source['role']}) at revision `{source['revision']}` "
+        f"with tree digest `{source['digest']}`."
+        for source in sources
+    ]
     (staging / "reports" / "coverage.md").write_text(
         frontmatter(
             "Coverage Report",
             "Coverage Report",
-            "Disposition of Major Coverage Obligations.",
+            "Disposition of Coverage Obligations.",
             revision,
-            major_obligations=len(evidence),
-            covered_obligations=len(evidence),
-            open_obligations=0,
+            **report_metadata(coverage),
         )
         + "\n# Coverage Report\n\n"
-        + "\n\n".join(coverage_sections)
+        + "## Sources\n\n"
+        + "\n".join(source_lines)
+        + "\n\n"
+        + render_coverage_group("By Source", coverage["by_source"])
+        + "\n\n"
+        + render_coverage_group("By Role", coverage["by_role"])
+        + "\n\n"
+        + render_coverage_group("By Priority", coverage["by_priority"])
+        + "\n\n## Obligations\n\n"
+        + ("\n".join(obligation_lines) if obligation_lines else "No Coverage Obligations.")
         + "\n",
         encoding="utf-8",
     )
@@ -563,34 +933,71 @@ def validate_bundle(
         if not isinstance(overview_revision, str) or overview_revision != coverage_revision:
             errors.append("overview.md and reports/coverage.md source_revision must match")
     coverage = documents.get("reports/coverage.md", {})
-    for field in ("major_obligations", "covered_obligations"):
+    metadata_fields = (
+        "blocked_major_obligations",
+        "blocked_obligations",
+        "covered_major_obligations",
+        "covered_obligations",
+        "deferred_obligations",
+        "excluded_major_obligations",
+        "excluded_obligations",
+        "failed_major_obligations",
+        "failed_obligations",
+        "major_obligations",
+        "open_major_obligations",
+        "open_obligations",
+        "supporting_obligations",
+        "total_obligations",
+    )
+    for field in metadata_fields:
         value = coverage.get(field)
         if type(value) is not int or value < 0:
             errors.append(f"reports/coverage.md: {field} must be a non-negative integer")
+    if all(type(coverage.get(field)) is int for field in metadata_fields):
+        if coverage["total_obligations"] != (
+            coverage["major_obligations"] + coverage["supporting_obligations"]
+        ):
+            errors.append("reports/coverage.md: priority totals must equal total_obligations")
+        if coverage["total_obligations"] != sum(
+            coverage[f"{disposition}_obligations"]
+            for disposition in ("blocked", "covered", "deferred", "excluded", "failed", "open")
+        ):
+            errors.append("reports/coverage.md: disposition totals must equal total_obligations")
     major_obligations = coverage.get("major_obligations")
-    covered_obligations = coverage.get("covered_obligations")
+    covered_major = coverage.get("covered_major_obligations")
+    excluded_major = coverage.get("excluded_major_obligations")
     if (
         type(major_obligations) is int
-        and type(covered_obligations) is int
-        and major_obligations != covered_obligations
+        and type(covered_major) is int
+        and type(excluded_major) is int
+        and major_obligations != covered_major + excluded_major
     ):
-        errors.append("reports/coverage.md: all Major Obligations must be covered")
-    open_obligations = coverage.get("open_obligations")
-    if type(open_obligations) is not int or open_obligations != 0:
-        errors.append("reports/coverage.md: open_obligations must be the integer 0")
+        errors.append("reports/coverage.md: all Major Obligations must be covered or excluded")
+    for field in (
+        "blocked_major_obligations",
+        "failed_major_obligations",
+        "open_major_obligations",
+    ):
+        if coverage.get(field) != 0:
+            errors.append(f"reports/coverage.md: {field} must be the integer 0")
     if expected_coverage is not None:
-        for report_field, ledger_field in {
-            "major_obligations": "major",
-            "covered_obligations": "covered",
-            "open_obligations": "open",
-        }.items():
-            if coverage.get(report_field) != expected_coverage.get(ledger_field):
+        expected_metadata = (
+            report_metadata(expected_coverage)
+            if "total" in expected_coverage
+            else {
+                "covered_obligations": expected_coverage.get("covered"),
+                "major_obligations": expected_coverage.get("major"),
+                "open_obligations": expected_coverage.get("open"),
+            }
+        )
+        for report_field, expected in expected_metadata.items():
+            if coverage.get(report_field) != expected:
                 errors.append(f"reports/coverage.md: {report_field} does not match run coverage")
     return errors
 
 
 def build(config_path: str) -> int:
-    project_id, configured_sources, publish_dir = load_config(config_path)
+    project_id, configured_sources, publish_dir, profile = load_config(config_path)
     configured_digest = source_set_digest(configured_sources)
     provisional_revision = (
         configured_sources[0]["revision"] if len(configured_sources) == 1 else configured_digest
@@ -620,41 +1027,114 @@ def build(config_path: str) -> int:
         sources = []
         source_universe = []
         evidence = []
+        obligations = []
         commit_dates = []
         for configured_source in configured_sources:
             try:
-                source, source_files, source_evidence, commit_date = inspect_source(
-                    configured_source
+                source, source_files, source_evidence, source_obligations, commit_date = (
+                    inspect_source(configured_source, profile)
                 )
             except UserError as error:
                 raise UserError(f"Source {configured_source['id']}: {error}") from error
             sources.append(source)
             source_universe.extend(source_files)
             evidence.extend(source_evidence)
+            obligations.extend(source_obligations)
             commit_dates.append(commit_date)
         digest = source_set_digest(sources)
         bundle_revision = sources[0]["revision"] if len(sources) == 1 else digest
-        source_set = {
-            "digest": digest,
-            "evidence": sorted(evidence, key=lambda item: (item["source_id"], item["path"])),
-            "source_universe": sorted(
-                source_universe, key=lambda item: (item["source_id"], item["path"])
-            ),
-            "sources": sources,
-        }
+        obligations.sort(
+            key=lambda item: (
+                item["source"],
+                item["path"],
+                item["span"]["start_line"],
+                item["kind"],
+            )
+        )
         with connection:
+            connection.executemany(
+                """INSERT INTO coverage_obligations
+                   (id, run_id, source, role, path, source_unit, kind, priority,
+                    disposition, reason, span, text)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [
+                    (
+                        item["id"],
+                        run_id,
+                        item["source"],
+                        item["role"],
+                        item["path"],
+                        item["source_unit"],
+                        item["kind"],
+                        item["priority"],
+                        item["disposition"],
+                        item["reason"],
+                        json.dumps(item["span"], sort_keys=True),
+                        item["text"],
+                    )
+                    for item in obligations
+                ],
+            )
+            obligations = obligation_rows(connection, run_id)
+            coverage = summarize_obligations(obligations, sources)
+            for source in sources:
+                source["coverage"] = summarize_obligations(
+                    [item for item in obligations if item["source"] == source["id"]], [source]
+                )
+            source_set = {
+                "digest": digest,
+                "evidence": sorted(evidence, key=lambda item: (item["source_id"], item["path"])),
+                "source_universe": sorted(
+                    source_universe,
+                    key=lambda item: (
+                        item["source_id"],
+                        item["path"],
+                        item.get("span", {}).get("start_line", 0),
+                        item["source_unit_kind"],
+                    ),
+                ),
+                "sources": sources,
+            }
             connection.execute(
                 """UPDATE runs
-                   SET revision = ?, source_set_json = ?, updated_at = ?
+                   SET revision = ?, source_set_json = ?, coverage_json = ?, updated_at = ?
                    WHERE id = ?""",
-                (bundle_revision, json.dumps(source_set, sort_keys=True), now(), run_id),
+                (
+                    bundle_revision,
+                    json.dumps(source_set, sort_keys=True),
+                    json.dumps(coverage, sort_keys=True),
+                    now(),
+                    run_id,
+                ),
             )
         if not evidence:
             raise UserError("Fixed Source Set contains no tracked Markdown files")
-        coverage = {"covered": len(evidence), "major": len(evidence), "open": 0}
+        if major_blockers(coverage):
+            error = "Major Coverage Obligations are open, blocked, or failed"
+            transition(connection, run_id, state, "failed", coverage=coverage, error=error)
+            emit(
+                {
+                    "blocked": True,
+                    "coverage": coverage,
+                    "errors": [error],
+                    "ok": False,
+                    "run_id": run_id,
+                    "state": "failed",
+                }
+            )
+            return 1
         transition(connection, run_id, state, "rendering", coverage=coverage)
         state = "rendering"
-        render_bundle(staging, project_id, bundle_revision, sources, evidence, max(commit_dates))
+        render_bundle(
+            staging,
+            project_id,
+            bundle_revision,
+            sources,
+            evidence,
+            obligations,
+            coverage,
+            max(commit_dates),
+        )
         transition(connection, run_id, state, "checking")
         state = "checking"
         errors = validate_bundle(staging, bundle_revision, coverage)
@@ -686,6 +1166,10 @@ def status(run_id: str) -> int:
                 "SELECT * FROM run_events WHERE run_id = ? ORDER BY sequence", (run_id,)
             )
         ]
+        has_obligations = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'coverage_obligations'"
+        ).fetchone()
+        obligations = obligation_rows(connection, run_id) if has_obligations else []
     source_set_json = row["source_set_json"] if "source_set_json" in row.keys() else None
     source_set: dict
     if source_set_json:
@@ -703,11 +1187,14 @@ def status(run_id: str) -> int:
             "source_universe": [],
             "sources": [legacy_source],
         }
+    coverage = json.loads(row["coverage_json"]) if row["coverage_json"] else None
     payload = {
-        "coverage": json.loads(row["coverage_json"]) if row["coverage_json"] else None,
+        "blocked": bool(coverage and "total" in coverage and major_blockers(coverage)),
+        "coverage": coverage,
         "evidence": source_set["evidence"],
         "error": row["error"],
         "events": events,
+        "obligations": obligations,
         "ok": True,
         "project_id": row["project_id"],
         "published_bundle": row["publish_dir"],
