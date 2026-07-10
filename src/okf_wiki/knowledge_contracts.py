@@ -16,6 +16,18 @@ class WorkerBudgets(BaseModel):
     tool_timeout_seconds: float = Field(default=15, gt=0)
 
 
+class ObligationSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str
+    source_id: str
+    path: str
+    source_unit: str
+    kind: str
+    priority: str
+    text: str
+
+
 class AnalysisTask(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
 

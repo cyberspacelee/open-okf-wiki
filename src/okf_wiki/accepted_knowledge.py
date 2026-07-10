@@ -540,6 +540,16 @@ class AcceptedKnowledgeStore:
             supersedes=[row["target_claim_id"] for row in links if row["kind"] == "supersedes"],
         )
 
+    def list_claims(self, run_id: str) -> list[ClaimRecord]:
+        with self._connect() as connection:
+            ids = [
+                row["id"]
+                for row in connection.execute(
+                    "SELECT id FROM accepted_claims WHERE run_id = ? ORDER BY id", (run_id,)
+                )
+            ]
+        return [claim for claim_id in ids if (claim := self.get_claim(run_id, claim_id))]
+
     def get_concept(self, run_id: str, concept_id: str) -> ConceptRecord | None:
         with self._connect() as connection:
             concept = connection.execute(
@@ -579,6 +589,16 @@ class AcceptedKnowledgeStore:
                        )
                        ORDER BY canonical_name, id LIMIT ?""",
                     (run_id, query, query, limit),
+                )
+            ]
+        return [concept for concept_id in ids if (concept := self.get_concept(run_id, concept_id))]
+
+    def list_concepts(self, run_id: str) -> list[ConceptRecord]:
+        with self._connect() as connection:
+            ids = [
+                row["id"]
+                for row in connection.execute(
+                    "SELECT id FROM accepted_concepts WHERE run_id = ? ORDER BY id", (run_id,)
                 )
             ]
         return [concept for concept_id in ids if (concept := self.get_concept(run_id, concept_id))]

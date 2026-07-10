@@ -1392,6 +1392,7 @@ def explore(run_id: str) -> int:
 
     from .planner import PlannerAgent
     from .scheduler import Scheduler
+    from .verifier import VerifierAgent
     from .worker import GatewaySettings, WorkerAgent, build_gateway_model
 
     model = build_gateway_model(
@@ -1417,6 +1418,7 @@ def explore(run_id: str) -> int:
                 PlannerAgent(model),
                 worker,
                 max_concurrency=concurrency,
+                verifier=VerifierAgent(model),
             )
             return await scheduler.run_until_terminal(run_id)
         finally:

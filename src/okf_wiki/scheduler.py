@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -11,9 +12,26 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .accepted_knowledge import AcceptedKnowledgeStore, AcceptanceReceipt
 from .coverage import refresh_run_coverage
-from .knowledge_contracts import AnalysisTask, WorkerBudgets, WorkerRunResult
+from .knowledge_contracts import (
+    AnalysisTask,
+    ObligationSummary,
+    WorkerBudgets,
+    WorkerProposal,
+    WorkerRunResult,
+)
 from .run_events import append_entity_event
 from .run_state import transition_run
+from .verification import (
+    REQUIRED_PERSPECTIVES,
+    AcceptanceDecision,
+    AcceptancePolicy,
+    SemanticVerifier,
+    VerificationFinding,
+    VerificationPerspective,
+    VerificationSource,
+    VerificationStore,
+    VerificationTarget,
+)
 
 
 TASK_TRANSITIONS = {
@@ -22,6 +40,13 @@ TASK_TRANSITIONS = {
     "submitted": {"accepted", "rejected", "failed"},
 }
 READ_TOOLS = ("list_paths", "search_text", "read_text")
+RISK_TERMS = {
+    "security": r"\b(?:security|authentication|authorization)\b",
+    "permissions": r"\b(?:permission|permissions|access control)\b",
+    "privacy": r"\b(?:privacy|personal data|pii)\b",
+    "persistence": r"\b(?:persistence|persisted|database|transaction)\b",
+    "failure_semantics": r"\b(?:failure|rollback|retry|error handling)\b",
+}
 
 
 class PlannerLimits(BaseModel):
@@ -62,18 +87,6 @@ class SourceSummary(BaseModel):
     revision: str
     role: str
     path_count: int
-
-
-class ObligationSummary(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    id: str
-    source_id: str
-    path: str
-    source_unit: str
-    kind: str
-    priority: str
-    text: str
 
 
 class ActiveTaskSummary(BaseModel):
@@ -184,6 +197,8 @@ class Scheduler:
         limits: PlannerLimits | None = None,
         worker_budgets: WorkerBudgets | None = None,
         max_concurrency: int = 4,
+        verifier: SemanticVerifier | None = None,
+        acceptance_policy: AcceptancePolicy | None = None,
     ) -> None:
         if max_concurrency < 1:
             raise ValueError("max_concurrency must be positive")
@@ -193,8 +208,12 @@ class Scheduler:
         self.limits = limits or PlannerLimits()
         self.worker_budgets = worker_budgets or WorkerBudgets()
         self.max_concurrency = max_concurrency
+        self.verifier = verifier
+        self.acceptance_policy = acceptance_policy or AcceptancePolicy()
         self.knowledge = AcceptedKnowledgeStore(database)
+        self.verification = VerificationStore(database)
         self._writer = asyncio.Lock()
+        self._verification_semaphore = asyncio.Semaphore(max_concurrency)
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -597,18 +616,144 @@ class Scheduler:
             return
         self.transition_task(run_id, task_id, "submitted")
         if result.status == "accepted":
+            if self.verifier is None:
+                await self._reject_task(
+                    run_id,
+                    task_id,
+                    "rejected",
+                    ["semantic verification unavailable"],
+                )
+                return
+            decision = await self._verify_candidate(run_id, task, result)
+            if decision.outcome != "accepted":
+                self.verification.record_decision(run_id, result.candidate_id, decision)
+                await self._reject_task(
+                    run_id,
+                    task_id,
+                    "rejected",
+                    [decision.outcome, *decision.reasons],
+                )
+                return
             try:
                 async with self._writer:
                     accepted = await asyncio.to_thread(self.knowledge.accept, run_id, result)
             except Exception as error:
+                self.verification.record_decision(
+                    run_id,
+                    result.candidate_id,
+                    AcceptanceDecision(
+                        outcome="rejected",
+                        reasons=(f"accepted knowledge validation failed: {error}",),
+                    ),
+                )
                 await self._reject_task(run_id, task_id, "rejected", [str(error)])
                 return
+            self.verification.record_decision(run_id, result.candidate_id, decision)
             await self._accept_task(run_id, task_id, accepted)
             return
         terminal = (
             "failed" if result.error_type in {"UsageLimitExceeded", "TimeoutError"} else "rejected"
         )
         await self._reject_task(run_id, task_id, terminal, result.errors)
+
+    def _risk_categories(
+        self, obligations: tuple[ObligationSummary, ...], proposal: WorkerProposal
+    ) -> tuple[str, ...]:
+        obligation_text = " ".join(f"{item.kind} {item.text}" for item in obligations)
+        candidate_text = " ".join(
+            [
+                obligation_text,
+                *(claim.text for claim in proposal.claims),
+                *(concept.description for concept in proposal.concepts),
+                *(disposition.reason for disposition in proposal.dispositions),
+            ]
+        ).casefold()
+        return tuple(
+            category
+            for category, pattern in RISK_TERMS.items()
+            if re.search(pattern, candidate_text)
+        )
+
+    async def _verify_candidate(
+        self, run_id: str, task: PersistedTask, result: WorkerRunResult
+    ) -> AcceptanceDecision:
+        if self.verifier is None or result.proposal is None:
+            raise ValueError("Semantic verification requires a Verifier and proposal")
+        verifier = self.verifier
+        with self._connect() as connection:
+            obligation_rows = list(
+                connection.execute(
+                    """SELECT id, source, path, source_unit, kind, priority, text
+                       FROM coverage_obligations
+                       WHERE run_id = ? AND id IN ({}) ORDER BY id""".format(
+                        ",".join("?" for _ in result.proposal.obligation_ids)
+                    ),
+                    (run_id, *result.proposal.obligation_ids),
+                )
+            )
+            run = connection.execute(
+                "SELECT source_set_json FROM runs WHERE id = ?", (run_id,)
+            ).fetchone()
+        if run is None:
+            raise ValueError(f"Unknown Production Run: {run_id}")
+        obligations = tuple(
+            ObligationSummary(
+                id=row["id"],
+                source_id=row["source"],
+                path=row["path"],
+                source_unit=row["source_unit"],
+                kind=row["kind"],
+                priority=row["priority"],
+                text=row["text"],
+            )
+            for row in obligation_rows
+        )
+        source_set = json.loads(run["source_set_json"])
+        sources = tuple(
+            VerificationSource(
+                id=source["id"],
+                repository=Path(source["repository"]),
+                revision=source["revision"],
+                role=source["role"],
+            )
+            for source in source_set.get("sources", [])
+        )
+        risk_categories = self._risk_categories(obligations, result.proposal)
+        target = VerificationTarget(
+            run_id=run_id,
+            candidate_id=result.candidate_id,
+            proposal=result.proposal,
+            sources=sources,
+            obligations=obligations,
+            accepted_claims=tuple(self.knowledge.list_claims(run_id)),
+            accepted_concepts=tuple(self.knowledge.list_concepts(run_id)),
+            risk_categories=risk_categories,
+        )
+        self.verification.stage(
+            run_id,
+            result.candidate_id,
+            task.task_id,
+            result.proposal.model_dump(mode="json"),
+        )
+
+        async def verify(perspective: VerificationPerspective):
+            async with self._verification_semaphore:
+                return await verifier.verify(perspective, target)
+
+        outcomes = await asyncio.gather(
+            *(verify(perspective) for perspective in REQUIRED_PERSPECTIVES),
+            return_exceptions=True,
+        )
+        findings = tuple(
+            outcome for outcome in outcomes if isinstance(outcome, VerificationFinding)
+        )
+        if findings:
+            self.verification.record_findings(run_id, result.candidate_id, findings)
+        return self.acceptance_policy.decide(
+            structural_valid=True,
+            findings=findings,
+            risk_categories=risk_categories,
+        )
 
     async def _accept_task(self, run_id: str, task_id: str, accepted: AcceptanceReceipt) -> None:
         task = self.get_task(run_id, task_id)

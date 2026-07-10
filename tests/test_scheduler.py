@@ -17,6 +17,12 @@ from okf_wiki.cli import create_run, initialize
 from okf_wiki.knowledge_contracts import AnalysisTask, WorkerRunResult
 from okf_wiki.planner import PlannerAgent
 from okf_wiki.scheduler import PlannerLimits, PlannerReceipt, Scheduler
+from okf_wiki.verification import (
+    REQUIRED_PERSPECTIVES,
+    VerificationFinding,
+    VerificationStore,
+    VerificationTarget,
+)
 from okf_wiki.worker import WorkerAgent
 
 
@@ -142,6 +148,33 @@ def worker_proposal(revision: str, task_id: str, obligation_id: str) -> dict:
             }
         ],
     }
+
+
+class StaticVerifier:
+    def __init__(
+        self,
+        overrides: dict[str, tuple[str, str]] | None = None,
+    ) -> None:
+        self.overrides = overrides or {}
+        self.targets: list[VerificationTarget] = []
+
+    async def verify(self, perspective: str, target: VerificationTarget) -> VerificationFinding:
+        self.targets.append(target)
+        verdict, severity = self.overrides.get(perspective, ("pass", "info"))
+        target_id = (
+            target.proposal.obligation_ids[0] if perspective == "coverage" else target.candidate_id
+        )
+        return VerificationFinding.model_validate(
+            {
+                "target_id": target_id,
+                "target_type": "obligation" if perspective == "coverage" else "candidate",
+                "perspective": perspective,
+                "verdict": verdict,
+                "severity": severity,
+                "evidence": [target.proposal.evidence[0].id],
+                "rationale": f"{perspective}: {verdict}",
+            }
+        )
 
 
 def test_scheduler_plans_from_bounded_persisted_state_and_records_task(tmp_path: Path) -> None:
@@ -351,7 +384,13 @@ def test_workers_run_in_parallel_and_acceptance_closes_persisted_obligations(
         model_name="function",
         max_concurrency=2,
     )
-    scheduler = Scheduler(database, planner, worker, max_concurrency=2)
+    scheduler = Scheduler(
+        database,
+        planner,
+        worker,
+        max_concurrency=2,
+        verifier=StaticVerifier(),
+    )
 
     outcome = asyncio.run(scheduler.advance(run_id))
 
@@ -377,6 +416,139 @@ def test_workers_run_in_parallel_and_acceptance_closes_persisted_obligations(
         assert source_set["sources"][0]["coverage"]["covered"] == 2
         assert source_set["sources"][0]["coverage"]["open"] == 0
         assert state == "verifying"
+
+
+def test_semantic_acceptance_runs_every_perspective_before_accepting(tmp_path: Path) -> None:
+    database, revision, run_id = make_run(tmp_path, [("obligation-1", "major", "open")])
+    planner = PlannerAgent(
+        TestModel(
+            call_tools=[],
+            custom_output_args={"tasks": [planned_task("obligation-1")]},
+        )
+    )
+    verifier = StaticVerifier()
+    planned = asyncio.run(Scheduler(database, planner, worker=None).plan(run_id))
+    scheduler = Scheduler(
+        database,
+        planner,
+        WorkerAgent(
+            TestModel(
+                call_tools=[],
+                custom_output_args=worker_proposal(revision, planned.task_ids[0], "obligation-1"),
+            ),
+            audit_path=tmp_path / "worker.db",
+            gateway_id="test",
+            model_name="test",
+            max_concurrency=1,
+        ),
+        verifier=verifier,
+    )
+
+    outcome = asyncio.run(scheduler.run_ready(run_id, planned.task_ids))
+
+    assert outcome.status == "complete"
+    assert [target.candidate_id for target in verifier.targets]
+    assert verifier.targets[0].obligations[0].text == "Requirement obligation-1"
+    assert {
+        finding.perspective
+        for finding in VerificationStore(database).get_findings(
+            run_id, verifier.targets[0].candidate_id
+        )
+    } == set(REQUIRED_PERSPECTIVES)
+    decision = VerificationStore(database).get_decision(run_id, verifier.targets[0].candidate_id)
+    assert decision is not None and decision.outcome == "accepted"
+    assert AcceptedKnowledgeStore(database).get_coverage_summary(run_id) == {"covered": 1}
+
+
+def test_accepted_candidate_cannot_bypass_semantic_verification(tmp_path: Path) -> None:
+    database, revision, run_id = make_run(tmp_path, [("obligation-1", "major", "open")])
+    planner = PlannerAgent(
+        TestModel(call_tools=[], custom_output_args={"tasks": [planned_task("obligation-1")]})
+    )
+    planned = asyncio.run(Scheduler(database, planner, worker=None).plan(run_id))
+    scheduler = Scheduler(
+        database,
+        planner,
+        WorkerAgent(
+            TestModel(
+                call_tools=[],
+                custom_output_args=worker_proposal(revision, planned.task_ids[0], "obligation-1"),
+            ),
+            audit_path=tmp_path / "worker.db",
+            gateway_id="test",
+            model_name="test",
+            max_concurrency=1,
+        ),
+    )
+
+    outcome = asyncio.run(scheduler.run_ready(run_id, planned.task_ids))
+
+    assert outcome.status == "replan"
+    task = scheduler.get_task(run_id, planned.task_ids[0])
+    assert task.state == "rejected"
+    assert task.receipt is not None
+    assert task.receipt.warnings == ("semantic verification unavailable",)
+    assert AcceptedKnowledgeStore(database).get_coverage_summary(run_id) == {"open": 1}
+    assert AcceptedKnowledgeStore(database).list_claims(run_id) == []
+
+
+@pytest.mark.parametrize(
+    ("overrides", "risk_text", "expected"),
+    [
+        ({"coverage": ("fail", "error")}, None, "revision_required"),
+        ({"contradiction": ("disputed", "warning")}, None, "review_required"),
+        ({}, "Security permissions are persisted.", "review_required"),
+        ({"risk": ("fail", "critical")}, None, "rejected"),
+    ],
+)
+def test_nonaccepted_semantic_decisions_reopen_obligations_without_mutating_knowledge(
+    tmp_path: Path,
+    overrides: dict[str, tuple[str, str]],
+    risk_text: str | None,
+    expected: str,
+) -> None:
+    database, revision, run_id = make_run(tmp_path, [("obligation-1", "major", "open")])
+    planner = PlannerAgent(
+        TestModel(call_tools=[], custom_output_args={"tasks": [planned_task("obligation-1")]})
+    )
+    first = Scheduler(database, planner, worker=None)
+    planned = asyncio.run(first.plan(run_id))
+    proposal = worker_proposal(revision, planned.task_ids[0], "obligation-1")
+    if risk_text:
+        proposal["claims"][0]["text"] = risk_text
+    verifier = StaticVerifier(overrides)
+    scheduler = Scheduler(
+        database,
+        planner,
+        WorkerAgent(
+            TestModel(call_tools=[], custom_output_args=proposal),
+            audit_path=tmp_path / "worker.db",
+            gateway_id="test",
+            model_name="test",
+            max_concurrency=1,
+        ),
+        verifier=verifier,
+    )
+
+    asyncio.run(scheduler.run_ready(run_id, planned.task_ids))
+
+    candidate_id = verifier.targets[0].candidate_id
+    decision = VerificationStore(database).get_decision(run_id, candidate_id)
+    assert decision is not None and decision.outcome == expected
+    task = scheduler.get_task(run_id, planned.task_ids[0])
+    assert task.state == "rejected"
+    assert task.receipt is not None
+    assert task.receipt.unresolved_ids == ("obligation-1",)
+    assert task.receipt.warnings[0] == expected
+    assert AcceptedKnowledgeStore(database).get_coverage_summary(run_id) == {"open": 1}
+    assert AcceptedKnowledgeStore(database).find_concepts(run_id, "") == []
+    if "contradiction" in overrides:
+        contradiction = next(
+            finding
+            for finding in VerificationStore(database).get_findings(run_id, candidate_id)
+            if finding.perspective == "contradiction"
+        )
+        assert contradiction.verdict == "disputed"
 
 
 def test_next_fresh_planner_receives_only_compact_persisted_receipts(tmp_path: Path) -> None:
@@ -405,7 +577,11 @@ def test_next_fresh_planner_receives_only_compact_persisted_receipts(tmp_path: P
         model_name="test",
         max_concurrency=1,
     )
-    asyncio.run(Scheduler(database, first.planner, worker).run_ready(run_id, planned.task_ids))
+    asyncio.run(
+        Scheduler(database, first.planner, worker, verifier=StaticVerifier()).run_ready(
+            run_id, planned.task_ids
+        )
+    )
     seen: list[dict] = []
 
     def next_plan(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
@@ -470,6 +646,7 @@ def test_scheduler_control_plane_has_no_agent_framework_imports() -> None:
     root = Path(__file__).parents[1] / "src" / "okf_wiki"
 
     assert "pydantic_ai" not in (root / "scheduler.py").read_text()
+    assert "pydantic_ai" not in (root / "verification.py").read_text()
     assert "from .worker" not in (root / "scheduler.py").read_text()
     assert "pydantic_ai" not in (root / "knowledge_contracts.py").read_text()
 
@@ -528,6 +705,7 @@ def test_progress_batches_do_not_spend_failure_replans(tmp_path: Path) -> None:
             max_concurrency=1,
         ),
         limits=PlannerLimits(max_tasks=1, max_replans=0),
+        verifier=StaticVerifier(),
     )
 
     outcome = asyncio.run(scheduler.run_until_terminal(run_id))
