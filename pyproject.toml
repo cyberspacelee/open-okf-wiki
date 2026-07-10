@@ -1,0 +1,29 @@
+[project]
+name = "okf-wiki"
+version = "0.1.0"
+description = "Build auditable OKF knowledge bundles from fixed source revisions."
+requires-python = ">=3.14,<3.15"
+dependencies = ["pyyaml==6.0.3"]
+
+[project.scripts]
+okf-wiki = "okf_wiki.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.13,<0.12"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+  "pytest==9.1.1",
+  "ruff==0.15.21",
+  "ty==0.0.58",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+extend-exclude = ["refs"]

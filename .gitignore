@@ -1,0 +1,6 @@
+.okf-wiki/
+.pytest_cache/
+.ruff_cache/
+.venv/
+__pycache__/
+/refs/
