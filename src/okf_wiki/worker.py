@@ -13,7 +13,6 @@ from urllib.parse import quote_from_bytes, unquote_to_bytes
 
 import httpx
 from openai import AsyncOpenAI
-from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai import (
     Agent,
     ModelRequest,
@@ -31,11 +30,13 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from .knowledge_contracts import (
+    AnalysisTask,
     ClaimProposal as ClaimProposal,
     ConceptProposal as ConceptProposal,
     DispositionProposal as DispositionProposal,
     EvidenceProposal as EvidenceProposal,
     RelationProposal as RelationProposal,
+    WorkerBudgets,
     WorkerProposal,
     WorkerRunResult,
 )
@@ -46,38 +47,14 @@ TOOL_VERSION = "git-snapshot-v1"
 SCHEMA_VERSION = "worker-proposal-v2"
 
 
-class WorkerBudgets(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    request_limit: int = Field(default=8, ge=1)
-    tool_calls_limit: int = Field(default=20, ge=1)
-    input_tokens_limit: int = Field(default=50_000, ge=1)
-    output_tokens_limit: int = Field(default=8_000, ge=1)
-    total_tokens_limit: int = Field(default=60_000, ge=1)
-    wall_time_seconds: float = Field(default=60, gt=0)
-    tool_timeout_seconds: float = Field(default=15, gt=0)
-
-    def usage_limits(self) -> UsageLimits:
-        return UsageLimits(
-            request_limit=self.request_limit,
-            tool_calls_limit=self.tool_calls_limit,
-            input_tokens_limit=self.input_tokens_limit,
-            output_tokens_limit=self.output_tokens_limit,
-            total_tokens_limit=self.total_tokens_limit,
-        )
-
-
-class AnalysisTask(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
-
-    task_id: str = Field(min_length=1)
-    obligation_ids: tuple[str, ...] = Field(min_length=1)
-    source_id: str = Field(min_length=1)
-    repository: Path
-    revision: str = Field(pattern=r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
-    allowed_paths: tuple[str, ...] = Field(min_length=1)
-    prompt: str = Field(min_length=1)
-    budgets: WorkerBudgets
+def _usage_limits(budgets: WorkerBudgets) -> UsageLimits:
+    return UsageLimits(
+        request_limit=budgets.request_limit,
+        tool_calls_limit=budgets.tool_calls_limit,
+        input_tokens_limit=budgets.input_tokens_limit,
+        output_tokens_limit=budgets.output_tokens_limit,
+        total_tokens_limit=budgets.total_tokens_limit,
+    )
 
 
 @dataclass(frozen=True)
@@ -537,7 +514,7 @@ class WorkerAgent:
                     result = await self.agent.run(
                         task.prompt,
                         deps=WorkerDeps(task, snapshot),
-                        usage_limits=task.budgets.usage_limits(),
+                        usage_limits=_usage_limits(task.budgets),
                         metadata={
                             "task_id": task.task_id,
                             "source_id": task.source_id,

@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import hashlib
 import json
 import os
@@ -15,6 +16,7 @@ from urllib.parse import quote_from_bytes, unquote, urlsplit
 import yaml
 
 from .accepted_knowledge import AcceptedKnowledgeStore
+from .coverage import DISPOSITIONS, major_blockers, obligation_rows, summarize_obligations
 from .java_analysis import (
     DEFAULT_JAVA_EXCLUDED_PATHS,
     JAVA_DEFAULT_PRIORITIES,
@@ -25,15 +27,10 @@ from .java_analysis import (
     is_java_input,
 )
 from .source_identity import source_unit_id, stable_span_id
+from .run_events import append_run_event
+from .run_state import RunTransitionError, transition_run
 
 
-ALLOWED_TRANSITIONS = {
-    "preparing": {"rendering", "failed", "cancelled"},
-    "rendering": {"checking", "failed", "cancelled"},
-    "checking": {"review_required", "failed", "cancelled"},
-    "review_required": {"publishing", "failed", "cancelled"},
-    "publishing": {"published", "failed"},
-}
 TERMINAL_STATES = {"published", "failed", "cancelled"}
 REQUIRED_BUNDLE_FILES = {"index.md", "log.md", "overview.md", "reports/coverage.md"}
 LINK_RE = re.compile(r"(?<!!)\[[^]]+\]\(([^)]+)\)")
@@ -68,7 +65,6 @@ DEFAULT_DISPOSITIONS = {
     "major": {"disposition": "covered", "reason": None},
     "supporting": {"disposition": "covered", "reason": None},
 }
-DISPOSITIONS = {"blocked", "covered", "deferred", "excluded", "failed", "open"}
 
 
 class UserError(Exception):
@@ -197,11 +193,7 @@ def create_run(
                 timestamp,
             ),
         )
-        connection.execute(
-            """INSERT INTO run_events (run_id, previous_state, state, occurred_at)
-               VALUES (?, NULL, 'preparing', ?)""",
-            (run_id, timestamp),
-        )
+        append_run_event(connection, run_id, None, "preparing")
 
 
 def transition(
@@ -214,40 +206,19 @@ def transition(
     error: str | None = None,
     details: dict | None = None,
 ) -> None:
-    if next_state not in ALLOWED_TRANSITIONS.get(previous_state, set()):
-        raise UserError(f"Illegal Production Run transition: {previous_state} -> {next_state}")
-    event_details = dict(details or {})
-    if error:
-        event_details["error"] = error
-    timestamp = now()
-    with connection:
-        changed = connection.execute(
-            """UPDATE runs
-               SET state = ?, coverage_json = COALESCE(?, coverage_json), error = ?, updated_at = ?
-               WHERE id = ? AND state = ?""",
-            (
-                next_state,
-                json.dumps(coverage, sort_keys=True) if coverage is not None else None,
-                error,
-                timestamp,
-                run_id,
-                previous_state,
-            ),
-        )
-        if changed.rowcount != 1:
-            raise UserError(f"Run {run_id} is not in {previous_state}")
-        connection.execute(
-            """INSERT INTO run_events
-               (run_id, previous_state, state, occurred_at, details)
-               VALUES (?, ?, ?, ?, ?)""",
-            (
+    try:
+        with connection:
+            transition_run(
+                connection,
                 run_id,
                 previous_state,
                 next_state,
-                timestamp,
-                json.dumps(event_details, sort_keys=True),
-            ),
-        )
+                coverage=coverage,
+                error=error,
+                details=details,
+            )
+    except RunTransitionError as transition_error:
+        raise UserError(str(transition_error)) from transition_error
 
 
 def get_run(connection: sqlite3.Connection, run_id: str) -> sqlite3.Row:
@@ -646,62 +617,12 @@ def source_set_digest(sources: list[dict]) -> str:
     ).hexdigest()
 
 
-def obligation_rows(connection: sqlite3.Connection, run_id: str) -> list[dict]:
-    return [
-        {
-            **dict(row),
-            "span": json.loads(row["span"]),
-            **json.loads(row["details"]),
-        }
-        for row in connection.execute(
-            """SELECT id, source, role, path, source_unit, kind, priority, disposition,
-                      reason, span, text, details
-               FROM coverage_obligations WHERE run_id = ? ORDER BY id""",
-            (run_id,),
-        )
-    ]
-
-
-def summarize_obligations(obligations: list[dict], sources: list[dict] | None = None) -> dict:
-    sources = sources or []
-    summary = {
-        "total": len(obligations),
-        "major": sum(item["priority"] == "major" for item in obligations),
-        "supporting": sum(item["priority"] == "supporting" for item in obligations),
-        **{
-            disposition: sum(item["disposition"] == disposition for item in obligations)
-            for disposition in sorted(DISPOSITIONS)
-        },
-    }
-    for output, field in {
-        "by_source": "source",
-        "by_role": "role",
-        "by_priority": "priority",
-    }.items():
-        groups = {}
-        values = {item[field] for item in obligations}
-        if field == "source":
-            values.update(source["id"] for source in sources)
-        elif field == "role":
-            values.update(source["role"] for source in sources)
-        else:
-            values.update(DEFAULT_DISPOSITIONS)
-        for value in sorted(values):
-            members = [item for item in obligations if item[field] == value]
-            groups[value] = {
-                "dispositions": {
-                    disposition: sum(item["disposition"] == disposition for item in members)
-                    for disposition in sorted({item["disposition"] for item in members})
-                },
-                "total": len(members),
-            }
-        summary[output] = groups
-    return summary
-
-
-def major_blockers(coverage: dict) -> int:
-    dispositions = coverage.get("by_priority", {}).get("major", {}).get("dispositions", {})
-    return sum(dispositions.get(state, 0) for state in ("blocked", "failed", "open"))
+def producer_profile_id(profile: dict) -> str:
+    resolved = {**profile, "priority_overrides": sorted(profile["priority_overrides"])}
+    digest = hashlib.sha256(
+        json.dumps(resolved, separators=(",", ":"), sort_keys=True).encode()
+    ).hexdigest()
+    return f"profile:{digest}"
 
 
 def report_metadata(coverage: dict) -> dict:
@@ -1058,6 +979,7 @@ def validate_bundle(
 
 def build(config_path: str) -> int:
     project_id, configured_sources, publish_dir, profile = load_config(config_path)
+    profile_id = producer_profile_id(profile)
     configured_digest = source_set_digest(configured_sources)
     provisional_revision = (
         configured_sources[0]["revision"] if len(configured_sources) == 1 else configured_digest
@@ -1069,6 +991,7 @@ def build(config_path: str) -> int:
     source_set = {
         "digest": configured_digest,
         "evidence": [],
+        "producer_profile_id": profile_id,
         "source_universe": [],
         "sources": configured_sources,
     }
@@ -1161,6 +1084,7 @@ def build(config_path: str) -> int:
             source_set = {
                 "digest": digest,
                 "evidence": sorted(evidence, key=lambda item: (item["source_id"], item["path"])),
+                "producer_profile_id": profile_id,
                 "source_universe": sorted(
                     source_universe,
                     key=lambda item: (
@@ -1186,8 +1110,9 @@ def build(config_path: str) -> int:
             )
         if not evidence:
             raise UserError("Fixed Source Set contains no tracked Java or Markdown files")
-        if major_blockers(coverage):
-            error = "Major Coverage Obligations are open, blocked, or failed"
+        major = coverage.get("by_priority", {}).get("major", {}).get("dispositions", {})
+        if major.get("blocked", 0) or major.get("failed", 0):
+            error = "Major Coverage Obligations are blocked or failed"
             transition(connection, run_id, state, "failed", coverage=coverage, error=error)
             emit(
                 {
@@ -1200,6 +1125,23 @@ def build(config_path: str) -> int:
                 }
             )
             return 1
+        transition(connection, run_id, state, "exploring", coverage=coverage)
+        state = "exploring"
+        if coverage.get("open", 0):
+            error = "Open Coverage Obligations require semantic analysis"
+            emit(
+                {
+                    "blocked": True,
+                    "coverage": coverage,
+                    "errors": [error],
+                    "ok": False,
+                    "run_id": run_id,
+                    "state": state,
+                }
+            )
+            return 1
+        transition(connection, run_id, state, "verifying", coverage=coverage)
+        state = "verifying"
         accepted_knowledge = accept_data_contracts(db_path(), run_id, source_universe, obligations)
         source_set["accepted_knowledge"] = accepted_knowledge
         with connection:
@@ -1252,7 +1194,8 @@ def status(run_id: str) -> int:
             for event in connection.execute(
                 "SELECT * FROM run_events WHERE run_id = ? ORDER BY sequence", (run_id,)
             )
-            if (details := json.loads(event["details"])).get("entity_type") != "coverage_obligation"
+            if (details := json.loads(event["details"])).get("entity_type")
+            not in {"coverage_obligation", "analysis_task"}
         ]
         has_obligations = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'coverage_obligations'"
@@ -1286,6 +1229,7 @@ def status(run_id: str) -> int:
         "obligations": obligations,
         "ok": True,
         "project_id": row["project_id"],
+        "producer_profile_id": source_set.get("producer_profile_id"),
         "published_bundle": row["publish_dir"],
         "run_id": row["id"],
         "source_set_digest": source_set["digest"],
@@ -1413,6 +1357,78 @@ def cancel(run_id: str) -> int:
     return 0
 
 
+def explore(run_id: str) -> int:
+    required = {
+        name: os.environ.get(name)
+        for name in ("OKF_GATEWAY_BASE_URL", "OKF_GATEWAY_API_KEY", "OKF_GATEWAY_MODEL")
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        raise UserError(f"Missing gateway environment: {', '.join(missing)}")
+    base_url = required["OKF_GATEWAY_BASE_URL"]
+    api_key = required["OKF_GATEWAY_API_KEY"]
+    model_name = required["OKF_GATEWAY_MODEL"]
+    assert base_url is not None and api_key is not None and model_name is not None
+    try:
+        concurrency = int(os.environ.get("OKF_GATEWAY_CONCURRENCY", "4"))
+    except ValueError as error:
+        raise UserError("OKF_GATEWAY_CONCURRENCY must be a positive integer") from error
+    if concurrency < 1:
+        raise UserError("OKF_GATEWAY_CONCURRENCY must be a positive integer")
+    headers_text = os.environ.get("OKF_GATEWAY_HEADERS")
+    try:
+        headers = json.loads(headers_text) if headers_text else None
+    except json.JSONDecodeError as error:
+        raise UserError("OKF_GATEWAY_HEADERS must be a JSON object") from error
+    if headers is not None and (
+        not isinstance(headers, dict)
+        or any(
+            not isinstance(key, str) or not isinstance(value, str) for key, value in headers.items()
+        )
+    ):
+        raise UserError("OKF_GATEWAY_HEADERS must be a JSON object of strings")
+    with connect(read_only=True) as connection:
+        get_run(connection, run_id)
+
+    from .planner import PlannerAgent
+    from .scheduler import Scheduler
+    from .worker import GatewaySettings, WorkerAgent, build_gateway_model
+
+    model = build_gateway_model(
+        GatewaySettings(
+            base_url=base_url,
+            api_key=api_key,
+            model=model_name,
+            default_headers=headers,
+        )
+    )
+
+    async def execute():
+        try:
+            worker = WorkerAgent(
+                model,
+                audit_path=state_dir() / "runs" / run_id / "worker.db",
+                gateway_id=os.environ.get("OKF_GATEWAY_ID", "enterprise"),
+                model_name=model_name,
+                max_concurrency=concurrency,
+            )
+            scheduler = Scheduler(
+                db_path(),
+                PlannerAgent(model),
+                worker,
+                max_concurrency=concurrency,
+            )
+            return await scheduler.run_until_terminal(run_id)
+        finally:
+            client = getattr(model.provider, "client", None)
+            if client is not None:
+                await client.close()
+
+    outcome = asyncio.run(execute())
+    emit({"ok": outcome.status == "complete", "run_id": run_id, **outcome.model_dump(mode="json")})
+    return 0 if outcome.status == "complete" else 1
+
+
 def parser() -> argparse.ArgumentParser:
     command = argparse.ArgumentParser(prog="okf-wiki")
     subcommands = command.add_subparsers(dest="command", required=True)
@@ -1420,6 +1436,8 @@ def parser() -> argparse.ArgumentParser:
     build_command.add_argument("project_config")
     status_command = subcommands.add_parser("status")
     status_command.add_argument("run_id")
+    explore_command = subcommands.add_parser("explore")
+    explore_command.add_argument("run_id")
     check_command = subcommands.add_parser("check")
     check_command.add_argument("target")
     review_command = subcommands.add_parser("review")
@@ -1439,6 +1457,8 @@ def main() -> int:
             return build(arguments.project_config)
         if arguments.command == "status":
             return status(arguments.run_id)
+        if arguments.command == "explore":
+            return explore(arguments.run_id)
         if arguments.command == "check":
             return check(arguments.target)
         if arguments.command == "review":

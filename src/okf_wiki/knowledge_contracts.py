@@ -1,6 +1,38 @@
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class WorkerBudgets(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    request_limit: int = Field(default=8, ge=1)
+    tool_calls_limit: int = Field(default=20, ge=1)
+    input_tokens_limit: int = Field(default=50_000, ge=1)
+    output_tokens_limit: int = Field(default=8_000, ge=1)
+    total_tokens_limit: int = Field(default=60_000, ge=1)
+    wall_time_seconds: float = Field(default=60, gt=0)
+    tool_timeout_seconds: float = Field(default=15, gt=0)
+
+
+class AnalysisTask(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
+
+    task_id: str = Field(min_length=1)
+    obligation_ids: tuple[str, ...] = Field(min_length=1, max_length=20)
+    source_id: str = Field(min_length=1)
+    repository: Path
+    revision: str = Field(pattern=r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
+    allowed_paths: tuple[str, ...] = Field(min_length=1, max_length=100)
+    agent_role: Literal["extraction"] = "extraction"
+    allowed_tools: tuple[Literal["list_paths", "search_text", "read_text"], ...] = (
+        "list_paths",
+        "search_text",
+        "read_text",
+    )
+    prompt: str = Field(min_length=1, max_length=8_000)
+    budgets: WorkerBudgets
 
 
 class EvidenceProposal(BaseModel):

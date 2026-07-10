@@ -3,11 +3,11 @@ import json
 import re
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, TypedDict, cast
 
 from .knowledge_contracts import EvidenceProposal, WorkerRunResult
+from .run_events import append_entity_event
 
 
 class EvidenceRecord(TypedDict):
@@ -64,7 +64,7 @@ class ObligationEvent(TypedDict):
     previous_state: str
     state: str
     occurred_at: str
-    candidate_id: str
+    candidate_id: str | None
 
 
 @dataclass(frozen=True)
@@ -474,24 +474,14 @@ class AcceptedKnowledgeStore:
                             disposition.obligation_id,
                         ),
                     )
-                    connection.execute(
-                        """INSERT INTO run_events
-                           (run_id, previous_state, state, occurred_at, details)
-                           VALUES (?, ?, ?, ?, ?)""",
-                        (
-                            run_id,
-                            previous,
-                            disposition.disposition,
-                            datetime.now(UTC).isoformat(),
-                            json.dumps(
-                                {
-                                    "candidate_id": candidate.candidate_id,
-                                    "entity_id": disposition.obligation_id,
-                                    "entity_type": "coverage_obligation",
-                                },
-                                sort_keys=True,
-                            ),
-                        ),
+                    append_entity_event(
+                        connection,
+                        run_id,
+                        "coverage_obligation",
+                        disposition.obligation_id,
+                        previous,
+                        disposition.disposition,
+                        candidate_id=candidate.candidate_id,
                     )
             connection.execute(
                 "INSERT OR IGNORE INTO accepted_candidates VALUES (?, ?)",
@@ -663,7 +653,7 @@ class AcceptedKnowledgeStore:
                             previous_state=row["previous_state"],
                             state=row["state"],
                             occurred_at=row["occurred_at"],
-                            candidate_id=details["candidate_id"],
+                            candidate_id=details.get("candidate_id"),
                         )
                     )
             return events

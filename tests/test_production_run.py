@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import okf_wiki.cli as cli
 from okf_wiki.accepted_knowledge import AcceptedKnowledgeStore
 from okf_wiki.cli import UserError, transition
 
@@ -117,10 +118,23 @@ def test_build_check_and_approve_a_fixed_revision(tmp_path: Path) -> None:
     assert status_before["obligations"] == []
     assert [event["state"] for event in status_before["events"]] == [
         "preparing",
+        "exploring",
+        "verifying",
         "rendering",
         "checking",
         "review_required",
     ]
+    with sqlite3.connect(workspace / ".okf-wiki" / "runs.db") as connection:
+        connection.executemany(
+            """INSERT INTO run_events
+               (run_id, previous_state, state, occurred_at, details)
+               VALUES (?, 'open', ?, '2026-01-01T00:00:00Z', ?)""",
+            [
+                (run_id, "assigned", '{"entity_type":"coverage_obligation"}'),
+                (run_id, "planned", '{"entity_type":"analysis_task"}'),
+            ],
+        )
+    assert run(["status", run_id], workspace)["events"] == status_before["events"]
 
     staging = Path(status_before["staging_bundle"])
     assert {path.relative_to(staging).as_posix() for path in staging.rglob("*.md")} == {
@@ -142,6 +156,38 @@ def test_build_check_and_approve_a_fixed_revision(tmp_path: Path) -> None:
         staging / "overview.md"
     ).read_text(encoding="utf-8")
     assert run(["check", str(workspace / "published")], workspace)["ok"] is True
+
+
+def test_supporting_open_obligation_remains_in_exploration(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    revision = make_source(source, "# Reference\n\n| Name | Meaning |\n|---|---|\n| A | B |\n")
+    config = write_config(workspace, source, revision)
+    config.write_text(
+        config.read_text()
+        + """
+[profile.dispositions.supporting]
+disposition = "open"
+""",
+        encoding="utf-8",
+    )
+
+    built = run(["build", str(config)], workspace, expected=1)
+    status = run(["status", built["run_id"]], workspace)
+
+    assert status["coverage"]["supporting"] == 1
+    assert status["coverage"]["open"] == 1
+    assert status["state"] == "exploring"
+
+
+def test_explore_command_dispatches_run_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+    monkeypatch.setattr(cli, "explore", lambda run_id: seen.append(run_id) or 7)
+    monkeypatch.setattr(sys, "argv", ["okf-wiki", "explore", "run-7"])
+
+    assert cli.main() == 7
+    assert seen == ["run-7"]
 
 
 def test_reject_cancel_and_failure_leave_the_published_bundle_unchanged(tmp_path: Path) -> None:
@@ -546,6 +592,7 @@ disposition = "covered"
 
     repeated = run(["build", str(config)], workspace)
     repeated_status = run(["status", repeated["run_id"]], workspace)
+    assert repeated_status["producer_profile_id"] == status["producer_profile_id"]
     assert {item["id"] for item in repeated_status["obligations"]} == {
         item["id"] for item in status["obligations"]
     }
@@ -573,11 +620,13 @@ disposition = "covered"
     blocked = run(["build", str(blocked_config)], workspace, expected=1)
     blocked_status = run(["status", blocked["run_id"]], workspace)
     assert blocked["blocked"] is True
-    assert blocked_status["state"] == "failed"
+    assert blocked_status["state"] == "exploring"
     assert blocked_status["coverage"]["by_priority"]["major"] == {
         "dispositions": {"open": 4},
         "total": 4,
     }
+    assert blocked_status["producer_profile_id"].startswith("profile:")
+    assert blocked_status["producer_profile_id"] != status["producer_profile_id"]
 
     deferred_config = write_source_set_config(
         workspace,
