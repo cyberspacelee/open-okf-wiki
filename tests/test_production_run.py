@@ -316,7 +316,7 @@ def test_coverage_counts_must_be_nonnegative_and_complete(tmp_path: Path) -> Non
     coverage.write_text(
         coverage.read_text(encoding="utf-8")
         .replace("major_obligations: 1", "major_obligations: 9")
-        .replace("covered_obligations: 1", "covered_obligations: 0"),
+        .replace("covered_obligations: 1", "covered_obligations: 9"),
         encoding="utf-8",
     )
 

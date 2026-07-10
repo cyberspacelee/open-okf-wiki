@@ -377,7 +377,11 @@ def validate_log(text: str) -> list[str]:
     return [] if seen_date and entries else ["log.md: must contain a dated bullet entry"]
 
 
-def validate_bundle(bundle: Path, expected_revision: str | None = None) -> list[str]:
+def validate_bundle(
+    bundle: Path,
+    expected_revision: str | None = None,
+    expected_coverage: dict | None = None,
+) -> list[str]:
     if not bundle.is_dir():
         return [f"Bundle does not exist: {bundle}"]
     errors = []
@@ -447,6 +451,14 @@ def validate_bundle(bundle: Path, expected_revision: str | None = None) -> list[
     open_obligations = coverage.get("open_obligations")
     if type(open_obligations) is not int or open_obligations != 0:
         errors.append("reports/coverage.md: open_obligations must be the integer 0")
+    if expected_coverage is not None:
+        for report_field, ledger_field in {
+            "major_obligations": "major",
+            "covered_obligations": "covered",
+            "open_obligations": "open",
+        }.items():
+            if coverage.get(report_field) != expected_coverage.get(ledger_field):
+                errors.append(f"reports/coverage.md: {report_field} does not match run coverage")
     return errors
 
 
@@ -466,7 +478,7 @@ def build(config_path: str) -> int:
         render_bundle(staging, project_id, revision, markdown_files, commit_date)
         transition(connection, run_id, state, "checking")
         state = "checking"
-        errors = validate_bundle(staging, revision)
+        errors = validate_bundle(staging, revision, coverage)
         if errors:
             raise UserError("; ".join(errors))
         transition(connection, run_id, state, "review_required")
@@ -519,7 +531,8 @@ def check(target: str) -> int:
     else:
         with connect(read_only=True) as connection:
             row = get_run(connection, target)
-        errors = validate_bundle(Path(row["staging_dir"]), row["revision"])
+        expected_coverage = json.loads(row["coverage_json"]) if row["coverage_json"] else None
+        errors = validate_bundle(Path(row["staging_dir"]), row["revision"], expected_coverage)
     emit({"errors": errors, "ok": not errors, "target": target})
     return bool(errors)
 
@@ -581,7 +594,8 @@ def review(run_id: str, approve: bool) -> int:
         connection.close()
         emit({"decision": "rejected", "ok": True, "run_id": run_id, "state": "cancelled"})
         return 0
-    errors = validate_bundle(Path(row["staging_dir"]), row["revision"])
+    expected_coverage = json.loads(row["coverage_json"]) if row["coverage_json"] else None
+    errors = validate_bundle(Path(row["staging_dir"]), row["revision"], expected_coverage)
     if errors:
         transition(connection, run_id, "review_required", "failed", error="; ".join(errors))
         connection.close()
