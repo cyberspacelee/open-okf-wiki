@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -302,3 +303,54 @@ def test_index_accepts_multiple_sections_with_link_bullets(tmp_path: Path) -> No
     )
 
     assert run(["check", built["run_id"]], workspace)["ok"] is True
+
+
+def test_coverage_counts_must_be_nonnegative_and_complete(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    revision = make_source(source)
+    built = build_run(workspace, source, revision)
+    status = run(["status", built["run_id"]], workspace)
+    coverage = Path(status["staging_bundle"]) / "reports" / "coverage.md"
+    coverage.write_text(
+        coverage.read_text(encoding="utf-8")
+        .replace("major_obligations: 1", "major_obligations: 9")
+        .replace("covered_obligations: 1", "covered_obligations: 0"),
+        encoding="utf-8",
+    )
+
+    assert run(["check", built["run_id"]], workspace, expected=1)["ok"] is False
+    approval = run(["review", built["run_id"], "--approve"], workspace, expected=1)
+    assert approval["state"] == "failed"
+    assert not (workspace / "published").exists()
+
+
+def test_failed_published_event_restores_the_previous_bundle(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    first_revision = make_source(source)
+    first = build_run(workspace, source, first_revision)
+    run(["review", first["run_id"], "--approve"], workspace)
+    published = workspace / "published"
+    previous_target = os.readlink(published)
+    previous_overview = (published / "overview.md").read_bytes()
+
+    second_revision = commit_source(source, "# Example\n\nSecond revision.\n")
+    second = build_run(workspace, source, second_revision)
+    database = workspace / ".okf-wiki" / "runs.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """CREATE TRIGGER reject_published_event BEFORE INSERT ON run_events
+               WHEN NEW.state = 'published'
+               BEGIN SELECT RAISE(ABORT, 'seeded published event failure'); END"""
+        )
+
+    approval = run(["review", second["run_id"], "--approve"], workspace, expected=1)
+    assert approval["state"] == "failed"
+    status = run(["status", second["run_id"]], workspace)
+    assert status["state"] == "failed"
+    assert "published" not in [event["state"] for event in status["events"]]
+    assert os.readlink(published) == previous_target
+    assert (published / "overview.md").read_bytes() == previous_overview

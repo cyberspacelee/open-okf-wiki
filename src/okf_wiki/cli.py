@@ -431,7 +431,20 @@ def validate_bundle(bundle: Path, expected_revision: str | None = None) -> list[
         coverage_revision = documents.get("reports/coverage.md", {}).get("source_revision")
         if not isinstance(overview_revision, str) or overview_revision != coverage_revision:
             errors.append("overview.md and reports/coverage.md source_revision must match")
-    open_obligations = documents.get("reports/coverage.md", {}).get("open_obligations")
+    coverage = documents.get("reports/coverage.md", {})
+    for field in ("major_obligations", "covered_obligations"):
+        value = coverage.get(field)
+        if type(value) is not int or value < 0:
+            errors.append(f"reports/coverage.md: {field} must be a non-negative integer")
+    major_obligations = coverage.get("major_obligations")
+    covered_obligations = coverage.get("covered_obligations")
+    if (
+        type(major_obligations) is int
+        and type(covered_obligations) is int
+        and major_obligations != covered_obligations
+    ):
+        errors.append("reports/coverage.md: all Major Obligations must be covered")
+    open_obligations = coverage.get("open_obligations")
     if type(open_obligations) is not int or open_obligations != 0:
         errors.append("reports/coverage.md: open_obligations must be the integer 0")
     return errors
@@ -511,10 +524,11 @@ def check(target: str) -> int:
     return bool(errors)
 
 
-def publish(staging: Path, destination: Path, run_id: str) -> None:
+def publish(staging: Path, destination: Path, run_id: str) -> str | None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     if os.path.lexists(destination) and not destination.is_symlink():
         raise UserError("Published Bundle path must be absent or a producer-managed symlink")
+    previous_target = os.readlink(destination) if destination.is_symlink() else None
     releases = destination.parent / f".{destination.name}.releases"
     releases.mkdir(exist_ok=True)
     final_release = releases / run_id
@@ -533,6 +547,20 @@ def publish(staging: Path, destination: Path, run_id: str) -> None:
         os.replace(temporary_link, destination)
     finally:
         shutil.rmtree(temporary_release, ignore_errors=True)
+        temporary_link.unlink(missing_ok=True)
+    return previous_target
+
+
+def restore_publication(destination: Path, previous_target: str | None, run_id: str) -> None:
+    temporary_link = destination.parent / f".{destination.name}.{run_id}.rollback"
+    temporary_link.unlink(missing_ok=True)
+    try:
+        if previous_target is None:
+            destination.unlink(missing_ok=True)
+        else:
+            os.symlink(previous_target, temporary_link, target_is_directory=True)
+            os.replace(temporary_link, destination)
+    finally:
         temporary_link.unlink(missing_ok=True)
 
 
@@ -560,14 +588,21 @@ def review(run_id: str, approve: bool) -> int:
         emit({"errors": errors, "ok": False, "run_id": run_id, "state": "failed"})
         return 1
     transition(connection, run_id, "review_required", "publishing")
+    publication_changed = False
     try:
-        publish(Path(row["staging_dir"]), Path(row["publish_dir"]), run_id)
+        previous_target = publish(Path(row["staging_dir"]), Path(row["publish_dir"]), run_id)
+        publication_changed = True
+        transition(connection, run_id, "publishing", "published")
     except Exception as error:
+        if publication_changed:
+            try:
+                restore_publication(Path(row["publish_dir"]), previous_target, run_id)
+            except Exception as rollback_error:
+                error = UserError(f"{error}; publication rollback failed: {rollback_error}")
         transition(connection, run_id, "publishing", "failed", error=str(error))
         connection.close()
         emit({"errors": [str(error)], "ok": False, "run_id": run_id, "state": "failed"})
         return 1
-    transition(connection, run_id, "publishing", "published")
     connection.close()
     emit({"ok": True, "run_id": run_id, "state": "published"})
     return 0
