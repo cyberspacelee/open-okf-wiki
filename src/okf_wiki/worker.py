@@ -377,24 +377,30 @@ def _trajectory(
             if isinstance(part, ToolCallPart):
                 trajectory.append(
                     {
+                        "args": part.args_as_dict(),
                         "event": "call",
                         "tool": part.tool_name,
                         "tool_call_id": part.tool_call_id,
+                        "tool_kind": part.tool_kind,
                     }
                 )
             elif isinstance(part, ToolReturnPart):
                 trajectory.append(
                     {
                         "event": "return",
+                        "result_empty": part.content in (None, "", [], {}),
                         "tool": part.tool_name,
                         "tool_call_id": part.tool_call_id,
                     }
                 )
             elif isinstance(part, RetryPromptPart):
                 retries += 1
+                message = str(part.content)
                 trajectory.append(
                     {
                         "event": "retry",
+                        "message": message,
+                        "scope_violation": "outside the assigned" in message,
                         "tool": part.tool_name,
                         "tool_call_id": part.tool_call_id,
                     }

@@ -1,0 +1,16 @@
+{
+  "name": "worker-v1",
+  "cases": [
+    {
+      "name": "grounded-data-contract",
+      "inputs": {"task_id": "task-1", "obligation_ids": ["data-contract-1"], "source_id": "source-1", "revision": "1111111111111111111111111111111111111111", "allowed_paths": ["src/OrderRequest.java"], "allowed_tools": ["list_paths", "search_text", "read_text"], "tool_calls_limit": 20, "data_carriers": ["OrderRequest"]},
+      "expected_output": {
+        "claims": [{"text": "Order payload requires an identifier.", "conditions": ["when creating an order"], "evidence_ids": ["evidence-1"]}],
+        "evidence": [{"id": "evidence-1", "source_id": "source-1", "path": "src/OrderRequest.java", "revision": "1111111111111111111111111111111111111111", "start_line": 1, "end_line": 3, "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
+        "data_contract_concepts": ["Order payload"],
+        "forbidden_concepts": ["OrderRequest"]
+      },
+      "metadata": {"thresholds": {"scope_adherence": {"minimum": 1}, "claim_atomicity": {"minimum": 1}, "evidence_validity": {"minimum": 1}, "conditions": {"minimum": 1}, "data_carrier_handling": {"minimum": 1}, "unsupported_output": {"minimum": 1}}}
+    }
+  ]
+}

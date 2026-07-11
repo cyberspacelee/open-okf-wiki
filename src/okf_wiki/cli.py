@@ -1262,6 +1262,19 @@ def recover(run_id: str) -> int:
     return 0
 
 
+def agent_eval(manifest_path: str) -> int:
+    from .agent_evals import ReleaseEvalManifest, evaluate_release
+
+    try:
+        payload = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        manifest = ReleaseEvalManifest.model_validate(payload)
+    except (OSError, ValueError) as error:
+        raise UserError(f"Invalid Agent Eval manifest: {error}") from error
+    report = evaluate_release(manifest)
+    emit(report.model_dump(mode="json"))
+    return int(report.blocked)
+
+
 def explore(run_id: str) -> int:
     with connect(read_only=True) as connection:
         row = get_run(connection, run_id)
@@ -1368,6 +1381,8 @@ def parser() -> argparse.ArgumentParser:
     cancel_command.add_argument("run_id")
     recover_command = subcommands.add_parser("recover")
     recover_command.add_argument("run_id")
+    eval_command = subcommands.add_parser("eval")
+    eval_command.add_argument("manifest")
     return command
 
 
@@ -1386,6 +1401,8 @@ def main() -> int:
             return review(arguments.run_id, arguments.approve)
         if arguments.command == "cancel":
             return cancel(arguments.run_id)
+        if arguments.command == "eval":
+            return agent_eval(arguments.manifest)
         return recover(arguments.run_id)
     except UserError as error:
         emit({"errors": [str(error)], "ok": False})

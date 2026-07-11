@@ -583,6 +583,16 @@ def test_function_model_records_tool_retry_usage_and_trajectory(tmp_path: Path) 
     trajectory = json.loads(row[2])
     assert [event["event"] for event in trajectory].count("retry") == 1
     assert {event.get("tool") for event in trajectory} >= {"search_text"}
+    search_calls = [
+        event
+        for event in trajectory
+        if event["event"] == "call" and event.get("tool") == "search_text"
+    ]
+    assert search_calls[0]["args"] == {"query": ""}
+    assert search_calls[1]["args"] == {"paths": ["guide.md"], "query": "Workers"}
+    assert (
+        next(event for event in trajectory if event["event"] == "return")["result_empty"] is False
+    )
     assert row[3] >= 0
     assert row[4:] == (
         "test",
