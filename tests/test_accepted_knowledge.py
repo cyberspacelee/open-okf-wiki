@@ -261,6 +261,24 @@ def test_accepted_candidate_is_queryable_with_stable_ids_and_page_plan(tmp_path:
     )
 
 
+def test_knowledge_summary_requires_page_plans_with_or_without_caller_transaction(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "runs.db"
+    make_ledger(database)
+    knowledge = AcceptedKnowledgeStore(database)
+    knowledge.accept("run-1", candidate("candidate-1"))
+    with sqlite3.connect(database) as connection:
+        connection.execute("DELETE FROM page_plans WHERE run_id = 'run-1'")
+
+    with pytest.raises(ValueError, match="Missing page plan"):
+        knowledge.knowledge_summary("run-1")
+    with sqlite3.connect(database) as connection:
+        connection.row_factory = sqlite3.Row
+        with pytest.raises(ValueError, match="Missing page plan"):
+            knowledge.knowledge_summary("run-1", connection)
+
+
 def test_omitted_claim_roles_are_order_independent_and_page_plan_follows_rename(
     tmp_path: Path,
 ) -> None:

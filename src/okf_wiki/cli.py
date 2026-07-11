@@ -28,7 +28,6 @@ from .coverage import (
     major_blockers,
     obligation_rows,
     refresh_run_coverage,
-    summarize_obligations,
 )
 from .java_analysis import (
     DEFAULT_JAVA_EXCLUDED_PATHS,
@@ -39,9 +38,10 @@ from .java_analysis import (
     analyze_java_source,
     is_java_input,
 )
-from .source_identity import source_unit_id, stable_span_id
+from .refresh import persist_inspection, prepare_refresh
 from .run_events import append_entity_event, append_run_event
 from .run_state import RunTransitionError, transition_run
+from .source_identity import source_unit_id, stable_span_id
 
 
 TERMINAL_STATES = {"published", "failed", "cancelled"}
@@ -428,15 +428,15 @@ def inspect_source(
         _mode, object_type, object_id = metadata.split(b" ", 2)
         path = quote_from_bytes(path_bytes, safe="/")
         unit_id = source_unit_id(source["id"], revision, path)
-        universe.append(
-            {
-                "path": path,
-                "revision": revision,
-                "source_id": source["id"],
-                "source_unit": unit_id,
-                "source_unit_kind": "file",
-            }
-        )
+        file_unit = {
+            "content_digest": object_id.decode(),
+            "path": path,
+            "revision": revision,
+            "source_id": source["id"],
+            "source_unit": unit_id,
+            "source_unit_kind": "file",
+        }
+        universe.append(file_unit)
         if object_type != b"blob":
             continue
         is_markdown = path_bytes.lower().endswith(b".md")
@@ -444,6 +444,7 @@ def inspect_source(
         if not (is_markdown or is_java):
             continue
         content = git_bytes(repository, "cat-file", "blob", object_id.decode())
+        file_unit["content_digest"] = hashlib.sha256(content).hexdigest()
         try:
             text = content.decode("utf-8")
         except UnicodeDecodeError as error:
@@ -649,14 +650,6 @@ def run_validation_errors(row: sqlite3.Row, source_set: dict, obligations: list[
     return errors
 
 
-def accepted_knowledge_summary(database: Path, run_id: str) -> list[dict]:
-    store = AcceptedKnowledgeStore(database)
-    return [
-        {**concept, "page": store.get_page_plan(run_id, concept["id"])["path"]}
-        for concept in store.list_concepts(run_id)
-    ]
-
-
 def finish_run(run_id: str) -> None:
     connection = connect()
     row = get_run(connection, run_id)
@@ -667,7 +660,7 @@ def finish_run(run_id: str) -> None:
     source_set = json.loads(row["source_set_json"])
     obligations = obligation_rows(connection, run_id)
     coverage = json.loads(row["coverage_json"])
-    accepted_knowledge = accepted_knowledge_summary(db_path(), run_id)
+    accepted_knowledge = AcceptedKnowledgeStore(db_path()).knowledge_summary(run_id)
     source_set["accepted_knowledge"] = accepted_knowledge
     try:
         transition(connection, run_id, state, "rendering", coverage=coverage)
@@ -761,89 +754,32 @@ def build(config_path: str) -> int:
             commit_dates.append(commit_date)
         digest = source_set_digest(sources)
         bundle_revision = sources[0]["revision"] if len(sources) == 1 else digest
-        obligations.sort(
-            key=lambda item: (
-                item["source"],
-                item["path"],
-                item["span"]["start_line"],
-                item["kind"],
-            )
+        knowledge = AcceptedKnowledgeStore(db_path())
+        prepared = prepare_refresh(
+            connection,
+            db_path(),
+            base_run_id=base_run_id,
+            project_id=project_id,
+            profile_id=profile_id,
+            sources=sources,
+            source_universe=source_universe,
+            obligations=obligations,
         )
         with connection:
-            connection.executemany(
-                """INSERT INTO coverage_obligations
-                   (id, run_id, source, role, path, source_unit, kind, priority,
-                    disposition, reason, span, text, details)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                [
-                    (
-                        item["id"],
-                        run_id,
-                        item["source"],
-                        item["role"],
-                        item["path"],
-                        item["source_unit"],
-                        item["kind"],
-                        item["priority"],
-                        item["disposition"],
-                        item["reason"],
-                        json.dumps(item["span"], sort_keys=True),
-                        item["text"],
-                        json.dumps(
-                            {
-                                key: item[key]
-                                for key in (
-                                    "constraints",
-                                    "carrier_promotion_reasons",
-                                    "data_carriers",
-                                    "data_contract_name",
-                                    "evidence_source_units",
-                                    "matched_rule",
-                                    "promoted",
-                                    "promotion_reasons",
-                                )
-                                if key in item
-                            },
-                            sort_keys=True,
-                        ),
-                    )
-                    for item in obligations
-                ],
-            )
-            obligations = obligation_rows(connection, run_id)
-            coverage = summarize_obligations(obligations, sources)
-            for source in sources:
-                source["coverage"] = summarize_obligations(
-                    [item for item in obligations if item["source"] == source["id"]], [source]
-                )
-            source_set = {
-                "base_run_id": base_run_id,
-                "bundle_date": max(commit_dates),
-                "digest": digest,
-                "evidence": sorted(evidence, key=lambda item: (item["source_id"], item["path"])),
-                "producer_profile_id": profile_id,
-                "source_universe": sorted(
-                    source_universe,
-                    key=lambda item: (
-                        item["source_id"],
-                        item["path"],
-                        item.get("span", {}).get("start_line", 0),
-                        item["source_unit_kind"],
-                    ),
-                ),
-                "sources": sources,
-            }
-            connection.execute(
-                """UPDATE runs
-                   SET revision = ?, source_set_json = ?, coverage_json = ?, updated_at = ?
-                   WHERE id = ?""",
-                (
-                    bundle_revision,
-                    json.dumps(source_set, sort_keys=True),
-                    json.dumps(coverage, sort_keys=True),
-                    now(),
-                    run_id,
-                ),
+            obligations, coverage, source_set = persist_inspection(
+                connection,
+                knowledge,
+                run_id=run_id,
+                bundle_revision=bundle_revision,
+                base_run_id=base_run_id,
+                bundle_date=max(commit_dates),
+                digest=digest,
+                evidence=evidence,
+                profile_id=profile_id,
+                source_universe=source_universe,
+                sources=sources,
+                prepared=prepared,
+                updated_at=now(),
             )
         if not evidence:
             raise UserError("Fixed Source Set contains no tracked Java or Markdown files")
@@ -934,6 +870,7 @@ def status(run_id: str) -> int:
     coverage = json.loads(row["coverage_json"]) if row["coverage_json"] else None
     blocking_findings = run_validation_errors(row, source_set, obligations)
     payload = {
+        "base_run_id": source_set.get("base_run_id"),
         "blocked": bool(coverage and "total" in coverage and major_blockers(coverage)),
         "accepted_knowledge": source_set.get("accepted_knowledge", []),
         "coverage": coverage,
@@ -945,6 +882,20 @@ def status(run_id: str) -> int:
         "project_id": row["project_id"],
         "producer_profile_id": source_set.get("producer_profile_id"),
         "published_bundle": row["publish_dir"],
+        "refresh": source_set.get(
+            "refresh",
+            {
+                "mode": "full",
+                "fallback_reason": "Run predates impact tracking",
+                "diff": {
+                    "added": [],
+                    "changed": [],
+                    "moved": [],
+                    "removed": [],
+                    "by_source": {},
+                },
+            },
+        ),
         "review": review_status(
             row["state"],
             blocking_findings,

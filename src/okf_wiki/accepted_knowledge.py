@@ -79,6 +79,34 @@ def _stable_id(prefix: str, value: object) -> str:
     return f"{prefix}:{hashlib.sha256(encoded).hexdigest()}"
 
 
+def evidence_record_id(
+    *,
+    source_id: str,
+    revision: str,
+    path: str,
+    source_unit: str,
+    start_line: int,
+    end_line: int,
+    digest: str,
+    evidence_kind: str,
+    authority: str,
+) -> str:
+    return _stable_id(
+        "evidence",
+        [
+            source_id,
+            revision.casefold(),
+            path,
+            source_unit,
+            start_line,
+            end_line,
+            digest,
+            evidence_kind,
+            authority,
+        ],
+    )
+
+
 def _slug(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.casefold()).strip("-") or "concept"
 
@@ -298,19 +326,16 @@ class AcceptedKnowledgeStore:
             evidence_ids: dict[str, str] = {}
             for evidence in proposal.evidence:
                 source_unit = self._source_unit(connection, run_id, evidence)
-                accepted_id = _stable_id(
-                    "evidence",
-                    [
-                        evidence.source_id,
-                        evidence.revision.casefold(),
-                        evidence.path,
-                        source_unit,
-                        evidence.start_line,
-                        evidence.end_line,
-                        evidence.digest,
-                        evidence.evidence_kind,
-                        evidence.authority,
-                    ],
+                accepted_id = evidence_record_id(
+                    source_id=evidence.source_id,
+                    revision=evidence.revision,
+                    path=evidence.path,
+                    source_unit=source_unit,
+                    start_line=evidence.start_line,
+                    end_line=evidence.end_line,
+                    digest=evidence.digest,
+                    evidence_kind=evidence.evidence_kind,
+                    authority=evidence.authority,
                 )
                 evidence_ids[evidence.id] = accepted_id
                 connection.execute(
@@ -345,6 +370,23 @@ class AcceptedKnowledgeStore:
                     ],
                 )
                 claim_ids[claim.id] = accepted_id
+                previous = connection.execute(
+                    "SELECT epistemic_status FROM accepted_claims WHERE run_id = ? AND id = ?",
+                    (run_id, accepted_id),
+                ).fetchone()
+                if previous is not None and previous["epistemic_status"] == "stale":
+                    connection.execute(
+                        "DELETE FROM claim_evidence WHERE run_id = ? AND claim_id = ?",
+                        (run_id, accepted_id),
+                    )
+                    connection.execute(
+                        "DELETE FROM claim_links WHERE run_id = ? AND claim_id = ?",
+                        (run_id, accepted_id),
+                    )
+                    connection.execute(
+                        "DELETE FROM obligation_claims WHERE run_id = ? AND claim_id = ?",
+                        (run_id, accepted_id),
+                    )
                 connection.execute(
                     """INSERT INTO accepted_claims VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT (run_id, id) DO UPDATE SET
@@ -403,6 +445,32 @@ class AcceptedKnowledgeStore:
                 supporting = [claim_ids[item] for item in supporting_proposals]
                 accepted_id = _stable_id("concept", sorted(defining))
                 concept_ids[concept.id] = accepted_id
+                previous = connection.execute(
+                    "SELECT status FROM accepted_concepts WHERE run_id = ? AND id = ?",
+                    (run_id, accepted_id),
+                ).fetchone()
+                if previous is not None and previous["status"] == "stale":
+                    relation_ids = [
+                        row["id"]
+                        for row in connection.execute(
+                            """SELECT id FROM concept_relations
+                               WHERE run_id = ?
+                                 AND (subject_concept_id = ? OR object_concept_id = ?)""",
+                            (run_id, accepted_id, accepted_id),
+                        )
+                    ]
+                    connection.executemany(
+                        "DELETE FROM relation_evidence WHERE run_id = ? AND relation_id = ?",
+                        [(run_id, relation_id) for relation_id in relation_ids],
+                    )
+                    connection.executemany(
+                        "DELETE FROM concept_relations WHERE run_id = ? AND id = ?",
+                        [(run_id, relation_id) for relation_id in relation_ids],
+                    )
+                    connection.execute(
+                        "DELETE FROM concept_claims WHERE run_id = ? AND concept_id = ?",
+                        (run_id, accepted_id),
+                    )
                 connection.execute(
                     """INSERT INTO accepted_concepts VALUES (?, ?, ?, ?, ?, ?)
                        ON CONFLICT (run_id, id) DO UPDATE SET
@@ -540,6 +608,138 @@ class AcceptedKnowledgeStore:
             supersedes=[row["target_claim_id"] for row in links if row["kind"] == "supersedes"],
         )
 
+    def clone_for_refresh(
+        self,
+        connection: sqlite3.Connection,
+        base_run_id: str,
+        run_id: str,
+        *,
+        previous_units: dict[str, dict],
+        current_units: dict[str, dict],
+        relocations: dict[str, str],
+        stale_claim_ids: set[str],
+        stale_concept_ids: set[str],
+        obligation_ids: dict[str, str],
+    ) -> None:
+        evidence_ids: dict[str, str] = {}
+        for row in connection.execute(
+            "SELECT * FROM accepted_evidence WHERE run_id = ? ORDER BY id",
+            (base_run_id,),
+        ):
+            record = dict(row)
+            relocated = relocations.get(record["source_unit"])
+            if relocated:
+                before = previous_units[record["source_unit"]]
+                after = current_units[relocated]
+                offset = after.get("span", {}).get("start_line", 1) - before.get("span", {}).get(
+                    "start_line", 1
+                )
+                record.update(
+                    revision=after["revision"],
+                    path=after["path"],
+                    source_unit=relocated,
+                    start_line=record["start_line"] + offset,
+                    end_line=record["end_line"] + offset,
+                )
+            new_id = evidence_record_id(
+                source_id=record["source_id"],
+                revision=record["revision"],
+                path=record["path"],
+                source_unit=record["source_unit"],
+                start_line=record["start_line"],
+                end_line=record["end_line"],
+                digest=record["digest"],
+                evidence_kind=record["evidence_kind"],
+                authority=record["authority"],
+            )
+            evidence_ids[row["id"]] = new_id
+            connection.execute(
+                """INSERT INTO accepted_evidence VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    run_id,
+                    new_id,
+                    record["source_id"],
+                    record["revision"],
+                    record["path"],
+                    record["source_unit"],
+                    record["start_line"],
+                    record["end_line"],
+                    record["digest"],
+                    record["evidence_kind"],
+                    record["authority"],
+                ),
+            )
+        connection.execute(
+            """INSERT INTO accepted_claims
+               SELECT ?, id, subject, predicate, statement, modality, conditions_json,
+                      epistemic_status
+               FROM accepted_claims WHERE run_id = ?""",
+            (run_id, base_run_id),
+        )
+        connection.executemany(
+            "UPDATE accepted_claims SET epistemic_status = 'stale' WHERE run_id = ? AND id = ?",
+            [(run_id, claim_id) for claim_id in stale_claim_ids],
+        )
+        connection.executemany(
+            "INSERT INTO claim_evidence VALUES (?, ?, ?)",
+            [
+                (run_id, row["claim_id"], evidence_ids[row["evidence_id"]])
+                for row in connection.execute(
+                    "SELECT claim_id, evidence_id FROM claim_evidence WHERE run_id = ?",
+                    (base_run_id,),
+                )
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO obligation_claims VALUES (?, ?, ?)",
+            [
+                (run_id, obligation_ids[row["obligation_id"]], row["claim_id"])
+                for row in connection.execute(
+                    "SELECT obligation_id, claim_id FROM obligation_claims WHERE run_id = ?",
+                    (base_run_id,),
+                )
+                if row["obligation_id"] in obligation_ids
+            ],
+        )
+        connection.execute(
+            """INSERT INTO claim_links
+               SELECT ?, claim_id, kind, target_claim_id FROM claim_links WHERE run_id = ?""",
+            (run_id, base_run_id),
+        )
+        connection.execute(
+            """INSERT INTO accepted_concepts
+               SELECT ?, id, canonical_name, aliases_json, description,
+                      status
+               FROM accepted_concepts WHERE run_id = ?""",
+            (run_id, base_run_id),
+        )
+        connection.executemany(
+            "UPDATE accepted_concepts SET status = 'stale' WHERE run_id = ? AND id = ?",
+            [(run_id, concept_id) for concept_id in stale_concept_ids],
+        )
+        for table, columns in (
+            ("concept_claims", "concept_id, claim_id, role"),
+            (
+                "concept_relations",
+                "id, subject_concept_id, predicate, object_concept_id",
+            ),
+            ("page_plans", "concept_id, path, title"),
+        ):
+            connection.execute(
+                f"INSERT INTO {table} SELECT ?, {columns} FROM {table} WHERE run_id = ?",
+                (run_id, base_run_id),
+            )
+        connection.executemany(
+            "INSERT INTO relation_evidence VALUES (?, ?, ?)",
+            [
+                (run_id, row["relation_id"], evidence_ids[row["evidence_id"]])
+                for row in connection.execute(
+                    "SELECT relation_id, evidence_id FROM relation_evidence WHERE run_id = ?",
+                    (base_run_id,),
+                )
+            ],
+        )
+
     def list_claims(self, run_id: str) -> list[ClaimRecord]:
         with self._connect() as connection:
             ids = [
@@ -602,6 +802,52 @@ class AcceptedKnowledgeStore:
                 )
             ]
         return [concept for concept_id in ids if (concept := self.get_concept(run_id, concept_id))]
+
+    def knowledge_summary(
+        self, run_id: str, connection: sqlite3.Connection | None = None
+    ) -> list[dict]:
+        if connection is None:
+            with self._connect() as owned_connection:
+                return self.knowledge_summary(run_id, owned_connection)
+        rows = list(
+            connection.execute(
+                """SELECT c.*, p.path FROM accepted_concepts c LEFT JOIN page_plans p
+                     ON p.run_id = c.run_id AND p.concept_id = c.id
+                   WHERE c.run_id = ? ORDER BY c.id""",
+                (run_id,),
+            )
+        )
+        if missing := next((row["id"] for row in rows if row["path"] is None), None):
+            raise ValueError(f"Missing page plan for Concept: {missing}")
+        return [
+            {
+                "id": row["id"],
+                "canonical_name": row["canonical_name"],
+                "aliases": cast(list[str], json.loads(row["aliases_json"])),
+                "description": row["description"],
+                "status": row["status"],
+                "defining_claim_ids": [
+                    item["claim_id"]
+                    for item in connection.execute(
+                        """SELECT claim_id FROM concept_claims
+                           WHERE run_id = ? AND concept_id = ? AND role = 'defining'
+                           ORDER BY claim_id""",
+                        (run_id, row["id"]),
+                    )
+                ],
+                "supporting_claim_ids": [
+                    item["claim_id"]
+                    for item in connection.execute(
+                        """SELECT claim_id FROM concept_claims
+                           WHERE run_id = ? AND concept_id = ? AND role = 'supporting'
+                           ORDER BY claim_id""",
+                        (run_id, row["id"]),
+                    )
+                ],
+                "page": row["path"],
+            }
+            for row in rows
+        ]
 
     def renderable_claims(self, run_id: str, concept_id: str) -> list[ClaimRecord]:
         concept = self.get_concept(run_id, concept_id)

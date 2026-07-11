@@ -105,6 +105,38 @@ def commit_source(source: Path, text: str | None) -> str:
     return head_revision(source)
 
 
+def make_java_source(path: Path) -> str:
+    make_source(path, "# Orders\n")
+    (path / "src").mkdir()
+    (path / "src" / "OrderController.java").write_text(
+        "public class OrderController { OrderRequest create(OrderRequest request) { return request; } }\n",
+        encoding="utf-8",
+    )
+    (path / "src" / "OrderRequest.java").write_text(
+        "public record OrderRequest(String id) {}\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "add", "src"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-qm", "java source"], cwd=path, check=True)
+    return head_revision(path)
+
+
+def move_java_evidence(source: Path) -> str:
+    (source / "src" / "api").mkdir()
+    subprocess.run(
+        ["git", "mv", "src/OrderRequest.java", "src/api/OrderRequest.java"],
+        cwd=source,
+        check=True,
+    )
+    subprocess.run(["git", "commit", "-qm", "move request"], cwd=source, check=True)
+    return head_revision(source)
+
+
+def remove_java_evidence(source: Path) -> str:
+    subprocess.run(["git", "rm", "src/OrderRequest.java"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-qm", "remove request"], cwd=source, check=True)
+    return head_revision(source)
+
+
 def test_build_check_and_approve_a_fixed_revision(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -205,6 +237,205 @@ def test_build_check_and_approve_a_fixed_revision(tmp_path: Path) -> None:
         staging / "overview.md"
     ).read_text(encoding="utf-8")
     assert run(["check", str(workspace / "published")], workspace)["ok"] is True
+
+
+def test_published_revision_refresh_relocates_unchanged_knowledge(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    first_revision = make_java_source(source)
+    first = build_run(workspace, source, first_revision)
+    first_status = run(["status", first["run_id"]], workspace)
+    run(["review", first["run_id"], "--approve"], workspace)
+
+    second_revision = move_java_evidence(source)
+    second = build_run(workspace, source, second_revision)
+    second_status = run(["status", second["run_id"]], workspace)
+
+    assert second_status["base_run_id"] == first["run_id"]
+    assert second_status["refresh"]["mode"] == "incremental"
+    assert second_status["refresh"]["fallback_reason"] is None
+    assert any(
+        item["before"]["path"] == "src/OrderRequest.java"
+        and item["after"]["path"] == "src/api/OrderRequest.java"
+        for item in second_status["refresh"]["diff"]["moved"]
+    )
+    assert [item["id"] for item in second_status["accepted_knowledge"]] == [
+        item["id"] for item in first_status["accepted_knowledge"]
+    ]
+    assert [item["page"] for item in second_status["accepted_knowledge"]] == [
+        item["page"] for item in first_status["accepted_knowledge"]
+    ]
+    rendered = Path(
+        second_status["staging_bundle"], second_status["accepted_knowledge"][0]["page"]
+    ).read_text(encoding="utf-8")
+    assert "src/api/OrderRequest.java" in rendered
+    assert second_revision in rendered
+    assert second_status["review"]["knowledge_changes"]["claims"]["removed"] == []
+    assert second_status["review"]["knowledge_changes"]["concepts"]["removed"] == []
+    assert run(["check", second["run_id"]], workspace)["ok"] is True
+    assert run(["review", second["run_id"], "--approve"], workspace)["state"] == "published"
+    assert second_revision in (workspace / "published" / "overview.md").read_text(encoding="utf-8")
+
+
+def test_refresh_keeps_removed_evidence_knowledge_stale_for_review(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    first_revision = make_java_source(source)
+    first = build_run(workspace, source, first_revision)
+    run(["review", first["run_id"], "--approve"], workspace)
+
+    removed_revision = remove_java_evidence(source)
+    refreshed = build_run(workspace, source, removed_revision, expected=1)
+    status = run(["status", refreshed["run_id"]], workspace)
+
+    assert status["state"] == "exploring"
+    assert status["refresh"]["reverify_claims"]
+    assert status["refresh"]["reverify_concepts"]
+    assert status["accepted_knowledge"][0]["status"] == "stale"
+    reverify = next(
+        item for item in status["obligations"] if item["kind"] == "impact_reverification"
+    )
+    assert reverify["disposition"] == "open"
+    assert reverify["reverify_claim_ids"] == status["refresh"]["reverify_claims"]
+    assert removed_revision not in (workspace / "published" / "overview.md").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_new_source_units_create_open_obligations(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    first_revision = make_source(source)
+    first = build_run(workspace, source, first_revision)
+    run(["review", first["run_id"], "--approve"], workspace)
+    (source / "requirements.md").write_text(
+        "# Requirements\n\nREQ-1 Orders MUST be retained.\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "add", "requirements.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-qm", "add requirement"], cwd=source, check=True)
+
+    refreshed = build_run(workspace, source, head_revision(source), expected=1)
+    status = run(["status", refreshed["run_id"]], workspace)
+
+    assert status["state"] == "exploring"
+    assert status["coverage"]["open"] == 3
+    assert status["refresh"]["new_source_units"]
+    assert {item["disposition"] for item in status["obligations"]} == {"open"}
+
+
+def test_new_source_unit_in_covered_file_gets_its_own_obligation(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    first_revision = make_source(source, "# Requirements\n\nREQ-1 Orders MUST be retained.\n")
+    first = build_run(workspace, source, first_revision)
+    run(["review", first["run_id"], "--approve"], workspace)
+    (source / "README.md").write_text(
+        "# Requirements\n\nREQ-1 Orders MUST be retained.\n\n# Notes\n\nBackground context.\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-qm", "add notes"], cwd=source, check=True)
+
+    refreshed = build_run(workspace, source, head_revision(source), expected=1)
+    status = run(["status", refreshed["run_id"]], workspace)
+    notes = next(unit for unit in status["source_universe"] if unit.get("heading") == "Notes")
+    added = [item for item in status["obligations"] if item["kind"] == "new_source_unit"]
+
+    assert [item["source_unit"] for item in added] == [notes["source_unit"]]
+    assert added[0]["disposition"] == "open"
+
+
+def test_ambiguous_impact_uses_full_analysis_and_publication_gates(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    make_source(source)
+    for name in ("one.txt", "two.txt"):
+        (source / name).write_text("duplicate\n", encoding="utf-8")
+    subprocess.run(["git", "add", "one.txt", "two.txt"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-qm", "duplicates"], cwd=source, check=True)
+    first_revision = head_revision(source)
+    first = build_run(workspace, source, first_revision)
+    run(["review", first["run_id"], "--approve"], workspace)
+    subprocess.run(["git", "mv", "one.txt", "three.txt"], cwd=source, check=True)
+    subprocess.run(["git", "mv", "two.txt", "four.txt"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-qm", "ambiguous moves"], cwd=source, check=True)
+
+    refreshed = build_run(workspace, source, head_revision(source), expected=1)
+    status = run(["status", refreshed["run_id"]], workspace)
+
+    assert status["refresh"]["mode"] == "full"
+    assert status["refresh"]["fallback_reason"] == "Source Unit relocation is ambiguous"
+    assert status["state"] == "exploring"
+    assert status["coverage"]["open"]
+    assert status["refresh"]["diff"]["by_source"]["source"]["added"]
+    assert run(["review", refreshed["run_id"], "--approve"], workspace, expected=1)["ok"] is False
+
+
+def test_full_fallback_preserves_prior_knowledge_stale_until_reverification(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    revision = make_java_source(source)
+    first = build_run(workspace, source, revision)
+    first_status = run(["status", first["run_id"]], workspace)
+    run(["review", first["run_id"], "--approve"], workspace)
+    config = write_config(workspace, source, revision)
+    config.write_text(
+        config.read_text()
+        + """
+[profile.priorities]
+java_type = "supporting"
+""",
+        encoding="utf-8",
+    )
+
+    refreshed = run(["build", str(config)], workspace, expected=1)
+    status = run(["status", refreshed["run_id"]], workspace)
+
+    assert status["refresh"]["mode"] == "full"
+    assert status["refresh"]["fallback_reason"] == "Producer Profile changed"
+    assert [item["id"] for item in status["accepted_knowledge"]] == [
+        item["id"] for item in first_status["accepted_knowledge"]
+    ]
+    assert {item["status"] for item in status["accepted_knowledge"]} == {"stale"}
+    assert any(item["kind"] == "impact_reverification" for item in status["obligations"])
+    assert status["state"] == "exploring"
+
+
+def test_incompatible_source_sets_still_report_added_and_removed_units(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    original = tmp_path / "original"
+    replacement = tmp_path / "replacement"
+    original_revision = make_source(original)
+    first = build_run(workspace, original, original_revision)
+    run(["review", first["run_id"], "--approve"], workspace)
+    replacement_revision = make_source(replacement, "# Replacement\n\nNew source.\n")
+    config = write_source_set_config(
+        workspace,
+        [
+            {
+                "id": "replacement",
+                "role": "implementation",
+                "repository": str(replacement),
+                "revision": replacement_revision,
+            }
+        ],
+    )
+
+    refreshed = run(["build", str(config)], workspace, expected=1)
+    status = run(["status", refreshed["run_id"]], workspace)
+
+    assert status["refresh"]["fallback_reason"] == "Published Source Set is incompatible"
+    assert status["refresh"]["diff"]["by_source"]["source"]["removed"]
+    assert status["refresh"]["diff"]["by_source"]["replacement"]["added"]
 
 
 def test_supporting_open_obligation_remains_in_exploration(tmp_path: Path) -> None:
