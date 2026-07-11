@@ -183,15 +183,30 @@ class VerificationStore:
                 ],
             )
 
-    def record_decision(self, run_id: str, candidate_id: str, decision: AcceptanceDecision) -> None:
-        with self._connect() as connection:
-            changed = connection.execute(
-                """UPDATE verification_candidates SET status = ?, decision_json = ?
-                   WHERE run_id = ? AND candidate_id = ? AND status = 'staged'""",
-                (decision.outcome, decision.model_dump_json(), run_id, candidate_id),
-            )
-            if changed.rowcount != 1:
-                raise ValueError(f"Candidate is not staged: {candidate_id}")
+    def record_decision(
+        self,
+        run_id: str,
+        candidate_id: str,
+        decision: AcceptanceDecision,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        if connection is None:
+            with self._connect() as owned_connection:
+                self.record_decision(
+                    run_id,
+                    candidate_id,
+                    decision,
+                    connection=owned_connection,
+                )
+            return
+        changed = connection.execute(
+            """UPDATE verification_candidates SET status = ?, decision_json = ?
+               WHERE run_id = ? AND candidate_id = ? AND status = 'staged'""",
+            (decision.outcome, decision.model_dump_json(), run_id, candidate_id),
+        )
+        if changed.rowcount != 1:
+            raise ValueError(f"Candidate is not staged: {candidate_id}")
 
     def get_findings(self, run_id: str, candidate_id: str) -> list[VerificationFinding]:
         with self._connect() as connection:

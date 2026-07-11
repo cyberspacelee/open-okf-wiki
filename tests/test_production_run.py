@@ -32,6 +32,17 @@ def run(command: list[str], cwd: Path, expected: int = 0) -> dict:
     return json.loads(result.stdout)
 
 
+def run_with_fault(command: list[str], cwd: Path, fault: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "okf_wiki", *command],
+        cwd=cwd,
+        env={**os.environ, "OKF_WIKI_FAULT": fault},
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+
 def head_revision(source: Path) -> str:
     return subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -470,6 +481,360 @@ def test_explore_command_dispatches_run_id(monkeypatch: pytest.MonkeyPatch) -> N
     assert seen == ["run-7"]
 
 
+def test_status_reports_phase_tasks_budgets_and_actionable_errors(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    revision = make_source(source, "# Requirements\n\nREQ-1 Orders MUST be paid.\n")
+    built = build_run(workspace, source, revision)
+    run(["review", built["run_id"], "--reject"], workspace)
+    database = workspace / ".okf-wiki" / "runs.db"
+    budgets = {
+        "request_limit": 2,
+        "tool_calls_limit": 3,
+        "input_tokens_limit": 100,
+        "output_tokens_limit": 50,
+        "total_tokens_limit": 150,
+        "wall_time_seconds": 10,
+        "tool_timeout_seconds": 2,
+    }
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE analysis_tasks (
+                run_id TEXT NOT NULL,
+                id TEXT NOT NULL,
+                state TEXT NOT NULL,
+                obligation_ids_json TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                repository TEXT NOT NULL,
+                revision TEXT NOT NULL,
+                allowed_paths_json TEXT NOT NULL,
+                agent_role TEXT NOT NULL,
+                allowed_tools_json TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                budgets_json TEXT NOT NULL,
+                receipt_json TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (run_id, id)
+            );
+            CREATE TABLE scheduler_control (
+                run_id TEXT PRIMARY KEY,
+                replan_count INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'active',
+                warning TEXT
+            );
+            """
+        )
+        common = (
+            built["run_id"],
+            json.dumps([]),
+            "source",
+            str(source),
+            revision,
+            json.dumps(["README.md"]),
+            "extraction",
+            json.dumps(["list_paths", "search_text", "read_text"]),
+            "bounded task",
+            json.dumps(budgets),
+            "2026-01-01T00:00:00Z",
+            "2026-01-01T00:00:00Z",
+        )
+        connection.execute(
+            """INSERT INTO analysis_tasks VALUES
+               (?, 'task-active', 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)""",
+            common,
+        )
+        connection.execute(
+            """INSERT INTO analysis_tasks VALUES
+               (?, 'task-failed', 'failed', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
+                'gateway timed out; retry explore', ?, ?)""",
+            common,
+        )
+        connection.execute(
+            "INSERT INTO scheduler_control VALUES (?, 1, 'active', 'planner retry scheduled')",
+            (built["run_id"],),
+        )
+
+    status = run(["status", built["run_id"]], workspace)
+
+    assert status["phase"] == "exploring"
+    assert status["tasks"] == {
+        "active": [
+            {
+                "budgets": budgets,
+                "id": "task-active",
+                "obligation_ids": [],
+                "state": "running",
+            }
+        ],
+        "failed": [
+            {
+                "error": "gateway timed out; retry explore",
+                "id": "task-failed",
+                "obligation_ids": [],
+                "state": "failed",
+            }
+        ],
+    }
+    assert status["budgets"] == {
+        "replans": {"remaining": 1, "used": 1},
+        "task_slots": {"remaining": 3, "used": 1},
+    }
+    assert status["actionable_errors"][:2] == [
+        "gateway timed out; retry explore",
+        "planner retry scheduled",
+    ]
+
+
+def test_recover_retries_unproven_in_flight_work_idempotently(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    revision = make_source(source, "# Requirements\n\nREQ-1 Orders MUST be paid.\n")
+    built = build_run(workspace, source, revision)
+    run(["review", built["run_id"], "--reject"], workspace)
+    database = workspace / ".okf-wiki" / "runs.db"
+    with sqlite3.connect(database) as connection:
+        obligation_id = connection.execute(
+            "SELECT id FROM coverage_obligations WHERE run_id = ? ORDER BY id LIMIT 1",
+            (built["run_id"],),
+        ).fetchone()[0]
+        connection.executescript(
+            """
+            CREATE TABLE analysis_tasks (
+                run_id TEXT NOT NULL,
+                id TEXT NOT NULL,
+                state TEXT NOT NULL,
+                obligation_ids_json TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                repository TEXT NOT NULL,
+                revision TEXT NOT NULL,
+                allowed_paths_json TEXT NOT NULL,
+                agent_role TEXT NOT NULL,
+                allowed_tools_json TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                budgets_json TEXT NOT NULL,
+                receipt_json TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (run_id, id)
+            );
+            """
+        )
+        connection.execute(
+            "UPDATE coverage_obligations SET disposition = 'assigned' WHERE run_id = ? AND id = ?",
+            (built["run_id"], obligation_id),
+        )
+        connection.execute(
+            """INSERT INTO analysis_tasks VALUES
+               (?, 'task-crashed', 'running', ?, 'source', ?, ?, '["README.md"]',
+                'extraction', '["list_paths","search_text","read_text"]', 'bounded task',
+                '{}', NULL, NULL, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')""",
+            (built["run_id"], json.dumps([obligation_id]), str(source), revision),
+        )
+        connection.execute(
+            """INSERT INTO run_events
+               (run_id, previous_state, state, occurred_at, details)
+               VALUES (?, 'planned', 'running', '2026-01-01T00:00:00Z', ?)""",
+            (
+                built["run_id"],
+                json.dumps({"entity_id": "task-crashed", "entity_type": "analysis_task"}),
+            ),
+        )
+
+    recovered = run(["recover", built["run_id"]], workspace)
+    assert recovered == {
+        "ok": True,
+        "recovered_tasks": ["task-crashed"],
+        "run_id": built["run_id"],
+        "state": "exploring",
+    }
+    assert run(["status", built["run_id"]], workspace)["tasks"]["active"][0]["state"] == ("planned")
+
+    repeated = run(["recover", built["run_id"]], workspace)
+    assert repeated["recovered_tasks"] == []
+    with sqlite3.connect(database) as connection:
+        states = [
+            row[0]
+            for row in connection.execute(
+                """SELECT state FROM run_events
+                   WHERE run_id = ? AND json_extract(details, '$.entity_id') = 'task-crashed'
+                   ORDER BY sequence""",
+                (built["run_id"],),
+            )
+        ]
+        disposition = connection.execute(
+            "SELECT disposition FROM coverage_obligations WHERE run_id = ? AND id = ?",
+            (built["run_id"], obligation_id),
+        ).fetchone()[0]
+    assert states == ["running", "planned"]
+    assert disposition == "assigned"
+
+
+@pytest.mark.parametrize(
+    "fault", ["before_staging", "after_staging", "before_review", "after_review"]
+)
+def test_recover_resumes_deterministic_render_checkpoints(tmp_path: Path, fault: str) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    revision = make_java_source(source)
+    config = write_config(workspace, source, revision)
+
+    interrupted = run_with_fault(["build", str(config)], workspace, fault)
+    assert interrupted.returncode == 86
+    database = workspace / ".okf-wiki" / "runs.db"
+    with sqlite3.connect(database) as connection:
+        run_id = connection.execute("SELECT id FROM runs").fetchone()[0]
+        before = {
+            "claims": connection.execute(
+                "SELECT COUNT(*) FROM accepted_claims WHERE run_id = ?", (run_id,)
+            ).fetchone()[0],
+            "concepts": connection.execute(
+                "SELECT COUNT(*) FROM accepted_concepts WHERE run_id = ?", (run_id,)
+            ).fetchone()[0],
+            "dispositions": list(
+                connection.execute(
+                    """SELECT id, disposition FROM coverage_obligations
+                       WHERE run_id = ? ORDER BY id""",
+                    (run_id,),
+                )
+            ),
+        }
+    interrupted_status = run(["status", run_id], workspace)
+    assert interrupted_status["state"] == "rendering"
+    assert Path(interrupted_status["staging_bundle"]).is_dir() is (fault != "before_staging")
+
+    recovered = run(["recover", run_id], workspace)
+    assert recovered["state"] == "review_required"
+    assert run(["check", run_id], workspace)["ok"] is True
+    run(["recover", run_id], workspace)
+
+    with sqlite3.connect(database) as connection:
+        after = {
+            "claims": connection.execute(
+                "SELECT COUNT(*) FROM accepted_claims WHERE run_id = ?", (run_id,)
+            ).fetchone()[0],
+            "concepts": connection.execute(
+                "SELECT COUNT(*) FROM accepted_concepts WHERE run_id = ?", (run_id,)
+            ).fetchone()[0],
+            "dispositions": list(
+                connection.execute(
+                    """SELECT id, disposition FROM coverage_obligations
+                       WHERE run_id = ? ORDER BY id""",
+                    (run_id,),
+                )
+            ),
+        }
+    assert after == before
+
+
+@pytest.mark.parametrize("fault", ["after_run_created", "after_inspection"])
+def test_recover_resumes_preparation_from_persisted_inputs(tmp_path: Path, fault: str) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    revision = make_java_source(source)
+    config = write_config(workspace, source, revision)
+
+    interrupted = run_with_fault(["build", str(config)], workspace, fault)
+    assert interrupted.returncode == 86
+    database = workspace / ".okf-wiki" / "runs.db"
+    with sqlite3.connect(database) as connection:
+        run_id, state = connection.execute("SELECT id, state FROM runs").fetchone()
+    assert state == "preparing"
+
+    recovered = run(["recover", run_id], workspace)
+    assert recovered["state"] == "review_required"
+    status = run(["status", run_id], workspace)
+    assert status["accepted_knowledge"]
+    assert run(["check", run_id], workspace)["ok"] is True
+
+
+@pytest.mark.parametrize("fault", ["before_publication", "after_publication"])
+def test_recover_finishes_publication_after_the_filesystem_transition(
+    tmp_path: Path, fault: str
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    revision = make_source(source)
+    built = build_run(workspace, source, revision)
+
+    interrupted = run_with_fault(["review", built["run_id"], "--approve"], workspace, fault)
+    assert interrupted.returncode == 86
+    published = workspace / "published"
+    assert published.is_symlink() is (fault == "after_publication")
+    if published.is_symlink():
+        assert revision in (published / "overview.md").read_text(encoding="utf-8")
+    assert run(["status", built["run_id"]], workspace)["state"] == "publishing"
+
+    recovered = run(["recover", built["run_id"]], workspace)
+    assert recovered["state"] == "published"
+    repeated = run(["recover", built["run_id"]], workspace)
+    assert repeated["state"] == "published"
+    status = run(["status", built["run_id"]], workspace)
+    assert [event["state"] for event in status["events"]].count("published") == 1
+    assert run(["check", str(published)], workspace)["ok"] is True
+
+
+def test_recovery_restores_previous_bundle_when_the_published_event_fails(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    first_revision = make_source(source)
+    first = build_run(workspace, source, first_revision)
+    run(["review", first["run_id"], "--approve"], workspace)
+    published = workspace / "published"
+    previous_target = os.readlink(published)
+
+    second_revision = commit_source(source, "# Example\n\nSecond revision.\n")
+    second = build_run(workspace, source, second_revision)
+    interrupted = run_with_fault(
+        ["review", second["run_id"], "--approve"], workspace, "after_publication"
+    )
+    assert interrupted.returncode == 86
+    database = workspace / ".okf-wiki" / "runs.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """CREATE TRIGGER reject_recovered_published_event BEFORE INSERT ON run_events
+               WHEN NEW.state = 'published'
+               BEGIN SELECT RAISE(ABORT, 'seeded recovered event failure'); END"""
+        )
+
+    recovered = run(["recover", second["run_id"]], workspace, expected=1)
+    assert recovered["state"] == "failed"
+    assert os.readlink(published) == previous_target
+    assert first_revision in (published / "overview.md").read_text(encoding="utf-8")
+
+
+def test_cancellation_is_terminal_and_preserves_accepted_state_and_audit(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    revision = make_java_source(source)
+    built = build_run(workspace, source, revision)
+    before = run(["status", built["run_id"]], workspace)
+    assert before["accepted_knowledge"]
+
+    run(["cancel", built["run_id"]], workspace)
+    cancelled = run(["status", built["run_id"]], workspace)
+
+    assert cancelled["state"] == "cancelled"
+    assert cancelled["accepted_knowledge"] == before["accepted_knowledge"]
+    assert cancelled["events"][:-1] == before["events"]
+    assert cancelled["events"][-1]["state"] == "cancelled"
+    assert not (workspace / "published").exists()
+    assert "cancelled" in run(["recover", built["run_id"]], workspace, expected=1)["errors"][0]
+    assert "cancelled" in run(["explore", built["run_id"]], workspace, expected=1)["errors"][0]
+
+
 def test_reject_cancel_and_failure_leave_the_published_bundle_unchanged(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -580,6 +945,24 @@ def test_state_transition_and_run_event_roll_back_together(tmp_path: Path) -> No
             raise AssertionError("Run Events must be immutable")
 
 
+@pytest.mark.parametrize("fault", ["before_state", "after_state", "before_event", "after_event"])
+def test_process_crash_cannot_split_run_state_from_its_event(tmp_path: Path, fault: str) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    revision = make_source(source)
+    built = build_run(workspace, source, revision)
+    before = run(["status", built["run_id"]], workspace)
+
+    interrupted = run_with_fault(["cancel", built["run_id"]], workspace, fault)
+    assert interrupted.returncode == 86
+    after = run(["status", built["run_id"]], workspace)
+    assert after["state"] == "review_required"
+    assert after["events"] == before["events"]
+
+    assert run(["cancel", built["run_id"]], workspace)["state"] == "cancelled"
+
+
 def test_status_reads_an_issue01_ledger_without_source_set_columns(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     database = workspace / ".okf-wiki" / "runs.db"
@@ -639,7 +1022,10 @@ def test_status_reads_an_issue01_ledger_without_source_set_columns(tmp_path: Pat
     assert status["evidence"] == []
 
 
-def test_illegal_transition_and_publishing_cancellation_are_rejected(tmp_path: Path) -> None:
+@pytest.mark.parametrize("fault", ["before_publication", "after_publication"])
+def test_illegal_transition_is_rejected_and_publishing_run_can_be_cancelled(
+    tmp_path: Path, fault: str
+) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     source = tmp_path / "source"
@@ -650,14 +1036,16 @@ def test_illegal_transition_and_publishing_cancellation_are_rejected(tmp_path: P
     with sqlite3.connect(database) as connection:
         with pytest.raises(UserError, match="review_required -> rendering"):
             transition(connection, built["run_id"], "review_required", "rendering")
-        transition(connection, built["run_id"], "review_required", "publishing")
 
-    for _ in range(3):
-        cancelled = run(["cancel", built["run_id"]], workspace, expected=1)
-        assert "publishing -> cancelled" in cancelled["errors"][0]
+    interrupted = run_with_fault(["review", built["run_id"], "--approve"], workspace, fault)
+    assert interrupted.returncode == 86
+    assert run(["status", built["run_id"]], workspace)["state"] == "publishing"
+
+    cancelled = run(["cancel", built["run_id"]], workspace)
+    assert cancelled["state"] == "cancelled"
     status = run(["status", built["run_id"]], workspace)
-    assert status["state"] == "publishing"
-    assert "cancelled" not in [event["state"] for event in status["events"]]
+    assert status["state"] == "cancelled"
+    assert status["events"][-1]["state"] == "cancelled"
     assert not (workspace / "published").exists()
 
 

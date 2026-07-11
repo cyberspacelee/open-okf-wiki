@@ -29,6 +29,7 @@ from .coverage import (
     obligation_rows,
     refresh_run_coverage,
 )
+from .fault_injection import crash_if_requested
 from .java_analysis import (
     DEFAULT_JAVA_EXCLUDED_PATHS,
     JAVA_DEFAULT_PRIORITIES,
@@ -650,50 +651,81 @@ def run_validation_errors(row: sqlite3.Row, source_set: dict, obligations: list[
     return errors
 
 
-def finish_run(run_id: str) -> None:
-    connection = connect()
-    row = get_run(connection, run_id)
-    state = row["state"]
-    if state != "verifying":
-        connection.close()
-        raise UserError(f"Run {run_id} is not ready to render")
+def render_checkpoint(connection: sqlite3.Connection, row: sqlite3.Row) -> None:
+    run_id = row["id"]
     source_set = json.loads(row["source_set_json"])
     obligations = obligation_rows(connection, run_id)
     coverage = json.loads(row["coverage_json"])
     accepted_knowledge = AcceptedKnowledgeStore(db_path()).knowledge_summary(run_id)
     source_set["accepted_knowledge"] = accepted_knowledge
-    try:
-        transition(connection, run_id, state, "rendering", coverage=coverage)
-        state = "rendering"
-        review = render_bundle(
-            Path(row["staging_dir"]),
-            row["project_id"],
-            row["revision"],
-            source_set["sources"],
-            source_set["evidence"],
-            obligations,
-            coverage,
-            source_set["bundle_date"],
-            accepted_knowledge,
-            db_path(),
-            run_id,
-            source_set.get("base_run_id"),
-            Path(row["publish_dir"]),
+    crash_if_requested("before_staging")
+    review = render_bundle(
+        Path(row["staging_dir"]),
+        row["project_id"],
+        row["revision"],
+        source_set["sources"],
+        source_set["evidence"],
+        obligations,
+        coverage,
+        source_set["bundle_date"],
+        accepted_knowledge,
+        db_path(),
+        run_id,
+        source_set.get("base_run_id"),
+        Path(row["publish_dir"]),
+    )
+    crash_if_requested("after_staging")
+    crash_if_requested("before_review")
+    source_set["authoritative_digest"] = authoritative_digest(db_path(), run_id, obligations)
+    source_set["bundle_manifest"] = file_manifest(Path(row["staging_dir"]))
+    source_set["review"] = review
+    with connection:
+        connection.execute(
+            "UPDATE runs SET source_set_json = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(source_set, sort_keys=True), now(), run_id),
         )
-        source_set["authoritative_digest"] = authoritative_digest(db_path(), run_id, obligations)
-        source_set["bundle_manifest"] = file_manifest(Path(row["staging_dir"]))
-        source_set["review"] = review
-        with connection:
-            connection.execute(
-                "UPDATE runs SET source_set_json = ?, updated_at = ? WHERE id = ?",
-                (json.dumps(source_set, sort_keys=True), now(), run_id),
-            )
-        transition(connection, run_id, state, "checking")
+    crash_if_requested("after_review")
+
+
+def advance_rendering(
+    connection: sqlite3.Connection, run_id: str, *, rerender_checking: bool = False
+) -> str:
+    row = get_run(connection, run_id)
+    state = row["state"]
+    if state == "verifying":
+        source_set = json.loads(row["source_set_json"])
+        accept_data_contracts(
+            db_path(), run_id, source_set["source_universe"], obligation_rows(connection, run_id)
+        )
+        transition(
+            connection,
+            run_id,
+            "verifying",
+            "rendering",
+            coverage=json.loads(row["coverage_json"]),
+        )
+        state = "rendering"
+    if state == "rendering":
+        render_checkpoint(connection, get_run(connection, run_id))
+        transition(connection, run_id, "rendering", "checking")
         state = "checking"
-        errors = run_validation_errors(get_run(connection, run_id), source_set, obligations)
-        if errors:
-            raise UserError("; ".join(errors))
-        transition(connection, run_id, state, "review_required")
+    elif state == "checking" and rerender_checking:
+        render_checkpoint(connection, get_run(connection, run_id))
+    if state != "checking":
+        raise UserError(f"Run {run_id} is not ready to render")
+    current = get_run(connection, run_id)
+    source_set = json.loads(current["source_set_json"])
+    errors = run_validation_errors(current, source_set, obligation_rows(connection, run_id))
+    if errors:
+        raise UserError("; ".join(errors))
+    transition(connection, run_id, "checking", "review_required")
+    return "review_required"
+
+
+def finish_run(run_id: str) -> None:
+    connection = connect()
+    try:
+        advance_rendering(connection, run_id)
     except Exception as error:
         current = get_run(connection, run_id)["state"]
         if current != "failed":
@@ -701,6 +733,93 @@ def finish_run(run_id: str) -> None:
         raise
     finally:
         connection.close()
+
+
+def inspect_run(connection: sqlite3.Connection, run_id: str, profile: dict) -> tuple[dict, dict]:
+    row = get_run(connection, run_id)
+    initial = json.loads(row["source_set_json"])
+    configured_sources = initial["sources"]
+    profile_id = initial["producer_profile_id"]
+    sources = []
+    source_universe = []
+    evidence = []
+    obligations = []
+    commit_dates = []
+    for configured_source in configured_sources:
+        try:
+            source, source_files, source_evidence, source_obligations, commit_date = inspect_source(
+                configured_source, profile
+            )
+        except UserError as error:
+            raise UserError(f"Source {configured_source['id']}: {error}") from error
+        sources.append(source)
+        source_universe.extend(source_files)
+        evidence.extend(source_evidence)
+        obligations.extend(source_obligations)
+        commit_dates.append(commit_date)
+    digest = source_set_digest(sources)
+    prepared = prepare_refresh(
+        connection,
+        db_path(),
+        base_run_id=initial.get("base_run_id"),
+        project_id=row["project_id"],
+        profile_id=profile_id,
+        sources=sources,
+        source_universe=source_universe,
+        obligations=obligations,
+    )
+    with connection:
+        _, coverage, source_set = persist_inspection(
+            connection,
+            AcceptedKnowledgeStore(db_path()),
+            run_id=run_id,
+            bundle_revision=sources[0]["revision"] if len(sources) == 1 else digest,
+            base_run_id=initial.get("base_run_id"),
+            bundle_date=max(commit_dates),
+            digest=digest,
+            evidence=evidence,
+            profile_id=profile_id,
+            source_universe=source_universe,
+            sources=sources,
+            prepared=prepared,
+            updated_at=now(),
+        )
+    crash_if_requested("after_inspection")
+    return coverage, source_set
+
+
+def advance_preparation(
+    connection: sqlite3.Connection, run_id: str, profile: dict | None = None
+) -> tuple[str, dict]:
+    row = get_run(connection, run_id)
+    source_set = json.loads(row["source_set_json"])
+    if "bundle_date" not in source_set:
+        if profile is None:
+            profile = source_set.get("profile")
+            if profile is None:
+                raise UserError("Preparing Run lacks its persisted Producer Profile")
+            profile["priority_overrides"] = set(profile["priority_overrides"])
+        coverage, source_set = inspect_run(connection, run_id, profile)
+    else:
+        coverage = json.loads(row["coverage_json"])
+    if not source_set["evidence"]:
+        raise UserError("Fixed Source Set contains no tracked Java or Markdown files")
+    major = coverage.get("by_priority", {}).get("major", {}).get("dispositions", {})
+    if major.get("blocked", 0) or major.get("failed", 0):
+        transition(
+            connection,
+            run_id,
+            "preparing",
+            "failed",
+            coverage=coverage,
+            error="Major Coverage Obligations are blocked or failed",
+        )
+        return "failed", coverage
+    transition(connection, run_id, "preparing", "exploring", coverage=coverage)
+    if coverage.get("open", 0):
+        return "exploring", coverage
+    transition(connection, run_id, "exploring", "verifying", coverage=coverage)
+    return "verifying", coverage
 
 
 def build(config_path: str) -> int:
@@ -719,6 +838,7 @@ def build(config_path: str) -> int:
         "digest": configured_digest,
         "base_run_id": base_run_id,
         "evidence": [],
+        "profile": {**profile, "priority_overrides": sorted(profile["priority_overrides"])},
         "producer_profile_id": profile_id,
         "source_universe": [],
         "sources": configured_sources,
@@ -733,60 +853,11 @@ def build(config_path: str) -> int:
         staging,
         source_set,
     )
-    state = "preparing"
+    crash_if_requested("after_run_created")
     try:
-        sources = []
-        source_universe = []
-        evidence = []
-        obligations = []
-        commit_dates = []
-        for configured_source in configured_sources:
-            try:
-                source, source_files, source_evidence, source_obligations, commit_date = (
-                    inspect_source(configured_source, profile)
-                )
-            except UserError as error:
-                raise UserError(f"Source {configured_source['id']}: {error}") from error
-            sources.append(source)
-            source_universe.extend(source_files)
-            evidence.extend(source_evidence)
-            obligations.extend(source_obligations)
-            commit_dates.append(commit_date)
-        digest = source_set_digest(sources)
-        bundle_revision = sources[0]["revision"] if len(sources) == 1 else digest
-        knowledge = AcceptedKnowledgeStore(db_path())
-        prepared = prepare_refresh(
-            connection,
-            db_path(),
-            base_run_id=base_run_id,
-            project_id=project_id,
-            profile_id=profile_id,
-            sources=sources,
-            source_universe=source_universe,
-            obligations=obligations,
-        )
-        with connection:
-            obligations, coverage, source_set = persist_inspection(
-                connection,
-                knowledge,
-                run_id=run_id,
-                bundle_revision=bundle_revision,
-                base_run_id=base_run_id,
-                bundle_date=max(commit_dates),
-                digest=digest,
-                evidence=evidence,
-                profile_id=profile_id,
-                source_universe=source_universe,
-                sources=sources,
-                prepared=prepared,
-                updated_at=now(),
-            )
-        if not evidence:
-            raise UserError("Fixed Source Set contains no tracked Java or Markdown files")
-        major = coverage.get("by_priority", {}).get("major", {}).get("dispositions", {})
-        if major.get("blocked", 0) or major.get("failed", 0):
+        state, coverage = advance_preparation(connection, run_id, profile)
+        if state == "failed":
             error = "Major Coverage Obligations are blocked or failed"
-            transition(connection, run_id, state, "failed", coverage=coverage, error=error)
             emit(
                 {
                     "blocked": True,
@@ -798,9 +869,7 @@ def build(config_path: str) -> int:
                 }
             )
             return 1
-        transition(connection, run_id, state, "exploring", coverage=coverage)
-        state = "exploring"
-        if coverage.get("open", 0):
+        if state == "exploring":
             error = "Open Coverage Obligations require semantic analysis"
             emit(
                 {
@@ -813,9 +882,6 @@ def build(config_path: str) -> int:
                 }
             )
             return 1
-        transition(connection, run_id, state, "verifying", coverage=coverage)
-        state = "verifying"
-        accept_data_contracts(db_path(), run_id, source_universe, obligations)
         finish_run(run_id)
     except Exception as error:
         current = get_run(connection, run_id)["state"]
@@ -869,16 +935,33 @@ def status(run_id: str) -> int:
         }
     coverage = json.loads(row["coverage_json"]) if row["coverage_json"] else None
     blocking_findings = run_validation_errors(row, source_set, obligations)
+    from .scheduler import scheduler_status
+
+    scheduler = scheduler_status(db_path(), run_id)
+    actionable_errors = list(
+        dict.fromkeys(
+            error
+            for error in [
+                row["error"],
+                *scheduler["errors"],
+                *blocking_findings,
+            ]
+            if error
+        )
+    )
     payload = {
+        "actionable_errors": actionable_errors,
         "base_run_id": source_set.get("base_run_id"),
         "blocked": bool(coverage and "total" in coverage and major_blockers(coverage)),
         "accepted_knowledge": source_set.get("accepted_knowledge", []),
+        "budgets": scheduler["budgets"],
         "coverage": coverage,
         "evidence": source_set["evidence"],
         "error": row["error"],
         "events": events,
         "obligations": obligations,
         "ok": True,
+        "phase": row["state"],
         "project_id": row["project_id"],
         "producer_profile_id": source_set.get("producer_profile_id"),
         "published_bundle": row["publish_dir"],
@@ -908,6 +991,7 @@ def status(run_id: str) -> int:
         "sources": source_set["sources"],
         "staging_bundle": row["staging_dir"],
         "state": row["state"],
+        "tasks": scheduler["tasks"],
     }
     if len(source_set["sources"]) == 1:
         source = source_set["sources"][0]
@@ -955,8 +1039,12 @@ def publish(staging: Path, destination: Path, run_id: str) -> str | None:
     shutil.rmtree(temporary_release, ignore_errors=True)
     temporary_link.unlink(missing_ok=True)
     try:
-        shutil.copytree(staging, temporary_release)
-        os.replace(temporary_release, final_release)
+        if final_release.exists():
+            if file_manifest(final_release) != file_manifest(staging):
+                raise UserError("Existing release differs from the staged Bundle")
+        else:
+            shutil.copytree(staging, temporary_release)
+            os.replace(temporary_release, final_release)
         os.symlink(
             os.path.relpath(final_release, destination.parent),
             temporary_link,
@@ -980,6 +1068,35 @@ def restore_publication(destination: Path, previous_target: str | None, run_id: 
             os.replace(temporary_link, destination)
     finally:
         temporary_link.unlink(missing_ok=True)
+
+
+def previous_publication_target(row: sqlite3.Row, source_set: dict) -> str | None:
+    base_run_id = source_set.get("base_run_id")
+    if not base_run_id:
+        return None
+    destination = Path(row["publish_dir"])
+    return os.path.relpath(
+        destination.parent / f".{destination.name}.releases" / base_run_id,
+        destination.parent,
+    )
+
+
+def complete_publication(connection: sqlite3.Connection, row: sqlite3.Row) -> None:
+    run_id = row["id"]
+    destination = Path(row["publish_dir"])
+    source_set = json.loads(row["source_set_json"])
+    previous_target = previous_publication_target(row, source_set)
+    try:
+        publish(Path(row["staging_dir"]), destination, run_id)
+        crash_if_requested("after_publication")
+        transition(connection, run_id, "publishing", "published")
+    except Exception as error:
+        try:
+            restore_publication(destination, previous_target, run_id)
+        except Exception as rollback_error:
+            error = UserError(f"{error}; publication rollback failed: {rollback_error}")
+        transition(connection, run_id, "publishing", "failed", error=str(error))
+        raise UserError(str(error)) from error
 
 
 def review(run_id: str, approve: bool) -> int:
@@ -1050,18 +1167,10 @@ def review(run_id: str, approve: bool) -> int:
         "publishing",
         details={"decision": "approved", "resolved_findings": blockers},
     )
-    publication_changed = False
+    crash_if_requested("before_publication")
     try:
-        previous_target = publish(Path(row["staging_dir"]), Path(row["publish_dir"]), run_id)
-        publication_changed = True
-        transition(connection, run_id, "publishing", "published")
+        complete_publication(connection, row)
     except Exception as error:
-        if publication_changed:
-            try:
-                restore_publication(Path(row["publish_dir"]), previous_target, run_id)
-            except Exception as rollback_error:
-                error = UserError(f"{error}; publication rollback failed: {rollback_error}")
-        transition(connection, run_id, "publishing", "failed", error=str(error))
         connection.close()
         emit({"errors": [str(error)], "ok": False, "run_id": run_id, "state": "failed"})
         return 1
@@ -1077,14 +1186,84 @@ def cancel(run_id: str) -> int:
         connection.close()
         raise UserError(f"Run {run_id} is already terminal")
     try:
+        if row["state"] == "publishing" and published_run_id(Path(row["publish_dir"])) == run_id:
+            source_set = json.loads(row["source_set_json"])
+            restore_publication(
+                Path(row["publish_dir"]),
+                previous_publication_target(row, source_set),
+                run_id,
+            )
         transition(connection, run_id, row["state"], "cancelled")
+    except OSError as error:
+        raise UserError(f"Cannot restore the previous published Bundle: {error}") from error
     finally:
         connection.close()
     emit({"ok": True, "run_id": run_id, "state": "cancelled"})
     return 0
 
 
+def recover(run_id: str) -> int:
+    connection = connect()
+    row = get_run(connection, run_id)
+    if row["state"] == "published":
+        connection.close()
+        emit({"ok": True, "recovered_tasks": [], "run_id": run_id, "state": "published"})
+        return 0
+    if row["state"] in {"failed", "cancelled"}:
+        connection.close()
+        raise UserError(f"Run {run_id} is {row['state']} and terminal")
+    from .scheduler import recover_tasks
+
+    recovered_tasks = recover_tasks(db_path(), run_id)
+    state = row["state"]
+    try:
+        if state == "preparing":
+            state, _coverage = advance_preparation(connection, run_id)
+            if state == "failed":
+                raise UserError("Major Coverage Obligations are blocked or failed")
+        if state in {"verifying", "rendering", "checking"}:
+            state = advance_rendering(connection, run_id, rerender_checking=state == "checking")
+    except Exception as error:
+        current = get_run(connection, run_id)["state"]
+        if current not in TERMINAL_STATES:
+            transition(connection, run_id, current, "failed", error=str(error))
+            current = "failed"
+        connection.close()
+        emit({"errors": [str(error)], "ok": False, "run_id": run_id, "state": current})
+        return 1
+    if state == "publishing":
+        current = get_run(connection, run_id)
+        source_set = json.loads(current["source_set_json"])
+        errors = run_validation_errors(current, source_set, obligation_rows(connection, run_id))
+        if errors:
+            transition(connection, run_id, "publishing", "failed", error="; ".join(errors))
+            connection.close()
+            emit({"errors": errors, "ok": False, "run_id": run_id, "state": "failed"})
+            return 1
+        try:
+            complete_publication(connection, current)
+        except Exception as error:
+            connection.close()
+            emit({"errors": [str(error)], "ok": False, "run_id": run_id, "state": "failed"})
+            return 1
+    final_state = get_run(connection, run_id)["state"]
+    connection.close()
+    emit(
+        {
+            "ok": True,
+            "recovered_tasks": recovered_tasks,
+            "run_id": run_id,
+            "state": final_state,
+        }
+    )
+    return 0
+
+
 def explore(run_id: str) -> int:
+    with connect(read_only=True) as connection:
+        row = get_run(connection, run_id)
+    if row["state"] in TERMINAL_STATES:
+        raise UserError(f"Run {run_id} is {row['state']} and terminal")
     required = {
         name: os.environ.get(name)
         for name in ("OKF_GATEWAY_BASE_URL", "OKF_GATEWAY_API_KEY", "OKF_GATEWAY_MODEL")
@@ -1114,9 +1293,6 @@ def explore(run_id: str) -> int:
         )
     ):
         raise UserError("OKF_GATEWAY_HEADERS must be a JSON object of strings")
-    with connect(read_only=True) as connection:
-        get_run(connection, run_id)
-
     from .planner import PlannerAgent
     from .scheduler import Scheduler
     from .verifier import VerifierAgent
@@ -1184,6 +1360,8 @@ def parser() -> argparse.ArgumentParser:
     decision.add_argument("--reject", action="store_true")
     cancel_command = subcommands.add_parser("cancel")
     cancel_command.add_argument("run_id")
+    recover_command = subcommands.add_parser("recover")
+    recover_command.add_argument("run_id")
     return command
 
 
@@ -1200,7 +1378,9 @@ def main() -> int:
             return check(arguments.target)
         if arguments.command == "review":
             return review(arguments.run_id, arguments.approve)
-        return cancel(arguments.run_id)
+        if arguments.command == "cancel":
+            return cancel(arguments.run_id)
+        return recover(arguments.run_id)
     except UserError as error:
         emit({"errors": [str(error)], "ok": False})
         return 1

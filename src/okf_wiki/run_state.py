@@ -2,6 +2,7 @@ import json
 import sqlite3
 from datetime import UTC, datetime
 
+from .fault_injection import crash_if_requested
 from .run_events import append_run_event
 
 
@@ -12,7 +13,7 @@ RUN_TRANSITIONS = {
     "rendering": {"checking", "failed", "cancelled"},
     "checking": {"review_required", "failed", "cancelled"},
     "review_required": {"exploring", "publishing", "failed", "cancelled"},
-    "publishing": {"published", "failed"},
+    "publishing": {"published", "failed", "cancelled"},
 }
 
 
@@ -37,6 +38,7 @@ def transition_run(
     event_details = dict(details or {})
     if error:
         event_details["error"] = error
+    crash_if_requested("before_state")
     changed = connection.execute(
         """UPDATE runs
            SET state = ?, coverage_json = COALESCE(?, coverage_json), error = ?, updated_at = ?
@@ -52,4 +54,7 @@ def transition_run(
     )
     if changed.rowcount != 1:
         raise RunTransitionError(f"Run {run_id} is not in {previous_state}")
+    crash_if_requested("after_state")
+    crash_if_requested("before_event")
     append_run_event(connection, run_id, previous_state, next_state, event_details)
+    crash_if_requested("after_event")

@@ -2,6 +2,7 @@ import hashlib
 import json
 import re
 import sqlite3
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypedDict, cast
@@ -263,11 +264,27 @@ class AcceptedKnowledgeStore:
         )
         return str(matches[0]["source_unit"])
 
-    def accept(self, run_id: str, candidate: WorkerRunResult) -> AcceptanceReceipt:
+    def accept(
+        self,
+        run_id: str,
+        candidate: WorkerRunResult,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> AcceptanceReceipt:
         if candidate.status != "accepted" or candidate.proposal is None or candidate.errors:
             return AcceptanceReceipt("rejected")
         proposal = candidate.proposal
-        with self._connect() as connection:
+        context = self._connect() if connection is None else nullcontext(connection)
+        with context as connection:
+            run_columns = {row["name"] for row in connection.execute("PRAGMA table_info(runs)")}
+            if {"state", "updated_at"} <= run_columns:
+                active = connection.execute(
+                    """UPDATE runs SET updated_at = updated_at
+                       WHERE id = ? AND state IN ('exploring', 'verifying')""",
+                    (run_id,),
+                )
+                if active.rowcount != 1:
+                    raise ValueError("Production Run no longer accepts semantic results")
             obligations = {
                 row["id"]: row
                 for row in connection.execute(

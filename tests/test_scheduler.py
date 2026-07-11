@@ -17,6 +17,7 @@ from okf_wiki.cli import create_run, initialize
 from okf_wiki.knowledge_contracts import AnalysisTask, WorkerRunResult
 from okf_wiki.planner import PlannerAgent
 from okf_wiki.scheduler import PlannerLimits, PlannerReceipt, Scheduler
+from okf_wiki.run_state import transition_run
 from okf_wiki.verification import (
     REQUIRED_PERSPECTIVES,
     VerificationFinding,
@@ -241,6 +242,99 @@ def test_scheduler_plans_from_bounded_persisted_state_and_records_task(tmp_path:
     assert [event.state for event in scheduler.task_events(run_id, task.task_id)] == ["planned"]
 
 
+def test_cancellation_during_planning_prevents_new_tasks(tmp_path: Path) -> None:
+    database, _revision, run_id = make_run(tmp_path, [("obligation-1", "major", "open")])
+
+    def plan(_messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
+        with sqlite3.connect(database) as connection, connection:
+            transition_run(connection, run_id, "exploring", "cancelled")
+        return ModelResponse(
+            [
+                ToolCallPart(
+                    info.output_tools[0].name,
+                    {"tasks": [planned_task("obligation-1")]},
+                    "plan",
+                )
+            ]
+        )
+
+    scheduler = Scheduler(database, PlannerAgent(FunctionModel(plan)), worker=None)
+
+    outcome = asyncio.run(scheduler.plan(run_id))
+
+    assert outcome.status == "failed"
+    assert outcome.task_ids == ()
+    with sqlite3.connect(database) as connection:
+        assert (
+            connection.execute("SELECT state FROM runs WHERE id = ?", (run_id,)).fetchone()[0]
+            == "cancelled"
+        )
+        assert connection.execute("SELECT COUNT(*) FROM analysis_tasks").fetchone()[0] == 0
+        assert (
+            connection.execute(
+                "SELECT disposition FROM coverage_obligations WHERE run_id = ?", (run_id,)
+            ).fetchone()[0]
+            == "open"
+        )
+
+
+def test_cancelled_run_does_not_start_a_planned_worker(tmp_path: Path) -> None:
+    database, _revision, run_id = make_run(tmp_path, [("obligation-1", "major", "open")])
+    planner = PlannerAgent(
+        TestModel(call_tools=[], custom_output_args={"tasks": [planned_task("obligation-1")]})
+    )
+    scheduler = Scheduler(database, planner, worker=None)
+    planned = asyncio.run(scheduler.plan(run_id))
+    calls = 0
+
+    class RecordingWorker:
+        async def run(self, task: AnalysisTask) -> WorkerRunResult:
+            nonlocal calls
+            calls += 1
+            raise AssertionError(f"Worker started after cancellation: {task.task_id}")
+
+    with sqlite3.connect(database) as connection, connection:
+        transition_run(connection, run_id, "exploring", "cancelled")
+    cancelled_scheduler = Scheduler(database, planner, RecordingWorker())
+
+    outcome = asyncio.run(cancelled_scheduler.run_ready(run_id, planned.task_ids))
+
+    assert outcome.status == "failed"
+    assert calls == 0
+    assert cancelled_scheduler.get_task(run_id, planned.task_ids[0]).state == "planned"
+    assert AcceptedKnowledgeStore(database).list_claims(run_id) == []
+
+
+def test_cancellation_before_acceptance_rejects_the_late_worker_result(tmp_path: Path) -> None:
+    database, revision, run_id = make_run(tmp_path, [("obligation-1", "major", "open")])
+    planner = PlannerAgent(
+        TestModel(call_tools=[], custom_output_args={"tasks": [planned_task("obligation-1")]})
+    )
+    planned = asyncio.run(Scheduler(database, planner, worker=None).plan(run_id))
+
+    class CancellingWorker:
+        async def run(self, task: AnalysisTask) -> WorkerRunResult:
+            with sqlite3.connect(database) as connection, connection:
+                transition_run(connection, run_id, "exploring", "cancelled")
+            return WorkerRunResult.model_validate(
+                {
+                    "candidate_id": "late-candidate",
+                    "errors": [],
+                    "proposal": worker_proposal(revision, task.task_id, "obligation-1"),
+                    "status": "accepted",
+                }
+            )
+
+    scheduler = Scheduler(database, planner, CancellingWorker(), verifier=StaticVerifier())
+
+    outcome = asyncio.run(scheduler.run_ready(run_id, planned.task_ids))
+
+    assert outcome.status == "failed"
+    assert AcceptedKnowledgeStore(database).list_claims(run_id) == []
+    assert AcceptedKnowledgeStore(database).get_coverage_summary(run_id) == {"open": 1}
+    assert scheduler.get_task(run_id, planned.task_ids[0]).state == "rejected"
+
+
 def test_source_summary_limit_does_not_hide_the_only_uncovered_source(tmp_path: Path) -> None:
     database, revision, run_id = make_run(
         tmp_path,
@@ -458,6 +552,96 @@ def test_semantic_acceptance_runs_every_perspective_before_accepting(tmp_path: P
     decision = VerificationStore(database).get_decision(run_id, verifier.targets[0].candidate_id)
     assert decision is not None and decision.outcome == "accepted"
     assert AcceptedKnowledgeStore(database).get_coverage_summary(run_id) == {"covered": 1}
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    [
+        """CREATE TRIGGER reject_atomic_acceptance BEFORE INSERT ON run_events
+           WHEN NEW.state = 'accepted'
+            AND json_extract(NEW.details, '$.entity_type') = 'analysis_task'
+           BEGIN SELECT RAISE(ABORT, 'seeded accepted event failure'); END""",
+        """CREATE TRIGGER reject_atomic_acceptance BEFORE UPDATE ON verification_candidates
+           WHEN NEW.status = 'accepted'
+           BEGIN SELECT RAISE(ABORT, 'seeded accepted decision failure'); END""",
+    ],
+)
+def test_atomic_acceptance_failure_rolls_back_authoritative_state(
+    tmp_path: Path, trigger: str
+) -> None:
+    database, revision, run_id = make_run(tmp_path, [("obligation-1", "major", "open")])
+    planner = PlannerAgent(
+        TestModel(call_tools=[], custom_output_args={"tasks": [planned_task("obligation-1")]})
+    )
+    first = Scheduler(database, planner, worker=None)
+    planned = asyncio.run(first.plan(run_id))
+    worker = WorkerAgent(
+        TestModel(
+            call_tools=[],
+            custom_output_args=worker_proposal(revision, planned.task_ids[0], "obligation-1"),
+        ),
+        audit_path=tmp_path / "worker.db",
+        gateway_id="test",
+        model_name="test",
+        max_concurrency=1,
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(trigger)
+
+    failed = asyncio.run(
+        Scheduler(database, planner, worker, verifier=StaticVerifier()).run_ready(
+            run_id, planned.task_ids
+        )
+    )
+
+    assert failed.status == "replan"
+    assert AcceptedKnowledgeStore(database).list_claims(run_id) == []
+    assert AcceptedKnowledgeStore(database).list_concepts(run_id) == []
+    assert AcceptedKnowledgeStore(database).get_coverage_summary(run_id) == {"open": 1}
+    failed_task = first.get_task(run_id, planned.task_ids[0])
+    assert failed_task.state == "rejected"
+    assert failed_task.receipt is not None and failed_task.receipt.accepted_ids == ()
+    assert "accepted" not in [
+        event.state for event in first.task_events(run_id, planned.task_ids[0])
+    ]
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT status FROM verification_candidates").fetchall() == [
+            ("rejected",)
+        ]
+
+    with sqlite3.connect(database) as connection:
+        connection.execute("DROP TRIGGER reject_atomic_acceptance")
+    retried = asyncio.run(Scheduler(database, planner, worker=None).plan(run_id))
+    retried_worker = WorkerAgent(
+        TestModel(
+            call_tools=[],
+            custom_output_args=worker_proposal(revision, retried.task_ids[0], "obligation-1"),
+        ),
+        audit_path=tmp_path / "retried-worker.db",
+        gateway_id="test",
+        model_name="test",
+        max_concurrency=1,
+    )
+    accepted = asyncio.run(
+        Scheduler(database, planner, retried_worker, verifier=StaticVerifier()).run_ready(
+            run_id, retried.task_ids
+        )
+    )
+
+    assert accepted.status == "complete"
+    assert len(AcceptedKnowledgeStore(database).list_claims(run_id)) == 1
+    assert len(AcceptedKnowledgeStore(database).list_concepts(run_id)) == 1
+    assert AcceptedKnowledgeStore(database).get_coverage_summary(run_id) == {"covered": 1}
+    assert [event.state for event in first.task_events(run_id, retried.task_ids[0])].count(
+        "accepted"
+    ) == 1
+    with sqlite3.connect(database) as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM verification_candidates WHERE status = 'accepted'"
+            ).fetchone()[0]
+            == 1
+        )
 
 
 def test_accepted_candidate_cannot_bypass_semantic_verification(tmp_path: Path) -> None:

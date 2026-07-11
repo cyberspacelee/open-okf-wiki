@@ -36,8 +36,8 @@ from .verification import (
 
 TASK_TRANSITIONS = {
     "planned": {"running"},
-    "running": {"submitted"},
-    "submitted": {"accepted", "rejected", "failed"},
+    "running": {"planned", "submitted"},
+    "submitted": {"planned", "accepted", "rejected", "failed"},
 }
 READ_TOOLS = ("list_paths", "search_text", "read_text")
 RISK_TERMS = {
@@ -179,6 +179,151 @@ class TaskEvent:
     previous_state: str | None
 
 
+def _connect(database: Path) -> sqlite3.Connection:
+    connection = sqlite3.connect(database, timeout=30)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    return connection
+
+
+def _transition_task(
+    connection: sqlite3.Connection,
+    run_id: str,
+    task_id: str,
+    next_state: str,
+    *,
+    receipt_json: str | None = None,
+    error: str | None = None,
+) -> None:
+    if next_state in {"running", "accepted"}:
+        active = connection.execute(
+            """UPDATE runs SET updated_at = updated_at
+               WHERE id = ? AND state = 'exploring'""",
+            (run_id,),
+        )
+        if active.rowcount != 1:
+            raise ValueError("Production Run is no longer active")
+    row = connection.execute(
+        "SELECT state FROM analysis_tasks WHERE run_id = ? AND id = ?",
+        (run_id, task_id),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Unknown Analysis Task: {task_id}")
+    previous = row["state"]
+    if next_state not in TASK_TRANSITIONS.get(previous, set()):
+        raise ValueError(f"Illegal Analysis Task transition: {previous} -> {next_state}")
+    changed = connection.execute(
+        """UPDATE analysis_tasks
+           SET state = ?, receipt_json = COALESCE(?, receipt_json), error = ?, updated_at = ?
+           WHERE run_id = ? AND id = ? AND state = ?""",
+        (
+            next_state,
+            receipt_json,
+            error,
+            datetime.now(UTC).isoformat(),
+            run_id,
+            task_id,
+            previous,
+        ),
+    )
+    if changed.rowcount != 1:
+        raise ValueError(f"Analysis Task is no longer in {previous}")
+    append_entity_event(connection, run_id, "analysis_task", task_id, previous, next_state)
+
+
+def recover_tasks(database: Path, run_id: str) -> list[str]:
+    with _connect(database) as connection:
+        exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'analysis_tasks'"
+        ).fetchone()
+        if not exists:
+            return []
+        tasks = list(
+            connection.execute(
+                """SELECT id FROM analysis_tasks
+                   WHERE run_id = ? AND state IN ('running', 'submitted') ORDER BY id""",
+                (run_id,),
+            )
+        )
+        with connection:
+            for task in tasks:
+                _transition_task(connection, run_id, task["id"], "planned")
+    return [task["id"] for task in tasks]
+
+
+def scheduler_status(database: Path, run_id: str) -> dict:
+    limits = PlannerLimits()
+    with _connect(database) as connection:
+        has_tasks = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'analysis_tasks'"
+        ).fetchone()
+        task_rows = (
+            list(
+                connection.execute(
+                    """SELECT id, state, obligation_ids_json, budgets_json, error
+                       FROM analysis_tasks WHERE run_id = ? ORDER BY created_at, id""",
+                    (run_id,),
+                )
+            )
+            if has_tasks
+            else []
+        )
+        has_control = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'scheduler_control'"
+        ).fetchone()
+        control = (
+            connection.execute(
+                "SELECT replan_count, warning FROM scheduler_control WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if has_control
+            else None
+        )
+    active = [task for task in task_rows if task["state"] in {"planned", "running", "submitted"}]
+    failed = [task for task in task_rows if task["state"] in {"rejected", "failed"}]
+    return {
+        "budgets": {
+            "replans": {
+                "remaining": max(
+                    0, limits.max_replans - (control["replan_count"] if control else 0)
+                ),
+                "used": control["replan_count"] if control else 0,
+            },
+            "task_slots": {
+                "remaining": max(0, limits.max_tasks - len(active)),
+                "used": len(active),
+            },
+        },
+        "errors": [
+            error
+            for error in [
+                *(task["error"] for task in failed),
+                control["warning"] if control else None,
+            ]
+            if error
+        ],
+        "tasks": {
+            "active": [
+                {
+                    "budgets": json.loads(task["budgets_json"]),
+                    "id": task["id"],
+                    "obligation_ids": json.loads(task["obligation_ids_json"]),
+                    "state": task["state"],
+                }
+                for task in active
+            ],
+            "failed": [
+                {
+                    "error": task["error"],
+                    "id": task["id"],
+                    "obligation_ids": json.loads(task["obligation_ids_json"]),
+                    "state": task["state"],
+                }
+                for task in failed
+            ],
+        },
+    }
+
+
 class Planner(Protocol):
     async def plan(self, summary: PlannerSummary) -> TaskPlan: ...
 
@@ -217,10 +362,7 @@ class Scheduler:
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database, timeout=30)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        return connection
+        return _connect(self.database)
 
     def _initialize(self) -> None:
         with self._connect() as connection:
@@ -426,6 +568,8 @@ class Scheduler:
                     status="failed",
                     warnings=(control["warning"],) if control["warning"] else (),
                 )
+            if self._run_state(connection, run_id) != "exploring":
+                return SchedulerOutcome(status="failed", warnings=("Production Run is not active",))
         summary = self._summary(run_id)
         if summary.active_tasks:
             ready = tuple(task.task_id for task in summary.active_tasks if task.state == "planned")
@@ -448,6 +592,13 @@ class Scheduler:
         if not plan.tasks:
             return self._replan(run_id, "Planner returned no tasks for uncovered Obligations")
         with self._connect() as connection, connection:
+            active = connection.execute(
+                """UPDATE runs SET updated_at = updated_at
+                   WHERE id = ? AND state = 'exploring'""",
+                (run_id,),
+            )
+            if active.rowcount != 1:
+                return SchedulerOutcome(status="failed", warnings=("Production Run was cancelled",))
             control = self._control(connection, run_id)
             timestamp = self._now()
             task_ids = []
@@ -528,32 +679,14 @@ class Scheduler:
         error: str | None = None,
     ) -> None:
         with self._connect() as connection, connection:
-            row = connection.execute(
-                "SELECT state FROM analysis_tasks WHERE run_id = ? AND id = ?",
-                (run_id, task_id),
-            ).fetchone()
-            if row is None:
-                raise ValueError(f"Unknown Analysis Task: {task_id}")
-            previous = row["state"]
-            if next_state not in TASK_TRANSITIONS.get(previous, set()):
-                raise ValueError(f"Illegal Analysis Task transition: {previous} -> {next_state}")
-            changed = connection.execute(
-                """UPDATE analysis_tasks
-                   SET state = ?, receipt_json = COALESCE(?, receipt_json), error = ?, updated_at = ?
-                   WHERE run_id = ? AND id = ? AND state = ?""",
-                (
-                    next_state,
-                    receipt.model_dump_json() if receipt else None,
-                    error,
-                    self._now(),
-                    run_id,
-                    task_id,
-                    previous,
-                ),
+            _transition_task(
+                connection,
+                run_id,
+                task_id,
+                next_state,
+                receipt_json=receipt.model_dump_json() if receipt else None,
+                error=error,
             )
-            if changed.rowcount != 1:
-                raise ValueError(f"Analysis Task is no longer in {previous}")
-            append_entity_event(connection, run_id, "analysis_task", task_id, previous, next_state)
 
     def get_task(self, run_id: str, task_id: str) -> PersistedTask:
         with self._connect() as connection:
@@ -601,7 +734,10 @@ class Scheduler:
         if self.worker is None:
             raise ValueError("Scheduler has no Worker Agent")
         task = self.get_task(run_id, task_id)
-        self.transition_task(run_id, task_id, "running")
+        try:
+            self.transition_task(run_id, task_id, "running")
+        except ValueError:
+            return
         try:
             async with semaphore:
                 result = await self.worker.run(task.assignment())
@@ -636,7 +772,9 @@ class Scheduler:
                 return
             try:
                 async with self._writer:
-                    accepted = await asyncio.to_thread(self.knowledge.accept, run_id, result)
+                    await asyncio.to_thread(
+                        self._accept_candidate, run_id, task_id, result, decision
+                    )
             except Exception as error:
                 self.verification.record_decision(
                     run_id,
@@ -648,8 +786,6 @@ class Scheduler:
                 )
                 await self._reject_task(run_id, task_id, "rejected", [str(error)])
                 return
-            self.verification.record_decision(run_id, result.candidate_id, decision)
-            await self._accept_task(run_id, task_id, accepted)
             return
         terminal = (
             "failed" if result.error_type in {"UsageLimitExceeded", "TimeoutError"} else "rejected"
@@ -755,26 +891,60 @@ class Scheduler:
             risk_categories=risk_categories,
         )
 
-    async def _accept_task(self, run_id: str, task_id: str, accepted: AcceptanceReceipt) -> None:
-        task = self.get_task(run_id, task_id)
-        with self._connect() as connection:
-            unresolved = tuple(
-                row["id"]
-                for row in connection.execute(
-                    """SELECT id FROM coverage_obligations
-                       WHERE run_id = ? AND id IN ({})
-                         AND disposition NOT IN ('covered', 'excluded', 'deferred')
-                       ORDER BY id""".format(",".join("?" for _ in task.obligation_ids)),
-                    (run_id, *task.obligation_ids),
-                )
+    def _accept_candidate(
+        self,
+        run_id: str,
+        task_id: str,
+        result: WorkerRunResult,
+        decision: AcceptanceDecision,
+    ) -> None:
+        with self._connect() as connection, connection:
+            self.verification.record_decision(
+                run_id,
+                result.candidate_id,
+                decision,
+                connection=connection,
             )
+            accepted = self.knowledge.accept(run_id, result, connection=connection)
+            self._accept_task(connection, run_id, task_id, accepted)
+
+    def _accept_task(
+        self,
+        connection: sqlite3.Connection,
+        run_id: str,
+        task_id: str,
+        accepted: AcceptanceReceipt,
+    ) -> None:
+        task = connection.execute(
+            "SELECT obligation_ids_json FROM analysis_tasks WHERE run_id = ? AND id = ?",
+            (run_id, task_id),
+        ).fetchone()
+        if task is None:
+            raise ValueError(f"Unknown Analysis Task: {task_id}")
+        obligation_ids = tuple(json.loads(task["obligation_ids_json"]))
+        unresolved = tuple(
+            row["id"]
+            for row in connection.execute(
+                """SELECT id FROM coverage_obligations
+                   WHERE run_id = ? AND id IN ({})
+                     AND disposition NOT IN ('covered', 'excluded', 'deferred')
+                   ORDER BY id""".format(",".join("?" for _ in obligation_ids)),
+                (run_id, *obligation_ids),
+            )
+        )
         accepted_ids = tuple(sorted((*accepted.claim_ids, *accepted.concept_ids)))
         receipt = PlannerReceipt(
             accepted_ids=accepted_ids[:100],
             unresolved_ids=unresolved,
             warnings=("Accepted ID receipt truncated",) if len(accepted_ids) > 100 else (),
         )
-        self.transition_task(run_id, task_id, "accepted", receipt=receipt)
+        _transition_task(
+            connection,
+            run_id,
+            task_id,
+            "accepted",
+            receipt_json=receipt.model_dump_json(),
+        )
 
     async def _reject_task(
         self, run_id: str, task_id: str, terminal: str, warnings: list[str]
@@ -825,6 +995,10 @@ class Scheduler:
         semaphore = asyncio.Semaphore(self.max_concurrency)
         await asyncio.gather(*(self._execute(run_id, task_id, semaphore) for task_id in task_ids))
         with self._connect() as connection, connection:
+            if self._run_state(connection, run_id) == "cancelled":
+                return SchedulerOutcome(
+                    status="failed", task_ids=task_ids, warnings=("Production Run was cancelled",)
+                )
             coverage = refresh_run_coverage(connection, run_id)
             warnings = (
                 tuple(
