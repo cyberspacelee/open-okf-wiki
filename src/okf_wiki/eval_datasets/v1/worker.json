@@ -3,10 +3,10 @@
   "cases": [
     {
       "name": "grounded-data-contract",
-      "inputs": {"task_id": "task-1", "obligation_ids": ["data-contract-1"], "source_id": "source-1", "revision": "1111111111111111111111111111111111111111", "allowed_paths": ["src/OrderRequest.java"], "allowed_tools": ["list_paths", "search_text", "read_text"], "tool_calls_limit": 20, "data_carriers": ["OrderRequest"]},
+      "inputs": {"task_id": "task-1", "obligation_ids": ["data-contract-1"], "source_id": "source-1", "revision": "b6ede90be6580e40dd2b415f91a75c71e0618e90", "allowed_paths": ["src/main/java/example/CreateOrderRequest.java"], "allowed_tools": ["list_paths", "search_text", "read_text"], "tool_calls_limit": 20, "data_carriers": ["OrderRequest"]},
       "expected_output": {
         "claims": [{"text": "Order payload requires an identifier.", "conditions": ["when creating an order"], "evidence_ids": ["evidence-1"]}],
-        "evidence": [{"id": "evidence-1", "source_id": "source-1", "path": "src/OrderRequest.java", "revision": "1111111111111111111111111111111111111111", "start_line": 1, "end_line": 3, "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
+        "evidence": [{"id": "evidence-1", "source_id": "source-1", "path": "src/main/java/example/CreateOrderRequest.java", "revision": "b6ede90be6580e40dd2b415f91a75c71e0618e90", "start_line": 1, "end_line": 1, "digest": "sha256:c4d28decd27c6bb65b3100a4ec3280443b0ad68140d36b2e1c89c576ab1c9527"}],
         "data_contract_concepts": ["Order payload"],
         "forbidden_concepts": ["OrderRequest"]
       },

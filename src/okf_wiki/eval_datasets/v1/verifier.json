@@ -3,7 +3,7 @@
   "cases": [
     {
       "name": "independent-critical-review",
-      "inputs": {"candidate_evidence_ids": ["evidence-1"], "resolvable_reread_references": ["source-1:src/Order.java:10-12", "source-1:src/Order.java:20-21"]},
+      "inputs": {"candidate_evidence_ids": ["evidence-critical"], "resolvable_reread_references": ["evidence-critical", "evidence-semantic"]},
       "expected_output": {"issues": [{"id": "claim-critical", "kind": "critical"}, {"id": "claim-semantic", "kind": "semantic"}]},
       "metadata": {"thresholds": {"critical_issue_recall": {"minimum": 1}, "semantic_issue_recall": {"minimum": 1}, "false_positive_rate": {"maximum": 0}, "independent_evidence_reading": {"minimum": 1}}}
     }

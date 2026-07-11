@@ -102,7 +102,10 @@ class VerifierAgent:
         references = [item.model_dump(mode="json") for item in target.proposal.evidence]
         if perspective == "contradiction":
             references.extend(
-                dict(evidence) for claim in target.accepted_claims for evidence in claim["evidence"]
+                dict(evidence)
+                for claim in target.accepted_claims
+                if claim["epistemic_status"] != "stale"
+                for evidence in claim["evidence"]
             )
         evidence = []
         seen: set[str] = set()

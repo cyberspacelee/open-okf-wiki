@@ -1,0 +1,141 @@
+{
+  "version": "v1",
+  "cases": [
+    {
+      "id": "mutation:permission-change",
+      "kind": "permission_change",
+      "description": "Change a tracked script from non-executable to executable without changing its content.",
+      "change": {
+          "operation": "chmod",
+          "source_id": "orders",
+          "path": "gradlew",
+          "mode": "100755"
+      },
+      "expected": {"effect": "semantic_unchanged", "semantic_snapshot": "unchanged"},
+      "source_revisions": {
+        "orders": "100b4028b177dcb947fff7079610e96e43f99216",
+        "contracts": "b6ede90be6580e40dd2b415f91a75c71e0618e90",
+        "requirements": "8524aa76aac0012bf515fae3a0a2515e071b0bf6"
+      }
+    },
+    {
+      "id": "mutation:new-requirement",
+      "kind": "new_requirement",
+      "description": "Add a new Major Markdown requirement.",
+      "change": {
+          "operation": "add",
+          "source_id": "requirements",
+          "path": "requirements/idempotency.md",
+          "content": "REQ-3: Clients MUST supply an idempotency key when creating an order.\n"
+      },
+      "expected": {
+        "effect": "new_major_obligation",
+        "claim_statement": "Order creation requires an idempotency key.",
+        "obligation": {
+          "source_id": "requirements",
+          "path": "requirements/idempotency.md",
+          "kind": "normative_statement",
+          "text": "REQ-3: Clients MUST supply an idempotency key when creating an order.",
+          "priority": "major",
+          "disposition": "covered"
+        }
+      },
+      "source_revisions": {
+        "orders": "c76069c95782ae5fb2ec883eba85ce46744b81b4",
+        "contracts": "b6ede90be6580e40dd2b415f91a75c71e0618e90",
+        "requirements": "0320657b2ef321542cc795a50a399fca2ba80781"
+      }
+    },
+    {
+      "id": "mutation:removed-defining-evidence",
+      "kind": "removed_defining_evidence",
+      "description": "Remove the defining endpoint evidence for Order Submission.",
+      "change": {
+          "operation": "remove",
+          "source_id": "orders",
+          "path": "orders-api/src/main/java/example/OrderController.java"
+      },
+      "expected": {"effect": "removed_defining_evidence", "claim_statement": "The API exposes an order creation endpoint."},
+      "source_revisions": {
+        "orders": "c779a076e513a2e2346fd2344960ca52aa95f7d4",
+        "contracts": "b6ede90be6580e40dd2b415f91a75c71e0618e90",
+        "requirements": "8524aa76aac0012bf515fae3a0a2515e071b0bf6"
+      }
+    },
+    {
+      "id": "mutation:file-move",
+      "kind": "file_move",
+      "description": "Move OrderController without changing its digest.",
+      "change": {
+          "operation": "move",
+          "source_id": "orders",
+          "path": "orders-api/src/main/java/example/OrderController.java",
+          "target": "orders-api/src/main/java/example/web/OrderController.java"
+      },
+      "expected": {"effect": "evidence_relocated", "claim_statement": "The API exposes an order creation endpoint.", "evidence_path": "orders-api/src/main/java/example/web/OrderController.java"},
+      "source_revisions": {
+        "orders": "5f3ab0592adf328a92d883e4f5b9744c53ea8966",
+        "contracts": "b6ede90be6580e40dd2b415f91a75c71e0618e90",
+        "requirements": "8524aa76aac0012bf515fae3a0a2515e071b0bf6"
+      }
+    },
+    {
+      "id": "mutation:concept-rename",
+      "kind": "concept_rename",
+      "description": "Rename Order Submission to Purchase Submission while retaining its identity.",
+      "change": {
+          "operation": "replace",
+          "source_id": "requirements",
+          "path": "requirements/orders.md",
+          "content": "# Purchase requirements\n\nREQ-1: The API MUST reject a purchase without line items.\n\nREQ-2: Accepted purchases MUST start in PENDING state.\n"
+      },
+      "expected": {"effect": "concept_identity_preserved", "previous_concept_name": "Order Submission", "concept_name": "Purchase Submission"},
+      "source_revisions": {
+        "orders": "c76069c95782ae5fb2ec883eba85ce46744b81b4",
+        "contracts": "b6ede90be6580e40dd2b415f91a75c71e0618e90",
+        "requirements": "e3f0abdf9363a402787fb871752eb2d183ccb206"
+      }
+    },
+    {
+      "id": "mutation:injected-conflict",
+      "kind": "injected_conflict",
+      "description": "Inject a critical requirement conflict for initial order status.",
+      "change": {
+          "operation": "add",
+          "source_id": "requirements",
+          "path": "requirements/conflicting-status.md",
+          "content": "REQ-4: Accepted orders MUST start in CREATED state.\n"
+      },
+      "expected": {"effect": "critical_conflict_resolved", "claim_statement": "A conflicting requirement says accepted orders begin in CREATED state.", "epistemic_status": "disputed"},
+      "source_revisions": {
+        "orders": "c76069c95782ae5fb2ec883eba85ce46744b81b4",
+        "contracts": "b6ede90be6580e40dd2b415f91a75c71e0618e90",
+        "requirements": "75225c9735dce568de7e17029116f766bc9e6b60"
+      }
+    },
+    {
+      "id": "mutation:large-dto",
+      "kind": "large_dto",
+      "description": "Add a large DTO whose fields must aggregate into one Data Contract.",
+      "change": {
+          "operation": "add",
+          "source_id": "contracts",
+          "path": "src/main/java/example/OrderExportResponse.java",
+          "content": "record OrderExportResponse(String id, String customerId, String status, String currency, long subtotalMinor, long taxMinor, long discountMinor, long shippingMinor, long totalMinor, String paymentStatus, String fulfillmentStatus, String warehouseId, String carrier, String trackingNumber, String channel, String locale, java.time.Instant createdAt, java.time.Instant updatedAt, java.time.Instant paidAt, java.time.Instant shippedAt) {}\n"
+      },
+      "expected": {
+        "effect": "data_contract_added",
+        "concept_membership": {
+          "canonical_name": "Order API Data Contract",
+          "claim_statement": "OrderExportResponse aggregates the large export payload as one Data Contract.",
+          "role": "supporting"
+        }
+      },
+      "source_revisions": {
+        "orders": "c76069c95782ae5fb2ec883eba85ce46744b81b4",
+        "contracts": "f67818c1c0e5b6d628d61d111e1b3bfb2a034faf",
+        "requirements": "8524aa76aac0012bf515fae3a0a2515e071b0bf6"
+      }
+    }
+  ]
+}

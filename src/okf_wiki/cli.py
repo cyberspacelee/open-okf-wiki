@@ -1275,6 +1275,17 @@ def agent_eval(manifest_path: str) -> int:
     return int(report.blocked)
 
 
+def benchmark(manifest_path: str) -> int:
+    from .benchmark import run_benchmark
+
+    try:
+        report = run_benchmark(manifest_path=Path(manifest_path))
+    except (OSError, ValueError) as error:
+        raise UserError(f"Invalid Benchmark manifest: {error}") from error
+    emit(report.model_dump(mode="json"))
+    return int(report.blocked)
+
+
 def explore(run_id: str) -> int:
     with connect(read_only=True) as connection:
         row = get_run(connection, run_id)
@@ -1383,6 +1394,8 @@ def parser() -> argparse.ArgumentParser:
     recover_command.add_argument("run_id")
     eval_command = subcommands.add_parser("eval")
     eval_command.add_argument("manifest")
+    benchmark_command = subcommands.add_parser("benchmark")
+    benchmark_command.add_argument("manifest")
     return command
 
 
@@ -1403,6 +1416,8 @@ def main() -> int:
             return cancel(arguments.run_id)
         if arguments.command == "eval":
             return agent_eval(arguments.manifest)
+        if arguments.command == "benchmark":
+            return benchmark(arguments.manifest)
         return recover(arguments.run_id)
     except UserError as error:
         emit({"errors": [str(error)], "ok": False})

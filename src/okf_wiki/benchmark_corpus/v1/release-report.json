@@ -1,0 +1,306 @@
+{
+  "agent_eval": {
+    "adjudication_failures": [],
+    "blocked": false,
+    "cases": [
+      {
+        "case": "bounded-priority-plan",
+        "failures": [],
+        "metrics": {
+          "budgets": 1.0,
+          "concurrency": 1.0,
+          "overlap": 1.0,
+          "priority": 1.0,
+          "role_selection": 1.0,
+          "scope": 1.0,
+          "valid_bounded_tasks": 1.0
+        },
+        "role": "planner"
+      },
+      {
+        "case": "grounded-data-contract",
+        "failures": [],
+        "metrics": {
+          "claim_atomicity": 1.0,
+          "conditions": 1.0,
+          "data_carrier_handling": 1.0,
+          "evidence_validity": 1.0,
+          "scope_adherence": 1.0,
+          "unsupported_output": 1.0
+        },
+        "role": "worker"
+      },
+      {
+        "case": "independent-critical-review",
+        "failures": [],
+        "metrics": {
+          "critical_issue_recall": 1.0,
+          "false_positive_rate": 0.0,
+          "independent_evidence_reading": 1.0,
+          "semantic_issue_recall": 1.0
+        },
+        "role": "verifier"
+      },
+      {
+        "case": "grounded-readable-concept",
+        "failures": [],
+        "metrics": {
+          "contradiction": 1.0,
+          "defining_claim_inclusion": 1.0,
+          "duplication": 1.0,
+          "grounding": 1.0,
+          "readability": 1.0
+        },
+        "role": "renderer"
+      }
+    ],
+    "change_kinds": [
+      "model",
+      "prompt",
+      "tool",
+      "classifier",
+      "workflow",
+      "profile",
+      "policy",
+      "schema"
+    ],
+    "cost_usd": 0.0,
+    "dataset_version": "v1",
+    "failures": [],
+    "human_adjudications": [
+      {
+        "case": "bounded-priority-plan",
+        "evidence": ["review:planner"],
+        "outcome": "approved",
+        "rationale": "Human-reviewed fixture approved.",
+        "role": "planner",
+        "version": "adjudication-v1"
+      },
+      {
+        "case": "grounded-data-contract",
+        "evidence": ["review:worker"],
+        "outcome": "approved",
+        "rationale": "Human-reviewed fixture approved.",
+        "role": "worker",
+        "version": "adjudication-v1"
+      },
+      {
+        "case": "independent-critical-review",
+        "evidence": ["review:verifier"],
+        "outcome": "approved",
+        "rationale": "Human-reviewed fixture approved.",
+        "role": "verifier",
+        "version": "adjudication-v1"
+      },
+      {
+        "case": "grounded-readable-concept",
+        "evidence": ["review:renderer"],
+        "outcome": "approved",
+        "rationale": "Human-reviewed fixture approved.",
+        "role": "renderer",
+        "version": "adjudication-v1"
+      }
+    ],
+    "judge_failures": [],
+    "latency_ms": 20,
+    "passed": true,
+    "semantic_judges": [
+      {
+        "case": "bounded-priority-plan",
+        "evidence": ["benchmark:planner"],
+        "outcome": "pass",
+        "rationale": "The deterministic result matches reviewed gold.",
+        "role": "planner",
+        "version": "semantic-judge-v1"
+      },
+      {
+        "case": "grounded-data-contract",
+        "evidence": ["benchmark:worker"],
+        "outcome": "pass",
+        "rationale": "The deterministic result matches reviewed gold.",
+        "role": "worker",
+        "version": "semantic-judge-v1"
+      },
+      {
+        "case": "independent-critical-review",
+        "evidence": ["benchmark:verifier"],
+        "outcome": "pass",
+        "rationale": "The deterministic result matches reviewed gold.",
+        "role": "verifier",
+        "version": "semantic-judge-v1"
+      },
+      {
+        "case": "grounded-readable-concept",
+        "evidence": ["benchmark:renderer"],
+        "outcome": "pass",
+        "rationale": "The deterministic result matches reviewed gold.",
+        "role": "renderer",
+        "version": "semantic-judge-v1"
+      }
+    ],
+    "trajectory_failures": [],
+    "versions": {
+      "model": "function-model-v1",
+      "prompt": "roles-v1",
+      "tool_schema": "git-snapshot-v1",
+      "workflow": "producer-v1"
+    }
+  },
+  "agent_eval_passed": true,
+  "blocked": false,
+  "blocking_metric": null,
+  "corpus_version": "v1",
+  "costs": {
+    "aggregation": "sum",
+    "cost_usd": 0.0,
+    "failures": 0,
+    "human_reviews": 18,
+    "latency_ms": 7307,
+    "retries": 0,
+    "sources": [
+      "production_worker_audit",
+      "agent_eval_worker_audit"
+    ],
+    "tokens": 24394,
+    "tool_calls": 53,
+    "worker_candidates": 53
+  },
+  "executed_runs": 18,
+  "failures": [],
+  "gateway": {
+    "evidence": "PydanticAI baseline is unchanged; live gateway tests were not run.",
+    "live": false,
+    "passed": true,
+    "status": "not_required",
+    "version": "gateway-contract-v1"
+  },
+  "hard_gates": {
+    "complete_major_disposition_and_evidence": true,
+    "exact_source_revisions": true,
+    "reviewed_conflicts_exclusions_data_contracts": true,
+    "reviewed_major_inventory": true,
+    "valid_okf": true,
+    "zero_broken_internal_links": true,
+    "zero_unexplained_deletions": true,
+    "zero_unresolved_critical_conflicts": true
+  },
+  "incremental_full_equivalent": true,
+  "mutations": [
+    {
+      "applied": true,
+      "case_id": "mutation:permission-change",
+      "effect": "semantic_unchanged",
+      "equivalent": true,
+      "kind": "permission_change",
+      "passed": true
+    },
+    {
+      "applied": true,
+      "case_id": "mutation:new-requirement",
+      "effect": "new_major_obligation",
+      "equivalent": true,
+      "kind": "new_requirement",
+      "passed": true
+    },
+    {
+      "applied": true,
+      "case_id": "mutation:removed-defining-evidence",
+      "effect": "removed_defining_evidence",
+      "equivalent": true,
+      "kind": "removed_defining_evidence",
+      "passed": true
+    },
+    {
+      "applied": true,
+      "case_id": "mutation:file-move",
+      "effect": "evidence_relocated",
+      "equivalent": true,
+      "kind": "file_move",
+      "passed": true
+    },
+    {
+      "applied": true,
+      "case_id": "mutation:concept-rename",
+      "effect": "concept_identity_preserved",
+      "equivalent": true,
+      "kind": "concept_rename",
+      "passed": true
+    },
+    {
+      "applied": true,
+      "case_id": "mutation:injected-conflict",
+      "effect": "critical_conflict_resolved",
+      "equivalent": true,
+      "kind": "injected_conflict",
+      "passed": true
+    },
+    {
+      "applied": true,
+      "case_id": "mutation:large-dto",
+      "effect": "data_contract_added",
+      "equivalent": true,
+      "kind": "large_dto",
+      "passed": true
+    }
+  ],
+  "nonsemantic_metadata_excluded": [
+    "run_id",
+    "run_events.occurred_at",
+    "agent_latency_ms",
+    "Source Snapshot revision identifiers (validated by exact_source_revisions)",
+    "Coverage Obligation IDs and Bundle Source Set provenance fields",
+    "reports/review.md",
+    "reports/coverage.md (represented by normalized obligation resolutions)",
+    "refresh-only impact_reverification/new_source_unit obligations"
+  ],
+  "passed": true,
+  "repeated_runs": 3,
+  "role_trajectories": {
+    "planner": {
+      "function_tools": [],
+      "invocations": 19,
+      "passed": true
+    },
+    "renderer": {
+      "function_tools": [],
+      "invocations": 1,
+      "passed": true
+    },
+    "verifier": {
+      "function_tools": [],
+      "invocations": 262,
+      "passed": true
+    },
+    "worker": {
+      "function_tools": ["read_text"],
+      "invocations": 53,
+      "passed": true
+    }
+  },
+  "security": {
+    "bundle_validation": true,
+    "read_only_sources": true
+  },
+  "semantic_metrics": {
+    "concept_precision": 1.0,
+    "concept_recall": 1.0,
+    "critical_unsupported_claims": 0,
+    "major_claim_recall": 1.0,
+    "supported_claim_precision": 1.0,
+    "wrong_merge_split_rate": 0.0
+  },
+  "stability": {
+    "canonical_concept_similarity": 1.0,
+    "critical_finding_variance": 0,
+    "major_claim_similarity": 1.0,
+    "major_closure": 1.0
+  },
+  "versions": {
+    "gateway_capability_tests": "gateway-contract-v1",
+    "model": "function-model-v1",
+    "prompt": "benchmark-semantic-v1",
+    "pydantic_ai": "2.8.0",
+    "python": "3.14.5",
+    "tool_schema": "git-snapshot-v1"
+  }
+}

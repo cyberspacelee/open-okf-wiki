@@ -558,7 +558,9 @@ def evaluate_trajectory(
     calls = [
         event
         for event in events
-        if event.get("event") == "call" and event.get("tool_kind") != "output"
+        if event.get("event") == "call"
+        and event.get("tool_kind") != "output"
+        and event.get("tool") != "final_result"
     ]
     empty_returns = {
         event.get("tool_call_id")

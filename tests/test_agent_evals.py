@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import sys
+from pathlib import Path
 from typing import cast
 
 from okf_wiki.agent_evals import (
@@ -114,47 +115,11 @@ def test_planner_eval_measures_bounded_prioritized_non_overlapping_tasks() -> No
 
 
 def test_worker_eval_measures_grounded_atomic_data_contract_output(tmp_path) -> None:
-    output = {
-        "task_id": "task-1",
-        "obligation_ids": ["data-contract-1"],
-        "evidence": [
-            {
-                "id": "evidence-1",
-                "source_id": "source-1",
-                "path": "src/OrderRequest.java",
-                "revision": "1" * 40,
-                "start_line": 1,
-                "end_line": 3,
-                "digest": "sha256:" + "a" * 64,
-            }
-        ],
-        "claims": [
-            {
-                "id": "claim-1",
-                "text": "Order payload requires an identifier.",
-                "conditions": ["when creating an order"],
-                "evidence_ids": ["evidence-1"],
-            }
-        ],
-        "concepts": [
-            {
-                "id": "concept-1",
-                "name": "Order payload",
-                "description": "The data contract accepted when creating an order.",
-                "claim_ids": ["claim-1"],
-                "defining_claim_ids": ["claim-1"],
-            }
-        ],
-        "relations": [],
-        "dispositions": [
-            {
-                "obligation_id": "data-contract-1",
-                "disposition": "covered",
-                "reason": "The aggregate data contract is grounded.",
-                "evidence_ids": ["evidence-1"],
-            }
-        ],
-    }
+    output = json.loads(
+        (Path(__file__).parents[1] / "src/okf_wiki/benchmark_corpus/v1/worker-eval.json").read_text(
+            encoding="utf-8"
+        )
+    )
 
     metrics = evaluate_role("worker", "grounded-data-contract", output)
 
@@ -178,7 +143,7 @@ def test_worker_eval_measures_grounded_atomic_data_contract_output(tmp_path) -> 
                             "event": "call",
                             "tool": "read_text",
                             "tool_call_id": "read-1",
-                            "args": {"path": "src/OrderRequest.java"},
+                            "args": {"path": "src/main/java/example/CreateOrderRequest.java"},
                         },
                         {
                             "event": "return",
@@ -252,13 +217,13 @@ def test_verifier_eval_measures_recall_false_positives_and_independent_reading()
                 "target_id": "claim-critical",
                 "verdict": "fail",
                 "severity": "critical",
-                "evidence": ["source-1:src/Order.java:10-12"],
+                "evidence": ["evidence-semantic"],
             },
             {
                 "target_id": "claim-semantic",
                 "verdict": "fail",
                 "severity": "error",
-                "evidence": ["source-1:src/Order.java:20-21"],
+                "evidence": ["evidence-semantic"],
             },
         ]
     }
@@ -278,7 +243,7 @@ def test_verifier_eval_measures_recall_false_positives_and_independent_reading()
         ]
         == 0
     )
-    output["findings"][0]["evidence"] = ["source-1:src/Order.java:10-12"]
+    output["findings"][0]["evidence"] = ["evidence-semantic"]
     output["findings"] = output["findings"][1:]
     assert (
         evaluate_role("verifier", "independent-critical-review", output)["critical_issue_recall"]
