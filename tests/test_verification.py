@@ -162,7 +162,8 @@ def test_fresh_verifier_agents_reread_original_snapshot_evidence(tmp_path) -> No
     subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repository, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
-    text = "Permissions require an administrator."
+    credential = "gateway-secret-credential"
+    text = f"Permissions require an administrator. Credential: {credential}."
     accepted_text = "Permissions do not require an administrator."
     (repository / "guide.md").write_text(f"# Guide\n\n{text}\n", encoding="utf-8")
     (repository / "implementation.md").write_text(
@@ -315,7 +316,7 @@ def test_fresh_verifier_agents_reread_original_snapshot_evidence(tmp_path) -> No
             ]
         )
 
-    verifier = VerifierAgent(FunctionModel(verify))
+    verifier = VerifierAgent(FunctionModel(verify), secrets=(credential,))
 
     async def run_verifiers():
         return await asyncio.gather(
@@ -330,7 +331,12 @@ def test_fresh_verifier_agents_reread_original_snapshot_evidence(tmp_path) -> No
 
     assert [result.perspective for result in results] == list(REQUIRED_PERSPECTIVES)
     assert len(prompts) == 5
-    assert all(prompt["evidence"][0]["text"] == text for prompt in prompts)
+    assert all(
+        prompt["evidence"][0]["text"]
+        == "Permissions require an administrator. Credential: [REDACTED CREDENTIAL]."
+        for prompt in prompts
+    )
+    assert credential not in json.dumps(prompts)
     assert all("messages" not in prompt for prompt in prompts)
     by_perspective = {prompt["perspective"]: prompt["target"] for prompt in prompts}
     assert by_perspective["coverage"]["obligations"][0]["text"] == (

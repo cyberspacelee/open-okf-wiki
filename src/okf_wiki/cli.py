@@ -6,7 +6,6 @@ import os
 import re
 import shutil
 import sqlite3
-import subprocess
 import tomllib
 import uuid
 from datetime import UTC, datetime
@@ -42,6 +41,7 @@ from .java_analysis import (
 from .refresh import persist_inspection, prepare_refresh
 from .run_events import append_entity_event, append_run_event
 from .run_state import RunTransitionError, transition_run
+from .security import MAX_ANALYZABLE_FILE_BYTES, git_read, git_read_bytes
 from .source_identity import source_unit_id, stable_span_id
 
 
@@ -238,18 +238,17 @@ def get_run(connection: sqlite3.Connection, run_id: str) -> sqlite3.Row:
 
 
 def git_bytes(repository: Path, *arguments: str) -> bytes:
-    result = subprocess.run(
-        ["git", "-C", str(repository), *arguments],
-        check=False,
-        capture_output=True,
-    )
-    if result.returncode:
-        raise UserError(result.stderr.decode(errors="replace").strip() or "Git command failed")
-    return result.stdout
+    try:
+        return git_read_bytes(repository, *arguments)
+    except ValueError as error:
+        raise UserError(str(error)) from error
 
 
 def git(repository: Path, *arguments: str) -> str:
-    return git_bytes(repository, *arguments).decode()
+    try:
+        return git_read(repository, *arguments)
+    except ValueError as error:
+        raise UserError(str(error)) from error
 
 
 def is_table_separator(line: str) -> bool:
@@ -444,6 +443,10 @@ def inspect_source(
         is_java = is_java_input(path)
         if not (is_markdown or is_java):
             continue
+        if int(git(repository, "cat-file", "-s", object_id.decode())) > MAX_ANALYZABLE_FILE_BYTES:
+            raise UserError(
+                f"Tracked analyzable file exceeds the static-analysis size limit: {path}"
+            )
         content = git_bytes(repository, "cat-file", "blob", object_id.decode())
         file_unit["content_digest"] = hashlib.sha256(content).hexdigest()
         try:
@@ -1298,6 +1301,8 @@ def explore(run_id: str) -> int:
     from .verifier import VerifierAgent
     from .worker import GatewaySettings, WorkerAgent, build_gateway_model
 
+    secrets = tuple(filter(None, (api_key, *(headers or {}).values())))
+
     model = build_gateway_model(
         GatewaySettings(
             base_url=base_url,
@@ -1315,13 +1320,14 @@ def explore(run_id: str) -> int:
                 gateway_id=os.environ.get("OKF_GATEWAY_ID", "enterprise"),
                 model_name=model_name,
                 max_concurrency=concurrency,
+                secrets=secrets,
             )
             scheduler = Scheduler(
                 db_path(),
-                PlannerAgent(model),
+                PlannerAgent(model, secrets=secrets),
                 worker,
                 max_concurrency=concurrency,
-                verifier=VerifierAgent(model),
+                verifier=VerifierAgent(model, secrets=secrets),
             )
             return await scheduler.run_until_terminal(run_id)
         finally:

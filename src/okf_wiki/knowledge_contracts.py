@@ -1,7 +1,9 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from .security import canonical_source_path
 
 
 class WorkerBudgets(BaseModel):
@@ -45,6 +47,13 @@ class AnalysisTask(BaseModel):
     )
     prompt: str = Field(min_length=1, max_length=8_000)
     budgets: WorkerBudgets
+
+    @field_validator("allowed_paths")
+    @classmethod
+    def paths_are_canonical(cls, paths: tuple[str, ...]) -> tuple[str, ...]:
+        for path in paths:
+            canonical_source_path(path)
+        return paths
 
 
 class EvidenceProposal(BaseModel):
