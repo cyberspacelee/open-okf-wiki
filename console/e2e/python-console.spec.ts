@@ -5,9 +5,9 @@ import {
   type ChildProcessWithoutNullStreams,
 } from "node:child_process"
 import { once } from "node:events"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { resolve } from "node:path"
+import { join, resolve } from "node:path"
 
 const repoRoot = resolve(process.cwd(), "..")
 let consoleProcess: ChildProcessWithoutNullStreams
@@ -101,7 +101,13 @@ test("loads the built Console through the real Python launcher", async ({
   await expect(
     page.getByRole("heading", { level: 1, name: "Workspace settings" })
   ).toBeVisible()
-  await page.getByLabel("Display name").focus()
+  const displayName = page.getByLabel("Display name")
+  await displayName.fill("   ")
+  await page.getByRole("button", { name: "Save settings" }).click()
+  await expect(displayName).toHaveAttribute("aria-invalid", "true")
+  await expect(page.getByText("Display name is required.")).toBeVisible()
+
+  await displayName.focus()
   await page.keyboard.press("ControlOrMeta+A")
   await page.keyboard.type("Catalog Settings E2E")
   await page.getByRole("switch", { name: "Compact navigation" }).focus()
@@ -109,6 +115,9 @@ test("loads the built Console through the real Python launcher", async ({
   await page.getByRole("button", { name: "Save settings" }).focus()
   await page.keyboard.press("Enter")
   await expect(page.getByRole("status")).toContainText("Settings saved")
+  await expect(
+    page.locator('[data-slot="sidebar"][data-state="collapsed"]')
+  ).toBeVisible()
 
   const persisted = JSON.parse(
     execFileSync(
@@ -119,8 +128,72 @@ test("loads the built Console through the real Python launcher", async ({
   )
   expect(persisted.definition.project.name).toBe("Catalog Settings E2E")
   expect(persisted.local_settings.ui.compact_navigation).toBe(true)
+
+  const settingsReload = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/v1/settings" &&
+      response.request().method() === "GET"
+  )
+  await page.reload()
+  await settingsReload
+  await expect(
+    page.locator('[data-slot="sidebar"][data-state="collapsed"]')
+  ).toBeVisible()
+  await page.getByRole("button", { name: "Settings" }).click()
+  await expect(displayName).toHaveValue("Catalog Settings E2E")
+
+  const external = JSON.parse(
+    execFileSync(
+      "uv",
+      ["run", "okf-wiki", "workspace", "settings", workspace],
+      { cwd: repoRoot, encoding: "utf-8" }
+    )
+  )
+  delete external.ok
+  external.definition.project.name = "External Settings Update"
+  const externalPayload = join(workspace, ".okf-wiki", "external-update.json")
+  writeFileSync(externalPayload, JSON.stringify(external))
+  execFileSync(
+    "uv",
+    [
+      "run",
+      "okf-wiki",
+      "workspace",
+      "update-settings",
+      externalPayload,
+      workspace,
+    ],
+    { cwd: repoRoot, stdio: "pipe" }
+  )
+
+  await page.getByLabel("Publication target").fill("stale-target")
+  await page.getByRole("button", { name: "Save settings" }).click()
+  await expect(page.getByRole("alert")).toContainText("refresh and try again")
+  await page.getByRole("button", { name: "Reload settings" }).click()
+  await expect(displayName).toHaveValue("External Settings Update")
+
+  const localSettingsPath = join(workspace, ".okf-wiki", "settings.toml")
+  writeFileSync(
+    localSettingsPath,
+    readFileSync(localSettingsPath, "utf-8").replace(
+      "[models]\n",
+      '[models]\napi_key = "removed-secret"\n'
+    )
+  )
+  await page.getByRole("link", { name: "Overview" }).click()
+  await page.getByRole("button", { name: "Settings" }).click()
+  await expect(page.getByRole("alert")).toContainText(
+    "use a Gateway Profile credential reference"
+  )
+  await expect(page.getByRole("alert")).not.toContainText("removed-secret")
   expect(externalRequests).toEqual([])
-  expect(consoleErrors).toEqual([])
+  expect(
+    consoleErrors.every(
+      (message) =>
+        message.includes("409 (Conflict)") ||
+        message.includes("400 (Bad Request)")
+    )
+  ).toBe(true)
 })
 
 function readSessionUrl(process: ChildProcessWithoutNullStreams) {

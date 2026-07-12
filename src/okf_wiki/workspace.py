@@ -424,8 +424,7 @@ class WorkspaceApplication:
             "configuration_digest",
         }:
             raise WorkspaceError(
-                "Settings update must contain definition, local_settings, and "
-                "configuration_digest"
+                "Settings update must contain definition, local_settings, and configuration_digest"
             )
         values = cast(dict[str, object], payload)
         definition = values["definition"]

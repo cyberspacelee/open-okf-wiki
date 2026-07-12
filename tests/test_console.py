@@ -263,9 +263,7 @@ def test_console_settings_update_matches_cli_and_rejects_stale_edits(
 
     assert code == 0
     assert cli_response == {"ok": True, **app.settings()}
-    assert cli_response["definition"]["publication"] == response.json()["definition"][
-        "publication"
-    ]
+    assert cli_response["definition"]["publication"] == response.json()["definition"]["publication"]
     assert cli_response["local_settings"] == response.json()["local_settings"]
 
 
@@ -284,9 +282,7 @@ def test_console_settings_update_rejects_invalid_payload_without_writes(
             headers={**headers, "Content-Type": "application/json"},
             content=b"not-json",
         )
-        incomplete = httpx.put(
-            base + "/api/v1/settings", headers=headers, json={"definition": {}}
-        )
+        incomplete = httpx.put(base + "/api/v1/settings", headers=headers, json={"definition": {}})
         wrong_type = httpx.put(
             base + "/api/v1/settings",
             headers={**headers, "Content-Type": "text/plain"},

@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from "react"
+import { useCallback, useEffect, useState, type CSSProperties } from "react"
 import {
   BookOpenIcon,
   BoxesIcon,
@@ -58,6 +58,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import type { Overview } from "@/lib/overview"
+import { fetchSettings } from "@/lib/settings"
 import { cn } from "@/lib/utils"
 
 const navItems = [
@@ -110,16 +111,35 @@ export function OverviewDashboard({
   token: string
 }) {
   const [page, setPage] = useState<"overview" | "settings">("overview")
+  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const applyCompactNavigation = useCallback(
+    (compact: boolean) => setSidebarOpen(!compact),
+    []
+  )
+
+  useEffect(() => {
+    const controller = new AbortController()
+    fetchSettings(token, controller.signal).then(
+      (settings) =>
+        applyCompactNavigation(settings.local_settings.ui.compact_navigation),
+      () => undefined
+    )
+    return () => controller.abort()
+  }, [applyCompactNavigation, token])
 
   return (
-    <SidebarProvider style={{ "--sidebar-width": "14rem" } as CSSProperties}>
-      <Sidebar collapsible="offcanvas">
-        <SidebarHeader className="h-16 justify-center px-5">
+    <SidebarProvider
+      open={sidebarOpen}
+      onOpenChange={setSidebarOpen}
+      style={{ "--sidebar-width": "14rem" } as CSSProperties}
+    >
+      <Sidebar collapsible="icon">
+        <SidebarHeader className="h-16 justify-center px-5 group-data-[collapsible=icon]:px-2">
           <div className="flex items-center gap-3">
             <div className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
               <BoxesIcon className="size-4" aria-hidden="true" />
             </div>
-            <div className="min-w-0">
+            <div className="min-w-0 group-data-[collapsible=icon]:hidden">
               <p className="truncate text-sm font-semibold">OKF Wiki</p>
               <p className="truncate text-xs text-muted-foreground">
                 Workspace Console
@@ -178,10 +198,12 @@ export function OverviewDashboard({
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
-        <SidebarFooter className="px-4 py-3 text-xs text-muted-foreground">
+        <SidebarFooter className="px-4 py-3 text-xs text-muted-foreground group-data-[collapsible=icon]:px-2">
           <p className="flex items-center gap-2">
             <CircleDotIcon className="size-3" aria-hidden="true" />
-            Local control plane
+            <span className="group-data-[collapsible=icon]:sr-only">
+              Local control plane
+            </span>
           </p>
         </SidebarFooter>
       </Sidebar>
@@ -216,7 +238,10 @@ export function OverviewDashboard({
         </header>
 
         {page === "settings" ? (
-          <SettingsPage token={token} />
+          <SettingsPage
+            token={token}
+            onCompactNavigationChange={applyCompactNavigation}
+          />
         ) : (
           <div className="mx-auto flex w-full max-w-[90rem] flex-col gap-8 px-5 py-7 lg:px-8 lg:py-9">
             <section

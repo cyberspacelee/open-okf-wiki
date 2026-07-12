@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/card"
 import {
   Field,
+  FieldContent,
   FieldDescription,
   FieldError,
   FieldGroup,
@@ -29,6 +30,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import {
@@ -53,7 +55,13 @@ type Draft = {
 
 type FieldErrors = Partial<Record<keyof Draft, string>>
 
-export function SettingsPage({ token }: { token: string }) {
+export function SettingsPage({
+  token,
+  onCompactNavigationChange,
+}: {
+  token: string
+  onCompactNavigationChange: (compact: boolean) => void
+}) {
   const [reload, setReload] = useState(0)
   const [snapshot, setSnapshot] = useState<WorkspaceSettings | null>(null)
   const [draft, setDraft] = useState<Draft | null>(null)
@@ -69,13 +77,14 @@ export function SettingsPage({ token }: { token: string }) {
         setError(null)
         setSnapshot(settings)
         setDraft(toDraft(settings))
+        onCompactNavigationChange(settings.local_settings.ui.compact_navigation)
       },
       (reason: SettingsError) => {
         if (!controller.signal.aborted) setError(reason)
       }
     )
     return () => controller.abort()
-  }, [reload, token])
+  }, [onCompactNavigationChange, reload, token])
 
   if (error && !draft) {
     return (
@@ -137,6 +146,7 @@ export function SettingsPage({ token }: { token: string }) {
       })
       setSnapshot(updated)
       setDraft(toDraft(updated))
+      onCompactNavigationChange(updated.local_settings.ui.compact_navigation)
       setSaved(true)
     } catch (reason) {
       setError(reason as SettingsError)
@@ -199,35 +209,46 @@ export function SettingsPage({ token }: { token: string }) {
         </CardHeader>
         <CardContent>
           <FieldGroup>
-            <Field data-disabled>
-              <FieldLabel htmlFor="project-id">Project ID</FieldLabel>
+            <Field orientation="responsive" data-disabled>
+              <FieldContent>
+                <FieldLabel htmlFor="project-id">Project ID</FieldLabel>
+                <FieldDescription id="project-id-description">
+                  Immutable after Workspace initialization.
+                </FieldDescription>
+              </FieldContent>
               <Input
                 id="project-id"
                 value={snapshot.definition.project.id}
                 disabled
+                aria-describedby="project-id-description"
               />
-              <FieldDescription>
-                Immutable after Workspace initialization.
-              </FieldDescription>
             </Field>
-            <Field data-invalid={Boolean(fieldErrors.name)}>
-              <FieldLabel htmlFor="project-name">Display name</FieldLabel>
+            <Field
+              orientation="responsive"
+              data-invalid={Boolean(fieldErrors.name)}
+            >
+              <FieldContent>
+                <FieldLabel htmlFor="project-name">Display name</FieldLabel>
+                <FieldDescription id="project-name-description">
+                  Shown throughout the Console and Bundle metadata.
+                </FieldDescription>
+                <FieldError id="project-name-error">
+                  {fieldErrors.name}
+                </FieldError>
+              </FieldContent>
               <Input
                 id="project-name"
                 value={draft.name}
                 required
                 aria-invalid={Boolean(fieldErrors.name)}
-                aria-describedby="project-name-description project-name-error"
+                aria-describedby="project-name-description"
+                aria-errormessage={
+                  fieldErrors.name ? "project-name-error" : undefined
+                }
                 onChange={(event) =>
                   setDraft({ ...draft, name: event.target.value })
                 }
               />
-              <FieldDescription id="project-name-description">
-                Shown throughout the Console and Bundle metadata.
-              </FieldDescription>
-              <FieldError id="project-name-error">
-                {fieldErrors.name}
-              </FieldError>
             </Field>
           </FieldGroup>
         </CardContent>
@@ -245,41 +266,55 @@ export function SettingsPage({ token }: { token: string }) {
         </CardHeader>
         <CardContent>
           <FieldGroup>
-            <Field data-invalid={Boolean(fieldErrors.bundleName)}>
-              <FieldLabel htmlFor="bundle-name">Bundle name</FieldLabel>
+            <Field orientation="responsive">
+              <FieldContent>
+                <FieldLabel htmlFor="bundle-name">Bundle name</FieldLabel>
+                <FieldDescription id="bundle-name-description">
+                  Leave blank to use the Producer Project display name.
+                </FieldDescription>
+              </FieldContent>
               <Input
                 id="bundle-name"
                 value={draft.bundleName}
                 placeholder={
                   draft.name.trim() || "Defaults to the project name"
                 }
-                aria-invalid={Boolean(fieldErrors.bundleName)}
+                aria-describedby="bundle-name-description"
                 onChange={(event) =>
                   setDraft({ ...draft, bundleName: event.target.value })
                 }
               />
-              <FieldDescription>
-                Leave blank to use the Producer Project display name.
-              </FieldDescription>
-              <FieldError>{fieldErrors.bundleName}</FieldError>
             </Field>
-            <Field data-invalid={Boolean(fieldErrors.publicationPath)}>
-              <FieldLabel htmlFor="publication-path">
-                Publication target
-              </FieldLabel>
+            <Field
+              orientation="responsive"
+              data-invalid={Boolean(fieldErrors.publicationPath)}
+            >
+              <FieldContent>
+                <FieldLabel htmlFor="publication-path">
+                  Publication target
+                </FieldLabel>
+                <FieldDescription id="publication-path-description">
+                  Directory where the accepted Knowledge Bundle is published.
+                </FieldDescription>
+                <FieldError id="publication-path-error">
+                  {fieldErrors.publicationPath}
+                </FieldError>
+              </FieldContent>
               <Input
                 id="publication-path"
                 value={draft.publicationPath}
                 required
                 aria-invalid={Boolean(fieldErrors.publicationPath)}
+                aria-describedby="publication-path-description"
+                aria-errormessage={
+                  fieldErrors.publicationPath
+                    ? "publication-path-error"
+                    : undefined
+                }
                 onChange={(event) =>
                   setDraft({ ...draft, publicationPath: event.target.value })
                 }
               />
-              <FieldDescription>
-                Directory where the accepted Knowledge Bundle is published.
-              </FieldDescription>
-              <FieldError>{fieldErrors.publicationPath}</FieldError>
             </Field>
           </FieldGroup>
         </CardContent>
@@ -297,43 +332,69 @@ export function SettingsPage({ token }: { token: string }) {
         </CardHeader>
         <CardContent>
           <FieldGroup>
-            <Field data-invalid={Boolean(fieldErrors.excludedPaths)}>
-              <FieldLabel htmlFor="java-excluded-paths">
-                Java excluded paths
-              </FieldLabel>
+            <Field
+              orientation="responsive"
+              data-invalid={Boolean(fieldErrors.excludedPaths)}
+            >
+              <FieldContent>
+                <FieldLabel htmlFor="java-excluded-paths">
+                  Java excluded paths
+                </FieldLabel>
+                <FieldDescription id="java-excluded-paths-description">
+                  One safe relative glob per line.
+                </FieldDescription>
+                <FieldError id="java-excluded-paths-error">
+                  {fieldErrors.excludedPaths}
+                </FieldError>
+              </FieldContent>
               <Textarea
                 id="java-excluded-paths"
                 rows={4}
                 value={draft.excludedPaths}
                 placeholder={"generated/**\nvendor/**"}
                 aria-invalid={Boolean(fieldErrors.excludedPaths)}
+                aria-describedby="java-excluded-paths-description"
+                aria-errormessage={
+                  fieldErrors.excludedPaths
+                    ? "java-excluded-paths-error"
+                    : undefined
+                }
                 onChange={(event) =>
                   setDraft({ ...draft, excludedPaths: event.target.value })
                 }
               />
-              <FieldDescription>
-                One safe relative glob per line.
-              </FieldDescription>
-              <FieldError>{fieldErrors.excludedPaths}</FieldError>
             </Field>
-            <Field data-invalid={Boolean(fieldErrors.priorities)}>
-              <FieldLabel htmlFor="profile-priorities">
-                Obligation priorities
-              </FieldLabel>
+            <Field
+              orientation="responsive"
+              data-invalid={Boolean(fieldErrors.priorities)}
+            >
+              <FieldContent>
+                <FieldLabel htmlFor="profile-priorities">
+                  Obligation priorities
+                </FieldLabel>
+                <FieldDescription id="profile-priorities-description">
+                  One obligation=major or obligation=supporting rule per line.
+                </FieldDescription>
+                <FieldError id="profile-priorities-error">
+                  {fieldErrors.priorities}
+                </FieldError>
+              </FieldContent>
               <Textarea
                 id="profile-priorities"
                 rows={4}
                 value={draft.priorities}
                 placeholder={"data_contract=major\ntable=supporting"}
                 aria-invalid={Boolean(fieldErrors.priorities)}
+                aria-describedby="profile-priorities-description"
+                aria-errormessage={
+                  fieldErrors.priorities
+                    ? "profile-priorities-error"
+                    : undefined
+                }
                 onChange={(event) =>
                   setDraft({ ...draft, priorities: event.target.value })
                 }
               />
-              <FieldDescription>
-                One obligation=major or obligation=supporting rule per line.
-              </FieldDescription>
-              <FieldError>{fieldErrors.priorities}</FieldError>
             </Field>
             <DispositionFields
               priority="major"
@@ -373,12 +434,19 @@ export function SettingsPage({ token }: { token: string }) {
         </CardHeader>
         <CardContent>
           <Field orientation="horizontal">
-            <FieldLabel htmlFor="compact-navigation">
-              Compact navigation
-            </FieldLabel>
+            <FieldContent>
+              <FieldLabel htmlFor="compact-navigation">
+                Compact navigation
+              </FieldLabel>
+              <FieldDescription id="compact-navigation-description">
+                Collapse desktop navigation to icons; mobile navigation remains
+                a full labelled menu.
+              </FieldDescription>
+            </FieldContent>
             <Switch
               id="compact-navigation"
               checked={draft.compactNavigation}
+              aria-describedby="compact-navigation-description"
               onCheckedChange={(checked) =>
                 setDraft({ ...draft, compactNavigation: checked })
               }
@@ -387,7 +455,8 @@ export function SettingsPage({ token }: { token: string }) {
         </CardContent>
       </Card>
 
-      <div className="flex flex-wrap items-center gap-3 border-t pt-6">
+      <Separator />
+      <div className="flex flex-wrap items-center gap-3">
         <Button type="submit" disabled={saving}>
           <SaveIcon data-icon="inline-start" />
           {saving ? "Saving…" : "Save settings"}
@@ -550,14 +619,20 @@ function DispositionFields({
         Default disposition for {priority} coverage obligations.
       </FieldDescription>
       <FieldGroup>
-        <Field>
-          <FieldLabel htmlFor={`${priority}-disposition`}>
-            Disposition
-          </FieldLabel>
+        <Field orientation="responsive">
+          <FieldContent>
+            <FieldLabel htmlFor={`${priority}-disposition`}>
+              Disposition
+            </FieldLabel>
+            <FieldDescription id={`${priority}-disposition-description`}>
+              Use the Producer default or choose an explicit state.
+            </FieldDescription>
+          </FieldContent>
           <NativeSelect
             className="w-full"
             id={`${priority}-disposition`}
             value={disposition}
+            aria-describedby={`${priority}-disposition-description`}
             onChange={(event) => onDisposition(event.target.value)}
           >
             <NativeSelectOption value="">
@@ -573,18 +648,26 @@ function DispositionFields({
             <NativeSelectOption value="failed">Failed</NativeSelectOption>
           </NativeSelect>
         </Field>
-        <Field data-invalid={Boolean(reasonError)}>
-          <FieldLabel htmlFor={`${priority}-reason`}>Reason</FieldLabel>
+        <Field orientation="responsive" data-invalid={Boolean(reasonError)}>
+          <FieldContent>
+            <FieldLabel htmlFor={`${priority}-reason`}>Reason</FieldLabel>
+            <FieldDescription id={`${priority}-reason-description`}>
+              Required for deferred or excluded coverage.
+            </FieldDescription>
+            <FieldError id={`${priority}-reason-error`}>
+              {reasonError}
+            </FieldError>
+          </FieldContent>
           <Input
             id={`${priority}-reason`}
             value={reason}
             aria-invalid={Boolean(reasonError)}
+            aria-describedby={`${priority}-reason-description`}
+            aria-errormessage={
+              reasonError ? `${priority}-reason-error` : undefined
+            }
             onChange={(event) => onReason(event.target.value)}
           />
-          <FieldDescription>
-            Required for deferred or excluded coverage.
-          </FieldDescription>
-          <FieldError>{reasonError}</FieldError>
         </Field>
       </FieldGroup>
     </FieldSet>

@@ -132,12 +132,10 @@ def test_settings_use_case_reads_and_atomically_updates_shared_and_local_layers(
         "name": "Catalog Platform",
     }
     assert updated["definition"]["profile"]["priorities"] == {"data_contract": "major"}
-    assert updated["local_settings"]["models"]["role_overrides"] == {
-        "worker": "model-worker"
-    }
+    assert updated["local_settings"]["models"]["role_overrides"] == {"worker": "model-worker"}
     assert updated["local_settings"]["ui"] == {"compact_navigation": True}
     assert updated["configuration_digest"] != before["configuration_digest"]
-    assert "name = \"Catalog Platform\"" in app.definition_path.read_text(encoding="utf-8")
+    assert 'name = "Catalog Platform"' in app.definition_path.read_text(encoding="utf-8")
     local_text = app.settings_path.read_text(encoding="utf-8")
     assert "compact_navigation = true" in local_text
     assert "Catalog Platform" not in local_text

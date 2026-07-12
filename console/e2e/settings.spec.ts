@@ -102,6 +102,9 @@ test("edits shared and local settings by keyboard without dropping untouched dat
   await page.keyboard.press("Enter")
 
   await expect(page.getByRole("status")).toContainText("Settings saved")
+  await expect(
+    page.locator('[data-slot="sidebar"][data-state="collapsed"]')
+  ).toBeVisible()
   expect(update?.definition.project.name).toBe("Catalog Platform")
   expect(update?.definition.publication.bundle_name).toBe("Catalog Knowledge")
   expect(update?.definition.sources).toEqual(settings.definition.sources)
