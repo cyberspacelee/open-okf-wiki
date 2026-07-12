@@ -1255,6 +1255,14 @@ def test_pull_disables_hooks_and_blocks_repository_selected_local_filters(tmp_pa
         hook = checkout / hook
     hook.write_text(f"#!/bin/sh\ntouch '{hook_marker}'\n", encoding="utf-8")
     hook.chmod(0o755)
+    signature_marker = tmp_path / "SIGNATURE_PROGRAM_RAN"
+    signature_program = tmp_path / "signature-program.sh"
+    signature_program.write_text(
+        f"#!/bin/sh\ntouch '{signature_marker}'\nexit 1\n", encoding="utf-8"
+    )
+    signature_program.chmod(0o755)
+    git(checkout, "config", "merge.verifySignatures", "true")
+    git(checkout, "config", "gpg.program", str(signature_program))
     (upstream / "SAFE.md").write_text("safe\n", encoding="utf-8")
     git(upstream, "add", "SAFE.md")
     git(upstream, "commit", "-qm", "safe update")
@@ -1263,6 +1271,7 @@ def test_pull_disables_hooks_and_blocks_repository_selected_local_filters(tmp_pa
     app.pull_source({"id": "code"})
 
     assert not hook_marker.exists()
+    assert not signature_marker.exists()
 
     filter_marker = tmp_path / "FILTER_RAN"
     filter_program = tmp_path / "filter.sh"

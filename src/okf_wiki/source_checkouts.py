@@ -222,7 +222,13 @@ def pull_checkout(
             )
         if remote_is_ahead:
             merged = _git_mutate(
-                checkout, "merge", "--ff-only", "--no-edit", "--no-verify", temporary_ref
+                checkout,
+                "merge",
+                "--ff-only",
+                "--no-edit",
+                "--no-verify",
+                "--no-verify-signatures",
+                temporary_ref,
             )
             if merged.returncode:
                 raise SourceCheckoutError(
