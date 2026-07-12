@@ -696,13 +696,13 @@ function PreflightCard({
             <TableBody>
               {preflight.sources.map((source) => (
                 <TableRow key={source.id}>
-                  <TableCell className="align-top">
+                  <TableCell className="align-top break-words whitespace-normal">
                     <p className="font-medium">{source.id}</p>
                     <p className="text-xs text-muted-foreground">
                       {roleLabel(source.role)}
                     </p>
                   </TableCell>
-                  <TableCell className="align-top">
+                  <TableCell className="align-top break-words whitespace-normal">
                     <Badge variant="outline">
                       {policyLabel(source.revision_policy)}
                     </Badge>

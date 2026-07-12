@@ -17,6 +17,8 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
 const repoRoot = resolve(process.cwd(), "..")
+const maxSourceId = `docs-${"x".repeat(123)}`
+const longBranch = `release/${"x".repeat(96)}`
 let consoleProcess: ChildProcessWithoutNullStreams
 let sessionUrl: string
 let workspace: string
@@ -349,7 +351,7 @@ test("loads the built Console through the real Python launcher", async ({
       remote: managedOrigin,
     },
     {
-      id: "docs",
+      id: maxSourceId,
       role: "documentation",
       revision: execFileSync("git", ["rev-parse", "HEAD"], {
         cwd: linkedSource,
@@ -392,7 +394,7 @@ test("loads the built Console through the real Python launcher", async ({
     .filter({ has: page.getByText("code", { exact: true }) })
   const linkedRow = configuredSources
     .getByRole("row")
-    .filter({ has: page.getByText("docs", { exact: true }) })
+    .filter({ has: page.getByText(maxSourceId, { exact: true }) })
   await expect(managedRow).toContainText("Checkout not bound")
   await expect(linkedRow).toContainText("Checkout not bound")
   await expect(
@@ -406,7 +408,7 @@ test("loads the built Console through the real Python launcher", async ({
     cwd: managedCheckout,
     encoding: "utf-8",
   }).trim()
-  execFileSync("git", ["switch", "-c", "release"], { cwd: managedOrigin })
+  execFileSync("git", ["switch", "-c", longBranch], { cwd: managedOrigin })
   writeFileSync(join(managedOrigin, "RELEASE.md"), "release branch\n")
   execFileSync("git", ["add", "RELEASE.md"], { cwd: managedOrigin })
   execFileSync("git", ["commit", "-qm", "release branch"], {
@@ -419,15 +421,20 @@ test("loads the built Console through the real Python launcher", async ({
   execFileSync("git", ["switch", managedBranch], { cwd: managedOrigin })
   execFileSync(
     "git",
-    ["fetch", "-q", "origin", "release:refs/remotes/origin/release"],
+    [
+      "fetch",
+      "-q",
+      "origin",
+      `${longBranch}:refs/remotes/origin/${longBranch}`,
+    ],
     { cwd: managedCheckout }
   )
-  execFileSync("git", ["branch", "release", "origin/release"], {
+  execFileSync("git", ["branch", longBranch, `origin/${longBranch}`], {
     cwd: managedCheckout,
   })
   await linkedRow.getByRole("button", { name: "Link below" }).click()
   await expect(page.getByLabel("Source ID").nth(1)).toBeDisabled()
-  await expect(page.getByLabel("Source ID").nth(1)).toHaveValue("docs")
+  await expect(page.getByLabel("Source ID").nth(1)).toHaveValue(maxSourceId)
   await expect(
     page.getByLabel("Source ID").nth(1).locator("xpath=..")
   ).toHaveAttribute("data-disabled", "true")
@@ -443,10 +450,10 @@ test("loads the built Console through the real Python launcher", async ({
     name: "code · Implementation",
   })
   const linkedPolicy = revisionPolicies.getByRole("group", {
-    name: "docs · Documentation",
+    name: `${maxSourceId} · Documentation`,
   })
   await managedPolicy.getByRole("button", { name: "Follow Branch" }).click()
-  await managedPolicy.getByLabel("Branch").fill("release")
+  await managedPolicy.getByLabel("Branch").fill(longBranch)
   await managedPolicy.getByRole("button", { name: "Save policy" }).click()
   await expect(managedPolicy).toContainText("Follow Branch")
   await expect(managedPolicy).toContainText(releaseCommit)
@@ -463,6 +470,8 @@ test("loads the built Console through the real Python launcher", async ({
   }).trim()
   await managedRow.getByRole("button", { name: "Pull" }).click()
   await expect(managedRow).toContainText(pulledCommit)
+  await managedPolicy.getByLabel("Branch").fill(longBranch)
+  await managedPolicy.getByRole("button", { name: "Save policy" }).click()
 
   const linkedCommit = execFileSync("git", ["rev-parse", "HEAD"], {
     cwd: linkedSource,
@@ -474,7 +483,7 @@ test("loads the built Console through the real Python launcher", async ({
   const preflightCard = page
     .getByText("Next Run Source Set", { exact: true })
     .locator("xpath=../..")
-  await expect(preflightCard).toContainText(pulledCommit)
+  await expect(preflightCard).toContainText(releaseCommit)
   await expect(preflightCard).toContainText(linkedCommit)
   await expect(preflightCard).toContainText("Local commit")
   await expect(preflightCard).toContainText("Remote commit")
@@ -488,32 +497,36 @@ test("loads the built Console through the real Python launcher", async ({
     "Exact commit",
     "Tree digest",
   ])
-  const preflightCells = preflightTable
-    .getByRole("row")
-    .nth(1)
-    .getByRole("cell")
-  const cellBounds = await preflightCells.evaluateAll((cells) =>
-    cells.map((cell) => {
-      const bounds = cell.getBoundingClientRect()
-      return { left: bounds.left, right: bounds.right }
-    })
+  await expect(preflightCard).toContainText(maxSourceId)
+  await expect(preflightCard).toContainText(longBranch)
+  const preflightRows = preflightTable.locator("tbody tr")
+  const rowCellBounds = await preflightRows.evaluateAll((rows) =>
+    rows.map((row) =>
+      Array.from(row.querySelectorAll("td")).map((cell) => {
+        const bounds = cell.getBoundingClientRect()
+        return { left: bounds.left, right: bounds.right }
+      })
+    )
   )
   expect(
-    cellBounds.every(
-      (bounds, index) =>
-        index === cellBounds.length - 1 ||
-        bounds.right <= cellBounds[index + 1].left + 1
+    rowCellBounds.every((cellBounds) =>
+      cellBounds.every(
+        (bounds, index) =>
+          index === cellBounds.length - 1 ||
+          bounds.right <= cellBounds[index + 1].left + 1
+      )
     )
   ).toBe(true)
-  const longValueMetrics = await preflightCells.evaluateAll((cells) =>
-    cells.slice(2).map((cell) => ({
+  const preflightCells = preflightTable.getByRole("cell")
+  const cellMetrics = await preflightCells.evaluateAll((cells) =>
+    cells.map((cell) => ({
       clientWidth: cell.clientWidth,
       scrollWidth: cell.scrollWidth,
       whiteSpace: getComputedStyle(cell).whiteSpace,
     }))
   )
   expect(
-    longValueMetrics.every(
+    cellMetrics.every(
       ({ clientWidth, scrollWidth, whiteSpace }) =>
         whiteSpace !== "nowrap" && scrollWidth <= clientWidth
     )
@@ -552,7 +565,9 @@ test("loads the built Console through the real Python launcher", async ({
   await preflightScroller.evaluate((element) => {
     element.scrollLeft = element.scrollWidth
   })
-  const treeDigestIsHorizontallyVisible = await preflightCells
+  const treeDigestIsHorizontallyVisible = await preflightRows
+    .first()
+    .getByRole("cell")
     .nth(5)
     .evaluate((cell) => {
       const container = cell.closest('[data-slot="table-container"]')
