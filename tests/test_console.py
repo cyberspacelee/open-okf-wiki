@@ -583,3 +583,96 @@ def test_console_can_bind_a_configured_source_without_rewriting_its_definition(
     assert code == 0
     assert response.json() == listed
     assert app.settings()["definition"] == definition_before
+
+
+def test_console_and_cli_share_pull_revision_and_preflight_use_cases(
+    tmp_path: Path, assets: Path
+) -> None:
+    upstream = tmp_path / "upstream"
+    remote = tmp_path / "remote.git"
+    checkout = tmp_path / "checkout"
+    workspace = tmp_path / "workspace"
+    make_git_source(upstream)
+    subprocess.run(["git", "init", "--bare", "-q", remote], check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=upstream, check=True)
+    subprocess.run(["git", "push", "-qu", "origin", "HEAD"], cwd=upstream, check=True)
+    subprocess.run(["git", "clone", "-q", remote, checkout], check=True)
+    branch = subprocess.run(
+        ["git", "branch", "--show-current"],
+        cwd=checkout,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    first = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=checkout,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    app = WorkspaceApplication(workspace)
+    app.initialize("catalog")
+    app.link_source({"id": "code", "role": "implementation", "checkout": str(checkout)})
+
+    with running_console(workspace, assets) as (server, _):
+        base = f"http://127.0.0.1:{server.server_port}"
+        headers = {**authorization(server), "Origin": base}
+        pinned = httpx.put(
+            base + "/api/v1/sources/revision",
+            headers=headers,
+            json={
+                "id": "code",
+                "revision_policy": "pinned_commit",
+                "revision": first,
+                "configuration_digest": app.sources()["configuration_digest"],
+            },
+        )
+        browser_preflight = httpx.get(
+            base + "/api/v1/workspace/preflight", headers=authorization(server)
+        )
+        preflight_code, command_preflight = cli(
+            ["workspace", "preflight", str(workspace)], tmp_path
+        )
+
+        (upstream / "REMOTE.md").write_text("remote\n", encoding="utf-8")
+        subprocess.run(["git", "add", "REMOTE.md"], cwd=upstream, check=True)
+        subprocess.run(["git", "commit", "-qm", "remote"], cwd=upstream, check=True)
+        subprocess.run(["git", "push", "-q"], cwd=upstream, check=True)
+        pulled = httpx.post(base + "/api/v1/sources/pull", headers=headers, json={"id": "code"})
+        sources_code, command_sources = cli(["workspace", "sources", str(workspace)], tmp_path)
+
+        (checkout / "LOCAL.md").write_text("local\n", encoding="utf-8")
+        rejected = httpx.post(base + "/api/v1/sources/pull", headers=headers, json={"id": "code"})
+
+    rejected_code, command_rejected = cli(
+        ["workspace", "pull-source", "code", str(workspace)], tmp_path
+    )
+
+    assert pinned.status_code == 200
+    assert preflight_code == sources_code == 0
+    assert browser_preflight.json() == command_preflight
+    assert pulled.status_code == 200
+    assert pulled.json() == command_sources
+    assert pulled.json()["sources"][0]["revision"] == first
+    assert rejected.status_code == 400
+    assert rejected_code == 1
+    assert rejected.json() == command_rejected
+
+    (checkout / "LOCAL.md").unlink()
+    digest = app.sources()["configuration_digest"]
+    follow_code, followed = cli(
+        [
+            "workspace",
+            "set-source-revision",
+            "code",
+            str(workspace),
+            "--follow-branch",
+            branch,
+            "--configuration-digest",
+            digest,
+        ],
+        tmp_path,
+    )
+    assert follow_code == 0
+    assert followed["sources"][0]["revision_policy"] == "follow_branch"

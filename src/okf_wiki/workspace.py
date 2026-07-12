@@ -15,10 +15,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from .bundle import verification_blockers
 from .coverage import major_blockers
 from .source_checkouts import (
+    FULL_COMMIT_RE,
     SourceCheckoutError,
     clone_checkout,
     delete_managed_checkout,
     inspect_checkout,
+    pull_checkout,
+    resolve_revision_policy,
     validate_clone_remote,
     verify_checkout_revision,
 )
@@ -71,6 +74,7 @@ class WorkspaceSource(StrictModel):
     id: str = Field(min_length=1)
     role: str = Field(min_length=1)
     revision: str = Field(min_length=1)
+    revision_policy: Literal["follow_branch", "pinned_commit"] | None = None
     remote: str | None = Field(default=None, min_length=1)
 
     @field_validator("id", "role", "revision", "remote")
@@ -109,6 +113,24 @@ class WorkspaceSource(StrictModel):
         ):
             raise ValueError("must not contain credentials; use local Git credential handling")
         return value
+
+    @model_validator(mode="after")
+    def complete_explicit_pin(self) -> "WorkspaceSource":
+        if (
+            self.revision_policy == "pinned_commit"
+            and FULL_COMMIT_RE.fullmatch(self.revision) is None
+        ):
+            raise ValueError("Pinned Commit must be a complete Git commit ID")
+        return self
+
+
+def _source_revision_policy(
+    revision: str,
+    revision_policy: Literal["follow_branch", "pinned_commit"] | None,
+) -> Literal["follow_branch", "pinned_commit"]:
+    return revision_policy or (
+        "pinned_commit" if FULL_COMMIT_RE.fullmatch(revision) else "follow_branch"
+    )
 
 
 class DispositionSettings(StrictModel):
@@ -216,6 +238,7 @@ class ResolvedSource(StrictModel):
     id: str
     role: str
     revision: str
+    revision_policy: Literal["follow_branch", "pinned_commit"] | None
     remote: str | None
     checkout: Path | None
     ownership: Literal["managed", "linked"] | None
@@ -312,6 +335,8 @@ def _render_definition(value: WorkspaceDefinition) -> str:
         )
         if source.remote:
             lines.append(f"remote = {_quote(source.remote)}")
+        if source.revision_policy:
+            lines.append(f"revision_policy = {_quote(source.revision_policy)}")
     profile = value.profile
     if profile.java_excluded_paths is not None:
         lines.extend(
@@ -821,6 +846,121 @@ class WorkspaceApplication:
             self._recover_update_locked()
             return self._sources_locked()
 
+    def set_source_revision(self, payload: object) -> dict:
+        values = self._source_payload(
+            payload,
+            {"id", "revision_policy", "revision", "configuration_digest"},
+            "Set Source Revision Policy",
+        )
+        source_id = values["id"]
+        with self._locked():
+            self._recover_update_locked()
+            if values["configuration_digest"] != self._configuration_digest():
+                raise WorkspaceStaleError(
+                    "Workspace Sources changed after they were loaded; refresh and try again"
+                )
+            definition, settings = self._configuration_locked()
+            source = next((item for item in definition.sources if item.id == source_id), None)
+            if source is None:
+                raise WorkspaceError(f"Unknown Source: {source_id}")
+            checkout = settings.checkouts.get(source_id)
+            if checkout is None:
+                raise WorkspaceError(
+                    f"Source {source_id} has no checkout binding; clone or link it first"
+                )
+            self._checkout_call(
+                resolve_revision_policy,
+                Path(checkout),
+                values["revision_policy"],
+                values["revision"],
+                require_clean=False,
+            )
+            definition_payload = definition.model_dump(mode="python")
+            for item in definition_payload["sources"]:
+                if item["id"] == source_id:
+                    item["revision_policy"] = values["revision_policy"]
+                    item["revision"] = values["revision"]
+                    break
+            self._update_locked(definition_payload, settings)
+            return self._sources_locked()
+
+    def pull_source(self, payload: object) -> dict:
+        values = self._source_payload(payload, {"id"}, "Pull Source")
+        source_id = values["id"]
+        with self._locked():
+            self._recover_update_locked()
+            definition, settings = self._configuration_locked()
+            source = next((item for item in definition.sources if item.id == source_id), None)
+            if source is None:
+                raise WorkspaceError(f"Unknown Source: {source_id}")
+            checkout = settings.checkouts.get(source_id)
+            if checkout is None:
+                raise WorkspaceError(
+                    f"Source {source_id} has no checkout binding; clone or link it first"
+                )
+            self._checkout_call(
+                pull_checkout,
+                Path(checkout),
+                source_id,
+                source.revision
+                if _source_revision_policy(source.revision, source.revision_policy)
+                == "follow_branch"
+                else None,
+            )
+            return self._sources_locked()
+
+    def run_preflight(self) -> dict:
+        _, preflight = self.resolve_run_inputs()
+        return preflight
+
+    def resolve_run_inputs(self) -> tuple[WorkspaceSnapshot, dict]:
+        with self._locked():
+            self._recover_update_locked()
+            snapshot = self._open_current()
+            return snapshot, self._run_preflight_locked(snapshot)
+
+    def _run_preflight_locked(self, snapshot: WorkspaceSnapshot) -> dict:
+        sources = []
+        for source in snapshot.sources:
+            if source.checkout is None:
+                raise WorkspaceError(
+                    f"Source {source.id} has no checkout binding; clone or link it first"
+                )
+            policy = _source_revision_policy(source.revision, source.revision_policy)
+            resolved = self._checkout_call(
+                resolve_revision_policy,
+                source.checkout,
+                policy,
+                source.revision,
+            )
+            sources.append(
+                {
+                    "id": source.id,
+                    "role": source.role,
+                    "revision_policy": policy,
+                    "revision": source.revision,
+                    **resolved,
+                }
+            )
+        identity = json.dumps(
+            [
+                {
+                    "digest": source["tree_digest"],
+                    "id": source["id"],
+                    "revision": source["exact_commit"],
+                    "role": source["role"],
+                }
+                for source in sources
+            ],
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        return {
+            "configuration_digest": snapshot.configuration_digest,
+            "source_set_digest": hashlib.sha256(identity).hexdigest(),
+            "sources": sources,
+        }
+
     def clone_source(self, payload: object) -> dict:
         values = self._source_payload_any(
             payload, ({"id"}, {"id", "role", "remote"}), "Clone Source"
@@ -853,7 +993,9 @@ class WorkspaceApplication:
             else:
                 if set(values) != {"id", "role", "remote"}:
                     raise WorkspaceError("A new Clone Source must contain id, role, and remote")
-                source = self._new_source(source_id, values["role"], "0" * 40, values["remote"])
+                source = self._new_source(
+                    source_id, values["role"], "0" * 40, values["remote"], None
+                )
                 remote = values["remote"]
                 revision = None
             self._checkout_call(validate_clone_remote, remote)
@@ -864,14 +1006,20 @@ class WorkspaceApplication:
                 source_id,
                 remote,
                 revision,
+                source.revision
+                if existing
+                and _source_revision_policy(source.revision, source.revision_policy)
+                == "follow_branch"
+                else None,
             )
             definition_payload = definition.model_dump(mode="python")
             if existing is None:
                 source = self._new_source(
                     source.id,
                     source.role,
-                    cast(str, status["commit"]),
+                    cast(str, status["branch"] or status["commit"]),
                     cast(str | None, status["remote"]) or remote,
+                    "follow_branch" if status["branch"] else "pinned_commit",
                 )
                 definition_payload["sources"].append(source.model_dump(mode="python"))
             settings_payload = settings.model_dump(mode="python")
@@ -925,7 +1073,19 @@ class WorkspaceApplication:
                     raise WorkspaceError(
                         f"Configured Source {source_id} role is {existing.role}; shared definition is unchanged"
                     )
-                self._checkout_call(verify_checkout_revision, checkout, existing.revision)
+                if (
+                    _source_revision_policy(existing.revision, existing.revision_policy)
+                    == "follow_branch"
+                ):
+                    self._checkout_call(
+                        resolve_revision_policy,
+                        checkout,
+                        "follow_branch",
+                        existing.revision,
+                        require_clean=False,
+                    )
+                else:
+                    self._checkout_call(verify_checkout_revision, checkout, existing.revision)
                 source = existing
             else:
                 if "role" not in values:
@@ -933,8 +1093,9 @@ class WorkspaceApplication:
                 source = self._new_source(
                     source_id,
                     values["role"],
-                    cast(str, status["commit"]),
+                    cast(str, status["branch"] or status["commit"]),
                     cast(str | None, status["remote"]),
+                    "follow_branch" if status["branch"] else "pinned_commit",
                 )
                 definition_payload["sources"].append(source.model_dump(mode="python"))
             settings_payload = settings.model_dump(mode="python")
@@ -1007,6 +1168,8 @@ class WorkspaceApplication:
                 "remote": source.remote,
                 "branch": None,
                 "commit": None,
+                "local_commit": None,
+                "remote_commit": None,
                 "dirty": None,
                 "ahead": None,
                 "behind": None,
@@ -1022,6 +1185,9 @@ class WorkspaceApplication:
                     "id": source.id,
                     "role": source.role,
                     "revision": source.revision,
+                    "revision_policy": _source_revision_policy(
+                        source.revision, source.revision_policy
+                    ),
                     "ownership": ownership,
                     "checkout": checkout_text,
                     **status,
@@ -1084,19 +1250,30 @@ class WorkspaceApplication:
         return {key: cast(str, value).strip() for key, value in values.items()}
 
     def _new_source(
-        self, source_id: str, role: str, revision: str, remote: str | None
+        self,
+        source_id: str,
+        role: str,
+        revision: str,
+        remote: str | None,
+        revision_policy: Literal["follow_branch", "pinned_commit"] | None = None,
     ) -> WorkspaceSource:
         try:
-            return WorkspaceSource(id=source_id, role=role, revision=revision, remote=remote)
+            return WorkspaceSource(
+                id=source_id,
+                role=role,
+                revision=revision,
+                remote=remote,
+                revision_policy=revision_policy,
+            )
         except ValidationError as error:
             item = error.errors()[0]
             location = ".".join(str(part) for part in item["loc"])
             raise WorkspaceError(f"Invalid Source {location}: {item['msg']}") from error
 
     @staticmethod
-    def _checkout_call(function, *arguments):
+    def _checkout_call(function, *arguments, **keywords):
         try:
-            return function(*arguments)
+            return function(*arguments, **keywords)
         except SourceCheckoutError as error:
             raise WorkspaceError(str(error)) from error
 

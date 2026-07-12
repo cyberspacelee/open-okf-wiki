@@ -509,18 +509,14 @@ def load_config(path_text: str) -> tuple[str, list[dict], Path, dict, dict | Non
         raise UserError("Workspace configuration must be named workspace.toml")
     if "schema_version" in config:
         try:
-            snapshot = WorkspaceApplication(path.parent).open()
+            snapshot, preflight = WorkspaceApplication(path.parent).resolve_run_inputs()
         except WorkspaceError as error:
             raise UserError(str(error)) from error
-        missing_checkouts = [source.id for source in snapshot.sources if source.checkout is None]
         if not snapshot.sources:
             raise UserError("Workspace has no configured Sources")
-        if missing_checkouts:
-            raise UserError(
-                "Sources lack Local Workspace Settings checkout bindings: "
-                + ", ".join(missing_checkouts)
-            )
         workspace_configuration = snapshot.model_dump(mode="json")
+        workspace_configuration["source_set_digest"] = preflight["source_set_digest"]
+        workspace_configuration["source_snapshots"] = preflight["sources"]
         if snapshot.models.gateway_profile is not None:
             try:
                 workspace_configuration["resolved_models"] = GatewayApplication().resolve_models(
@@ -535,10 +531,14 @@ def load_config(path_text: str) -> tuple[str, list[dict], Path, dict, dict | Non
                 {
                     "id": source.id,
                     "repository": str(source.checkout),
-                    "revision": source.revision,
+                    "revision": resolved["exact_commit"],
+                    "revision_policy": resolved["revision_policy"],
+                    "revision_target": resolved["revision"],
+                    "digest": resolved["tree_digest"],
+                    "tree_digest": resolved["tree_digest"],
                     "role": source.role,
                 }
-                for source in snapshot.sources
+                for source, resolved in zip(snapshot.sources, preflight["sources"], strict=True)
             ],
             snapshot.publication.path,
             load_profile({"profile": snapshot.profile.model_dump(exclude_none=True)}),
@@ -1432,6 +1432,8 @@ def parser() -> argparse.ArgumentParser:
     workspace_update_settings.add_argument("root", nargs="?", default=".")
     workspace_sources = workspace_commands.add_parser("sources")
     workspace_sources.add_argument("root", nargs="?", default=".")
+    workspace_preflight = workspace_commands.add_parser("preflight")
+    workspace_preflight.add_argument("root", nargs="?", default=".")
     workspace_clone_source = workspace_commands.add_parser("clone-source")
     workspace_clone_source.add_argument("source_id")
     workspace_clone_source.add_argument("role")
@@ -1456,6 +1458,16 @@ def parser() -> argparse.ArgumentParser:
     workspace_delete_source.add_argument("source_id")
     workspace_delete_source.add_argument("root", nargs="?", default=".")
     workspace_delete_source.add_argument("--confirm", required=True)
+    workspace_pull_source = workspace_commands.add_parser("pull-source")
+    workspace_pull_source.add_argument("source_id")
+    workspace_pull_source.add_argument("root", nargs="?", default=".")
+    workspace_revision = workspace_commands.add_parser("set-source-revision")
+    workspace_revision.add_argument("source_id")
+    workspace_revision.add_argument("root", nargs="?", default=".")
+    revision = workspace_revision.add_mutually_exclusive_group(required=True)
+    revision.add_argument("--follow-branch")
+    revision.add_argument("--pin-commit")
+    workspace_revision.add_argument("--configuration-digest", required=True)
     workspace_migrate = workspace_commands.add_parser("migrate")
     workspace_migrate.add_argument("project_config")
     workspace_migrate.add_argument("--root")
@@ -1565,6 +1577,10 @@ def main() -> int:
                 app = WorkspaceApplication(arguments.root)
                 emit({"ok": True, **app.sources()})
                 return 0
+            elif arguments.workspace_command == "preflight":
+                app = WorkspaceApplication(arguments.root)
+                emit({"ok": True, **app.run_preflight()})
+                return 0
             elif arguments.workspace_command == "clone-source":
                 app = WorkspaceApplication(arguments.root)
                 result = app.clone_source(
@@ -1606,6 +1622,24 @@ def main() -> int:
                 app = WorkspaceApplication(arguments.root)
                 result = app.delete_managed_source(
                     {"id": arguments.source_id, "confirmation": arguments.confirm}
+                )
+                emit({"ok": True, **result})
+                return 0
+            elif arguments.workspace_command == "pull-source":
+                app = WorkspaceApplication(arguments.root)
+                emit({"ok": True, **app.pull_source({"id": arguments.source_id})})
+                return 0
+            elif arguments.workspace_command == "set-source-revision":
+                app = WorkspaceApplication(arguments.root)
+                policy = "follow_branch" if arguments.follow_branch else "pinned_commit"
+                revision = arguments.follow_branch or arguments.pin_commit
+                result = app.set_source_revision(
+                    {
+                        "id": arguments.source_id,
+                        "revision_policy": policy,
+                        "revision": revision,
+                        "configuration_digest": arguments.configuration_digest,
+                    }
                 )
                 emit({"ok": True, **result})
                 return 0

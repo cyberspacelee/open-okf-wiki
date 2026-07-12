@@ -1,5 +1,7 @@
 import json
+import hashlib
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -65,12 +67,15 @@ def test_linked_source_is_registered_in_place_and_reports_local_git_state(tmp_pa
         {
             "id": "requirements",
             "role": "requirements",
-            "revision": revision,
+            "revision": git(source, "branch", "--show-current"),
+            "revision_policy": "follow_branch",
             "ownership": "linked",
             "checkout": str(source),
             "remote": str(remote),
             "branch": git(source, "branch", "--show-current"),
             "commit": revision,
+            "local_commit": revision,
+            "remote_commit": revision,
             "dirty": False,
             "ahead": 0,
             "behind": 0,
@@ -789,3 +794,496 @@ def test_clone_failure_does_not_echo_untrusted_git_output(
         )
 
     assert "TOKEN-LEAK" not in str(captured.value)
+
+
+def test_clean_pull_advances_followed_branch_and_keeps_a_pinned_commit(
+    tmp_path: Path,
+) -> None:
+    upstream = tmp_path / "upstream"
+    remote = tmp_path / "remote.git"
+    make_source(upstream, bare_remote=remote)
+    checkout = tmp_path / "checkout"
+    subprocess.run(["git", "clone", "-q", remote, checkout], check=True)
+    git(checkout, "config", "user.name", "Checkout")
+    git(checkout, "config", "user.email", "checkout@example.com")
+    branch = git(checkout, "branch", "--show-current")
+    app = WorkspaceApplication(tmp_path / "workspace")
+    app.initialize("catalog")
+
+    linked = app.link_source({"id": "code", "role": "implementation", "checkout": str(checkout)})[
+        "sources"
+    ][0]
+
+    assert linked["revision_policy"] == "follow_branch"
+    assert linked["revision"] == branch
+    initial = linked["commit"]
+
+    (upstream / "REMOTE.md").write_text("remote one\n", encoding="utf-8")
+    git(upstream, "add", "REMOTE.md")
+    git(upstream, "commit", "-qm", "remote one")
+    git(upstream, "push", "-q")
+    advanced = git(upstream, "rev-parse", "HEAD")
+
+    pulled = app.pull_source({"id": "code"})["sources"][0]
+
+    assert pulled["commit"] == pulled["local_commit"] == advanced
+    assert pulled["remote_commit"] == advanced
+    assert pulled["revision_policy"] == "follow_branch"
+    assert pulled["revision"] == branch
+
+    pinned = app.set_source_revision(
+        {
+            "id": "code",
+            "revision_policy": "pinned_commit",
+            "revision": initial,
+            "configuration_digest": app.sources()["configuration_digest"],
+        }
+    )["sources"][0]
+    assert pinned["revision"] == initial
+    pinned_preflight = app.run_preflight()
+
+    (upstream / "REMOTE-2.md").write_text("remote two\n", encoding="utf-8")
+    git(upstream, "add", "REMOTE-2.md")
+    git(upstream, "commit", "-qm", "remote two")
+    git(upstream, "push", "-q")
+    latest = git(upstream, "rev-parse", "HEAD")
+
+    pulled_again = app.pull_source({"id": "code"})["sources"][0]
+
+    assert pulled_again["commit"] == latest
+    assert pulled_again["revision_policy"] == "pinned_commit"
+    assert pulled_again["revision"] == initial
+    assert app.run_preflight()["source_set_digest"] == pinned_preflight["source_set_digest"]
+
+
+def test_managed_checkout_can_pull_a_clean_followed_branch(tmp_path: Path) -> None:
+    upstream = tmp_path / "upstream"
+    remote = tmp_path / "remote.git"
+    make_source(upstream, bare_remote=remote)
+    app = WorkspaceApplication(tmp_path / "workspace")
+    app.initialize("catalog")
+    cloned = app.clone_source({"id": "code", "role": "implementation", "remote": str(remote)})
+    assert cloned["sources"][0]["ownership"] == "managed"
+
+    (upstream / "REMOTE.md").write_text("remote\n", encoding="utf-8")
+    git(upstream, "add", "REMOTE.md")
+    git(upstream, "commit", "-qm", "remote")
+    git(upstream, "push", "-q")
+    latest = git(upstream, "rev-parse", "HEAD")
+
+    pulled = app.pull_source({"id": "code"})["sources"][0]
+
+    assert pulled["ownership"] == "managed"
+    assert pulled["commit"] == latest
+    assert pulled["revision_policy"] == "follow_branch"
+
+
+def test_configured_follow_branch_clone_checks_out_the_exact_remote_branch(tmp_path: Path) -> None:
+    upstream = tmp_path / "upstream"
+    remote = tmp_path / "remote.git"
+    make_source(upstream, bare_remote=remote)
+    git(upstream, "checkout", "-qb", "docs")
+    (upstream / "DOCS.md").write_text("docs\n", encoding="utf-8")
+    git(upstream, "add", "DOCS.md")
+    git(upstream, "commit", "-qm", "docs")
+    git(upstream, "push", "-qu", "origin", "docs")
+    app = WorkspaceApplication(tmp_path / "workspace")
+    app.initialize("catalog")
+    app.update(
+        {
+            "schema_version": 1,
+            "project": {"id": "catalog", "name": "Catalog"},
+            "sources": [
+                {
+                    "id": "docs",
+                    "role": "documentation",
+                    "revision_policy": "follow_branch",
+                    "revision": "docs",
+                    "remote": str(remote),
+                }
+            ],
+        },
+        {"schema_version": 1},
+    )
+
+    cloned = app.clone_source({"id": "docs"})["sources"][0]
+
+    assert cloned["branch"] == "docs"
+    assert cloned["revision"] == "docs"
+    assert cloned["commit"] == git(upstream, "rev-parse", "HEAD")
+
+
+@pytest.mark.parametrize("dirty_state", ["tracked", "staged", "untracked", "ignored", "conflict"])
+def test_pull_refuses_each_dirty_checkout_state(tmp_path: Path, dirty_state: str) -> None:
+    upstream = tmp_path / "upstream"
+    remote = tmp_path / "remote.git"
+    make_source(upstream, bare_remote=remote)
+    checkout = tmp_path / "checkout"
+    subprocess.run(["git", "clone", "-q", remote, checkout], check=True)
+    git(checkout, "config", "user.name", "Checkout")
+    git(checkout, "config", "user.email", "checkout@example.com")
+    app = WorkspaceApplication(tmp_path / "workspace")
+    app.initialize("catalog")
+    app.link_source({"id": "code", "role": "implementation", "checkout": str(checkout)})
+    before = git(checkout, "rev-parse", "HEAD")
+
+    if dirty_state == "tracked":
+        (checkout / "README.md").write_text("tracked\n", encoding="utf-8")
+    elif dirty_state == "staged":
+        (checkout / "README.md").write_text("staged\n", encoding="utf-8")
+        git(checkout, "add", "README.md")
+    elif dirty_state == "untracked":
+        (checkout / "LOCAL.md").write_text("untracked\n", encoding="utf-8")
+    elif dirty_state == "ignored":
+        exclude = Path(git(checkout, "rev-parse", "--git-path", "info/exclude"))
+        if not exclude.is_absolute():
+            exclude = checkout / exclude
+        exclude.write_text("IGNORED.md\n", encoding="utf-8")
+        (checkout / "IGNORED.md").write_text("ignored\n", encoding="utf-8")
+    else:
+        (checkout / "README.md").write_text("local\n", encoding="utf-8")
+        git(checkout, "commit", "-am", "local")
+        (upstream / "README.md").write_text("remote\n", encoding="utf-8")
+        git(upstream, "commit", "-am", "remote")
+        git(upstream, "push", "-q")
+        git(checkout, "fetch", "-q", "origin")
+        subprocess.run(
+            ["git", "merge", "origin/" + git(checkout, "branch", "--show-current")],
+            cwd=checkout,
+            check=False,
+            capture_output=True,
+        )
+        before = git(checkout, "rev-parse", "HEAD")
+
+    with pytest.raises(WorkspaceError, match="Pull blocked"):
+        app.pull_source({"id": "code"})
+
+    assert git(checkout, "rev-parse", "HEAD") == before
+
+
+def test_preflight_resolves_exact_tree_and_build_keeps_immutable_source_snapshot(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    remote = tmp_path / "remote.git"
+    first = make_source(source, bare_remote=remote)
+    app = WorkspaceApplication(tmp_path / "workspace")
+    app.initialize("catalog")
+    app.link_source({"id": "docs", "role": "documentation", "checkout": str(source)})
+    tree = subprocess.run(
+        ["git", "ls-tree", "-r", "--full-tree", "-z", first],
+        cwd=source,
+        check=True,
+        capture_output=True,
+    ).stdout
+
+    preflight = app.run_preflight()
+
+    assert preflight["sources"] == [
+        {
+            "id": "docs",
+            "role": "documentation",
+            "revision_policy": "follow_branch",
+            "revision": git(source, "branch", "--show-current"),
+            "local_commit": first,
+            "remote_commit": first,
+            "exact_commit": first,
+            "tree_digest": hashlib.sha256(tree).hexdigest(),
+        }
+    ]
+
+    built = cli(["build", "workspace.toml"], app.root)
+    (source / "LATER.md").write_text("later\n", encoding="utf-8")
+    git(source, "add", "LATER.md")
+    git(source, "commit", "-qm", "later")
+    later = git(source, "rev-parse", "HEAD")
+
+    with sqlite3.connect(app.database_path) as connection:
+        source_set = json.loads(
+            connection.execute(
+                "SELECT source_set_json FROM runs WHERE id = ?", (built["run_id"],)
+            ).fetchone()[0]
+        )
+
+    assert source_set["sources"][0]["revision"] == first
+    assert source_set["sources"][0]["revision"] != later
+    assert source_set["digest"] == preflight["source_set_digest"]
+    assert source_set["workspace_configuration"]["source_snapshots"] == preflight["sources"]
+
+
+def test_revision_policy_errors_do_not_change_shared_configuration(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    make_source(source)
+    app = WorkspaceApplication(tmp_path / "workspace")
+    app.initialize("catalog")
+    app.link_source({"id": "code", "role": "implementation", "checkout": str(source)})
+    before = app.settings()["definition"]
+    digest = app.sources()["configuration_digest"]
+
+    with pytest.raises(WorkspaceError, match="complete Git commit ID"):
+        app.set_source_revision(
+            {
+                "id": "code",
+                "revision_policy": "pinned_commit",
+                "revision": "abc123",
+                "configuration_digest": digest,
+            }
+        )
+    with pytest.raises(WorkspaceError, match="Pinned Commit is unavailable"):
+        app.set_source_revision(
+            {
+                "id": "code",
+                "revision_policy": "pinned_commit",
+                "revision": "d" * 40,
+                "configuration_digest": digest,
+            }
+        )
+    with pytest.raises(WorkspaceError, match="unavailable locally"):
+        app.set_source_revision(
+            {
+                "id": "code",
+                "revision_policy": "follow_branch",
+                "revision": "missing-branch",
+                "configuration_digest": digest,
+            }
+        )
+
+    assert app.settings()["definition"] == before
+
+
+def test_pull_reports_a_deleted_remote_without_changing_checkout_or_policy(tmp_path: Path) -> None:
+    upstream = tmp_path / "upstream"
+    remote = tmp_path / "remote.git"
+    make_source(upstream, bare_remote=remote)
+    checkout = tmp_path / "checkout"
+    subprocess.run(["git", "clone", "-q", remote, checkout], check=True)
+    app = WorkspaceApplication(tmp_path / "workspace")
+    app.initialize("catalog")
+    app.link_source({"id": "code", "role": "implementation", "checkout": str(checkout)})
+    before_commit = git(checkout, "rev-parse", "HEAD")
+    before_definition = app.settings()["definition"]
+    remote.rename(tmp_path / "deleted-remote.git")
+
+    with pytest.raises(WorkspaceError, match="verify the branch, remote, and your Git credentials"):
+        app.pull_source({"id": "code"})
+
+    assert git(checkout, "rev-parse", "HEAD") == before_commit
+    assert app.settings()["definition"] == before_definition
+
+
+def test_follow_branch_never_resolves_a_same_named_tag(tmp_path: Path) -> None:
+    origin = tmp_path / "origin"
+    revision = make_source(origin)
+    git(origin, "tag", "release", revision)
+    app = WorkspaceApplication(tmp_path / "workspace")
+    app.initialize("catalog")
+    app.update(
+        {
+            "schema_version": 1,
+            "project": {"id": "catalog", "name": "Catalog"},
+            "sources": [
+                {
+                    "id": "code",
+                    "role": "implementation",
+                    "revision_policy": "follow_branch",
+                    "revision": "release",
+                    "remote": str(origin),
+                }
+            ],
+        },
+        {"schema_version": 1},
+    )
+
+    with pytest.raises(WorkspaceError, match="(?i)followed branch .* unavailable"):
+        app.link_source({"id": "code", "checkout": str(origin)})
+    with pytest.raises(WorkspaceError, match="remote branch origin/release is unavailable"):
+        app.clone_source({"id": "code"})
+
+    assert app.sources()["sources"][0]["ownership"] is None
+
+
+def test_legacy_named_revision_is_inferred_as_follow_branch(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    revision = make_source(source)
+    branch = git(source, "branch", "--show-current")
+    app = WorkspaceApplication(tmp_path / "workspace")
+    app.initialize("catalog")
+    app.update(
+        {
+            "schema_version": 1,
+            "project": {"id": "catalog", "name": "Catalog"},
+            "sources": [{"id": "code", "role": "implementation", "revision": branch}],
+        },
+        {"schema_version": 1, "checkouts": {"code": str(source)}},
+    )
+
+    listed = app.sources()["sources"][0]
+    preflight = app.run_preflight()["sources"][0]
+
+    assert listed["revision_policy"] == "follow_branch"
+    assert preflight["exact_commit"] == revision
+
+
+def test_pull_refuses_detached_unfinished_and_non_fast_forward_states(tmp_path: Path) -> None:
+    upstream = tmp_path / "upstream"
+    remote = tmp_path / "remote.git"
+    make_source(upstream, bare_remote=remote)
+    checkout = tmp_path / "checkout"
+    subprocess.run(["git", "clone", "-q", remote, checkout], check=True)
+    git(checkout, "config", "user.name", "Checkout")
+    git(checkout, "config", "user.email", "checkout@example.com")
+    app = WorkspaceApplication(tmp_path / "workspace")
+    app.initialize("catalog")
+    app.link_source({"id": "code", "role": "implementation", "checkout": str(checkout)})
+    definition = app.settings()["definition"]
+
+    git(checkout, "checkout", "--detach", "-q")
+    with pytest.raises(WorkspaceError, match="detached"):
+        app.pull_source({"id": "code"})
+    branch = definition["sources"][0]["revision"]
+    git(checkout, "checkout", "-q", branch)
+
+    git_path = Path(git(checkout, "rev-parse", "--git-path", "rebase-apply"))
+    if not git_path.is_absolute():
+        git_path = checkout / git_path
+    git_path.mkdir(parents=True)
+    with pytest.raises(WorkspaceError, match="unfinished Git operation"):
+        app.pull_source({"id": "code"})
+    git_path.rmdir()
+
+    (checkout / "LOCAL.md").write_text("local\n", encoding="utf-8")
+    git(checkout, "add", "LOCAL.md")
+    git(checkout, "commit", "-qm", "local")
+    local = git(checkout, "rev-parse", "HEAD")
+    (upstream / "REMOTE.md").write_text("remote\n", encoding="utf-8")
+    git(upstream, "add", "REMOTE.md")
+    git(upstream, "commit", "-qm", "remote")
+    git(upstream, "push", "-q")
+
+    with pytest.raises(WorkspaceError, match="not a fast-forward"):
+        app.pull_source({"id": "code"})
+
+    assert git(checkout, "rev-parse", "HEAD") == local
+    assert app.settings()["definition"] == definition
+
+
+def test_pull_disables_hooks_and_blocks_repository_selected_local_filters(tmp_path: Path) -> None:
+    upstream = tmp_path / "upstream"
+    remote = tmp_path / "remote.git"
+    make_source(upstream, bare_remote=remote)
+    checkout = tmp_path / "checkout"
+    subprocess.run(["git", "clone", "-q", remote, checkout], check=True)
+    app = WorkspaceApplication(tmp_path / "workspace")
+    app.initialize("catalog")
+    app.link_source({"id": "code", "role": "implementation", "checkout": str(checkout)})
+    hook_marker = tmp_path / "HOOK_RAN"
+    hook = Path(git(checkout, "rev-parse", "--git-path", "hooks/post-merge"))
+    if not hook.is_absolute():
+        hook = checkout / hook
+    hook.write_text(f"#!/bin/sh\ntouch '{hook_marker}'\n", encoding="utf-8")
+    hook.chmod(0o755)
+    (upstream / "SAFE.md").write_text("safe\n", encoding="utf-8")
+    git(upstream, "add", "SAFE.md")
+    git(upstream, "commit", "-qm", "safe update")
+    git(upstream, "push", "-q")
+
+    app.pull_source({"id": "code"})
+
+    assert not hook_marker.exists()
+
+    filter_marker = tmp_path / "FILTER_RAN"
+    filter_program = tmp_path / "filter.sh"
+    filter_program.write_text(f"#!/bin/sh\ntouch '{filter_marker}'\ncat\n", encoding="utf-8")
+    filter_program.chmod(0o755)
+    git(checkout, "config", "filter.evil.smudge", str(filter_program))
+    (upstream / ".gitattributes").write_text("README.md filter=evil\n", encoding="utf-8")
+    (upstream / "README.md").write_text("filtered\n", encoding="utf-8")
+    git(upstream, "add", ".gitattributes", "README.md")
+    git(upstream, "commit", "-qm", "select filter")
+    git(upstream, "push", "-q")
+    before = git(checkout, "rev-parse", "HEAD")
+
+    with pytest.raises(WorkspaceError, match="executable filter"):
+        app.pull_source({"id": "code"})
+
+    assert git(checkout, "rev-parse", "HEAD") == before
+    assert not filter_marker.exists()
+
+
+def test_pull_delegates_credentials_without_forwarding_unrelated_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    upstream = tmp_path / "upstream"
+    remote = tmp_path / "remote.git"
+    make_source(upstream, bare_remote=remote)
+    checkout = tmp_path / "checkout"
+    subprocess.run(["git", "clone", "-q", remote, checkout], check=True)
+    app = WorkspaceApplication(tmp_path / "workspace")
+    app.initialize("catalog")
+    app.link_source({"id": "code", "role": "implementation", "checkout": str(checkout)})
+    (upstream / "REMOTE.md").write_text("remote\n", encoding="utf-8")
+    git(upstream, "add", "REMOTE.md")
+    git(upstream, "commit", "-qm", "remote")
+    git(upstream, "push", "-q")
+    monkeypatch.setenv("SSH_AUTH_SOCK", str(tmp_path / "agent.sock"))
+    monkeypatch.setenv("OKF_GATEWAY_API_KEY", "must-not-leak")
+    real_run = source_checkouts_module.subprocess.run
+    observed: list[tuple[list[str], dict[str, str]]] = []
+
+    def spy(command, *args, **kwargs):
+        observed.append((list(command), dict(kwargs["env"])))
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(source_checkouts_module.subprocess, "run", spy)
+
+    app.pull_source({"id": "code"})
+
+    fetch_command, fetch_environment = next(
+        (command, environment) for command, environment in observed if "fetch" in command
+    )
+    merge_command, merge_environment = next(
+        (command, environment) for command, environment in observed if "merge" in command
+    )
+    assert fetch_environment["SSH_AUTH_SOCK"] == str(tmp_path / "agent.sock")
+    assert "OKF_GATEWAY_API_KEY" not in fetch_environment
+    assert "OKF_GATEWAY_API_KEY" not in merge_environment
+    assert merge_environment["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert "protocol.ext.allow=never" in fetch_command
+    assert "--no-recurse-submodules" in fetch_command
+    assert "--ff-only" in merge_command
+    assert not ({"stash", "reset", "clean", "rebase", "checkout"} & set(merge_command))
+
+
+def test_pull_refuses_a_branch_switch_at_the_same_commit_during_fetch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    upstream = tmp_path / "upstream"
+    remote = tmp_path / "remote.git"
+    make_source(upstream, bare_remote=remote)
+    checkout = tmp_path / "checkout"
+    subprocess.run(["git", "clone", "-q", remote, checkout], check=True)
+    app = WorkspaceApplication(tmp_path / "workspace")
+    app.initialize("catalog")
+    app.link_source({"id": "code", "role": "implementation", "checkout": str(checkout)})
+    (upstream / "REMOTE.md").write_text("remote\n", encoding="utf-8")
+    git(upstream, "add", "REMOTE.md")
+    git(upstream, "commit", "-qm", "remote")
+    git(upstream, "push", "-q")
+    real_mutate = source_checkouts_module._git_mutate
+    switched = False
+
+    def switch_after_fetch(path, *arguments, **keywords):
+        nonlocal switched
+        result = real_mutate(path, *arguments, **keywords)
+        if arguments[0] == "fetch" and not switched:
+            switched = True
+            assert real_mutate(path, "branch", "other", "HEAD").returncode == 0
+            assert real_mutate(path, "switch", "other").returncode == 0
+        return result
+
+    monkeypatch.setattr(source_checkouts_module, "_git_mutate", switch_after_fetch)
+
+    with pytest.raises(WorkspaceError, match="checked-out branch changed"):
+        app.pull_source({"id": "code"})
+
+    assert git(checkout, "branch", "--show-current") == "other"

@@ -384,10 +384,13 @@ test("loads the built Console through the real Python launcher", async ({
   await expect(
     page.getByRole("heading", { level: 1, name: "Sources" })
   ).toBeVisible()
-  const managedRow = page
+  const configuredSources = page
+    .getByText("Configured Sources", { exact: true })
+    .locator("xpath=../..")
+  const managedRow = configuredSources
     .getByRole("row")
     .filter({ has: page.getByText("code", { exact: true }) })
-  const linkedRow = page
+  const linkedRow = configuredSources
     .getByRole("row")
     .filter({ has: page.getByText("docs", { exact: true }) })
   await expect(managedRow).toContainText("Checkout not bound")
@@ -408,6 +411,44 @@ test("loads the built Console through the real Python launcher", async ({
   await page.getByRole("button", { name: "Bind checkout" }).click()
   await expect(linkedRow).toContainText("linked")
   expect(existsSync(linkedSource)).toBe(true)
+
+  const revisionPolicies = page
+    .getByText("Revision Policies", { exact: true })
+    .locator("xpath=../..")
+  const managedPolicy = revisionPolicies.getByRole("group", {
+    name: "code · Implementation",
+  })
+  const linkedPolicy = revisionPolicies.getByRole("group", {
+    name: "docs · Documentation",
+  })
+  await managedPolicy.getByRole("button", { name: "Follow Branch" }).click()
+  await managedPolicy.getByRole("button", { name: "Save policy" }).click()
+  await expect(managedPolicy).toContainText("Follow Branch")
+  writeFileSync(join(managedOrigin, "REMOTE.md"), "remote update\n")
+  execFileSync("git", ["add", "REMOTE.md"], { cwd: managedOrigin })
+  execFileSync("git", ["commit", "-qm", "remote update"], {
+    cwd: managedOrigin,
+  })
+  const pulledCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: managedOrigin,
+    encoding: "utf-8",
+  }).trim()
+  await managedRow.getByRole("button", { name: "Pull" }).click()
+  await expect(managedRow).toContainText(pulledCommit)
+
+  const linkedCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: linkedSource,
+    encoding: "utf-8",
+  }).trim()
+  await linkedPolicy.getByRole("button", { name: "Pinned Commit" }).click()
+  await linkedPolicy.getByLabel("Commit").fill(linkedCommit)
+  await linkedPolicy.getByRole("button", { name: "Save policy" }).click()
+  const preflightCard = page
+    .getByText("Next Run Source Set", { exact: true })
+    .locator("xpath=../..")
+  await expect(preflightCard).toContainText(pulledCommit)
+  await expect(preflightCard).toContainText(linkedCommit)
+  await expect(preflightCard).toContainText("Source Set")
   await page.screenshot({
     path: "test-results/sources-desktop.png",
     fullPage: true,
@@ -440,6 +481,8 @@ test("loads the built Console through the real Python launcher", async ({
   writeFileSync(join(linkedSource, "untracked.txt"), "local change\n")
   await page.getByRole("button", { name: "Refresh status" }).click()
   await expect(linkedRow).toContainText("Dirty")
+  await linkedRow.getByRole("button", { name: "Pull" }).click()
+  await expect(page.getByRole("alert")).toContainText("Pull blocked")
   await linkedRow.getByRole("button", { name: "Remove" }).click()
   await expect(linkedRow).toBeHidden()
   expect(existsSync(linkedSource)).toBe(true)

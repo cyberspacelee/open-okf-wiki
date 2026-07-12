@@ -111,6 +111,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 }
             elif path == "/api/v1/sources" and self.command in {"GET", "HEAD"}:
                 payload = {"ok": True, **self.server.application.sources()}
+            elif path == "/api/v1/workspace/preflight" and self.command in {"GET", "HEAD"}:
+                payload = {"ok": True, **self.server.application.run_preflight()}
             elif path == "/api/v1/sources/clone" and self.command == "POST":
                 payload = {"ok": True, **self.server.application.clone_source(self._json_body())}
             elif path == "/api/v1/sources/link" and self.command == "POST":
@@ -121,6 +123,13 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 payload = {
                     "ok": True,
                     **self.server.application.delete_managed_source(self._json_body()),
+                }
+            elif path == "/api/v1/sources/pull" and self.command == "POST":
+                payload = {"ok": True, **self.server.application.pull_source(self._json_body())}
+            elif path == "/api/v1/sources/revision" and self.command == "PUT":
+                payload = {
+                    "ok": True,
+                    **self.server.application.set_source_revision(self._json_body()),
                 }
             elif path == "/api/v1/gateway-profiles" and self.command in {"GET", "HEAD"}:
                 payload = {"ok": True, "profiles": self.server.gateways.list_profiles()}

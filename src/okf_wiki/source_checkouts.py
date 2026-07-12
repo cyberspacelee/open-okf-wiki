@@ -1,4 +1,6 @@
+import hashlib
 import os
+import re
 import secrets
 import shutil
 import stat
@@ -7,11 +9,14 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .security import git_read
+from .security import git_read, git_read_bytes
 
 
 class SourceCheckoutError(ValueError):
     pass
+
+
+FULL_COMMIT_RE = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
 
 
 def validate_clone_remote(remote: str) -> None:
@@ -51,24 +56,328 @@ def inspect_checkout(checkout: Path) -> dict[str, object]:
             raise SourceCheckoutError(
                 "Git origin remote is unsafe; repair the origin remote before refreshing status"
             ) from error
-    dirty = bool(_git_inspect(checkout, "status", "--porcelain=v1", "--untracked-files=normal"))
+    dirty = bool(_working_tree_changes(checkout))
     ahead: int | None = None
     behind: int | None = None
-    if branch and _git_inspect(
-        checkout, "rev-parse", "--verify", "@{upstream}^{commit}", required=False
-    ):
-        counts = _git_inspect(checkout, "rev-list", "--left-right", "--count", "HEAD...@{upstream}")
-        if counts:
-            ahead, behind = (int(value) for value in counts.split())
+    remote_commit: str | None = None
+    if branch:
+        remote_commit = _git_inspect(
+            checkout, "rev-parse", "--verify", "@{upstream}^{commit}", required=False
+        )
+        if remote_commit:
+            counts = _git_inspect(
+                checkout, "rev-list", "--left-right", "--count", "HEAD...@{upstream}"
+            )
+            if counts:
+                ahead, behind = (int(value) for value in counts.split())
     return {
         "remote": remote,
         "branch": branch,
         "commit": commit,
+        "local_commit": commit,
+        "remote_commit": remote_commit,
         "dirty": dirty,
         "ahead": ahead,
         "behind": behind,
         "error": None,
     }
+
+
+def resolve_revision_policy(
+    checkout: Path, revision_policy: str, revision: str, *, require_clean: bool = True
+) -> dict[str, str | None]:
+    inspect_checkout(checkout)
+    if require_clean:
+        _require_clean_checkout(checkout)
+    local_commit: str | None
+    remote_commit: str | None
+    if revision_policy == "follow_branch":
+        _validate_branch(checkout, revision)
+        local_commit = _git_inspect(
+            checkout,
+            "rev-parse",
+            "--verify",
+            f"refs/heads/{revision}^{{commit}}",
+            context=f"Followed branch {revision} is unavailable locally",
+        )
+        remote_commit = _git_inspect(
+            checkout,
+            "rev-parse",
+            "--verify",
+            f"refs/remotes/origin/{revision}^{{commit}}",
+            required=False,
+        )
+        exact_commit = local_commit
+    elif revision_policy == "pinned_commit":
+        if FULL_COMMIT_RE.fullmatch(revision) is None:
+            raise SourceCheckoutError("Pinned Commit must be a complete Git commit ID")
+        exact_commit = _git_inspect(
+            checkout,
+            "rev-parse",
+            "--verify",
+            f"{revision}^{{commit}}",
+            context="Pinned Commit is unavailable in this checkout",
+        )
+        if exact_commit is None or exact_commit.casefold() != revision.casefold():
+            raise SourceCheckoutError(
+                "Pinned Commit does not resolve to the exact requested commit"
+            )
+        local_commit = _git_inspect(checkout, "rev-parse", "--verify", "HEAD^{commit}")
+        branch = _git_inspect(checkout, "symbolic-ref", "--short", "-q", "HEAD", required=False)
+        remote_commit = (
+            _git_inspect(
+                checkout,
+                "rev-parse",
+                "--verify",
+                f"refs/remotes/origin/{branch}^{{commit}}",
+                required=False,
+            )
+            if branch
+            else None
+        )
+    else:
+        raise SourceCheckoutError(f"Unsupported Source Revision Policy: {revision_policy}")
+    assert exact_commit is not None
+    tree = git_read_bytes(checkout, "ls-tree", "-r", "--full-tree", "-z", exact_commit)
+    return {
+        "local_commit": local_commit,
+        "remote_commit": remote_commit,
+        "exact_commit": exact_commit,
+        "tree_digest": hashlib.sha256(tree).hexdigest(),
+    }
+
+
+def pull_checkout(
+    checkout: Path, source_id: str, followed_branch: str | None = None
+) -> dict[str, object]:
+    status = inspect_checkout(checkout)
+    _require_clean_checkout(checkout)
+    branch = status["branch"]
+    if not isinstance(branch, str):
+        raise SourceCheckoutError(
+            f"Pull blocked for Source {source_id}: checkout is detached; check out a branch manually"
+        )
+    if followed_branch is not None and branch != followed_branch:
+        raise SourceCheckoutError(
+            f"Pull blocked for Source {source_id}: checkout is on {branch}; "
+            f"check out followed branch {followed_branch} manually"
+        )
+    _validate_branch(checkout, branch)
+    before = status["commit"]
+    temporary_ref = f"refs/okf-wiki/pull/{secrets.token_hex(16)}"
+    try:
+        fetched = _git_mutate(
+            checkout,
+            "fetch",
+            "--no-tags",
+            "--no-recurse-submodules",
+            "--",
+            "origin",
+            f"refs/heads/{branch}:{temporary_ref}",
+            credentials=True,
+        )
+        if fetched.returncode:
+            raise SourceCheckoutError(
+                f"Pull failed for Source {source_id}: remote branch origin/{branch} is unavailable; "
+                "verify the branch, remote, and your Git credentials"
+            )
+        remote_commit = _git_inspect(
+            checkout,
+            "rev-parse",
+            "--verify",
+            f"{temporary_ref}^{{commit}}",
+            context=f"Pull failed for Source {source_id}: fetched commit is unavailable",
+        )
+        current = _git_inspect(checkout, "rev-parse", "--verify", "HEAD^{commit}")
+        if current != before:
+            raise SourceCheckoutError(
+                f"Pull blocked for Source {source_id}: checkout changed while fetching; try again"
+            )
+        current_branch = _git_inspect(
+            checkout, "symbolic-ref", "--short", "-q", "HEAD", required=False
+        )
+        if current_branch != branch:
+            raise SourceCheckoutError(
+                f"Pull blocked for Source {source_id}: checked-out branch changed while fetching; "
+                "try again"
+            )
+        _require_clean_checkout(checkout)
+        if _external_checkout_filter(checkout, temporary_ref):
+            raise SourceCheckoutError(
+                f"Pull blocked for Source {source_id}: Git attributes select an executable filter; "
+                "remove the filter before updating this checkout"
+            )
+        ancestor = _git_mutate(checkout, "merge-base", "--is-ancestor", "HEAD", temporary_ref)
+        if ancestor.returncode:
+            raise SourceCheckoutError(
+                f"Pull failed for Source {source_id}: origin/{branch} is not a fast-forward; "
+                "resolve the branch divergence manually"
+            )
+        merged = _git_mutate(
+            checkout, "merge", "--ff-only", "--no-edit", "--no-verify", temporary_ref
+        )
+        if merged.returncode:
+            raise SourceCheckoutError(
+                f"Pull failed for Source {source_id}: Git could not fast-forward the clean checkout"
+            )
+        assert remote_commit is not None
+        tracked = _git_mutate(
+            checkout,
+            "update-ref",
+            f"refs/remotes/origin/{branch}",
+            remote_commit,
+        )
+        if tracked.returncode:
+            raise SourceCheckoutError(
+                f"Pull updated Source {source_id}, but its origin/{branch} status could not be recorded"
+            )
+        return inspect_checkout(checkout)
+    finally:
+        _git_mutate(checkout, "update-ref", "-d", temporary_ref)
+
+
+def _working_tree_changes(checkout: Path) -> list[str]:
+    status = _git_inspect(
+        checkout,
+        "status",
+        "--porcelain=v2",
+        "--untracked-files=all",
+        "--ignored=matching",
+        context=f"{checkout}: Git working-tree status is unavailable",
+    )
+    return status.splitlines() if status else []
+
+
+def _require_clean_checkout(checkout: Path) -> None:
+    changes = _working_tree_changes(checkout)
+    categories = []
+    if any(line.startswith("u ") for line in changes):
+        categories.append("unresolved conflicts")
+    if any(line.startswith(("? ", "! ")) for line in changes):
+        categories.append("untracked or ignored files")
+    if any(line[:1] in {"1", "2"} and len(line) > 3 and line[2] != "." for line in changes):
+        categories.append("staged changes")
+    if any(line[:1] in {"1", "2"} and len(line) > 3 and line[3] != "." for line in changes):
+        categories.append("tracked changes")
+    operations = [
+        name
+        for name in ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "BISECT_HEAD")
+        if _git_inspect(checkout, "rev-parse", "--verify", "-q", name, required=False)
+    ]
+    operations.extend(
+        name
+        for name in ("rebase-merge", "rebase-apply", "sequencer")
+        if _git_path_exists(checkout, name)
+    )
+    if operations:
+        categories.append("an unfinished Git operation")
+    if categories:
+        raise SourceCheckoutError(
+            "Pull blocked: checkout has " + ", ".join(dict.fromkeys(categories))
+        )
+
+
+def _git_path_exists(checkout: Path, name: str) -> bool:
+    path = _git_inspect(
+        checkout,
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-path",
+        name,
+        required=False,
+    )
+    return bool(path and os.path.lexists(path))
+
+
+def _validate_branch(checkout: Path, branch: str) -> None:
+    if (
+        branch.startswith("-")
+        or _git_inspect(checkout, "check-ref-format", "--branch", branch, required=False) is None
+    ):
+        raise SourceCheckoutError(f"Invalid followed branch name: {branch}")
+
+
+def _external_checkout_filter(checkout: Path, revision: str) -> bool:
+    configured = _git_mutate(
+        checkout,
+        "config",
+        "--local",
+        "--get-regexp",
+        r"^filter\..*\.(clean|smudge|process)$",
+    )
+    if configured.returncode != 0 or not configured.stdout.strip():
+        return False
+    paths = _git_inspect(checkout, "ls-tree", "-r", "--name-only", revision)
+    for path in paths.splitlines() if paths else ():
+        if path == ".gitattributes" or path.endswith("/.gitattributes"):
+            attributes = _git_inspect(checkout, "show", f"{revision}:{path}", required=False)
+            if attributes is None:
+                return True
+            if any(
+                "filter" in line.split("#", 1)[0].split()[1:]
+                or any(token.startswith("filter=") for token in line.split("#", 1)[0].split()[1:])
+                for line in attributes.splitlines()
+            ):
+                return True
+    return False
+
+
+def _git_mutate(
+    checkout: Path, *arguments: str, credentials: bool = False
+) -> subprocess.CompletedProcess[str]:
+    executable = shutil.which("git", path=os.defpath)
+    if executable is None:
+        raise SourceCheckoutError("System Git is not available")
+    environment = _clone_environment()
+    if not credentials:
+        environment.update(
+            {
+                "GCM_INTERACTIVE": "Never",
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_TERMINAL_PROMPT": "0",
+                "HOME": os.devnull,
+                "XDG_CONFIG_HOME": os.devnull,
+            }
+        )
+    command = [
+        executable,
+        "--no-pager",
+        "--no-replace-objects",
+        "--no-optional-locks",
+        "-c",
+        f"core.hooksPath={os.devnull}",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.untrackedCache=false",
+        "-c",
+        "core.sshCommand=ssh",
+        "-c",
+        "core.gitProxy=",
+        "-c",
+        "submodule.recurse=false",
+        "-c",
+        "fetch.recurseSubmodules=false",
+        "-c",
+        "protocol.ext.allow=never",
+        "-c",
+        "remote.origin.uploadpack=git-upload-pack",
+        "-C",
+        str(checkout.resolve()),
+        *arguments,
+    ]
+    try:
+        return subprocess.run(
+            command,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+    except OSError as error:
+        raise SourceCheckoutError(f"Git operation failed: {error}") from error
 
 
 def clone_checkout(
@@ -77,6 +386,7 @@ def clone_checkout(
     source_id: str,
     remote: str,
     revision: str | None = None,
+    checkout_branch: str | None = None,
 ) -> tuple[Path, dict[str, object], os.stat_result]:
     validate_clone_remote(remote)
     sources_root = workspace / "sources"
@@ -89,9 +399,11 @@ def clone_checkout(
     template = Path(tempfile.mkdtemp(prefix="git-template-", dir=state_directory))
     (template / "hooks").mkdir()
     try:
-        _git_clone(source_id, remote, temporary, template)
+        _git_clone(source_id, remote, temporary, template, checkout_branch)
         status = inspect_checkout(temporary)
-        if revision is not None:
+        if checkout_branch is not None:
+            verify_checkout_branch(temporary, checkout_branch)
+        elif revision is not None:
             verify_checkout_revision(temporary, revision)
         os.replace(temporary, target)
         return target, status, target.stat()
@@ -178,6 +490,17 @@ def verify_checkout_revision(checkout: Path, revision: str) -> None:
         "--verify",
         f"{revision}^{{commit}}",
         context=f"{checkout}: configured revision is unavailable",
+    )
+
+
+def verify_checkout_branch(checkout: Path, branch: str) -> None:
+    _validate_branch(checkout, branch)
+    _git_inspect(
+        checkout,
+        "rev-parse",
+        "--verify",
+        f"refs/heads/{branch}^{{commit}}",
+        context=f"{checkout}: configured followed branch is unavailable",
     )
 
 
@@ -333,7 +656,13 @@ def _restore_quarantine(sources_descriptor: int, source_id: str, quarantine: str
         )
 
 
-def _git_clone(source_id: str, remote: str, target: Path, template: Path) -> None:
+def _git_clone(
+    source_id: str,
+    remote: str,
+    target: Path,
+    template: Path,
+    checkout_branch: str | None,
+) -> None:
     executable = shutil.which("git", path=os.defpath)
     if executable is None:
         raise SourceCheckoutError("System Git is not available")
@@ -341,7 +670,7 @@ def _git_clone(source_id: str, remote: str, target: Path, template: Path) -> Non
     command = [
         executable,
         "-c",
-        "core.hooksPath=/dev/null",
+        f"core.hooksPath={os.devnull}",
         "-c",
         "core.fsmonitor=false",
         "-c",
@@ -359,10 +688,10 @@ def _git_clone(source_id: str, remote: str, target: Path, template: Path) -> Non
         remote,
         str(target),
     ]
-    checkout = [
+    checkout_prefix = [
         executable,
         "-c",
-        "core.hooksPath=/dev/null",
+        f"core.hooksPath={os.devnull}",
         "-c",
         "core.fsmonitor=false",
         "-c",
@@ -377,24 +706,53 @@ def _git_clone(source_id: str, remote: str, target: Path, template: Path) -> Non
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_NOSYSTEM": "1",
     }
-    for operation, operation_environment in (
-        (command, environment),
-        (checkout, checkout_environment),
-    ):
-        try:
-            result = subprocess.run(
-                operation,
-                check=False,
-                capture_output=True,
-                text=True,
-                env=operation_environment,
+    if checkout_branch is not None:
+        branch_check = subprocess.run(
+            [executable, "check-ref-format", "--branch", checkout_branch],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            env=checkout_environment,
+        )
+        if checkout_branch.startswith("-") or branch_check.returncode:
+            raise SourceCheckoutError(f"Invalid followed branch name: {checkout_branch}")
+    _run_clone_operation(source_id, command, environment)
+    checkout = checkout_prefix
+    if checkout_branch is not None:
+        remote_ref = f"refs/remotes/origin/{checkout_branch}"
+        if (
+            _git_inspect(
+                target, "rev-parse", "--verify", f"{remote_ref}^{{commit}}", required=False
             )
-        except OSError as error:
-            raise SourceCheckoutError(f"Source {source_id} clone failed: {error}") from error
-        if result.returncode:
+            is None
+        ):
             raise SourceCheckoutError(
-                f"Source {source_id} clone failed: Git exited with status {result.returncode}"
+                f"Source {source_id} clone failed: remote branch origin/{checkout_branch} is unavailable"
             )
+        local_ref = f"refs/heads/{checkout_branch}"
+        if _git_inspect(target, "rev-parse", "--verify", f"{local_ref}^{{commit}}", required=False):
+            checkout.append(checkout_branch)
+        else:
+            checkout.extend(["--track", "-b", checkout_branch, remote_ref])
+    _run_clone_operation(source_id, checkout, checkout_environment)
+
+
+def _run_clone_operation(source_id: str, command: list[str], environment: dict[str, str]) -> None:
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+    except OSError as error:
+        raise SourceCheckoutError(f"Source {source_id} clone failed: {error}") from error
+    if result.returncode:
+        raise SourceCheckoutError(
+            f"Source {source_id} clone failed: Git exited with status {result.returncode}"
+        )
 
 
 def _clone_environment() -> dict[str, str]:

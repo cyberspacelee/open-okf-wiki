@@ -1,7 +1,9 @@
 import { useEffect, useState, type FormEvent } from "react"
 import {
   CircleAlertIcon,
+  DownloadIcon,
   FolderGit2Icon,
+  GitCommitHorizontalIcon,
   GitBranchIcon,
   LinkIcon,
   RefreshCwIcon,
@@ -26,6 +28,7 @@ import {
   Card,
   CardContent,
   CardDescription,
+  CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
@@ -41,6 +44,8 @@ import {
   FieldDescription,
   FieldGroup,
   FieldLabel,
+  FieldLegend,
+  FieldSet,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
@@ -54,14 +59,20 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import {
   cloneConfiguredSource,
   cloneSource,
   deleteManagedSource,
+  fetchPreflight,
   fetchSources,
   linkSource,
   linkConfiguredSource,
+  pullSource,
   removeSource,
+  setSourceRevision,
+  type PreflightSnapshot,
+  type RevisionPolicy,
   type SourceCheckout,
   type SourceRole,
   type SourcesError,
@@ -79,6 +90,10 @@ export function SourcesPage({ token }: { token: string }) {
   const [reload, setReload] = useState(0)
   const [snapshot, setSnapshot] = useState<SourcesSnapshot | null>(null)
   const [error, setError] = useState<SourcesError | null>(null)
+  const [preflight, setPreflight] = useState<PreflightSnapshot | null>(null)
+  const [preflightError, setPreflightError] = useState<SourcesError | null>(
+    null
+  )
   const [working, setWorking] = useState<string | null>(null)
   const [linkConfiguredId, setLinkConfiguredId] = useState<string | null>(null)
 
@@ -96,6 +111,23 @@ export function SourcesPage({ token }: { token: string }) {
     return () => controller.abort()
   }, [reload, token])
 
+  useEffect(() => {
+    const controller = new AbortController()
+    fetchPreflight(token, controller.signal).then(
+      (result) => {
+        setPreflight(result)
+        setPreflightError(null)
+      },
+      (reason: SourcesError) => {
+        if (!controller.signal.aborted) {
+          setPreflight(null)
+          setPreflightError(reason)
+        }
+      }
+    )
+    return () => controller.abort()
+  }, [reload, token])
+
   async function mutate(
     label: string,
     operation: () => Promise<SourcesSnapshot>
@@ -104,6 +136,13 @@ export function SourcesPage({ token }: { token: string }) {
     setError(null)
     try {
       setSnapshot(await operation())
+      try {
+        setPreflight(await fetchPreflight(token))
+        setPreflightError(null)
+      } catch (reason) {
+        setPreflight(null)
+        setPreflightError(reason as SourcesError)
+      }
     } catch (reason) {
       setError(reason as SourcesError)
     } finally {
@@ -186,7 +225,25 @@ export function SourcesPage({ token }: { token: string }) {
           setTimeout(() => document.getElementById("link-checkout")?.focus(), 0)
         }}
         onRemove={(id) => mutate(`remove:${id}`, () => removeSource(token, id))}
+        onPull={(id) => mutate(`pull:${id}`, () => pullSource(token, id))}
       />
+
+      <RevisionPoliciesCard
+        sources={snapshot.sources.filter((source) => source.ownership !== null)}
+        working={working}
+        onRevision={(id, revision_policy, revision) =>
+          mutate(`revision:${id}`, () =>
+            setSourceRevision(token, {
+              id,
+              revision_policy,
+              revision,
+              configuration_digest: snapshot.configuration_digest,
+            })
+          )
+        }
+      />
+
+      <PreflightCard preflight={preflight} error={preflightError} />
 
       {snapshot.retained_managed.length > 0 && (
         <Card>
@@ -256,12 +313,14 @@ function SourceTable({
   onClone,
   onLink,
   onRemove,
+  onPull,
 }: {
   sources: SourceCheckout[]
   working: string | null
   onClone: (id: string) => void
   onLink: (id: string) => void
   onRemove: (id: string) => void
+  onPull: (id: string) => void
 }) {
   return (
     <Card>
@@ -292,8 +351,11 @@ function SourceTable({
                 <TableHead>Source</TableHead>
                 <TableHead>Ownership</TableHead>
                 <TableHead>Git state</TableHead>
+                <TableHead>Revision policy</TableHead>
                 <TableHead>Checkout</TableHead>
-                <TableHead className="text-right">Action</TableHead>
+                <TableHead className="sticky right-0 bg-card text-right">
+                  Action
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -350,6 +412,14 @@ function SourceTable({
                       )}
                     </TableCell>
                     <TableCell>
+                      <Badge variant="outline">
+                        {policyLabel(source.revision_policy)}
+                      </Badge>
+                      <p className="mt-1 max-w-56 truncate font-mono text-xs text-muted-foreground">
+                        {source.revision}
+                      </p>
+                    </TableCell>
+                    <TableCell>
                       <p className="max-w-72 truncate font-mono text-xs">
                         {source.checkout ?? "Not bound"}
                       </p>
@@ -362,9 +432,9 @@ function SourceTable({
                         </p>
                       )}
                     </TableCell>
-                    <TableCell className="text-right">
+                    <TableCell className="sticky right-0 bg-card text-right">
                       {unbound ? (
-                        <div className="flex justify-end gap-2">
+                        <div className="flex flex-col items-end gap-2 sm:flex-row sm:justify-end">
                           <Button
                             size="sm"
                             variant="outline"
@@ -401,17 +471,30 @@ function SourceTable({
                           </Button>
                         </div>
                       ) : (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={working !== null}
-                          onClick={() => onRemove(source.id)}
-                        >
-                          <Trash2Icon data-icon="inline-start" />
-                          {working === `remove:${source.id}`
-                            ? "Removing…"
-                            : "Remove"}
-                        </Button>
+                        <div className="flex flex-col items-end gap-2 sm:flex-row sm:justify-end">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={working !== null}
+                            onClick={() => onPull(source.id)}
+                          >
+                            <DownloadIcon data-icon="inline-start" />
+                            {working === `pull:${source.id}`
+                              ? "Pulling…"
+                              : "Pull"}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={working !== null}
+                            onClick={() => onRemove(source.id)}
+                          >
+                            <Trash2Icon data-icon="inline-start" />
+                            {working === `remove:${source.id}`
+                              ? "Removing…"
+                              : "Remove"}
+                          </Button>
+                        </div>
                       )}
                     </TableCell>
                   </TableRow>
@@ -421,6 +504,220 @@ function SourceTable({
           </Table>
         )}
       </CardContent>
+    </Card>
+  )
+}
+
+function RevisionPoliciesCard({
+  sources,
+  working,
+  onRevision,
+}: {
+  sources: SourceCheckout[]
+  working: string | null
+  onRevision: (
+    id: string,
+    revisionPolicy: RevisionPolicy,
+    revision: string
+  ) => void
+}) {
+  if (sources.length === 0) return null
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Revision Policies</CardTitle>
+        <CardDescription>
+          Follow a named local branch or pin the exact commit the next Run must
+          use. Pull never changes a pinned commit.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-6">
+        {sources.map((source) => (
+          <RevisionPolicyForm
+            key={`${source.id}:${source.revision_policy}:${source.revision}`}
+            source={source}
+            disabled={working !== null}
+            busy={working === `revision:${source.id}`}
+            onSubmit={(policy, revision) =>
+              onRevision(source.id, policy, revision)
+            }
+          />
+        ))}
+      </CardContent>
+    </Card>
+  )
+}
+
+function RevisionPolicyForm({
+  source,
+  disabled,
+  busy,
+  onSubmit,
+}: {
+  source: SourceCheckout
+  disabled: boolean
+  busy: boolean
+  onSubmit: (policy: RevisionPolicy, revision: string) => void
+}) {
+  const [policy, setPolicy] = useState(source.revision_policy)
+  const [revision, setRevision] = useState(source.revision)
+
+  function changePolicy(values: string[]) {
+    const next = values[0] as RevisionPolicy | undefined
+    if (!next) return
+    setPolicy(next)
+    setRevision(
+      next === "follow_branch" ? (source.branch ?? "") : (source.commit ?? "")
+    )
+  }
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (revision.trim()) onSubmit(policy, revision.trim())
+  }
+
+  return (
+    <form onSubmit={submit}>
+      <FieldSet>
+        <FieldLegend variant="label">
+          {source.id} · {roleLabel(source.role)}
+        </FieldLegend>
+        <FieldDescription>
+          Local {source.local_commit ?? "unavailable"}; remote{" "}
+          {source.remote_commit ?? "unavailable"}.
+        </FieldDescription>
+        <FieldGroup>
+          <Field orientation="horizontal" data-disabled={disabled || undefined}>
+            <FieldLabel id={`policy-${source.id}`}>Policy</FieldLabel>
+            <ToggleGroup
+              aria-labelledby={`policy-${source.id}`}
+              value={[policy]}
+              onValueChange={changePolicy}
+              variant="outline"
+              size="sm"
+              spacing={0}
+              disabled={disabled}
+            >
+              <ToggleGroupItem value="follow_branch">
+                Follow Branch
+              </ToggleGroupItem>
+              <ToggleGroupItem value="pinned_commit">
+                Pinned Commit
+              </ToggleGroupItem>
+            </ToggleGroup>
+          </Field>
+          <Field orientation="horizontal" data-disabled={disabled || undefined}>
+            <FieldLabel htmlFor={`revision-${source.id}`}>
+              {policy === "follow_branch" ? "Branch" : "Commit"}
+            </FieldLabel>
+            <Input
+              id={`revision-${source.id}`}
+              value={revision}
+              onChange={(event) => setRevision(event.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+              disabled={disabled}
+              required
+            />
+          </Field>
+          <Button
+            type="submit"
+            className="self-start"
+            size="sm"
+            disabled={disabled || !revision.trim()}
+          >
+            <GitCommitHorizontalIcon data-icon="inline-start" />
+            {busy ? "Saving…" : "Save policy"}
+          </Button>
+        </FieldGroup>
+      </FieldSet>
+    </form>
+  )
+}
+
+function PreflightCard({
+  preflight,
+  error,
+}: {
+  preflight: PreflightSnapshot | null
+  error: SourcesError | null
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Next Run Source Set</CardTitle>
+        <CardDescription>
+          Exact immutable commits and tree digests resolved by the Python
+          control plane before Production Run creation.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="px-0">
+        {error ? (
+          <Alert variant="destructive">
+            <CircleAlertIcon />
+            <AlertTitle>Run preflight blocked</AlertTitle>
+            <AlertDescription>{error.message}</AlertDescription>
+          </Alert>
+        ) : !preflight ? (
+          <Skeleton className="h-32 w-full" />
+        ) : preflight.sources.length === 0 ? (
+          <Empty className="min-h-40">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <GitCommitHorizontalIcon />
+              </EmptyMedia>
+              <EmptyTitle>No Source Set yet</EmptyTitle>
+              <EmptyDescription>
+                Configure and bind a Source before starting a Production Run.
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Source</TableHead>
+                <TableHead>Policy</TableHead>
+                <TableHead>Exact commit</TableHead>
+                <TableHead>Tree digest</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {preflight.sources.map((source) => (
+                <TableRow key={source.id}>
+                  <TableCell>
+                    <p className="font-medium">{source.id}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {roleLabel(source.role)}
+                    </p>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="outline">
+                      {policyLabel(source.revision_policy)}
+                    </Badge>
+                    <p className="mt-1 font-mono text-xs text-muted-foreground">
+                      {source.revision}
+                    </p>
+                  </TableCell>
+                  <TableCell className="max-w-72 font-mono text-xs break-all">
+                    {source.exact_commit}
+                  </TableCell>
+                  <TableCell className="max-w-72 font-mono text-xs break-all">
+                    {source.tree_digest}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+      {preflight && preflight.sources.length > 0 && (
+        <CardFooter>
+          <p className="font-mono text-xs break-all text-muted-foreground">
+            Source Set {preflight.source_set_digest}
+          </p>
+        </CardFooter>
+      )}
     </Card>
   )
 }
@@ -717,4 +1014,8 @@ function SourcesLoading() {
 
 function roleLabel(role: SourceRole) {
   return roles.find((item) => item.value === role)?.label ?? role
+}
+
+function policyLabel(policy: RevisionPolicy) {
+  return policy === "follow_branch" ? "Follow Branch" : "Pinned Commit"
 }

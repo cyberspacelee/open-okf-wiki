@@ -1,19 +1,41 @@
 export type SourceRole =
   "implementation" | "documentation" | "requirements" | "contract"
+export type RevisionPolicy = "follow_branch" | "pinned_commit"
 
 export type SourceCheckout = {
   id: string
   role: SourceRole
   revision: string
+  revision_policy: RevisionPolicy
   ownership: "managed" | "linked" | null
   checkout: string | null
   remote: string | null
   branch: string | null
   commit: string | null
+  local_commit: string | null
+  remote_commit: string | null
   dirty: boolean | null
   ahead: number | null
   behind: number | null
   error: string | null
+}
+
+export type SourcePreflight = {
+  id: string
+  role: SourceRole
+  revision_policy: RevisionPolicy
+  revision: string
+  local_commit: string | null
+  remote_commit: string | null
+  exact_commit: string
+  tree_digest: string
+}
+
+export type PreflightSnapshot = {
+  ok: true
+  configuration_digest: string
+  source_set_digest: string
+  sources: SourcePreflight[]
 }
 
 export type SourcesSnapshot = {
@@ -30,6 +52,24 @@ export type SourcesError = {
 
 export function fetchSources(token: string, signal?: AbortSignal) {
   return requestSources("/api/v1/sources", "GET", token, undefined, signal)
+}
+
+export async function fetchPreflight(token: string, signal?: AbortSignal) {
+  const response = await request(
+    "/api/v1/workspace/preflight",
+    "GET",
+    token,
+    undefined,
+    signal
+  )
+  const payload: unknown = await response.json().catch(() => null)
+  if (!isPreflightSnapshot(payload)) {
+    throw {
+      kind: "server",
+      message: "The local service returned an invalid Run preflight response.",
+    } satisfies SourcesError
+  }
+  return payload
 }
 
 export function cloneSource(
@@ -76,13 +116,47 @@ export function deleteManagedSource(
   })
 }
 
+export function pullSource(token: string, id: string) {
+  return requestSources("/api/v1/sources/pull", "POST", token, { id })
+}
+
+export function setSourceRevision(
+  token: string,
+  payload: {
+    id: string
+    revision_policy: RevisionPolicy
+    revision: string
+    configuration_digest: string
+  }
+) {
+  return requestSources("/api/v1/sources/revision", "PUT", token, payload)
+}
+
 async function requestSources(
   path: string,
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "PUT",
   token: string,
   body?: object,
   signal?: AbortSignal
 ): Promise<SourcesSnapshot> {
+  const response = await request(path, method, token, body, signal)
+  const payload: unknown = await response.json().catch(() => null)
+  if (!isSourcesSnapshot(payload)) {
+    throw {
+      kind: "server",
+      message: "The local service returned an invalid Sources response.",
+    } satisfies SourcesError
+  }
+  return payload
+}
+
+async function request(
+  path: string,
+  method: "GET" | "POST" | "PUT",
+  token: string,
+  body?: object,
+  signal?: AbortSignal
+) {
   let response: Response
   try {
     response = await fetch(path, {
@@ -107,14 +181,7 @@ async function requestSources(
       message: await responseMessage(response),
     } satisfies SourcesError
   }
-  const payload: unknown = await response.json().catch(() => null)
-  if (!isSourcesSnapshot(payload)) {
-    throw {
-      kind: "server",
-      message: "The local service returned an invalid Sources response.",
-    } satisfies SourcesError
-  }
-  return payload
+  return response
 }
 
 async function responseMessage(response: Response) {
@@ -155,6 +222,9 @@ function isSource(value: unknown) {
       String(value.role)
     ) &&
     typeof value.revision === "string" &&
+    ["follow_branch", "pinned_commit"].includes(
+      String(value.revision_policy)
+    ) &&
     (value.ownership === "managed" ||
       value.ownership === "linked" ||
       value.ownership === null) &&
@@ -162,10 +232,41 @@ function isSource(value: unknown) {
     nullableString(value.remote) &&
     nullableString(value.branch) &&
     nullableString(value.commit) &&
+    nullableString(value.local_commit) &&
+    nullableString(value.remote_commit) &&
     (typeof value.dirty === "boolean" || value.dirty === null) &&
     nullableNumber(value.ahead) &&
     nullableNumber(value.behind) &&
     nullableString(value.error)
+  )
+}
+
+function isPreflightSnapshot(value: unknown): value is PreflightSnapshot {
+  return (
+    isRecord(value) &&
+    value.ok === true &&
+    typeof value.configuration_digest === "string" &&
+    typeof value.source_set_digest === "string" &&
+    Array.isArray(value.sources) &&
+    value.sources.every(
+      (source) =>
+        isRecord(source) &&
+        typeof source.id === "string" &&
+        [
+          "implementation",
+          "documentation",
+          "requirements",
+          "contract",
+        ].includes(String(source.role)) &&
+        ["follow_branch", "pinned_commit"].includes(
+          String(source.revision_policy)
+        ) &&
+        typeof source.revision === "string" &&
+        nullableString(source.local_commit) &&
+        nullableString(source.remote_commit) &&
+        typeof source.exact_commit === "string" &&
+        typeof source.tree_digest === "string"
+    )
   )
 }
 
