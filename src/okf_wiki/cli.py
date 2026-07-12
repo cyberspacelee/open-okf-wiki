@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import sqlite3
+import sys
 import tomllib
 import uuid
 from datetime import UTC, datetime
@@ -28,6 +29,7 @@ from .coverage import (
     obligation_rows,
     refresh_run_coverage,
 )
+from .gateway_profiles import GatewayApplication, GatewayError
 from .fault_injection import crash_if_requested
 from .java_analysis import (
     DEFAULT_JAVA_EXCLUDED_PATHS,
@@ -517,6 +519,15 @@ def load_config(path_text: str) -> tuple[str, list[dict], Path, dict, dict | Non
                 "Sources lack Local Workspace Settings checkout bindings: "
                 + ", ".join(missing_checkouts)
             )
+        workspace_configuration = snapshot.model_dump(mode="json")
+        if snapshot.models.gateway_profile is not None:
+            try:
+                workspace_configuration["resolved_models"] = GatewayApplication().run_snapshot(
+                    path.parent,
+                    allow_missing=True,
+                )
+            except GatewayError as error:
+                raise UserError(str(error)) from error
         return (
             snapshot.project.id,
             [
@@ -530,7 +541,7 @@ def load_config(path_text: str) -> tuple[str, list[dict], Path, dict, dict | Non
             ],
             snapshot.publication.path,
             load_profile({"profile": snapshot.profile.model_dump(exclude_none=True)}),
-            snapshot.model_dump(mode="json"),
+            workspace_configuration,
         )
     required = {"project_id", "publish_dir"}
     missing = sorted(required - config.keys())
@@ -1374,6 +1385,35 @@ def parser() -> argparse.ArgumentParser:
     eval_command.add_argument("manifest")
     benchmark_command = subcommands.add_parser("benchmark")
     benchmark_command.add_argument("manifest")
+    gateway_command = subcommands.add_parser("gateway")
+    gateway_commands = gateway_command.add_subparsers(dest="gateway_command", required=True)
+    gateway_list = gateway_commands.add_parser("list")
+    gateway_list.add_argument("--config-root")
+    gateway_save = gateway_commands.add_parser("save")
+    gateway_save.add_argument("profile_id")
+    gateway_save.add_argument("--name", required=True)
+    gateway_save.add_argument("--gateway-id", required=True)
+    gateway_save.add_argument("--base-url", required=True)
+    gateway_save.add_argument("--header", action="append", default=[])
+    gateway_save.add_argument("--credential-stdin", action="store_true")
+    gateway_save.add_argument("--expected-revision", type=int)
+    gateway_save.add_argument("--config-root")
+    gateway_test = gateway_commands.add_parser("test")
+    gateway_test.add_argument("profile_id")
+    gateway_test.add_argument("--model")
+    gateway_test.add_argument("--timeout", type=float, default=10)
+    gateway_test.add_argument("--config-root")
+    gateway_select = gateway_commands.add_parser("select")
+    gateway_select.add_argument("root")
+    gateway_select.add_argument("profile_id")
+    gateway_select.add_argument("--model", required=True)
+    gateway_select.add_argument("--concurrency", type=int, default=4)
+    gateway_select.add_argument("--budget", action="append", default=[])
+    gateway_select.add_argument("--role-model", action="append", default=[])
+    gateway_select.add_argument("--config-root")
+    gateway_snapshot = gateway_commands.add_parser("snapshot")
+    gateway_snapshot.add_argument("root")
+    gateway_snapshot.add_argument("--config-root")
     workspace_command = subcommands.add_parser("workspace")
     workspace_commands = workspace_command.add_subparsers(dest="workspace_command", required=True)
     workspace_init = workspace_commands.add_parser("init")
@@ -1418,6 +1458,58 @@ def main() -> int:
             return agent_eval(arguments.manifest)
         if arguments.command == "benchmark":
             return benchmark(arguments.manifest)
+        if arguments.command == "gateway":
+            gateways = GatewayApplication(arguments.config_root)
+            if arguments.gateway_command == "list":
+                emit({"ok": True, "profiles": gateways.list_profiles()})
+            elif arguments.gateway_command == "save":
+                credential = sys.stdin.read() if arguments.credential_stdin else None
+                emit(
+                    {
+                        "ok": True,
+                        "profile": gateways.save_profile(
+                            {
+                                "id": arguments.profile_id,
+                                "name": arguments.name,
+                                "gateway_id": arguments.gateway_id,
+                                "base_url": arguments.base_url,
+                                "headers": _key_values(arguments.header, "header", str),
+                            },
+                            credential=credential.rstrip("\n") if credential is not None else None,
+                            expected_revision=arguments.expected_revision,
+                        ),
+                    }
+                )
+            elif arguments.gateway_command == "test":
+                emit(
+                    {
+                        "ok": True,
+                        "result": gateways.test_profile(
+                            arguments.profile_id,
+                            model=arguments.model,
+                            timeout_seconds=arguments.timeout,
+                        ),
+                    }
+                )
+            elif arguments.gateway_command == "select":
+                emit(
+                    {
+                        "ok": True,
+                        "workspace": gateways.select_workspace(
+                            arguments.root,
+                            profile_id=arguments.profile_id,
+                            default_model=arguments.model,
+                            concurrency=arguments.concurrency,
+                            budgets=_key_values(arguments.budget, "budget", int),
+                            role_overrides=_key_values(
+                                arguments.role_model, "role-model", str
+                            ),
+                        ),
+                    }
+                )
+            else:
+                emit({"ok": True, "models": gateways.run_snapshot(arguments.root)})
+            return 0
         if arguments.command == "workspace":
             if arguments.workspace_command == "console":
                 from .console import run_console
@@ -1450,6 +1542,21 @@ def main() -> int:
             emit({"ok": True, **snapshot.model_dump(mode="json")})
             return 0
         return recover(arguments.run_id)
-    except (UserError, WorkspaceError) as error:
+    except (GatewayError, UserError, WorkspaceError) as error:
         emit({"errors": [str(error)], "ok": False})
         return 1
+
+
+def _key_values(values: list[str], label: str, value_type: type) -> dict:
+    parsed = {}
+    for item in values:
+        if "=" not in item:
+            raise GatewayError(f"--{label} must use NAME=VALUE")
+        key, value = item.split("=", 1)
+        if not key or not value:
+            raise GatewayError(f"--{label} must use non-empty NAME=VALUE")
+        try:
+            parsed[key] = value_type(value)
+        except ValueError:
+            raise GatewayError(f"--{label} has an invalid value for {key}") from None
+    return parsed

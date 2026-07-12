@@ -518,6 +518,32 @@ class WorkspaceApplication:
             self._recover_update_locked()
             return self._open_current()
 
+    def configure_models(self, models: ModelSettings | dict) -> WorkspaceSnapshot:
+        with self._locked():
+            self._recover_update_locked()
+            definition = _validate(
+                WorkspaceDefinition,
+                _read_toml(self.definition_path),
+                self.definition_path,
+            )
+            settings = _validate(
+                LocalWorkspaceSettings,
+                _read_toml(self.settings_path),
+                self.settings_path,
+            )
+            try:
+                selected = ModelSettings.model_validate(models)
+            except ValidationError as error:
+                item = error.errors()[0]
+                location = ".".join(str(part) for part in item["loc"])
+                raise WorkspaceError(
+                    f"{self.settings_path}: invalid field 'models.{location}': {item['msg']}"
+                ) from error
+            return self._update_locked(
+                definition,
+                settings.model_copy(update={"models": selected}),
+            )
+
     def _open_current(self) -> WorkspaceSnapshot:
         definition = _validate(
             WorkspaceDefinition, _read_toml(self.definition_path), self.definition_path

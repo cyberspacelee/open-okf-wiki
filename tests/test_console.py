@@ -16,8 +16,8 @@ from okf_wiki.workspace import WorkspaceApplication, WorkspaceError
 
 
 @contextmanager
-def running_console(root: Path, assets: Path):
-    server, session_url = create_console(root, assets=assets)
+def running_console(root: Path, assets: Path, config_root: Path | None = None):
+    server, session_url = create_console(root, assets=assets, config_root=config_root)
     thread = threading.Thread(target=server.serve_forever)
     thread.start()
     try:
@@ -335,6 +335,54 @@ def test_console_and_cli_settings_updates_return_the_same_domain_error(
     assert code == 1
     assert response.json() == cli_response
     assert "must-not-appear" not in response.text
+
+
+def test_console_configures_reuses_and_selects_secret_free_gateway_profile(
+    tmp_path: Path, assets: Path
+) -> None:
+    WorkspaceApplication(tmp_path).initialize("catalog")
+    config_root = tmp_path / "machine"
+    with running_console(tmp_path, assets, config_root) as (server, _):
+        base = f"http://127.0.0.1:{server.server_port}"
+        headers = {**authorization(server), "Origin": base}
+        created = httpx.post(
+            base + "/api/v1/gateway-profiles",
+            headers=headers,
+            json={
+                "profile": {
+                    "id": "enterprise",
+                    "name": "Enterprise",
+                    "gateway_id": "corp",
+                    "base_url": "https://gateway.example/v1",
+                    "headers": {"X-Tenant": "docs"},
+                },
+                "credential": "http-secret",
+            },
+        )
+        listed = httpx.get(base + "/api/v1/gateway-profiles", headers=authorization(server))
+        selected = httpx.put(
+            base + "/api/v1/workspace/models",
+            headers=headers,
+            json={
+                "profile_id": "enterprise",
+                "default_model": "model-a",
+                "concurrency": 2,
+                "budgets": {"total_tokens": 1000},
+                "role_overrides": {"verifier": "model-b"},
+            },
+        )
+        snapshot = httpx.get(
+            base + "/api/v1/workspace/run-snapshot", headers=authorization(server)
+        )
+
+    assert created.status_code == listed.status_code == selected.status_code == 200
+    assert snapshot.status_code == 200
+    combined = created.text + listed.text + selected.text + snapshot.text
+    assert "http-secret" not in combined
+    assert "docs" not in combined
+    assert listed.json()["profiles"][0]["credential_configured"] is True
+    assert snapshot.json()["models"]["assignments"]["verifier"] == "model-b"
+    assert snapshot.json()["models"]["concurrency"] == 2
 
 
 def test_console_redacts_unexpected_errors(tmp_path: Path, assets: Path, monkeypatch) -> None:

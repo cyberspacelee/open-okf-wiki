@@ -6,6 +6,7 @@ import {
 } from "node:child_process"
 import { once } from "node:events"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { createServer, type Server } from "node:http"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
@@ -13,9 +14,76 @@ const repoRoot = resolve(process.cwd(), "..")
 let consoleProcess: ChildProcessWithoutNullStreams
 let sessionUrl: string
 let workspace: string
+let gatewayServer: Server
+let gatewayUrl: string
 
 test.beforeAll(async () => {
   workspace = mkdtempSync(resolve(tmpdir(), "okf-wiki-console-"))
+  gatewayServer = createServer((request, response) => {
+    const chunks: Buffer[] = []
+    request.on("data", (chunk) => chunks.push(chunk))
+    request.on("end", () => {
+      const payload = chunks.length
+        ? JSON.parse(Buffer.concat(chunks).toString())
+        : null
+      const send = (body: unknown) => {
+        const content = JSON.stringify(body)
+        response.writeHead(200, {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(content),
+        })
+        response.end(content)
+      }
+      if (request.url === "/v1/models") {
+        if (request.headers.authorization !== "Bearer browser-secret") {
+          const content = JSON.stringify({ error: { message: "unauthorized" } })
+          response.writeHead(401, {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(content),
+          })
+          response.end(content)
+          return
+        }
+        send({ data: [{ id: "model-a" }, { id: "model-b" }] })
+        return
+      }
+      setTimeout(
+        () =>
+          send({
+            choices: [
+              {
+                message: payload?.tools
+                  ? {
+                      role: "assistant",
+                      content: null,
+                      tool_calls: [
+                        {
+                          id: "call-1",
+                          type: "function",
+                          function: { name: "okf_probe", arguments: "{}" },
+                        },
+                      ],
+                    }
+                  : { role: "assistant", content: '{"ok":true}' },
+              },
+            ],
+            usage: {
+              prompt_tokens: 2,
+              completion_tokens: 1,
+              total_tokens: 3,
+            },
+          }),
+        30
+      )
+    })
+  })
+  await new Promise<void>((resolveListen) =>
+    gatewayServer.listen(0, "127.0.0.1", resolveListen)
+  )
+  const address = gatewayServer.address()
+  if (!address || typeof address === "string")
+    throw new Error("Gateway did not start")
+  gatewayUrl = `http://127.0.0.1:${address.port}/v1`
   execFileSync(
     "uv",
     [
@@ -35,7 +103,14 @@ test.beforeAll(async () => {
   consoleProcess = spawn(
     "uv",
     ["run", "okf-wiki", "workspace", "console", workspace, "--no-open"],
-    { cwd: repoRoot, stdio: "pipe" }
+    {
+      cwd: repoRoot,
+      stdio: "pipe",
+      env: {
+        ...process.env,
+        OKF_WIKI_CONFIG_HOME: resolve(workspace, "machine"),
+      },
+    }
   )
   sessionUrl = await readSessionUrl(consoleProcess)
 })
@@ -50,6 +125,72 @@ test.afterAll(async () => {
     if (consoleProcess.exitCode === null) consoleProcess.kill("SIGKILL")
   }
   if (workspace) rmSync(workspace, { recursive: true, force: true })
+  if (gatewayServer) {
+    await new Promise<void>((resolveClose) =>
+      gatewayServer.close(() => resolveClose())
+    )
+  }
+})
+
+test("configures, tests, and selects a Gateway Profile through Connections", async ({
+  page,
+}) => {
+  await page.goto(sessionUrl)
+  await page.getByRole("link", { name: "Connections" }).click()
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Connections" })
+  ).toBeVisible()
+
+  await page.getByLabel("Profile name").fill("Enterprise Gateway")
+  await page.getByLabel("Profile ID").fill("enterprise")
+  await page.getByLabel("Gateway ID").fill("corp-openai")
+  await page.getByLabel("OpenAI-compatible base URL").fill(gatewayUrl)
+  await page.getByLabel("Optional non-secret headers").fill("X-Tenant=docs")
+  await page.getByLabel("Credential").fill("browser-secret")
+  const saveResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/api/v1/gateway-profiles"
+  )
+  await page.getByRole("button", { name: "Save profile" }).click()
+  expect((await saveResponse).status()).toBe(200)
+  await expect(
+    page.getByRole("cell", { name: "Enterprise Gateway" })
+  ).toBeVisible()
+  await expect(page.getByLabel("Credential")).toHaveValue("")
+
+  await page.getByLabel("Profile name").fill("Rejected Update")
+  await page.getByLabel("Profile ID").fill("enterprise")
+  await page.getByLabel("Gateway ID").fill("corp-openai")
+  await page.getByLabel("OpenAI-compatible base URL").fill(gatewayUrl)
+  await page
+    .getByLabel("Optional non-secret headers")
+    .fill("Authorization=Bearer forbidden")
+  await page.getByLabel("Credential").fill("keep-on-failure")
+  const rejectedResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/api/v1/gateway-profiles"
+  )
+  await page.getByRole("button", { name: "Save profile" }).click()
+  expect((await rejectedResponse).status()).toBe(400)
+  await expect(page.getByLabel("Credential")).toHaveValue("keep-on-failure")
+
+  await page.getByLabel("Default model").fill("model-a")
+  await page.getByLabel("Concurrency").fill("2")
+  await page.getByLabel("Total token budget").fill("5000")
+  await page.getByRole("button", { name: "Advanced role overrides" }).click()
+  await page.getByLabel("Verifier").fill("model-b")
+  await page.getByRole("button", { name: "Save Workspace selection" }).click()
+  await expect(page.getByText("Workspace selection completed.")).toBeVisible()
+
+  await page.getByLabel("Capability test model").fill("model-a")
+  const testResponse = page.waitForResponse((response) =>
+    new URL(response.url()).pathname.endsWith("/test")
+  )
+  await page.getByRole("button", { name: "Test" }).click()
+  expect((await testResponse).status()).toBe(200)
+  await expect(page.getByText("Verified")).toBeVisible()
 })
 
 test("loads the built Console through the real Python launcher", async ({

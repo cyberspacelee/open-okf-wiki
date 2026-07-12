@@ -7,6 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 from urllib.parse import quote, unquote, urlsplit
 
+from .gateway_profiles import GatewayApplication, GatewayError
 from .workspace import WorkspaceApplication, WorkspaceError, WorkspaceStaleError
 
 
@@ -27,9 +28,16 @@ class ConsoleRequestError(Exception):
 class ConsoleServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, root: Path | str, port: int, assets: Path) -> None:
+    def __init__(
+        self,
+        root: Path | str,
+        port: int,
+        assets: Path,
+        config_root: Path | str | None = None,
+    ) -> None:
         super().__init__(("127.0.0.1", port), ConsoleHandler)
         self.application = WorkspaceApplication(root)
+        self.gateways = GatewayApplication(config_root)
         self.assets = assets.resolve()
         self.session_token = secrets.token_urlsafe(32)
         self.origin = f"http://127.0.0.1:{self.server_port}"
@@ -100,6 +108,66 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     **self.server.application.update_settings_payload(self._json_body()),
                 }
+            elif path == "/api/v1/gateway-profiles" and self.command in {"GET", "HEAD"}:
+                payload = {"ok": True, "profiles": self.server.gateways.list_profiles()}
+            elif path == "/api/v1/gateway-profiles" and self.command == "POST":
+                body = self._json_body()
+                profile = body.get("profile")
+                if not isinstance(profile, dict):
+                    raise GatewayError("invalid field 'profile': must be an object")
+                credential = body.get("credential")
+                expected = body.get("expected_revision")
+                if credential is not None and not isinstance(credential, str):
+                    raise GatewayError("invalid field 'credential': must be a string")
+                if expected is not None and not isinstance(expected, int):
+                    raise GatewayError("invalid field 'expected_revision': must be an integer")
+                payload = {
+                    "ok": True,
+                    "profile": self.server.gateways.save_profile(
+                        profile,
+                        credential=credential,
+                        expected_revision=expected,
+                    ),
+                }
+            elif (
+                path.startswith("/api/v1/gateway-profiles/")
+                and path.endswith("/test")
+                and self.command == "POST"
+            ):
+                profile_id = unquote(path.removeprefix("/api/v1/gateway-profiles/").removesuffix("/test").rstrip("/"))
+                body = self._json_body()
+                model = body.get("model")
+                timeout = body.get("timeout_seconds", 10)
+                if model is not None and not isinstance(model, str):
+                    raise GatewayError("invalid field 'model': must be a string")
+                if not isinstance(timeout, int | float):
+                    raise GatewayError("invalid field 'timeout_seconds': must be a number")
+                payload = {
+                    "ok": True,
+                    "result": self.server.gateways.test_profile(
+                        profile_id,
+                        model=model,
+                        timeout_seconds=float(timeout),
+                    ),
+                }
+            elif path == "/api/v1/workspace/models" and self.command == "PUT":
+                body = self._json_body()
+                payload = {
+                    "ok": True,
+                    "workspace": self.server.gateways.select_workspace(
+                        self.server.application.root,
+                        profile_id=self._required_text(body, "profile_id"),
+                        default_model=self._required_text(body, "default_model"),
+                        concurrency=body.get("concurrency", 4),
+                        budgets=body.get("budgets", {}),
+                        role_overrides=body.get("role_overrides", {}),
+                    ),
+                }
+            elif path == "/api/v1/workspace/run-snapshot" and self.command in {"GET", "HEAD"}:
+                payload = {
+                    "ok": True,
+                    "models": self.server.gateways.run_snapshot(self.server.application.root),
+                }
             else:
                 self._json(404, {"errors": ["Not found"], "ok": False}, head=head)
                 return
@@ -109,7 +177,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         except WorkspaceStaleError as error:
             self._json(409, {"errors": [str(error)], "ok": False}, head=head)
             return
-        except WorkspaceError as error:
+        except (GatewayError, WorkspaceError) as error:
             self._json(400, {"errors": [str(error)], "ok": False}, head=head)
             return
         except Exception:
@@ -117,7 +185,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             return
         self._json(200, payload, head=head)
 
-    def _json_body(self) -> object:
+    def _json_body(self) -> dict:
         media_type = self.headers.get("Content-Type", "").partition(";")[0].strip().lower()
         if media_type != "application/json":
             raise ConsoleRequestError(415, "Content-Type must be application/json")
@@ -130,9 +198,19 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         if length < 1:
             raise ConsoleRequestError(400, "Invalid JSON request body")
         try:
-            return json.loads(self.rfile.read(length))
+            payload = json.loads(self.rfile.read(length))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise ConsoleRequestError(400, "Invalid JSON request body") from error
+        if not isinstance(payload, dict):
+            raise ConsoleRequestError(400, "JSON request body must be an object")
+        return payload
+
+    @staticmethod
+    def _required_text(payload: dict, name: str) -> str:
+        value = payload.get(name)
+        if not isinstance(value, str) or not value.strip():
+            raise GatewayError(f"invalid field '{name}': must be a non-empty string")
+        return value
 
     def _authorized(self) -> bool:
         received = self.headers.get("Authorization", "").encode(errors="surrogatepass")
@@ -203,11 +281,12 @@ def create_console(
     port: int = 0,
     *,
     assets: Path | None = None,
+    config_root: Path | str | None = None,
 ) -> tuple[ConsoleServer, str]:
     if not 0 <= port <= 65535:
         raise WorkspaceError("Console port must be between 0 and 65535")
     asset_root = assets or Path(__file__).with_name("console_assets")
-    server = ConsoleServer(root, port, asset_root)
+    server = ConsoleServer(root, port, asset_root, config_root)
     session_url = f"{server.origin}/#token={quote(server.session_token)}"
     return server, session_url
 

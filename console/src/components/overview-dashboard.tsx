@@ -15,6 +15,7 @@ import {
   SparklesIcon,
 } from "lucide-react"
 
+import { GatewayConnections } from "@/components/gateway-connections"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -62,14 +63,14 @@ import { fetchSettings } from "@/lib/settings"
 import { cn } from "@/lib/utils"
 
 const navItems = [
-  { label: "Overview", icon: LayoutDashboardIcon },
+  { label: "Overview", icon: LayoutDashboardIcon, href: "/" },
   { label: "Sources", icon: GitBranchIcon },
   { label: "Runs", icon: PlayIcon },
   { label: "Review", icon: ShieldCheckIcon },
   { label: "Knowledge", icon: BookOpenIcon },
   { label: "Concepts", icon: NetworkIcon },
   { label: "Settings", icon: SettingsIcon },
-  { label: "Connections", icon: LinkIcon },
+  { label: "Connections", icon: LinkIcon, href: "/?view=connections" },
 ] as const
 
 const phases = [
@@ -110,7 +111,12 @@ export function OverviewDashboard({
   overview: Overview
   token: string
 }) {
-  const [page, setPage] = useState<"overview" | "settings">("overview")
+  const [page, setPage] = useState<"overview" | "settings" | "connections">(
+    () =>
+      new URLSearchParams(window.location.search).get("view") === "connections"
+        ? "connections"
+        : "overview"
+  )
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const applyCompactNavigation = useCallback(
     (compact: boolean) => setSidebarOpen(!compact),
@@ -126,6 +132,12 @@ export function OverviewDashboard({
     )
     return () => controller.abort()
   }, [applyCompactNavigation, token])
+
+  const navigate = useCallback((nextPage: typeof page) => {
+    const url = nextPage === "connections" ? "/?view=connections" : "/"
+    window.history.replaceState(null, "", url)
+    setPage(nextPage)
+  }, [])
 
   return (
     <SidebarProvider
@@ -152,20 +164,34 @@ export function OverviewDashboard({
             <SidebarGroupContent>
               <nav aria-label="Primary">
                 <SidebarMenu>
-                  {navItems.map(({ label, icon: Icon }, index) => (
+                  {navItems.map(({ label, icon: Icon, ...item }) => (
                     <SidebarMenuItem key={label}>
-                      {index === 0 ? (
+                      {"href" in item ? (
                         <SidebarMenuButton
-                          isActive={page === "overview"}
+                          isActive={
+                            page ===
+                            (label === "Connections"
+                              ? "connections"
+                              : "overview")
+                          }
                           render={
                             <a
-                              href="/"
+                              href={item.href}
                               aria-current={
-                                page === "overview" ? "page" : undefined
+                                page ===
+                                (label === "Connections"
+                                  ? "connections"
+                                  : "overview")
+                                  ? "page"
+                                  : undefined
                               }
                               onClick={(event) => {
                                 event.preventDefault()
-                                setPage("overview")
+                                navigate(
+                                  label === "Connections"
+                                    ? "connections"
+                                    : "overview"
+                                )
                               }}
                             />
                           }
@@ -180,7 +206,7 @@ export function OverviewDashboard({
                           aria-current={
                             page === "settings" ? "page" : undefined
                           }
-                          onClick={() => setPage("settings")}
+                          onClick={() => navigate("settings")}
                         >
                           <Icon />
                           <span>{label}</span>
@@ -220,7 +246,9 @@ export function OverviewDashboard({
                 <p className="text-xs text-muted-foreground">
                   {page === "overview"
                     ? "Workspace overview"
-                    : "Workspace settings"}
+                    : page === "settings"
+                      ? "Workspace settings"
+                      : "Gateway connections"}
                 </p>
               </div>
             </div>
@@ -229,10 +257,12 @@ export function OverviewDashboard({
                 <CircleCheckIcon data-icon="inline-start" />
                 Local only
               </Badge>
-              <Button disabled>
-                <PlayIcon data-icon="inline-start" />
-                Start run
-              </Button>
+              {page === "overview" && (
+                <Button disabled>
+                  <PlayIcon data-icon="inline-start" />
+                  Start run
+                </Button>
+              )}
             </div>
           </div>
         </header>
@@ -244,6 +274,10 @@ export function OverviewDashboard({
           />
         ) : (
           <div className="mx-auto flex w-full max-w-[90rem] flex-col gap-8 px-5 py-7 lg:px-8 lg:py-9">
+            {page === "connections" ? (
+              <GatewayConnections token={token} />
+            ) : (
+              <>
             <section
               aria-labelledby="overview-title"
               className="grid gap-6 border-b pb-8 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end"
@@ -299,6 +333,8 @@ export function OverviewDashboard({
             </div>
 
             <NextActions actions={overview.next_actions} />
+              </>
+            )}
           </div>
         )}
       </SidebarInset>
