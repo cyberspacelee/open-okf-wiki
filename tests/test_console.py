@@ -12,6 +12,7 @@ import pytest
 import okf_wiki.console as console_module
 from okf_wiki.console import MAX_JSON_BODY, create_console
 from okf_wiki.cli import parser
+from okf_wiki.gateway_probe import GatewayProbe
 from okf_wiki.workspace import WorkspaceApplication, WorkspaceError
 
 
@@ -369,8 +370,20 @@ def test_console_json_mutations_distinguish_media_type_size_and_syntax(
 
 
 def test_console_configures_reuses_and_selects_secret_free_gateway_profile(
-    tmp_path: Path, assets: Path
+    tmp_path: Path, assets: Path, monkeypatch
 ) -> None:
+    def probe(_client, model):
+        return {
+            "model": model,
+            "models": ["model-a", "model-b"],
+            "capabilities": {
+                "authentication": True,
+                "structured_output": True,
+                "tool_calling": True,
+            },
+        }
+
+    monkeypatch.setattr(GatewayProbe, "run", probe)
     WorkspaceApplication(tmp_path).initialize("catalog")
     config_root = tmp_path / "machine"
     with running_console(tmp_path, assets, config_root) as (server, _):
@@ -390,7 +403,18 @@ def test_console_configures_reuses_and_selects_secret_free_gateway_profile(
                 "credential": "http-secret",
             },
         )
-        listed = httpx.get(base + "/api/v1/gateway-profiles", headers=authorization(server))
+        tested = [
+            httpx.post(
+                base + "/api/v1/gateway-profiles/enterprise/test",
+                headers=headers,
+                json={"model": model},
+            )
+            for model in ("model-a", "model-b")
+        ]
+        listed = httpx.get(
+            base + "/api/v1/gateway-profiles",
+            headers=authorization(server),
+        )
         selected = httpx.put(
             base + "/api/v1/workspace/models",
             headers=headers,
@@ -402,11 +426,10 @@ def test_console_configures_reuses_and_selects_secret_free_gateway_profile(
                 "role_overrides": {"verifier": "model-b"},
             },
         )
-        snapshot = httpx.get(
-            base + "/api/v1/workspace/run-snapshot", headers=authorization(server)
-        )
+        snapshot = httpx.get(base + "/api/v1/workspace/run-snapshot", headers=authorization(server))
 
     assert created.status_code == listed.status_code == selected.status_code == 200
+    assert all(response.status_code == 200 for response in tested)
     assert snapshot.status_code == 200
     combined = created.text + listed.text + selected.text + snapshot.text
     assert "http-secret" not in combined

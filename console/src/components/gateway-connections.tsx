@@ -317,12 +317,12 @@ function ProfileList({
                     <TableCell>
                       <Badge
                         variant={
-                          profile.capabilities.authentication
+                          profile.capabilities[testModel]?.authentication
                             ? "secondary"
                             : "outline"
                         }
                       >
-                        {profile.capabilities.authentication
+                        {profile.capabilities[testModel]?.authentication
                           ? "Verified"
                           : "Not tested"}
                       </Badge>
@@ -645,7 +645,10 @@ function WorkspaceModels({
                 <FieldSet>
                   <FieldLegend variant="label">Agent Role models</FieldLegend>
                   <FieldDescription>
-                    Leave blank to inherit the default model.
+                    Leave blank to inherit the default model. Test every
+                    selected model before saving. Selection is recorded here;
+                    semantic execution remains subject to the release Benchmark
+                    Corpus and Agent Evaluation policy.
                   </FieldDescription>
                   <FieldGroup>
                     {roles.map((role) => (

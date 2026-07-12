@@ -1,4 +1,5 @@
 import builtins
+import ipaddress
 import json
 import os
 import re
@@ -58,6 +59,8 @@ class GatewayProfileInput(StrictModel):
         parsed = urlsplit(value)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ValueError("must be an http or https URL with a host")
+        if parsed.scheme == "http" and not _is_loopback_host(parsed.hostname):
+            raise ValueError("must use https unless the host is localhost or loopback")
         if parsed.username is not None or parsed.password is not None:
             raise ValueError("must not contain user information")
         if parsed.query or parsed.fragment:
@@ -78,7 +81,14 @@ class GatewayProfileInput(StrictModel):
                 raise ValueError("headers must use non-empty single-line names and values")
             if any(
                 marker in normalized
-                for marker in ("authorization", "api_key", "token", "secret", "credential", "cookie")
+                for marker in (
+                    "authorization",
+                    "api_key",
+                    "token",
+                    "secret",
+                    "credential",
+                    "cookie",
+                )
             ):
                 raise ValueError(f"secret-bearing header '{name}' must use the credential field")
         return headers
@@ -92,7 +102,7 @@ class GatewayProfile(StrictModel):
     base_url: str
     headers: dict[str, str] = Field(default_factory=dict)
     credential_backend: str | None = None
-    capabilities: dict[str, bool] = Field(default_factory=dict)
+    capabilities: dict[str, dict[str, bool]] = Field(default_factory=dict)
     models: list[str] = Field(default_factory=list)
     revision: int = Field(ge=1)
 
@@ -119,7 +129,7 @@ class GatewayProfileRegistry:
         *,
         secret_store: SecretStore | None = None,
     ) -> None:
-        self.root = (Path(root).resolve() if root is not None else _default_config_root())
+        self.root = Path(root).resolve() if root is not None else _default_config_root()
         self.path = self.root / "gateway-profiles.json"
         self.lock_path = self.root / "gateway-profiles-lock.db"
         self.secret_store = secret_store or SecretStore(
@@ -160,10 +170,14 @@ class GatewayProfileRegistry:
                 if previous_backend is not None:
                     previous_secret = self.secret_store.get(value.id, previous_backend)
                 backend = self.secret_store.put(value.id, credential)
-            connection_changed = current is None or any(
-                getattr(current, field) != getattr(value, field)
-                for field in ("gateway_id", "base_url", "headers")
-            ) or credential is not None
+            connection_changed = (
+                current is None
+                or any(
+                    getattr(current, field) != getattr(value, field)
+                    for field in ("gateway_id", "base_url", "headers")
+                )
+                or credential is not None
+            )
             profiles[value.id] = GatewayProfile(
                 **value.model_dump(),
                 credential_backend=backend,
@@ -210,7 +224,9 @@ class GatewayProfileRegistry:
             raise GatewayError("Gateway Profile has no credential", category="authentication")
         return self.secret_store.get(profile_id, profile.credential_backend)
 
-    def test(self, profile_id: str, *, model: str | None = None, timeout_seconds: float = 10) -> dict:
+    def test(
+        self, profile_id: str, *, model: str | None = None, timeout_seconds: float = 10
+    ) -> dict:
         if timeout_seconds <= 0:
             raise GatewayError("timeout must be positive")
         with self._locked():
@@ -224,7 +240,14 @@ class GatewayProfileRegistry:
                 )
             secret = self.secret_store.get(profile_id, profile.credential_backend)
         client = GatewayProbe(profile, secret, timeout_seconds)
-        result = client.run(model)
+        try:
+            result = client.run(model)
+        except GatewayError as error:
+            self._invalidate_capabilities(
+                profile,
+                model if error.model_specific else None,
+            )
+            raise
         with self._locked():
             profiles = self._load()
             current = profiles.get(profile_id)
@@ -235,15 +258,44 @@ class GatewayProfileRegistry:
                     "Gateway Profile changed during capability testing",
                     category="stale",
                 )
+            discovered_models = result["models"]
+            tested_model = result["model"]
+            capabilities = {
+                name: value
+                for name, value in current.capabilities.items()
+                if name in discovered_models
+            }
+            capabilities[tested_model] = result["capabilities"]
             profiles[profile_id] = current.model_copy(
                 update={
-                    "capabilities": result["capabilities"],
-                    "models": result["models"],
+                    "capabilities": capabilities,
+                    "models": discovered_models,
                     "revision": current.revision + 1,
                 }
             )
             self._write(profiles)
         return result
+
+    def _invalidate_capabilities(self, profile: GatewayProfile, model: str | None) -> None:
+        with self._locked():
+            profiles = self._load()
+            current = profiles.get(profile.id)
+            if current is None or current.revision != profile.revision:
+                return
+            capabilities = dict(current.capabilities)
+            if model is None:
+                capabilities.clear()
+            else:
+                capabilities.pop(model, None)
+            if capabilities == current.capabilities:
+                return
+            profiles[profile.id] = current.model_copy(
+                update={
+                    "capabilities": capabilities,
+                    "revision": current.revision + 1,
+                }
+            )
+            self._write(profiles)
 
     def _validate_input(self, payload: Mapping[str, object]) -> GatewayProfileInput:
         try:
@@ -270,7 +322,10 @@ class GatewayProfileRegistry:
                 if not isinstance(item, dict):
                     raise ValueError("invalid Gateway Profile")
                 GatewayProfileInput.model_validate(
-                    {key: item.get(key) for key in ("id", "name", "gateway_id", "base_url", "headers")}
+                    {
+                        key: item.get(key)
+                        for key in ("id", "name", "gateway_id", "base_url", "headers")
+                    }
                 )
                 profiles.append(GatewayProfile.model_validate(item))
             if len({profile.id for profile in profiles}) != len(profiles):
@@ -287,8 +342,7 @@ class GatewayProfileRegistry:
                     {
                         "schema_version": PROFILE_SCHEMA_VERSION,
                         "profiles": [
-                            profiles[key].model_dump(mode="json")
-                            for key in sorted(profiles)
+                            profiles[key].model_dump(mode="json") for key in sorted(profiles)
                         ],
                     },
                     indent=2,
@@ -356,22 +410,20 @@ class GatewayApplication:
         budgets: Mapping[str, int] | None = None,
         role_overrides: Mapping[str, str] | None = None,
     ) -> dict:
-        self.registry.get(profile_id)
         overrides = dict(role_overrides or {})
-        unknown_roles = sorted(set(overrides) - set(AGENT_ROLES))
-        if unknown_roles:
-            raise GatewayError("unknown Agent Roles: " + ", ".join(unknown_roles))
         app = WorkspaceApplication(root)
         try:
-            snapshot = app.configure_models(
-                ModelSettings(
-                    gateway_profile=profile_id,
-                    default_model=default_model,
-                    concurrency=concurrency,
-                    budgets=dict(budgets or {}),
-                    role_overrides=overrides,
-                )
+            settings = ModelSettings(
+                gateway_profile=profile_id,
+                default_model=default_model,
+                concurrency=concurrency,
+                budgets=dict(budgets or {}),
+                role_overrides=overrides,
             )
+            # Selection records local intent. Ticket08 applies the release Benchmark
+            # Corpus and Agent Evaluation policy before semantic execution.
+            self.resolve_models(settings)
+            snapshot = app.configure_models(settings)
             return snapshot.model_dump(mode="json")
         except (ValidationError, WorkspaceError) as error:
             raise GatewayError(str(error)) from error
@@ -406,6 +458,18 @@ class GatewayApplication:
                 "budgets": models.budgets,
                 "capabilities": {},
             }
+        assigned_models = sorted(set(assignments.values()))
+        untested = [
+            model
+            for model in assigned_models
+            if model not in profile.models or model not in profile.capabilities
+        ]
+        if untested:
+            raise GatewayError(
+                "Gateway Profile requires successful capability tests for models: "
+                + ", ".join(untested),
+                category="capability",
+            )
         return {
             "profile": {
                 "id": profile.id,
@@ -420,5 +484,14 @@ class GatewayApplication:
             "assignments": assignments,
             "concurrency": models.concurrency,
             "budgets": models.budgets,
-            "capabilities": profile.capabilities,
+            "capabilities": {model: profile.capabilities[model] for model in assigned_models},
         }
+
+
+def _is_loopback_host(host: str) -> bool:
+    if host.casefold() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False

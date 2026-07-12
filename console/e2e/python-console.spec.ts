@@ -190,16 +190,25 @@ test("configures, tests, and selects a Gateway Profile through Connections", asy
   await page.getByLabel("Total token budget").fill("5000")
   await page.getByRole("button", { name: "Advanced role overrides" }).click()
   await page.getByLabel("Verifier").fill("model-b")
-  await page.getByRole("button", { name: "Save Workspace selection" }).click()
-  await expect(page.getByText("Workspace selection completed.")).toBeVisible()
 
   await page.getByLabel("Capability test model").fill("model-a")
-  const testResponse = page.waitForResponse((response) =>
+  const defaultTestResponse = page.waitForResponse((response) =>
     new URL(response.url()).pathname.endsWith("/test")
   )
   await page.getByRole("button", { name: "Test" }).click()
-  expect((await testResponse).status()).toBe(200)
+  expect((await defaultTestResponse).status()).toBe(200)
   await expect(page.getByText("Verified")).toBeVisible()
+
+  await page.getByLabel("Capability test model").fill("model-b")
+  const overrideTestResponse = page.waitForResponse((response) =>
+    new URL(response.url()).pathname.endsWith("/test")
+  )
+  await page.getByRole("button", { name: "Test" }).click()
+  expect((await overrideTestResponse).status()).toBe(200)
+  await expect(page.getByText("Verified")).toBeVisible()
+
+  await page.getByRole("button", { name: "Save Workspace selection" }).click()
+  await expect(page.getByText("Workspace selection completed.")).toBeVisible()
 
   await page.getByLabel("Profile name").fill("Enterprise Gateway")
   await page.getByLabel("Profile ID").fill("enterprise")

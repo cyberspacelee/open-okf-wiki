@@ -98,7 +98,7 @@ class CtypesMacOSKeychain:
             self.security = ctypes.CDLL(security_path)
             self.core_foundation = ctypes.CDLL(core_path)
             self._configure()
-        except (AttributeError, OSError):
+        except AttributeError, OSError:
             self.security = None
             self.core_foundation = None
 
@@ -260,6 +260,162 @@ class MacOSSecurityBackend:
         self.api.delete(self.service, profile_id.encode())
 
 
+class WindowsCredentialAPI(Protocol):
+    def available(self) -> bool: ...
+
+    def put(self, target: str, secret: bytes) -> None: ...
+
+    def get(self, target: str) -> bytes | None: ...
+
+    def delete(self, target: str) -> None: ...
+
+
+class _WindowsFileTime(ctypes.Structure):
+    _fields_ = [("low", ctypes.c_uint32), ("high", ctypes.c_uint32)]
+
+
+class _WindowsCredential(ctypes.Structure):
+    _fields_ = [
+        ("flags", ctypes.c_uint32),
+        ("type", ctypes.c_uint32),
+        ("target_name", ctypes.c_wchar_p),
+        ("comment", ctypes.c_wchar_p),
+        ("last_written", _WindowsFileTime),
+        ("credential_blob_size", ctypes.c_uint32),
+        ("credential_blob", ctypes.POINTER(ctypes.c_ubyte)),
+        ("persist", ctypes.c_uint32),
+        ("attribute_count", ctypes.c_uint32),
+        ("attributes", ctypes.c_void_p),
+        ("target_alias", ctypes.c_wchar_p),
+        ("user_name", ctypes.c_wchar_p),
+    ]
+
+
+class CtypesWindowsCredentialManager:
+    credential_type_generic = 1
+    persist_local_machine = 2
+    error_not_found = 1168
+
+    def __init__(self) -> None:
+        self.advapi32: Any | None = None
+        if sys.platform != "win32":
+            return
+        try:
+            loader = getattr(ctypes, "WinDLL")
+            self.advapi32 = loader("Advapi32", use_last_error=True)
+            self._configure()
+        except AttributeError, OSError:
+            self.advapi32 = None
+
+    def available(self) -> bool:
+        return self.advapi32 is not None
+
+    def _configure(self) -> None:
+        assert self.advapi32 is not None
+        credential_pointer = ctypes.POINTER(_WindowsCredential)
+        self.advapi32.CredWriteW.argtypes = [credential_pointer, ctypes.c_uint32]
+        self.advapi32.CredWriteW.restype = ctypes.c_int
+        self.advapi32.CredReadW.argtypes = [
+            ctypes.c_wchar_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.POINTER(credential_pointer),
+        ]
+        self.advapi32.CredReadW.restype = ctypes.c_int
+        self.advapi32.CredDeleteW.argtypes = [
+            ctypes.c_wchar_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+        ]
+        self.advapi32.CredDeleteW.restype = ctypes.c_int
+        self.advapi32.CredFree.argtypes = [ctypes.c_void_p]
+        self.advapi32.CredFree.restype = None
+
+    @staticmethod
+    def _last_error() -> int:
+        return int(getattr(ctypes, "get_last_error")())
+
+    def put(self, target: str, secret: bytes) -> None:
+        if not self.available():
+            raise GatewayError("Windows Credential Manager unavailable")
+        assert self.advapi32 is not None
+        secret_buffer = ctypes.create_string_buffer(secret)
+        credential = _WindowsCredential(
+            type=self.credential_type_generic,
+            target_name=target,
+            credential_blob_size=len(secret),
+            credential_blob=ctypes.cast(
+                secret_buffer,
+                ctypes.POINTER(ctypes.c_ubyte),
+            ),
+            persist=self.persist_local_machine,
+            user_name=target,
+        )
+        try:
+            if not self.advapi32.CredWriteW(ctypes.byref(credential), 0):
+                raise GatewayError("Windows Credential Manager update failed")
+        finally:
+            ctypes.memset(secret_buffer, 0, len(secret_buffer))
+
+    def get(self, target: str) -> bytes | None:
+        if not self.available():
+            raise GatewayError("Windows Credential Manager unavailable")
+        assert self.advapi32 is not None
+        pointer = ctypes.POINTER(_WindowsCredential)()
+        if not self.advapi32.CredReadW(
+            target,
+            self.credential_type_generic,
+            0,
+            ctypes.byref(pointer),
+        ):
+            if self._last_error() == self.error_not_found:
+                return None
+            raise GatewayError("Windows Credential Manager lookup failed")
+        try:
+            credential = pointer.contents
+            return ctypes.string_at(
+                credential.credential_blob,
+                credential.credential_blob_size,
+            )
+        finally:
+            self.advapi32.CredFree(pointer)
+
+    def delete(self, target: str) -> None:
+        if not self.available():
+            raise GatewayError("Windows Credential Manager unavailable")
+        assert self.advapi32 is not None
+        if self.advapi32.CredDeleteW(target, self.credential_type_generic, 0):
+            return
+        if self._last_error() != self.error_not_found:
+            raise GatewayError("Windows Credential Manager delete failed")
+
+
+class WindowsCredentialBackend:
+    name = "windows-credential-manager"
+    target_prefix = "okf-wiki-gateway:"
+
+    def __init__(self, api: WindowsCredentialAPI | None = None) -> None:
+        self.api = api or CtypesWindowsCredentialManager()
+
+    def available(self) -> bool:
+        return self.api.available()
+
+    def put(self, profile_id: str, secret: str) -> None:
+        self.api.put(self.target_prefix + profile_id, secret.encode())
+
+    def get(self, profile_id: str) -> str:
+        value = self.api.get(self.target_prefix + profile_id)
+        if not value:
+            raise GatewayError("gateway credential unavailable")
+        try:
+            return value.decode()
+        except UnicodeDecodeError as error:
+            raise GatewayError("gateway credential is not valid UTF-8") from error
+
+    def delete(self, profile_id: str) -> None:
+        self.api.delete(self.target_prefix + profile_id)
+
+
 class LocalFileSecretBackend:
     name = "local-file-0600"
 
@@ -325,27 +481,35 @@ class SecretStore:
         return self.fallback.name
 
     def get(self, profile_id: str, backend: str) -> str:
-        for candidate in (self.primary, self.fallback):
-            if candidate is not None and candidate.name == backend and candidate.available():
-                return candidate.get(profile_id)
+        candidate = self._backend(backend)
+        if candidate is not None:
+            return candidate.get(profile_id)
         raise GatewayError("gateway credential unavailable")
 
     def restore(self, profile_id: str, secret: str, backend: str) -> None:
-        for candidate in (self.primary, self.fallback):
-            if candidate is not None and candidate.name == backend and candidate.available():
-                candidate.put(profile_id, secret)
-                return
+        candidate = self._backend(backend)
+        if candidate is not None:
+            candidate.put(profile_id, secret)
+            return
         raise GatewayError("cannot restore the previous gateway credential")
 
     def delete(self, profile_id: str, backend: str | None) -> None:
+        candidate = self._backend(backend)
+        if candidate is not None:
+            candidate.delete(profile_id)
+
+    def _backend(self, backend: str | None) -> SecretBackend | None:
         for candidate in (self.primary, self.fallback):
             if candidate is not None and candidate.name == backend and candidate.available():
-                candidate.delete(profile_id)
+                return candidate
+        return None
 
 
 def system_secret_backend() -> SecretBackend | None:
     if sys.platform == "darwin":
         return MacOSSecurityBackend()
+    if sys.platform == "win32":
+        return WindowsCredentialBackend()
     if sys.platform.startswith("linux"):
         return LinuxSecretToolBackend()
     return None

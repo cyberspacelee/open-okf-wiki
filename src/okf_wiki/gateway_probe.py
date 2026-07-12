@@ -56,6 +56,7 @@ class GatewayProbe:
             raise GatewayError(
                 "Selected model is not available from the Gateway",
                 category="capability",
+                model_specific=True,
             )
         self._verify_error_mapping()
 
@@ -186,7 +187,7 @@ class GatewayProbe:
             status = error.code
             error.close()
             raise status_error(status) from None
-        except (TimeoutError, socket.timeout):
+        except TimeoutError, socket.timeout:
             raise GatewayError("Gateway request timed out", category="timeout") from None
         except URLError as error:
             if isinstance(error.reason, (TimeoutError, socket.timeout)):
@@ -211,12 +212,14 @@ class GatewayProbe:
             raise GatewayError(
                 "Gateway chat response is missing a choice",
                 category="capability",
+                model_specific=True,
             )
         message = choices[0].get("message")
         if not isinstance(message, dict):
             raise GatewayError(
                 "Gateway chat response is missing a message",
                 category="capability",
+                model_specific=True,
             )
         return message
 
@@ -230,6 +233,7 @@ class GatewayProbe:
             raise GatewayError(
                 "Gateway does not satisfy structured output",
                 category="capability",
+                model_specific=True,
             )
 
     def _validate_tools(self, payload: dict) -> None:
@@ -238,12 +242,14 @@ class GatewayProbe:
             raise GatewayError(
                 "Gateway does not satisfy function tool calling",
                 category="capability",
+                model_specific=True,
             )
         function = calls[0].get("function") if isinstance(calls[0], dict) else None
         if not isinstance(function, dict) or function.get("name") != "okf_probe":
             raise GatewayError(
                 "Gateway returned an invalid function tool call",
                 category="capability",
+                model_specific=True,
             )
 
     @staticmethod
@@ -253,7 +259,11 @@ class GatewayProbe:
         if not isinstance(usage, dict) or any(
             not isinstance(usage.get(name), int) for name in names
         ):
-            raise GatewayError("Gateway does not report token usage", category="capability")
+            raise GatewayError(
+                "Gateway does not report token usage",
+                category="capability",
+                model_specific=True,
+            )
 
 
 def status_error(status: int) -> GatewayError:

@@ -1502,9 +1502,7 @@ def main() -> int:
                             default_model=arguments.model,
                             concurrency=arguments.concurrency,
                             budgets=_key_values(arguments.budget, "budget", int),
-                            role_overrides=_key_values(
-                                arguments.role_model, "role-model", str
-                            ),
+                            role_overrides=_key_values(arguments.role_model, "role-model", str),
                         ),
                     }
                 )

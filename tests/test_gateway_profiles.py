@@ -25,6 +25,8 @@ from okf_wiki.gateway_secrets import (
     LocalFileSecretBackend,
     MacOSSecurityBackend,
     SecretStore,
+    WindowsCredentialBackend,
+    system_secret_backend,
 )
 from okf_wiki.workspace import WorkspaceApplication
 
@@ -214,6 +216,56 @@ def test_macos_keychain_uses_injected_framework_api_without_process_arguments(
     assert (b"okf-wiki-gateway", b"enterprise") not in api.values
 
 
+def test_windows_credential_manager_uses_injected_api_without_process_arguments(
+    monkeypatch,
+) -> None:
+    class CredentialAPI:
+        def __init__(self) -> None:
+            self.values: dict[str, bytes] = {}
+            self.calls: list[tuple[str, str, bytes | None]] = []
+
+        def available(self) -> bool:
+            return True
+
+        def put(self, target: str, secret: bytes) -> None:
+            self.calls.append(("put", target, secret))
+            self.values[target] = secret
+
+        def get(self, target: str) -> bytes | None:
+            self.calls.append(("get", target, None))
+            return self.values.get(target)
+
+        def delete(self, target: str) -> None:
+            self.calls.append(("delete", target, None))
+            self.values.pop(target, None)
+
+    monkeypatch.setattr(
+        "okf_wiki.gateway_secrets.subprocess.run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not spawn")),
+    )
+    api = CredentialAPI()
+    backend = WindowsCredentialBackend(api)
+    backend.put("enterprise", "windows-secret")
+
+    assert backend.get("enterprise") == "windows-secret"
+    assert api.calls[0] == (
+        "put",
+        "okf-wiki-gateway:enterprise",
+        b"windows-secret",
+    )
+    backend.delete("enterprise")
+    assert "okf-wiki-gateway:enterprise" not in api.values
+
+    monkeypatch.setattr("okf_wiki.gateway_secrets.sys.platform", "win32")
+    monkeypatch.setattr(
+        "okf_wiki.gateway_secrets.CtypesWindowsCredentialManager",
+        lambda: api,
+    )
+    selected = system_secret_backend()
+    assert isinstance(selected, WindowsCredentialBackend)
+    assert selected.api is api
+
+
 def test_profile_validation_and_stale_updates_are_strict(tmp_path: Path) -> None:
     profiles = registry(tmp_path)
     created = profiles.save(profile_payload(), credential="secret")
@@ -234,6 +286,27 @@ def test_profile_validation_and_stale_updates_are_strict(tmp_path: Path) -> None
         profiles.save({**profile_payload(), "headers": {"Authorization": "Bearer secret"}})
     with pytest.raises(GatewayError, match="headers"):
         profiles.save({**profile_payload(), "headers": {"Bad Header": "value"}})
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://localhost:8080/v1",
+        "http://127.0.0.1:8080/v1",
+        "http://127.1.2.3:8080/v1",
+        "http://[::1]:8080/v1",
+    ],
+)
+def test_cleartext_gateway_is_limited_to_loopback(tmp_path: Path, base_url: str) -> None:
+    profiles = registry(tmp_path)
+    assert profiles.save(profile_payload(base_url))["base_url"] == base_url
+
+    with pytest.raises(GatewayError, match="must use https") as caught:
+        profiles.save(
+            profile_payload("http://gateway.example/v1"),
+            credential="must-not-leak",
+        )
+    assert "must-not-leak" not in str(caught.value)
 
 
 def test_profile_save_restores_previous_secret_when_registry_write_fails(
@@ -271,7 +344,11 @@ def test_capability_result_is_rejected_when_profile_changes_during_probe(
 
     def change_profile(_probe, _model):
         profiles.save({**profile_payload(), "name": "Changed"}, expected_revision=1)
-        return {"capabilities": {"authentication": True}, "models": ["model-a"]}
+        return {
+            "capabilities": {"authentication": True},
+            "model": "model-a",
+            "models": ["model-a"],
+        }
 
     monkeypatch.setattr(GatewayProbe, "run", change_profile)
     with pytest.raises(GatewayError, match="changed during") as caught:
@@ -304,7 +381,11 @@ def test_capability_probe_captures_profile_and_credential_under_one_lock(
     def run(probe, _model):
         assert saved.wait(timeout=2)
         captured.append((probe.profile.base_url, probe.secret))
-        return {"capabilities": {"authentication": True}, "models": ["model-a"]}
+        return {
+            "capabilities": {"authentication": True},
+            "model": "model-a",
+            "models": ["model-a"],
+        }
 
     monkeypatch.setattr(GatewayProbe, "run", run)
 
@@ -480,9 +561,7 @@ def redirect_gateway():
     target = RedirectTargetServer()
     target_thread = threading.Thread(target=target.serve_forever)
     target_thread.start()
-    source = RedirectSourceServer(
-        f"http://127.0.0.1:{target.server_port}/capture"
-    )
+    source = RedirectSourceServer(f"http://127.0.0.1:{target.server_port}/capture")
     source_thread = threading.Thread(target=source.serve_forever)
     source_thread.start()
     try:
@@ -530,11 +609,12 @@ def test_capability_probe_checks_models_schema_tools_usage_headers_and_concurren
     assert any(body.get("response_format", {}).get("type") == "json_schema" for body in bodies)
     assert any(body.get("tool_choice") == "required" for body in bodies)
     assert any(
-        headers.get("Authorization")
-        == "Bearer okf-wiki-deliberately-invalid-capability-probe"
+        headers.get("Authorization") == "Bearer okf-wiki-deliberately-invalid-capability-probe"
         for _, headers, _ in server.requests
     )
-    assert any(path.endswith("okf-wiki-capability-probe-not-found") for path, _, _ in server.requests)
+    assert any(
+        path.endswith("okf-wiki-capability-probe-not-found") for path, _, _ in server.requests
+    )
 
     assert replaced["capabilities"] == {}
     assert replaced["models"] == []
@@ -556,6 +636,64 @@ def test_capability_failures_are_mapped_and_redacted(
     assert caught.value.category == category
     assert "gateway-secret" not in str(caught.value)
     assert "provider body" not in str(caught.value)
+
+
+def test_failed_retest_invalidates_model_specific_or_all_global_capabilities(
+    tmp_path: Path, monkeypatch
+) -> None:
+    profiles = registry(tmp_path)
+    profiles.save(profile_payload(), credential="gateway-secret")
+    outcomes = iter(
+        [
+            {
+                "capabilities": {"authentication": True},
+                "model": "model-a",
+                "models": ["model-a", "model-b"],
+            },
+            {
+                "capabilities": {"authentication": True},
+                "model": "model-b",
+                "models": ["model-a", "model-b"],
+            },
+        ]
+    )
+    monkeypatch.setattr(GatewayProbe, "run", lambda _probe, _model: next(outcomes))
+    profiles.test("enterprise", model="model-a")
+    profiles.test("enterprise", model="model-b")
+
+    def fail_model(_probe, _model):
+        raise GatewayError(
+            "Gateway does not satisfy structured output",
+            category="capability",
+            model_specific=True,
+        )
+
+    monkeypatch.setattr(GatewayProbe, "run", fail_model)
+    with pytest.raises(GatewayError, match="structured output"):
+        profiles.test("enterprise", model="model-a")
+
+    saved = profiles.get("enterprise")
+    assert set(saved.capabilities) == {"model-b"}
+    assert saved.capabilities["model-b"]["authentication"] is True
+
+    monkeypatch.setattr(
+        GatewayProbe,
+        "run",
+        lambda _probe, _model: {
+            "capabilities": {"authentication": True},
+            "model": "model-a",
+            "models": ["model-a", "model-b"],
+        },
+    )
+    profiles.test("enterprise", model="model-a")
+
+    def fail_global(_probe, _model):
+        raise GatewayError("Gateway authentication was rejected", category="authentication")
+
+    monkeypatch.setattr(GatewayProbe, "run", fail_global)
+    with pytest.raises(GatewayError, match="authentication was rejected"):
+        profiles.test("enterprise", model="model-a")
+    assert profiles.get("enterprise").capabilities == {}
 
 
 def test_capability_timeout_is_safe(tmp_path: Path) -> None:
@@ -599,7 +737,24 @@ def test_workspace_selection_is_local_reusable_and_run_snapshot_is_secret_free(
 ) -> None:
     config_root = tmp_path / "machine"
     gateway = GatewayApplication(config_root)
-    gateway.save_profile(profile_payload(), credential="shared-secret")
+    with fake_gateway() as (_server, base_url):
+        gateway.save_profile(profile_payload(base_url), credential="gateway-secret")
+        with pytest.raises(GatewayError, match="model-a, model-b"):
+            gateway.select_workspace(
+                tmp_path / "missing",
+                profile_id="enterprise",
+                default_model="model-a",
+                role_overrides={"verifier": "model-b"},
+            )
+        gateway.test_profile("enterprise", model="model-a", timeout_seconds=1)
+        with pytest.raises(GatewayError, match="model-b"):
+            gateway.select_workspace(
+                tmp_path / "missing",
+                profile_id="enterprise",
+                default_model="model-a",
+                role_overrides={"verifier": "model-b"},
+            )
+        gateway.test_profile("enterprise", model="model-b", timeout_seconds=1)
     workspaces = [tmp_path / "one", tmp_path / "two"]
     for root in workspaces:
         WorkspaceApplication(root).initialize(root.name)
@@ -620,11 +775,14 @@ def test_workspace_selection_is_local_reusable_and_run_snapshot_is_secret_free(
     assert snapshot["profile"]["gateway_id"] == "corp-openai"
     assert snapshot["concurrency"] == 2
     assert snapshot["budgets"] == {"total_tokens": 5000}
-    assert "shared-secret" not in encoded
+    assert set(snapshot["capabilities"]) == {"model-a", "model-b"}
+    assert snapshot["capabilities"]["model-a"]["structured_output"] is True
+    assert snapshot["capabilities"]["model-b"]["tool_calling"] is True
+    assert "gateway-secret" not in encoded
     assert "credential" not in encoded
     assert "docs" not in encoded
-    assert "shared-secret" not in (workspaces[0] / "workspace.toml").read_text()
-    assert "shared-secret" not in (workspaces[0] / ".okf-wiki/settings.toml").read_text()
+    assert "gateway-secret" not in (workspaces[0] / "workspace.toml").read_text()
+    assert "gateway-secret" not in (workspaces[0] / ".okf-wiki/settings.toml").read_text()
 
 
 def test_build_configuration_resolves_models_from_the_same_workspace_snapshot(
@@ -639,15 +797,16 @@ def test_build_configuration_resolves_models_from_the_same_workspace_snapshot(
         {
             "schema_version": 1,
             "project": {"id": "catalog", "name": "Catalog"},
-            "sources": [
-                {"id": "docs", "role": "documentation", "revision": "abc"}
-            ],
+            "sources": [{"id": "docs", "role": "documentation", "revision": "abc"}],
         },
         {"schema_version": 1, "checkouts": {"docs": str(source)}},
     )
     config_root = tmp_path / "machine"
     gateways = GatewayApplication(config_root)
-    gateways.save_profile(profile_payload(), credential="snapshot-secret")
+    with fake_gateway() as (_server, base_url):
+        gateways.save_profile(profile_payload(base_url), credential="gateway-secret")
+        gateways.test_profile("enterprise", model="model-a", timeout_seconds=1)
+        gateways.test_profile("enterprise", model="model-b", timeout_seconds=1)
     gateways.select_workspace(
         workspace,
         profile_id="enterprise",
@@ -760,6 +919,7 @@ def test_production_run_persists_resolved_nonsecret_gateway_snapshot(tmp_path: P
     with fake_gateway() as (_server, base_url):
         gateways.save_profile(profile_payload(base_url), credential="gateway-secret")
         gateways.test_profile("enterprise", model="model-a", timeout_seconds=1)
+        gateways.test_profile("enterprise", model="model-b", timeout_seconds=1)
     gateways.select_workspace(
         workspace,
         profile_id="enterprise",
@@ -789,7 +949,7 @@ def test_production_run_persists_resolved_nonsecret_gateway_snapshot(tmp_path: P
     assert persisted["assignments"]["verifier"] == "model-b"
     assert persisted["profile"]["gateway_id"] == "corp-openai"
     assert persisted["concurrency"] == 2
-    assert persisted["capabilities"]["structured_output"] is True
-    assert persisted["capabilities"]["tool_calling"] is True
+    assert persisted["capabilities"]["model-a"]["structured_output"] is True
+    assert persisted["capabilities"]["model-b"]["tool_calling"] is True
     assert "gateway-secret" not in json.dumps(persisted)
     assert "credential" not in json.dumps(persisted)

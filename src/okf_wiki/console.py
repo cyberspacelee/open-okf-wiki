@@ -135,7 +135,9 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 and path.endswith("/test")
                 and self.command == "POST"
             ):
-                profile_id = unquote(path.removeprefix("/api/v1/gateway-profiles/").removesuffix("/test").rstrip("/"))
+                profile_id = unquote(
+                    path.removeprefix("/api/v1/gateway-profiles/").removesuffix("/test").rstrip("/")
+                )
                 body = self._json_body()
                 model = body.get("model")
                 timeout = body.get("timeout_seconds", 10)

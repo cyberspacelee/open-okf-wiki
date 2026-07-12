@@ -6,7 +6,7 @@ export type GatewayProfile = {
   header_names: string[]
   credential_backend: string | null
   credential_configured: boolean
-  capabilities: Record<string, boolean>
+  capabilities: Record<string, Record<string, boolean>>
   models: string[]
   revision: number
 }
