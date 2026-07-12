@@ -1434,6 +1434,16 @@ def parser() -> argparse.ArgumentParser:
     workspace_sources.add_argument("root", nargs="?", default=".")
     workspace_preflight = workspace_commands.add_parser("preflight")
     workspace_preflight.add_argument("root", nargs="?", default=".")
+    workspace_runs = workspace_commands.add_parser("runs")
+    workspace_runs.add_argument("root", nargs="?", default=".")
+    workspace_run_status = workspace_commands.add_parser("run-status")
+    workspace_run_status.add_argument("run_id")
+    workspace_run_status.add_argument("root", nargs="?", default=".")
+    workspace_start_run = workspace_commands.add_parser("start-run")
+    workspace_start_run.add_argument("root", nargs="?", default=".")
+    workspace_start_run.add_argument("--configuration-digest", required=True)
+    workspace_start_run.add_argument("--source-set-digest", required=True)
+    workspace_start_run.add_argument("--fixture", choices=("success", "failure"), default="success")
     workspace_clone_source = workspace_commands.add_parser("clone-source")
     workspace_clone_source.add_argument("source_id")
     workspace_clone_source.add_argument("role")
@@ -1580,6 +1590,29 @@ def main() -> int:
             elif arguments.workspace_command == "preflight":
                 app = WorkspaceApplication(arguments.root)
                 emit({"ok": True, **app.run_preflight()})
+                return 0
+            elif arguments.workspace_command == "runs":
+                app = WorkspaceApplication(arguments.root)
+                emit({"ok": True, **app.list_runs()})
+                return 0
+            elif arguments.workspace_command == "run-status":
+                app = WorkspaceApplication(arguments.root)
+                emit({"ok": True, **app.run_status(arguments.run_id)})
+                return 0
+            elif arguments.workspace_command == "start-run":
+                app = WorkspaceApplication(arguments.root)
+                emit(
+                    {
+                        "ok": True,
+                        **app.start_run(
+                            {
+                                "configuration_digest": arguments.configuration_digest,
+                                "source_set_digest": arguments.source_set_digest,
+                                "fixture": arguments.fixture,
+                            }
+                        ),
+                    }
+                )
                 return 0
             elif arguments.workspace_command == "clone-source":
                 app = WorkspaceApplication(arguments.root)

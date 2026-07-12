@@ -113,6 +113,13 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 payload = {"ok": True, **self.server.application.sources()}
             elif path == "/api/v1/workspace/preflight" and self.command in {"GET", "HEAD"}:
                 payload = {"ok": True, **self.server.application.run_preflight()}
+            elif path == "/api/v1/runs" and self.command in {"GET", "HEAD"}:
+                payload = {"ok": True, **self.server.application.list_runs()}
+            elif path == "/api/v1/runs" and self.command == "POST":
+                payload = {"ok": True, **self.server.application.start_run(self._json_body())}
+            elif path.startswith("/api/v1/runs/") and self.command in {"GET", "HEAD"}:
+                run_id = unquote(path.removeprefix("/api/v1/runs/"))
+                payload = {"ok": True, **self.server.application.run_status(run_id)}
             elif path == "/api/v1/sources/clone" and self.command == "POST":
                 payload = {"ok": True, **self.server.application.clone_source(self._json_body())}
             elif path == "/api/v1/sources/link" and self.command == "POST":

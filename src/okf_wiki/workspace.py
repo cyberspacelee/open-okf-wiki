@@ -3,8 +3,11 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import tomllib
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Literal, TypeVar, cast
@@ -912,6 +915,259 @@ class WorkspaceApplication:
     def run_preflight(self) -> dict:
         _, preflight = self.resolve_run_inputs()
         return preflight
+
+    def start_run(self, payload: object) -> dict:
+        if not isinstance(payload, dict) or set(payload) not in (
+            {"configuration_digest", "source_set_digest"},
+            {"configuration_digest", "source_set_digest", "fixture"},
+        ):
+            raise WorkspaceError(
+                "Start Run must contain configuration_digest, source_set_digest, and optional fixture"
+            )
+        values = cast(dict[str, object], payload)
+        configuration_digest = values["configuration_digest"]
+        source_set_digest = values["source_set_digest"]
+        fixture = values.get("fixture", "success")
+        if not isinstance(configuration_digest, str) or not isinstance(source_set_digest, str):
+            raise WorkspaceError("Start Run identities must be strings")
+        if fixture not in {"success", "failure"}:
+            raise WorkspaceError("Start Run fixture must be success or failure")
+
+        from .bundle import published_run_id
+        from .cli import create_run, load_profile, producer_profile_id, source_set_digest as digest
+
+        with self._locked():
+            self._recover_update_locked()
+            snapshot = self._open_current()
+            preflight = self._run_preflight_locked(snapshot)
+            if configuration_digest != preflight["configuration_digest"]:
+                raise WorkspaceStaleError(
+                    "Workspace configuration changed after Run preflight; refresh and try again"
+                )
+            if source_set_digest != preflight["source_set_digest"]:
+                raise WorkspaceStaleError(
+                    "Source Set changed after Run preflight; refresh and try again"
+                )
+            if not snapshot.sources:
+                raise WorkspaceError("Workspace has no configured Sources")
+            with sqlite3.connect(self.database_path) as connection:
+                active = connection.execute(
+                    """SELECT id, state FROM runs
+                       WHERE state NOT IN ('published', 'failed', 'cancelled')
+                       ORDER BY created_at LIMIT 1"""
+                ).fetchone()
+                if active is not None:
+                    raise WorkspaceError(
+                        f"Production Run {active[0]} is {active[1]}; finish or cancel it first"
+                    )
+                configured_sources = [
+                    {
+                        "id": source.id,
+                        "repository": str(source.checkout),
+                        "revision": resolved["exact_commit"],
+                        "revision_policy": resolved["revision_policy"],
+                        "revision_target": resolved["revision"],
+                        "digest": resolved["tree_digest"],
+                        "tree_digest": resolved["tree_digest"],
+                        "role": source.role,
+                    }
+                    for source, resolved in zip(snapshot.sources, preflight["sources"], strict=True)
+                ]
+                if digest(configured_sources) != source_set_digest:
+                    raise WorkspaceStaleError(
+                        "Source Set changed while creating the Production Run; refresh and try again"
+                    )
+                profile = load_profile({"profile": snapshot.profile.model_dump(exclude_none=True)})
+                workspace_configuration = snapshot.model_dump(mode="json")
+                workspace_configuration.update(
+                    source_set_digest=source_set_digest,
+                    source_snapshots=preflight["sources"],
+                )
+                run_id = uuid.uuid4().hex
+                staging = self.root / ".okf-wiki" / "runs" / run_id / "staging"
+                source_set = {
+                    "base_run_id": published_run_id(snapshot.publication.path),
+                    "digest": source_set_digest,
+                    "evidence": [],
+                    "execution": {
+                        "mode": "deterministic_fixture",
+                        "requested_outcome": fixture,
+                    },
+                    "producer_profile_id": producer_profile_id(profile),
+                    "profile": {
+                        **profile,
+                        "priority_overrides": sorted(profile["priority_overrides"]),
+                    },
+                    "source_universe": [],
+                    "sources": configured_sources,
+                    "workspace_configuration": workspace_configuration,
+                }
+                create_run(
+                    connection,
+                    run_id,
+                    snapshot.project.id,
+                    Path(configured_sources[0]["repository"]),
+                    configured_sources[0]["revision"]
+                    if len(configured_sources) == 1
+                    else source_set_digest,
+                    snapshot.publication.path,
+                    staging,
+                    source_set,
+                )
+            try:
+                self._launch_run_worker(run_id, cast(str, fixture))
+            except OSError as error:
+                from .run_state import transition_run
+
+                with sqlite3.connect(self.database_path) as connection, connection:
+                    transition_run(
+                        connection,
+                        run_id,
+                        "preparing",
+                        "failed",
+                        error=f"Could not start Run Worker: {error}",
+                    )
+                raise WorkspaceError(f"Could not start Run Worker: {error}") from error
+        return self.run_status(run_id)
+
+    def _launch_run_worker(self, run_id: str, fixture: str) -> None:
+        subprocess.Popen(
+            [sys.executable, "-m", "okf_wiki.run_worker", str(self.root), run_id, fixture],
+            cwd=self.root,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            start_new_session=True,
+        )
+
+    def list_runs(self) -> dict:
+        self.open()
+        with sqlite3.connect(self.database_path) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = list(connection.execute("SELECT * FROM runs ORDER BY created_at DESC, id DESC"))
+        return {"runs": [self._run_summary(row) for row in rows]}
+
+    def run_status(self, run_id: str) -> dict:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", run_id):
+            raise WorkspaceError("Invalid Production Run ID")
+        self.open()
+        with sqlite3.connect(self.database_path) as connection:
+            connection.row_factory = sqlite3.Row
+            row = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+            if row is None:
+                raise WorkspaceError(f"Unknown Production Run: {run_id}")
+            event_rows = list(
+                connection.execute(
+                    "SELECT * FROM run_events WHERE run_id = ? ORDER BY sequence", (run_id,)
+                )
+            )
+            events = [
+                {
+                    "occurred_at": event["occurred_at"],
+                    "previous_state": event["previous_state"],
+                    "sequence": event["sequence"],
+                    "state": event["state"],
+                }
+                for event in event_rows
+                if json.loads(event["details"]).get("entity_type")
+                not in {"coverage_obligation", "analysis_task"}
+            ]
+            entity_events = [
+                {
+                    "entity_id": details["entity_id"],
+                    "entity_type": details["entity_type"],
+                    "occurred_at": event["occurred_at"],
+                    "previous_state": event["previous_state"],
+                    "sequence": event["sequence"],
+                    "state": event["state"],
+                }
+                for event in event_rows
+                if (details := json.loads(event["details"])).get("entity_type")
+                in {"coverage_obligation", "analysis_task"}
+                and isinstance(details.get("entity_id"), str)
+            ]
+            completed_tasks = [
+                {
+                    "id": task["id"],
+                    "obligation_ids": json.loads(task["obligation_ids_json"]),
+                    "state": task["state"],
+                }
+                for task in connection.execute(
+                    """SELECT id, state, obligation_ids_json FROM analysis_tasks
+                       WHERE run_id = ? AND state = 'accepted' ORDER BY created_at, id""",
+                    (run_id,),
+                )
+            ]
+        from .scheduler import scheduler_status
+
+        source_set = self._source_set_for_row(row)
+        scheduler = scheduler_status(self.database_path, run_id)
+        scheduler["tasks"]["completed"] = completed_tasks
+        errors = list(dict.fromkeys(filter(None, [row["error"], *scheduler["errors"]])))
+        return {
+            **self._run_summary(row),
+            "actionable_errors": errors,
+            "entity_events": entity_events,
+            "events": events,
+            "project_id": row["project_id"],
+            "sources": [
+                {
+                    "id": source["id"],
+                    "revision": source["revision"],
+                    "role": source["role"],
+                    "tree_digest": source.get("tree_digest", source.get("digest")),
+                }
+                for source in source_set["sources"]
+            ],
+            "tasks": scheduler["tasks"],
+        }
+
+    @staticmethod
+    def _run_summary(row: sqlite3.Row) -> dict:
+        source_set = WorkspaceApplication._source_set_for_row(row)
+        state = row["state"]
+        return {
+            "created_at": row["created_at"],
+            "execution": source_set.get("execution", {"mode": "legacy", "requested_outcome": None}),
+            "outcome": state
+            if state in {"review_required", "published", "failed", "cancelled"}
+            else None,
+            "phase": state,
+            "run_id": row["id"],
+            "source_set_digest": source_set["digest"],
+            "state": state,
+            "updated_at": row["updated_at"],
+        }
+
+    @staticmethod
+    def _source_set_for_row(row: sqlite3.Row) -> dict:
+        if row["source_set_json"]:
+            return json.loads(row["source_set_json"])
+        source = {
+            "id": "source",
+            "repository": row["repository"],
+            "revision": row["revision"],
+            "role": "implementation",
+        }
+        identity = json.dumps(
+            [
+                {
+                    "digest": None,
+                    "id": "source",
+                    "revision": row["revision"],
+                    "role": "implementation",
+                }
+            ],
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        return {
+            "digest": hashlib.sha256(identity).hexdigest(),
+            "evidence": [],
+            "source_universe": [],
+            "sources": [source],
+        }
 
     def resolve_run_inputs(self) -> tuple[WorkspaceSnapshot, dict]:
         with self._locked():

@@ -3,6 +3,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -676,3 +677,87 @@ def test_console_and_cli_share_pull_revision_and_preflight_use_cases(
     )
     assert follow_code == 0
     assert followed["sources"][0]["revision_policy"] == "follow_branch"
+
+
+def test_console_and_cli_share_run_creation_status_and_stale_errors(
+    tmp_path: Path, assets: Path
+) -> None:
+    workspace = tmp_path / "workspace"
+    source = tmp_path / "source"
+    make_git_source(source)
+    app = WorkspaceApplication(workspace)
+    app.initialize("catalog")
+    app.link_source({"id": "code", "role": "implementation", "checkout": str(source)})
+    preflight = app.run_preflight()
+    payload = {
+        "configuration_digest": preflight["configuration_digest"],
+        "source_set_digest": preflight["source_set_digest"],
+        "fixture": "failure",
+    }
+
+    with running_console(workspace, assets) as (server, _):
+        base = f"http://127.0.0.1:{server.server_port}"
+        created = httpx.post(
+            base + "/api/v1/runs",
+            headers={**authorization(server), "Origin": base},
+            json=payload,
+        )
+        deadline = time.monotonic() + 5
+        while (
+            time.monotonic() < deadline
+            and app.run_status(created.json()["run_id"])["state"] != "failed"
+        ):
+            time.sleep(0.05)
+        detail = httpx.get(
+            base + f"/api/v1/runs/{created.json()['run_id']}",
+            headers=authorization(server),
+        )
+        listed = httpx.get(base + "/api/v1/runs", headers=authorization(server))
+        stale = httpx.post(
+            base + "/api/v1/runs",
+            headers={**authorization(server), "Origin": base},
+            json={**payload, "source_set_digest": "0" * 64},
+        )
+
+    status_code, command_detail = cli(
+        ["workspace", "run-status", created.json()["run_id"], str(workspace)], tmp_path
+    )
+    list_code, command_list = cli(["workspace", "runs", str(workspace)], tmp_path)
+    stale_code, command_stale = cli(
+        [
+            "workspace",
+            "start-run",
+            str(workspace),
+            "--configuration-digest",
+            payload["configuration_digest"],
+            "--source-set-digest",
+            "0" * 64,
+            "--fixture",
+            "failure",
+        ],
+        tmp_path,
+    )
+    create_code, command_created = cli(
+        [
+            "workspace",
+            "start-run",
+            str(workspace),
+            "--configuration-digest",
+            payload["configuration_digest"],
+            "--source-set-digest",
+            payload["source_set_digest"],
+            "--fixture",
+            "failure",
+        ],
+        tmp_path,
+    )
+
+    assert created.status_code == detail.status_code == listed.status_code == 200
+    assert created.json()["execution"]["mode"] == "deterministic_fixture"
+    assert status_code == list_code == create_code == 0
+    assert detail.json() == command_detail
+    assert listed.json() == command_list
+    assert stale.status_code == 409
+    assert stale_code == 1
+    assert stale.json() == command_stale
+    assert command_created["run_id"] != created.json()["run_id"]
