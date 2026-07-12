@@ -1218,7 +1218,9 @@ def test_pull_disables_hooks_and_blocks_repository_selected_local_filters(tmp_pa
     filter_program = tmp_path / "filter.sh"
     filter_program.write_text(f"#!/bin/sh\ntouch '{filter_marker}'\ncat\n", encoding="utf-8")
     filter_program.chmod(0o755)
-    git(checkout, "config", "filter.evil.smudge", str(filter_program))
+    filter_config = tmp_path / "checkout-filter.gitconfig"
+    filter_config.write_text(f'[filter "evil"]\n\tsmudge = {filter_program}\n', encoding="utf-8")
+    git(checkout, "config", "include.path", str(filter_config))
     (upstream / ".gitattributes").write_text("README.md filter=evil\n", encoding="utf-8")
     (upstream / "README.md").write_text("filtered\n", encoding="utf-8")
     git(upstream, "add", ".gitattributes", "README.md")
@@ -1248,7 +1250,11 @@ def test_pull_delegates_credentials_without_forwarding_unrelated_secrets(
     git(upstream, "add", "REMOTE.md")
     git(upstream, "commit", "-qm", "remote")
     git(upstream, "push", "-q")
+    global_config = tmp_path / "user.gitconfig"
+    global_config.write_text("[credential]\n\thelper = trusted-test\n", encoding="utf-8")
+    git(checkout, "config", "credential.helper", "!malicious-local-helper")
     monkeypatch.setenv("SSH_AUTH_SOCK", str(tmp_path / "agent.sock"))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
     monkeypatch.setenv("OKF_GATEWAY_API_KEY", "must-not-leak")
     real_run = source_checkouts_module.subprocess.run
     observed: list[tuple[list[str], dict[str, str]]] = []
@@ -1273,6 +1279,9 @@ def test_pull_delegates_credentials_without_forwarding_unrelated_secrets(
     assert merge_environment["GIT_CONFIG_GLOBAL"] == os.devnull
     assert "protocol.ext.allow=never" in fetch_command
     assert "--no-recurse-submodules" in fetch_command
+    assert "credential.helper=" in fetch_command
+    assert "credential.helper=trusted-test" in fetch_command
+    assert all("malicious-local-helper" not in argument for argument in fetch_command)
     assert "--ff-only" in merge_command
     assert not ({"stash", "reset", "clean", "rebase", "checkout"} & set(merge_command))
 

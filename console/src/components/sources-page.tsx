@@ -50,6 +50,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Spinner } from "@/components/ui/spinner"
 import { Separator } from "@/components/ui/separator"
 import {
   Table,
@@ -478,7 +479,11 @@ function SourceTable({
                             disabled={working !== null}
                             onClick={() => onPull(source.id)}
                           >
-                            <DownloadIcon data-icon="inline-start" />
+                            {working === `pull:${source.id}` ? (
+                              <Spinner data-icon="inline-start" />
+                            ) : (
+                              <DownloadIcon data-icon="inline-start" />
+                            )}
                             {working === `pull:${source.id}`
                               ? "Pulling…"
                               : "Pull"}
@@ -626,7 +631,11 @@ function RevisionPolicyForm({
             size="sm"
             disabled={disabled || !revision.trim()}
           >
-            <GitCommitHorizontalIcon data-icon="inline-start" />
+            {busy ? (
+              <Spinner data-icon="inline-start" />
+            ) : (
+              <GitCommitHorizontalIcon data-icon="inline-start" />
+            )}
             {busy ? "Saving…" : "Save policy"}
           </Button>
         </FieldGroup>

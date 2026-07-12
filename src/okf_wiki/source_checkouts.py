@@ -41,6 +41,7 @@ def validate_clone_remote(remote: str) -> None:
 def inspect_checkout(checkout: Path) -> dict[str, object]:
     if not checkout.is_dir():
         raise SourceCheckoutError(f"{checkout}: not a usable Git working tree")
+    _reject_local_executable_filters(checkout)
     context = f"{checkout}: not a usable Git working tree"
     inside = _git_inspect(checkout, "rev-parse", "--is-inside-work-tree", context=context)
     top = _git_inspect(checkout, "rev-parse", "--show-toplevel", context=context)
@@ -162,6 +163,11 @@ def pull_checkout(
             f"Pull blocked for Source {source_id}: checkout is on {branch}; "
             f"check out followed branch {followed_branch} manually"
         )
+    remote = status["remote"]
+    if not isinstance(remote, str):
+        raise SourceCheckoutError(
+            f"Pull failed for Source {source_id}: checkout has no origin remote"
+        )
     _validate_branch(checkout, branch)
     before = status["commit"]
     temporary_ref = f"refs/okf-wiki/pull/{secrets.token_hex(16)}"
@@ -172,7 +178,7 @@ def pull_checkout(
             "--no-tags",
             "--no-recurse-submodules",
             "--",
-            "origin",
+            remote,
             f"refs/heads/{branch}:{temporary_ref}",
             credentials=True,
         )
@@ -202,11 +208,6 @@ def pull_checkout(
                 "try again"
             )
         _require_clean_checkout(checkout)
-        if _external_checkout_filter(checkout, temporary_ref):
-            raise SourceCheckoutError(
-                f"Pull blocked for Source {source_id}: Git attributes select an executable filter; "
-                "remove the filter before updating this checkout"
-            )
         remote_is_ahead = (
             _git_mutate(checkout, "merge-base", "--is-ancestor", "HEAD", temporary_ref).returncode
             == 0
@@ -257,6 +258,7 @@ def _working_tree_changes(checkout: Path) -> list[str]:
 
 
 def _require_clean_checkout(checkout: Path) -> None:
+    _reject_local_executable_filters(checkout)
     changes = _working_tree_changes(checkout)
     categories = []
     if any(line.startswith("u ") for line in changes):
@@ -305,29 +307,19 @@ def _validate_branch(checkout: Path, branch: str) -> None:
         raise SourceCheckoutError(f"Invalid followed branch name: {branch}")
 
 
-def _external_checkout_filter(checkout: Path, revision: str) -> bool:
+def _reject_local_executable_filters(checkout: Path) -> None:
     configured = _git_mutate(
         checkout,
         "config",
-        "--local",
+        "--includes",
         "--get-regexp",
         r"^filter\..*\.(clean|smudge|process)$",
     )
-    if configured.returncode != 0 or not configured.stdout.strip():
-        return False
-    paths = _git_inspect(checkout, "ls-tree", "-r", "--name-only", revision)
-    for path in paths.splitlines() if paths else ():
-        if path == ".gitattributes" or path.endswith("/.gitattributes"):
-            attributes = _git_inspect(checkout, "show", f"{revision}:{path}", required=False)
-            if attributes is None:
-                return True
-            if any(
-                "filter" in line.split("#", 1)[0].split()[1:]
-                or any(token.startswith("filter=") for token in line.split("#", 1)[0].split()[1:])
-                for line in attributes.splitlines()
-            ):
-                return True
-    return False
+    if configured.returncode == 0 and configured.stdout.strip():
+        raise SourceCheckoutError(
+            "Git checkout has local executable filters; remove local filter clean, smudge, "
+            "or process commands before using this Source"
+        )
 
 
 def _git_mutate(
@@ -371,10 +363,20 @@ def _git_mutate(
         "protocol.ext.allow=never",
         "-c",
         "remote.origin.uploadpack=git-upload-pack",
-        "-C",
-        str(checkout.resolve()),
-        *arguments,
     ]
+    if credentials:
+        command.extend(["-c", "credential.helper=", "-c", "core.askPass="])
+        for helper in _trusted_credential_helpers(executable, environment):
+            command.extend(["-c", f"credential.helper={helper}"])
+    command.extend(
+        [
+            "-c",
+            "remote.origin.proxy=",
+            "-C",
+            str(checkout.resolve()),
+            *arguments,
+        ]
+    )
     try:
         return subprocess.run(
             command,
@@ -386,6 +388,27 @@ def _git_mutate(
         )
     except OSError as error:
         raise SourceCheckoutError(f"Git operation failed: {error}") from error
+
+
+def _trusted_credential_helpers(executable: str, environment: dict[str, str]) -> list[str]:
+    helpers = []
+    for scope in ("--system", "--global"):
+        try:
+            result = subprocess.run(
+                [executable, "config", scope, "--includes", "--get-all", "credential.helper"],
+                check=False,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+        except OSError as error:
+            raise SourceCheckoutError(
+                f"Git credential configuration is unavailable: {error}"
+            ) from error
+        if result.returncode == 0:
+            helpers.extend(line for line in result.stdout.splitlines() if line)
+    return helpers
 
 
 def clone_checkout(
