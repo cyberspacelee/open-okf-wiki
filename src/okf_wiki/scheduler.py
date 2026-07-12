@@ -21,6 +21,7 @@ from .knowledge_contracts import (
 )
 from .run_events import append_entity_event
 from .run_state import transition_run
+from .state_schema import migrate_state
 from .verification import (
     REQUIRED_PERSPECTIVES,
     AcceptanceDecision,
@@ -366,35 +367,7 @@ class Scheduler:
 
     def _initialize(self) -> None:
         with self._connect() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS analysis_tasks (
-                    run_id TEXT NOT NULL REFERENCES runs(id),
-                    id TEXT NOT NULL,
-                    state TEXT NOT NULL,
-                    obligation_ids_json TEXT NOT NULL,
-                    source_id TEXT NOT NULL,
-                    repository TEXT NOT NULL,
-                    revision TEXT NOT NULL,
-                    allowed_paths_json TEXT NOT NULL,
-                    agent_role TEXT NOT NULL,
-                    allowed_tools_json TEXT NOT NULL,
-                    prompt TEXT NOT NULL,
-                    budgets_json TEXT NOT NULL,
-                    receipt_json TEXT,
-                    error TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    PRIMARY KEY (run_id, id)
-                );
-                CREATE TABLE IF NOT EXISTS scheduler_control (
-                    run_id TEXT PRIMARY KEY REFERENCES runs(id),
-                    replan_count INTEGER NOT NULL DEFAULT 0,
-                    status TEXT NOT NULL DEFAULT 'active',
-                    warning TEXT
-                );
-                """
-            )
+            migrate_state(connection)
 
     @staticmethod
     def _now() -> str:

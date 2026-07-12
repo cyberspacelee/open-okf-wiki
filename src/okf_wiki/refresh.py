@@ -332,6 +332,10 @@ def persist_inspection(
     prepared: PreparedRefresh,
     updated_at: str,
 ) -> tuple[list[dict], dict, dict]:
+    row = connection.execute("SELECT source_set_json FROM runs WHERE id = ?", (run_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"Unknown Production Run: {run_id}")
+    initial_source_set = json.loads(row["source_set_json"])
     standard = {
         "id",
         "source",
@@ -379,6 +383,7 @@ def persist_inspection(
             [item for item in obligations if item["source"] == source["id"]], [source]
         )
     source_set = {
+        **initial_source_set,
         "base_run_id": base_run_id,
         "bundle_date": bundle_date,
         "digest": digest,

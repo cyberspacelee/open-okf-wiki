@@ -9,6 +9,7 @@ from typing import Literal, TypedDict, cast
 
 from .knowledge_contracts import EvidenceProposal, WorkerRunResult
 from .run_events import append_entity_event
+from .state_schema import migrate_state
 
 
 class EvidenceRecord(TypedDict):
@@ -125,110 +126,7 @@ class AcceptedKnowledgeStore:
 
     def _initialize(self) -> None:
         with self._connect() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS accepted_candidates (
-                    run_id TEXT NOT NULL,
-                    candidate_id TEXT NOT NULL,
-                    PRIMARY KEY (run_id, candidate_id)
-                );
-                CREATE TABLE IF NOT EXISTS accepted_evidence (
-                    run_id TEXT NOT NULL,
-                    id TEXT NOT NULL,
-                    source_id TEXT NOT NULL,
-                    revision TEXT NOT NULL,
-                    path TEXT NOT NULL,
-                    source_unit TEXT NOT NULL,
-                    start_line INTEGER NOT NULL,
-                    end_line INTEGER NOT NULL,
-                    digest TEXT NOT NULL,
-                    evidence_kind TEXT NOT NULL,
-                    authority TEXT NOT NULL,
-                    PRIMARY KEY (run_id, id)
-                );
-                CREATE TABLE IF NOT EXISTS accepted_claims (
-                    run_id TEXT NOT NULL,
-                    id TEXT NOT NULL,
-                    subject TEXT NOT NULL,
-                    predicate TEXT NOT NULL,
-                    statement TEXT NOT NULL,
-                    modality TEXT NOT NULL,
-                    conditions_json TEXT NOT NULL,
-                    epistemic_status TEXT NOT NULL,
-                    PRIMARY KEY (run_id, id)
-                );
-                CREATE TABLE IF NOT EXISTS claim_evidence (
-                    run_id TEXT NOT NULL,
-                    claim_id TEXT NOT NULL,
-                    evidence_id TEXT NOT NULL,
-                    PRIMARY KEY (run_id, claim_id, evidence_id),
-                    FOREIGN KEY (run_id, claim_id) REFERENCES accepted_claims(run_id, id),
-                    FOREIGN KEY (run_id, evidence_id) REFERENCES accepted_evidence(run_id, id)
-                );
-                CREATE TABLE IF NOT EXISTS claim_links (
-                    run_id TEXT NOT NULL,
-                    claim_id TEXT NOT NULL,
-                    kind TEXT NOT NULL,
-                    target_claim_id TEXT NOT NULL,
-                    PRIMARY KEY (run_id, claim_id, kind, target_claim_id),
-                    FOREIGN KEY (run_id, claim_id) REFERENCES accepted_claims(run_id, id),
-                    FOREIGN KEY (run_id, target_claim_id) REFERENCES accepted_claims(run_id, id)
-                );
-                CREATE TABLE IF NOT EXISTS accepted_concepts (
-                    run_id TEXT NOT NULL,
-                    id TEXT NOT NULL,
-                    canonical_name TEXT NOT NULL,
-                    aliases_json TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    PRIMARY KEY (run_id, id)
-                );
-                CREATE TABLE IF NOT EXISTS concept_claims (
-                    run_id TEXT NOT NULL,
-                    concept_id TEXT NOT NULL,
-                    claim_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    PRIMARY KEY (run_id, concept_id, claim_id),
-                    FOREIGN KEY (run_id, concept_id) REFERENCES accepted_concepts(run_id, id),
-                    FOREIGN KEY (run_id, claim_id) REFERENCES accepted_claims(run_id, id)
-                );
-                CREATE TABLE IF NOT EXISTS concept_relations (
-                    run_id TEXT NOT NULL,
-                    id TEXT NOT NULL,
-                    subject_concept_id TEXT NOT NULL,
-                    predicate TEXT NOT NULL,
-                    object_concept_id TEXT NOT NULL,
-                    PRIMARY KEY (run_id, id),
-                    FOREIGN KEY (run_id, subject_concept_id)
-                        REFERENCES accepted_concepts(run_id, id),
-                    FOREIGN KEY (run_id, object_concept_id)
-                        REFERENCES accepted_concepts(run_id, id)
-                );
-                CREATE TABLE IF NOT EXISTS relation_evidence (
-                    run_id TEXT NOT NULL,
-                    relation_id TEXT NOT NULL,
-                    evidence_id TEXT NOT NULL,
-                    PRIMARY KEY (run_id, relation_id, evidence_id),
-                    FOREIGN KEY (run_id, relation_id) REFERENCES concept_relations(run_id, id),
-                    FOREIGN KEY (run_id, evidence_id) REFERENCES accepted_evidence(run_id, id)
-                );
-                CREATE TABLE IF NOT EXISTS page_plans (
-                    run_id TEXT NOT NULL,
-                    concept_id TEXT NOT NULL,
-                    path TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    PRIMARY KEY (run_id, concept_id),
-                    FOREIGN KEY (run_id, concept_id) REFERENCES accepted_concepts(run_id, id)
-                );
-                CREATE TABLE IF NOT EXISTS obligation_claims (
-                    run_id TEXT NOT NULL,
-                    obligation_id TEXT NOT NULL,
-                    claim_id TEXT NOT NULL,
-                    PRIMARY KEY (run_id, obligation_id, claim_id),
-                    FOREIGN KEY (run_id, claim_id) REFERENCES accepted_claims(run_id, id)
-                );
-                """
-            )
+            migrate_state(connection)
 
     @staticmethod
     def _source_unit(

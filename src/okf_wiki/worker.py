@@ -49,6 +49,7 @@ from .security import (
     git_read_bytes,
     redact_secrets,
 )
+from .state_schema import migrate_worker_audit
 
 
 PROMPT_VERSION = "worker-v1"
@@ -453,31 +454,7 @@ class WorkerAgent:
     def _initialize_audit(self) -> None:
         self.audit_path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.audit_path) as connection:
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS worker_candidates (
-                    id TEXT PRIMARY KEY,
-                    task_id TEXT NOT NULL,
-                    obligation_ids_json TEXT NOT NULL,
-                    source_id TEXT NOT NULL,
-                    revision TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    proposal_json TEXT,
-                    errors_json TEXT NOT NULL,
-                    error_type TEXT,
-                    trajectory_json TEXT NOT NULL,
-                    retry_count INTEGER NOT NULL,
-                    usage_json TEXT NOT NULL,
-                    latency_ms INTEGER NOT NULL,
-                    gateway_id TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    response_model TEXT NOT NULL,
-                    provider_url TEXT,
-                    prompt_version TEXT NOT NULL,
-                    tool_version TEXT NOT NULL,
-                    schema_version TEXT NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )"""
-            )
+            migrate_worker_audit(connection)
 
     def _record(
         self,

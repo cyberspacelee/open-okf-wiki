@@ -507,35 +507,6 @@ def test_status_reports_phase_tasks_budgets_and_actionable_errors(tmp_path: Path
         "tool_timeout_seconds": 2,
     }
     with sqlite3.connect(database) as connection:
-        connection.executescript(
-            """
-            CREATE TABLE analysis_tasks (
-                run_id TEXT NOT NULL,
-                id TEXT NOT NULL,
-                state TEXT NOT NULL,
-                obligation_ids_json TEXT NOT NULL,
-                source_id TEXT NOT NULL,
-                repository TEXT NOT NULL,
-                revision TEXT NOT NULL,
-                allowed_paths_json TEXT NOT NULL,
-                agent_role TEXT NOT NULL,
-                allowed_tools_json TEXT NOT NULL,
-                prompt TEXT NOT NULL,
-                budgets_json TEXT NOT NULL,
-                receipt_json TEXT,
-                error TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (run_id, id)
-            );
-            CREATE TABLE scheduler_control (
-                run_id TEXT PRIMARY KEY,
-                replan_count INTEGER NOT NULL DEFAULT 0,
-                status TEXT NOT NULL DEFAULT 'active',
-                warning TEXT
-            );
-            """
-        )
         common = (
             built["run_id"],
             json.dumps([]),
@@ -610,29 +581,6 @@ def test_recover_retries_unproven_in_flight_work_idempotently(tmp_path: Path) ->
             "SELECT id FROM coverage_obligations WHERE run_id = ? ORDER BY id LIMIT 1",
             (built["run_id"],),
         ).fetchone()[0]
-        connection.executescript(
-            """
-            CREATE TABLE analysis_tasks (
-                run_id TEXT NOT NULL,
-                id TEXT NOT NULL,
-                state TEXT NOT NULL,
-                obligation_ids_json TEXT NOT NULL,
-                source_id TEXT NOT NULL,
-                repository TEXT NOT NULL,
-                revision TEXT NOT NULL,
-                allowed_paths_json TEXT NOT NULL,
-                agent_role TEXT NOT NULL,
-                allowed_tools_json TEXT NOT NULL,
-                prompt TEXT NOT NULL,
-                budgets_json TEXT NOT NULL,
-                receipt_json TEXT,
-                error TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (run_id, id)
-            );
-            """
-        )
         connection.execute(
             "UPDATE coverage_obligations SET disposition = 'assigned' WHERE run_id = ? AND id = ?",
             (built["run_id"], obligation_id),

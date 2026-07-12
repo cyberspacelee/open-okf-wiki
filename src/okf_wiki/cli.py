@@ -43,6 +43,8 @@ from .run_events import append_entity_event, append_run_event
 from .run_state import RunTransitionError, transition_run
 from .security import MAX_ANALYZABLE_FILE_BYTES, git_read, git_read_bytes
 from .source_identity import source_unit_id, stable_span_id
+from .state_schema import migrate_state
+from .workspace import WorkspaceApplication, WorkspaceError
 
 
 TERMINAL_STATES = {"published", "failed", "cancelled"}
@@ -111,66 +113,7 @@ def connect(read_only: bool = False) -> sqlite3.Connection:
 
 
 def initialize(connection: sqlite3.Connection) -> None:
-    connection.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS runs (
-            id TEXT PRIMARY KEY,
-            project_id TEXT NOT NULL,
-            repository TEXT NOT NULL,
-            revision TEXT NOT NULL,
-            publish_dir TEXT NOT NULL,
-            staging_dir TEXT NOT NULL,
-            state TEXT NOT NULL,
-            coverage_json TEXT,
-            source_set_json TEXT,
-            error TEXT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS run_events (
-            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_id TEXT NOT NULL REFERENCES runs(id),
-            previous_state TEXT,
-            state TEXT NOT NULL,
-            occurred_at TEXT NOT NULL,
-            details TEXT NOT NULL DEFAULT '{}'
-        );
-        CREATE TABLE IF NOT EXISTS coverage_obligations (
-            id TEXT NOT NULL,
-            run_id TEXT NOT NULL REFERENCES runs(id),
-            source TEXT NOT NULL,
-            role TEXT NOT NULL,
-            path TEXT NOT NULL,
-            source_unit TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            priority TEXT NOT NULL,
-            disposition TEXT NOT NULL,
-            reason TEXT,
-            span TEXT NOT NULL,
-            text TEXT NOT NULL,
-            details TEXT NOT NULL DEFAULT '{}',
-            PRIMARY KEY (run_id, id)
-        );
-        CREATE TRIGGER IF NOT EXISTS run_events_no_update
-        BEFORE UPDATE ON run_events BEGIN
-            SELECT RAISE(ABORT, 'Run Events are immutable');
-        END;
-        CREATE TRIGGER IF NOT EXISTS run_events_no_delete
-        BEFORE DELETE ON run_events BEGIN
-            SELECT RAISE(ABORT, 'Run Events are immutable');
-        END;
-        """
-    )
-    columns = {row["name"] for row in connection.execute("PRAGMA table_info(runs)")}
-    if "source_set_json" not in columns:
-        connection.execute("ALTER TABLE runs ADD COLUMN source_set_json TEXT")
-    obligation_columns = {
-        row["name"] for row in connection.execute("PRAGMA table_info(coverage_obligations)")
-    }
-    if "details" not in obligation_columns:
-        connection.execute(
-            "ALTER TABLE coverage_obligations ADD COLUMN details TEXT NOT NULL DEFAULT '{}'"
-        )
+    migrate_state(connection)
 
 
 def create_run(
@@ -553,12 +496,40 @@ def load_profile(config: dict) -> dict:
     }
 
 
-def load_config(path_text: str) -> tuple[str, list[dict], Path, dict]:
+def load_config(path_text: str) -> tuple[str, list[dict], Path, dict, dict | None]:
     path = Path(path_text).resolve()
     try:
         config = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise UserError(f"Cannot read Producer Project config: {error}") from error
+    if "schema_version" in config:
+        try:
+            snapshot = WorkspaceApplication(path.parent).open()
+        except WorkspaceError as error:
+            raise UserError(str(error)) from error
+        missing_checkouts = [source.id for source in snapshot.sources if source.checkout is None]
+        if not snapshot.sources:
+            raise UserError("Workspace has no configured Sources")
+        if missing_checkouts:
+            raise UserError(
+                "Sources lack Local Workspace Settings checkout bindings: "
+                + ", ".join(missing_checkouts)
+            )
+        return (
+            snapshot.project.id,
+            [
+                {
+                    "id": source.id,
+                    "repository": str(source.checkout),
+                    "revision": source.revision,
+                    "role": source.role,
+                }
+                for source in snapshot.sources
+            ],
+            snapshot.publication.path,
+            load_profile({"profile": snapshot.profile.model_dump(exclude_none=True)}),
+            snapshot.model_dump(mode="json"),
+        )
     required = {"project_id", "publish_dir"}
     missing = sorted(required - config.keys())
     if missing:
@@ -618,6 +589,7 @@ def load_config(path_text: str) -> tuple[str, list[dict], Path, dict]:
         sorted(sources, key=lambda source: source["id"]),
         publish_dir.absolute(),
         load_profile(config),
+        None,
     )
 
 
@@ -826,7 +798,9 @@ def advance_preparation(
 
 
 def build(config_path: str) -> int:
-    project_id, configured_sources, publish_dir, profile = load_config(config_path)
+    project_id, configured_sources, publish_dir, profile, workspace_configuration = load_config(
+        config_path
+    )
     profile_id = producer_profile_id(profile)
     configured_digest = source_set_digest(configured_sources)
     provisional_revision = (
@@ -846,6 +820,8 @@ def build(config_path: str) -> int:
         "source_universe": [],
         "sources": configured_sources,
     }
+    if workspace_configuration is not None:
+        source_set["workspace_configuration"] = workspace_configuration
     create_run(
         connection,
         run_id,
@@ -1396,6 +1372,19 @@ def parser() -> argparse.ArgumentParser:
     eval_command.add_argument("manifest")
     benchmark_command = subcommands.add_parser("benchmark")
     benchmark_command.add_argument("manifest")
+    workspace_command = subcommands.add_parser("workspace")
+    workspace_commands = workspace_command.add_subparsers(dest="workspace_command", required=True)
+    workspace_init = workspace_commands.add_parser("init")
+    workspace_init.add_argument("project_id")
+    workspace_init.add_argument("--name")
+    workspace_init.add_argument("--root", default=".")
+    workspace_inspect = workspace_commands.add_parser("inspect")
+    workspace_inspect.add_argument("root", nargs="?", default=".")
+    workspace_validate = workspace_commands.add_parser("validate")
+    workspace_validate.add_argument("root", nargs="?", default=".")
+    workspace_migrate = workspace_commands.add_parser("migrate")
+    workspace_migrate.add_argument("project_config")
+    workspace_migrate.add_argument("--root", default=".")
     return command
 
 
@@ -1418,7 +1407,17 @@ def main() -> int:
             return agent_eval(arguments.manifest)
         if arguments.command == "benchmark":
             return benchmark(arguments.manifest)
+        if arguments.command == "workspace":
+            app = WorkspaceApplication(arguments.root)
+            if arguments.workspace_command == "init":
+                snapshot = app.initialize(arguments.project_id, arguments.name)
+            elif arguments.workspace_command == "migrate":
+                snapshot = app.migrate_legacy(arguments.project_config)
+            else:
+                snapshot = app.open()
+            emit({"ok": True, **snapshot.model_dump(mode="json")})
+            return 0
         return recover(arguments.run_id)
-    except UserError as error:
+    except (UserError, WorkspaceError) as error:
         emit({"errors": [str(error)], "ok": False})
         return 1

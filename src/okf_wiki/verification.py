@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .accepted_knowledge import ClaimRecord, ConceptRecord
 from .knowledge_contracts import ObligationSummary, WorkerProposal
+from .state_schema import migrate_state
 
 
 VerificationPerspective = Literal[
@@ -127,28 +128,7 @@ class VerificationStore:
         if not initialize:
             return
         with self._connect() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS verification_candidates (
-                    run_id TEXT NOT NULL,
-                    candidate_id TEXT NOT NULL,
-                    task_id TEXT NOT NULL,
-                    proposal_json TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    decision_json TEXT,
-                    PRIMARY KEY (run_id, candidate_id)
-                );
-                CREATE TABLE IF NOT EXISTS verification_findings (
-                    run_id TEXT NOT NULL,
-                    candidate_id TEXT NOT NULL,
-                    perspective TEXT NOT NULL,
-                    finding_json TEXT NOT NULL,
-                    PRIMARY KEY (run_id, candidate_id, perspective),
-                    FOREIGN KEY (run_id, candidate_id)
-                        REFERENCES verification_candidates(run_id, candidate_id)
-                );
-                """
-            )
+            migrate_state(connection)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database, timeout=30)
