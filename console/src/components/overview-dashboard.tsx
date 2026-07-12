@@ -194,8 +194,8 @@ export function OverviewDashboard({
                     : page === "settings"
                       ? "Workspace settings"
                       : page === "sources"
-                      ? "Source Checkouts"
-                      : "Gateway connections"}
+                        ? "Source Checkouts"
+                        : "Gateway connections"}
                 </p>
               </div>
             </div>
