@@ -26,18 +26,26 @@ const SESSION_TOKEN_KEY = "okf-wiki-console-token"
 export function consumeSessionToken() {
   const fragment = new URLSearchParams(window.location.hash.slice(1))
   const token = fragment.get("token")
+  history.replaceState(
+    null,
+    "",
+    `${window.location.pathname}${window.location.search}`
+  )
 
   if (token) {
-    sessionStorage.setItem(SESSION_TOKEN_KEY, token)
-    history.replaceState(
-      null,
-      "",
-      `${window.location.pathname}${window.location.search}`
-    )
+    try {
+      sessionStorage.setItem(SESSION_TOKEN_KEY, token)
+    } catch {
+      // The fragment token remains valid when browser storage is unavailable.
+    }
     return token
   }
 
-  return sessionStorage.getItem(SESSION_TOKEN_KEY)
+  try {
+    return sessionStorage.getItem(SESSION_TOKEN_KEY)
+  } catch {
+    return null
+  }
 }
 
 export async function fetchOverview(

@@ -55,6 +55,11 @@ test("captures the fragment token, clears it, and renders authoritative overview
     page.getByText("Verifying", { exact: true }).first()
   ).toBeVisible()
   await expect(page.getByRole("button", { name: "Start run" })).toBeDisabled()
+  await expect(page.getByRole("link", { name: "Overview" })).toHaveAttribute(
+    "aria-current",
+    "page"
+  )
+  await expect(page.getByRole("button", { name: "Sources" })).toBeDisabled()
   await expect(
     page.evaluate(() => sessionStorage.getItem("okf-wiki-console-token"))
   ).resolves.toBe("browser-secret")
@@ -69,7 +74,63 @@ test("captures the fragment token, clears it, and renders authoritative overview
     path: "test-results/overview-mobile.png",
     fullPage: true,
   })
+  await page.getByRole("button", { name: "Toggle Sidebar" }).click()
+  await expect(page.getByRole("link", { name: "Overview" })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Sources" })).toBeDisabled()
+  await page.screenshot({
+    path: "test-results/overview-mobile-menu.png",
+    fullPage: true,
+  })
 })
+
+test("uses the fragment token when session storage is unavailable", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Storage.prototype.setItem = () => {
+      throw new DOMException("Storage disabled")
+    }
+    Storage.prototype.getItem = () => {
+      throw new DOMException("Storage disabled")
+    }
+  })
+  await mockOverview(page, populatedOverview, 200, (authorization) => {
+    expect(authorization).toBe("Bearer transient-secret")
+  })
+
+  await page.goto("/#token=transient-secret")
+
+  await expect(page).toHaveURL("http://127.0.0.1:4173/")
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Catalog Platform" })
+  ).toBeVisible()
+})
+
+test("clears unrelated fragments before reporting a missing session", async ({
+  page,
+}) => {
+  await page.goto("/#section=overview")
+  await expect(page).toHaveURL("http://127.0.0.1:4173/")
+  await expect(page.getByText("Secure session required")).toBeVisible()
+})
+
+for (const [state, label] of [
+  ["checking", "Checking"],
+  ["publishing", "Publishing"],
+] as const) {
+  test(`shows exact ${state} run state on the rail and badge`, async ({
+    page,
+  }) => {
+    await mockOverview(page, {
+      ...populatedOverview,
+      active_run: { ...populatedOverview.active_run, state },
+    })
+
+    await page.goto(`/#token=${state}`)
+    const flow = page.getByRole("region", { name: "Production flow" })
+    await expect(flow.getByText(label, { exact: true })).toHaveCount(2)
+  })
+}
 
 test("shows an accessible loading state", async ({ page }) => {
   await page.route("**/api/v1/overview", async (route) => {

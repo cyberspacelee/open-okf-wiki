@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react"
 import {
   BookOpenIcon,
   BoxesIcon,
@@ -34,6 +35,20 @@ import {
 } from "@/components/ui/empty"
 import { Separator } from "@/components/ui/separator"
 import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarHeader,
+  SidebarInset,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+  SidebarTrigger,
+} from "@/components/ui/sidebar"
+import {
   Table,
   TableBody,
   TableCell,
@@ -60,8 +75,24 @@ const phases = [
   "Exploring",
   "Verifying",
   "Rendering",
+  "Checking",
   "Review",
+  "Publishing",
+  "Published",
 ] as const
+
+const runStates: Record<string, { label: string; phase: number }> = {
+  preparing: { label: "Preparing", phase: 0 },
+  exploring: { label: "Exploring", phase: 1 },
+  verifying: { label: "Verifying", phase: 2 },
+  rendering: { label: "Rendering", phase: 3 },
+  checking: { label: "Checking", phase: 4 },
+  review_required: { label: "Review required", phase: 5 },
+  publishing: { label: "Publishing", phase: 6 },
+  published: { label: "Published", phase: 7 },
+  failed: { label: "Failed", phase: -1 },
+  cancelled: { label: "Cancelled", phase: -1 },
+}
 
 const actionLabels: Record<string, string> = {
   configure_sources: "Configure sources",
@@ -72,52 +103,70 @@ const actionLabels: Record<string, string> = {
 
 export function OverviewDashboard({ overview }: { overview: Overview }) {
   return (
-    <div className="min-h-svh bg-background text-foreground">
-      <aside className="fixed inset-y-0 left-0 hidden w-56 border-r bg-sidebar lg:flex lg:flex-col">
-        <div className="flex h-16 items-center gap-3 px-5">
-          <div className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
-            <BoxesIcon className="size-4" aria-hidden="true" />
+    <SidebarProvider style={{ "--sidebar-width": "14rem" } as CSSProperties}>
+      <Sidebar collapsible="offcanvas">
+        <SidebarHeader className="h-16 justify-center px-5">
+          <div className="flex items-center gap-3">
+            <div className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
+              <BoxesIcon className="size-4" aria-hidden="true" />
+            </div>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold">OKF Wiki</p>
+              <p className="truncate text-xs text-muted-foreground">
+                Workspace Console
+              </p>
+            </div>
           </div>
-          <div className="min-w-0">
-            <p className="truncate text-sm font-semibold">OKF Wiki</p>
-            <p className="truncate text-xs text-muted-foreground">
-              Workspace Console
-            </p>
-          </div>
-        </div>
-        <Separator />
-        <nav aria-label="Primary" className="flex flex-1 flex-col gap-1 p-3">
-          {navItems.map(({ label, icon: Icon }, index) => (
-            <Button
-              key={label}
-              aria-current={index === 0 ? "page" : undefined}
-              disabled={index !== 0}
-              variant={index === 0 ? "secondary" : "ghost"}
-              className="w-full justify-start"
-            >
-              <Icon data-icon="inline-start" />
-              {label}
-            </Button>
-          ))}
-        </nav>
-        <div className="p-4 text-xs text-muted-foreground">
+        </SidebarHeader>
+        <SidebarContent>
+          <SidebarGroup>
+            <SidebarGroupContent>
+              <nav aria-label="Primary">
+                <SidebarMenu>
+                  {navItems.map(({ label, icon: Icon }, index) => (
+                    <SidebarMenuItem key={label}>
+                      {index === 0 ? (
+                        <SidebarMenuButton
+                          isActive
+                          render={<a href="/" aria-current="page" />}
+                        >
+                          <Icon />
+                          <span>{label}</span>
+                        </SidebarMenuButton>
+                      ) : (
+                        <SidebarMenuButton disabled type="button">
+                          <Icon />
+                          <span>{label}</span>
+                        </SidebarMenuButton>
+                      )}
+                    </SidebarMenuItem>
+                  ))}
+                </SidebarMenu>
+              </nav>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        </SidebarContent>
+        <SidebarFooter className="px-4 py-3 text-xs text-muted-foreground">
           <p className="flex items-center gap-2">
             <CircleDotIcon className="size-3" aria-hidden="true" />
             Local control plane
           </p>
-        </div>
-      </aside>
+        </SidebarFooter>
+      </Sidebar>
 
-      <div className="lg:pl-56">
+      <SidebarInset>
         <header className="border-b bg-background">
           <div className="flex min-h-16 items-center justify-between gap-4 px-5 lg:px-8">
-            <div className="min-w-0">
-              <p className="truncate text-sm font-medium">
-                {overview.project.name}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                Workspace overview
-              </p>
+            <div className="flex min-w-0 items-center gap-2">
+              <SidebarTrigger className="md:hidden" />
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium">
+                  {overview.project.name}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Workspace overview
+                </p>
+              </div>
             </div>
             <div className="flex items-center gap-2">
               <Badge variant="outline">
@@ -130,24 +179,9 @@ export function OverviewDashboard({ overview }: { overview: Overview }) {
               </Button>
             </div>
           </div>
-          <nav
-            aria-label="Mobile primary"
-            className="flex scroll-fade-x overflow-x-auto px-3 pb-3 lg:hidden"
-          >
-            {navItems.map(({ label }, index) => (
-              <Button
-                key={label}
-                disabled={index !== 0}
-                size="sm"
-                variant={index === 0 ? "secondary" : "ghost"}
-              >
-                {label}
-              </Button>
-            ))}
-          </nav>
         </header>
 
-        <main className="mx-auto flex max-w-[90rem] flex-col gap-8 px-5 py-7 lg:px-8 lg:py-9">
+        <div className="mx-auto flex w-full max-w-[90rem] flex-col gap-8 px-5 py-7 lg:px-8 lg:py-9">
           <section
             aria-labelledby="overview-title"
             className="grid gap-6 border-b pb-8 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end"
@@ -184,7 +218,7 @@ export function OverviewDashboard({ overview }: { overview: Overview }) {
                 label="Run"
                 value={
                   overview.active_run
-                    ? titleCase(overview.active_run.state)
+                    ? runStateLabel(overview.active_run.state)
                     : "Idle"
                 }
               />
@@ -203,9 +237,9 @@ export function OverviewDashboard({ overview }: { overview: Overview }) {
           </div>
 
           <NextActions actions={overview.next_actions} />
-        </main>
-      </div>
-    </div>
+        </div>
+      </SidebarInset>
+    </SidebarProvider>
   )
 }
 
@@ -219,7 +253,7 @@ function SummaryMetric({ label, value }: { label: string; value: string }) {
 }
 
 function PhaseRail({ state }: { state: string | null }) {
-  const current = state ? phaseIndex(state) : -1
+  const current = state ? (runStates[state]?.phase ?? -1) : -1
 
   return (
     <section aria-labelledby="production-flow-title">
@@ -233,10 +267,10 @@ function PhaseRail({ state }: { state: string | null }) {
           </p>
         </div>
         <Badge variant={state ? "secondary" : "outline"}>
-          {state ? titleCase(state) : "No active run"}
+          {state ? runStateLabel(state) : "No active run"}
         </Badge>
       </div>
-      <ol className="grid gap-2 sm:grid-cols-5">
+      <ol className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-8">
         {phases.map((phase, index) => (
           <li
             key={phase}
@@ -335,7 +369,7 @@ function BundleCard({ overview }: { overview: Overview }) {
         </CardDescription>
         <CardAction>
           <Badge variant={bundle ? "secondary" : "outline"}>
-            {bundle ? titleCase(bundle.state) : "Empty"}
+            {bundle ? runStateLabel(bundle.state) : "Empty"}
           </Badge>
         </CardAction>
       </CardHeader>
@@ -362,7 +396,7 @@ function RunCard({ overview }: { overview: Overview }) {
         </CardDescription>
         <CardAction>
           <Badge variant={run ? "secondary" : "outline"}>
-            {run ? titleCase(run.state) : "Idle"}
+            {run ? runStateLabel(run.state) : "Idle"}
           </Badge>
         </CardAction>
       </CardHeader>
@@ -445,14 +479,8 @@ function Detail({
   )
 }
 
-function phaseIndex(state: string) {
-  const normalized = state.toLowerCase().replaceAll("-", "_")
-  if (normalized.includes("prepar")) return 0
-  if (normalized.includes("explor") || normalized.includes("analy")) return 1
-  if (normalized.includes("verif")) return 2
-  if (normalized.includes("render") || normalized.includes("check")) return 3
-  if (normalized.includes("review") || normalized.includes("publish")) return 4
-  return -1
+function runStateLabel(state: string) {
+  return runStates[state]?.label ?? "Unknown state"
 }
 
 function titleCase(value: string) {
