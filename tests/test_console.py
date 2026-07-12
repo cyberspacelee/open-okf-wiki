@@ -536,3 +536,50 @@ def test_console_source_api_matches_cli_and_uses_the_application_seam(
     assert code_invalid == 1
     assert invalid.json() == cli_invalid
     assert source.is_dir()
+
+
+def test_console_can_bind_a_configured_source_without_rewriting_its_definition(
+    tmp_path: Path, assets: Path
+) -> None:
+    workspace = tmp_path / "workspace"
+    origin = tmp_path / "origin"
+    make_git_source(origin)
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=origin,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    app = WorkspaceApplication(workspace)
+    app.initialize("catalog")
+    app.update(
+        {
+            "schema_version": 1,
+            "project": {"id": "catalog", "name": "Catalog"},
+            "sources": [
+                {
+                    "id": "code",
+                    "role": "implementation",
+                    "revision": revision,
+                    "remote": str(origin),
+                }
+            ],
+        },
+        {"schema_version": 1},
+    )
+    definition_before = app.settings()["definition"]
+
+    with running_console(workspace, assets) as (server, _):
+        base = f"http://127.0.0.1:{server.server_port}"
+        response = httpx.post(
+            base + "/api/v1/sources/clone",
+            headers={**authorization(server), "Origin": base},
+            json={"id": "code"},
+        )
+
+    code, listed = cli(["workspace", "sources", str(workspace)], tmp_path)
+    assert response.status_code == 200
+    assert code == 0
+    assert response.json() == listed
+    assert app.settings()["definition"] == definition_before

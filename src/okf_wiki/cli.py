@@ -1437,11 +1437,18 @@ def parser() -> argparse.ArgumentParser:
     workspace_clone_source.add_argument("role")
     workspace_clone_source.add_argument("remote")
     workspace_clone_source.add_argument("root", nargs="?", default=".")
+    workspace_clone_configured = workspace_commands.add_parser("clone-configured-source")
+    workspace_clone_configured.add_argument("source_id")
+    workspace_clone_configured.add_argument("root", nargs="?", default=".")
     workspace_link_source = workspace_commands.add_parser("link-source")
     workspace_link_source.add_argument("source_id")
     workspace_link_source.add_argument("role")
     workspace_link_source.add_argument("checkout")
     workspace_link_source.add_argument("root", nargs="?", default=".")
+    workspace_link_configured = workspace_commands.add_parser("link-configured-source")
+    workspace_link_configured.add_argument("source_id")
+    workspace_link_configured.add_argument("checkout")
+    workspace_link_configured.add_argument("root", nargs="?", default=".")
     workspace_remove_source = workspace_commands.add_parser("remove-source")
     workspace_remove_source.add_argument("source_id")
     workspace_remove_source.add_argument("root", nargs="?", default=".")
@@ -1569,6 +1576,10 @@ def main() -> int:
                 )
                 emit({"ok": True, **result})
                 return 0
+            elif arguments.workspace_command == "clone-configured-source":
+                app = WorkspaceApplication(arguments.root)
+                emit({"ok": True, **app.clone_source({"id": arguments.source_id})})
+                return 0
             elif arguments.workspace_command == "link-source":
                 app = WorkspaceApplication(arguments.root)
                 result = app.link_source(
@@ -1577,6 +1588,13 @@ def main() -> int:
                         "role": arguments.role,
                         "checkout": arguments.checkout,
                     }
+                )
+                emit({"ok": True, **result})
+                return 0
+            elif arguments.workspace_command == "link-configured-source":
+                app = WorkspaceApplication(arguments.root)
+                result = app.link_source(
+                    {"id": arguments.source_id, "checkout": arguments.checkout}
                 )
                 emit({"ok": True, **result})
                 return 0

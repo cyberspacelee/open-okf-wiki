@@ -20,6 +20,7 @@ from .source_checkouts import (
     delete_managed_checkout,
     inspect_checkout,
     validate_clone_remote,
+    verify_checkout_revision,
 )
 from .state_schema import migrate_state
 
@@ -513,6 +514,7 @@ class WorkspaceApplication:
         settings: LocalWorkspaceSettings | dict,
         *,
         validate_current: bool = True,
+        write_definition: bool = True,
     ) -> WorkspaceSnapshot:
         definition = _validate(WorkspaceDefinition, definition, self.definition_path)
         settings = _validate(LocalWorkspaceSettings, settings, self.settings_path)
@@ -541,13 +543,16 @@ class WorkspaceApplication:
         previous_settings = self.settings_path.read_bytes() if self.settings_path.exists() else None
         definition_temp: Path | None = None
         settings_temp: Path | None = None
+        operation = "configuration" if write_definition else "local settings"
         try:
-            definition_temp = _write_temp(
-                self.definition_path, _render_definition(definition), 0o644
-            )
+            if write_definition:
+                definition_temp = _write_temp(
+                    self.definition_path, _render_definition(definition), 0o644
+                )
             settings_temp = _write_temp(self.settings_path, _render_settings(settings), 0o600)
             self._begin_update(previous_definition, previous_settings)
-            _replace_durable(definition_temp, self.definition_path)
+            if definition_temp is not None:
+                _replace_durable(definition_temp, self.definition_path)
             _replace_durable(settings_temp, self.settings_path)
             snapshot = self._open_current()
             self._finish_update()
@@ -558,14 +563,22 @@ class WorkspaceApplication:
                 self._finish_update()
             except Exception as recovery_error:
                 raise WorkspaceError(
-                    f"{self.root}: configuration update and recovery failed: {recovery_error}"
+                    f"{self.root}: {operation} update and recovery failed: {recovery_error}"
                 ) from recovery_error
-            raise WorkspaceError(f"{self.root}: configuration update failed: {error}") from error
+            raise WorkspaceError(f"{self.root}: {operation} update failed: {error}") from error
         finally:
             if definition_temp is not None:
                 definition_temp.unlink(missing_ok=True)
             if settings_temp is not None:
                 settings_temp.unlink(missing_ok=True)
+
+    def _update_local_settings_locked(
+        self, settings: LocalWorkspaceSettings | dict
+    ) -> WorkspaceSnapshot:
+        definition = _validate(
+            WorkspaceDefinition, _read_toml(self.definition_path), self.definition_path
+        )
+        return self._update_locked(definition, settings, write_definition=False)
 
     def open(self) -> WorkspaceSnapshot:
         with self._locked():
@@ -809,29 +822,58 @@ class WorkspaceApplication:
             return self._sources_locked()
 
     def clone_source(self, payload: object) -> dict:
-        values = self._source_payload(payload, {"id", "role", "remote"}, "Clone Source")
-        source_id, role, remote = values["id"], values["role"], values["remote"]
-        candidate = self._new_source(source_id, role, "0" * 40, remote)
-        self._checkout_call(validate_clone_remote, remote)
+        values = self._source_payload_any(
+            payload, ({"id"}, {"id", "role", "remote"}), "Clone Source"
+        )
+        source_id = values["id"]
+        self._validate_source_id(source_id)
         with self._locked():
             self._recover_update_locked()
             definition, settings = self._configuration_locked()
-            self._ensure_available_source_id(candidate.id, definition, settings)
+            existing = next(
+                (source for source in definition.sources if source.id == source_id), None
+            )
+            self._ensure_source_unbound(source_id, settings)
+            if existing is not None:
+                if "role" in values and values["role"] != existing.role:
+                    raise WorkspaceError(
+                        f"Configured Source {source_id} role is {existing.role}; shared definition is unchanged"
+                    )
+                if "remote" in values and values["remote"] != existing.remote:
+                    raise WorkspaceError(
+                        f"Configured Source {source_id} remote differs from the shared definition"
+                    )
+                if existing.remote is None:
+                    raise WorkspaceError(
+                        f"Configured Source {source_id} has no remote; link an existing checkout"
+                    )
+                source = existing
+                remote = existing.remote
+                revision = existing.revision
+            else:
+                if set(values) != {"id", "role", "remote"}:
+                    raise WorkspaceError("A new Clone Source must contain id, role, and remote")
+                source = self._new_source(source_id, values["role"], "0" * 40, values["remote"])
+                remote = values["remote"]
+                revision = None
+            self._checkout_call(validate_clone_remote, remote)
             target, status, identity = self._checkout_call(
                 clone_checkout,
                 self.root,
                 self.settings_path.parent,
-                candidate.id,
+                source_id,
                 remote,
-            )
-            source = self._new_source(
-                candidate.id,
-                candidate.role,
-                cast(str, status["commit"]),
-                cast(str | None, status["remote"]) or remote,
+                revision,
             )
             definition_payload = definition.model_dump(mode="python")
-            definition_payload["sources"].append(source.model_dump(mode="python"))
+            if existing is None:
+                source = self._new_source(
+                    source.id,
+                    source.role,
+                    cast(str, status["commit"]),
+                    cast(str | None, status["remote"]) or remote,
+                )
+                definition_payload["sources"].append(source.model_dump(mode="python"))
             settings_payload = settings.model_dump(mode="python")
             settings_payload["checkouts"][source.id] = str(target)
             settings_payload["managed_checkouts"][source.id] = {
@@ -840,11 +882,14 @@ class WorkspaceApplication:
                 "inode": identity.st_ino,
             }
             try:
-                self._update_locked(definition_payload, settings_payload)
+                if existing is None:
+                    self._update_locked(definition_payload, settings_payload)
+                else:
+                    self._update_local_settings_locked(settings_payload)
             except Exception as error:
                 try:
                     delete_managed_checkout(
-                        self.root, candidate.id, target, identity.st_dev, identity.st_ino
+                        self.root, source_id, target, identity.st_dev, identity.st_ino
                     )
                 except SourceCheckoutError as cleanup_error:
                     raise WorkspaceError(
@@ -854,7 +899,11 @@ class WorkspaceApplication:
             return self._sources_locked()
 
     def link_source(self, payload: object) -> dict:
-        values = self._source_payload(payload, {"id", "role", "checkout"}, "Link Source")
+        values = self._source_payload_any(
+            payload, ({"id", "checkout"}, {"id", "role", "checkout"}), "Link Source"
+        )
+        source_id = values["id"]
+        self._validate_source_id(source_id)
         checkout = Path(values["checkout"]).expanduser().resolve()
         try:
             checkout.relative_to(self.root)
@@ -862,22 +911,38 @@ class WorkspaceApplication:
             pass
         else:
             raise WorkspaceError("Linked Source checkout must be outside the Workspace")
-        status = self._checkout_call(inspect_checkout, checkout)
-        source = self._new_source(
-            values["id"],
-            values["role"],
-            cast(str, status["commit"]),
-            cast(str | None, status["remote"]),
-        )
         with self._locked():
             self._recover_update_locked()
             definition, settings = self._configuration_locked()
-            self._ensure_available_source_id(source.id, definition, settings)
+            existing = next(
+                (source for source in definition.sources if source.id == source_id), None
+            )
+            self._ensure_source_unbound(source_id, settings)
+            status = self._checkout_call(inspect_checkout, checkout)
             definition_payload = definition.model_dump(mode="python")
-            definition_payload["sources"].append(source.model_dump(mode="python"))
+            if existing is not None:
+                if "role" in values and values["role"] != existing.role:
+                    raise WorkspaceError(
+                        f"Configured Source {source_id} role is {existing.role}; shared definition is unchanged"
+                    )
+                self._checkout_call(verify_checkout_revision, checkout, existing.revision)
+                source = existing
+            else:
+                if "role" not in values:
+                    raise WorkspaceError("A new Link Source must contain id, role, and checkout")
+                source = self._new_source(
+                    source_id,
+                    values["role"],
+                    cast(str, status["commit"]),
+                    cast(str | None, status["remote"]),
+                )
+                definition_payload["sources"].append(source.model_dump(mode="python"))
             settings_payload = settings.model_dump(mode="python")
             settings_payload["checkouts"][source.id] = str(checkout)
-            self._update_locked(definition_payload, settings_payload)
+            if existing is None:
+                self._update_locked(definition_payload, settings_payload)
+            else:
+                self._update_local_settings_locked(settings_payload)
             return self._sources_locked()
 
     def remove_source(self, payload: object) -> dict:
@@ -923,7 +988,7 @@ class WorkspaceApplication:
             )
             settings_payload = settings.model_dump(mode="python")
             settings_payload["managed_checkouts"].pop(source_id)
-            self._update_locked(definition, settings_payload)
+            self._update_local_settings_locked(settings_payload)
             return {"deleted": source_id, **self._sources_locked()}
 
     def _sources_locked(self) -> dict:
@@ -956,6 +1021,7 @@ class WorkspaceApplication:
                 {
                     "id": source.id,
                     "role": source.role,
+                    "revision": source.revision,
                     "ownership": ownership,
                     "checkout": checkout_text,
                     **status,
@@ -993,8 +1059,24 @@ class WorkspaceApplication:
 
     @staticmethod
     def _source_payload(payload: object, fields: set[str], operation: str) -> dict[str, str]:
-        if not isinstance(payload, dict) or set(payload) != fields:
-            raise WorkspaceError(f"{operation} must contain {', '.join(sorted(fields))}")
+        return WorkspaceApplication._source_payload_any(payload, (fields,), operation)
+
+    @staticmethod
+    def _source_payload_any(
+        payload: object, field_sets: tuple[set[str], ...], operation: str
+    ) -> dict[str, str]:
+        expected = next(
+            (
+                fields
+                for fields in field_sets
+                if isinstance(payload, dict) and set(payload) == fields
+            ),
+            None,
+        )
+        if expected is None:
+            alternatives = " or ".join(", ".join(sorted(fields)) for fields in field_sets)
+            raise WorkspaceError(f"{operation} must contain {alternatives}")
+        assert isinstance(payload, dict)
         values = cast(dict[str, object], payload)
         for key, value in values.items():
             if not isinstance(value, str) or not value.strip():
@@ -1019,11 +1101,14 @@ class WorkspaceApplication:
             raise WorkspaceError(str(error)) from error
 
     @staticmethod
-    def _ensure_available_source_id(
-        source_id: str, definition: WorkspaceDefinition, settings: LocalWorkspaceSettings
-    ) -> None:
-        if source_id in {source.id for source in definition.sources}:
-            raise WorkspaceError(f"Source {source_id} already exists")
+    def _validate_source_id(source_id: str) -> None:
+        if not SOURCE_ID_RE.fullmatch(source_id):
+            raise WorkspaceError("Invalid Source id: must use a safe stable identifier")
+
+    @staticmethod
+    def _ensure_source_unbound(source_id: str, settings: LocalWorkspaceSettings) -> None:
+        if source_id in settings.checkouts:
+            raise WorkspaceError(f"Source {source_id} already has a checkout binding")
         if source_id in settings.managed_checkouts:
             raise WorkspaceError(
                 f"Source {source_id} has a retained managed checkout; delete or restore it first"

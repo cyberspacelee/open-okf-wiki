@@ -4,6 +4,7 @@ export type SourceRole =
 export type SourceCheckout = {
   id: string
   role: SourceRole
+  revision: string
   ownership: "managed" | "linked" | null
   checkout: string | null
   remote: string | null
@@ -38,11 +39,26 @@ export function cloneSource(
   return requestSources("/api/v1/sources/clone", "POST", token, payload)
 }
 
+export function cloneConfiguredSource(token: string, id: string) {
+  return requestSources("/api/v1/sources/clone", "POST", token, { id })
+}
+
 export function linkSource(
   token: string,
   payload: { id: string; role: SourceRole; checkout: string }
 ) {
   return requestSources("/api/v1/sources/link", "POST", token, payload)
+}
+
+export function linkConfiguredSource(
+  token: string,
+  id: string,
+  checkout: string
+) {
+  return requestSources("/api/v1/sources/link", "POST", token, {
+    id,
+    checkout,
+  })
 }
 
 export function removeSource(token: string, id: string) {
@@ -138,6 +154,7 @@ function isSource(value: unknown) {
     ["implementation", "documentation", "requirements", "contract"].includes(
       String(value.role)
     ) &&
+    typeof value.revision === "string" &&
     (value.ownership === "managed" ||
       value.ownership === "linked" ||
       value.ownership === null) &&

@@ -55,10 +55,12 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import {
+  cloneConfiguredSource,
   cloneSource,
   deleteManagedSource,
   fetchSources,
   linkSource,
+  linkConfiguredSource,
   removeSource,
   type SourceCheckout,
   type SourceRole,
@@ -78,6 +80,7 @@ export function SourcesPage({ token }: { token: string }) {
   const [snapshot, setSnapshot] = useState<SourcesSnapshot | null>(null)
   const [error, setError] = useState<SourcesError | null>(null)
   const [working, setWorking] = useState<string | null>(null)
+  const [linkConfiguredId, setLinkConfiguredId] = useState<string | null>(null)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -129,6 +132,10 @@ export function SourcesPage({ token }: { token: string }) {
     )
   }
 
+  const configuredLinkSource = snapshot.sources.find(
+    (source) => source.id === linkConfiguredId && source.ownership === null
+  )
+
   return (
     <main className="mx-auto flex w-full max-w-[90rem] flex-col gap-6 px-5 py-7 lg:px-8 lg:py-9">
       <section
@@ -171,6 +178,13 @@ export function SourcesPage({ token }: { token: string }) {
       <SourceTable
         sources={snapshot.sources}
         working={working}
+        onClone={(id) =>
+          mutate(`bind-clone:${id}`, () => cloneConfiguredSource(token, id))
+        }
+        onLink={(id) => {
+          setLinkConfiguredId(id)
+          setTimeout(() => document.getElementById("link-checkout")?.focus(), 0)
+        }}
         onRemove={(id) => mutate(`remove:${id}`, () => removeSource(token, id))}
       />
 
@@ -219,10 +233,16 @@ export function SourcesPage({ token }: { token: string }) {
           }
         />
         <LinkForm
+          key={configuredLinkSource?.id ?? "new"}
+          configuredSource={configuredLinkSource}
           disabled={working !== null}
           busy={working === "link"}
           onSubmit={(payload) =>
-            mutate("link", () => linkSource(token, payload))
+            mutate("link", () =>
+              configuredLinkSource
+                ? linkConfiguredSource(token, payload.id, payload.checkout)
+                : linkSource(token, payload)
+            )
           }
         />
       </div>
@@ -233,10 +253,14 @@ export function SourcesPage({ token }: { token: string }) {
 function SourceTable({
   sources,
   working,
+  onClone,
+  onLink,
   onRemove,
 }: {
   sources: SourceCheckout[]
   working: string | null
+  onClone: (id: string) => void
+  onLink: (id: string) => void
   onRemove: (id: string) => void
 }) {
   return (
@@ -273,70 +297,126 @@ function SourceTable({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sources.map((source) => (
-                <TableRow key={source.id}>
-                  <TableCell>
-                    <p className="font-medium">{source.id}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {roleLabel(source.role)}
-                    </p>
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant="outline">
-                      {source.ownership ?? "Unbound"}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    {source.error ? (
-                      <p className="max-w-64 text-sm whitespace-normal text-destructive">
-                        {source.error}
+              {sources.map((source) => {
+                const unbound = source.ownership === null
+                return (
+                  <TableRow key={source.id}>
+                    <TableCell>
+                      <p className="font-medium">{source.id}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {roleLabel(source.role)}
                       </p>
-                    ) : (
-                      <div className="flex flex-col gap-1 text-xs">
-                        <p>
-                          <span className="font-medium">
-                            {source.branch ?? "Detached"}
-                          </span>{" "}
-                          <Badge
-                            variant={source.dirty ? "destructive" : "secondary"}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="outline">
+                        {source.ownership ?? "Unbound"}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      {unbound ? (
+                        <div className="flex flex-col gap-1 text-xs">
+                          <Badge variant="outline">Checkout not bound</Badge>
+                          <p className="font-mono text-muted-foreground">
+                            Revision {source.revision}
+                          </p>
+                        </div>
+                      ) : source.error ? (
+                        <p className="max-w-64 text-sm whitespace-normal text-destructive">
+                          {source.error}
+                        </p>
+                      ) : (
+                        <div className="flex flex-col gap-1 text-xs">
+                          <p>
+                            <span className="font-medium">
+                              {source.branch ?? "Detached"}
+                            </span>{" "}
+                            <Badge
+                              variant={
+                                source.dirty ? "destructive" : "secondary"
+                              }
+                            >
+                              {source.dirty ? "Dirty" : "Clean"}
+                            </Badge>
+                          </p>
+                          <p className="font-mono text-muted-foreground">
+                            {source.commit ?? "No commit"}
+                          </p>
+                          <p className="text-muted-foreground">
+                            {source.ahead === null || source.behind === null
+                              ? "No local upstream"
+                              : `${source.ahead} ahead / ${source.behind} behind`}
+                          </p>
+                        </div>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <p className="max-w-72 truncate font-mono text-xs">
+                        {source.checkout ?? "Not bound"}
+                      </p>
+                      <p className="max-w-72 truncate text-xs text-muted-foreground">
+                        {source.remote ?? "No origin remote"}
+                      </p>
+                      {unbound && (
+                        <p className="text-xs text-muted-foreground">
+                          Choose a managed clone or link an external checkout.
+                        </p>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {unbound ? (
+                        <div className="flex justify-end gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={
+                              working !== null || source.remote === null
+                            }
+                            onClick={() => onClone(source.id)}
                           >
-                            {source.dirty ? "Dirty" : "Clean"}
-                          </Badge>
-                        </p>
-                        <p className="font-mono text-muted-foreground">
-                          {source.commit ?? "No commit"}
-                        </p>
-                        <p className="text-muted-foreground">
-                          {source.ahead === null || source.behind === null
-                            ? "No local upstream"
-                            : `${source.ahead} ahead / ${source.behind} behind`}
-                        </p>
-                      </div>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <p className="max-w-72 truncate font-mono text-xs">
-                      {source.checkout ?? "Not bound"}
-                    </p>
-                    <p className="max-w-72 truncate text-xs text-muted-foreground">
-                      {source.remote ?? "No origin remote"}
-                    </p>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={working !== null}
-                      onClick={() => onRemove(source.id)}
-                    >
-                      <Trash2Icon data-icon="inline-start" />
-                      {working === `remove:${source.id}`
-                        ? "Removing…"
-                        : "Remove"}
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
+                            <FolderGit2Icon data-icon="inline-start" />
+                            {working === `bind-clone:${source.id}`
+                              ? "Cloning…"
+                              : "Clone"}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={working !== null}
+                            onClick={() => onLink(source.id)}
+                          >
+                            <LinkIcon data-icon="inline-start" />
+                            Link below
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={working !== null}
+                            aria-label={`Remove ${source.id} configuration`}
+                            onClick={() => onRemove(source.id)}
+                          >
+                            <Trash2Icon data-icon="inline-start" />
+                            {working === `remove:${source.id}`
+                              ? "Removing…"
+                              : "Remove config"}
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={working !== null}
+                          onClick={() => onRemove(source.id)}
+                        >
+                          <Trash2Icon data-icon="inline-start" />
+                          {working === `remove:${source.id}`
+                            ? "Removing…"
+                            : "Remove"}
+                        </Button>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                )
+              })}
             </TableBody>
           </Table>
         )}
@@ -383,7 +463,7 @@ function CloneForm({
               onIdChange={setId}
               onRoleChange={setRole}
             />
-            <Field>
+            <Field data-disabled={disabled || undefined}>
               <FieldLabel htmlFor="clone-remote">Git remote</FieldLabel>
               <Input
                 id="clone-remote"
@@ -415,10 +495,12 @@ function CloneForm({
 }
 
 function LinkForm({
+  configuredSource,
   disabled,
   busy,
   onSubmit,
 }: {
+  configuredSource?: SourceCheckout
   disabled: boolean
   busy: boolean
   onSubmit: (payload: {
@@ -427,8 +509,10 @@ function LinkForm({
     checkout: string
   }) => void
 }) {
-  const [id, setId] = useState("")
-  const [role, setRole] = useState<SourceRole>("documentation")
+  const [id, setId] = useState(configuredSource?.id ?? "")
+  const [role, setRole] = useState<SourceRole>(
+    configuredSource?.role ?? "documentation"
+  )
   const [checkout, setCheckout] = useState("")
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -440,9 +524,15 @@ function LinkForm({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Link existing Source</CardTitle>
+        <CardTitle>
+          {configuredSource
+            ? `Bind ${configuredSource.id}`
+            : "Link existing Source"}
+        </CardTitle>
         <CardDescription>
-          Registers an external working tree without moving or copying it.
+          {configuredSource
+            ? "Adds only this machine's checkout binding; the shared Source definition stays unchanged."
+            : "Registers an external working tree without moving or copying it."}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -453,10 +543,11 @@ function LinkForm({
               id={id}
               role={role}
               disabled={disabled}
+              locked={configuredSource !== undefined}
               onIdChange={setId}
               onRoleChange={setRole}
             />
-            <Field>
+            <Field data-disabled={disabled || undefined}>
               <FieldLabel htmlFor="link-checkout">
                 Local checkout path
               </FieldLabel>
@@ -480,7 +571,11 @@ function LinkForm({
               disabled={disabled || !id.trim() || !checkout.trim()}
             >
               <LinkIcon data-icon="inline-start" />
-              {busy ? "Linking…" : "Link Source"}
+              {busy
+                ? "Linking…"
+                : configuredSource
+                  ? "Bind checkout"
+                  : "Link Source"}
             </Button>
           </FieldGroup>
         </form>
@@ -494,6 +589,7 @@ function SourceIdentityFields({
   id,
   role,
   disabled,
+  locked = false,
   onIdChange,
   onRoleChange,
 }: {
@@ -501,12 +597,14 @@ function SourceIdentityFields({
   id: string
   role: SourceRole
   disabled: boolean
+  locked?: boolean
   onIdChange: (value: string) => void
   onRoleChange: (value: SourceRole) => void
 }) {
+  const identityDisabled = disabled || locked
   return (
     <>
-      <Field>
+      <Field data-disabled={identityDisabled || undefined}>
         <FieldLabel htmlFor={`${prefix}-id`}>Source ID</FieldLabel>
         <Input
           id={`${prefix}-id`}
@@ -514,7 +612,7 @@ function SourceIdentityFields({
           value={id}
           onChange={(event) => onIdChange(event.target.value)}
           placeholder="catalog-docs"
-          disabled={disabled}
+          disabled={identityDisabled}
           required
         />
         <FieldDescription id={`${prefix}-id-description`}>
@@ -522,13 +620,13 @@ function SourceIdentityFields({
           underscores, and hyphens only.
         </FieldDescription>
       </Field>
-      <Field>
+      <Field data-disabled={identityDisabled || undefined}>
         <FieldLabel htmlFor={`${prefix}-role`}>Role</FieldLabel>
         <NativeSelect
           id={`${prefix}-role`}
           value={role}
           onChange={(event) => onRoleChange(event.target.value as SourceRole)}
-          disabled={disabled}
+          disabled={identityDisabled}
         >
           {roles.map((item) => (
             <NativeSelectOption key={item.value} value={item.value}>

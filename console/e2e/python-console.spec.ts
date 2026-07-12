@@ -338,6 +338,26 @@ test("loads the built Console through the real Python launcher", async ({
   )
   delete external.ok
   external.definition.project.name = "External Settings Update"
+  external.definition.sources = [
+    {
+      id: "code",
+      role: "implementation",
+      revision: execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: managedOrigin,
+        encoding: "utf-8",
+      }).trim(),
+      remote: managedOrigin,
+    },
+    {
+      id: "docs",
+      role: "documentation",
+      revision: execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: linkedSource,
+        encoding: "utf-8",
+      }).trim(),
+      remote: null,
+    },
+  ]
   const externalPayload = join(workspace, ".okf-wiki", "external-update.json")
   writeFileSync(externalPayload, JSON.stringify(external))
   execFileSync(
@@ -364,25 +384,30 @@ test("loads the built Console through the real Python launcher", async ({
   await expect(
     page.getByRole("heading", { level: 1, name: "Sources" })
   ).toBeVisible()
-  const sourceIds = page.getByLabel("Source ID")
-  await sourceIds.nth(1).fill("docs")
-  await page.getByLabel("Local checkout path").fill(linkedSource)
-  await page.getByRole("button", { name: "Link Source" }).click()
-  await expect(
-    page
-      .getByRole("row")
-      .filter({ has: page.getByText("docs", { exact: true }) })
-  ).toContainText("linked")
-  expect(existsSync(linkedSource)).toBe(true)
-
-  await sourceIds.nth(0).fill("code")
-  await page.getByLabel("Git remote").fill(managedOrigin)
-  await page.getByRole("button", { name: "Clone Source" }).click()
   const managedRow = page
     .getByRole("row")
     .filter({ has: page.getByText("code", { exact: true }) })
+  const linkedRow = page
+    .getByRole("row")
+    .filter({ has: page.getByText("docs", { exact: true }) })
+  await expect(managedRow).toContainText("Checkout not bound")
+  await expect(linkedRow).toContainText("Checkout not bound")
+  await expect(
+    managedRow.getByRole("button", { name: "Remove code configuration" })
+  ).toBeVisible()
+  await managedRow.getByRole("button", { name: "Clone" }).click()
   await expect(managedRow).toContainText("managed")
   await expect(managedRow).toContainText("Clean")
+  await linkedRow.getByRole("button", { name: "Link below" }).click()
+  await expect(page.getByLabel("Source ID").nth(1)).toBeDisabled()
+  await expect(page.getByLabel("Source ID").nth(1)).toHaveValue("docs")
+  await expect(
+    page.getByLabel("Source ID").nth(1).locator("xpath=..")
+  ).toHaveAttribute("data-disabled", "true")
+  await page.getByLabel("Local checkout path").fill(linkedSource)
+  await page.getByRole("button", { name: "Bind checkout" }).click()
+  await expect(linkedRow).toContainText("linked")
+  expect(existsSync(linkedSource)).toBe(true)
   await page.screenshot({
     path: "test-results/sources-desktop.png",
     fullPage: true,
@@ -412,9 +437,6 @@ test("loads the built Console through the real Python launcher", async ({
   ).toBeHidden()
   expect(existsSync(join(workspace, "sources", "code"))).toBe(false)
 
-  const linkedRow = page
-    .getByRole("row")
-    .filter({ has: page.getByText("docs", { exact: true }) })
   writeFileSync(join(linkedSource, "untracked.txt"), "local change\n")
   await page.getByRole("button", { name: "Refresh status" }).click()
   await expect(linkedRow).toContainText("Dirty")
@@ -422,7 +444,8 @@ test("loads the built Console through the real Python launcher", async ({
   await expect(linkedRow).toBeHidden()
   expect(existsSync(linkedSource)).toBe(true)
 
-  await sourceIds.nth(0).fill("../escape")
+  await page.getByLabel("Source ID").nth(0).fill("../escape")
+  await page.getByLabel("Git remote").fill(managedOrigin)
   await page.getByRole("button", { name: "Clone Source" }).click()
   await expect(page.getByRole("alert")).toContainText("Invalid Source id")
   expect(existsSync(join(workspace, "escape"))).toBe(false)
