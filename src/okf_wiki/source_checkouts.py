@@ -114,44 +114,60 @@ def delete_managed_checkout(
         raise SourceCheckoutError("Managed checkout path is escaped or ambiguous")
     _validate_delete_root(workspace, sources_root)
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(sources_root, flags)
     try:
-        if not os.path.lexists(target):
-            quarantines = _matching_quarantines(sources_root, source_id, device, inode)
-            if not quarantines:
-                return False
-            if len(quarantines) > 1:
-                raise SourceCheckoutError("Managed checkout quarantine is ambiguous")
-            _delete_quarantine(descriptor, sources_root, source_id, quarantines[0], device, inode)
-            return True
-        target_info = target.lstat()
-        if stat.S_ISLNK(target_info.st_mode):
-            raise SourceCheckoutError(f"Managed checkout path contains a symlink: {target}")
-        if not stat.S_ISDIR(target_info.st_mode):
-            raise SourceCheckoutError(f"Managed checkout path is not a directory: {target}")
-        if os.path.ismount(target):
-            raise SourceCheckoutError(f"Managed checkout is an external mount: {target}")
-        target_descriptor = os.open(source_id, flags, dir_fd=descriptor)
+        workspace_descriptor = os.open(workspace, flags)
+    except OSError as error:
+        raise SourceCheckoutError(f"Cannot delete managed Source {source_id}: {error}") from error
+    try:
+        descriptor = os.open("sources", flags, dir_fd=workspace_descriptor)
         try:
-            identity = os.fstat(target_descriptor)
-            if (identity.st_dev, identity.st_ino) != (device, inode):
+            if _is_mounted_descriptor(descriptor, workspace_descriptor):
                 raise SourceCheckoutError(
-                    "Managed checkout ownership no longer matches its receipt"
+                    f"Managed Sources root is an external mount: {sources_root}"
                 )
-            quarantine = f".{source_id}.delete-{secrets.token_hex(12)}"
-            os.rename(
-                source_id,
-                quarantine,
-                src_dir_fd=descriptor,
-                dst_dir_fd=descriptor,
-            )
-            _delete_quarantine(descriptor, sources_root, source_id, quarantine, device, inode)
+            try:
+                target_info = os.stat(source_id, dir_fd=descriptor, follow_symlinks=False)
+            except FileNotFoundError:
+                quarantines = _matching_quarantines(descriptor, source_id, device, inode)
+                if not quarantines:
+                    return False
+                if len(quarantines) > 1:
+                    raise SourceCheckoutError("Managed checkout quarantine is ambiguous")
+                _delete_quarantine(
+                    descriptor, sources_root, source_id, quarantines[0], device, inode
+                )
+                return True
+            if stat.S_ISLNK(target_info.st_mode):
+                raise SourceCheckoutError(f"Managed checkout path contains a symlink: {target}")
+            if not stat.S_ISDIR(target_info.st_mode):
+                raise SourceCheckoutError(f"Managed checkout path is not a directory: {target}")
+            if os.path.ismount(target):
+                raise SourceCheckoutError(f"Managed checkout is an external mount: {target}")
+            target_descriptor = os.open(source_id, flags, dir_fd=descriptor)
+            try:
+                identity = os.fstat(target_descriptor)
+                if (identity.st_dev, identity.st_ino) != (device, inode):
+                    raise SourceCheckoutError(
+                        "Managed checkout ownership no longer matches its receipt"
+                    )
+                if _is_mounted_descriptor(target_descriptor, descriptor):
+                    raise SourceCheckoutError(f"Managed checkout is an external mount: {target}")
+                quarantine = f".{source_id}.delete-{secrets.token_hex(12)}"
+                os.rename(
+                    source_id,
+                    quarantine,
+                    src_dir_fd=descriptor,
+                    dst_dir_fd=descriptor,
+                )
+                _delete_quarantine(descriptor, sources_root, source_id, quarantine, device, inode)
+            finally:
+                os.close(target_descriptor)
         finally:
-            os.close(target_descriptor)
+            os.close(descriptor)
     except OSError as error:
         raise SourceCheckoutError(f"Cannot delete managed Source {source_id}: {error}") from error
     finally:
-        os.close(descriptor)
+        os.close(workspace_descriptor)
     return True
 
 
@@ -188,15 +204,18 @@ def _validate_delete_root(workspace: Path, sources_root: Path) -> None:
         raise SourceCheckoutError(f"Managed Sources root is an external mount: {sources_root}")
 
 
-def _matching_quarantines(sources_root: Path, source_id: str, device: int, inode: int) -> list[str]:
+def _matching_quarantines(
+    sources_descriptor: int, source_id: str, device: int, inode: int
+) -> list[str]:
     prefix = f".{source_id}.delete-"
     matches = []
-    for entry in os.scandir(sources_root):
-        if not entry.name.startswith(prefix):
-            continue
-        info = entry.stat(follow_symlinks=False)
-        if stat.S_ISDIR(info.st_mode) and (info.st_dev, info.st_ino) == (device, inode):
-            matches.append(entry.name)
+    with os.scandir(sources_descriptor) as entries:
+        for entry in entries:
+            if not entry.name.startswith(prefix):
+                continue
+            info = entry.stat(follow_symlinks=False)
+            if stat.S_ISDIR(info.st_mode) and (info.st_dev, info.st_ino) == (device, inode):
+                matches.append(entry.name)
     return matches
 
 
@@ -284,20 +303,7 @@ def _delete_directory_contents(descriptor: int) -> None:
 def _is_mounted_descriptor(descriptor: int, parent_descriptor: int) -> bool:
     mount_id = _descriptor_mount_id(descriptor)
     parent_mount_id = _descriptor_mount_id(parent_descriptor)
-    if mount_id is not None or parent_mount_id is not None:
-        return mount_id is None or parent_mount_id is None or mount_id != parent_mount_id
-    identity = os.fstat(descriptor)
-    if identity.st_dev != os.fstat(parent_descriptor).st_dev:
-        return True
-    for root in ("/proc/self/fd", "/dev/fd"):
-        descriptor_path = f"{root}/{descriptor}/."
-        try:
-            observed = os.stat(descriptor_path)
-        except OSError:
-            continue
-        if os.path.samestat(observed, identity):
-            return os.path.ismount(descriptor_path)
-    return True
+    return mount_id is None or parent_mount_id is None or mount_id != parent_mount_id
 
 
 def _descriptor_mount_id(descriptor: int) -> int | None:

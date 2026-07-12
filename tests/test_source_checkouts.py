@@ -488,6 +488,46 @@ def test_mount_detection_is_bound_to_the_open_directory(
         os.close(parent_descriptor)
 
 
+def test_mount_detection_fails_closed_without_mount_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    child.mkdir(parents=True)
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    parent_descriptor = os.open(parent, flags)
+    child_descriptor = os.open(child, flags)
+    monkeypatch.setattr(source_checkouts_module, "_descriptor_mount_id", lambda _fd: None)
+    try:
+        assert source_checkouts_module._is_mounted_descriptor(child_descriptor, parent_descriptor)
+    finally:
+        os.close(child_descriptor)
+        os.close(parent_descriptor)
+
+
+def test_managed_delete_checks_the_sources_root_mount_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin = tmp_path / "origin"
+    make_source(origin)
+    workspace = tmp_path / "workspace"
+    app = WorkspaceApplication(workspace)
+    app.initialize("catalog")
+    app.clone_source({"id": "code", "role": "implementation", "remote": str(origin)})
+    app.remove_source({"id": "code"})
+    sources_inode = (workspace / "sources").stat().st_ino
+    monkeypatch.setattr(
+        source_checkouts_module,
+        "_descriptor_mount_id",
+        lambda descriptor: 2 if os.fstat(descriptor).st_ino == sources_inode else 1,
+    )
+
+    with pytest.raises(WorkspaceError, match="Sources root is an external mount"):
+        app.delete_managed_source({"id": "code", "confirmation": "code"})
+
+    assert (workspace / "sources" / "code").is_dir()
+
+
 @pytest.mark.parametrize("mounted", ["sources", "target"])
 def test_managed_delete_refuses_managed_root_and_target_mounts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mounted: str
