@@ -4,8 +4,9 @@ import os
 import sqlite3
 import tempfile
 import tomllib
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal, TypeVar, cast
+from typing import Iterator, Literal, TypeVar, cast
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -348,9 +349,14 @@ class WorkspaceApplication:
         self.settings_path = self.root / ".okf-wiki" / "settings.toml"
         self.database_path = self.root / ".okf-wiki" / "runs.db"
         self.update_journal_path = self.root / ".okf-wiki" / "config-update.json"
+        self.lock_path = self.root / ".okf-wiki" / "workspace-lock.db"
 
     def initialize(self, project_id: str, name: str | None = None) -> WorkspaceSnapshot:
-        self._recover_update()
+        with self._locked():
+            return self._initialize_locked(project_id, name)
+
+    def _initialize_locked(self, project_id: str, name: str | None) -> WorkspaceSnapshot:
+        self._recover_update_locked()
         if self.definition_path.exists() or self.settings_path.exists():
             raise WorkspaceError(f"{self.root}: Workspace is already initialized")
         definition = _validate(
@@ -361,17 +367,27 @@ class WorkspaceApplication:
             },
             self.definition_path,
         )
-        return self.update(definition, LocalWorkspaceSettings())
+        return self._update_locked(definition, LocalWorkspaceSettings())
 
     def update(
         self,
         definition: WorkspaceDefinition | dict,
         settings: LocalWorkspaceSettings | dict,
     ) -> WorkspaceSnapshot:
-        self._recover_update()
+        with self._locked():
+            self._recover_update_locked()
+            return self._update_locked(definition, settings)
+
+    def _update_locked(
+        self,
+        definition: WorkspaceDefinition | dict,
+        settings: LocalWorkspaceSettings | dict,
+        *,
+        validate_current: bool = True,
+    ) -> WorkspaceSnapshot:
         definition = _validate(WorkspaceDefinition, definition, self.definition_path)
         settings = _validate(LocalWorkspaceSettings, settings, self.settings_path)
-        if self.definition_path.exists():
+        if validate_current and self.definition_path.exists():
             current = _validate(
                 WorkspaceDefinition, _read_toml(self.definition_path), self.definition_path
             )
@@ -422,8 +438,9 @@ class WorkspaceApplication:
                 settings_temp.unlink(missing_ok=True)
 
     def open(self) -> WorkspaceSnapshot:
-        self._recover_update()
-        return self._open_current()
+        with self._locked():
+            self._recover_update_locked()
+            return self._open_current()
 
     def _open_current(self) -> WorkspaceSnapshot:
         definition = _validate(
@@ -495,13 +512,15 @@ class WorkspaceApplication:
         finally:
             journal.unlink(missing_ok=True)
 
-    def _recover_update(self) -> None:
+    def _recover_update_locked(self) -> None:
         if not self.update_journal_path.exists():
             return
         try:
             journal = json.loads(self.update_journal_path.read_text(encoding="utf-8"))
-            if set(journal) != {"definition", "settings"} or not all(
-                value is None or isinstance(value, str) for value in journal.values()
+            if (
+                not isinstance(journal, dict)
+                or set(journal) != {"definition", "settings"}
+                or not all(value is None or isinstance(value, str) for value in journal.values())
             ):
                 raise ValueError("invalid update journal")
         except (OSError, ValueError, json.JSONDecodeError) as error:
@@ -543,15 +562,23 @@ class WorkspaceApplication:
         return self.open().model_dump(mode="json")
 
     def migrate_legacy(self, path: Path | str) -> WorkspaceSnapshot:
-        self._recover_update()
+        with self._locked():
+            return self._migrate_legacy_locked(path)
+
+    def _migrate_legacy_locked(self, path: Path | str) -> WorkspaceSnapshot:
+        self._recover_update_locked()
         legacy_path = Path(path).resolve()
         if legacy_path.parent != self.root:
             raise WorkspaceError(
                 f"{legacy_path}: legacy Producer Project must be migrated in place"
             )
-        if self.definition_path.exists() or self.settings_path.exists():
+        if self.settings_path.exists() or (
+            self.definition_path.exists() and legacy_path != self.definition_path
+        ):
             raise WorkspaceError(f"{self.root}: Workspace is already initialized")
         payload = _read_toml(legacy_path)
+        if legacy_path == self.definition_path and "schema_version" in payload:
+            raise WorkspaceError(f"{self.root}: Workspace is already initialized")
         allowed = {"project_id", "publish_dir", "repository", "revision", "sources", "profile"}
         unknown = sorted(set(payload) - allowed)
         if unknown:
@@ -616,4 +643,25 @@ class WorkspaceApplication:
             raise WorkspaceError(
                 f"{legacy_path}: invalid Producer Project configuration: {error}"
             ) from error
-        return self.update(definition, settings)
+        return self._update_locked(
+            definition,
+            settings,
+            validate_current=legacy_path != self.definition_path,
+        )
+
+    @contextmanager
+    def _locked(self) -> Iterator[None]:
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = sqlite3.connect(self.lock_path, timeout=30)
+            connection.execute("BEGIN IMMEDIATE")
+        except sqlite3.Error as error:
+            if connection is not None:
+                connection.close()
+            raise WorkspaceError(f"{self.lock_path}: cannot lock workspace: {error}") from error
+        try:
+            yield
+        finally:
+            connection.rollback()
+            connection.close()

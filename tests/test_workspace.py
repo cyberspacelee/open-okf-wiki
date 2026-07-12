@@ -1,8 +1,10 @@
+import concurrent.futures
 import json
 import os
 import sqlite3
 import subprocess
 import sys
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -403,10 +405,13 @@ def test_unknown_malformed_and_conflicting_configuration_fails(
         app.open()
 
 
-def test_legacy_project_migration_preserves_configuration_and_runs(tmp_path: Path) -> None:
+@pytest.mark.parametrize("legacy_name", ["project.toml", "workspace.toml"])
+def test_legacy_project_migration_preserves_configuration_and_runs(
+    tmp_path: Path, legacy_name: str
+) -> None:
     source = tmp_path / "source"
     source.mkdir()
-    legacy = tmp_path / "project.toml"
+    legacy = tmp_path / legacy_name
     legacy.write_text(
         f"""project_id = "catalog"
 publish_dir = "published"
@@ -650,6 +655,89 @@ def test_open_recovers_old_configuration_after_interrupted_pair_replace(
     assert app.definition_path.read_bytes() == definition_before
     assert app.settings_path.read_bytes() == settings_before
     assert not app.update_journal_path.exists()
+
+
+@pytest.mark.parametrize("journal", ['["definition", "settings"]', '"definition"'])
+def test_open_rejects_non_object_update_journal(tmp_path: Path, journal: str) -> None:
+    app = WorkspaceApplication(tmp_path)
+    app.initialize("catalog")
+    app.update_journal_path.write_text(journal, encoding="utf-8")
+
+    with pytest.raises(WorkspaceError, match="cannot recover.*invalid update journal"):
+        app.open()
+
+
+def test_failed_same_name_legacy_migration_restores_original_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = WorkspaceApplication(tmp_path)
+    legacy = app.definition_path
+    legacy.write_text(
+        'project_id = "catalog"\npublish_dir = "published"\n'
+        'repository = "source"\nrevision = "abc"\n',
+        encoding="utf-8",
+    )
+    before = legacy.read_bytes()
+    real_replace = workspace_module._replace_durable
+    failed = False
+
+    def fail_settings_once(source: Path, target: Path) -> None:
+        nonlocal failed
+        if target == app.settings_path and not failed:
+            failed = True
+            raise OSError("injected settings replace failure")
+        real_replace(source, target)
+
+    monkeypatch.setattr(workspace_module, "_replace_durable", fail_settings_once)
+    with pytest.raises(WorkspaceError, match="configuration update failed"):
+        app.migrate_legacy(legacy)
+
+    assert legacy.read_bytes() == before
+    assert not app.settings_path.exists()
+    assert not app.update_journal_path.exists()
+
+
+def test_concurrent_updates_never_enter_replacement_together_or_mix_pairs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    WorkspaceApplication(tmp_path).initialize("catalog")
+    real_replace = workspace_module._replace_durable
+    rendezvous = threading.Barrier(2)
+    state_lock = threading.Lock()
+    active = 0
+    maximum_active = 0
+
+    def interleave(source: Path, target: Path) -> None:
+        nonlocal active, maximum_active
+        if target == tmp_path / "workspace.toml":
+            with state_lock:
+                active += 1
+                maximum_active = max(maximum_active, active)
+            try:
+                rendezvous.wait(timeout=0.2)
+            except threading.BrokenBarrierError:
+                pass
+            finally:
+                with state_lock:
+                    active -= 1
+        real_replace(source, target)
+
+    monkeypatch.setattr(workspace_module, "_replace_durable", interleave)
+
+    def update(name: str, concurrency: int) -> None:
+        WorkspaceApplication(tmp_path).update(
+            {"schema_version": 1, "project": {"id": "catalog", "name": name}},
+            {"schema_version": 1, "models": {"concurrency": concurrency}},
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(update, "A", 1), executor.submit(update, "B", 2)]
+        for future in futures:
+            future.result()
+
+    snapshot = WorkspaceApplication(tmp_path).open()
+    assert maximum_active == 1
+    assert (snapshot.project.name, snapshot.models.concurrency) in {("A", 1), ("B", 2)}
 
 
 @pytest.mark.parametrize(
