@@ -27,9 +27,9 @@ test.beforeAll(async () => {
       const payload = chunks.length
         ? JSON.parse(Buffer.concat(chunks).toString())
         : null
-      const send = (body: unknown) => {
+      const send = (body: unknown, status = 200) => {
         const content = JSON.stringify(body)
-        response.writeHead(200, {
+        response.writeHead(status, {
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(content),
         })
@@ -37,33 +37,18 @@ test.beforeAll(async () => {
       }
       if (request.url === "/v1/models") {
         if (request.headers.authorization !== "Bearer browser-secret") {
-          const content = JSON.stringify({ error: { message: "unauthorized" } })
-          response.writeHead(401, {
-            "Content-Type": "application/json",
-            "Content-Length": Buffer.byteLength(content),
-          })
-          response.end(content)
+          send({ error: { message: "unauthorized" } }, 401)
           return
         }
         send({ data: [{ id: "model-a" }, { id: "model-b" }] })
         return
       }
       if (request.method === "GET") {
-        const content = JSON.stringify({ error: { message: "not found" } })
-        response.writeHead(404, {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(content),
-        })
-        response.end(content)
+        send({ error: { message: "not found" } }, 404)
         return
       }
       if (rejectModelA && payload?.model === "model-a") {
-        const content = JSON.stringify({ error: { message: "gateway down" } })
-        response.writeHead(503, {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(content),
-        })
-        response.end(content)
+        send({ error: { message: "gateway down" } }, 503)
         return
       }
       setTimeout(

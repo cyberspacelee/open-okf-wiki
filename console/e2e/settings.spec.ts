@@ -144,6 +144,26 @@ test("shows semantic validation before persistence", async ({ page }) => {
   expect(putCount).toBe(0)
 })
 
+test("closes mobile navigation after opening Settings", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.route("**/api/v1/settings", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(settings),
+    })
+  )
+
+  await page.goto("/#token=mobile-settings")
+  await page.getByRole("button", { name: "Toggle Sidebar" }).click()
+  await page.getByRole("button", { name: "Settings" }).click()
+
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Workspace settings" })
+  ).toBeVisible()
+  await expect(page.getByRole("dialog")).toHaveCount(0)
+})
+
 test("explains stale edits and removed fields", async ({ page }) => {
   await page.route("**/api/v1/settings", async (route) => {
     if (route.request().method() === "GET") {

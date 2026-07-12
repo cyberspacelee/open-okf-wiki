@@ -49,6 +49,7 @@ import {
   SidebarMenuItem,
   SidebarProvider,
   SidebarTrigger,
+  useSidebar,
 } from "@/components/ui/sidebar"
 import {
   Table,
@@ -104,6 +105,8 @@ const actionLabels: Record<string, string> = {
   view_run: "View the active run",
 }
 
+type Page = "overview" | "settings" | "connections"
+
 export function OverviewDashboard({
   overview,
   token,
@@ -111,11 +114,10 @@ export function OverviewDashboard({
   overview: Overview
   token: string
 }) {
-  const [page, setPage] = useState<"overview" | "settings" | "connections">(
-    () =>
-      new URLSearchParams(window.location.search).get("view") === "connections"
-        ? "connections"
-        : "overview"
+  const [page, setPage] = useState<Page>(() =>
+    new URLSearchParams(window.location.search).get("view") === "connections"
+      ? "connections"
+      : "overview"
   )
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const applyCompactNavigation = useCallback(
@@ -133,7 +135,7 @@ export function OverviewDashboard({
     return () => controller.abort()
   }, [applyCompactNavigation, token])
 
-  const navigate = useCallback((nextPage: typeof page) => {
+  const navigate = useCallback((nextPage: Page) => {
     const url = nextPage === "connections" ? "/?view=connections" : "/"
     window.history.replaceState(null, "", url)
     setPage(nextPage)
@@ -162,65 +164,7 @@ export function OverviewDashboard({
         <SidebarContent>
           <SidebarGroup>
             <SidebarGroupContent>
-              <nav aria-label="Primary">
-                <SidebarMenu>
-                  {navItems.map(({ label, icon: Icon, ...item }) => (
-                    <SidebarMenuItem key={label}>
-                      {"href" in item ? (
-                        <SidebarMenuButton
-                          isActive={
-                            page ===
-                            (label === "Connections"
-                              ? "connections"
-                              : "overview")
-                          }
-                          render={
-                            <a
-                              href={item.href}
-                              aria-current={
-                                page ===
-                                (label === "Connections"
-                                  ? "connections"
-                                  : "overview")
-                                  ? "page"
-                                  : undefined
-                              }
-                              onClick={(event) => {
-                                event.preventDefault()
-                                navigate(
-                                  label === "Connections"
-                                    ? "connections"
-                                    : "overview"
-                                )
-                              }}
-                            />
-                          }
-                        >
-                          <Icon />
-                          <span>{label}</span>
-                        </SidebarMenuButton>
-                      ) : label === "Settings" ? (
-                        <SidebarMenuButton
-                          isActive={page === "settings"}
-                          type="button"
-                          aria-current={
-                            page === "settings" ? "page" : undefined
-                          }
-                          onClick={() => navigate("settings")}
-                        >
-                          <Icon />
-                          <span>{label}</span>
-                        </SidebarMenuButton>
-                      ) : (
-                        <SidebarMenuButton disabled type="button">
-                          <Icon />
-                          <span>{label}</span>
-                        </SidebarMenuButton>
-                      )}
-                    </SidebarMenuItem>
-                  ))}
-                </SidebarMenu>
-              </nav>
+              <PrimaryNavigation page={page} onNavigate={navigate} />
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
@@ -278,67 +222,129 @@ export function OverviewDashboard({
               <GatewayConnections token={token} />
             ) : (
               <>
-            <section
-              aria-labelledby="overview-title"
-              className="grid gap-6 border-b pb-8 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end"
-            >
-              <div className="min-w-0">
-                <p className="mb-2 text-sm text-muted-foreground">
-                  Producer Project
-                </p>
-                <h1
-                  id="overview-title"
-                  className="truncate text-3xl font-semibold tracking-tight lg:text-4xl"
+                <section
+                  aria-labelledby="overview-title"
+                  className="grid gap-6 border-b pb-8 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end"
                 >
-                  {overview.project.name}
-                </h1>
-                <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
-                  One local view of source readiness, production progress, and
-                  the current knowledge bundle.
-                </p>
-              </div>
-              <dl className="grid grid-cols-2 gap-x-8 gap-y-4 sm:grid-cols-3">
-                <SummaryMetric
-                  label="Sources"
-                  value={String(overview.source_count)}
-                />
-                <SummaryMetric
-                  label="Bundle"
-                  value={
-                    overview.latest_bundle
-                      ? titleCase(overview.latest_bundle.state)
-                      : "Not built"
-                  }
-                />
-                <SummaryMetric
-                  label="Run"
-                  value={
-                    overview.active_run
-                      ? runStateLabel(overview.active_run.state)
-                      : "Idle"
-                  }
-                />
-              </dl>
-            </section>
+                  <div className="min-w-0">
+                    <p className="mb-2 text-sm text-muted-foreground">
+                      Producer Project
+                    </p>
+                    <h1
+                      id="overview-title"
+                      className="truncate text-3xl font-semibold tracking-tight lg:text-4xl"
+                    >
+                      {overview.project.name}
+                    </h1>
+                    <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
+                      One local view of source readiness, production progress,
+                      and the current knowledge bundle.
+                    </p>
+                  </div>
+                  <dl className="grid grid-cols-2 gap-x-8 gap-y-4 sm:grid-cols-3">
+                    <SummaryMetric
+                      label="Sources"
+                      value={String(overview.source_count)}
+                    />
+                    <SummaryMetric
+                      label="Bundle"
+                      value={
+                        overview.latest_bundle
+                          ? titleCase(overview.latest_bundle.state)
+                          : "Not built"
+                      }
+                    />
+                    <SummaryMetric
+                      label="Run"
+                      value={
+                        overview.active_run
+                          ? runStateLabel(overview.active_run.state)
+                          : "Idle"
+                      }
+                    />
+                  </dl>
+                </section>
 
-            <PhaseRail state={overview.active_run?.state ?? null} />
+                <PhaseRail state={overview.active_run?.state ?? null} />
 
-            <div className="grid gap-6 xl:grid-cols-[minmax(0,1.55fr)_minmax(20rem,0.75fr)]">
-              <SourceHealth sourceCount={overview.source_count} />
-              <div className="flex flex-col gap-4">
-                <BundleCard overview={overview} />
-                <RunCard overview={overview} />
-                <BlockersCard blockers={overview.blockers} />
-              </div>
-            </div>
+                <div className="grid gap-6 xl:grid-cols-[minmax(0,1.55fr)_minmax(20rem,0.75fr)]">
+                  <SourceHealth sourceCount={overview.source_count} />
+                  <div className="flex flex-col gap-4">
+                    <BundleCard overview={overview} />
+                    <RunCard overview={overview} />
+                    <BlockersCard blockers={overview.blockers} />
+                  </div>
+                </div>
 
-            <NextActions actions={overview.next_actions} />
+                <NextActions actions={overview.next_actions} />
               </>
             )}
           </div>
         )}
       </SidebarInset>
     </SidebarProvider>
+  )
+}
+
+function PrimaryNavigation({
+  page,
+  onNavigate,
+}: {
+  page: Page
+  onNavigate: (page: Page) => void
+}) {
+  const { setOpenMobile } = useSidebar()
+
+  function navigate(nextPage: Page) {
+    setOpenMobile(false)
+    onNavigate(nextPage)
+  }
+
+  return (
+    <nav aria-label="Primary">
+      <SidebarMenu>
+        {navItems.map(({ label, icon: Icon, ...item }) => {
+          const target = label === "Connections" ? "connections" : "overview"
+          return (
+            <SidebarMenuItem key={label}>
+              {"href" in item ? (
+                <SidebarMenuButton
+                  isActive={page === target}
+                  render={
+                    <a
+                      href={item.href}
+                      aria-current={page === target ? "page" : undefined}
+                      onClick={(event) => {
+                        event.preventDefault()
+                        navigate(target)
+                      }}
+                    />
+                  }
+                >
+                  <Icon />
+                  <span>{label}</span>
+                </SidebarMenuButton>
+              ) : label === "Settings" ? (
+                <SidebarMenuButton
+                  isActive={page === "settings"}
+                  type="button"
+                  aria-current={page === "settings" ? "page" : undefined}
+                  onClick={() => navigate("settings")}
+                >
+                  <Icon />
+                  <span>{label}</span>
+                </SidebarMenuButton>
+              ) : (
+                <SidebarMenuButton disabled type="button">
+                  <Icon />
+                  <span>{label}</span>
+                </SidebarMenuButton>
+              )}
+            </SidebarMenuItem>
+          )
+        })}
+      </SidebarMenu>
+    </nav>
   )
 }
 
