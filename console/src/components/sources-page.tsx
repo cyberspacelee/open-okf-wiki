@@ -682,27 +682,27 @@ function PreflightCard({
             </EmptyHeader>
           </Empty>
         ) : (
-          <Table>
+          <Table className="min-w-[76rem] table-fixed">
             <TableHeader>
               <TableRow>
-                <TableHead>Source</TableHead>
-                <TableHead>Policy</TableHead>
-                <TableHead>Local commit</TableHead>
-                <TableHead>Remote commit</TableHead>
-                <TableHead>Exact commit</TableHead>
-                <TableHead>Tree digest</TableHead>
+                <TableHead className="w-28">Source</TableHead>
+                <TableHead className="w-36">Policy</TableHead>
+                <TableHead className="w-60">Local commit</TableHead>
+                <TableHead className="w-60">Remote commit</TableHead>
+                <TableHead className="w-60">Exact commit</TableHead>
+                <TableHead className="w-60">Tree digest</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {preflight.sources.map((source) => (
                 <TableRow key={source.id}>
-                  <TableCell>
+                  <TableCell className="align-top">
                     <p className="font-medium">{source.id}</p>
                     <p className="text-xs text-muted-foreground">
                       {roleLabel(source.role)}
                     </p>
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="align-top">
                     <Badge variant="outline">
                       {policyLabel(source.revision_policy)}
                     </Badge>
@@ -710,16 +710,16 @@ function PreflightCard({
                       {source.revision}
                     </p>
                   </TableCell>
-                  <TableCell className="max-w-72 font-mono text-xs break-all">
+                  <TableCell className="align-top font-mono text-xs break-all whitespace-normal">
                     {source.local_commit ?? "unavailable"}
                   </TableCell>
-                  <TableCell className="max-w-72 font-mono text-xs break-all">
+                  <TableCell className="align-top font-mono text-xs break-all whitespace-normal">
                     {source.remote_commit ?? "unavailable"}
                   </TableCell>
-                  <TableCell className="max-w-72 font-mono text-xs break-all">
+                  <TableCell className="align-top font-mono text-xs break-all whitespace-normal">
                     {source.exact_commit}
                   </TableCell>
-                  <TableCell className="max-w-72 font-mono text-xs break-all">
+                  <TableCell className="align-top font-mono text-xs break-all whitespace-normal">
                     {source.tree_digest}
                   </TableCell>
                 </TableRow>

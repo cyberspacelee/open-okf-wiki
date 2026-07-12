@@ -479,11 +479,95 @@ test("loads the built Console through the real Python launcher", async ({
   await expect(preflightCard).toContainText("Local commit")
   await expect(preflightCard).toContainText("Remote commit")
   await expect(preflightCard).toContainText("Source Set")
+  const preflightTable = preflightCard.getByRole("table")
+  await expect(preflightTable.getByRole("columnheader")).toHaveText([
+    "Source",
+    "Policy",
+    "Local commit",
+    "Remote commit",
+    "Exact commit",
+    "Tree digest",
+  ])
+  const preflightCells = preflightTable
+    .getByRole("row")
+    .nth(1)
+    .getByRole("cell")
+  const cellBounds = await preflightCells.evaluateAll((cells) =>
+    cells.map((cell) => {
+      const bounds = cell.getBoundingClientRect()
+      return { left: bounds.left, right: bounds.right }
+    })
+  )
+  expect(
+    cellBounds.every(
+      (bounds, index) =>
+        index === cellBounds.length - 1 ||
+        bounds.right <= cellBounds[index + 1].left + 1
+    )
+  ).toBe(true)
+  const longValueMetrics = await preflightCells.evaluateAll((cells) =>
+    cells.slice(2).map((cell) => ({
+      clientWidth: cell.clientWidth,
+      scrollWidth: cell.scrollWidth,
+      whiteSpace: getComputedStyle(cell).whiteSpace,
+    }))
+  )
+  expect(
+    longValueMetrics.every(
+      ({ clientWidth, scrollWidth, whiteSpace }) =>
+        whiteSpace !== "nowrap" && scrollWidth <= clientWidth
+    )
+  ).toBe(true)
   await page.screenshot({
     path: "test-results/sources-desktop.png",
     fullPage: true,
   })
   await page.setViewportSize({ width: 390, height: 844 })
+  const sidebarTrigger = page.getByRole("button", { name: "Toggle Sidebar" })
+  await expect(sidebarTrigger).toBeVisible()
+  await sidebarTrigger.click()
+  const mobileSidebar = page.locator(
+    '[data-slot="sidebar"][data-mobile="true"]'
+  )
+  await expect(mobileSidebar).toBeVisible()
+  await mobileSidebar.getByRole("button", { name: "Sources" }).click()
+  await expect(mobileSidebar).toHaveCount(0)
+  await expect(page.locator('[data-slot="sheet-overlay"]')).toHaveCount(0)
+  const pageOverflow = await page.evaluate(() => ({
+    body: document.body.style.overflow,
+    document: document.documentElement.style.overflow,
+    viewport: document.documentElement.clientWidth,
+    width: document.documentElement.scrollWidth,
+  }))
+  expect(pageOverflow.body).not.toBe("hidden")
+  expect(pageOverflow.document).not.toBe("hidden")
+  expect(pageOverflow.width).toBe(pageOverflow.viewport)
+  const preflightScroller = preflightCard.locator(
+    '[data-slot="table-container"]'
+  )
+  const scrollRange = await preflightScroller.evaluate(
+    (element) => element.scrollWidth - element.clientWidth
+  )
+  expect(scrollRange).toBeGreaterThan(0)
+  await preflightScroller.evaluate((element) => {
+    element.scrollLeft = element.scrollWidth
+  })
+  const treeDigestIsHorizontallyVisible = await preflightCells
+    .nth(5)
+    .evaluate((cell) => {
+      const container = cell.closest('[data-slot="table-container"]')
+      if (!container) return false
+      const cellBounds = cell.getBoundingClientRect()
+      const containerBounds = container.getBoundingClientRect()
+      return (
+        cellBounds.left >= containerBounds.left - 1 &&
+        cellBounds.right <= containerBounds.right + 1
+      )
+    })
+  expect(treeDigestIsHorizontallyVisible).toBe(true)
+  await preflightScroller.evaluate((element) => {
+    element.scrollLeft = 0
+  })
   await page.screenshot({
     path: "test-results/sources-mobile.png",
     fullPage: true,
