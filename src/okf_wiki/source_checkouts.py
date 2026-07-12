@@ -219,21 +219,50 @@ def _delete_quarantine(
         if (identity.st_dev, identity.st_ino) != (device, inode):
             _restore_quarantine(sources_descriptor, source_id, quarantine)
             raise SourceCheckoutError("Managed checkout ownership no longer matches its receipt")
+        quarantine_path = sources_root / quarantine
+        if os.path.ismount(quarantine_path):
+            _restore_quarantine(sources_descriptor, source_id, quarantine)
+            raise SourceCheckoutError(f"Managed checkout is an external mount: {quarantine_path}")
+        _delete_directory_contents(quarantine_descriptor, quarantine_path)
+        current = os.stat(quarantine, dir_fd=sources_descriptor, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != (device, inode):
+            raise SourceCheckoutError(
+                "Managed checkout changed during deletion; external path retained"
+            )
+        os.rmdir(quarantine, dir_fd=sources_descriptor)
     finally:
         os.close(quarantine_descriptor)
-    quarantine_path = sources_root / quarantine
-    if os.path.ismount(quarantine_path):
-        _restore_quarantine(sources_descriptor, source_id, quarantine)
-        raise SourceCheckoutError(f"Managed checkout is an external mount: {quarantine_path}")
-    for root, directories, _files in os.walk(quarantine_path, followlinks=False):
-        for name in directories:
-            candidate = Path(root) / name
-            if not candidate.is_symlink() and os.path.ismount(candidate):
-                _restore_quarantine(sources_descriptor, source_id, quarantine)
+
+
+def _delete_directory_contents(descriptor: int, path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    with os.scandir(descriptor) as iterator:
+        entries = list(iterator)
+    for entry in entries:
+        info = entry.stat(follow_symlinks=False)
+        if not stat.S_ISDIR(info.st_mode):
+            current = os.stat(entry.name, dir_fd=descriptor, follow_symlinks=False)
+            if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+                raise SourceCheckoutError("Managed checkout changed during deletion")
+            os.unlink(entry.name, dir_fd=descriptor)
+            continue
+        child_descriptor = os.open(entry.name, flags, dir_fd=descriptor)
+        try:
+            identity = os.fstat(child_descriptor)
+            if (identity.st_dev, identity.st_ino) != (info.st_dev, info.st_ino):
+                raise SourceCheckoutError("Managed checkout changed during deletion")
+            child_path = path / entry.name
+            if os.path.ismount(child_path):
                 raise SourceCheckoutError(
-                    f"Managed checkout contains an external mount: {candidate}"
+                    f"Managed checkout contains an external mount: {child_path}"
                 )
-    shutil.rmtree(quarantine, dir_fd=sources_descriptor)
+            _delete_directory_contents(child_descriptor, child_path)
+            current = os.stat(entry.name, dir_fd=descriptor, follow_symlinks=False)
+            if (current.st_dev, current.st_ino) != (identity.st_dev, identity.st_ino):
+                raise SourceCheckoutError("Managed checkout changed during deletion")
+            os.rmdir(entry.name, dir_fd=descriptor)
+        finally:
+            os.close(child_descriptor)
 
 
 def _restore_quarantine(sources_descriptor: int, source_id: str, quarantine: str) -> None:
@@ -288,10 +317,8 @@ def _git_clone(source_id: str, remote: str, target: Path, template: Path) -> Non
     except OSError as error:
         raise SourceCheckoutError(f"Source {source_id} clone failed: {error}") from error
     if result.returncode:
-        detail = (result.stderr or result.stdout).strip().splitlines()
         raise SourceCheckoutError(
-            f"Source {source_id} clone failed: "
-            f"{detail[-1] if detail else 'Git exited unsuccessfully'}"
+            f"Source {source_id} clone failed: Git exited with status {result.returncode}"
         )
 
 

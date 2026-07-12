@@ -354,6 +354,50 @@ def test_managed_delete_quarantines_and_refuses_a_directory_swapped_after_fstat(
     assert "code" in app.settings()["local_settings"]["managed_checkouts"]
 
 
+def test_managed_delete_does_not_follow_a_replaced_quarantine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin = tmp_path / "origin"
+    make_source(origin)
+    workspace = tmp_path / "workspace"
+    app = WorkspaceApplication(workspace)
+    app.initialize("catalog")
+    app.clone_source({"id": "code", "role": "implementation", "remote": str(origin)})
+    app.remove_source({"id": "code"})
+    sources = workspace / "sources"
+    target = sources / "code"
+    inode = target.stat().st_ino
+    displaced = sources / "displaced"
+    replacement = sources / "replacement"
+    replacement.mkdir()
+    (replacement / "KEEP.txt").write_text("external\n", encoding="utf-8")
+    real_scandir = source_checkouts_module.os.scandir
+    real_rename = source_checkouts_module.os.rename
+    swapped = False
+
+    def swap_before_recursive_delete(path):
+        nonlocal swapped
+        if isinstance(path, int) and os.fstat(path).st_ino == inode and not swapped:
+            swapped = True
+            with real_scandir(sources) as entries:
+                quarantine = next(
+                    entry.name for entry in entries if entry.name.startswith(".code.delete-")
+                )
+            real_rename(sources / quarantine, displaced)
+            real_rename(replacement, sources / quarantine)
+        return real_scandir(path)
+
+    monkeypatch.setattr(source_checkouts_module.os, "scandir", swap_before_recursive_delete)
+
+    with pytest.raises(WorkspaceError, match="changed during deletion"):
+        app.delete_managed_source({"id": "code", "confirmation": "code"})
+
+    quarantines = list(sources.glob(".code.delete-*"))
+    assert len(quarantines) == 1
+    assert (quarantines[0] / "KEEP.txt").read_text(encoding="utf-8") == "external\n"
+    assert "code" in app.settings()["local_settings"]["managed_checkouts"]
+
+
 @pytest.mark.parametrize("mounted", ["sources", "target"])
 def test_managed_delete_refuses_managed_root_and_target_mounts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mounted: str
@@ -589,3 +633,29 @@ def test_clone_failure_cleans_only_its_temporary_checkout(tmp_path: Path) -> Non
     assert keep.read_text(encoding="utf-8") == "user data"
     assert not (sources / "missing").exists()
     assert not list(sources.glob(".missing.clone-*"))
+
+
+def test_clone_failure_does_not_echo_untrusted_git_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = WorkspaceApplication(tmp_path / "workspace")
+    app.initialize("catalog")
+    monkeypatch.setattr(source_checkouts_module.shutil, "which", lambda *_args, **_kwargs: "git")
+    monkeypatch.setattr(
+        source_checkouts_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=[], returncode=17, stdout="", stderr="credential TOKEN-LEAK"
+        ),
+    )
+
+    with pytest.raises(WorkspaceError, match="status 17") as captured:
+        app.clone_source(
+            {
+                "id": "code",
+                "role": "implementation",
+                "remote": "https://example.test/source.git",
+            }
+        )
+
+    assert "TOKEN-LEAK" not in str(captured.value)
