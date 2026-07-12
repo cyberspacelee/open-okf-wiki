@@ -1387,6 +1387,10 @@ def parser() -> argparse.ArgumentParser:
     workspace_migrate = workspace_commands.add_parser("migrate")
     workspace_migrate.add_argument("project_config")
     workspace_migrate.add_argument("--root")
+    workspace_console = workspace_commands.add_parser("console")
+    workspace_console.add_argument("root", nargs="?", default=".")
+    workspace_console.add_argument("--port", type=int, default=0)
+    workspace_console.add_argument("--no-open", action="store_true")
     return command
 
 
@@ -1410,6 +1414,12 @@ def main() -> int:
         if arguments.command == "benchmark":
             return benchmark(arguments.manifest)
         if arguments.command == "workspace":
+            if arguments.workspace_command == "console":
+                from .console import run_console
+
+                return run_console(
+                    arguments.root, arguments.port, open_browser=not arguments.no_open
+                )
             if arguments.workspace_command == "migrate":
                 root = arguments.root or Path(arguments.project_config).resolve().parent
                 app = WorkspaceApplication(root)

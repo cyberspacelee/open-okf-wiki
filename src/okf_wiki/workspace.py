@@ -11,6 +11,8 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from .bundle import verification_blockers
+from .coverage import major_blockers
 from .state_schema import migrate_state
 
 
@@ -560,6 +562,71 @@ class WorkspaceApplication:
 
     def inspect(self) -> dict:
         return self.open().model_dump(mode="json")
+
+    def overview(self) -> dict:
+        snapshot = self.open()
+        with sqlite3.connect(self.database_path) as connection:
+            connection.row_factory = sqlite3.Row
+            latest_bundle = connection.execute(
+                """SELECT id, state, updated_at, publish_dir FROM runs
+                   WHERE state = 'published' ORDER BY updated_at DESC, id DESC LIMIT 1"""
+            ).fetchone()
+            active_run = connection.execute(
+                """SELECT id, state, updated_at, coverage_json, error FROM runs
+                   WHERE state NOT IN ('published', 'failed', 'cancelled')
+                   ORDER BY updated_at DESC, id DESC LIMIT 1"""
+            ).fetchone()
+        blockers: list[str] = []
+        missing_checkouts = [source.id for source in snapshot.sources if source.checkout is None]
+        if not snapshot.sources:
+            blockers.append("No Sources are configured")
+        blockers.extend(
+            f"Source {source_id} has no checkout binding" for source_id in missing_checkouts
+        )
+        if active_run is not None:
+            if active_run["error"]:
+                blockers.append(active_run["error"])
+            coverage = (
+                json.loads(active_run["coverage_json"]) if active_run["coverage_json"] else {}
+            )
+            blocked = major_blockers(coverage)
+            if blocked:
+                blockers.append(f"{blocked} major obligations remain open")
+            if active_run["state"] == "review_required":
+                blockers.extend(verification_blockers(self.database_path, active_run["id"]))
+        if not snapshot.sources or missing_checkouts:
+            next_actions = ["configure_sources"]
+        elif active_run is None:
+            next_actions = ["start_run"]
+        elif active_run["state"] == "review_required":
+            next_actions = ["review_run"]
+        else:
+            next_actions = ["view_run"]
+        return {
+            "project": snapshot.project.model_dump(mode="json"),
+            "source_count": len(snapshot.sources),
+            "latest_bundle": (
+                {
+                    "run_id": latest_bundle["id"],
+                    "state": latest_bundle["state"],
+                    "updated_at": latest_bundle["updated_at"],
+                    "path": latest_bundle["publish_dir"],
+                }
+                if latest_bundle is not None
+                else None
+            ),
+            "active_run": (
+                {
+                    "run_id": active_run["id"],
+                    "state": active_run["state"],
+                    "updated_at": active_run["updated_at"],
+                }
+                if active_run is not None
+                else None
+            ),
+            "blockers": list(dict.fromkeys(blockers)),
+            "next_actions": next_actions,
+        }
 
     def migrate_legacy(self, path: Path | str) -> WorkspaceSnapshot:
         with self._locked():
