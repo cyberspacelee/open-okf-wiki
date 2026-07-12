@@ -282,6 +282,10 @@ def _delete_directory_contents(descriptor: int) -> None:
 
 
 def _is_mounted_descriptor(descriptor: int, parent_descriptor: int) -> bool:
+    mount_id = _descriptor_mount_id(descriptor)
+    parent_mount_id = _descriptor_mount_id(parent_descriptor)
+    if mount_id is not None or parent_mount_id is not None:
+        return mount_id is None or parent_mount_id is None or mount_id != parent_mount_id
     identity = os.fstat(descriptor)
     if identity.st_dev != os.fstat(parent_descriptor).st_dev:
         return True
@@ -293,7 +297,18 @@ def _is_mounted_descriptor(descriptor: int, parent_descriptor: int) -> bool:
             continue
         if os.path.samestat(observed, identity):
             return os.path.ismount(descriptor_path)
-    return False
+    return True
+
+
+def _descriptor_mount_id(descriptor: int) -> int | None:
+    try:
+        lines = Path(f"/proc/self/fdinfo/{descriptor}").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        if line.startswith("mnt_id:"):
+            return int(line.partition(":")[2].strip())
+    return None
 
 
 def _restore_quarantine(sources_descriptor: int, source_id: str, quarantine: str) -> None:
@@ -330,6 +345,7 @@ def _git_clone(source_id: str, remote: str, target: Path, template: Path) -> Non
         "-c",
         "protocol.ext.allow=never",
         "clone",
+        "--no-checkout",
         "--no-local",
         "--no-recurse-submodules",
         f"--template={template}",
@@ -337,20 +353,42 @@ def _git_clone(source_id: str, remote: str, target: Path, template: Path) -> Non
         remote,
         str(target),
     ]
-    try:
-        result = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-            env=environment,
-        )
-    except OSError as error:
-        raise SourceCheckoutError(f"Source {source_id} clone failed: {error}") from error
-    if result.returncode:
-        raise SourceCheckoutError(
-            f"Source {source_id} clone failed: Git exited with status {result.returncode}"
-        )
+    checkout = [
+        executable,
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.untrackedCache=false",
+        "-c",
+        "submodule.recurse=false",
+        "-C",
+        str(target),
+        "checkout",
+    ]
+    checkout_environment = environment | {
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+    for operation, operation_environment in (
+        (command, environment),
+        (checkout, checkout_environment),
+    ):
+        try:
+            result = subprocess.run(
+                operation,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=operation_environment,
+            )
+        except OSError as error:
+            raise SourceCheckoutError(f"Source {source_id} clone failed: {error}") from error
+        if result.returncode:
+            raise SourceCheckoutError(
+                f"Source {source_id} clone failed: Git exited with status {result.returncode}"
+            )
 
 
 def _clone_environment() -> dict[str, str]:

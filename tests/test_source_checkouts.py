@@ -131,6 +131,36 @@ def test_managed_clone_uses_workspace_path_without_running_template_hooks(
     assert not list((workspace / "sources").glob(".code.clone-*"))
 
 
+def test_managed_clone_does_not_run_repository_selected_global_filters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin = tmp_path / "origin"
+    make_source(origin)
+    (origin / ".gitattributes").write_text("README.md filter=evil\n", encoding="utf-8")
+    git(origin, "add", ".gitattributes")
+    git(origin, "commit", "-qm", "select filter")
+    marker = tmp_path / "FILTER_EXECUTED"
+    filter_program = tmp_path / "filter.sh"
+    filter_program.write_text(
+        f"#!/bin/sh\ntouch '{marker}'\ncat\n",
+        encoding="utf-8",
+    )
+    filter_program.chmod(0o755)
+    global_config = tmp_path / "user.gitconfig"
+    global_config.write_text(
+        f'[filter "evil"]\n\tsmudge = {filter_program}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+    app = WorkspaceApplication(tmp_path / "workspace")
+    app.initialize("catalog")
+
+    app.clone_source({"id": "code", "role": "implementation", "remote": str(origin)})
+
+    assert not marker.exists()
+    assert (tmp_path / "workspace" / "sources" / "code" / "README.md").is_file()
+
+
 @pytest.mark.parametrize(
     ("payload", "message"),
     [
@@ -446,15 +476,11 @@ def test_mount_detection_is_bound_to_the_open_directory(
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     parent_descriptor = os.open(parent, flags)
     child_descriptor = os.open(child, flags)
-    identity = os.fstat(child_descriptor)
-
-    def is_child_descriptor(path) -> bool:
-        try:
-            return os.path.samestat(os.stat(path), identity)
-        except OSError:
-            return False
-
-    monkeypatch.setattr(source_checkouts_module.os.path, "ismount", is_child_descriptor)
+    monkeypatch.setattr(
+        source_checkouts_module,
+        "_descriptor_mount_id",
+        lambda descriptor: 2 if descriptor == child_descriptor else 1,
+    )
     try:
         assert source_checkouts_module._is_mounted_descriptor(child_descriptor, parent_descriptor)
     finally:
