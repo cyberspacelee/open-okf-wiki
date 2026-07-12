@@ -109,6 +109,19 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     **self.server.application.update_settings_payload(self._json_body()),
                 }
+            elif path == "/api/v1/sources" and self.command in {"GET", "HEAD"}:
+                payload = {"ok": True, **self.server.application.sources()}
+            elif path == "/api/v1/sources/clone" and self.command == "POST":
+                payload = {"ok": True, **self.server.application.clone_source(self._json_body())}
+            elif path == "/api/v1/sources/link" and self.command == "POST":
+                payload = {"ok": True, **self.server.application.link_source(self._json_body())}
+            elif path == "/api/v1/sources/remove" and self.command == "POST":
+                payload = {"ok": True, **self.server.application.remove_source(self._json_body())}
+            elif path == "/api/v1/sources/delete-managed" and self.command == "POST":
+                payload = {
+                    "ok": True,
+                    **self.server.application.delete_managed_source(self._json_body()),
+                }
             elif path == "/api/v1/gateway-profiles" and self.command in {"GET", "HEAD"}:
                 payload = {"ok": True, "profiles": self.server.gateways.list_profiles()}
             elif path == "/api/v1/gateway-profiles" and self.command == "POST":

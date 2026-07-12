@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import tempfile
 import tomllib
@@ -13,10 +14,19 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from .bundle import verification_blockers
 from .coverage import major_blockers
+from .source_checkouts import (
+    SourceCheckoutError,
+    clone_checkout,
+    delete_managed_checkout,
+    inspect_checkout,
+    validate_clone_remote,
+)
 from .state_schema import migrate_state
 
 
 WORKSPACE_SCHEMA_VERSION = 1
+SOURCE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+SOURCE_ROLES = {"implementation", "documentation", "requirements", "contract"}
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
@@ -68,6 +78,22 @@ class WorkspaceSource(StrictModel):
         if value is not None and not value.strip():
             raise ValueError("must not be blank")
         return value.strip() if value is not None else None
+
+    @field_validator("id")
+    @classmethod
+    def safe_id(cls, value: str) -> str:
+        if not SOURCE_ID_RE.fullmatch(value):
+            raise ValueError("must use letters, numbers, dots, underscores, or hyphens")
+        return value
+
+    @field_validator("role")
+    @classmethod
+    def supported_role(cls, value: str) -> str:
+        if value not in SOURCE_ROLES:
+            raise ValueError(
+                "must be one of implementation, documentation, requirements, or contract"
+            )
+        return value
 
     @field_validator("remote")
     @classmethod
@@ -155,17 +181,33 @@ class UISettings(StrictModel):
     compact_navigation: bool = False
 
 
+class ManagedCheckoutReceipt(StrictModel):
+    path: str = Field(min_length=1)
+    device: int = Field(ge=0)
+    inode: int = Field(ge=1)
+
+
 class LocalWorkspaceSettings(StrictModel):
     schema_version: Literal[1] = WORKSPACE_SCHEMA_VERSION
     checkouts: dict[str, str] = Field(default_factory=dict)
+    managed_checkouts: dict[str, ManagedCheckoutReceipt] = Field(default_factory=dict)
     models: ModelSettings = ModelSettings()
     ui: UISettings = UISettings()
 
     @field_validator("checkouts")
     @classmethod
     def valid_checkouts(cls, values: dict[str, str]) -> dict[str, str]:
-        if any(not key or not value for key, value in values.items()):
+        if any(not SOURCE_ID_RE.fullmatch(key) or not value for key, value in values.items()):
             raise ValueError("checkout bindings must use non-empty strings")
+        return values
+
+    @field_validator("managed_checkouts")
+    @classmethod
+    def valid_managed_ids(
+        cls, values: dict[str, ManagedCheckoutReceipt]
+    ) -> dict[str, ManagedCheckoutReceipt]:
+        if any(not SOURCE_ID_RE.fullmatch(key) for key in values):
+            raise ValueError("managed checkout IDs must be safe Source IDs")
         return values
 
 
@@ -175,6 +217,7 @@ class ResolvedSource(StrictModel):
     revision: str
     remote: str | None
     checkout: Path | None
+    ownership: Literal["managed", "linked"] | None
 
 
 class ResolvedPublication(StrictModel):
@@ -301,6 +344,16 @@ def _render_settings(value: LocalWorkspaceSettings) -> str:
         lines.extend(["", "[checkouts]"])
         lines.extend(
             f"{_quote(key)} = {_quote(path)}" for key, path in sorted(value.checkouts.items())
+        )
+    for source_id, receipt in sorted(value.managed_checkouts.items()):
+        lines.extend(
+            [
+                "",
+                f"[managed_checkouts.{_quote(source_id)}]",
+                f"path = {_quote(receipt.path)}",
+                f"device = {receipt.device}",
+                f"inode = {receipt.inode}",
+            ]
         )
     models = value.models
     lines.extend(["", "[models]", f"concurrency = {models.concurrency}"])
@@ -480,6 +533,7 @@ class WorkspaceApplication:
                 f"{self.settings_path}: checkout bindings reference unknown Sources: "
                 + ", ".join(unknown_checkouts)
             )
+        self._validate_managed_bindings(definition, settings)
         self.root.mkdir(parents=True, exist_ok=True)
         previous_definition = (
             self.definition_path.read_bytes() if self.definition_path.exists() else None
@@ -559,6 +613,7 @@ class WorkspaceApplication:
                 f"{self.settings_path}: checkout bindings reference unknown Sources: "
                 + ", ".join(unknown_checkouts)
             )
+        self._validate_managed_bindings(definition, settings)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             with sqlite3.connect(self.database_path) as connection:
@@ -581,6 +636,13 @@ class WorkspaceApplication:
                     checkout=(self.root / settings.checkouts[source.id]).resolve()
                     if source.id in settings.checkouts
                     else None,
+                    ownership=(
+                        "managed"
+                        if source.id in settings.managed_checkouts
+                        else "linked"
+                        if source.id in settings.checkouts
+                        else None
+                    ),
                 )
                 for source in definition.sources
             ),
@@ -588,6 +650,21 @@ class WorkspaceApplication:
             models=settings.models,
             configuration_digest=digest,
         )
+
+    def _validate_managed_bindings(
+        self, definition: WorkspaceDefinition, settings: LocalWorkspaceSettings
+    ) -> None:
+        source_ids = {source.id for source in definition.sources}
+        for source_id, receipt in settings.managed_checkouts.items():
+            expected = self.root / "sources" / source_id
+            if Path(receipt.path) != expected:
+                raise WorkspaceError(
+                    f"{self.settings_path}: managed checkout {source_id} must use {expected}"
+                )
+            if source_id in source_ids and settings.checkouts.get(source_id) != str(expected):
+                raise WorkspaceError(
+                    f"{self.settings_path}: managed Source {source_id} has an ambiguous checkout"
+                )
 
     def _begin_update(
         self, previous_definition: bytes | None, previous_settings: bytes | None
@@ -725,6 +802,232 @@ class WorkspaceApplication:
             "blockers": list(dict.fromkeys(blockers)),
             "next_actions": next_actions,
         }
+
+    def sources(self) -> dict:
+        with self._locked():
+            self._recover_update_locked()
+            return self._sources_locked()
+
+    def clone_source(self, payload: object) -> dict:
+        values = self._source_payload(payload, {"id", "role", "remote"}, "Clone Source")
+        source_id, role, remote = values["id"], values["role"], values["remote"]
+        candidate = self._new_source(source_id, role, "0" * 40, remote)
+        self._checkout_call(validate_clone_remote, remote)
+        with self._locked():
+            self._recover_update_locked()
+            definition, settings = self._configuration_locked()
+            self._ensure_available_source_id(candidate.id, definition, settings)
+            target, status, identity = self._checkout_call(
+                clone_checkout,
+                self.root,
+                self.settings_path.parent,
+                candidate.id,
+                remote,
+            )
+            source = self._new_source(
+                candidate.id,
+                candidate.role,
+                cast(str, status["commit"]),
+                cast(str | None, status["remote"]) or remote,
+            )
+            definition_payload = definition.model_dump(mode="python")
+            definition_payload["sources"].append(source.model_dump(mode="python"))
+            settings_payload = settings.model_dump(mode="python")
+            settings_payload["checkouts"][source.id] = str(target)
+            settings_payload["managed_checkouts"][source.id] = {
+                "path": str(target),
+                "device": identity.st_dev,
+                "inode": identity.st_ino,
+            }
+            try:
+                self._update_locked(definition_payload, settings_payload)
+            except Exception as error:
+                try:
+                    delete_managed_checkout(
+                        self.root, candidate.id, target, identity.st_dev, identity.st_ino
+                    )
+                except SourceCheckoutError as cleanup_error:
+                    raise WorkspaceError(
+                        f"{error}; managed clone cleanup failed: {cleanup_error}"
+                    ) from cleanup_error
+                raise
+            return self._sources_locked()
+
+    def link_source(self, payload: object) -> dict:
+        values = self._source_payload(payload, {"id", "role", "checkout"}, "Link Source")
+        checkout = Path(values["checkout"]).expanduser().resolve()
+        try:
+            checkout.relative_to(self.root)
+        except ValueError:
+            pass
+        else:
+            raise WorkspaceError("Linked Source checkout must be outside the Workspace")
+        status = self._checkout_call(inspect_checkout, checkout)
+        source = self._new_source(
+            values["id"],
+            values["role"],
+            cast(str, status["commit"]),
+            cast(str | None, status["remote"]),
+        )
+        with self._locked():
+            self._recover_update_locked()
+            definition, settings = self._configuration_locked()
+            self._ensure_available_source_id(source.id, definition, settings)
+            definition_payload = definition.model_dump(mode="python")
+            definition_payload["sources"].append(source.model_dump(mode="python"))
+            settings_payload = settings.model_dump(mode="python")
+            settings_payload["checkouts"][source.id] = str(checkout)
+            self._update_locked(definition_payload, settings_payload)
+            return self._sources_locked()
+
+    def remove_source(self, payload: object) -> dict:
+        values = self._source_payload(payload, {"id"}, "Remove Source")
+        with self._locked():
+            self._recover_update_locked()
+            definition, settings = self._configuration_locked()
+            if values["id"] not in {source.id for source in definition.sources}:
+                raise WorkspaceError(f"Unknown Source: {values['id']}")
+            definition_payload = definition.model_dump(mode="python")
+            definition_payload["sources"] = [
+                source for source in definition_payload["sources"] if source["id"] != values["id"]
+            ]
+            settings_payload = settings.model_dump(mode="python")
+            settings_payload["checkouts"].pop(values["id"], None)
+            self._update_locked(definition_payload, settings_payload)
+            return self._sources_locked()
+
+    def delete_managed_source(self, payload: object) -> dict:
+        values = self._source_payload(payload, {"id", "confirmation"}, "Delete managed Source")
+        source_id = values["id"]
+        if values["confirmation"] != source_id:
+            raise WorkspaceError(
+                f"Managed Source deletion confirmation must exactly match {source_id}"
+            )
+        with self._locked():
+            self._recover_update_locked()
+            definition, settings = self._configuration_locked()
+            if source_id in {source.id for source in definition.sources}:
+                raise WorkspaceError(
+                    f"Remove Source {source_id} from configuration first, then delete its checkout"
+                )
+            receipt = settings.managed_checkouts.get(source_id)
+            if receipt is None:
+                raise WorkspaceError(f"Source {source_id} is not a managed checkout")
+            self._checkout_call(
+                delete_managed_checkout,
+                self.root,
+                source_id,
+                Path(receipt.path),
+                receipt.device,
+                receipt.inode,
+            )
+            settings_payload = settings.model_dump(mode="python")
+            settings_payload["managed_checkouts"].pop(source_id)
+            self._update_locked(definition, settings_payload)
+            return {"deleted": source_id, **self._sources_locked()}
+
+    def _sources_locked(self) -> dict:
+        definition, settings = self._configuration_locked()
+        sources = []
+        for source in definition.sources:
+            checkout_text = settings.checkouts.get(source.id)
+            ownership = (
+                "managed"
+                if source.id in settings.managed_checkouts
+                else "linked"
+                if checkout_text
+                else None
+            )
+            status: dict[str, object] = {
+                "remote": source.remote,
+                "branch": None,
+                "commit": None,
+                "dirty": None,
+                "ahead": None,
+                "behind": None,
+                "error": None,
+            }
+            if checkout_text:
+                try:
+                    status = self._checkout_call(inspect_checkout, Path(checkout_text))
+                except WorkspaceError as error:
+                    status["error"] = str(error)
+            sources.append(
+                {
+                    "id": source.id,
+                    "role": source.role,
+                    "ownership": ownership,
+                    "checkout": checkout_text,
+                    **status,
+                }
+            )
+        active_ids = {source.id for source in definition.sources}
+        retained = [
+            {"id": source_id, "checkout": receipt.path}
+            for source_id, receipt in sorted(settings.managed_checkouts.items())
+            if source_id not in active_ids
+        ]
+        return {
+            "configuration_digest": self._configuration_digest(),
+            "sources": sources,
+            "retained_managed": retained,
+        }
+
+    def _configuration_locked(self) -> tuple[WorkspaceDefinition, LocalWorkspaceSettings]:
+        definition = _validate(
+            WorkspaceDefinition, _read_toml(self.definition_path), self.definition_path
+        )
+        settings = _validate(
+            LocalWorkspaceSettings, _read_toml(self.settings_path), self.settings_path
+        )
+        unknown_checkouts = sorted(
+            set(settings.checkouts) - {item.id for item in definition.sources}
+        )
+        if unknown_checkouts:
+            raise WorkspaceError(
+                f"{self.settings_path}: checkout bindings reference unknown Sources: "
+                + ", ".join(unknown_checkouts)
+            )
+        self._validate_managed_bindings(definition, settings)
+        return definition, settings
+
+    @staticmethod
+    def _source_payload(payload: object, fields: set[str], operation: str) -> dict[str, str]:
+        if not isinstance(payload, dict) or set(payload) != fields:
+            raise WorkspaceError(f"{operation} must contain {', '.join(sorted(fields))}")
+        values = cast(dict[str, object], payload)
+        for key, value in values.items():
+            if not isinstance(value, str) or not value.strip():
+                raise WorkspaceError(f"{operation} field {key} must be a non-empty string")
+        return {key: cast(str, value).strip() for key, value in values.items()}
+
+    def _new_source(
+        self, source_id: str, role: str, revision: str, remote: str | None
+    ) -> WorkspaceSource:
+        try:
+            return WorkspaceSource(id=source_id, role=role, revision=revision, remote=remote)
+        except ValidationError as error:
+            item = error.errors()[0]
+            location = ".".join(str(part) for part in item["loc"])
+            raise WorkspaceError(f"Invalid Source {location}: {item['msg']}") from error
+
+    @staticmethod
+    def _checkout_call(function, *arguments):
+        try:
+            return function(*arguments)
+        except SourceCheckoutError as error:
+            raise WorkspaceError(str(error)) from error
+
+    @staticmethod
+    def _ensure_available_source_id(
+        source_id: str, definition: WorkspaceDefinition, settings: LocalWorkspaceSettings
+    ) -> None:
+        if source_id in {source.id for source in definition.sources}:
+            raise WorkspaceError(f"Source {source_id} already exists")
+        if source_id in settings.managed_checkouts:
+            raise WorkspaceError(
+                f"Source {source_id} has a retained managed checkout; delete or restore it first"
+            )
 
     def migrate_legacy(self, path: Path | str) -> WorkspaceSnapshot:
         with self._locked():

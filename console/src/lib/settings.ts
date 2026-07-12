@@ -22,6 +22,10 @@ export type WorkspaceDefinition = {
 export type LocalWorkspaceSettings = {
   schema_version: 1
   checkouts: Record<string, string>
+  managed_checkouts: Record<
+    string,
+    { path: string; device: number; inode: number }
+  >
   models: Record<string, unknown>
   ui: { compact_navigation: boolean }
 }
@@ -145,9 +149,25 @@ function isWorkspaceSettings(value: unknown): value is WorkspaceSettings {
     isDispositions(profile.dispositions) &&
     local.schema_version === 1 &&
     isStringRecord(local.checkouts) &&
+    isManagedCheckouts(local.managed_checkouts) &&
     isRecord(local.models) &&
     isRecord(ui) &&
     typeof ui.compact_navigation === "boolean"
+  )
+}
+
+function isManagedCheckouts(value: unknown) {
+  return (
+    isRecord(value) &&
+    Object.values(value).every(
+      (item) =>
+        isRecord(item) &&
+        typeof item.path === "string" &&
+        Number.isInteger(item.device) &&
+        Number(item.device) >= 0 &&
+        Number.isInteger(item.inode) &&
+        Number(item.inode) >= 1
+    )
   )
 }
 

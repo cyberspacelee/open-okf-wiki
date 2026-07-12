@@ -53,6 +53,16 @@ def cli(command: list[str], cwd: Path) -> tuple[int, dict]:
     return result.returncode, json.loads(result.stdout)
 
 
+def make_git_source(path: Path) -> None:
+    path.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
+    (path / "README.md").write_text("Source knowledge.\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-qm", "source"], cwd=path, check=True)
+
+
 def test_console_serves_offline_shell_on_loopback_with_security_headers(
     tmp_path: Path, assets: Path
 ) -> None:
@@ -483,3 +493,46 @@ def test_cli_console_opens_browser_unless_disabled(
     with pytest.raises(Stop):
         console_module.run_console(tmp_path, open_browser=False)
     assert calls == []
+
+
+def test_console_source_api_matches_cli_and_uses_the_application_seam(
+    tmp_path: Path, assets: Path
+) -> None:
+    workspace = tmp_path / "workspace"
+    source = tmp_path / "source"
+    make_git_source(source)
+    WorkspaceApplication(workspace).initialize("catalog")
+
+    with running_console(workspace, assets) as (server, _):
+        base = f"http://127.0.0.1:{server.server_port}"
+        mutation_headers = {**authorization(server), "Origin": base}
+        linked = httpx.post(
+            base + "/api/v1/sources/link",
+            headers=mutation_headers,
+            json={"id": "docs", "role": "documentation", "checkout": str(source)},
+        )
+        listed = httpx.get(base + "/api/v1/sources", headers=authorization(server))
+        invalid = httpx.post(
+            base + "/api/v1/sources/link",
+            headers=mutation_headers,
+            json={"id": "contracts", "role": "contracts", "checkout": str(source)},
+        )
+        removed = httpx.post(
+            base + "/api/v1/sources/remove",
+            headers=mutation_headers,
+            json={"id": "docs"},
+        )
+
+    code, cli_listed = cli(["workspace", "sources", str(workspace)], tmp_path)
+    code_invalid, cli_invalid = cli(
+        ["workspace", "link-source", "contracts", "contracts", str(source), str(workspace)],
+        tmp_path,
+    )
+    assert linked.status_code == listed.status_code == removed.status_code == 200
+    assert listed.json()["sources"] == linked.json()["sources"]
+    assert removed.json()["sources"] == cli_listed["sources"] == []
+    assert code == 0
+    assert invalid.status_code == 400
+    assert code_invalid == 1
+    assert invalid.json() == cli_invalid
+    assert source.is_dir()

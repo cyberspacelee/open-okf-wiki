@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/empty"
 import { Separator } from "@/components/ui/separator"
 import { SettingsPage } from "@/components/settings-page"
+import { SourcesPage } from "@/components/sources-page"
 import {
   Sidebar,
   SidebarContent,
@@ -105,7 +106,7 @@ const actionLabels: Record<string, string> = {
   view_run: "View the active run",
 }
 
-type Page = "overview" | "settings" | "connections"
+type Page = "overview" | "sources" | "settings" | "connections"
 
 export function OverviewDashboard({
   overview,
@@ -192,6 +193,8 @@ export function OverviewDashboard({
                     ? "Workspace overview"
                     : page === "settings"
                       ? "Workspace settings"
+                      : page === "sources"
+                      ? "Source Checkouts"
                       : "Gateway connections"}
                 </p>
               </div>
@@ -216,6 +219,8 @@ export function OverviewDashboard({
             token={token}
             onCompactNavigationChange={applyCompactNavigation}
           />
+        ) : page === "sources" ? (
+          <SourcesPage token={token} />
         ) : (
           <div className="mx-auto flex w-full max-w-[90rem] flex-col gap-8 px-5 py-7 lg:px-8 lg:py-9">
             {page === "connections" ? (
@@ -324,12 +329,20 @@ function PrimaryNavigation({
                   <Icon />
                   <span>{label}</span>
                 </SidebarMenuButton>
-              ) : label === "Settings" ? (
+              ) : label === "Sources" || label === "Settings" ? (
                 <SidebarMenuButton
-                  isActive={page === "settings"}
+                  isActive={
+                    page === (label === "Sources" ? "sources" : "settings")
+                  }
                   type="button"
-                  aria-current={page === "settings" ? "page" : undefined}
-                  onClick={() => navigate("settings")}
+                  aria-current={
+                    page === (label === "Sources" ? "sources" : "settings")
+                      ? "page"
+                      : undefined
+                  }
+                  onClick={() =>
+                    navigate(label === "Sources" ? "sources" : "settings")
+                  }
                 >
                   <Icon />
                   <span>{label}</span>

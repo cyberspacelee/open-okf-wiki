@@ -29,6 +29,7 @@ const settings = {
   local_settings: {
     schema_version: 1,
     checkouts: { code: "/source" },
+    managed_checkouts: {},
     models: {
       gateway_profile: "enterprise",
       default_model: "model-v1",

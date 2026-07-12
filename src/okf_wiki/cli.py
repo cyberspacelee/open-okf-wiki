@@ -1430,6 +1430,25 @@ def parser() -> argparse.ArgumentParser:
     workspace_update_settings = workspace_commands.add_parser("update-settings")
     workspace_update_settings.add_argument("payload")
     workspace_update_settings.add_argument("root", nargs="?", default=".")
+    workspace_sources = workspace_commands.add_parser("sources")
+    workspace_sources.add_argument("root", nargs="?", default=".")
+    workspace_clone_source = workspace_commands.add_parser("clone-source")
+    workspace_clone_source.add_argument("source_id")
+    workspace_clone_source.add_argument("role")
+    workspace_clone_source.add_argument("remote")
+    workspace_clone_source.add_argument("root", nargs="?", default=".")
+    workspace_link_source = workspace_commands.add_parser("link-source")
+    workspace_link_source.add_argument("source_id")
+    workspace_link_source.add_argument("role")
+    workspace_link_source.add_argument("checkout")
+    workspace_link_source.add_argument("root", nargs="?", default=".")
+    workspace_remove_source = workspace_commands.add_parser("remove-source")
+    workspace_remove_source.add_argument("source_id")
+    workspace_remove_source.add_argument("root", nargs="?", default=".")
+    workspace_delete_source = workspace_commands.add_parser("delete-managed-source")
+    workspace_delete_source.add_argument("source_id")
+    workspace_delete_source.add_argument("root", nargs="?", default=".")
+    workspace_delete_source.add_argument("--confirm", required=True)
     workspace_migrate = workspace_commands.add_parser("migrate")
     workspace_migrate.add_argument("project_config")
     workspace_migrate.add_argument("--root")
@@ -1534,6 +1553,43 @@ def main() -> int:
                 except (OSError, json.JSONDecodeError) as error:
                     raise UserError(f"Invalid settings update: {error}") from error
                 emit({"ok": True, **app.update_settings_payload(payload)})
+                return 0
+            elif arguments.workspace_command == "sources":
+                app = WorkspaceApplication(arguments.root)
+                emit({"ok": True, **app.sources()})
+                return 0
+            elif arguments.workspace_command == "clone-source":
+                app = WorkspaceApplication(arguments.root)
+                result = app.clone_source(
+                    {
+                        "id": arguments.source_id,
+                        "role": arguments.role,
+                        "remote": arguments.remote,
+                    }
+                )
+                emit({"ok": True, **result})
+                return 0
+            elif arguments.workspace_command == "link-source":
+                app = WorkspaceApplication(arguments.root)
+                result = app.link_source(
+                    {
+                        "id": arguments.source_id,
+                        "role": arguments.role,
+                        "checkout": arguments.checkout,
+                    }
+                )
+                emit({"ok": True, **result})
+                return 0
+            elif arguments.workspace_command == "remove-source":
+                app = WorkspaceApplication(arguments.root)
+                emit({"ok": True, **app.remove_source({"id": arguments.source_id})})
+                return 0
+            elif arguments.workspace_command == "delete-managed-source":
+                app = WorkspaceApplication(arguments.root)
+                result = app.delete_managed_source(
+                    {"id": arguments.source_id, "confirmation": arguments.confirm}
+                )
+                emit({"ok": True, **result})
                 return 0
             else:
                 app = WorkspaceApplication(arguments.root)

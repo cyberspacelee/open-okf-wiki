@@ -59,7 +59,7 @@ test("captures the fragment token, clears it, and renders authoritative overview
     "aria-current",
     "page"
   )
-  await expect(page.getByRole("button", { name: "Sources" })).toBeDisabled()
+  await expect(page.getByRole("button", { name: "Sources" })).toBeEnabled()
   await expect(
     page.evaluate(() => sessionStorage.getItem("okf-wiki-console-token"))
   ).resolves.toBe("browser-secret")
@@ -76,7 +76,7 @@ test("captures the fragment token, clears it, and renders authoritative overview
   })
   await page.getByRole("button", { name: "Toggle Sidebar" }).click()
   await expect(page.getByRole("link", { name: "Overview" })).toBeVisible()
-  await expect(page.getByRole("button", { name: "Sources" })).toBeDisabled()
+  await expect(page.getByRole("button", { name: "Sources" })).toBeEnabled()
   await page.screenshot({
     path: "test-results/overview-mobile-menu.png",
     fullPage: true,

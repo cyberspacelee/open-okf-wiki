@@ -5,7 +5,13 @@ import {
   type ChildProcessWithoutNullStreams,
 } from "node:child_process"
 import { once } from "node:events"
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
 import { createServer, type Server } from "node:http"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -17,9 +23,13 @@ let workspace: string
 let gatewayServer: Server
 let gatewayUrl: string
 let rejectModelA = false
+let linkedSource: string
+let managedOrigin: string
 
 test.beforeAll(async () => {
   workspace = mkdtempSync(resolve(tmpdir(), "okf-wiki-console-"))
+  linkedSource = createGitSource("okf-wiki-linked-")
+  managedOrigin = createGitSource("okf-wiki-origin-")
   gatewayServer = createServer((request, response) => {
     const chunks: Buffer[] = []
     request.on("data", (chunk) => chunks.push(chunk))
@@ -129,6 +139,8 @@ test.afterAll(async () => {
     if (consoleProcess.exitCode === null) consoleProcess.kill("SIGKILL")
   }
   if (workspace) rmSync(workspace, { recursive: true, force: true })
+  if (linkedSource) rmSync(linkedSource, { recursive: true, force: true })
+  if (managedOrigin) rmSync(managedOrigin, { recursive: true, force: true })
   if (gatewayServer) {
     await new Promise<void>((resolveClose) =>
       gatewayServer.close(() => resolveClose())
@@ -347,6 +359,74 @@ test("loads the built Console through the real Python launcher", async ({
   await page.getByRole("button", { name: "Reload settings" }).click()
   await expect(displayName).toHaveValue("External Settings Update")
 
+  await page.getByRole("button", { name: "Sources" }).focus()
+  await page.keyboard.press("Enter")
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Sources" })
+  ).toBeVisible()
+  const sourceIds = page.getByLabel("Source ID")
+  await sourceIds.nth(1).fill("docs")
+  await page.getByLabel("Local checkout path").fill(linkedSource)
+  await page.getByRole("button", { name: "Link Source" }).click()
+  await expect(
+    page
+      .getByRole("row")
+      .filter({ has: page.getByText("docs", { exact: true }) })
+  ).toContainText("linked")
+  expect(existsSync(linkedSource)).toBe(true)
+
+  await sourceIds.nth(0).fill("code")
+  await page.getByLabel("Git remote").fill(managedOrigin)
+  await page.getByRole("button", { name: "Clone Source" }).click()
+  const managedRow = page
+    .getByRole("row")
+    .filter({ has: page.getByText("code", { exact: true }) })
+  await expect(managedRow).toContainText("managed")
+  await expect(managedRow).toContainText("Clean")
+  await page.screenshot({
+    path: "test-results/sources-desktop.png",
+    fullPage: true,
+  })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.screenshot({
+    path: "test-results/sources-mobile.png",
+    fullPage: true,
+  })
+  await page.setViewportSize({ width: 1280, height: 720 })
+
+  await managedRow.getByRole("button", { name: "Remove" }).click()
+  await expect(
+    page.getByText("Retained managed checkouts", { exact: true })
+  ).toBeVisible()
+  await page.getByRole("button", { name: "Delete checkout" }).click()
+  const deleteDialog = page.getByRole("alertdialog")
+  const confirmation = deleteDialog.getByLabel("Source ID confirmation")
+  await confirmation.fill("wrong")
+  await expect(
+    deleteDialog.getByRole("button", { name: "Delete checkout" })
+  ).toBeDisabled()
+  await confirmation.fill("code")
+  await deleteDialog.getByRole("button", { name: "Delete checkout" }).click()
+  await expect(
+    page.getByText("Retained managed checkouts", { exact: true })
+  ).toBeHidden()
+  expect(existsSync(join(workspace, "sources", "code"))).toBe(false)
+
+  const linkedRow = page
+    .getByRole("row")
+    .filter({ has: page.getByText("docs", { exact: true }) })
+  writeFileSync(join(linkedSource, "untracked.txt"), "local change\n")
+  await page.getByRole("button", { name: "Refresh status" }).click()
+  await expect(linkedRow).toContainText("Dirty")
+  await linkedRow.getByRole("button", { name: "Remove" }).click()
+  await expect(linkedRow).toBeHidden()
+  expect(existsSync(linkedSource)).toBe(true)
+
+  await sourceIds.nth(0).fill("../escape")
+  await page.getByRole("button", { name: "Clone Source" }).click()
+  await expect(page.getByRole("alert")).toContainText("Invalid Source id")
+  expect(existsSync(join(workspace, "escape"))).toBe(false)
+
   const localSettingsPath = join(workspace, ".okf-wiki", "settings.toml")
   writeFileSync(
     localSettingsPath,
@@ -370,6 +450,19 @@ test("loads the built Console through the real Python launcher", async ({
     )
   ).toBe(true)
 })
+
+function createGitSource(prefix: string) {
+  const path = mkdtempSync(resolve(tmpdir(), prefix))
+  execFileSync("git", ["init", "-q"], { cwd: path })
+  execFileSync("git", ["config", "user.name", "Playwright"], { cwd: path })
+  execFileSync("git", ["config", "user.email", "playwright@example.com"], {
+    cwd: path,
+  })
+  writeFileSync(join(path, "README.md"), "Source knowledge.\n")
+  execFileSync("git", ["add", "README.md"], { cwd: path })
+  execFileSync("git", ["commit", "-qm", "source"], { cwd: path })
+  return path
+}
 
 function readSessionUrl(process: ChildProcessWithoutNullStreams) {
   return new Promise<string>((resolveUrl, reject) => {
