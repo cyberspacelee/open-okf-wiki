@@ -647,8 +647,7 @@ function WorkspaceModels({
                   <FieldDescription>
                     Leave blank to inherit the default model. Test every
                     selected model before saving. Selection is recorded here;
-                    semantic execution remains subject to the release Benchmark
-                    Corpus and Agent Evaluation policy.
+                    later semantic execution uses these exact assignments.
                   </FieldDescription>
                   <FieldGroup>
                     {roles.map((role) => (

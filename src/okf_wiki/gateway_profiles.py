@@ -420,8 +420,8 @@ class GatewayApplication:
                 budgets=dict(budgets or {}),
                 role_overrides=overrides,
             )
-            # Selection records local intent. Ticket08 applies the release Benchmark
-            # Corpus and Agent Evaluation policy before semantic execution.
+            # Selection records local intent for Ticket08; successful capability
+            # tests are the per-Workspace prerequisite enforced here.
             self.resolve_models(settings)
             snapshot = app.configure_models(settings)
             return snapshot.model_dump(mode="json")
