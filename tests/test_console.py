@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 import okf_wiki.console as console_module
-from okf_wiki.console import create_console
+from okf_wiki.console import MAX_JSON_BODY, create_console
 from okf_wiki.cli import parser
 from okf_wiki.workspace import WorkspaceApplication, WorkspaceError
 
@@ -205,6 +205,140 @@ def test_console_non_get_requires_token_and_exact_origin(tmp_path: Path, assets:
 
     assert missing_origin.status_code == wrong_origin.status_code == 403
     assert authorized.status_code == 404
+
+
+def test_console_settings_update_matches_cli_and_rejects_stale_edits(
+    tmp_path: Path, assets: Path
+) -> None:
+    app = WorkspaceApplication(tmp_path)
+    app.initialize("catalog", "Catalog")
+    current = app.settings()
+    payload = {
+        **current,
+        "definition": {
+            **current["definition"],
+            "project": {"id": "catalog", "name": "Catalog Platform"},
+            "publication": {"path": "dist/wiki", "bundle_name": "Catalog Knowledge"},
+        },
+        "local_settings": {
+            **current["local_settings"],
+            "models": {
+                **current["local_settings"]["models"],
+                "concurrency": 2,
+                "budgets": {"total_tokens": 12000},
+            },
+            "ui": {"compact_navigation": True},
+        },
+    }
+
+    with running_console(tmp_path, assets) as (server, _):
+        base = f"http://127.0.0.1:{server.server_port}"
+        headers = {**authorization(server), "Origin": base}
+        response = httpx.put(base + "/api/v1/settings", headers=headers, json=payload)
+        stale = httpx.put(base + "/api/v1/settings", headers=headers, json=payload)
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, **app.settings()}
+    assert stale.status_code == 409
+    assert stale.json()["ok"] is False
+    assert "refresh and try again" in stale.json()["errors"][0]
+
+    cli_payload = tmp_path / "settings-update.json"
+    cli_current = app.settings()
+    cli_payload.write_text(
+        json.dumps(
+            {
+                **cli_current,
+                "definition": {
+                    **cli_current["definition"],
+                    "project": {"id": "catalog", "name": "Catalog CLI"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    code, cli_response = cli(
+        ["workspace", "update-settings", str(cli_payload), str(tmp_path)], tmp_path
+    )
+
+    assert code == 0
+    assert cli_response == {"ok": True, **app.settings()}
+    assert cli_response["definition"]["publication"] == response.json()["definition"][
+        "publication"
+    ]
+    assert cli_response["local_settings"] == response.json()["local_settings"]
+
+
+def test_console_settings_update_rejects_invalid_payload_without_writes(
+    tmp_path: Path, assets: Path
+) -> None:
+    app = WorkspaceApplication(tmp_path)
+    app.initialize("catalog")
+    before = (app.definition_path.read_bytes(), app.settings_path.read_bytes())
+
+    with running_console(tmp_path, assets) as (server, _):
+        base = f"http://127.0.0.1:{server.server_port}"
+        headers = {**authorization(server), "Origin": base}
+        malformed = httpx.put(
+            base + "/api/v1/settings",
+            headers={**headers, "Content-Type": "application/json"},
+            content=b"not-json",
+        )
+        incomplete = httpx.put(
+            base + "/api/v1/settings", headers=headers, json={"definition": {}}
+        )
+        wrong_type = httpx.put(
+            base + "/api/v1/settings",
+            headers={**headers, "Content-Type": "text/plain"},
+            content=b"{}",
+        )
+        too_large = httpx.put(
+            base + "/api/v1/settings",
+            headers={**headers, "Content-Type": "application/json"},
+            content=b" " * (MAX_JSON_BODY + 1),
+        )
+
+    assert malformed.status_code == incomplete.status_code == 400
+    assert malformed.json() == {"errors": ["Invalid JSON request body"], "ok": False}
+    assert "must contain definition" in incomplete.json()["errors"][0]
+    assert wrong_type.status_code == 415
+    assert wrong_type.json() == {"errors": ["Content-Type must be application/json"], "ok": False}
+    assert too_large.status_code == 413
+    assert too_large.json() == {"errors": ["JSON request body is too large"], "ok": False}
+    assert (app.definition_path.read_bytes(), app.settings_path.read_bytes()) == before
+
+
+def test_console_and_cli_settings_updates_return_the_same_domain_error(
+    tmp_path: Path, assets: Path
+) -> None:
+    app = WorkspaceApplication(tmp_path)
+    app.initialize("catalog")
+    current = app.settings()
+    payload = {
+        **current,
+        "local_settings": {
+            **current["local_settings"],
+            "models": {"api_key": "must-not-appear"},
+        },
+    }
+    payload_path = tmp_path / "invalid-settings.json"
+    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with running_console(tmp_path, assets) as (server, _):
+        base = f"http://127.0.0.1:{server.server_port}"
+        response = httpx.put(
+            base + "/api/v1/settings",
+            headers={**authorization(server), "Origin": base},
+            json=payload,
+        )
+    code, cli_response = cli(
+        ["workspace", "update-settings", str(payload_path), str(tmp_path)], tmp_path
+    )
+
+    assert response.status_code == 400
+    assert code == 1
+    assert response.json() == cli_response
+    assert "must-not-appear" not in response.text
 
 
 def test_console_redacts_unexpected_errors(tmp_path: Path, assets: Path, monkeypatch) -> None:

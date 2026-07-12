@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react"
+import { useState, type CSSProperties } from "react"
 import {
   BookOpenIcon,
   BoxesIcon,
@@ -34,6 +34,7 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty"
 import { Separator } from "@/components/ui/separator"
+import { SettingsPage } from "@/components/settings-page"
 import {
   Sidebar,
   SidebarContent,
@@ -101,7 +102,15 @@ const actionLabels: Record<string, string> = {
   view_run: "View the active run",
 }
 
-export function OverviewDashboard({ overview }: { overview: Overview }) {
+export function OverviewDashboard({
+  overview,
+  token,
+}: {
+  overview: Overview
+  token: string
+}) {
+  const [page, setPage] = useState<"overview" | "settings">("overview")
+
   return (
     <SidebarProvider style={{ "--sidebar-width": "14rem" } as CSSProperties}>
       <Sidebar collapsible="offcanvas">
@@ -127,8 +136,31 @@ export function OverviewDashboard({ overview }: { overview: Overview }) {
                     <SidebarMenuItem key={label}>
                       {index === 0 ? (
                         <SidebarMenuButton
-                          isActive
-                          render={<a href="/" aria-current="page" />}
+                          isActive={page === "overview"}
+                          render={
+                            <a
+                              href="/"
+                              aria-current={
+                                page === "overview" ? "page" : undefined
+                              }
+                              onClick={(event) => {
+                                event.preventDefault()
+                                setPage("overview")
+                              }}
+                            />
+                          }
+                        >
+                          <Icon />
+                          <span>{label}</span>
+                        </SidebarMenuButton>
+                      ) : label === "Settings" ? (
+                        <SidebarMenuButton
+                          isActive={page === "settings"}
+                          type="button"
+                          aria-current={
+                            page === "settings" ? "page" : undefined
+                          }
+                          onClick={() => setPage("settings")}
                         >
                           <Icon />
                           <span>{label}</span>
@@ -164,7 +196,9 @@ export function OverviewDashboard({ overview }: { overview: Overview }) {
                   {overview.project.name}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  Workspace overview
+                  {page === "overview"
+                    ? "Workspace overview"
+                    : "Workspace settings"}
                 </p>
               </div>
             </div>
@@ -181,63 +215,67 @@ export function OverviewDashboard({ overview }: { overview: Overview }) {
           </div>
         </header>
 
-        <div className="mx-auto flex w-full max-w-[90rem] flex-col gap-8 px-5 py-7 lg:px-8 lg:py-9">
-          <section
-            aria-labelledby="overview-title"
-            className="grid gap-6 border-b pb-8 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end"
-          >
-            <div className="min-w-0">
-              <p className="mb-2 text-sm text-muted-foreground">
-                Producer Project
-              </p>
-              <h1
-                id="overview-title"
-                className="truncate text-3xl font-semibold tracking-tight lg:text-4xl"
-              >
-                {overview.project.name}
-              </h1>
-              <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
-                One local view of source readiness, production progress, and the
-                current knowledge bundle.
-              </p>
-            </div>
-            <dl className="grid grid-cols-2 gap-x-8 gap-y-4 sm:grid-cols-3">
-              <SummaryMetric
-                label="Sources"
-                value={String(overview.source_count)}
-              />
-              <SummaryMetric
-                label="Bundle"
-                value={
-                  overview.latest_bundle
-                    ? titleCase(overview.latest_bundle.state)
-                    : "Not built"
-                }
-              />
-              <SummaryMetric
-                label="Run"
-                value={
-                  overview.active_run
-                    ? runStateLabel(overview.active_run.state)
-                    : "Idle"
-                }
-              />
-            </dl>
-          </section>
+        {page === "settings" ? (
+          <SettingsPage token={token} />
+        ) : (
+          <div className="mx-auto flex w-full max-w-[90rem] flex-col gap-8 px-5 py-7 lg:px-8 lg:py-9">
+            <section
+              aria-labelledby="overview-title"
+              className="grid gap-6 border-b pb-8 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end"
+            >
+              <div className="min-w-0">
+                <p className="mb-2 text-sm text-muted-foreground">
+                  Producer Project
+                </p>
+                <h1
+                  id="overview-title"
+                  className="truncate text-3xl font-semibold tracking-tight lg:text-4xl"
+                >
+                  {overview.project.name}
+                </h1>
+                <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
+                  One local view of source readiness, production progress, and
+                  the current knowledge bundle.
+                </p>
+              </div>
+              <dl className="grid grid-cols-2 gap-x-8 gap-y-4 sm:grid-cols-3">
+                <SummaryMetric
+                  label="Sources"
+                  value={String(overview.source_count)}
+                />
+                <SummaryMetric
+                  label="Bundle"
+                  value={
+                    overview.latest_bundle
+                      ? titleCase(overview.latest_bundle.state)
+                      : "Not built"
+                  }
+                />
+                <SummaryMetric
+                  label="Run"
+                  value={
+                    overview.active_run
+                      ? runStateLabel(overview.active_run.state)
+                      : "Idle"
+                  }
+                />
+              </dl>
+            </section>
 
-          <PhaseRail state={overview.active_run?.state ?? null} />
+            <PhaseRail state={overview.active_run?.state ?? null} />
 
-          <div className="grid gap-6 xl:grid-cols-[minmax(0,1.55fr)_minmax(20rem,0.75fr)]">
-            <SourceHealth sourceCount={overview.source_count} />
-            <div className="flex flex-col gap-4">
-              <BundleCard overview={overview} />
-              <RunCard overview={overview} />
-              <BlockersCard blockers={overview.blockers} />
+            <div className="grid gap-6 xl:grid-cols-[minmax(0,1.55fr)_minmax(20rem,0.75fr)]">
+              <SourceHealth sourceCount={overview.source_count} />
+              <div className="flex flex-col gap-4">
+                <BundleCard overview={overview} />
+                <RunCard overview={overview} />
+                <BlockersCard blockers={overview.blockers} />
+              </div>
             </div>
+
+            <NextActions actions={overview.next_actions} />
           </div>
-
-          <NextActions actions={overview.next_actions} />
-        </div>
+        )}
       </SidebarInset>
     </SidebarProvider>
   )

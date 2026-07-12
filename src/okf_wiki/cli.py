@@ -1384,6 +1384,11 @@ def parser() -> argparse.ArgumentParser:
     workspace_inspect.add_argument("root", nargs="?", default=".")
     workspace_validate = workspace_commands.add_parser("validate")
     workspace_validate.add_argument("root", nargs="?", default=".")
+    workspace_settings = workspace_commands.add_parser("settings")
+    workspace_settings.add_argument("root", nargs="?", default=".")
+    workspace_update_settings = workspace_commands.add_parser("update-settings")
+    workspace_update_settings.add_argument("payload")
+    workspace_update_settings.add_argument("root", nargs="?", default=".")
     workspace_migrate = workspace_commands.add_parser("migrate")
     workspace_migrate.add_argument("project_config")
     workspace_migrate.add_argument("--root")
@@ -1427,6 +1432,18 @@ def main() -> int:
             elif arguments.workspace_command == "init":
                 app = WorkspaceApplication(arguments.root)
                 snapshot = app.initialize(arguments.project_id, arguments.name)
+            elif arguments.workspace_command == "settings":
+                app = WorkspaceApplication(arguments.root)
+                emit({"ok": True, **app.settings()})
+                return 0
+            elif arguments.workspace_command == "update-settings":
+                app = WorkspaceApplication(arguments.root)
+                try:
+                    payload = json.loads(Path(arguments.payload).read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as error:
+                    raise UserError(f"Invalid settings update: {error}") from error
+                emit({"ok": True, **app.update_settings_payload(payload)})
+                return 0
             else:
                 app = WorkspaceApplication(arguments.root)
                 snapshot = app.open()

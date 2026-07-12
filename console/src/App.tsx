@@ -56,7 +56,7 @@ export function App() {
   if (state.status === "loading") return <LoadingOverview />
   if (state.status === "error") return <ErrorOverview error={state.error} />
 
-  return <OverviewDashboard overview={state.overview} />
+  return <OverviewDashboard overview={state.overview} token={token!} />
 }
 
 function LoadingOverview() {

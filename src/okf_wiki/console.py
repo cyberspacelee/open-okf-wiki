@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 from urllib.parse import quote, unquote, urlsplit
 
-from .workspace import WorkspaceApplication, WorkspaceError
+from .workspace import WorkspaceApplication, WorkspaceError, WorkspaceStaleError
 
 
 CSP = (
@@ -15,6 +15,13 @@ CSP = (
     "img-src 'self' data:; font-src 'self'; object-src 'none'; frame-src 'none'; "
     "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 )
+MAX_JSON_BODY = 1024 * 1024
+
+
+class ConsoleRequestError(Exception):
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class ConsoleServer(ThreadingHTTPServer):
@@ -81,17 +88,27 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._json(401, {"errors": ["Unauthorized"], "ok": False}, head=head)
             return
-        if self.command not in {"GET", "HEAD"}:
-            self._json(404, {"errors": ["Not found"], "ok": False}, head=head)
-            return
         try:
-            if path == "/api/v1/workspace":
+            if path == "/api/v1/workspace" and self.command in {"GET", "HEAD"}:
                 payload = {"ok": True, **self.server.application.inspect()}
-            elif path == "/api/v1/overview":
+            elif path == "/api/v1/overview" and self.command in {"GET", "HEAD"}:
                 payload = {"ok": True, **self.server.application.overview()}
+            elif path == "/api/v1/settings" and self.command in {"GET", "HEAD"}:
+                payload = {"ok": True, **self.server.application.settings()}
+            elif path == "/api/v1/settings" and self.command == "PUT":
+                payload = {
+                    "ok": True,
+                    **self.server.application.update_settings_payload(self._json_body()),
+                }
             else:
                 self._json(404, {"errors": ["Not found"], "ok": False}, head=head)
                 return
+        except ConsoleRequestError as error:
+            self._json(error.status, {"errors": [str(error)], "ok": False}, head=head)
+            return
+        except WorkspaceStaleError as error:
+            self._json(409, {"errors": [str(error)], "ok": False}, head=head)
+            return
         except WorkspaceError as error:
             self._json(400, {"errors": [str(error)], "ok": False}, head=head)
             return
@@ -99,6 +116,23 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._json(500, {"errors": ["Internal server error"], "ok": False}, head=head)
             return
         self._json(200, payload, head=head)
+
+    def _json_body(self) -> object:
+        media_type = self.headers.get("Content-Type", "").partition(";")[0].strip().lower()
+        if media_type != "application/json":
+            raise ConsoleRequestError(415, "Content-Type must be application/json")
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError as error:
+            raise ConsoleRequestError(400, "Invalid JSON request body") from error
+        if length > MAX_JSON_BODY:
+            raise ConsoleRequestError(413, "JSON request body is too large")
+        if length < 1:
+            raise ConsoleRequestError(400, "Invalid JSON request body")
+        try:
+            return json.loads(self.rfile.read(length))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ConsoleRequestError(400, "Invalid JSON request body") from error
 
     def _authorized(self) -> bool:
         received = self.headers.get("Authorization", "").encode(errors="surrogatepass")

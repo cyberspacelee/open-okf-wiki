@@ -24,6 +24,10 @@ class WorkspaceError(ValueError):
     pass
 
 
+class WorkspaceStaleError(WorkspaceError):
+    pass
+
+
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -147,10 +151,15 @@ class ModelSettings(StrictModel):
         return values
 
 
+class UISettings(StrictModel):
+    compact_navigation: bool = False
+
+
 class LocalWorkspaceSettings(StrictModel):
     schema_version: Literal[1] = WORKSPACE_SCHEMA_VERSION
     checkouts: dict[str, str] = Field(default_factory=dict)
     models: ModelSettings = ModelSettings()
+    ui: UISettings = UISettings()
 
     @field_validator("checkouts")
     @classmethod
@@ -308,6 +317,13 @@ def _render_settings(value: LocalWorkspaceSettings) -> str:
     if models.budgets:
         lines.extend(["", "[models.budgets]"])
         lines.extend(f"{_quote(key)} = {budget}" for key, budget in sorted(models.budgets.items()))
+    lines.extend(
+        [
+            "",
+            "[ui]",
+            f"compact_navigation = {str(value.ui.compact_navigation).lower()}",
+        ]
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -379,6 +395,65 @@ class WorkspaceApplication:
         with self._locked():
             self._recover_update_locked()
             return self._update_locked(definition, settings)
+
+    def settings(self) -> dict:
+        with self._locked():
+            self._recover_update_locked()
+            return self._settings_locked()
+
+    def update_settings(
+        self,
+        definition: WorkspaceDefinition | dict,
+        settings: LocalWorkspaceSettings | dict,
+        expected_configuration_digest: str,
+    ) -> dict:
+        with self._locked():
+            self._recover_update_locked()
+            current_digest = self._configuration_digest()
+            if expected_configuration_digest != current_digest:
+                raise WorkspaceStaleError(
+                    "Workspace settings changed after they were loaded; refresh and try again"
+                )
+            self._update_locked(definition, settings)
+            return self._settings_locked()
+
+    def update_settings_payload(self, payload: object) -> dict:
+        if not isinstance(payload, dict) or set(payload) != {
+            "definition",
+            "local_settings",
+            "configuration_digest",
+        }:
+            raise WorkspaceError(
+                "Settings update must contain definition, local_settings, and "
+                "configuration_digest"
+            )
+        values = cast(dict[str, object], payload)
+        definition = values["definition"]
+        settings = values["local_settings"]
+        digest = values["configuration_digest"]
+        if not isinstance(definition, dict) or not isinstance(settings, dict):
+            raise WorkspaceError("Settings update definition and local_settings must be objects")
+        if not isinstance(digest, str):
+            raise WorkspaceError("Settings update configuration_digest must be a string")
+        return self.update_settings(definition, settings, digest)
+
+    def _settings_locked(self) -> dict:
+        definition = _validate(
+            WorkspaceDefinition, _read_toml(self.definition_path), self.definition_path
+        )
+        settings = _validate(
+            LocalWorkspaceSettings, _read_toml(self.settings_path), self.settings_path
+        )
+        return {
+            "definition": definition.model_dump(mode="json"),
+            "local_settings": settings.model_dump(mode="json"),
+            "configuration_digest": self._configuration_digest(),
+        }
+
+    def _configuration_digest(self) -> str:
+        return hashlib.sha256(
+            self.definition_path.read_bytes() + b"\0" + self.settings_path.read_bytes()
+        ).hexdigest()
 
     def _update_locked(
         self,
@@ -465,9 +540,7 @@ class WorkspaceApplication:
                 state_version = migrate_state(connection)
         except (sqlite3.Error, ValueError) as error:
             raise WorkspaceError(f"{self.database_path}: {error}") from error
-        digest = hashlib.sha256(
-            self.definition_path.read_bytes() + b"\0" + self.settings_path.read_bytes()
-        ).hexdigest()
+        digest = self._configuration_digest()
         return WorkspaceSnapshot(
             schema_version=definition.schema_version,
             state_schema_version=state_version,

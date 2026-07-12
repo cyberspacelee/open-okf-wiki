@@ -95,6 +95,30 @@ test("loads the built Console through the real Python launcher", async ({
     "page"
   )
   await expect(page.getByText("No Sources are configured")).toBeVisible()
+
+  await page.getByRole("button", { name: "Settings" }).focus()
+  await page.keyboard.press("Enter")
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Workspace settings" })
+  ).toBeVisible()
+  await page.getByLabel("Display name").focus()
+  await page.keyboard.press("ControlOrMeta+A")
+  await page.keyboard.type("Catalog Settings E2E")
+  await page.getByRole("switch", { name: "Compact navigation" }).focus()
+  await page.keyboard.press("Space")
+  await page.getByRole("button", { name: "Save settings" }).focus()
+  await page.keyboard.press("Enter")
+  await expect(page.getByRole("status")).toContainText("Settings saved")
+
+  const persisted = JSON.parse(
+    execFileSync(
+      "uv",
+      ["run", "okf-wiki", "workspace", "settings", workspace],
+      { cwd: repoRoot, encoding: "utf-8" }
+    )
+  )
+  expect(persisted.definition.project.name).toBe("Catalog Settings E2E")
+  expect(persisted.local_settings.ui.compact_navigation).toBe(true)
   expect(externalRequests).toEqual([])
   expect(consoleErrors).toEqual([])
 })

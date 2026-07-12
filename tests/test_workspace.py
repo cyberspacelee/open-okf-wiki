@@ -17,7 +17,7 @@ from okf_wiki.state_schema import (
     migrate_state,
     migrate_worker_audit,
 )
-from okf_wiki.workspace import WorkspaceApplication, WorkspaceError
+from okf_wiki.workspace import WorkspaceApplication, WorkspaceError, WorkspaceStaleError
 
 
 def cli(command: list[str], cwd: Path, expected: int = 0) -> dict:
@@ -86,6 +86,104 @@ def test_workspace_keeps_one_producer_project_identity(tmp_path: Path) -> None:
         )
 
     assert (tmp_path / "workspace.toml").read_bytes() == before
+
+
+def test_settings_use_case_reads_and_atomically_updates_shared_and_local_layers(
+    tmp_path: Path,
+) -> None:
+    app = WorkspaceApplication(tmp_path)
+    app.initialize("catalog", "Catalog")
+    before = app.settings()
+
+    updated = app.update_settings(
+        {
+            "schema_version": 1,
+            "project": {"id": "catalog", "name": "Catalog Platform"},
+            "publication": {"path": "dist/wiki", "bundle_name": "Catalog Knowledge"},
+            "sources": [],
+            "profile": {
+                "java_excluded_paths": ["generated/**"],
+                "priorities": {"data_contract": "major"},
+                "dispositions": {
+                    "supporting": {
+                        "disposition": "deferred",
+                        "reason": "Reviewed in the next release",
+                    }
+                },
+            },
+        },
+        {
+            "schema_version": 1,
+            "checkouts": {},
+            "models": {
+                "gateway_profile": "enterprise",
+                "default_model": "model-v1",
+                "role_overrides": {"worker": "model-worker"},
+                "concurrency": 3,
+                "budgets": {"total_tokens": 12000},
+            },
+            "ui": {"compact_navigation": True},
+        },
+        before["configuration_digest"],
+    )
+
+    assert updated["definition"]["project"] == {
+        "id": "catalog",
+        "name": "Catalog Platform",
+    }
+    assert updated["definition"]["profile"]["priorities"] == {"data_contract": "major"}
+    assert updated["local_settings"]["models"]["role_overrides"] == {
+        "worker": "model-worker"
+    }
+    assert updated["local_settings"]["ui"] == {"compact_navigation": True}
+    assert updated["configuration_digest"] != before["configuration_digest"]
+    assert "name = \"Catalog Platform\"" in app.definition_path.read_text(encoding="utf-8")
+    local_text = app.settings_path.read_text(encoding="utf-8")
+    assert "compact_navigation = true" in local_text
+    assert "Catalog Platform" not in local_text
+
+
+def test_settings_use_case_rejects_invalid_stale_and_removed_fields_without_writes(
+    tmp_path: Path,
+) -> None:
+    app = WorkspaceApplication(tmp_path)
+    app.initialize("catalog", "Catalog")
+    current = app.settings()
+    definition_before = app.definition_path.read_bytes()
+    settings_before = app.settings_path.read_bytes()
+
+    with pytest.raises(WorkspaceError, match="Producer Project identity is immutable"):
+        app.update_settings(
+            {**current["definition"], "project": {"id": "other", "name": "Other"}},
+            current["local_settings"],
+            current["configuration_digest"],
+        )
+    with pytest.raises(WorkspaceError, match="removed field 'models.api_key'.*Gateway Profile"):
+        app.update_settings(
+            current["definition"],
+            {**current["local_settings"], "models": {"api_key": "secret"}},
+            current["configuration_digest"],
+        )
+    with pytest.raises(WorkspaceStaleError, match="settings changed after they were loaded"):
+        app.update_settings(
+            {**current["definition"], "project": {"id": "catalog", "name": "Stale"}},
+            current["local_settings"],
+            "0" * 64,
+        )
+
+    assert app.definition_path.read_bytes() == definition_before
+    assert app.settings_path.read_bytes() == settings_before
+
+
+def test_settings_payload_requires_the_complete_update_contract(tmp_path: Path) -> None:
+    app = WorkspaceApplication(tmp_path)
+    app.initialize("catalog")
+
+    with pytest.raises(
+        WorkspaceError,
+        match="must contain definition, local_settings, and configuration_digest",
+    ):
+        app.update_settings_payload({"definition": {}})
 
 
 def test_workspace_layers_shared_sources_with_local_checkouts(tmp_path: Path) -> None:
@@ -187,7 +285,8 @@ def test_build_uses_workspace_application_and_keeps_resolved_run_snapshot(tmp_pa
     assert persisted["models"]["default_model"] == "model-v1"
     assert "api_key" not in json.dumps(persisted)
 
-    app.update(
+    current = app.settings()
+    app.update_settings(
         {
             "schema_version": 1,
             "project": {"id": "catalog", "name": "Changed Later"},
@@ -206,6 +305,7 @@ def test_build_uses_workspace_application_and_keeps_resolved_run_snapshot(tmp_pa
             "checkouts": {"code": str(source)},
             "models": {"default_model": "model-v2"},
         },
+        current["configuration_digest"],
     )
     with sqlite3.connect(workspace / ".okf-wiki" / "runs.db") as connection:
         unchanged = json.loads(
@@ -738,6 +838,32 @@ def test_concurrent_updates_never_enter_replacement_together_or_mix_pairs(
     snapshot = WorkspaceApplication(tmp_path).open()
     assert maximum_active == 1
     assert (snapshot.project.name, snapshot.models.concurrency) in {("A", 1), ("B", 2)}
+
+
+def test_concurrent_digest_updates_allow_one_writer_and_reject_the_stale_writer(
+    tmp_path: Path,
+) -> None:
+    app = WorkspaceApplication(tmp_path)
+    app.initialize("catalog")
+    current = app.settings()
+
+    def update(name: str) -> str:
+        return WorkspaceApplication(tmp_path).update_settings(
+            {**current["definition"], "project": {"id": "catalog", "name": name}},
+            current["local_settings"],
+            current["configuration_digest"],
+        )["definition"]["project"]["name"]
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(update, "A"), executor.submit(update, "B")]
+    outcomes = []
+    for future in futures:
+        try:
+            outcomes.append(future.result())
+        except WorkspaceStaleError:
+            outcomes.append("stale")
+
+    assert sorted(outcomes) in (["A", "stale"], ["B", "stale"])
 
 
 @pytest.mark.parametrize(
