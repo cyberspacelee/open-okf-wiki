@@ -65,13 +65,15 @@ def test_console_serves_offline_shell_on_loopback_with_security_headers(
 
     assert response.status_code == 200
     assert script.status_code == 200
-    assert "default-src 'none'" in response.headers["content-security-policy"]
-    assert "script-src 'self'" in response.headers["content-security-policy"]
-    assert "style-src 'self'" in response.headers["content-security-policy"]
-    assert "connect-src 'self'" in response.headers["content-security-policy"]
+    assert response.headers["content-security-policy"] == (
+        "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
+        "img-src 'self' data:; font-src 'self'; object-src 'none'; frame-src 'none'; "
+        "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    )
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["referrer-policy"] == "no-referrer"
     assert response.headers["cross-origin-opener-policy"] == "same-origin"
+    assert response.headers["cross-origin-resource-policy"] == "same-origin"
 
 
 def test_console_cli_exposes_only_loopback_launch_options(tmp_path: Path, assets: Path) -> None:
