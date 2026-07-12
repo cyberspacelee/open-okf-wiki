@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import okf_wiki.workspace as workspace_module
 from okf_wiki.state_schema import (
     MIGRATIONS,
     WORKER_AUDIT_MIGRATIONS,
@@ -213,6 +214,111 @@ def test_build_uses_workspace_application_and_keeps_resolved_run_snapshot(tmp_pa
     assert unchanged == persisted
 
 
+def test_build_rejects_noncanonical_versioned_config(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    WorkspaceApplication(workspace).initialize("catalog")
+    alternate = workspace / "alternate.toml"
+    alternate.write_text("schema_version = 1\n", encoding="utf-8")
+
+    result = cli(["build", str(alternate)], workspace, expected=1)
+
+    assert result["ok"] is False
+    assert "must be named workspace.toml" in result["errors"][0]
+
+
+@pytest.mark.parametrize(
+    "remote",
+    [
+        "https://git@example.test/repo.git",
+        "https://git:secret@example.test/repo.git",
+        "ssh://git:secret@example.test/repo.git",
+        "ssh://git@example.test/repo.git?token=secret",
+        "ssh://git@example.test/repo.git#secret",
+    ],
+)
+def test_workspace_rejects_remote_secrets_without_echoing_them(tmp_path: Path, remote: str) -> None:
+    app = WorkspaceApplication(tmp_path)
+    app.initialize("catalog")
+
+    with pytest.raises(WorkspaceError) as caught:
+        app.update(
+            {
+                "schema_version": 1,
+                "project": {"id": "catalog", "name": "Catalog"},
+                "sources": [
+                    {
+                        "id": "code",
+                        "role": "implementation",
+                        "revision": "abc",
+                        "remote": remote,
+                    }
+                ],
+            },
+            {"schema_version": 1},
+        )
+
+    assert "secret" not in str(caught.value)
+
+
+def test_inspect_and_build_do_not_leak_rejected_remote_credentials(tmp_path: Path) -> None:
+    app = WorkspaceApplication(tmp_path)
+    app.initialize("catalog")
+    app.definition_path.write_text(
+        """schema_version = 1
+[project]
+id = "catalog"
+name = "Catalog"
+[[sources]]
+id = "code"
+role = "implementation"
+revision = "abc"
+remote = "https://git:secret@example.test/catalog.git"
+""",
+        encoding="utf-8",
+    )
+
+    inspected = cli(["workspace", "inspect", str(tmp_path)], tmp_path, expected=1)
+    built = cli(["build", "workspace.toml"], tmp_path, expected=1)
+
+    assert "secret" not in json.dumps(inspected)
+    assert "secret" not in json.dumps(built)
+    with sqlite3.connect(app.database_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
+
+
+def test_ssh_user_remote_is_safe_in_inspection_and_run_snapshot(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    source = tmp_path / "source"
+    revision = make_source(source)
+    remote = "ssh://git@example.test/catalog.git"
+    app = WorkspaceApplication(workspace)
+    app.initialize("catalog")
+    app.update(
+        {
+            "schema_version": 1,
+            "project": {"id": "catalog", "name": "Catalog"},
+            "sources": [
+                {
+                    "id": "code",
+                    "role": "implementation",
+                    "revision": revision,
+                    "remote": remote,
+                }
+            ],
+        },
+        {"schema_version": 1, "checkouts": {"code": str(source)}},
+    )
+
+    assert app.inspect()["sources"][0]["remote"] == remote
+    built = cli(["build", "workspace.toml"], workspace)
+    with sqlite3.connect(workspace / ".okf-wiki" / "runs.db") as connection:
+        snapshot = connection.execute(
+            "SELECT source_set_json FROM runs WHERE id = ?", (built["run_id"],)
+        ).fetchone()[0]
+    assert remote in snapshot
+    assert "secret" not in snapshot
+
+
 @pytest.mark.parametrize(
     ("relative_path", "content", "expected", "definition", "settings"),
     [
@@ -354,8 +460,12 @@ normative_statement = "supporting"
             ),
         )
 
-    snapshot = WorkspaceApplication(tmp_path).migrate_legacy(legacy)
+    caller = tmp_path / "caller"
+    caller.mkdir()
+    migrated = cli(["workspace", "migrate", str(legacy)], caller)
+    snapshot = WorkspaceApplication(tmp_path).open()
 
+    assert migrated["workspace"] == str(tmp_path)
     assert snapshot.project.id == "catalog"
     assert snapshot.sources[0].checkout == source
     assert snapshot.profile.priorities == {"normative_statement": "supporting"}
@@ -370,6 +480,23 @@ normative_statement = "supporting"
             "SELECT state, source_set_json FROM runs WHERE id = 'run-1'"
         ).fetchone()
         assert row == ("review_required", json.dumps(source_set))
+
+
+def test_legacy_migration_rejects_a_different_workspace_root(tmp_path: Path) -> None:
+    legacy = tmp_path / "project.toml"
+    legacy.write_text(
+        'project_id = "catalog"\npublish_dir = "published"\n'
+        'repository = "source"\nrevision = "abc"\n',
+        encoding="utf-8",
+    )
+
+    result = cli(
+        ["workspace", "migrate", str(legacy), "--root", str(tmp_path / "other")],
+        tmp_path,
+        expected=1,
+    )
+
+    assert "must be migrated in place" in result["errors"][0]
 
 
 def test_state_schema_migrations_are_ordered_and_reject_future_versions(tmp_path: Path) -> None:
@@ -473,6 +600,58 @@ def test_failed_state_open_rolls_back_configuration_update(tmp_path: Path) -> No
     assert (tmp_path / ".okf-wiki" / "settings.toml").read_bytes() == settings_before
 
 
+def test_runtime_error_during_update_restores_previous_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = WorkspaceApplication(tmp_path)
+    app.initialize("catalog")
+    definition_before = app.definition_path.read_bytes()
+    settings_before = app.settings_path.read_bytes()
+
+    def fail(_connection: sqlite3.Connection) -> int:
+        raise RuntimeError("injected state migration failure")
+
+    monkeypatch.setattr(workspace_module, "migrate_state", fail)
+    with pytest.raises(WorkspaceError, match="configuration update failed"):
+        app.update(
+            {"schema_version": 1, "project": {"id": "catalog", "name": "Changed"}},
+            {"schema_version": 1},
+        )
+
+    assert app.definition_path.read_bytes() == definition_before
+    assert app.settings_path.read_bytes() == settings_before
+
+
+def test_open_recovers_old_configuration_after_interrupted_pair_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = WorkspaceApplication(tmp_path)
+    app.initialize("catalog", "Before")
+    definition_before = app.definition_path.read_bytes()
+    settings_before = app.settings_path.read_bytes()
+    real_replace = os.replace
+
+    def interrupt_after_definition(source: Path | str, target: Path | str) -> None:
+        real_replace(source, target)
+        if Path(target) == app.definition_path:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(workspace_module.os, "replace", interrupt_after_definition)
+    with pytest.raises(KeyboardInterrupt):
+        app.update(
+            {"schema_version": 1, "project": {"id": "catalog", "name": "After"}},
+            {"schema_version": 1, "models": {"concurrency": 2}},
+        )
+    monkeypatch.setattr(workspace_module.os, "replace", real_replace)
+
+    recovered = app.open()
+
+    assert recovered.project.name == "Before"
+    assert app.definition_path.read_bytes() == definition_before
+    assert app.settings_path.read_bytes() == settings_before
+    assert not app.update_journal_path.exists()
+
+
 @pytest.mark.parametrize(
     "legacy_body, expected",
     [
@@ -497,4 +676,4 @@ def test_legacy_migration_rejects_conflicting_and_unknown_fields(
     legacy = tmp_path / "project.toml"
     legacy.write_text(legacy_body, encoding="utf-8")
     with pytest.raises(WorkspaceError, match=expected):
-        WorkspaceApplication(tmp_path / "workspace").migrate_legacy(legacy)
+        WorkspaceApplication(tmp_path).migrate_legacy(legacy)

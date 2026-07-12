@@ -65,7 +65,14 @@ class WorkspaceSource(StrictModel):
     @field_validator("remote")
     @classmethod
     def no_credentials(cls, value: str | None) -> str | None:
-        if value is not None and urlsplit(value).username is not None:
+        if value is None:
+            return value
+        remote = urlsplit(value)
+        if remote.query or remote.fragment:
+            raise ValueError("must not contain a query or fragment")
+        if remote.password is not None or (
+            remote.scheme in {"http", "https"} and remote.username is not None
+        ):
             raise ValueError("must not contain credentials; use local Git credential handling")
         return value
 
@@ -321,14 +328,29 @@ def _write_temp(path: Path, content: str, mode: int) -> Path:
     return temporary
 
 
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _replace_durable(source: Path, target: Path) -> None:
+    os.replace(source, target)
+    _fsync_directory(target.parent)
+
+
 class WorkspaceApplication:
     def __init__(self, root: Path | str) -> None:
         self.root = Path(root).resolve()
         self.definition_path = self.root / "workspace.toml"
         self.settings_path = self.root / ".okf-wiki" / "settings.toml"
         self.database_path = self.root / ".okf-wiki" / "runs.db"
+        self.update_journal_path = self.root / ".okf-wiki" / "config-update.json"
 
     def initialize(self, project_id: str, name: str | None = None) -> WorkspaceSnapshot:
+        self._recover_update()
         if self.definition_path.exists() or self.settings_path.exists():
             raise WorkspaceError(f"{self.root}: Workspace is already initialized")
         definition = _validate(
@@ -346,6 +368,7 @@ class WorkspaceApplication:
         definition: WorkspaceDefinition | dict,
         settings: LocalWorkspaceSettings | dict,
     ) -> WorkspaceSnapshot:
+        self._recover_update()
         definition = _validate(WorkspaceDefinition, definition, self.definition_path)
         settings = _validate(LocalWorkspaceSettings, settings, self.settings_path)
         if self.definition_path.exists():
@@ -370,31 +393,39 @@ class WorkspaceApplication:
             self.definition_path.read_bytes() if self.definition_path.exists() else None
         )
         previous_settings = self.settings_path.read_bytes() if self.settings_path.exists() else None
-        definition_temp = _write_temp(self.definition_path, _render_definition(definition), 0o644)
-        settings_temp = _write_temp(self.settings_path, _render_settings(settings), 0o600)
+        definition_temp: Path | None = None
+        settings_temp: Path | None = None
         try:
-            os.replace(definition_temp, self.definition_path)
-            os.replace(settings_temp, self.settings_path)
-            return self.open()
-        except (OSError, WorkspaceError) as error:
-            if previous_definition is None:
-                self.definition_path.unlink(missing_ok=True)
-            else:
-                rollback = _write_temp(
-                    self.definition_path, previous_definition.decode("utf-8"), 0o644
-                )
-                os.replace(rollback, self.definition_path)
-            if previous_settings is None:
-                self.settings_path.unlink(missing_ok=True)
-            else:
-                rollback = _write_temp(self.settings_path, previous_settings.decode("utf-8"), 0o600)
-                os.replace(rollback, self.settings_path)
+            definition_temp = _write_temp(
+                self.definition_path, _render_definition(definition), 0o644
+            )
+            settings_temp = _write_temp(self.settings_path, _render_settings(settings), 0o600)
+            self._begin_update(previous_definition, previous_settings)
+            _replace_durable(definition_temp, self.definition_path)
+            _replace_durable(settings_temp, self.settings_path)
+            snapshot = self._open_current()
+            self._finish_update()
+            return snapshot
+        except Exception as error:
+            try:
+                self._restore_pair(previous_definition, previous_settings)
+                self._finish_update()
+            except Exception as recovery_error:
+                raise WorkspaceError(
+                    f"{self.root}: configuration update and recovery failed: {recovery_error}"
+                ) from recovery_error
             raise WorkspaceError(f"{self.root}: configuration update failed: {error}") from error
         finally:
-            definition_temp.unlink(missing_ok=True)
-            settings_temp.unlink(missing_ok=True)
+            if definition_temp is not None:
+                definition_temp.unlink(missing_ok=True)
+            if settings_temp is not None:
+                settings_temp.unlink(missing_ok=True)
 
     def open(self) -> WorkspaceSnapshot:
+        self._recover_update()
+        return self._open_current()
+
+    def _open_current(self) -> WorkspaceSnapshot:
         definition = _validate(
             WorkspaceDefinition, _read_toml(self.definition_path), self.definition_path
         )
@@ -441,13 +472,85 @@ class WorkspaceApplication:
             configuration_digest=digest,
         )
 
+    def _begin_update(
+        self, previous_definition: bytes | None, previous_settings: bytes | None
+    ) -> None:
+        journal = _write_temp(
+            self.update_journal_path,
+            json.dumps(
+                {
+                    "definition": previous_definition.decode("utf-8")
+                    if previous_definition is not None
+                    else None,
+                    "settings": previous_settings.decode("utf-8")
+                    if previous_settings is not None
+                    else None,
+                },
+                sort_keys=True,
+            ),
+            0o600,
+        )
+        try:
+            _replace_durable(journal, self.update_journal_path)
+        finally:
+            journal.unlink(missing_ok=True)
+
+    def _recover_update(self) -> None:
+        if not self.update_journal_path.exists():
+            return
+        try:
+            journal = json.loads(self.update_journal_path.read_text(encoding="utf-8"))
+            if set(journal) != {"definition", "settings"} or not all(
+                value is None or isinstance(value, str) for value in journal.values()
+            ):
+                raise ValueError("invalid update journal")
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            raise WorkspaceError(
+                f"{self.update_journal_path}: cannot recover configuration update: {error}"
+            ) from error
+        self._restore_pair(
+            journal["definition"].encode("utf-8") if journal["definition"] is not None else None,
+            journal["settings"].encode("utf-8") if journal["settings"] is not None else None,
+        )
+        self._finish_update()
+
+    def _restore_pair(
+        self, previous_definition: bytes | None, previous_settings: bytes | None
+    ) -> None:
+        self._restore_content(self.definition_path, previous_definition, 0o644)
+        self._restore_content(self.settings_path, previous_settings, 0o600)
+
+    def _restore_content(self, target: Path, content: bytes | None, mode: int) -> None:
+        if content is None:
+            self._remove_durable(target)
+            return
+        temporary = _write_temp(target, content.decode("utf-8"), mode)
+        try:
+            _replace_durable(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _remove_durable(path: Path) -> None:
+        if path.exists():
+            path.unlink()
+            _fsync_directory(path.parent)
+
+    def _finish_update(self) -> None:
+        self._remove_durable(self.update_journal_path)
+
     def inspect(self) -> dict:
         return self.open().model_dump(mode="json")
 
     def migrate_legacy(self, path: Path | str) -> WorkspaceSnapshot:
+        self._recover_update()
+        legacy_path = Path(path).resolve()
+        if legacy_path.parent != self.root:
+            raise WorkspaceError(
+                f"{legacy_path}: legacy Producer Project must be migrated in place"
+            )
         if self.definition_path.exists() or self.settings_path.exists():
             raise WorkspaceError(f"{self.root}: Workspace is already initialized")
-        legacy_path = Path(path).resolve()
         payload = _read_toml(legacy_path)
         allowed = {"project_id", "publish_dir", "repository", "revision", "sources", "profile"}
         unknown = sorted(set(payload) - allowed)

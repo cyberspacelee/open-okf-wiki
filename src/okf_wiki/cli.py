@@ -502,6 +502,8 @@ def load_config(path_text: str) -> tuple[str, list[dict], Path, dict, dict | Non
         config = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise UserError(f"Cannot read Producer Project config: {error}") from error
+    if "schema_version" in config and path.name != "workspace.toml":
+        raise UserError("Workspace configuration must be named workspace.toml")
     if "schema_version" in config:
         try:
             snapshot = WorkspaceApplication(path.parent).open()
@@ -1384,7 +1386,7 @@ def parser() -> argparse.ArgumentParser:
     workspace_validate.add_argument("root", nargs="?", default=".")
     workspace_migrate = workspace_commands.add_parser("migrate")
     workspace_migrate.add_argument("project_config")
-    workspace_migrate.add_argument("--root", default=".")
+    workspace_migrate.add_argument("--root")
     return command
 
 
@@ -1408,12 +1410,15 @@ def main() -> int:
         if arguments.command == "benchmark":
             return benchmark(arguments.manifest)
         if arguments.command == "workspace":
-            app = WorkspaceApplication(arguments.root)
-            if arguments.workspace_command == "init":
-                snapshot = app.initialize(arguments.project_id, arguments.name)
-            elif arguments.workspace_command == "migrate":
+            if arguments.workspace_command == "migrate":
+                root = arguments.root or Path(arguments.project_config).resolve().parent
+                app = WorkspaceApplication(root)
                 snapshot = app.migrate_legacy(arguments.project_config)
+            elif arguments.workspace_command == "init":
+                app = WorkspaceApplication(arguments.root)
+                snapshot = app.initialize(arguments.project_id, arguments.name)
             else:
+                app = WorkspaceApplication(arguments.root)
                 snapshot = app.open()
             emit({"ok": True, **snapshot.model_dump(mode="json")})
             return 0
