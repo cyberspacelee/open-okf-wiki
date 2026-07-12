@@ -207,19 +207,27 @@ def pull_checkout(
                 f"Pull blocked for Source {source_id}: Git attributes select an executable filter; "
                 "remove the filter before updating this checkout"
             )
-        ancestor = _git_mutate(checkout, "merge-base", "--is-ancestor", "HEAD", temporary_ref)
-        if ancestor.returncode:
+        remote_is_ahead = (
+            _git_mutate(checkout, "merge-base", "--is-ancestor", "HEAD", temporary_ref).returncode
+            == 0
+        )
+        local_is_ahead = (
+            _git_mutate(checkout, "merge-base", "--is-ancestor", temporary_ref, "HEAD").returncode
+            == 0
+        )
+        if not remote_is_ahead and not local_is_ahead:
             raise SourceCheckoutError(
                 f"Pull failed for Source {source_id}: origin/{branch} is not a fast-forward; "
                 "resolve the branch divergence manually"
             )
-        merged = _git_mutate(
-            checkout, "merge", "--ff-only", "--no-edit", "--no-verify", temporary_ref
-        )
-        if merged.returncode:
-            raise SourceCheckoutError(
-                f"Pull failed for Source {source_id}: Git could not fast-forward the clean checkout"
+        if remote_is_ahead:
+            merged = _git_mutate(
+                checkout, "merge", "--ff-only", "--no-edit", "--no-verify", temporary_ref
             )
+            if merged.returncode:
+                raise SourceCheckoutError(
+                    f"Pull failed for Source {source_id}: Git could not fast-forward the clean checkout"
+                )
         assert remote_commit is not None
         tracked = _git_mutate(
             checkout,

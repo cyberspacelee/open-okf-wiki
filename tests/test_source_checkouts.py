@@ -878,6 +878,29 @@ def test_managed_checkout_can_pull_a_clean_followed_branch(tmp_path: Path) -> No
     assert pulled["revision_policy"] == "follow_branch"
 
 
+def test_pull_keeps_a_clean_local_commit_when_the_remote_is_behind(tmp_path: Path) -> None:
+    upstream = tmp_path / "upstream"
+    remote = tmp_path / "remote.git"
+    make_source(upstream, bare_remote=remote)
+    checkout = tmp_path / "checkout"
+    subprocess.run(["git", "clone", "-q", remote, checkout], check=True)
+    git(checkout, "config", "user.name", "Checkout")
+    git(checkout, "config", "user.email", "checkout@example.com")
+    (checkout / "LOCAL.md").write_text("local\n", encoding="utf-8")
+    git(checkout, "add", "LOCAL.md")
+    git(checkout, "commit", "-qm", "local")
+    local = git(checkout, "rev-parse", "HEAD")
+    app = WorkspaceApplication(tmp_path / "workspace")
+    app.initialize("catalog")
+    app.link_source({"id": "code", "role": "implementation", "checkout": str(checkout)})
+
+    pulled = app.pull_source({"id": "code"})["sources"][0]
+
+    assert pulled["commit"] == local
+    assert pulled["ahead"] == 1
+    assert pulled["behind"] == 0
+
+
 def test_configured_follow_branch_clone_checks_out_the_exact_remote_branch(tmp_path: Path) -> None:
     upstream = tmp_path / "upstream"
     remote = tmp_path / "remote.git"
