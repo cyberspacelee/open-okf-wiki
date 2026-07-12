@@ -133,7 +133,11 @@ export function GatewayConnections({ token }: { token: string }) {
     )
   }
 
-  async function run(action: string, operation: () => Promise<unknown>) {
+  async function run(
+    action: string,
+    operation: () => Promise<unknown>,
+    reloadOnFailure = false
+  ) {
     setBusy(action)
     setError("")
     setNotice("")
@@ -145,9 +149,12 @@ export function GatewayConnections({ token }: { token: string }) {
       )
       return true
     } catch (reason) {
-      setError(
+      const message =
         reason instanceof Error ? reason.message : "Connection action failed."
-      )
+      if (reloadOnFailure) {
+        await reload().catch(() => undefined)
+      }
+      setError(message)
       return false
     } finally {
       setBusy("")
@@ -193,7 +200,11 @@ export function GatewayConnections({ token }: { token: string }) {
         state={state}
         busy={busy}
         onTest={(profileId, model) =>
-          run(`Test ${profileId}`, () => testProfile(token, profileId, model))
+          run(
+            `Test ${profileId}`,
+            () => testProfile(token, profileId, model),
+            true
+          )
         }
       />
 

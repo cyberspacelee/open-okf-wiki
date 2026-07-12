@@ -16,6 +16,7 @@ let sessionUrl: string
 let workspace: string
 let gatewayServer: Server
 let gatewayUrl: string
+let rejectModelA = false
 
 test.beforeAll(async () => {
   workspace = mkdtempSync(resolve(tmpdir(), "okf-wiki-console-"))
@@ -50,6 +51,15 @@ test.beforeAll(async () => {
       if (request.method === "GET") {
         const content = JSON.stringify({ error: { message: "not found" } })
         response.writeHead(404, {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(content),
+        })
+        response.end(content)
+        return
+      }
+      if (rejectModelA && payload?.model === "model-a") {
+        const content = JSON.stringify({ error: { message: "gateway down" } })
+        response.writeHead(503, {
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(content),
         })
@@ -209,6 +219,18 @@ test("configures, tests, and selects a Gateway Profile through Connections", asy
 
   await page.getByRole("button", { name: "Save Workspace selection" }).click()
   await expect(page.getByText("Workspace selection completed.")).toBeVisible()
+
+  await page.getByLabel("Capability test model").fill("model-a")
+  await expect(page.getByText("Verified")).toBeVisible()
+  rejectModelA = true
+  const failedTestResponse = page.waitForResponse((response) =>
+    new URL(response.url()).pathname.endsWith("/test")
+  )
+  await page.getByRole("button", { name: "Test" }).click()
+  expect((await failedTestResponse).status()).toBe(400)
+  await expect(page.getByRole("alert")).toContainText("Gateway service failed")
+  await expect(page.getByText("Not tested")).toBeVisible()
+  rejectModelA = false
 
   await page.getByLabel("Profile name").fill("Enterprise Gateway")
   await page.getByLabel("Profile ID").fill("enterprise")
