@@ -21,7 +21,7 @@ from .verification import (
 )
 
 
-FIXTURE_PHASE_DELAY = 0.35
+FIXTURE_PHASE_DELAY = 0.6
 
 
 class FixturePlanner:
