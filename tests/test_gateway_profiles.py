@@ -791,13 +791,26 @@ def test_build_configuration_resolves_models_from_the_same_workspace_snapshot(
     workspace = tmp_path / "workspace"
     source = tmp_path / "source"
     source.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=source, check=True)
+    (source / "README.md").write_text("Source knowledge.\n")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-qm", "source"], cwd=source, check=True)
+    branch = subprocess.run(
+        ["git", "branch", "--show-current"],
+        cwd=source,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
     app = WorkspaceApplication(workspace)
     app.initialize("catalog")
     app.update(
         {
             "schema_version": 1,
             "project": {"id": "catalog", "name": "Catalog"},
-            "sources": [{"id": "docs", "role": "documentation", "revision": "abc"}],
+            "sources": [{"id": "docs", "role": "documentation", "revision": branch}],
         },
         {"schema_version": 1, "checkouts": {"docs": str(source)}},
     )
@@ -813,12 +826,12 @@ def test_build_configuration_resolves_models_from_the_same_workspace_snapshot(
         default_model="model-a",
     )
     monkeypatch.setenv("OKF_WIKI_CONFIG_HOME", str(config_root))
-    real_open = WorkspaceApplication.open
+    real_resolve_run_inputs = WorkspaceApplication.resolve_run_inputs
     calls = 0
 
-    def open_then_change(self):
+    def resolve_then_change(self):
         nonlocal calls
-        snapshot = real_open(self)
+        resolved = real_resolve_run_inputs(self)
         if self.root == workspace:
             calls += 1
             if calls == 1:
@@ -827,9 +840,9 @@ def test_build_configuration_resolves_models_from_the_same_workspace_snapshot(
                     profile_id="enterprise",
                     default_model="model-b",
                 )
-        return snapshot
+        return resolved
 
-    monkeypatch.setattr(WorkspaceApplication, "open", open_then_change)
+    monkeypatch.setattr(WorkspaceApplication, "resolve_run_inputs", resolve_then_change)
     configuration = load_config(str(workspace / "workspace.toml"))[4]
 
     assert calls == 1

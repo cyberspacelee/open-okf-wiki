@@ -401,6 +401,30 @@ test("loads the built Console through the real Python launcher", async ({
   await managedRow.getByRole("button", { name: "Clone" }).click()
   await expect(managedRow).toContainText("managed")
   await expect(managedRow).toContainText("Clean")
+  const managedCheckout = join(workspace, "sources", "code")
+  const managedBranch = execFileSync("git", ["branch", "--show-current"], {
+    cwd: managedCheckout,
+    encoding: "utf-8",
+  }).trim()
+  execFileSync("git", ["switch", "-c", "release"], { cwd: managedOrigin })
+  writeFileSync(join(managedOrigin, "RELEASE.md"), "release branch\n")
+  execFileSync("git", ["add", "RELEASE.md"], { cwd: managedOrigin })
+  execFileSync("git", ["commit", "-qm", "release branch"], {
+    cwd: managedOrigin,
+  })
+  const releaseCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: managedOrigin,
+    encoding: "utf-8",
+  }).trim()
+  execFileSync("git", ["switch", managedBranch], { cwd: managedOrigin })
+  execFileSync(
+    "git",
+    ["fetch", "-q", "origin", "release:refs/remotes/origin/release"],
+    { cwd: managedCheckout }
+  )
+  execFileSync("git", ["branch", "release", "origin/release"], {
+    cwd: managedCheckout,
+  })
   await linkedRow.getByRole("button", { name: "Link below" }).click()
   await expect(page.getByLabel("Source ID").nth(1)).toBeDisabled()
   await expect(page.getByLabel("Source ID").nth(1)).toHaveValue("docs")
@@ -422,8 +446,12 @@ test("loads the built Console through the real Python launcher", async ({
     name: "docs · Documentation",
   })
   await managedPolicy.getByRole("button", { name: "Follow Branch" }).click()
+  await managedPolicy.getByLabel("Branch").fill("release")
   await managedPolicy.getByRole("button", { name: "Save policy" }).click()
   await expect(managedPolicy).toContainText("Follow Branch")
+  await expect(managedPolicy).toContainText(releaseCommit)
+  await managedPolicy.getByLabel("Branch").fill(managedBranch)
+  await managedPolicy.getByRole("button", { name: "Save policy" }).click()
   writeFileSync(join(managedOrigin, "REMOTE.md"), "remote update\n")
   execFileSync("git", ["add", "REMOTE.md"], { cwd: managedOrigin })
   execFileSync("git", ["commit", "-qm", "remote update"], {
@@ -448,6 +476,8 @@ test("loads the built Console through the real Python launcher", async ({
     .locator("xpath=../..")
   await expect(preflightCard).toContainText(pulledCommit)
   await expect(preflightCard).toContainText(linkedCommit)
+  await expect(preflightCard).toContainText("Local commit")
+  await expect(preflightCard).toContainText("Remote commit")
   await expect(preflightCard).toContainText("Source Set")
   await page.screenshot({
     path: "test-results/sources-desktop.png",

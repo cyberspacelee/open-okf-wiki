@@ -878,6 +878,45 @@ def test_managed_checkout_can_pull_a_clean_followed_branch(tmp_path: Path) -> No
     assert pulled["revision_policy"] == "follow_branch"
 
 
+def test_follow_branch_reports_selected_non_current_local_and_remote_commits(
+    tmp_path: Path,
+) -> None:
+    upstream = tmp_path / "upstream"
+    remote = tmp_path / "remote.git"
+    make_source(upstream, bare_remote=remote)
+    default_branch = git(upstream, "branch", "--show-current")
+    git(upstream, "switch", "-c", "release")
+    (upstream / "RELEASE.md").write_text("release\n", encoding="utf-8")
+    git(upstream, "add", "RELEASE.md")
+    git(upstream, "commit", "-qm", "release")
+    git(upstream, "push", "-qu", "origin", "release")
+    release = git(upstream, "rev-parse", "HEAD")
+    git(upstream, "switch", default_branch)
+    checkout = tmp_path / "checkout"
+    subprocess.run(["git", "clone", "-q", remote, checkout], check=True)
+    git(checkout, "branch", "release", "origin/release")
+    current = git(checkout, "rev-parse", "HEAD")
+    app = WorkspaceApplication(tmp_path / "workspace")
+    app.initialize("catalog")
+    app.link_source({"id": "code", "role": "implementation", "checkout": str(checkout)})
+
+    followed = app.set_source_revision(
+        {
+            "id": "code",
+            "revision_policy": "follow_branch",
+            "revision": "release",
+            "configuration_digest": app.sources()["configuration_digest"],
+        }
+    )["sources"][0]
+    preflight = app.run_preflight()["sources"][0]
+
+    assert followed["commit"] == current
+    assert followed["local_commit"] == release
+    assert followed["remote_commit"] == release
+    assert preflight["local_commit"] == release
+    assert preflight["remote_commit"] == release
+
+
 def test_pull_keeps_a_clean_local_commit_when_the_remote_is_behind(tmp_path: Path) -> None:
     upstream = tmp_path / "upstream"
     remote = tmp_path / "remote.git"
@@ -1058,6 +1097,17 @@ def test_revision_policy_errors_do_not_change_shared_configuration(tmp_path: Pat
                 "id": "code",
                 "revision_policy": "pinned_commit",
                 "revision": "d" * 40,
+                "configuration_digest": digest,
+            }
+        )
+    tree = git(source, "rev-parse", "HEAD^{tree}")
+    unreachable = git(source, "commit-tree", tree, "-p", "HEAD", "-m", "unreachable")
+    with pytest.raises(WorkspaceError, match="Pinned Commit is unreachable"):
+        app.set_source_revision(
+            {
+                "id": "code",
+                "revision_policy": "pinned_commit",
+                "revision": unreachable,
                 "configuration_digest": digest,
             }
         )
@@ -1253,6 +1303,13 @@ def test_pull_delegates_credentials_without_forwarding_unrelated_secrets(
     global_config = tmp_path / "user.gitconfig"
     global_config.write_text("[credential]\n\thelper = trusted-test\n", encoding="utf-8")
     git(checkout, "config", "credential.helper", "!malicious-local-helper")
+    git(
+        checkout,
+        "config",
+        f"url.{tmp_path / 'redirected.git'}.insteadOf",
+        str(remote),
+    )
+    git(checkout, "config", "http.proxy", "http://127.0.0.1:1")
     monkeypatch.setenv("SSH_AUTH_SOCK", str(tmp_path / "agent.sock"))
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
     monkeypatch.setenv("OKF_GATEWAY_API_KEY", "must-not-leak")
@@ -1282,6 +1339,8 @@ def test_pull_delegates_credentials_without_forwarding_unrelated_secrets(
     assert "credential.helper=" in fetch_command
     assert "credential.helper=trusted-test" in fetch_command
     assert all("malicious-local-helper" not in argument for argument in fetch_command)
+    assert str(remote) in fetch_command
+    assert str(checkout) not in fetch_command
     assert "--ff-only" in merge_command
     assert not ({"stash", "reset", "clean", "rebase", "checkout"} & set(merge_command))
 
@@ -1309,8 +1368,8 @@ def test_pull_refuses_a_branch_switch_at_the_same_commit_during_fetch(
         result = real_mutate(path, *arguments, **keywords)
         if arguments[0] == "fetch" and not switched:
             switched = True
-            assert real_mutate(path, "branch", "other", "HEAD").returncode == 0
-            assert real_mutate(path, "switch", "other").returncode == 0
+            assert real_mutate(checkout, "branch", "other", "HEAD").returncode == 0
+            assert real_mutate(checkout, "switch", "other").returncode == 0
         return result
 
     monkeypatch.setattr(source_checkouts_module, "_git_mutate", switch_after_fetch)

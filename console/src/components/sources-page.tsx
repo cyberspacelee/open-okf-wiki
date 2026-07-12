@@ -687,6 +687,8 @@ function PreflightCard({
               <TableRow>
                 <TableHead>Source</TableHead>
                 <TableHead>Policy</TableHead>
+                <TableHead>Local commit</TableHead>
+                <TableHead>Remote commit</TableHead>
                 <TableHead>Exact commit</TableHead>
                 <TableHead>Tree digest</TableHead>
               </TableRow>
@@ -707,6 +709,12 @@ function PreflightCard({
                     <p className="mt-1 font-mono text-xs text-muted-foreground">
                       {source.revision}
                     </p>
+                  </TableCell>
+                  <TableCell className="max-w-72 font-mono text-xs break-all">
+                    {source.local_commit ?? "unavailable"}
+                  </TableCell>
+                  <TableCell className="max-w-72 font-mono text-xs break-all">
+                    {source.remote_commit ?? "unavailable"}
                   </TableCell>
                   <TableCell className="max-w-72 font-mono text-xs break-all">
                     {source.exact_commit}

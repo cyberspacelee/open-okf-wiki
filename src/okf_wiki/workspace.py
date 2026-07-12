@@ -1178,6 +1178,16 @@ class WorkspaceApplication:
             if checkout_text:
                 try:
                     status = self._checkout_call(inspect_checkout, Path(checkout_text))
+                    policy = _source_revision_policy(source.revision, source.revision_policy)
+                    resolved = self._checkout_call(
+                        resolve_revision_policy,
+                        Path(checkout_text),
+                        policy,
+                        source.revision,
+                        require_clean=False,
+                    )
+                    status["local_commit"] = resolved["local_commit"]
+                    status["remote_commit"] = resolved["remote_commit"]
                 except WorkspaceError as error:
                     status["error"] = str(error)
             sources.append(

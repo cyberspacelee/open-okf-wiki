@@ -49,7 +49,7 @@ def inspect_checkout(checkout: Path) -> dict[str, object]:
         raise SourceCheckoutError(context)
     commit = _git_inspect(checkout, "rev-parse", "--verify", "HEAD^{commit}", context=context)
     branch = _git_inspect(checkout, "symbolic-ref", "--short", "-q", "HEAD", required=False)
-    remote = _git_inspect(checkout, "remote", "get-url", "origin", required=False)
+    remote = _origin_url(checkout)
     if remote is not None:
         try:
             validate_clone_remote(remote)
@@ -123,6 +123,20 @@ def resolve_revision_policy(
             raise SourceCheckoutError(
                 "Pinned Commit does not resolve to the exact requested commit"
             )
+        reachable_refs = _git_inspect(
+            checkout,
+            "for-each-ref",
+            f"--contains={exact_commit}",
+            "--format=%(refname)",
+            "refs/heads",
+            "refs/remotes",
+            "refs/tags",
+        )
+        if not reachable_refs:
+            raise SourceCheckoutError(
+                "Pinned Commit is unreachable from every checkout ref; "
+                "fetch or restore a branch or tag containing it"
+            )
         local_commit = _git_inspect(checkout, "rev-parse", "--verify", "HEAD^{commit}")
         branch = _git_inspect(checkout, "symbolic-ref", "--short", "-q", "HEAD", required=False)
         remote_commit = (
@@ -172,27 +186,12 @@ def pull_checkout(
     before = status["commit"]
     temporary_ref = f"refs/okf-wiki/pull/{secrets.token_hex(16)}"
     try:
-        fetched = _git_mutate(
+        remote_commit = _fetch_remote_commit(
             checkout,
-            "fetch",
-            "--no-tags",
-            "--no-recurse-submodules",
-            "--",
             remote,
-            f"refs/heads/{branch}:{temporary_ref}",
-            credentials=True,
-        )
-        if fetched.returncode:
-            raise SourceCheckoutError(
-                f"Pull failed for Source {source_id}: remote branch origin/{branch} is unavailable; "
-                "verify the branch, remote, and your Git credentials"
-            )
-        remote_commit = _git_inspect(
-            checkout,
-            "rev-parse",
-            "--verify",
-            f"{temporary_ref}^{{commit}}",
-            context=f"Pull failed for Source {source_id}: fetched commit is unavailable",
+            branch,
+            temporary_ref,
+            source_id,
         )
         current = _git_inspect(checkout, "rev-parse", "--verify", "HEAD^{commit}")
         if current != before:
@@ -307,6 +306,24 @@ def _validate_branch(checkout: Path, branch: str) -> None:
         raise SourceCheckoutError(f"Invalid followed branch name: {branch}")
 
 
+def _origin_url(checkout: Path) -> str | None:
+    configured = _git_mutate(
+        checkout,
+        "config",
+        "--includes",
+        "--get-all",
+        "remote.origin.url",
+    )
+    if configured.returncode == 1:
+        return None
+    if configured.returncode != 0:
+        raise SourceCheckoutError("Git origin remote configuration is unavailable")
+    urls = [line for line in configured.stdout.splitlines() if line]
+    if len(urls) != 1:
+        raise SourceCheckoutError("Git origin remote configuration is ambiguous")
+    return urls[0]
+
+
 def _reject_local_executable_filters(checkout: Path) -> None:
     configured = _git_mutate(
         checkout,
@@ -388,6 +405,100 @@ def _git_mutate(
         )
     except OSError as error:
         raise SourceCheckoutError(f"Git operation failed: {error}") from error
+
+
+def _fetch_remote_commit(
+    checkout: Path,
+    remote: str,
+    branch: str,
+    temporary_ref: str,
+    source_id: str,
+) -> str:
+    executable = shutil.which("git", path=os.defpath)
+    if executable is None:
+        raise SourceCheckoutError("System Git is not available")
+    object_format = _git_inspect(checkout, "rev-parse", "--show-object-format")
+    with tempfile.TemporaryDirectory(prefix="okf-wiki-fetch-") as temporary:
+        root = Path(temporary)
+        bare = root / "repository.git"
+        template = root / "template"
+        template.mkdir()
+        try:
+            initialized = subprocess.run(
+                [
+                    executable,
+                    "-c",
+                    f"init.templateDir={template}",
+                    "init",
+                    "--bare",
+                    "--quiet",
+                    f"--object-format={object_format}",
+                    str(bare),
+                ],
+                check=False,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                env=_isolated_environment(),
+            )
+        except OSError as error:
+            raise SourceCheckoutError(
+                f"Pull failed for Source {source_id}: temporary Git storage is unavailable"
+            ) from error
+        if initialized.returncode:
+            raise SourceCheckoutError(
+                f"Pull failed for Source {source_id}: temporary Git storage is unavailable"
+            )
+        fetched = _git_mutate(
+            bare,
+            "fetch",
+            "--no-tags",
+            "--no-recurse-submodules",
+            "--",
+            remote,
+            f"refs/heads/{branch}:refs/heads/pull",
+            credentials=True,
+        )
+        if fetched.returncode:
+            raise SourceCheckoutError(
+                f"Pull failed for Source {source_id}: remote branch origin/{branch} is unavailable; "
+                "verify the branch, remote, and your Git credentials"
+            )
+        commit = _git_inspect(
+            bare,
+            "rev-parse",
+            "--verify",
+            "refs/heads/pull^{commit}",
+            context=f"Pull failed for Source {source_id}: fetched commit is unavailable",
+        )
+        assert commit is not None
+        bundle = root / "pull.bundle"
+        if _git_mutate(bare, "bundle", "create", str(bundle), "refs/heads/pull").returncode:
+            raise SourceCheckoutError(
+                f"Pull failed for Source {source_id}: fetched commit could not be transferred"
+            )
+        if _git_mutate(checkout, "bundle", "unbundle", str(bundle)).returncode:
+            raise SourceCheckoutError(
+                f"Pull failed for Source {source_id}: fetched commit could not be imported"
+            )
+        if _git_mutate(checkout, "update-ref", temporary_ref, commit).returncode:
+            raise SourceCheckoutError(
+                f"Pull failed for Source {source_id}: fetched commit could not be recorded"
+            )
+        return commit
+
+
+def _isolated_environment() -> dict[str, str]:
+    environment = _clone_environment()
+    environment.update(
+        {
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "HOME": os.devnull,
+            "XDG_CONFIG_HOME": os.devnull,
+        }
+    )
+    return environment
 
 
 def _trusted_credential_helpers(executable: str, environment: dict[str, str]) -> list[str]:
