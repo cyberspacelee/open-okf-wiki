@@ -7,7 +7,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 from urllib.parse import quote, unquote, urlsplit
 
-from .gateway_profiles import GatewayApplication, GatewayError
+from .gateway_common import GatewayError
+from .gateway_profiles import GatewayApplication
 from .workspace import WorkspaceApplication, WorkspaceError, WorkspaceStaleError
 
 

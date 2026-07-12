@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react"
+import { useCallback, useEffect, useState, type FormEvent } from "react"
 import {
   CheckCircle2Icon,
   ChevronDownIcon,
@@ -34,6 +34,7 @@ import {
 } from "@/components/ui/empty"
 import {
   Field,
+  FieldContent,
   FieldDescription,
   FieldGroup,
   FieldLabel,
@@ -69,19 +70,61 @@ export function GatewayConnections({ token }: { token: string }) {
   const [error, setError] = useState("")
   const [notice, setNotice] = useState("")
   const [busy, setBusy] = useState("")
+  const [loading, setLoading] = useState(true)
 
-  const reload = () =>
-    loadConnections(token).then(setState, (reason: Error) =>
-      setError(reason.message)
-    )
+  const reload = useCallback(async () => {
+    setLoading(true)
+    try {
+      setState(await loadConnections(token))
+      setError("")
+    } finally {
+      setLoading(false)
+    }
+  }, [token])
 
   useEffect(() => {
-    loadConnections(token).then(setState, (reason: Error) =>
-      setError(reason.message)
+    let active = true
+    loadConnections(token).then(
+      (next) => {
+        if (active) {
+          setState(next)
+          setError("")
+          setLoading(false)
+        }
+      },
+      (reason: Error) => {
+        if (active) {
+          setError(reason.message)
+          setLoading(false)
+        }
+      }
     )
+    return () => {
+      active = false
+    }
   }, [token])
 
   if (!state) {
+    if (!loading) {
+      return (
+        <div className="flex flex-col gap-4">
+          <Alert variant="destructive">
+            <CircleAlertIcon />
+            <AlertTitle>Connection settings unavailable</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+          <Button
+            className="self-start"
+            variant="outline"
+            onClick={() =>
+              void reload().catch((reason: Error) => setError(reason.message))
+            }
+          >
+            Retry
+          </Button>
+        </div>
+      )
+    }
     return (
       <div aria-busy="true" className="flex flex-col gap-5">
         <Skeleton className="h-24 w-full" />
@@ -96,10 +139,10 @@ export function GatewayConnections({ token }: { token: string }) {
     setNotice("")
     try {
       await operation()
+      await reload()
       setNotice(
         action === "profile" ? "Gateway Profile saved." : `${action} completed.`
       )
-      await reload()
       return true
     } catch (reason) {
       setError(
@@ -213,12 +256,18 @@ function ProfileList({
           </Empty>
         ) : (
           <>
-            <Field className="max-w-sm">
-              <FieldLabel htmlFor="test-model">
-                Capability test model
-              </FieldLabel>
+            <Field orientation="horizontal">
+              <FieldContent>
+                <FieldLabel htmlFor="test-model">
+                  Capability test model
+                </FieldLabel>
+                <FieldDescription id="test-model-description">
+                  Use a model returned by the selected enterprise gateway.
+                </FieldDescription>
+              </FieldContent>
               <Input
                 id="test-model"
+                aria-describedby="test-model-description"
                 value={testModel}
                 onChange={(event) => setTestModel(event.target.value)}
                 placeholder="enterprise-model"
@@ -361,8 +410,10 @@ function ProfileForm({
         </CardHeader>
         <CardContent>
           <FieldGroup>
-            <Field>
-              <FieldLabel htmlFor="profile-name">Profile name</FieldLabel>
+            <Field orientation="horizontal">
+              <FieldContent>
+                <FieldLabel htmlFor="profile-name">Profile name</FieldLabel>
+              </FieldContent>
               <Input
                 id="profile-name"
                 name="name"
@@ -370,66 +421,80 @@ function ProfileForm({
                 placeholder="Enterprise Gateway"
               />
             </Field>
-            <FieldGroup className="grid sm:grid-cols-2">
-              <Field>
+            <Field orientation="horizontal">
+              <FieldContent>
                 <FieldLabel htmlFor="profile-id">Profile ID</FieldLabel>
-                <Input
-                  id="profile-id"
-                  name="id"
-                  required
-                  placeholder="enterprise"
-                />
-              </Field>
-              <Field>
+              </FieldContent>
+              <Input
+                id="profile-id"
+                name="id"
+                required
+                placeholder="enterprise"
+              />
+            </Field>
+            <Field orientation="horizontal">
+              <FieldContent>
                 <FieldLabel htmlFor="gateway-id">Gateway ID</FieldLabel>
-                <Input
-                  id="gateway-id"
-                  name="gateway_id"
-                  required
-                  placeholder="corp-openai"
-                />
-              </Field>
-            </FieldGroup>
-            <Field>
-              <FieldLabel htmlFor="base-url">
-                OpenAI-compatible base URL
-              </FieldLabel>
+              </FieldContent>
+              <Input
+                id="gateway-id"
+                name="gateway_id"
+                required
+                placeholder="corp-openai"
+              />
+            </Field>
+            <Field orientation="horizontal">
+              <FieldContent>
+                <FieldLabel htmlFor="base-url">
+                  OpenAI-compatible base URL
+                </FieldLabel>
+                <FieldDescription id="base-url-description">
+                  User info, query strings, and fragments are rejected.
+                </FieldDescription>
+              </FieldContent>
               <Input
                 id="base-url"
+                aria-describedby="base-url-description"
                 name="base_url"
                 type="url"
                 required
                 placeholder="https://gateway.example/v1"
               />
-              <FieldDescription>
-                User info, query strings, and fragments are rejected.
-              </FieldDescription>
             </Field>
-            <Field>
-              <FieldLabel htmlFor="headers">
-                Optional non-secret headers
-              </FieldLabel>
+            <Field orientation="horizontal">
+              <FieldContent>
+                <FieldLabel htmlFor="headers">
+                  Optional non-secret headers
+                </FieldLabel>
+                <FieldDescription id="headers-description">
+                  One NAME=VALUE pair per line. Secret-bearing names are
+                  rejected.
+                </FieldDescription>
+              </FieldContent>
               <Textarea
                 id="headers"
+                aria-describedby="headers-description"
                 name="headers"
                 placeholder="X-Tenant=knowledge"
               />
-              <FieldDescription>
-                One NAME=VALUE pair per line. Secret-bearing names are rejected.
-              </FieldDescription>
             </Field>
-            <Field>
-              <FieldLabel htmlFor="credential">Credential</FieldLabel>
+            <Field orientation="horizontal">
+              <FieldContent>
+                <FieldLabel htmlFor="credential">Credential</FieldLabel>
+                <FieldDescription id="credential-description">
+                  Stored in the OS credential store or a local 0600 fallback.
+                  macOS uses the default Keychain and may show an OS access
+                  prompt.
+                </FieldDescription>
+              </FieldContent>
               <Input
                 id="credential"
+                aria-describedby="credential-description"
                 name="credential"
                 type="password"
                 required
                 autoComplete="off"
               />
-              <FieldDescription>
-                Stored in the OS credential store or a local 0600 fallback.
-              </FieldDescription>
             </Field>
           </FieldGroup>
         </CardContent>
@@ -488,10 +553,12 @@ function WorkspaceModels({
         </CardHeader>
         <CardContent>
           <FieldGroup>
-            <Field>
-              <FieldLabel htmlFor="workspace-profile">
-                Gateway Profile
-              </FieldLabel>
+            <Field orientation="horizontal">
+              <FieldContent>
+                <FieldLabel htmlFor="workspace-profile">
+                  Gateway Profile
+                </FieldLabel>
+              </FieldContent>
               <NativeSelect
                 key={selected}
                 id="workspace-profile"
@@ -509,42 +576,58 @@ function WorkspaceModels({
                 ))}
               </NativeSelect>
             </Field>
-            <Field>
-              <FieldLabel htmlFor="default-model">Default model</FieldLabel>
+            <Field orientation="horizontal">
+              <FieldContent>
+                <FieldLabel htmlFor="default-model">Default model</FieldLabel>
+                <FieldDescription id="default-model-description">
+                  Used for every Agent Role without an override.
+                </FieldDescription>
+              </FieldContent>
               <Input
                 id="default-model"
+                aria-describedby="default-model-description"
                 name="default_model"
                 required
                 defaultValue={state.models.default_model || ""}
                 placeholder="enterprise-model"
               />
             </Field>
-            <FieldGroup className="grid sm:grid-cols-2">
-              <Field>
+            <Field orientation="horizontal">
+              <FieldContent>
                 <FieldLabel htmlFor="concurrency">Concurrency</FieldLabel>
-                <Input
-                  id="concurrency"
-                  name="concurrency"
-                  type="number"
-                  min="1"
-                  required
-                  defaultValue={state.models.concurrency}
-                />
-              </Field>
-              <Field>
+                <FieldDescription id="concurrency-description">
+                  Maximum parallel model requests for this Workspace.
+                </FieldDescription>
+              </FieldContent>
+              <Input
+                id="concurrency"
+                aria-describedby="concurrency-description"
+                name="concurrency"
+                type="number"
+                min="1"
+                required
+                defaultValue={state.models.concurrency}
+              />
+            </Field>
+            <Field orientation="horizontal">
+              <FieldContent>
                 <FieldLabel htmlFor="total-tokens">
                   Total token budget
                 </FieldLabel>
-                <Input
-                  id="total-tokens"
-                  name="total_tokens"
-                  type="number"
-                  min="1"
-                  required
-                  defaultValue={state.models.budgets.total_tokens || 100000}
-                />
-              </Field>
-            </FieldGroup>
+                <FieldDescription id="total-tokens-description">
+                  Positive upper bound recorded in each resolved Run snapshot.
+                </FieldDescription>
+              </FieldContent>
+              <Input
+                id="total-tokens"
+                aria-describedby="total-tokens-description"
+                name="total_tokens"
+                type="number"
+                min="1"
+                required
+                defaultValue={state.models.budgets.total_tokens || 100000}
+              />
+            </Field>
             <Collapsible>
               <CollapsibleTrigger
                 render={
@@ -566,10 +649,12 @@ function WorkspaceModels({
                   </FieldDescription>
                   <FieldGroup>
                     {roles.map((role) => (
-                      <Field key={role} orientation="responsive">
-                        <FieldLabel htmlFor={`role-${role}`}>
-                          {role[0].toUpperCase() + role.slice(1)}
-                        </FieldLabel>
+                      <Field key={role} orientation="horizontal">
+                        <FieldContent>
+                          <FieldLabel htmlFor={`role-${role}`}>
+                            {role[0].toUpperCase() + role.slice(1)}
+                          </FieldLabel>
+                        </FieldContent>
                         <Input
                           id={`role-${role}`}
                           name={role}

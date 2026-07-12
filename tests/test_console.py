@@ -337,6 +337,37 @@ def test_console_and_cli_settings_updates_return_the_same_domain_error(
     assert "must-not-appear" not in response.text
 
 
+def test_console_json_mutations_distinguish_media_type_size_and_syntax(
+    tmp_path: Path, assets: Path
+) -> None:
+    WorkspaceApplication(tmp_path).initialize("catalog")
+    with running_console(tmp_path, assets, tmp_path / "machine") as (server, _):
+        base = f"http://127.0.0.1:{server.server_port}"
+        headers = {**authorization(server), "Origin": base}
+        unsupported = httpx.post(
+            base + "/api/v1/gateway-profiles",
+            headers={**headers, "Content-Type": "text/plain"},
+            content=b"{}",
+        )
+        invalid = httpx.post(
+            base + "/api/v1/gateway-profiles",
+            headers={**headers, "Content-Type": "application/json"},
+            content=b"{",
+        )
+        oversized = httpx.post(
+            base + "/api/v1/gateway-profiles",
+            headers={**headers, "Content-Type": "application/json"},
+            content=b" " * 1_048_577,
+        )
+
+    assert unsupported.status_code == 415
+    assert oversized.status_code == 413
+    assert invalid.status_code == 400
+    assert unsupported.json()["errors"] == ["Content-Type must be application/json"]
+    assert oversized.json()["errors"] == ["JSON request body is too large"]
+    assert invalid.json()["errors"] == ["Invalid JSON request body"]
+
+
 def test_console_configures_reuses_and_selects_secret_free_gateway_profile(
     tmp_path: Path, assets: Path
 ) -> None:

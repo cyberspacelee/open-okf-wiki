@@ -47,6 +47,15 @@ test.beforeAll(async () => {
         send({ data: [{ id: "model-a" }, { id: "model-b" }] })
         return
       }
+      if (request.method === "GET") {
+        const content = JSON.stringify({ error: { message: "not found" } })
+        response.writeHead(404, {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(content),
+        })
+        response.end(content)
+        return
+      }
       setTimeout(
         () =>
           send({
@@ -191,6 +200,15 @@ test("configures, tests, and selects a Gateway Profile through Connections", asy
   await page.getByRole("button", { name: "Test" }).click()
   expect((await testResponse).status()).toBe(200)
   await expect(page.getByText("Verified")).toBeVisible()
+
+  await page.getByLabel("Profile name").fill("Enterprise Gateway")
+  await page.getByLabel("Profile ID").fill("enterprise")
+  await page.getByLabel("Gateway ID").fill("corp-openai")
+  await page.getByLabel("OpenAI-compatible base URL").fill(gatewayUrl)
+  await page.getByLabel("Optional non-secret headers").fill("X-Tenant=docs")
+  await page.getByLabel("Credential").fill("invalid-browser-secret")
+  await page.getByRole("button", { name: "Save profile" }).click()
+  await expect(page.getByText("Not tested")).toBeVisible()
 })
 
 test("loads the built Console through the real Python launcher", async ({

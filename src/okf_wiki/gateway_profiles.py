@@ -1,37 +1,29 @@
-import concurrent.futures
 import builtins
 import json
 import os
 import re
-import shutil
-import socket
 import sqlite3
-import subprocess
-import sys
-import tempfile
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal, Protocol
-from urllib.error import HTTPError, URLError
+from typing import Literal
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from .gateway_common import PROFILE_ID, GatewayError, atomic_write
+from .gateway_probe import GatewayProbe
+from .gateway_secrets import (
+    LocalFileSecretBackend,
+    SecretStore,
+    system_secret_backend,
+)
 from .workspace import ModelSettings, WorkspaceApplication, WorkspaceError
 
 
 PROFILE_SCHEMA_VERSION = 1
 AGENT_ROLES = ("planner", "worker", "verifier", "renderer", "query")
-PROFILE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 HEADER_NAME = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
-
-
-class GatewayError(ValueError):
-    def __init__(self, message: str, *, category: str = "configuration") -> None:
-        super().__init__(message)
-        self.category = category
 
 
 class StrictModel(BaseModel):
@@ -111,199 +103,6 @@ class GatewayProfile(StrictModel):
         return value
 
 
-class SecretBackend(Protocol):
-    name: str
-
-    def available(self) -> bool: ...
-
-    def put(self, profile_id: str, secret: str) -> None: ...
-
-    def get(self, profile_id: str) -> str: ...
-
-    def delete(self, profile_id: str) -> None: ...
-
-
-class CommandSecretBackend:
-    def _run(self, command: list[str], *, secret: str | None = None) -> subprocess.CompletedProcess:
-        try:
-            return subprocess.run(
-                command,
-                input=secret,
-                text=True,
-                capture_output=True,
-                check=False,
-                timeout=10,
-            )
-        except (OSError, subprocess.TimeoutExpired) as error:
-            raise GatewayError("operating-system credential store unavailable") from error
-
-
-class LinuxSecretToolBackend(CommandSecretBackend):
-    name = "linux-secret-tool"
-    executable = "secret-tool"
-
-    def available(self) -> bool:
-        return shutil.which(self.executable) is not None
-
-    def put(self, profile_id: str, secret: str) -> None:
-        result = self._run(
-            [self.executable, "store", "--label=OKF Wiki gateway", "service", "okf-wiki", "profile", profile_id],
-            secret=secret,
-        )
-        if result.returncode:
-            raise GatewayError("operating-system credential store unavailable")
-
-    def get(self, profile_id: str) -> str:
-        result = self._run(
-            [self.executable, "lookup", "service", "okf-wiki", "profile", profile_id]
-        )
-        value = result.stdout.rstrip("\n")
-        if result.returncode or not value:
-            raise GatewayError("gateway credential unavailable")
-        return value
-
-    def delete(self, profile_id: str) -> None:
-        self._run([self.executable, "clear", "service", "okf-wiki", "profile", profile_id])
-
-
-class MacOSSecurityBackend(CommandSecretBackend):
-    name = "macos-keychain"
-    executable = "security"
-    service = "okf-wiki-gateway"
-
-    def available(self) -> bool:
-        return shutil.which(self.executable) is not None
-
-    def put(self, profile_id: str, secret: str) -> None:
-        result = self._run(
-            [
-                self.executable,
-                "add-generic-password",
-                "-U",
-                "-a",
-                profile_id,
-                "-s",
-                self.service,
-                "-w",
-            ],
-            secret=secret,
-        )
-        if result.returncode:
-            raise GatewayError("operating-system credential store unavailable")
-
-    def get(self, profile_id: str) -> str:
-        result = self._run(
-            [
-                self.executable,
-                "find-generic-password",
-                "-a",
-                profile_id,
-                "-s",
-                self.service,
-                "-w",
-            ]
-        )
-        value = result.stdout.rstrip("\n")
-        if result.returncode or not value:
-            raise GatewayError("gateway credential unavailable")
-        return value
-
-    def delete(self, profile_id: str) -> None:
-        self._run(
-            [
-                self.executable,
-                "delete-generic-password",
-                "-a",
-                profile_id,
-                "-s",
-                self.service,
-            ]
-        )
-
-
-class LocalFileSecretBackend:
-    name = "local-file-0600"
-
-    def __init__(self, root: Path) -> None:
-        self.root = root.resolve()
-
-    def available(self) -> bool:
-        return True
-
-    def _path(self, profile_id: str) -> Path:
-        if PROFILE_ID.fullmatch(profile_id) is None:
-            raise GatewayError("invalid Gateway Profile ID")
-        return self.root / f"{profile_id}.secret"
-
-    def put(self, profile_id: str, secret: str) -> None:
-        path = self._path(profile_id)
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.parent.chmod(0o700)
-            _atomic_write(path, secret, 0o600)
-        except OSError as error:
-            raise GatewayError("cannot write the restricted local credential store") from error
-
-    def get(self, profile_id: str) -> str:
-        path = self._path(profile_id)
-        try:
-            if path.parent.stat().st_mode & 0o077:
-                raise GatewayError("local credential directory permissions are too broad")
-            mode = path.stat().st_mode
-            if mode & (stat_bits := 0o077):
-                raise GatewayError(
-                    f"local credential permissions are too broad ({oct(mode & stat_bits)})"
-                )
-            value = path.read_text(encoding="utf-8")
-        except OSError as error:
-            raise GatewayError("gateway credential unavailable") from error
-        if not value:
-            raise GatewayError("gateway credential unavailable")
-        return value
-
-    def delete(self, profile_id: str) -> None:
-        try:
-            self._path(profile_id).unlink(missing_ok=True)
-        except OSError as error:
-            raise GatewayError("cannot remove the local credential") from error
-
-
-class SecretStore:
-    def __init__(self, *, primary: SecretBackend | None, fallback: SecretBackend) -> None:
-        self.primary = primary
-        self.fallback = fallback
-
-    def put(self, profile_id: str, secret: str) -> str:
-        if not secret:
-            raise GatewayError("credential must not be empty")
-        if self.primary is not None and self.primary.available():
-            try:
-                self.primary.put(profile_id, secret)
-                return self.primary.name
-            except GatewayError:
-                pass
-        self.fallback.put(profile_id, secret)
-        return self.fallback.name
-
-    def get(self, profile_id: str, backend: str) -> str:
-        for candidate in (self.primary, self.fallback):
-            if candidate is not None and candidate.name == backend and candidate.available():
-                return candidate.get(profile_id)
-        raise GatewayError("gateway credential unavailable")
-
-    def restore(self, profile_id: str, secret: str, backend: str) -> None:
-        for candidate in (self.primary, self.fallback):
-            if candidate is not None and candidate.name == backend and candidate.available():
-                candidate.put(profile_id, secret)
-                return
-        raise GatewayError("cannot restore the previous gateway credential")
-
-    def delete(self, profile_id: str, backend: str | None) -> None:
-        for candidate in (self.primary, self.fallback):
-            if candidate is not None and candidate.name == backend and candidate.available():
-                candidate.delete(profile_id)
-
-
 def _default_config_root() -> Path:
     explicit = os.environ.get("OKF_WIKI_CONFIG_HOME")
     if explicit:
@@ -311,34 +110,6 @@ def _default_config_root() -> Path:
     xdg = os.environ.get("XDG_CONFIG_HOME")
     base = Path(xdg).expanduser() if xdg else Path.home() / ".config"
     return (base / "okf-wiki").resolve()
-
-
-def _system_backend() -> SecretBackend | None:
-    if sys.platform == "darwin":
-        return MacOSSecurityBackend()
-    if sys.platform.startswith("linux"):
-        return LinuxSecretToolBackend()
-    return None
-
-
-def _atomic_write(path: Path, content: str, mode: int) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary = Path(name)
-    try:
-        os.fchmod(descriptor, mode)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 class GatewayProfileRegistry:
@@ -352,7 +123,7 @@ class GatewayProfileRegistry:
         self.path = self.root / "gateway-profiles.json"
         self.lock_path = self.root / "gateway-profiles-lock.db"
         self.secret_store = secret_store or SecretStore(
-            primary=_system_backend(),
+            primary=system_secret_backend(),
             fallback=LocalFileSecretBackend(self.root / "credentials"),
         )
 
@@ -387,15 +158,12 @@ class GatewayProfileRegistry:
             previous_secret = None
             if credential is not None:
                 if previous_backend is not None:
-                    try:
-                        previous_secret = self.secret_store.get(value.id, previous_backend)
-                    except GatewayError:
-                        pass
+                    previous_secret = self.secret_store.get(value.id, previous_backend)
                 backend = self.secret_store.put(value.id, credential)
             connection_changed = current is None or any(
                 getattr(current, field) != getattr(value, field)
                 for field in ("gateway_id", "base_url", "headers")
-            )
+            ) or credential is not None
             profiles[value.id] = GatewayProfile(
                 **value.model_dump(),
                 credential_backend=backend,
@@ -445,8 +213,16 @@ class GatewayProfileRegistry:
     def test(self, profile_id: str, *, model: str | None = None, timeout_seconds: float = 10) -> dict:
         if timeout_seconds <= 0:
             raise GatewayError("timeout must be positive")
-        profile = self.get(profile_id)
-        secret = self.credential(profile_id)
+        with self._locked():
+            profile = self._load().get(profile_id)
+            if profile is None:
+                raise GatewayError("Gateway Profile not found", category="not_found")
+            if profile.credential_backend is None:
+                raise GatewayError(
+                    "Gateway Profile has no credential",
+                    category="authentication",
+                )
+            secret = self.secret_store.get(profile_id, profile.credential_backend)
         client = GatewayProbe(profile, secret, timeout_seconds)
         result = client.run(model)
         with self._locked():
@@ -505,7 +281,7 @@ class GatewayProfileRegistry:
 
     def _write(self, profiles: Mapping[str, GatewayProfile]) -> None:
         try:
-            _atomic_write(
+            atomic_write(
                 self.path,
                 json.dumps(
                     {
@@ -538,206 +314,6 @@ class GatewayProfileRegistry:
             if connection is not None:
                 connection.rollback()
                 connection.close()
-
-
-class GatewayProbe:
-    def __init__(self, profile: GatewayProfile, secret: str, timeout_seconds: float) -> None:
-        self.profile = profile
-        self.secret = secret
-        self.timeout_seconds = timeout_seconds
-
-    def run(self, model: str | None) -> dict:
-        models_payload = self._request("GET", "models")
-        raw_models = models_payload.get("data")
-        if not isinstance(raw_models, list):
-            raise GatewayError("Gateway model discovery returned an invalid response", category="capability")
-        models = [item["id"] for item in raw_models if isinstance(item, dict) and isinstance(item.get("id"), str)]
-        if not models:
-            raise GatewayError("Gateway model discovery returned no models", category="capability")
-        selected = model or models[0]
-        if selected not in models:
-            raise GatewayError("Selected model is not available from the Gateway", category="capability")
-        try:
-            self._request(
-                "GET",
-                "models",
-                credential="okf-wiki-deliberately-invalid-capability-probe",
-            )
-        except GatewayError as error:
-            if error.category != "authentication":
-                raise GatewayError(
-                    "Gateway does not map invalid authentication safely",
-                    category="capability",
-                ) from None
-        else:
-            raise GatewayError(
-                "Gateway accepted an invalid authentication credential",
-                category="capability",
-            )
-
-        schema_payload = {
-            "model": selected,
-            "messages": [{"role": "user", "content": "Return ok=true."}],
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "okf_gateway_probe",
-                    "strict": True,
-                    "schema": {
-                        "type": "object",
-                        "properties": {"ok": {"type": "boolean"}},
-                        "required": ["ok"],
-                        "additionalProperties": False,
-                    },
-                },
-            },
-        }
-        structured = self._request("POST", "chat/completions", schema_payload)
-        self._validate_structured(structured)
-        self._validate_usage(structured)
-
-        tool_payload = {
-            "model": selected,
-            "messages": [{"role": "user", "content": "Call the probe tool."}],
-            "tools": [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "okf_probe",
-                        "description": "Verify function tool calling.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {},
-                            "required": [],
-                            "additionalProperties": False,
-                        },
-                    },
-                }
-            ],
-            "tool_choice": "required",
-        }
-        tool_result = self._request("POST", "chat/completions", tool_payload)
-        self._validate_tools(tool_result)
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            futures = [
-                executor.submit(self._request, "POST", "chat/completions", schema_payload)
-                for _ in range(2)
-            ]
-            for future in futures:
-                self._validate_structured(future.result())
-
-        return {
-            "ok": True,
-            "model": selected,
-            "models": models,
-            "error_mapping_basis": "live_authentication_and_client_contract",
-            "capabilities": {
-                "authentication": True,
-                "concurrency": True,
-                "error_mapping": _error_mapping_verified(),
-                "model_discovery": True,
-                "structured_output": True,
-                "tool_calling": True,
-                "usage_reporting": True,
-            },
-        }
-
-    def _request(
-        self,
-        method: str,
-        endpoint: str,
-        payload: dict | None = None,
-        *,
-        credential: str | None = None,
-    ) -> dict:
-        body = json.dumps(payload).encode() if payload is not None else None
-        request = Request(
-            f"{self.profile.base_url}/{endpoint}",
-            data=body,
-            method=method,
-            headers={
-                "Accept": "application/json",
-                "Authorization": f"Bearer {credential or self.secret}",
-                **self.profile.headers,
-                **({"Content-Type": "application/json"} if body is not None else {}),
-            },
-        )
-        try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
-                raw = response.read(1_048_577)
-        except HTTPError as error:
-            status = error.code
-            error.close()
-            raise _status_error(status) from None
-        except (TimeoutError, socket.timeout):
-            raise GatewayError("Gateway request timed out", category="timeout") from None
-        except URLError as error:
-            if isinstance(error.reason, (TimeoutError, socket.timeout)):
-                raise GatewayError("Gateway request timed out", category="timeout") from None
-            raise GatewayError("Gateway connection failed", category="connection") from None
-        except OSError:
-            raise GatewayError("Gateway connection failed", category="connection") from None
-        if len(raw) > 1_048_576:
-            raise GatewayError("Gateway response exceeded the size limit", category="capability")
-        try:
-            value = json.loads(raw)
-        except json.JSONDecodeError:
-            raise GatewayError("Gateway returned invalid JSON", category="capability") from None
-        if not isinstance(value, dict):
-            raise GatewayError("Gateway returned an invalid response", category="capability")
-        return value
-
-    @staticmethod
-    def _message(payload: dict) -> dict:
-        choices = payload.get("choices")
-        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-            raise GatewayError("Gateway chat response is missing a choice", category="capability")
-        message = choices[0].get("message")
-        if not isinstance(message, dict):
-            raise GatewayError("Gateway chat response is missing a message", category="capability")
-        return message
-
-    def _validate_structured(self, payload: dict) -> None:
-        content = self._message(payload).get("content")
-        try:
-            value = json.loads(content) if isinstance(content, str) else None
-        except json.JSONDecodeError:
-            value = None
-        if value != {"ok": True}:
-            raise GatewayError("Gateway does not satisfy structured output", category="capability")
-
-    def _validate_tools(self, payload: dict) -> None:
-        calls = self._message(payload).get("tool_calls")
-        if not isinstance(calls, list) or not calls:
-            raise GatewayError("Gateway does not satisfy function tool calling", category="capability")
-        function = calls[0].get("function") if isinstance(calls[0], dict) else None
-        if not isinstance(function, dict) or function.get("name") != "okf_probe":
-            raise GatewayError("Gateway returned an invalid function tool call", category="capability")
-
-    @staticmethod
-    def _validate_usage(payload: dict) -> None:
-        usage = payload.get("usage")
-        names = ("prompt_tokens", "completion_tokens", "total_tokens")
-        if not isinstance(usage, dict) or any(not isinstance(usage.get(name), int) for name in names):
-            raise GatewayError("Gateway does not report token usage", category="capability")
-
-
-def _status_error(status: int) -> GatewayError:
-    if status in {401, 403}:
-        return GatewayError("Gateway authentication was rejected", category="authentication")
-    if status == 429:
-        return GatewayError("Gateway rate limit was reached", category="rate_limit")
-    if 500 <= status <= 599:
-        return GatewayError("Gateway service failed", category="gateway")
-    return GatewayError(f"Gateway request failed with HTTP {status}", category="request")
-
-
-def _error_mapping_verified() -> bool:
-    return all(
-        _status_error(status).category == category
-        for status, category in ((401, "authentication"), (429, "rate_limit"), (503, "gateway"))
-    )
 
 
 class GatewayApplication:
@@ -801,7 +377,12 @@ class GatewayApplication:
             raise GatewayError(str(error)) from error
 
     def run_snapshot(self, root: Path | str, *, allow_missing: bool = False) -> dict:
-        models = WorkspaceApplication(root).open().models
+        return self.resolve_models(
+            WorkspaceApplication(root).open().models,
+            allow_missing=allow_missing,
+        )
+
+    def resolve_models(self, models: ModelSettings, *, allow_missing: bool = False) -> dict:
         if models.gateway_profile is None or models.default_model is None:
             raise GatewayError("Workspace has no selected Gateway Profile or default model")
         unknown_roles = sorted(set(models.role_overrides) - set(AGENT_ROLES))

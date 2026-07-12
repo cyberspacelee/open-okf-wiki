@@ -29,7 +29,8 @@ from .coverage import (
     obligation_rows,
     refresh_run_coverage,
 )
-from .gateway_profiles import GatewayApplication, GatewayError
+from .gateway_common import GatewayError
+from .gateway_profiles import GatewayApplication
 from .fault_injection import crash_if_requested
 from .java_analysis import (
     DEFAULT_JAVA_EXCLUDED_PATHS,
@@ -522,8 +523,8 @@ def load_config(path_text: str) -> tuple[str, list[dict], Path, dict, dict | Non
         workspace_configuration = snapshot.model_dump(mode="json")
         if snapshot.models.gateway_profile is not None:
             try:
-                workspace_configuration["resolved_models"] = GatewayApplication().run_snapshot(
-                    path.parent,
+                workspace_configuration["resolved_models"] = GatewayApplication().resolve_models(
+                    snapshot.models,
                     allow_missing=True,
                 )
             except GatewayError as error:

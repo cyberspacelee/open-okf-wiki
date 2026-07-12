@@ -210,6 +210,49 @@ test("requires a launcher-provided session", async ({ page }) => {
   await expect(page.getByText("Secure session required")).toBeVisible()
 })
 
+test("shows a retryable Connections error instead of an endless skeleton", async ({
+  page,
+}) => {
+  let attempts = 0
+  await mockOverview(page, populatedOverview)
+  await page.route("**/api/v1/workspace", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        models: {
+          gateway_profile: null,
+          default_model: null,
+          role_overrides: {},
+          concurrency: 4,
+          budgets: {},
+        },
+      }),
+    })
+  })
+  await page.route("**/api/v1/gateway-profiles", async (route) => {
+    attempts += 1
+    await route.fulfill({
+      status: attempts <= 2 ? 500 : 200,
+      contentType: "application/json",
+      body: JSON.stringify(
+        attempts <= 2
+          ? { ok: false, errors: ["Profile registry unavailable"] }
+          : { ok: true, profiles: [] }
+      ),
+    })
+  })
+
+  await page.goto("/?view=connections#token=connections-retry")
+  await expect(page.getByRole("alert")).toContainText(
+    "Profile registry unavailable"
+  )
+  await page.getByRole("button", { name: "Retry" }).click()
+  await expect(page.getByText("No Gateway Profiles")).toBeVisible()
+  expect(attempts).toBe(3)
+})
+
 async function mockOverview(
   page: Page,
   body: unknown,
