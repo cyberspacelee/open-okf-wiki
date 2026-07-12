@@ -1,0 +1,3 @@
+# Separate knowledge queries from source investigations
+
+The Workspace Console answers ordinary Knowledge Queries only from the fixed Accepted Knowledge Model, returning explicit Claim and Evidence References or an insufficient-support result. A user may separately request a Source Investigation against the fixed Source Snapshot; its source-cited answer is visibly provisional, cannot close obligations or affect review, and enters authoritative knowledge only through a later normal Production Run, verification, and review. This preserves a trustworthy default without making the Console unable to investigate gaps in the current Bundle.

@@ -24,6 +24,8 @@ Domain vocabulary is defined in [CONTEXT.md](../../CONTEXT.md). Architectural ra
 - Support initial generation and revision-based incremental refresh.
 - Evaluate Agent Roles, tool trajectories, and end-to-end knowledge quality before release.
 - Operate entirely through static, read-only source analysis.
+- Provide a local Workspace Console for setup, Run observation, review, Bundle reading, Concept provenance, and grounded questions.
+- Separate accepted-knowledge questions from explicitly provisional Source Investigations.
 
 ## Non-goals for the MVP
 
@@ -33,16 +35,16 @@ Domain vocabulary is defined in [CONTEXT.md](../../CONTEXT.md). Architectural ra
 - Guarded Auto-publish.
 - Enabled Web Enrichment.
 - Pi, Codex, Rust, MCP, vector database, graph database, Temporal, PostgreSQL, Redis, Kafka, or NATS integrations.
-- A multi-tenant management platform or Web UI.
+- A remote multi-tenant management platform, collaborative Wiki editor, or direct editing of derived Bundle pages.
 - Complete language-specific semantic analysis beyond Java and Markdown.
 - A universal multi-language Tree-sitter platform.
 
 ## Core architecture
 
 ```text
-CLI / CI / Webhook
-        |
-        v
+CLI / CI / Webhook / Local Workspace Console
+                    |
+                    v
 +-------------------------------+
 | Run Worker                    |
 |                               |
@@ -60,6 +62,7 @@ CLI / CI / Webhook
 |  - Worker Agents              |
 |  - Verifier Agents            |
 |  - Renderer Agent             |
+|  - Query Agent                |
 +-------------+-----------------+
               |
               v
@@ -585,6 +588,9 @@ PyYAML safe_load / safe_dump
 git CLI + ripgrep
 pytest + Ruff
 ty 0.0.58 (exact-pinned, advisory only)
+Bun
+Vite + React
+shadcn Base UI
 ```
 
 `pyproject.toml` constrains PydanticAI to the 2.8 series and the committed `uv.lock` fixes the exact resolved version. During development, the rolling official PydanticAI documentation and `llms.txt` may be used for discovery, but claims about framework behavior must be checked against the official release tag matching the lockfile version, initially `v2.8.0`, using that tag's documentation, source, or tests. Enterprise gateway support for tool calling, structured output, retries, streaming, and concurrency is established by local contract tests rather than inferred from the phrase “OpenAI-compatible.” Development-time documentation lookup does not enable Web Enrichment for Production Runs.
@@ -624,7 +630,7 @@ reviews
 
 PostgreSQL and a queue are introduced only when a single Production Run must span processes or machines, workers must share a ledger, SQLite contention violates an SLO, or centralized HA and tenant isolation become required.
 
-## CLI surface
+## Human and automation surfaces
 
 ```bash
 okf-wiki build <project-config>
@@ -632,11 +638,12 @@ okf-wiki status <run-id>
 okf-wiki check <run-id-or-bundle>
 okf-wiki review <run-id> --approve
 okf-wiki review <run-id> --reject
+okf-wiki ui [workspace]
 ```
 
 `build` creates or refreshes a Production Run from the Source Set. The MVP stops successful runs at Review Required; approval performs final checks and publication.
 
-Review produces both a human-readable Markdown report and machine-readable status/check output. A Web UI is added only when measured use requires multi-user review queues, authentication and authorization, remote service workflows, richer Claim/Concept diffs, or when the Benchmark Corpus demonstrates that CLI review materially reduces review quality.
+Review produces a human-readable Markdown report, machine-readable status/check output, and a local Workspace Console view with Claim/Concept diffs, Evidence References, Verification Findings, and digest-checked approval or rejection. CLI and CI remain complete automation adapters. Remote multi-user review queues, authentication and authorization, and hosted service workflows remain deferred.
 
 ## MVP delivery boundary
 
@@ -651,6 +658,7 @@ The MVP delivers:
 - initial generation and revision-based refresh.
 - deterministic OKF rendering, review, checks, and atomic publication.
 - Benchmark Corpus, Mutation Cases, role/trajectory/end-to-end Agent Evaluation, and upgrade gates.
+- local Workspace Console with safe Source Checkout management, Run visualization, read-only Bundle rendering, Concept provenance, and grounded questions.
 
 The MVP deliberately skips every item listed under Non-goals until a benchmark, scale measurement, or real user workflow proves it necessary.
 
@@ -679,3 +687,9 @@ The MVP deliberately skips every item listed under Non-goals until a benchmark, 
 - [ADR-0014: Gate releases on a versioned benchmark](../adr/0014-gate-releases-on-a-versioned-benchmark.md)
 - [ADR-0015: Build one bundle from a versioned source set](../adr/0015-build-one-bundle-from-a-versioned-source-set.md)
 - [ADR-0016: Make agent evaluation a release gate](../adr/0016-make-agent-evaluation-a-release-gate.md)
+- [ADR-0017: Keep one producer project per workspace](../adr/0017-keep-one-producer-project-per-workspace.md)
+- [ADR-0018: Manage Git checkouts without owning credentials](../adr/0018-manage-git-checkouts-without-owning-credentials.md)
+- [ADR-0019: Separate shared workspace definition from local settings](../adr/0019-separate-shared-workspace-definition-from-local-settings.md)
+- [ADR-0020: Serve a local workspace console from the Python control plane](../adr/0020-serve-a-local-workspace-console-from-the-python-control-plane.md)
+- [ADR-0021: Use reusable local gateway profiles](../adr/0021-use-reusable-local-gateway-profiles.md)
+- [ADR-0022: Separate knowledge queries from source investigations](../adr/0022-separate-knowledge-queries-from-source-investigations.md)

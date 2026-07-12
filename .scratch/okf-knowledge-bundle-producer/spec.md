@@ -118,11 +118,19 @@ The MVP uses one isolated Run Worker per Production Run, a local SQLite ledger w
 93. As a CLI user, I want to start a build from a Producer Project configuration, so that the complete Source Set is analyzed consistently.
 94. As a CLI user, I want to inspect Production Run status, so that I can track progress and failures.
 95. As a CLI user, I want to check a run or Bundle without publishing it, so that validation can run in CI.
-96. As a CLI user, I want to approve or reject a run, so that Review Required can be resolved without a Web UI.
+96. As a CLI user, I want to approve or reject a run, so that Review Required can also be resolved through automation without opening the Workspace Console.
 97. As a CI administrator, I want failed checks to return machine-readable errors and non-zero status, so that pipelines can block invalid Bundles.
 98. As a CI administrator, I want no partial Bundle to replace the current published Bundle, so that failed runs cannot damage consumers.
 99. As a downstream OKF consumer, I want reserved files and frontmatter to conform to the Producer Profile, so that the Bundle can be parsed consistently.
 100. As a downstream OKF consumer, I want unknown domain Concepts represented without requiring a fixed global ontology, so that the format remains extensible.
+101. As a user, I want to initialize one Workspace for one product or project and configure its code, documentation, requirements, and contract repositories in a page, so that setup does not require hand-editing configuration.
+102. As a user, I want to clone, link, inspect, and safely pull Source Checkouts through the Workspace Console, so that local repository preparation is visible without risking my uncommitted work.
+103. As a user, I want to configure reusable LLM Gateway Profiles and select models from the Workspace Console, so that model connectivity is manageable without putting secrets in shared project files.
+104. As a reviewer, I want to watch recorded Run phases, tasks, Coverage Obligation transitions, Findings, and costs, so that I understand what the Producer did without seeing simulated model reasoning.
+105. As a reviewer, I want to replay how Evidence References and Claims formed or changed a Concept, so that Concept provenance is inspectable rather than hidden in generated prose.
+106. As a knowledge consumer, I want a safe rendered Markdown reader with source, diff, metadata, Claim, and citation views, so that the Knowledge Bundle is useful without becoming an editable second source of truth.
+107. As a knowledge consumer, I want to ask a question about the current Concept or complete accepted Knowledge Bundle and receive Claim- and Evidence-grounded answers, so that answers remain auditable.
+108. As a knowledge consumer, I want to explicitly investigate a fixed Source Snapshot when accepted knowledge is insufficient, so that I can explore a gap without presenting provisional findings as accepted Wiki knowledge.
 
 ## Implementation Decisions
 
@@ -179,7 +187,8 @@ The MVP uses one isolated Run Worker per Production Run, a local SQLite ledger w
 - The default Bundle taxonomy contains overview, architecture, modules, flows, Concepts, requirements, decisions, guides, references, and reports.
 - Web Enrichment and other External Knowledge Sources are represented in the domain model but disabled in the MVP. Future sources require explicit seeds, allowlists, budgets, digests, truncation records, and Authority Levels.
 - The CLI supports building a Producer Project, inspecting status, checking a run or Bundle, and approving or rejecting Review Required. Review emits a human-readable Markdown report plus machine-readable status/check output.
-- The MVP has no frontend. A Web review UI is reconsidered only for measured multi-user review, authentication and authorization, remote service workflows, richer Claim/Concept diffs, or evidence that CLI review reduces review quality.
+- The MVP includes a loopback-only Workspace Console for setup, Source Checkout management, Run observation, review, read-only Bundle navigation, Concept provenance, and grounded questions. It is a Vite and React client using shadcn Base UI and the same Python application interface as the CLI; it cannot directly mutate authoritative state or edit derived Markdown.
+- Ordinary Knowledge Queries use only the Accepted Knowledge Model. A separate Source Investigation may read a fixed Source Snapshot when the Bundle is insufficient, but its source-cited result is provisional and cannot affect obligations, review, publication, or authoritative knowledge without a later normal Production Run.
 - Publication always occurs from staging through an atomic replacement after all checks and required review pass.
 - Agent Evaluation is part of the MVP and covers role behavior, tool trajectories, end-to-end outcomes, Mutation Cases, repeated-run stability, and sampled production outcomes.
 - `pydantic-evals` is used for Agent Evaluation; deterministic state, storage, security, validation, and rendering behavior use ordinary tests.
@@ -239,7 +248,7 @@ The MVP uses one isolated Run Worker per Production Run, a local SQLite ledger w
 - Vector search, embeddings, graph databases, or GraphRAG-style community generation.
 - PostgreSQL, Redis, Kafka, NATS, Temporal, distributed worker leases, or multi-node Production Runs.
 - Guarded Auto-publish.
-- A Web review UI, multi-tenant administration, billing, or account management.
+- A hosted or multi-tenant administration platform, collaborative Wiki editor, billing, account management, or direct editing of derived Bundle pages.
 - Complete language-specific semantic support beyond Java and Markdown.
 - A universal Tree-sitter or compiler-analysis platform.
 - Automatic execution of generated code or active repository behavior verification.
@@ -249,7 +258,7 @@ The MVP uses one isolated Run Worker per Production Run, a local SQLite ledger w
 ## Further Notes
 
 - The canonical domain language is maintained in the project glossary.
-- Sixteen accepted ADRs record the architectural choices summarized by this spec.
+- Accepted ADRs record the architectural choices summarized by this spec.
 - The overall design document contains the complete state-machine, security, coverage, Agent workflow, incremental, publication, and evaluation rationale.
 - The local Google OKF reference implementation is the preferred source for OKF parsing, path, reserved-file, and index behavior.
 - OpenKnowledge is useful as workflow design prior art but is GPL-3.0 and is not a source for copied implementation in a non-GPL product.

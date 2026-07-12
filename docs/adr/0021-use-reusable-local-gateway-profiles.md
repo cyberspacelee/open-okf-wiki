@@ -1,0 +1,3 @@
+# Use reusable local gateway profiles
+
+LLM connectivity is configured through reusable machine-local Gateway Profiles rather than copied into every Workspace Definition. A Workspace selects a profile, default model, optional Agent Role overrides, concurrency, and budgets through the Workspace Console; each Production Run records the resolved non-secret configuration and exact model assignments. Secrets use the operating-system credential store when available with a permission-restricted local fallback, and never enter shared Workspace configuration, prompts, traces, Bundle output, or Run snapshots.

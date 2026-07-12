@@ -4,6 +4,22 @@ This context defines the language for turning source repositories into auditable
 
 ## Language
 
+**Workspace**:
+A user-initialized local working directory representing one product or project. It holds one Producer Project's configuration and runtime state for producing one Knowledge Bundle from one or more source repositories.
+_Avoid_: Producer Project, Source Set, repository
+
+**Workspace Definition**:
+The shareable declaration of a Workspace's Sources, Source Revision Policies, Producer Profile, and publication intent.
+_Avoid_: Local Workspace Settings, Production Run snapshot
+
+**Local Workspace Settings**:
+Machine-specific Workspace bindings and preferences that must not be required to reproduce the shared knowledge-production intent.
+_Avoid_: Workspace Definition, Producer Profile
+
+**Workspace Console**:
+The local browser interface for configuring a Workspace, managing Source Checkouts and model connections, observing Production Runs, reviewing accepted knowledge, reading the Knowledge Bundle, and asking grounded questions. It is an adapter over the Deterministic Control Plane, not an authoritative state owner or Wiki editor.
+_Avoid_: Remote administration platform, Markdown editor, source of truth
+
 **OKF Knowledge Bundle Producer**:
 A system that derives an Open Knowledge Format Knowledge Bundle from a versioned Source Set.
 _Avoid_: OKF Wiki Agent, Wiki generator
@@ -39,6 +55,14 @@ _Avoid_: Autonomous peer, recursive Subagent
 **Agent Role**:
 A defined semantic responsibility such as planning, extraction, verification, or rendering that is independent of any particular model assignment.
 _Avoid_: Model, persistent Agent identity
+
+**Gateway Profile**:
+A reusable machine-local connection to an LLM gateway, including its endpoint, secret reference, headers, and verified capabilities. A Workspace selects a Gateway Profile and model assignment without copying credentials into shared configuration or Production Run records.
+_Avoid_: Producer Profile, model, API key
+
+**Query Agent**:
+A short-lived read-only Agent that answers a Knowledge Query from accepted Claims and Evidence References without changing authoritative knowledge.
+_Avoid_: Worker Agent, Web Enrichment, chat memory
 
 **Production Run**:
 One attempt to derive and publish a Knowledge Bundle from a fixed Source Set under a declared Coverage Policy.
@@ -84,6 +108,14 @@ _Avoid_: Chunk, prompt context
 An immutable, read-only representation of the Source Universe at the revision used by a Production Run.
 _Avoid_: Working directory, build workspace
 
+**Source Checkout**:
+A mutable local Git working copy registered in a Workspace for clone, pull, and revision selection before a Production Run pins a Source Snapshot. A managed checkout lives under the Workspace; a linked checkout is an existing repository owned outside it.
+_Avoid_: Source Snapshot, Source Unit, repository configuration
+
+**Source Revision Policy**:
+A Workspace rule that either follows a named branch or pins an exact commit for a Source Checkout. A Production Run always resolves the policy to an exact Source Snapshot revision.
+_Avoid_: Source Snapshot, floating Production Run revision
+
 **Source Set**:
 The named collection of independently versioned Source Snapshots used by one Production Run for a Producer Project.
 _Avoid_: Monorepo, model context
@@ -119,6 +151,14 @@ _Avoid_: Source symbol, file, page
 **Accepted Knowledge Model**:
 The authoritative set of accepted Claims, Concepts, relations, and their Evidence References from which a Knowledge Bundle is rendered.
 _Avoid_: Markdown output, Agent memory
+
+**Knowledge Query**:
+A read-only question against a fixed Accepted Knowledge Model, scoped to one Concept or the complete Knowledge Bundle and answered with explicit Claim and Evidence References.
+_Avoid_: Analysis Task, Web Enrichment, knowledge mutation
+
+**Source Investigation**:
+An explicitly requested read-only investigation of a fixed Source Snapshot when accepted knowledge cannot answer a question. Its result is provisional, source-cited, and never part of the Accepted Knowledge Model unless it later passes the normal production and review process.
+_Avoid_: Knowledge Query, accepted Claim, Web Enrichment
 
 **Verification Finding**:
 A typed assessment of a proposed or accepted knowledge item from one explicit semantic verification perspective.
