@@ -1031,9 +1031,19 @@ class WorkspaceApplication:
         return self.run_status(run_id)
 
     def _launch_run_worker(self, run_id: str, fixture: str) -> None:
+        run_state = self.root / ".okf-wiki" / "runs" / run_id
+        run_state.mkdir(parents=True, exist_ok=True)
         subprocess.Popen(
-            [sys.executable, "-m", "okf_wiki.run_worker", str(self.root), run_id, fixture],
-            cwd=self.root,
+            [
+                sys.executable,
+                "-I",
+                "-m",
+                "okf_wiki.run_worker",
+                str(self.root),
+                run_id,
+                fixture,
+            ],
+            cwd=run_state,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

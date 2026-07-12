@@ -129,6 +129,40 @@ def test_failure_fixture_preserves_recorded_progress_and_actionable_error(
     assert status["actionable_errors"] == ["Deterministic failure fixture stopped during Exploring"]
 
 
+def test_run_worker_ignores_workspace_package_and_stdlib_import_shadows(
+    tmp_path: Path,
+) -> None:
+    repository, _revision = source_repository(tmp_path)
+    workspace = tmp_path / "workspace"
+    application = WorkspaceApplication(workspace)
+    application.initialize("catalog")
+    application.link_source({"id": "code", "role": "implementation", "checkout": str(repository)})
+    package_marker = workspace / "package-shadow-ran"
+    stdlib_marker = workspace / "stdlib-shadow-ran"
+    (workspace / "okf_wiki").mkdir()
+    (workspace / "okf_wiki" / "__init__.py").write_text("")
+    (workspace / "okf_wiki" / "run_worker.py").write_text(
+        f"from pathlib import Path\nPath({str(package_marker)!r}).write_text('unsafe')\n"
+    )
+    (workspace / "hashlib.py").write_text(
+        f"from pathlib import Path\nPath({str(stdlib_marker)!r}).write_text('unsafe')\n"
+    )
+    preflight = application.run_preflight()
+
+    started = application.start_run(
+        {
+            "configuration_digest": preflight["configuration_digest"],
+            "source_set_digest": preflight["source_set_digest"],
+            "fixture": "success",
+        }
+    )
+    status = wait_for_state(application, started["run_id"], "review_required")
+
+    assert status["state"] == "review_required"
+    assert not package_marker.exists()
+    assert not stdlib_marker.exists()
+
+
 def test_historical_legacy_runs_and_typed_entity_events_are_safe_to_reload(
     tmp_path: Path,
 ) -> None:

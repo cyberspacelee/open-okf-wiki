@@ -54,6 +54,9 @@ test("deep links, polls recorded phases, and reloads the same Run", async ({
   await expect(page.locator('[aria-current="step"]')).toHaveText(
     "Review Required"
   )
+  await expect(page.getByText("Analysis Task Planned")).toBeVisible()
+  await expect(page.getByText("Accepted · 1 obligations")).toBeVisible()
+  await expect(page.getByText("Unknown state")).toHaveCount(0)
   expect(detailRequests).toBeGreaterThanOrEqual(3)
 
   await page.reload()
@@ -192,7 +195,16 @@ function detail(state: string) {
       state: eventState,
       occurred_at: `2026-07-13T09:00:0${index}Z`,
     })),
-    entity_events: [],
+    entity_events: [
+      {
+        sequence: 20,
+        previous_state: null,
+        state: "planned",
+        occurred_at: "2026-07-13T09:00:06Z",
+        entity_type: "analysis_task",
+        entity_id: "task-fixture",
+      },
+    ],
     sources: [
       {
         id: "code",
@@ -201,6 +213,16 @@ function detail(state: string) {
         tree_digest: "c".repeat(64),
       },
     ],
-    tasks: { active: [], completed: [], failed: [] },
+    tasks: {
+      active: [],
+      completed: [
+        {
+          id: "task-fixture",
+          state: "accepted",
+          obligation_ids: ["obligation-1"],
+        },
+      ],
+      failed: [],
+    },
   }
 }

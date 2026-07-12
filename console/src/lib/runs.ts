@@ -10,6 +10,63 @@ export type RunState =
   | "failed"
   | "cancelled"
 
+export const RUN_PHASES: Array<{ state: RunState; label: string }> = [
+  { state: "preparing", label: "Preparing" },
+  { state: "exploring", label: "Exploring" },
+  { state: "verifying", label: "Verifying" },
+  { state: "rendering", label: "Rendering" },
+  { state: "checking", label: "Checking" },
+  { state: "review_required", label: "Review Required" },
+  { state: "publishing", label: "Publishing" },
+  { state: "published", label: "Published" },
+]
+
+export const RUN_STATE_META: Record<
+  RunState,
+  { label: string; phase: number }
+> = {
+  preparing: { label: "Preparing", phase: 0 },
+  exploring: { label: "Exploring", phase: 1 },
+  verifying: { label: "Verifying", phase: 2 },
+  rendering: { label: "Rendering", phase: 3 },
+  checking: { label: "Checking", phase: 4 },
+  review_required: { label: "Review Required", phase: 5 },
+  publishing: { label: "Publishing", phase: 6 },
+  published: { label: "Published", phase: 7 },
+  failed: { label: "Failed", phase: -1 },
+  cancelled: { label: "Cancelled", phase: -1 },
+}
+
+export const ACTIVE_RUN_STATES = new Set<RunState>([
+  "preparing",
+  "exploring",
+  "verifying",
+  "rendering",
+  "checking",
+  "publishing",
+])
+
+export function runStateLabel(state: string) {
+  return RUN_STATE_META[state as RunState]?.label ?? "Unknown state"
+}
+
+export function titleCase(value: string) {
+  return value
+    .replaceAll("_", " ")
+    .replaceAll("-", " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+export function formatDate(value: string) {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime())
+    ? value
+    : new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(date)
+}
+
 export type RunSummary = {
   run_id: string
   state: RunState
@@ -64,18 +121,7 @@ export type RunDetail = RunSummary & {
 export type RunsSnapshot = { ok: true; runs: RunSummary[] }
 export type RunsError = { kind: "invalid" | "server"; message: string }
 
-const states = new Set<RunState>([
-  "preparing",
-  "exploring",
-  "verifying",
-  "rendering",
-  "checking",
-  "review_required",
-  "publishing",
-  "published",
-  "failed",
-  "cancelled",
-])
+const states = new Set<RunState>(Object.keys(RUN_STATE_META) as RunState[])
 
 export async function fetchRuns(token: string, signal?: AbortSignal) {
   const payload = await request("/api/v1/runs", "GET", token, undefined, signal)

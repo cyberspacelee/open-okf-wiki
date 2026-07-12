@@ -35,33 +35,19 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import {
+  ACTIVE_RUN_STATES,
+  RUN_PHASES,
   fetchRun,
   fetchRuns,
+  formatDate,
+  runStateLabel,
+  titleCase,
   type RunDetail,
   type RunsError,
   type RunState,
   type RunSummary,
 } from "@/lib/runs"
 import { cn } from "@/lib/utils"
-
-const phases: Array<{ state: RunState; label: string }> = [
-  { state: "preparing", label: "Preparing" },
-  { state: "exploring", label: "Exploring" },
-  { state: "verifying", label: "Verifying" },
-  { state: "rendering", label: "Rendering" },
-  { state: "checking", label: "Checking" },
-  { state: "review_required", label: "Review Required" },
-  { state: "publishing", label: "Publishing" },
-  { state: "published", label: "Published" },
-]
-const activeStates = new Set<RunState>([
-  "preparing",
-  "exploring",
-  "verifying",
-  "rendering",
-  "checking",
-  "publishing",
-])
 
 export function RunsPage({
   token,
@@ -110,7 +96,7 @@ export function RunsPage({
         setRuns(snapshot.runs)
         setError(null)
         attempts += 1
-        if (activeStates.has(nextDetail.state)) {
+        if (ACTIVE_RUN_STATES.has(nextDetail.state)) {
           if (attempts < 40) timer = window.setTimeout(load, 500)
           else
             setError({
@@ -266,11 +252,11 @@ function RunHistory({
                   <TableCell className="whitespace-nowrap">
                     {formatDate(run.updated_at)}
                   </TableCell>
-                  <TableCell className="max-w-48 truncate font-mono text-xs">
-                    {run.source_set_digest}
+                  <TableCell className="max-w-48 truncate">
+                    <code className="text-xs">{run.source_set_digest}</code>
                   </TableCell>
                   <TableCell>
-                    {run.outcome ? stateLabel(run.outcome) : "In progress"}
+                    {run.outcome ? runStateLabel(run.outcome) : "In progress"}
                   </TableCell>
                 </TableRow>
               ))}
@@ -295,12 +281,14 @@ function RunDetails({
 
   const recordedPhase = [...detail.events]
     .reverse()
-    .find((event) => phases.some((phase) => phase.state === event.state))
+    .find((event) => RUN_PHASES.some((phase) => phase.state === event.state))
     ?.state as RunState | undefined
-  const currentPhase = phases.some((phase) => phase.state === detail.state)
+  const currentPhase = RUN_PHASES.some((phase) => phase.state === detail.state)
     ? detail.state
     : recordedPhase
-  const currentIndex = phases.findIndex((phase) => phase.state === currentPhase)
+  const currentIndex = RUN_PHASES.findIndex(
+    (phase) => phase.state === currentPhase
+  )
   const timeline = [...detail.events, ...detail.entity_events].sort(
     (left, right) => left.sequence - right.sequence
   )
@@ -310,8 +298,8 @@ function RunDetails({
       <div className="flex min-w-0 flex-col gap-6">
         <Card>
           <CardHeader>
-            <CardTitle className="font-mono text-base break-all">
-              {detail.run_id}
+            <CardTitle>
+              <code className="break-all">{detail.run_id}</code>
             </CardTitle>
             <CardDescription>
               {detail.execution.mode === "deterministic_fixture"
@@ -324,7 +312,7 @@ function RunDetails({
           </CardHeader>
           <CardContent>
             <ol className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              {phases.map((phase, index) => (
+              {RUN_PHASES.map((phase, index) => (
                 <li
                   key={phase.state}
                   aria-current={index === currentIndex ? "step" : undefined}
@@ -390,8 +378,8 @@ function RunDetails({
                     <p className="text-sm font-medium">
                       {"entity_type" in event &&
                       typeof event.entity_type === "string"
-                        ? `${titleCase(event.entity_type)} ${stateLabel(event.state)}`
-                        : stateLabel(event.state)}
+                        ? `${titleCase(event.entity_type)} ${titleCase(event.state)}`
+                        : runStateLabel(event.state)}
                     </p>
                     <p className="mt-1 text-xs text-muted-foreground">
                       {formatDate(event.occurred_at)} · event {event.sequence}
@@ -412,8 +400,8 @@ function RunDetails({
         <Card size="sm">
           <CardHeader>
             <CardTitle>Exact Source Set</CardTitle>
-            <CardDescription className="font-mono break-all">
-              {detail.source_set_digest}
+            <CardDescription>
+              <code className="break-all">{detail.source_set_digest}</code>
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
@@ -470,7 +458,7 @@ function TaskCard({
             <div key={task.id} className="rounded-lg border p-3">
               <p className="truncate font-mono text-xs">{task.id}</p>
               <p className="mt-1 text-xs text-muted-foreground">
-                {stateLabel(task.state)} · {task.obligation_ids.length}{" "}
+                {titleCase(task.state)} · {task.obligation_ids.length}{" "}
                 obligations
               </p>
             </div>
@@ -494,27 +482,7 @@ function StateBadge({ state }: { state: string }) {
       }
     >
       {state === "published" && <CircleCheckIcon data-icon="inline-start" />}
-      {stateLabel(state)}
+      {runStateLabel(state)}
     </Badge>
   )
-}
-
-function stateLabel(value: string) {
-  return value === "review_required" ? "Review Required" : titleCase(value)
-}
-
-function titleCase(value: string) {
-  return value
-    .replaceAll("_", " ")
-    .replace(/\b\w/g, (letter) => letter.toUpperCase())
-}
-
-function formatDate(value: string) {
-  const date = new Date(value)
-  return Number.isNaN(date.getTime())
-    ? value
-    : new Intl.DateTimeFormat(undefined, {
-        dateStyle: "medium",
-        timeStyle: "short",
-      }).format(date)
 }

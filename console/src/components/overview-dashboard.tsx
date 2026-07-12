@@ -62,6 +62,14 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import type { Overview } from "@/lib/overview"
+import {
+  RUN_PHASES,
+  RUN_STATE_META,
+  formatDate,
+  runStateLabel,
+  titleCase,
+  type RunState,
+} from "@/lib/runs"
 import { fetchSettings } from "@/lib/settings"
 import { cn } from "@/lib/utils"
 
@@ -75,30 +83,6 @@ const navItems = [
   { label: "Settings", icon: SettingsIcon },
   { label: "Connections", icon: LinkIcon, href: "/?view=connections" },
 ] as const
-
-const phases = [
-  "Preparing",
-  "Exploring",
-  "Verifying",
-  "Rendering",
-  "Checking",
-  "Review",
-  "Publishing",
-  "Published",
-] as const
-
-const runStates: Record<string, { label: string; phase: number }> = {
-  preparing: { label: "Preparing", phase: 0 },
-  exploring: { label: "Exploring", phase: 1 },
-  verifying: { label: "Verifying", phase: 2 },
-  rendering: { label: "Rendering", phase: 3 },
-  checking: { label: "Checking", phase: 4 },
-  review_required: { label: "Review required", phase: 5 },
-  publishing: { label: "Publishing", phase: 6 },
-  published: { label: "Published", phase: 7 },
-  failed: { label: "Failed", phase: -1 },
-  cancelled: { label: "Cancelled", phase: -1 },
-}
 
 const actionLabels: Record<string, string> = {
   configure_sources: "Configure sources",
@@ -396,7 +380,7 @@ function SummaryMetric({ label, value }: { label: string; value: string }) {
 }
 
 function PhaseRail({ state }: { state: string | null }) {
-  const current = state ? (runStates[state]?.phase ?? -1) : -1
+  const current = state ? (RUN_STATE_META[state as RunState]?.phase ?? -1) : -1
 
   return (
     <section aria-labelledby="production-flow-title">
@@ -414,9 +398,9 @@ function PhaseRail({ state }: { state: string | null }) {
         </Badge>
       </div>
       <ol className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-8">
-        {phases.map((phase, index) => (
+        {RUN_PHASES.map((phase, index) => (
           <li
-            key={phase}
+            key={phase.state}
             className="flex min-w-0 items-center gap-3 rounded-lg border p-3"
           >
             <span
@@ -433,7 +417,7 @@ function PhaseRail({ state }: { state: string | null }) {
                 index === current && "font-medium text-foreground"
               )}
             >
-              {phase}
+              {phase.label}
             </span>
           </li>
         ))}
@@ -620,25 +604,4 @@ function Detail({
       <dd className={cn("truncate", mono && "font-mono")}>{value}</dd>
     </dl>
   )
-}
-
-function runStateLabel(state: string) {
-  return runStates[state]?.label ?? "Unknown state"
-}
-
-function titleCase(value: string) {
-  return value
-    .replaceAll("_", " ")
-    .replaceAll("-", " ")
-    .replace(/\b\w/g, (letter) => letter.toUpperCase())
-}
-
-function formatDate(value: string) {
-  const date = new Date(value)
-  return Number.isNaN(date.getTime())
-    ? value
-    : new Intl.DateTimeFormat(undefined, {
-        dateStyle: "medium",
-        timeStyle: "short",
-      }).format(date)
 }
