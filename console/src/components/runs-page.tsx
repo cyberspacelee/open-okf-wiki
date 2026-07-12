@@ -297,9 +297,10 @@ function RunDetails({
     .reverse()
     .find((event) => phases.some((phase) => phase.state === event.state))
     ?.state as RunState | undefined
-  const currentIndex = phases.findIndex(
-    (phase) => phase.state === recordedPhase
-  )
+  const currentPhase = phases.some((phase) => phase.state === detail.state)
+    ? detail.state
+    : recordedPhase
+  const currentIndex = phases.findIndex((phase) => phase.state === currentPhase)
   const timeline = [...detail.events, ...detail.entity_events].sort(
     (left, right) => left.sequence - right.sequence
   )

@@ -119,6 +119,35 @@ test("polling errors preserve the last valid phase and expose retry", async ({
   await expect(page.getByRole("button", { name: "Retry" })).toBeVisible()
 })
 
+test("uses authoritative legacy state when no phase event is available", async ({
+  page,
+}) => {
+  await mockShell(page)
+  const legacy = {
+    ...detail("exploring"),
+    execution: { mode: "legacy", requested_outcome: null },
+    events: [],
+  }
+  await page.route("**/api/v1/runs/run-active", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(legacy),
+    })
+  })
+  await page.route("**/api/v1/runs", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, runs: [legacy] }),
+    })
+  })
+
+  await page.goto("/?view=runs&run=run-active#token=legacy-token")
+
+  await expect(page.locator('[aria-current="step"]')).toHaveText("Exploring")
+})
+
 async function mockShell(page: Page) {
   await page.route("**/api/v1/overview", async (route) => {
     await route.fulfill({
