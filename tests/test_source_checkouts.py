@@ -398,6 +398,70 @@ def test_managed_delete_does_not_follow_a_replaced_quarantine(
     assert "code" in app.settings()["local_settings"]["managed_checkouts"]
 
 
+def test_managed_delete_quarantines_a_replaced_child_before_unlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin = tmp_path / "origin"
+    make_source(origin)
+    workspace = tmp_path / "workspace"
+    app = WorkspaceApplication(workspace)
+    app.initialize("catalog")
+    app.clone_source({"id": "code", "role": "implementation", "remote": str(origin)})
+    app.remove_source({"id": "code"})
+    replacement = tmp_path / "replacement.txt"
+    replacement.write_text("external\n", encoding="utf-8")
+    real_rename = source_checkouts_module.os.rename
+    swapped = False
+
+    def swap_before_quarantine(source, destination, *args, **kwargs):
+        nonlocal swapped
+        if source == "README.md" and str(destination).startswith(".delete-") and not swapped:
+            swapped = True
+            descriptor = kwargs["src_dir_fd"]
+            real_rename(
+                "README.md",
+                "README.original",
+                src_dir_fd=descriptor,
+                dst_dir_fd=descriptor,
+            )
+            real_rename(replacement, "README.md", dst_dir_fd=descriptor)
+        return real_rename(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(source_checkouts_module.os, "rename", swap_before_quarantine)
+
+    with pytest.raises(WorkspaceError, match="changed during deletion"):
+        app.delete_managed_source({"id": "code", "confirmation": "code"})
+
+    quarantined = list((workspace / "sources").glob(".code.delete-*/.delete-*"))
+    assert any(path.read_text(encoding="utf-8") == "external\n" for path in quarantined)
+    assert "code" in app.settings()["local_settings"]["managed_checkouts"]
+
+
+def test_mount_detection_is_bound_to_the_open_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    child.mkdir(parents=True)
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    parent_descriptor = os.open(parent, flags)
+    child_descriptor = os.open(child, flags)
+    identity = os.fstat(child_descriptor)
+
+    def is_child_descriptor(path) -> bool:
+        try:
+            return os.path.samestat(os.stat(path), identity)
+        except OSError:
+            return False
+
+    monkeypatch.setattr(source_checkouts_module.os.path, "ismount", is_child_descriptor)
+    try:
+        assert source_checkouts_module._is_mounted_descriptor(child_descriptor, parent_descriptor)
+    finally:
+        os.close(child_descriptor)
+        os.close(parent_descriptor)
+
+
 @pytest.mark.parametrize("mounted", ["sources", "target"])
 def test_managed_delete_refuses_managed_root_and_target_mounts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mounted: str
