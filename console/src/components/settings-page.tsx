@@ -209,7 +209,7 @@ export function SettingsPage({
         </CardHeader>
         <CardContent>
           <FieldGroup>
-            <Field orientation="responsive" data-disabled>
+            <Field orientation="horizontal" data-disabled>
               <FieldContent>
                 <FieldLabel htmlFor="project-id">Project ID</FieldLabel>
                 <FieldDescription id="project-id-description">
@@ -224,7 +224,7 @@ export function SettingsPage({
               />
             </Field>
             <Field
-              orientation="responsive"
+              orientation="horizontal"
               data-invalid={Boolean(fieldErrors.name)}
             >
               <FieldContent>
@@ -266,7 +266,7 @@ export function SettingsPage({
         </CardHeader>
         <CardContent>
           <FieldGroup>
-            <Field orientation="responsive">
+            <Field orientation="horizontal">
               <FieldContent>
                 <FieldLabel htmlFor="bundle-name">Bundle name</FieldLabel>
                 <FieldDescription id="bundle-name-description">
@@ -286,7 +286,7 @@ export function SettingsPage({
               />
             </Field>
             <Field
-              orientation="responsive"
+              orientation="horizontal"
               data-invalid={Boolean(fieldErrors.publicationPath)}
             >
               <FieldContent>
@@ -333,7 +333,7 @@ export function SettingsPage({
         <CardContent>
           <FieldGroup>
             <Field
-              orientation="responsive"
+              orientation="horizontal"
               data-invalid={Boolean(fieldErrors.excludedPaths)}
             >
               <FieldContent>
@@ -365,7 +365,7 @@ export function SettingsPage({
               />
             </Field>
             <Field
-              orientation="responsive"
+              orientation="horizontal"
               data-invalid={Boolean(fieldErrors.priorities)}
             >
               <FieldContent>
@@ -619,7 +619,7 @@ function DispositionFields({
         Default disposition for {priority} coverage obligations.
       </FieldDescription>
       <FieldGroup>
-        <Field orientation="responsive">
+        <Field orientation="horizontal">
           <FieldContent>
             <FieldLabel htmlFor={`${priority}-disposition`}>
               Disposition
@@ -648,7 +648,7 @@ function DispositionFields({
             <NativeSelectOption value="failed">Failed</NativeSelectOption>
           </NativeSelect>
         </Field>
-        <Field orientation="responsive" data-invalid={Boolean(reasonError)}>
+        <Field orientation="horizontal" data-invalid={Boolean(reasonError)}>
           <FieldContent>
             <FieldLabel htmlFor={`${priority}-reason`}>Reason</FieldLabel>
             <FieldDescription id={`${priority}-reason-description`}>
