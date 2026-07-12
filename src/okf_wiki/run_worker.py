@@ -21,6 +21,9 @@ from .verification import (
 )
 
 
+FIXTURE_PHASE_DELAY = 0.35
+
+
 class FixturePlanner:
     async def plan(self, summary: PlannerSummary) -> TaskPlan:
         grouped: dict[str, list] = {}
@@ -159,10 +162,10 @@ def run(root: Path, run_id: str, fixture: str) -> None:
     with sqlite3.connect(database) as connection:
         connection.row_factory = sqlite3.Row
         if fixture == "failure":
-            time.sleep(0.1)
+            time.sleep(FIXTURE_PHASE_DELAY)
             with connection:
                 transition_run(connection, run_id, "preparing", "exploring")
-            time.sleep(0.1)
+            time.sleep(FIXTURE_PHASE_DELAY)
             with connection:
                 transition_run(
                     connection,
@@ -172,6 +175,7 @@ def run(root: Path, run_id: str, fixture: str) -> None:
                     error="Deterministic failure fixture stopped during Exploring",
                 )
             return
+        time.sleep(FIXTURE_PHASE_DELAY)
         state, _coverage = advance_preparation(connection, run_id)
         if state == "exploring":
             outcome = asyncio.run(
@@ -188,6 +192,7 @@ def run(root: Path, run_id: str, fixture: str) -> None:
             state = "verifying"
         if state != "verifying":
             raise ValueError(f"Deterministic fixture stopped in {state}")
+        time.sleep(FIXTURE_PHASE_DELAY)
         advance_rendering(connection, run_id)
 
 

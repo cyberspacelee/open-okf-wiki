@@ -761,3 +761,14 @@ def test_console_and_cli_share_run_creation_status_and_stale_errors(
     assert stale_code == 1
     assert stale.json() == command_stale
     assert command_created["run_id"] != created.json()["run_id"]
+    assert set(command_created) == set(created.json())
+    assert command_created["execution"] == created.json()["execution"]
+    assert command_created["source_set_digest"] == created.json()["source_set_digest"]
+    assert command_created["sources"] == created.json()["sources"]
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        command_status = app.run_status(command_created["run_id"])
+        if command_status["state"] == "failed":
+            break
+        time.sleep(0.05)
+    assert command_status["state"] == "failed"

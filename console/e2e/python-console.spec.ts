@@ -328,7 +328,7 @@ test("loads the built Console through the real Python launcher", async ({
   await expect(
     page.locator('[data-slot="sidebar"][data-state="collapsed"]')
   ).toBeVisible()
-  await page.getByRole("button", { name: "Settings" }).click()
+  await page.getByRole("button", { name: "Settings", exact: true }).click()
   await expect(displayName).toHaveValue("Catalog Settings E2E")
 
   const external = JSON.parse(
@@ -531,6 +531,74 @@ test("loads the built Console through the real Python launcher", async ({
         whiteSpace !== "nowrap" && scrollWidth <= clientWidth
     )
   ).toBe(true)
+
+  await preflightCard
+    .getByRole("button", { name: "Controlled Failure" })
+    .click()
+  const failedRunResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/api/v1/runs"
+  )
+  await preflightCard.getByRole("button", { name: "Start Run" }).click()
+  expect((await failedRunResponse).status()).toBe(200)
+  await expect(page).toHaveURL(/\?view=runs&run=[0-9a-f]{32}$/)
+  await expect(page.getByRole("alert")).toContainText(
+    "Deterministic failure fixture stopped during Exploring"
+  )
+  await expect(page.locator('[aria-current="step"]')).toHaveText("Exploring")
+
+  await page.getByRole("button", { name: "Sources" }).click()
+  await expect(preflightCard).toBeVisible()
+  await preflightCard.getByRole("button", { name: "Review Required" }).click()
+  const successfulRunResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/api/v1/runs"
+  )
+  await preflightCard.getByRole("button", { name: "Start Run" }).click()
+  expect((await successfulRunResponse).status()).toBe(200)
+  await expect(page.locator('[aria-current="step"]')).toHaveText("Preparing")
+  await expect(page.locator('[aria-current="step"]')).toHaveText("Verifying")
+  await expect(page.locator('[aria-current="step"]')).toHaveText(
+    "Review Required"
+  )
+  const successfulRunUrl = page.url()
+  await page.screenshot({
+    path: "test-results/runs-desktop.png",
+    fullPage: true,
+  })
+  await page.reload()
+  await expect(page).toHaveURL(successfulRunUrl)
+  await expect(page.locator('[aria-current="step"]')).toHaveText(
+    "Review Required"
+  )
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.getByRole("button", { name: "Toggle Sidebar" }).click()
+  const runsMobileSidebar = page.locator(
+    '[data-slot="sidebar"][data-mobile="true"]'
+  )
+  await runsMobileSidebar.getByRole("button", { name: "Runs" }).click()
+  await expect(runsMobileSidebar).toHaveCount(0)
+  await expect(
+    page.getByText("Exact Source Set", { exact: true })
+  ).toBeVisible()
+  await expect(page.locator('[aria-current="step"]')).toHaveText(
+    "Review Required"
+  )
+  const runsOverflow = await page.evaluate(() => ({
+    viewport: document.documentElement.clientWidth,
+    width: document.documentElement.scrollWidth,
+  }))
+  expect(runsOverflow.width).toBe(runsOverflow.viewport)
+  await page.screenshot({
+    path: "test-results/runs-mobile-real.png",
+    fullPage: true,
+  })
+  await page.setViewportSize({ width: 1280, height: 720 })
+  await page.getByRole("button", { name: "Sources" }).click()
+  await expect(preflightCard).toBeVisible()
+
   await page.screenshot({
     path: "test-results/sources-desktop.png",
     fullPage: true,
@@ -631,7 +699,7 @@ test("loads the built Console through the real Python launcher", async ({
     )
   )
   await page.getByRole("link", { name: "Overview" }).click()
-  await page.getByRole("button", { name: "Settings" }).click()
+  await page.getByRole("button", { name: "Settings", exact: true }).click()
   await expect(page.getByRole("alert")).toContainText(
     "use a Gateway Profile credential reference"
   )

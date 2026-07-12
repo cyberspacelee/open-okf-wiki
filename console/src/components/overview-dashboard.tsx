@@ -37,6 +37,7 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { SettingsPage } from "@/components/settings-page"
 import { SourcesPage } from "@/components/sources-page"
+import { RunsPage } from "@/components/runs-page"
 import {
   Sidebar,
   SidebarContent,
@@ -106,7 +107,7 @@ const actionLabels: Record<string, string> = {
   view_run: "View the active run",
 }
 
-type Page = "overview" | "sources" | "settings" | "connections"
+type Page = "overview" | "sources" | "runs" | "settings" | "connections"
 
 export function OverviewDashboard({
   overview,
@@ -115,10 +116,15 @@ export function OverviewDashboard({
   overview: Overview
   token: string
 }) {
-  const [page, setPage] = useState<Page>(() =>
-    new URLSearchParams(window.location.search).get("view") === "connections"
-      ? "connections"
+  const query = new URLSearchParams(window.location.search)
+  const [page, setPage] = useState<Page>(() => {
+    const view = query.get("view")
+    return ["sources", "runs", "settings", "connections"].includes(String(view))
+      ? (view as Page)
       : "overview"
+  })
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(() =>
+    query.get("run")
   )
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const applyCompactNavigation = useCallback(
@@ -136,11 +142,19 @@ export function OverviewDashboard({
     return () => controller.abort()
   }, [applyCompactNavigation, token])
 
-  const navigate = useCallback((nextPage: Page) => {
-    const url = nextPage === "connections" ? "/?view=connections" : "/"
+  const navigate = useCallback((nextPage: Page, runId?: string) => {
+    const parameters = new URLSearchParams()
+    if (nextPage !== "overview") parameters.set("view", nextPage)
+    if (nextPage === "runs" && runId) parameters.set("run", runId)
+    const url = parameters.size ? `/?${parameters}` : "/"
     window.history.replaceState(null, "", url)
     setPage(nextPage)
+    if (nextPage === "runs") setSelectedRunId(runId ?? null)
   }, [])
+  const selectRun = useCallback(
+    (runId: string) => navigate("runs", runId),
+    [navigate]
+  )
 
   return (
     <SidebarProvider
@@ -195,7 +209,9 @@ export function OverviewDashboard({
                       ? "Workspace settings"
                       : page === "sources"
                         ? "Source Checkouts"
-                        : "Gateway connections"}
+                        : page === "runs"
+                          ? "Production Runs"
+                          : "Gateway connections"}
                 </p>
               </div>
             </div>
@@ -220,7 +236,13 @@ export function OverviewDashboard({
             onCompactNavigationChange={applyCompactNavigation}
           />
         ) : page === "sources" ? (
-          <SourcesPage token={token} />
+          <SourcesPage token={token} onRunStarted={selectRun} />
+        ) : page === "runs" ? (
+          <RunsPage
+            token={token}
+            selectedRunId={selectedRunId}
+            onSelectRun={selectRun}
+          />
         ) : (
           <div className="mx-auto flex w-full max-w-[90rem] flex-col gap-8 px-5 py-7 lg:px-8 lg:py-9">
             {page === "connections" ? (
@@ -309,7 +331,16 @@ function PrimaryNavigation({
     <nav aria-label="Primary">
       <SidebarMenu>
         {navItems.map(({ label, icon: Icon, ...item }) => {
-          const target = label === "Connections" ? "connections" : "overview"
+          const target: Page =
+            label === "Connections"
+              ? "connections"
+              : label === "Sources"
+                ? "sources"
+                : label === "Runs"
+                  ? "runs"
+                  : label === "Settings"
+                    ? "settings"
+                    : "overview"
           return (
             <SidebarMenuItem key={label}>
               {"href" in item ? (
@@ -329,20 +360,14 @@ function PrimaryNavigation({
                   <Icon />
                   <span>{label}</span>
                 </SidebarMenuButton>
-              ) : label === "Sources" || label === "Settings" ? (
+              ) : label === "Sources" ||
+                label === "Runs" ||
+                label === "Settings" ? (
                 <SidebarMenuButton
-                  isActive={
-                    page === (label === "Sources" ? "sources" : "settings")
-                  }
+                  isActive={page === target}
                   type="button"
-                  aria-current={
-                    page === (label === "Sources" ? "sources" : "settings")
-                      ? "page"
-                      : undefined
-                  }
-                  onClick={() =>
-                    navigate(label === "Sources" ? "sources" : "settings")
-                  }
+                  aria-current={page === target ? "page" : undefined}
+                  onClick={() => navigate(target)}
                 >
                   <Icon />
                   <span>{label}</span>

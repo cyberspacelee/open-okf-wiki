@@ -6,6 +6,7 @@ import {
   GitCommitHorizontalIcon,
   GitBranchIcon,
   LinkIcon,
+  PlayIcon,
   RefreshCwIcon,
   Trash2Icon,
 } from "lucide-react"
@@ -79,6 +80,7 @@ import {
   type SourcesError,
   type SourcesSnapshot,
 } from "@/lib/sources"
+import { startRun } from "@/lib/runs"
 
 const roles: Array<{ value: SourceRole; label: string }> = [
   { value: "implementation", label: "Implementation" },
@@ -87,7 +89,13 @@ const roles: Array<{ value: SourceRole; label: string }> = [
   { value: "contract", label: "Contract" },
 ]
 
-export function SourcesPage({ token }: { token: string }) {
+export function SourcesPage({
+  token,
+  onRunStarted,
+}: {
+  token: string
+  onRunStarted?: (runId: string) => void
+}) {
   const [reload, setReload] = useState(0)
   const [snapshot, setSnapshot] = useState<SourcesSnapshot | null>(null)
   const [error, setError] = useState<SourcesError | null>(null)
@@ -96,6 +104,7 @@ export function SourcesPage({ token }: { token: string }) {
     null
   )
   const [working, setWorking] = useState<string | null>(null)
+  const [fixture, setFixture] = useState<"success" | "failure">("success")
   const [linkConfiguredId, setLinkConfiguredId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -144,6 +153,24 @@ export function SourcesPage({ token }: { token: string }) {
         setPreflight(null)
         setPreflightError(reason as SourcesError)
       }
+    } catch (reason) {
+      setError(reason as SourcesError)
+    } finally {
+      setWorking(null)
+    }
+  }
+
+  async function startProductionRun() {
+    if (!preflight) return
+    setWorking("start-run")
+    setError(null)
+    try {
+      const run = await startRun(token, {
+        configuration_digest: preflight.configuration_digest,
+        source_set_digest: preflight.source_set_digest,
+        fixture,
+      })
+      onRunStarted?.(run.run_id)
     } catch (reason) {
       setError(reason as SourcesError)
     } finally {
@@ -210,7 +237,7 @@ export function SourcesPage({ token }: { token: string }) {
       {error && (
         <Alert variant="destructive">
           <CircleAlertIcon />
-          <AlertTitle>Source operation failed</AlertTitle>
+          <AlertTitle>Workspace operation failed</AlertTitle>
           <AlertDescription>{error.message}</AlertDescription>
         </Alert>
       )}
@@ -244,7 +271,14 @@ export function SourcesPage({ token }: { token: string }) {
         }
       />
 
-      <PreflightCard preflight={preflight} error={preflightError} />
+      <PreflightCard
+        preflight={preflight}
+        error={preflightError}
+        fixture={fixture}
+        starting={working === "start-run"}
+        onFixtureChange={setFixture}
+        onStart={startProductionRun}
+      />
 
       {snapshot.retained_managed.length > 0 && (
         <Card>
@@ -647,9 +681,17 @@ function RevisionPolicyForm({
 function PreflightCard({
   preflight,
   error,
+  fixture,
+  starting,
+  onFixtureChange,
+  onStart,
 }: {
   preflight: PreflightSnapshot | null
   error: SourcesError | null
+  fixture: "success" | "failure"
+  starting: boolean
+  onFixtureChange: (fixture: "success" | "failure") => void
+  onStart: () => void
 }) {
   return (
     <Card>
@@ -729,10 +771,35 @@ function PreflightCard({
         )}
       </CardContent>
       {preflight && preflight.sources.length > 0 && (
-        <CardFooter>
+        <CardFooter className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
           <p className="font-mono text-xs break-all text-muted-foreground">
             Source Set {preflight.source_set_digest}
           </p>
+          <div className="flex flex-col items-start gap-2 sm:items-end">
+            <ToggleGroup
+              value={[fixture]}
+              onValueChange={(value) => {
+                if (value[0] === "success" || value[0] === "failure")
+                  onFixtureChange(value[0])
+              }}
+              variant="outline"
+              size="sm"
+              aria-label="Deterministic fixture outcome"
+            >
+              <ToggleGroupItem value="success">Review Required</ToggleGroupItem>
+              <ToggleGroupItem value="failure">
+                Controlled Failure
+              </ToggleGroupItem>
+            </ToggleGroup>
+            <Button disabled={starting} onClick={onStart}>
+              {starting ? (
+                <Spinner data-icon="inline-start" />
+              ) : (
+                <PlayIcon data-icon="inline-start" />
+              )}
+              {starting ? "Starting…" : "Start Run"}
+            </Button>
+          </div>
         </CardFooter>
       )}
     </Card>
