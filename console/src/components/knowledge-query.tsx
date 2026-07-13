@@ -77,7 +77,13 @@ type KnowledgeQueryProps = {
 
 export function KnowledgeQuery(props: KnowledgeQueryProps) {
   const { bundle, runId, sourceSetDigest, page, conceptId } = props
-  const identityKey = `${bundle}:${runId}:${sourceSetDigest}:${page ?? ""}:${conceptId ?? ""}`
+  const identityKey = JSON.stringify([
+    bundle,
+    runId,
+    sourceSetDigest,
+    page,
+    conceptId,
+  ])
   return <KnowledgeQuerySession key={identityKey} {...props} />
 }
 

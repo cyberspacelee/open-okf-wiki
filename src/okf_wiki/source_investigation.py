@@ -336,7 +336,7 @@ def _usage(value: RunUsage | None) -> dict[str, int]:
     }
 
 
-async def _grounded_segments(
+def _grounded_segments(
     draft: InvestigationDraft, deps: InvestigationDeps
 ) -> tuple[InvestigationSegment, ...]:
     segments = []
@@ -491,7 +491,7 @@ class SourceInvestigationAgent:
             )
             if contains_secret_values(result.output.model_dump(mode="json"), self.secrets):
                 raise ValueError("Investigation response disclosed a protected credential")
-            segments = await _grounded_segments(result.output, deps)
+            segments = _grounded_segments(result.output, deps)
             return SourceInvestigationAnswer(
                 investigation_id=investigation_id,
                 outcome=_outcome(segments),
