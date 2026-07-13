@@ -3,6 +3,7 @@ import asyncio
 from pydantic_ai import Agent, UsageLimits
 from pydantic_ai.models import Model
 
+from .gateway_common import actionable_model_error
 from .scheduler import PlannerSummary, TaskPlan
 from .security import contains_secret, redact_secrets
 
@@ -15,6 +16,7 @@ class PlannerAgent:
         request_limit: int = 3,
         input_tokens_limit: int = 12_000,
         output_tokens_limit: int = 4_000,
+        total_tokens_limit: int | None = None,
         wall_time_seconds: float = 30,
         secrets: tuple[str, ...] = (),
     ) -> None:
@@ -23,6 +25,7 @@ class PlannerAgent:
             request_limit=request_limit,
             input_tokens_limit=input_tokens_limit,
             output_tokens_limit=output_tokens_limit,
+            total_tokens_limit=total_tokens_limit,
         )
         self.wall_time_seconds = wall_time_seconds
         self.secrets = secrets
@@ -40,12 +43,20 @@ class PlannerAgent:
             retries={"output": 1},
             max_concurrency=1,
         )
-        async with asyncio.timeout(self.wall_time_seconds):
-            result = await agent.run(
-                redact_secrets(summary.model_dump_json(), self.secrets),
-                usage_limits=self.usage_limits,
-                metadata={"run_id": summary.run_id, "agent_role": "planner"},
-            )
+        try:
+            async with asyncio.timeout(self.wall_time_seconds):
+                result = await agent.run(
+                    redact_secrets(summary.model_dump_json(), self.secrets),
+                    usage_limits=self.usage_limits,
+                    metadata={"run_id": summary.run_id, "agent_role": "planner"},
+                )
+        except Exception as error:
+            actionable = actionable_model_error(error)
+            if actionable:
+                if type(error).__name__ in {"UsageLimitExceeded", "TimeoutError"}:
+                    raise type(error)(actionable) from None
+                raise RuntimeError(actionable) from None
+            raise
         if contains_secret(result.output.model_dump_json(), self.secrets):
             raise ValueError("Planner disclosed a protected credential")
         return result.output

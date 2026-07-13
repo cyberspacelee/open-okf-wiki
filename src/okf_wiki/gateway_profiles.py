@@ -434,9 +434,42 @@ class GatewayApplication:
             allow_missing=allow_missing,
         )
 
+    def execution_connection(self, snapshot: Mapping[str, object]) -> tuple[GatewayProfile, str]:
+        profile_snapshot = snapshot.get("profile")
+        capabilities = snapshot.get("capabilities")
+        if not isinstance(profile_snapshot, dict) or not isinstance(capabilities, dict):
+            raise GatewayError("Production Run has an invalid Gateway snapshot")
+        profile_id = profile_snapshot.get("id")
+        if not isinstance(profile_id, str):
+            raise GatewayError("Production Run has an invalid Gateway Profile identity")
+        profile = self.registry.get(profile_id)
+        current_identity = {
+            "id": profile.id,
+            "name": profile.name,
+            "gateway_id": profile.gateway_id,
+            "base_url": profile.base_url,
+            "header_names": sorted(profile.headers),
+            "revision": profile.revision,
+            "registered": True,
+        }
+        if profile_snapshot != current_identity:
+            raise GatewayError(
+                "Gateway Profile changed after the Production Run started; start a new Run",
+                category="stale",
+            )
+        if capabilities != {model: profile.capabilities.get(model) for model in capabilities}:
+            raise GatewayError(
+                "Gateway capabilities changed after the Production Run started; start a new Run",
+                category="stale",
+            )
+        return profile, self.registry.credential(profile.id)
+
     def resolve_models(self, models: ModelSettings, *, allow_missing: bool = False) -> dict:
         if models.gateway_profile is None or models.default_model is None:
             raise GatewayError("Workspace has no selected Gateway Profile or default model")
+        unknown_budgets = sorted(set(models.budgets) - {"total_tokens"})
+        if unknown_budgets:
+            raise GatewayError("unknown semantic budget settings: " + ", ".join(unknown_budgets))
         unknown_roles = sorted(set(models.role_overrides) - set(AGENT_ROLES))
         if unknown_roles:
             raise GatewayError("unknown Agent Roles: " + ", ".join(unknown_roles))
@@ -456,6 +489,7 @@ class GatewayApplication:
                 "assignments": assignments,
                 "concurrency": models.concurrency,
                 "budgets": models.budgets,
+                "runtime_limits": _resolved_budgets(models.budgets),
                 "capabilities": {},
             }
         assigned_models = sorted(set(assignments.values()))
@@ -484,8 +518,17 @@ class GatewayApplication:
             "assignments": assignments,
             "concurrency": models.concurrency,
             "budgets": models.budgets,
+            "runtime_limits": _resolved_budgets(models.budgets),
             "capabilities": {model: profile.capabilities[model] for model in assigned_models},
         }
+
+
+def _resolved_budgets(budgets: Mapping[str, int]) -> dict[str, int]:
+    return (
+        {"per_agent_call_total_tokens": budgets["total_tokens"]}
+        if "total_tokens" in budgets
+        else {}
+    )
 
 
 def _is_loopback_host(host: str) -> bool:

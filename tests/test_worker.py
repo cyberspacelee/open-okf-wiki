@@ -968,7 +968,7 @@ def test_openai_compatible_http_error_is_mapped_and_audited(tmp_path: Path) -> N
 
     assert result.status == "rejected"
     assert result.error_type == "ModelHTTPError"
-    assert "status_code: 401" in result.errors[0]
+    assert result.errors == ["Gateway authentication failed; update the Gateway Profile credential"]
 
 
 def test_openai_compatible_connection_error_is_mapped_and_audited(tmp_path: Path) -> None:
@@ -1001,7 +1001,7 @@ def test_openai_compatible_connection_error_is_mapped_and_audited(tmp_path: Path
 
     assert result.status == "rejected"
     assert result.error_type == "ModelAPIError"
-    assert result.errors == ["Connection error."]
+    assert result.errors == ["Gateway connection failed; check the profile endpoint and network"]
 
 
 def test_openai_compatible_configured_run_concurrency(tmp_path: Path) -> None:

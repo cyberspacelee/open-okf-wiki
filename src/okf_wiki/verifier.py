@@ -5,6 +5,7 @@ import json
 from pydantic_ai import Agent, UsageLimits
 from pydantic_ai.models import Model
 
+from .gateway_common import actionable_model_error
 from .verification import (
     VerificationFinding,
     VerificationPerspective,
@@ -84,6 +85,7 @@ class VerifierAgent:
         request_limit: int = 3,
         input_tokens_limit: int = 20_000,
         output_tokens_limit: int = 2_000,
+        total_tokens_limit: int | None = None,
         wall_time_seconds: float = 30,
         secrets: tuple[str, ...] = (),
     ) -> None:
@@ -92,6 +94,7 @@ class VerifierAgent:
             request_limit=request_limit,
             input_tokens_limit=input_tokens_limit,
             output_tokens_limit=output_tokens_limit,
+            total_tokens_limit=total_tokens_limit,
         )
         self.wall_time_seconds = wall_time_seconds
         self.secrets = secrets
@@ -166,17 +169,25 @@ class VerifierAgent:
             retries={"output": 1},
             max_concurrency=1,
         )
-        async with asyncio.timeout(self.wall_time_seconds):
-            result = await agent.run(
-                prompt,
-                usage_limits=self.usage_limits,
-                metadata={
-                    "run_id": target.run_id,
-                    "candidate_id": target.candidate_id,
-                    "agent_role": "verifier",
-                    "perspective": perspective,
-                },
-            )
+        try:
+            async with asyncio.timeout(self.wall_time_seconds):
+                result = await agent.run(
+                    prompt,
+                    usage_limits=self.usage_limits,
+                    metadata={
+                        "run_id": target.run_id,
+                        "candidate_id": target.candidate_id,
+                        "agent_role": "verifier",
+                        "perspective": perspective,
+                    },
+                )
+        except Exception as error:
+            actionable = actionable_model_error(error)
+            if actionable:
+                if type(error).__name__ in {"UsageLimitExceeded", "TimeoutError"}:
+                    raise type(error)(actionable) from None
+                raise RuntimeError(actionable) from None
+            raise
         finding = result.output
         if contains_secret(finding.model_dump_json(), self.secrets):
             raise ValueError("Verifier disclosed a protected credential")

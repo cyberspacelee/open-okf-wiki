@@ -37,7 +37,7 @@ class ConsoleServer(ThreadingHTTPServer):
         config_root: Path | str | None = None,
     ) -> None:
         super().__init__(("127.0.0.1", port), ConsoleHandler)
-        self.application = WorkspaceApplication(root)
+        self.application = WorkspaceApplication(root, config_root=config_root)
         self.gateways = GatewayApplication(config_root)
         self.assets = assets.resolve()
         self.session_token = secrets.token_urlsafe(32)
@@ -323,8 +323,14 @@ def create_console(
     return server, session_url
 
 
-def run_console(root: Path | str, port: int = 0, *, open_browser: bool = True) -> int:
-    server, session_url = create_console(root, port)
+def run_console(
+    root: Path | str,
+    port: int = 0,
+    *,
+    open_browser: bool = True,
+    config_root: Path | str | None = None,
+) -> int:
+    server, session_url = create_console(root, port, config_root=config_root)
     print(
         json.dumps(
             {"address": server.origin, "ok": True, "session_url": session_url},

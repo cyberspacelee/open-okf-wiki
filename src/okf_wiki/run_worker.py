@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import json
 import os
 import sqlite3
 import sys
@@ -7,7 +8,7 @@ import time
 from pathlib import Path
 from urllib.parse import unquote_to_bytes
 
-from .cli import advance_preparation, advance_rendering, get_run
+from .cli import advance_preparation, advance_rendering, execute_semantic_run, get_run
 from .coverage import obligation_rows
 from .knowledge_contracts import AnalysisTask, WorkerProposal, WorkerRunResult
 from .run_state import RUN_TRANSITIONS, transition_run
@@ -174,6 +175,32 @@ def run(root: Path, run_id: str, fixture: str) -> None:
                     "failed",
                     error="Deterministic failure fixture stopped during Exploring",
                 )
+            return
+        if fixture == "gateway_semantic":
+            from .gateway_profiles import GatewayApplication
+
+            source_set = json.loads(get_run(connection, run_id)["source_set_json"])
+            resolved_models = source_set.get("workspace_configuration", {}).get("resolved_models")
+            if not isinstance(resolved_models, dict):
+                raise ValueError("Production Run has no resolved Gateway snapshot")
+            profile, credential = GatewayApplication().execution_connection(resolved_models)
+            state, _coverage = advance_preparation(connection, run_id)
+            if state == "exploring":
+                outcome = execute_semantic_run(
+                    run_id,
+                    resolved_models,
+                    base_url=profile.base_url,
+                    credential=credential,
+                    headers=profile.headers,
+                    gateway_id=profile.gateway_id,
+                    secrets=(credential, *profile.headers.values()),
+                )
+                if outcome.status != "complete":
+                    return
+                state = "verifying"
+            if state != "verifying":
+                raise ValueError(f"Semantic execution stopped in {state}")
+            advance_rendering(connection, run_id)
             return
         time.sleep(FIXTURE_PHASE_DELAY)
         state, _coverage = advance_preparation(connection, run_id)

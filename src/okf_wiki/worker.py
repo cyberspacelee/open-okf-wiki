@@ -28,6 +28,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
+from .gateway_common import actionable_model_error
 from .knowledge_contracts import (
     AnalysisTask,
     ClaimProposal as ClaimProposal,
@@ -551,7 +552,7 @@ class WorkerAgent:
             if responses:
                 response_model = responses[-1].model_name or self.model_name
                 provider_url = responses[-1].provider_url
-            errors = [redact_secrets(str(error), self.secrets)]
+            errors = [actionable_model_error(error) or redact_secrets(str(error), self.secrets)]
             error_type = type(error).__name__
         status = "rejected" if errors else "accepted"
         self._record(

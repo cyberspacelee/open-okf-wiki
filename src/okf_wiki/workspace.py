@@ -443,8 +443,9 @@ def _replace_durable(source: Path, target: Path) -> None:
 
 
 class WorkspaceApplication:
-    def __init__(self, root: Path | str) -> None:
+    def __init__(self, root: Path | str, *, config_root: Path | str | None = None) -> None:
         self.root = Path(root).resolve()
+        self.config_root = Path(config_root).resolve() if config_root is not None else None
         self.definition_path = self.root / "workspace.toml"
         self.settings_path = self.root / ".okf-wiki" / "settings.toml"
         self.database_path = self.root / ".okf-wiki" / "runs.db"
@@ -927,14 +928,15 @@ class WorkspaceApplication:
         values = cast(dict[str, object], payload)
         configuration_digest = values["configuration_digest"]
         source_set_digest = values["source_set_digest"]
-        fixture = values.get("fixture", "success")
+        fixture = values.get("fixture")
         if not isinstance(configuration_digest, str) or not isinstance(source_set_digest, str):
             raise WorkspaceError("Start Run identities must be strings")
-        if fixture not in {"success", "failure"}:
+        if fixture is not None and fixture not in {"success", "failure"}:
             raise WorkspaceError("Start Run fixture must be success or failure")
 
         from .bundle import published_run_id
         from .cli import create_run, load_profile, producer_profile_id, source_set_digest as digest
+        from .gateway_profiles import GatewayApplication
 
         with self._locked():
             self._recover_update_locked()
@@ -950,6 +952,11 @@ class WorkspaceApplication:
                 )
             if not snapshot.sources:
                 raise WorkspaceError("Workspace has no configured Sources")
+            resolved_models = None
+            if fixture is None:
+                gateways = GatewayApplication(self.config_root)
+                resolved_models = gateways.resolve_models(snapshot.models)
+                gateways.registry.credential(resolved_models["profile"]["id"])
             with sqlite3.connect(self.database_path) as connection:
                 active = connection.execute(
                     """SELECT id, state FROM runs
@@ -983,6 +990,8 @@ class WorkspaceApplication:
                     source_set_digest=source_set_digest,
                     source_snapshots=preflight["sources"],
                 )
+                if resolved_models is not None:
+                    workspace_configuration["resolved_models"] = resolved_models
                 run_id = uuid.uuid4().hex
                 staging = self.root / ".okf-wiki" / "runs" / run_id / "staging"
                 source_set = {
@@ -990,8 +999,8 @@ class WorkspaceApplication:
                     "digest": source_set_digest,
                     "evidence": [],
                     "execution": {
-                        "mode": "deterministic_fixture",
-                        "requested_outcome": fixture,
+                        "mode": "deterministic_fixture" if fixture else "gateway_semantic",
+                        **({"requested_outcome": fixture} if fixture else {}),
                     },
                     "producer_profile_id": producer_profile_id(profile),
                     "profile": {
@@ -1015,7 +1024,7 @@ class WorkspaceApplication:
                     source_set,
                 )
             try:
-                self._launch_run_worker(run_id, cast(str, fixture))
+                self._launch_run_worker(run_id, cast(str, fixture or "gateway_semantic"))
             except OSError as error:
                 from .run_state import transition_run
 
@@ -1033,6 +1042,9 @@ class WorkspaceApplication:
     def _launch_run_worker(self, run_id: str, fixture: str) -> None:
         run_state = self.root / ".okf-wiki" / "runs" / run_id
         run_state.mkdir(parents=True, exist_ok=True)
+        environment = os.environ.copy()
+        if self.config_root is not None:
+            environment["OKF_WIKI_CONFIG_HOME"] = str(self.config_root)
         subprocess.Popen(
             [
                 sys.executable,
@@ -1049,6 +1061,7 @@ class WorkspaceApplication:
             stderr=subprocess.DEVNULL,
             close_fds=True,
             start_new_session=True,
+            env=environment,
         )
 
     def list_runs(self) -> dict:
@@ -1097,29 +1110,62 @@ class WorkspaceApplication:
                 in {"coverage_obligation", "analysis_task"}
                 and isinstance(details.get("entity_id"), str)
             ]
-            completed_tasks = [
+            task_rows = [
                 {
+                    "agent_role": task["agent_role"],
+                    "budgets": json.loads(task["budgets_json"]),
+                    "error": task["error"],
                     "id": task["id"],
                     "obligation_ids": json.loads(task["obligation_ids_json"]),
+                    "path_scope": json.loads(task["allowed_paths_json"]),
+                    "receipt": json.loads(task["receipt_json"]) if task["receipt_json"] else None,
+                    "source_id": task["source_id"],
                     "state": task["state"],
                 }
                 for task in connection.execute(
-                    """SELECT id, state, obligation_ids_json FROM analysis_tasks
-                       WHERE run_id = ? AND state = 'accepted' ORDER BY created_at, id""",
+                    """SELECT id, state, obligation_ids_json, source_id, allowed_paths_json,
+                              agent_role, budgets_json, receipt_json, error
+                       FROM analysis_tasks WHERE run_id = ? ORDER BY created_at, id""",
                     (run_id,),
                 )
+            ]
+            from .coverage import obligation_rows
+
+            coverage_obligations = [
+                {
+                    key: obligation[key]
+                    for key in ("id", "priority", "disposition", "source", "role")
+                }
+                | {
+                    "state_changes": [
+                        event
+                        for event in entity_events
+                        if event["entity_type"] == "coverage_obligation"
+                        and event["entity_id"] == obligation["id"]
+                    ]
+                }
+                for obligation in obligation_rows(connection, run_id)
             ]
         from .scheduler import scheduler_status
 
         source_set = self._source_set_for_row(row)
         scheduler = scheduler_status(self.database_path, run_id)
-        scheduler["tasks"]["completed"] = completed_tasks
+        scheduler["tasks"] = {
+            "active": [
+                task for task in task_rows if task["state"] in {"planned", "running", "submitted"}
+            ],
+            "completed": [task for task in task_rows if task["state"] == "accepted"],
+            "failed": [task for task in task_rows if task["state"] in {"rejected", "failed"}],
+        }
         errors = list(dict.fromkeys(filter(None, [row["error"], *scheduler["errors"]])))
         return {
             **self._run_summary(row),
             "actionable_errors": errors,
+            "audit": self._run_audit(run_id),
+            "coverage_obligations": coverage_obligations,
             "entity_events": entity_events,
             "events": events,
+            "models": source_set.get("workspace_configuration", {}).get("resolved_models"),
             "project_id": row["project_id"],
             "sources": [
                 {
@@ -1132,6 +1178,31 @@ class WorkspaceApplication:
             ],
             "tasks": scheduler["tasks"],
         }
+
+    def _run_audit(self, run_id: str) -> dict:
+        path = self.root / ".okf-wiki" / "runs" / run_id / "worker.db"
+        totals = {
+            "failures": 0,
+            "latency_ms": 0,
+            "models": set(),
+            "retries": 0,
+            "tokens": 0,
+            "tool_calls": 0,
+        }
+        if path.is_file():
+            with sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True) as connection:
+                for status, usage_json, latency_ms, retries, model in connection.execute(
+                    """SELECT status, usage_json, latency_ms, retry_count, response_model
+                       FROM worker_candidates"""
+                ):
+                    usage = json.loads(usage_json)
+                    totals["failures"] += status != "accepted"
+                    totals["latency_ms"] += latency_ms
+                    totals["models"].add(model)
+                    totals["retries"] += retries
+                    totals["tokens"] += usage.get("total_tokens", 0)
+                    totals["tool_calls"] += usage.get("tool_calls", 0)
+        return {**totals, "models": sorted(totals["models"])}
 
     @staticmethod
     def _run_summary(row: sqlite3.Row) -> dict:

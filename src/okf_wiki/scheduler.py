@@ -858,6 +858,13 @@ class Scheduler:
         )
         if findings:
             self.verification.record_findings(run_id, result.candidate_id, findings)
+        failures = tuple(
+            self._warning(str(outcome))
+            for outcome in outcomes
+            if isinstance(outcome, BaseException)
+        )
+        if failures:
+            return AcceptanceDecision(outcome="revision_required", reasons=failures)
         return self.acceptance_policy.decide(
             structural_valid=True,
             findings=findings,

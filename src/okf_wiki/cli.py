@@ -1310,46 +1310,25 @@ def explore(run_id: str) -> int:
         )
     ):
         raise UserError("OKF_GATEWAY_HEADERS must be a JSON object of strings")
-    from .planner import PlannerAgent
-    from .scheduler import Scheduler
-    from .verifier import VerifierAgent
-    from .worker import GatewaySettings, WorkerAgent, build_gateway_model
-
     secrets = tuple(filter(None, (api_key, *(headers or {}).values())))
-
-    model = build_gateway_model(
-        GatewaySettings(
-            base_url=base_url,
-            api_key=api_key,
-            model=model_name,
-            default_headers=headers,
-        )
+    outcome = execute_semantic_run(
+        run_id,
+        {
+            "assignments": {
+                "planner": model_name,
+                "worker": model_name,
+                "verifier": model_name,
+            },
+            "concurrency": concurrency,
+            "budgets": {},
+            "runtime_limits": {},
+        },
+        base_url=base_url,
+        credential=api_key,
+        headers=headers or {},
+        gateway_id=os.environ.get("OKF_GATEWAY_ID", "enterprise"),
+        secrets=secrets,
     )
-
-    async def execute():
-        try:
-            worker = WorkerAgent(
-                model,
-                audit_path=state_dir() / "runs" / run_id / "worker.db",
-                gateway_id=os.environ.get("OKF_GATEWAY_ID", "enterprise"),
-                model_name=model_name,
-                max_concurrency=concurrency,
-                secrets=secrets,
-            )
-            scheduler = Scheduler(
-                db_path(),
-                PlannerAgent(model, secrets=secrets),
-                worker,
-                max_concurrency=concurrency,
-                verifier=VerifierAgent(model, secrets=secrets),
-            )
-            return await scheduler.run_until_terminal(run_id)
-        finally:
-            client = getattr(model.provider, "client", None)
-            if client is not None:
-                await client.close()
-
-    outcome = asyncio.run(execute())
     if outcome.status == "complete":
         try:
             finish_run(run_id)
@@ -1360,6 +1339,76 @@ def explore(run_id: str) -> int:
         return 0
     emit({"ok": False, "run_id": run_id, **outcome.model_dump(mode="json")})
     return 1
+
+
+def execute_semantic_run(
+    run_id: str,
+    resolved_models: dict,
+    *,
+    base_url: str,
+    credential: str,
+    headers: dict[str, str],
+    gateway_id: str,
+    secrets: tuple[str, ...],
+):
+    from .knowledge_contracts import WorkerBudgets
+    from .planner import PlannerAgent
+    from .scheduler import Scheduler
+    from .verifier import VerifierAgent
+    from .worker import GatewaySettings, WorkerAgent, build_gateway_model
+
+    assignments = resolved_models["assignments"]
+    concurrency = resolved_models["concurrency"]
+    total_tokens = resolved_models.get("runtime_limits", {}).get("per_agent_call_total_tokens")
+
+    async def execute():
+        models = {
+            name: build_gateway_model(
+                GatewaySettings(
+                    base_url=base_url,
+                    api_key=credential,
+                    model=name,
+                    default_headers=headers,
+                )
+            )
+            for name in {assignments[role] for role in ("planner", "worker", "verifier")}
+        }
+        try:
+            worker_budgets = WorkerBudgets(
+                **({"total_tokens_limit": total_tokens} if total_tokens else {})
+            )
+            worker = WorkerAgent(
+                models[assignments["worker"]],
+                audit_path=state_dir() / "runs" / run_id / "worker.db",
+                gateway_id=gateway_id,
+                model_name=assignments["worker"],
+                max_concurrency=concurrency,
+                secrets=secrets,
+            )
+            scheduler = Scheduler(
+                db_path(),
+                PlannerAgent(
+                    models[assignments["planner"]],
+                    total_tokens_limit=total_tokens,
+                    secrets=secrets,
+                ),
+                worker,
+                worker_budgets=worker_budgets,
+                max_concurrency=concurrency,
+                verifier=VerifierAgent(
+                    models[assignments["verifier"]],
+                    total_tokens_limit=total_tokens,
+                    secrets=secrets,
+                ),
+            )
+            return await scheduler.run_until_terminal(run_id)
+        finally:
+            for model in models.values():
+                client = getattr(model.provider, "client", None)
+                if client is not None:
+                    await client.close()
+
+    return asyncio.run(execute())
 
 
 def parser() -> argparse.ArgumentParser:
@@ -1443,7 +1492,8 @@ def parser() -> argparse.ArgumentParser:
     workspace_start_run.add_argument("root", nargs="?", default=".")
     workspace_start_run.add_argument("--configuration-digest", required=True)
     workspace_start_run.add_argument("--source-set-digest", required=True)
-    workspace_start_run.add_argument("--fixture", choices=("success", "failure"), default="success")
+    workspace_start_run.add_argument("--fixture", choices=("success", "failure"))
+    workspace_start_run.add_argument("--config-root")
     workspace_clone_source = workspace_commands.add_parser("clone-source")
     workspace_clone_source.add_argument("source_id")
     workspace_clone_source.add_argument("role")
@@ -1485,6 +1535,7 @@ def parser() -> argparse.ArgumentParser:
     workspace_console.add_argument("root", nargs="?", default=".")
     workspace_console.add_argument("--port", type=int, default=0)
     workspace_console.add_argument("--no-open", action="store_true")
+    workspace_console.add_argument("--config-root")
     return command
 
 
@@ -1562,7 +1613,10 @@ def main() -> int:
                 from .console import run_console
 
                 return run_console(
-                    arguments.root, arguments.port, open_browser=not arguments.no_open
+                    arguments.root,
+                    arguments.port,
+                    open_browser=not arguments.no_open,
+                    config_root=arguments.config_root,
                 )
             if arguments.workspace_command == "migrate":
                 root = arguments.root or Path(arguments.project_config).resolve().parent
@@ -1600,17 +1654,17 @@ def main() -> int:
                 emit({"ok": True, **app.run_status(arguments.run_id)})
                 return 0
             elif arguments.workspace_command == "start-run":
-                app = WorkspaceApplication(arguments.root)
+                app = WorkspaceApplication(arguments.root, config_root=arguments.config_root)
+                payload = {
+                    "configuration_digest": arguments.configuration_digest,
+                    "source_set_digest": arguments.source_set_digest,
+                }
+                if arguments.fixture is not None:
+                    payload["fixture"] = arguments.fixture
                 emit(
                     {
                         "ok": True,
-                        **app.start_run(
-                            {
-                                "configuration_digest": arguments.configuration_digest,
-                                "source_set_digest": arguments.source_set_digest,
-                                "fixture": arguments.fixture,
-                            }
-                        ),
+                        **app.start_run(payload),
                     }
                 )
                 return 0
