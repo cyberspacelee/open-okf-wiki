@@ -75,10 +75,13 @@ export type RunSummary = {
   updated_at: string
   source_set_digest: string
   outcome: "review_required" | "published" | "failed" | "cancelled" | null
-  execution: {
-    mode: "deterministic_fixture" | "legacy"
-    requested_outcome: "success" | "failure" | null
-  }
+  execution:
+    | {
+        mode: "deterministic_fixture"
+        requested_outcome: "success" | "failure"
+      }
+    | { mode: "gateway_semantic"; requested_outcome?: null }
+    | { mode: "legacy"; requested_outcome?: null }
 }
 
 export type RunEvent = {
@@ -97,14 +100,72 @@ export type RunTask = {
   id: string
   state: string
   obligation_ids: string[]
+  source_id: string
+  path_scope: string[]
+  agent_role: string
+  budgets: Record<string, number>
+  receipt: {
+    accepted_ids: string[]
+    unresolved_ids: string[]
+    warnings: string[]
+  } | null
   error?: string | null
+}
+
+export type RunModels = {
+  profile: {
+    id: string
+    name?: string
+    gateway_id?: string
+    base_url?: string
+    header_names?: string[]
+    revision?: number
+    registered: boolean
+  }
+  default_model: string
+  assignments: Record<string, string>
+  concurrency: number
+  budgets: Record<string, number>
+  runtime_limits: Record<string, number>
+  capabilities: Record<string, Record<string, boolean>>
+}
+
+export type CoverageObligation = {
+  id: string
+  priority: string
+  disposition: string
+  source: string
+  role: string
+  state_changes: EntityEvent[]
+}
+
+export type RunAudit = {
+  failures: number
+  latency_ms: number
+  models: string[]
+  retries: number
+  tokens: number
+  tool_calls: number
+  by_role_model: Array<{
+    role: "planner" | "worker" | "verifier"
+    model: string
+    calls: number
+    failures: number
+    latency_ms: number
+    retries: number
+    tokens: number
+    tool_calls: number
+  }>
 }
 
 export type RunDetail = RunSummary & {
   project_id: string
   actionable_errors: string[]
+  audit: RunAudit
+  coverage_obligations: CoverageObligation[]
   events: RunEvent[]
   entity_events: EntityEvent[]
+  models: RunModels | null
   sources: Array<{
     id: string
     role: string
@@ -152,12 +213,25 @@ export async function startRun(
   payload: {
     configuration_digest: string
     source_set_digest: string
-    fixture: "success" | "failure"
+    fixture?: "success" | "failure"
   }
 ) {
   const result = await request("/api/v1/runs", "POST", token, payload)
   if (!isRunDetail(result)) throw invalidResponse("started Run")
   return result
+}
+
+export async function fetchRunSnapshot(token: string, signal?: AbortSignal) {
+  const payload = await request(
+    "/api/v1/workspace/run-snapshot",
+    "GET",
+    token,
+    undefined,
+    signal
+  )
+  if (!isRecord(payload) || payload.ok !== true || !isRunModels(payload.models))
+    throw invalidResponse("Gateway Run snapshot")
+  return payload.models
 }
 
 async function request(
@@ -206,6 +280,9 @@ function isRunDetail(value: unknown): value is RunDetail & { ok: true } {
     value.ok === true &&
     typeof value.project_id === "string" &&
     isStringArray(value.actionable_errors) &&
+    isAudit(value.audit) &&
+    Array.isArray(value.coverage_obligations) &&
+    value.coverage_obligations.every(isCoverageObligation) &&
     Array.isArray(value.events) &&
     value.events.every(isEvent) &&
     Array.isArray(value.entity_events) &&
@@ -226,6 +303,7 @@ function isRunDetail(value: unknown): value is RunDetail & { ok: true } {
         typeof source.revision === "string" &&
         (typeof source.tree_digest === "string" || source.tree_digest === null)
     ) &&
+    (value.models === null || isRunModels(value.models)) &&
     isRecord(value.tasks) &&
     [value.tasks.active, value.tasks.completed, value.tasks.failed].every(
       (tasks) => Array.isArray(tasks) && tasks.every(isTask)
@@ -248,14 +326,7 @@ function isRunSummary(
       ["review_required", "published", "failed", "cancelled"].includes(
         String(value.outcome)
       )) &&
-    isRecord(value.execution) &&
-    ["deterministic_fixture", "legacy"].includes(
-      String(value.execution.mode)
-    ) &&
-    (value.execution.requested_outcome === null ||
-      ["success", "failure"].includes(
-        String(value.execution.requested_outcome)
-      ))
+    isExecution(value.execution)
   )
 }
 
@@ -276,9 +347,106 @@ function isTask(value: unknown) {
     typeof value.id === "string" &&
     typeof value.state === "string" &&
     isStringArray(value.obligation_ids) &&
+    typeof value.source_id === "string" &&
+    isStringArray(value.path_scope) &&
+    typeof value.agent_role === "string" &&
+    isNumberRecord(value.budgets) &&
+    (value.receipt === null || isReceipt(value.receipt)) &&
     (value.error === undefined ||
       value.error === null ||
       typeof value.error === "string")
+  )
+}
+
+function isExecution(value: unknown) {
+  if (!isRecord(value)) return false
+  if (value.mode === "deterministic_fixture")
+    return ["success", "failure"].includes(String(value.requested_outcome))
+  return (
+    ["gateway_semantic", "legacy"].includes(String(value.mode)) &&
+    (value.requested_outcome === undefined || value.requested_outcome === null)
+  )
+}
+
+function isRunModels(value: unknown): value is RunModels {
+  return (
+    isRecord(value) &&
+    isRecord(value.profile) &&
+    typeof value.profile.id === "string" &&
+    typeof value.profile.registered === "boolean" &&
+    optionalString(value.profile.name) &&
+    optionalString(value.profile.gateway_id) &&
+    optionalString(value.profile.base_url) &&
+    (value.profile.header_names === undefined ||
+      isStringArray(value.profile.header_names)) &&
+    (value.profile.revision === undefined ||
+      Number.isInteger(value.profile.revision)) &&
+    typeof value.default_model === "string" &&
+    isStringRecord(value.assignments) &&
+    Number.isInteger(value.concurrency) &&
+    isNumberRecord(value.budgets) &&
+    isNumberRecord(value.runtime_limits) &&
+    isRecord(value.capabilities) &&
+    Object.values(value.capabilities).every(isBooleanRecord)
+  )
+}
+
+function isCoverageObligation(value: unknown) {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    typeof value.priority === "string" &&
+    typeof value.disposition === "string" &&
+    typeof value.source === "string" &&
+    typeof value.role === "string" &&
+    Array.isArray(value.state_changes) &&
+    value.state_changes.every(
+      (event) =>
+        isEvent(event) &&
+        event.entity_type === "coverage_obligation" &&
+        typeof event.entity_id === "string"
+    )
+  )
+}
+
+function isAudit(value: unknown) {
+  return (
+    isRecord(value) &&
+    [
+      value.failures,
+      value.latency_ms,
+      value.retries,
+      value.tokens,
+      value.tool_calls,
+    ].every((item) => Number.isInteger(item) && Number(item) >= 0) &&
+    isStringArray(value.models) &&
+    Array.isArray(value.by_role_model) &&
+    value.by_role_model.every(isRoleModelAudit)
+  )
+}
+
+function isRoleModelAudit(value: unknown) {
+  return (
+    isRecord(value) &&
+    ["planner", "worker", "verifier"].includes(String(value.role)) &&
+    typeof value.model === "string" &&
+    [
+      value.calls,
+      value.failures,
+      value.latency_ms,
+      value.retries,
+      value.tokens,
+      value.tool_calls,
+    ].every((item) => Number.isInteger(item) && Number(item) >= 0)
+  )
+}
+
+function isReceipt(value: unknown) {
+  return (
+    isRecord(value) &&
+    isStringArray(value.accepted_ids) &&
+    isStringArray(value.unresolved_ids) &&
+    isStringArray(value.warnings)
   )
 }
 
@@ -291,6 +459,33 @@ function invalidResponse(label: string): RunsError {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string")
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return (
+    isRecord(value) &&
+    Object.values(value).every((item) => typeof item === "string")
+  )
+}
+
+function isNumberRecord(value: unknown): value is Record<string, number> {
+  return (
+    isRecord(value) &&
+    Object.values(value).every(
+      (item) => Number.isInteger(item) && Number(item) >= 0
+    )
+  )
+}
+
+function isBooleanRecord(value: unknown): value is Record<string, boolean> {
+  return (
+    isRecord(value) &&
+    Object.values(value).every((item) => typeof item === "boolean")
+  )
+}
+
+function optionalString(value: unknown) {
+  return value === undefined || typeof value === "string"
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

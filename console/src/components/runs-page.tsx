@@ -304,7 +304,9 @@ function RunDetails({
             <CardDescription>
               {detail.execution.mode === "deterministic_fixture"
                 ? `No live gateway · requested ${detail.execution.requested_outcome} fixture`
-                : "Legacy Production Run"}
+                : detail.execution.mode === "gateway_semantic"
+                  ? "Semantic execution through the recorded Gateway Profile"
+                  : "Legacy Production Run"}
             </CardDescription>
             <CardAction>
               <StateBadge state={detail.state} />
@@ -394,6 +396,10 @@ function RunDetails({
             </ol>
           </CardContent>
         </Card>
+
+        <AuditCard audit={detail.audit} />
+
+        <CoverageCard obligations={detail.coverage_obligations} />
       </div>
 
       <div className="flex min-w-0 flex-col gap-6">
@@ -424,9 +430,14 @@ function RunDetails({
           </CardContent>
         </Card>
 
-        <TaskCard title="Active tasks" tasks={detail.tasks.active} />
-        <TaskCard title="Completed tasks" tasks={detail.tasks.completed} />
-        <TaskCard title="Failed tasks" tasks={detail.tasks.failed} />
+        {detail.models && <GatewaySnapshotCard models={detail.models} />}
+
+        <TaskCard title="Active Analysis Tasks" tasks={detail.tasks.active} />
+        <TaskCard
+          title="Completed Analysis Tasks"
+          tasks={detail.tasks.completed}
+        />
+        <TaskCard title="Failed Analysis Tasks" tasks={detail.tasks.failed} />
       </div>
     </div>
   )
@@ -455,18 +466,276 @@ function TaskCard({
       {tasks.length > 0 && (
         <CardContent className="flex flex-col gap-3">
           {tasks.map((task) => (
-            <div key={task.id} className="rounded-lg border p-3">
-              <p className="truncate font-mono text-xs">{task.id}</p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {titleCase(task.state)} · {task.obligation_ids.length}{" "}
-                obligations
-              </p>
-            </div>
+            <article
+              key={task.id}
+              className="flex min-w-0 flex-col gap-3 rounded-lg border p-3"
+            >
+              <div className="flex min-w-0 items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="font-mono text-xs break-all">{task.id}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {task.source_id} · {titleCase(task.agent_role)}
+                  </p>
+                </div>
+                <Badge variant="outline">{titleCase(task.state)}</Badge>
+              </div>
+
+              <dl className="grid gap-3 text-xs">
+                <div>
+                  <dt className="font-medium">Path scope</dt>
+                  <dd className="mt-1 flex flex-col gap-1 text-muted-foreground">
+                    {task.path_scope.map((path) => (
+                      <code key={path} className="break-all">
+                        {path}
+                      </code>
+                    ))}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="font-medium">Obligation IDs</dt>
+                  <dd className="mt-1 flex flex-col gap-1 font-mono text-muted-foreground">
+                    {task.obligation_ids.map((id) => (
+                      <span key={id} className="break-all">
+                        {id}
+                      </span>
+                    ))}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="font-medium">Budgets</dt>
+                  <dd className="mt-1 flex flex-wrap gap-2">
+                    {Object.entries(task.budgets).map(([name, value]) => (
+                      <Badge key={name} variant="secondary">
+                        {titleCase(name)} {formatNumber(value)}
+                      </Badge>
+                    ))}
+                  </dd>
+                </div>
+              </dl>
+
+              {task.receipt && (
+                <div className="rounded-md bg-muted p-3 text-xs">
+                  <p className="font-medium">Compact receipt</p>
+                  <p className="mt-1 text-muted-foreground">
+                    {task.receipt.accepted_ids.length} accepted ·{" "}
+                    {task.receipt.unresolved_ids.length} unresolved ·{" "}
+                    {task.receipt.warnings.length} warnings
+                  </p>
+                  {task.receipt.warnings.map((warning) => (
+                    <p key={warning} className="mt-1 text-muted-foreground">
+                      {warning}
+                    </p>
+                  ))}
+                </div>
+              )}
+              {task.error && (
+                <p className="text-xs text-destructive">{task.error}</p>
+              )}
+            </article>
           ))}
         </CardContent>
       )}
     </Card>
   )
+}
+
+function GatewaySnapshotCard({ models }: { models: RunDetail["models"] }) {
+  if (!models) return null
+  return (
+    <Card size="sm">
+      <CardHeader>
+        <CardTitle>Gateway snapshot</CardTitle>
+        <CardDescription>
+          {models.profile.name ?? models.profile.id} · revision{" "}
+          {models.profile.revision ?? "unavailable"}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4 text-xs">
+        <dl className="grid grid-cols-2 gap-3">
+          <div>
+            <dt className="text-muted-foreground">Gateway</dt>
+            <dd className="mt-1 font-medium break-all">
+              {models.profile.gateway_id ?? models.profile.id}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-muted-foreground">Concurrency</dt>
+            <dd className="mt-1 font-medium">{models.concurrency}</dd>
+          </div>
+        </dl>
+        <div>
+          <p className="font-medium">Model assignments</p>
+          <dl className="mt-2 flex flex-col gap-2">
+            {Object.entries(models.assignments).map(([role, model]) => (
+              <div
+                key={role}
+                className="flex items-start justify-between gap-3"
+              >
+                <dt className="text-muted-foreground">{titleCase(role)}</dt>
+                <dd className="text-right font-mono break-all">{model}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+        {Object.keys(models.budgets).length > 0 && (
+          <div>
+            <p className="font-medium">Run budgets</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {Object.entries(models.budgets).map(([name, value]) => (
+                <Badge key={name} variant="secondary">
+                  {titleCase(name)} {formatNumber(value)}
+                </Badge>
+              ))}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function AuditCard({ audit }: { audit: RunDetail["audit"] }) {
+  const totals = [
+    ["Tokens", audit.tokens],
+    ["Tool calls", audit.tool_calls],
+    ["Retries", audit.retries],
+    ["Latency", `${formatNumber(audit.latency_ms)} ms`],
+    ["Failures", audit.failures],
+  ] as const
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Operational audit</CardTitle>
+        <CardDescription>
+          Aggregated usage only; prompts and hidden reasoning are excluded.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-5">
+        <dl className="grid grid-cols-2 gap-4 sm:grid-cols-5">
+          {totals.map(([label, value]) => (
+            <div key={label}>
+              <dt className="text-xs text-muted-foreground">{label}</dt>
+              <dd className="mt-1 font-semibold">
+                {typeof value === "number" ? formatNumber(value) : value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-muted-foreground">Models</span>
+          {audit.models.length ? (
+            audit.models.map((model) => (
+              <Badge key={model} variant="outline">
+                {model}
+              </Badge>
+            ))
+          ) : (
+            <Badge variant="outline">No model calls</Badge>
+          )}
+        </div>
+        {audit.by_role_model.length > 0 && (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Role / model</TableHead>
+                <TableHead>Calls</TableHead>
+                <TableHead>Tokens</TableHead>
+                <TableHead>Tools</TableHead>
+                <TableHead>Retries</TableHead>
+                <TableHead>Latency</TableHead>
+                <TableHead>Failures</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {audit.by_role_model.map((item) => (
+                <TableRow key={`${item.role}:${item.model}`}>
+                  <TableCell>
+                    <p className="font-medium">{titleCase(item.role)}</p>
+                    <p className="font-mono text-xs break-all text-muted-foreground">
+                      {item.model}
+                    </p>
+                  </TableCell>
+                  <TableCell>{formatNumber(item.calls)}</TableCell>
+                  <TableCell>{formatNumber(item.tokens)}</TableCell>
+                  <TableCell>{formatNumber(item.tool_calls)}</TableCell>
+                  <TableCell>{formatNumber(item.retries)}</TableCell>
+                  <TableCell>{formatNumber(item.latency_ms)} ms</TableCell>
+                  <TableCell>{formatNumber(item.failures)}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function CoverageCard({
+  obligations,
+}: {
+  obligations: RunDetail["coverage_obligations"]
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Coverage obligations</CardTitle>
+        <CardDescription>
+          Persisted source coverage and disposition changes.
+        </CardDescription>
+        <CardAction>
+          <Badge variant="outline">{obligations.length}</Badge>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        {obligations.length ? (
+          obligations.map((obligation) => (
+            <article
+              key={obligation.id}
+              className="flex min-w-0 flex-col gap-3 rounded-lg border p-3"
+            >
+              <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="font-mono text-xs break-all">{obligation.id}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {obligation.source} · {titleCase(obligation.role)}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Badge variant="outline">
+                    {titleCase(obligation.priority)}
+                  </Badge>
+                  <Badge variant="secondary">
+                    {titleCase(obligation.disposition)}
+                  </Badge>
+                </div>
+              </div>
+              <ol className="flex flex-wrap gap-2 text-xs">
+                {obligation.state_changes.map((change) => (
+                  <li key={change.sequence}>
+                    <Badge variant="outline">{titleCase(change.state)}</Badge>
+                  </li>
+                ))}
+              </ol>
+            </article>
+          ))
+        ) : (
+          <Empty className="min-h-32">
+            <EmptyHeader>
+              <EmptyTitle>No Coverage Obligations</EmptyTitle>
+              <EmptyDescription>
+                Coverage will appear after the Planner records source work.
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function formatNumber(value: number) {
+  return new Intl.NumberFormat().format(value)
 }
 
 function StateBadge({ state }: { state: string }) {

@@ -80,7 +80,7 @@ import {
   type SourcesError,
   type SourcesSnapshot,
 } from "@/lib/sources"
-import { startRun } from "@/lib/runs"
+import { fetchRunSnapshot, startRun, type RunModels } from "@/lib/runs"
 
 const roles: Array<{ value: SourceRole; label: string }> = [
   { value: "implementation", label: "Implementation" },
@@ -88,6 +88,8 @@ const roles: Array<{ value: SourceRole; label: string }> = [
   { value: "requirements", label: "Requirements" },
   { value: "contract", label: "Contract" },
 ]
+
+type RunMode = "gateway_semantic" | "fixture_success" | "fixture_failure"
 
 export function SourcesPage({
   token,
@@ -104,7 +106,8 @@ export function SourcesPage({
     null
   )
   const [working, setWorking] = useState<string | null>(null)
-  const [fixture, setFixture] = useState<"success" | "failure">("success")
+  const [runMode, setRunMode] = useState<RunMode>("gateway_semantic")
+  const [runModels, setRunModels] = useState<RunModels | null | undefined>()
   const [linkConfiguredId, setLinkConfiguredId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -116,6 +119,23 @@ export function SourcesPage({
       },
       (reason: SourcesError) => {
         if (!controller.signal.aborted) setError(reason)
+      }
+    )
+    return () => controller.abort()
+  }, [reload, token])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    fetchRunSnapshot(token, controller.signal).then(
+      (models) => {
+        setRunModels(models)
+        setRunMode("gateway_semantic")
+      },
+      () => {
+        if (!controller.signal.aborted) {
+          setRunModels(null)
+          setRunMode("fixture_success")
+        }
       }
     )
     return () => controller.abort()
@@ -168,7 +188,11 @@ export function SourcesPage({
       const run = await startRun(token, {
         configuration_digest: preflight.configuration_digest,
         source_set_digest: preflight.source_set_digest,
-        fixture,
+        ...(runMode === "fixture_success"
+          ? { fixture: "success" as const }
+          : runMode === "fixture_failure"
+            ? { fixture: "failure" as const }
+            : {}),
       })
       onRunStarted?.(run.run_id)
     } catch (reason) {
@@ -274,9 +298,10 @@ export function SourcesPage({
       <PreflightCard
         preflight={preflight}
         error={preflightError}
-        fixture={fixture}
+        runMode={runMode}
+        runModels={runModels}
         starting={working === "start-run"}
-        onFixtureChange={setFixture}
+        onRunModeChange={setRunMode}
         onStart={startProductionRun}
       />
 
@@ -681,16 +706,18 @@ function RevisionPolicyForm({
 function PreflightCard({
   preflight,
   error,
-  fixture,
+  runMode,
+  runModels,
   starting,
-  onFixtureChange,
+  onRunModeChange,
   onStart,
 }: {
   preflight: PreflightSnapshot | null
   error: SourcesError | null
-  fixture: "success" | "failure"
+  runMode: RunMode
+  runModels: RunModels | null | undefined
   starting: boolean
-  onFixtureChange: (fixture: "success" | "failure") => void
+  onRunModeChange: (mode: RunMode) => void
   onStart: () => void
 }) {
   return (
@@ -775,23 +802,43 @@ function PreflightCard({
           <p className="font-mono text-xs break-all text-muted-foreground">
             Source Set {preflight.source_set_digest}
           </p>
-          <div className="flex flex-col items-start gap-2 sm:items-end">
+          <div className="flex w-full flex-col items-start gap-2 sm:w-auto sm:items-end">
+            <p className="max-w-md text-xs text-muted-foreground sm:text-right">
+              {runModels === undefined
+                ? "Checking the Workspace Gateway selection…"
+                : runModels
+                  ? `${runModels.profile.name ?? runModels.profile.id} · ${runModels.default_model} · ${runModels.concurrency} concurrent`
+                  : "No verified Gateway selection. Deterministic fixtures remain available for local testing."}
+            </p>
             <ToggleGroup
-              value={[fixture]}
+              value={[runMode]}
               onValueChange={(value) => {
-                if (value[0] === "success" || value[0] === "failure")
-                  onFixtureChange(value[0])
+                if (
+                  value[0] === "gateway_semantic" ||
+                  value[0] === "fixture_success" ||
+                  value[0] === "fixture_failure"
+                )
+                  onRunModeChange(value[0])
               }}
               variant="outline"
               size="sm"
-              aria-label="Deterministic fixture outcome"
+              className="w-full flex-wrap sm:w-fit"
+              aria-label="Run execution mode"
             >
-              <ToggleGroupItem value="success">Review Required</ToggleGroupItem>
-              <ToggleGroupItem value="failure">
+              <ToggleGroupItem value="gateway_semantic" disabled={!runModels}>
+                Gateway Semantic
+              </ToggleGroupItem>
+              <ToggleGroupItem value="fixture_success">
+                Review Required
+              </ToggleGroupItem>
+              <ToggleGroupItem value="fixture_failure">
                 Controlled Failure
               </ToggleGroupItem>
             </ToggleGroup>
-            <Button disabled={starting} onClick={onStart}>
+            <Button
+              disabled={starting || runModels === undefined}
+              onClick={onStart}
+            >
               {starting ? (
                 <Spinner data-icon="inline-start" />
               ) : (
