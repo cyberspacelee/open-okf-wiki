@@ -1310,6 +1310,78 @@ def test_bundle_scope_finds_and_reads_an_accepted_concept(tmp_path: Path) -> Non
     assert result.segments[0].claim_ids == (BUNDLE_CLAIM_ID,)
 
 
+@pytest.mark.parametrize("status", ["stale", "disputed"])
+def test_bundle_scope_excludes_non_active_concepts_from_query_discovery(
+    tmp_path: Path, status: str
+) -> None:
+    application = query_workspace(tmp_path)
+    with sqlite3.connect(application.database_path) as connection:
+        connection.execute(
+            "UPDATE accepted_concepts SET status = ? WHERE run_id = ? AND id = ?",
+            (status, "run-1", ATTACK_CONCEPT_ID),
+        )
+    discovered = []
+    retrieved = []
+    rejected = []
+
+    def refuse(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
+        returns = [
+            part
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+            if isinstance(part, ToolReturnPart)
+        ]
+        retries = [
+            part
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+            if isinstance(part, RetryPromptPart)
+        ]
+        if not returns and not retries:
+            part = ToolCallPart("find_concepts", {"query": "Injection bait"}, "find")
+        elif len(returns) == 1 and not retries:
+            content = returns[-1].content
+            assert isinstance(content, list)
+            discovered.extend(content)
+            part = ToolCallPart("renderable_claims", {"concept_id": ATTACK_CONCEPT_ID}, "read")
+        else:
+            if retries:
+                rejected.append(True)
+            elif returns:
+                content = returns[-1].content
+                assert isinstance(content, list)
+                retrieved.extend(content)
+            part = ToolCallPart(
+                info.output_tools[0].name,
+                {"segments": [{"kind": "insufficient_support"}]},
+                "refuse",
+            )
+        return ModelResponse([part])
+
+    result = asyncio.run(
+        QueryAgent(
+            FunctionModel(refuse),
+            database=application.database_path,
+            model_name="query-model",
+        ).ask(
+            KnowledgeQueryContext(
+                run_id="run-1",
+                source_set_digest="source-set-1",
+                bundle="published",
+                scope="bundle",
+            ),
+            "What does the stale or disputed Concept say?",
+        )
+    )
+
+    assert result.outcome == "insufficient_support"
+    assert discovered == []
+    assert retrieved == []
+    assert rejected == [True]
+
+
 def test_workspace_query_uses_selected_query_model_and_current_page_scope(
     tmp_path: Path,
 ) -> None:

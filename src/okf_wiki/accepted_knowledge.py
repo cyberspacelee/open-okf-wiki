@@ -935,7 +935,7 @@ class AcceptedKnowledgeStore:
             ]
         return [concept for concept_id in ids if (concept := self.get_concept(run_id, concept_id))]
 
-    def find_concept_summaries(
+    def find_active_concept_summaries(
         self, run_id: str, query: str, limit: int = 20
     ) -> list[ConceptSummary]:
         if limit < 1:
@@ -944,7 +944,7 @@ class AcceptedKnowledgeStore:
             rows = list(
                 connection.execute(
                     """SELECT id, canonical_name, status FROM accepted_concepts
-                       WHERE run_id = ? AND (
+                       WHERE run_id = ? AND status = 'active' AND (
                            instr(lower(canonical_name), lower(?)) > 0
                            OR instr(lower(aliases_json), lower(?)) > 0
                        )

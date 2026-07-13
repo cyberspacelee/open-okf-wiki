@@ -228,7 +228,7 @@ async def find_concepts(ctx: RunContext[QueryDeps], query: str) -> list[ConceptS
         raise ModelRetry("Concept search is limited to 200 characters")
     async with asyncio.timeout(ctx.deps.tool_timeout_seconds):
         concepts = await asyncio.to_thread(
-            ctx.deps.store.find_concept_summaries,
+            ctx.deps.store.find_active_concept_summaries,
             ctx.deps.context.run_id,
             query,
             MAX_CONCEPT_RESULTS,
