@@ -16,6 +16,7 @@ from pydantic_ai.messages import RetryPromptPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 import okf_wiki.cli as cli
+import okf_wiki.review as review_module
 from okf_wiki import workspace as workspace_module
 from okf_wiki.accepted_knowledge import AcceptedKnowledgeStore
 from okf_wiki.cli import UserError, transition
@@ -32,6 +33,7 @@ from okf_wiki.worker import WorkerAgent
 
 
 def run(command: list[str], cwd: Path, expected: int = 0) -> dict:
+    command = with_review_digest(command, cwd)
     result = subprocess.run(
         [sys.executable, "-m", "okf_wiki", *command],
         cwd=cwd,
@@ -44,6 +46,7 @@ def run(command: list[str], cwd: Path, expected: int = 0) -> dict:
 
 
 def run_with_fault(command: list[str], cwd: Path, fault: str) -> subprocess.CompletedProcess[str]:
+    command = with_review_digest(command, cwd)
     return subprocess.run(
         [sys.executable, "-m", "okf_wiki", *command],
         cwd=cwd,
@@ -52,6 +55,20 @@ def run_with_fault(command: list[str], cwd: Path, fault: str) -> subprocess.Comp
         text=True,
         capture_output=True,
     )
+
+
+def with_review_digest(command: list[str], cwd: Path) -> list[str]:
+    if not command or command[0] != "review" or "--expected-digest" in command:
+        return command
+    status = subprocess.run(
+        [sys.executable, "-m", "okf_wiki", "status", command[1]],
+        cwd=cwd,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    digest = json.loads(status.stdout)["review"].get("authoritative_digest", "0" * 64)
+    return [*command, "--expected-digest", digest]
 
 
 def head_revision(source: Path) -> str:
@@ -114,6 +131,11 @@ def write_source_set_config(
         )
     config.write_text("\n".join(lines) + profile, encoding="utf-8")
     return config
+
+
+def test_review_cli_requires_expected_authoritative_digest() -> None:
+    with pytest.raises(SystemExit):
+        cli.parser().parse_args(["review", "run-1", "--approve"])
 
 
 def commit_source(source: Path, text: str | None) -> str:
@@ -807,6 +829,9 @@ def test_reject_cancel_and_failure_leave_the_published_bundle_unchanged(tmp_path
 
     second_revision = commit_source(source, "# Example\n\nChanged source knowledge.\n")
     rejected = build_run(workspace, source, second_revision)
+    expected_digest = run(["status", rejected["run_id"]], workspace)["review"][
+        "authoritative_digest"
+    ]
     rejection = run(["review", rejected["run_id"], "--reject"], workspace)
     assert rejection == {
         "decision": "rejected",
@@ -816,7 +841,10 @@ def test_reject_cancel_and_failure_leave_the_published_bundle_unchanged(tmp_path
     }
     rejected_status = run(["status", rejected["run_id"]], workspace)
     assert rejected_status["state"] == "exploring"
-    assert rejected_status["events"][-1]["details"] == {"decision": "rejected"}
+    assert rejected_status["events"][-1]["details"] == {
+        "decision": "rejected",
+        "expected_digest": expected_digest,
+    }
     assert published.resolve() == original_release
     assert (published / "overview.md").read_bytes() == original_overview
 
@@ -1037,17 +1065,17 @@ def test_publication_and_cancellation_race_keeps_state_and_link_consistent(
     assert row is not None
     barrier = threading.Barrier(2)
     if winner == "publisher":
-        original_publish = cli.publish
+        original_publish = review_module.publish
 
         def synchronized_publish(staging: Path, destination: Path, run_id: str) -> str | None:
             result = original_publish(staging, destination, run_id)
             barrier.wait()
             return result
 
-        monkeypatch.setattr(cli, "publish", synchronized_publish)
+        monkeypatch.setattr(review_module, "publish", synchronized_publish)
 
         def publication_competitor() -> None:
-            cli.complete_publication(publisher_connection, row)
+            review_module.complete_publication(publisher_connection, row)
 
         def cancel_competitor() -> dict:
             barrier.wait()
@@ -1058,7 +1086,7 @@ def test_publication_and_cancellation_race_keeps_state_and_link_consistent(
         class SimulatedCrash(BaseException):
             pass
 
-        original_restore = cli.restore_publication
+        original_restore = review_module.restore_publication
         after_publication_reached = False
 
         def synchronized_restore(destination: Path, previous: str | None, run_id: str) -> None:
@@ -1071,12 +1099,12 @@ def test_publication_and_cancellation_race_keeps_state_and_link_consistent(
                 after_publication_reached = True
                 raise SimulatedCrash
 
-        monkeypatch.setattr(cli, "restore_publication", synchronized_restore)
-        monkeypatch.setattr(cli, "crash_if_requested", crash_after_publication)
+        monkeypatch.setattr(review_module, "restore_publication", synchronized_restore)
+        monkeypatch.setattr(review_module, "crash_if_requested", crash_after_publication)
 
         def publication_competitor() -> None:
             barrier.wait()
-            cli.complete_publication(publisher_connection, row)
+            review_module.complete_publication(publisher_connection, row)
 
         def cancel_competitor() -> dict:
             return workspace_module.cancel_run_checkpoint(database, second["run_id"])
@@ -1090,7 +1118,7 @@ def test_publication_and_cancellation_race_keeps_state_and_link_consistent(
                 cancellation.result(timeout=10)
         else:
             assert cancellation.result(timeout=10)["state"] == "cancelled"
-            with pytest.raises(UserError):
+            with pytest.raises(review_module.ReviewError):
                 publication.result(timeout=10)
             assert after_publication_reached is False
     publisher_connection.close()
@@ -1205,6 +1233,7 @@ def test_review_report_and_machine_state_include_persisted_verification_findings
     )
     assert publishing_event["details"] == {
         "decision": "approved",
+        "expected_digest": status["review"]["authoritative_digest"],
         "resolved_findings": ["candidate-review:contradiction:disputed:warning"],
     }
 

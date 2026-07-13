@@ -615,6 +615,43 @@ test("loads the built Console through the real Python launcher", async ({
   await page.setViewportSize({ width: 1280, height: 720 })
   await page.getByRole("button", { name: "Sources" }).click()
   await expect(preflightCard).toBeVisible()
+  await preflightCard.getByRole("button", { name: "Review Required" }).click()
+  const reviewRunResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/api/v1/runs"
+  )
+  await preflightCard.getByRole("button", { name: "Start Run" }).click()
+  expect((await reviewRunResponse).status()).toBe(200)
+  await expect(page.locator('[aria-current="step"]')).toHaveText(
+    "Review Required"
+  )
+  await page.getByRole("button", { name: "Review" }).click()
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Review & publish" })
+  ).toBeVisible()
+  await expect(page.getByTestId("review-digest")).toHaveText(/[0-9a-f]{64}/)
+  await page
+    .getByRole("row", { name: /overview\.md Added/ })
+    .getByRole("button", { name: "Details" })
+    .click()
+  await expect(page.getByRole("dialog")).toContainText(
+    "Overview of the fixed source revision."
+  )
+  await page.keyboard.press("Escape")
+  const approvalResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname.endsWith("/decision")
+  )
+  await page.getByRole("button", { name: "Approve & publish" }).click()
+  await page.getByRole("button", { name: "Confirm publication" }).click()
+  expect((await approvalResponse).status()).toBe(200)
+  await expect(page.getByRole("alert")).toContainText("published atomically")
+  expect(existsSync(join(workspace, "published", "overview.md"))).toBe(true)
+
+  await page.getByRole("button", { name: "Sources" }).click()
+  await expect(preflightCard).toBeVisible()
 
   await page.screenshot({
     path: "test-results/sources-desktop.png",

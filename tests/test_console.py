@@ -64,6 +64,45 @@ def make_git_source(path: Path) -> None:
     subprocess.run(["git", "commit", "-qm", "source"], cwd=path, check=True)
 
 
+def review_workspace(root: Path) -> tuple[WorkspaceApplication, str]:
+    source = root / "review-source"
+    make_git_source(source)
+    (source / "README.md").write_text(
+        "# Review\n\nCredential handling MUST remain deterministic.\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-qm", "review knowledge"], cwd=source, check=True)
+    workspace = root / "review-workspace"
+    app = WorkspaceApplication(workspace)
+    app.initialize("catalog")
+    app.link_source({"id": "code", "role": "implementation", "checkout": str(source)})
+    settings = app.settings()
+    settings["definition"]["profile"]["dispositions"]["major"] = {
+        "disposition": "open",
+        "reason": None,
+    }
+    app.update_settings(
+        settings["definition"],
+        settings["local_settings"],
+        settings["configuration_digest"],
+    )
+    preflight = app.run_preflight()
+    started = app.start_run(
+        {
+            "configuration_digest": preflight["configuration_digest"],
+            "source_set_digest": preflight["source_set_digest"],
+            "fixture": "success",
+        }
+    )
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if app.run_status(started["run_id"])["state"] == "review_required":
+            return app, started["run_id"]
+        time.sleep(0.05)
+    raise AssertionError("Production Run did not reach Review Required")
+
+
 def test_console_serves_offline_shell_on_loopback_with_security_headers(
     tmp_path: Path, assets: Path
 ) -> None:
@@ -141,6 +180,56 @@ def test_console_workspace_api_matches_cli_success_and_error(tmp_path: Path, ass
     assert response.status_code == 400
     assert response.json() == expected
     assert shell.status_code == 200
+
+
+def test_console_review_api_matches_cli_and_returns_refreshed_stale_snapshot(
+    tmp_path: Path, assets: Path
+) -> None:
+    app, run_id = review_workspace(tmp_path)
+    code, expected = cli(
+        ["workspace", "review-snapshot", run_id, str(app.root)],
+        app.root,
+    )
+    assert code == 0
+    evidence_id = expected["evidence_references"][0]["id"]
+    code, expected_evidence = cli(
+        ["workspace", "review-evidence", run_id, evidence_id, str(app.root)],
+        app.root,
+    )
+    assert code == 0
+    with running_console(app.root, assets) as (server, _):
+        base = f"http://127.0.0.1:{server.server_port}"
+        headers = authorization(server)
+        response = httpx.get(f"{base}/api/v1/reviews/{run_id}", headers=headers)
+        evidence = httpx.get(
+            f"{base}/api/v1/reviews/{run_id}/evidence/{evidence_id}",
+            headers=headers,
+        )
+        assert response.json() == expected
+        assert evidence.json() == expected_evidence
+
+        with sqlite3.connect(app.database_path) as connection:
+            connection.execute(
+                "UPDATE accepted_claims SET statement = statement || ' Changed.' WHERE run_id = ?",
+                (run_id,),
+            )
+        stale = httpx.post(
+            f"{base}/api/v1/reviews/{run_id}/decision",
+            headers={**headers, "Origin": server.origin},
+            json={
+                "decision": "approve",
+                "expected_digest": expected["authoritative_digest"],
+            },
+        )
+
+    code, refreshed = cli(
+        ["workspace", "review-snapshot", run_id, str(app.root)],
+        app.root,
+    )
+    assert code == 0
+    assert stale.status_code == 409
+    assert stale.json()["review"] == refreshed
+    assert app.run_status(run_id)["state"] == "review_required"
 
 
 def test_console_overview_is_produced_by_workspace_application(

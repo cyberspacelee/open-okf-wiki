@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import sqlite3
 import sys
 import tomllib
@@ -27,7 +26,6 @@ from .coverage import (
     DISPOSITIONS,
     major_blockers,
     obligation_rows,
-    refresh_run_coverage,
 )
 from .gateway_common import GatewayError
 from .gateway_profiles import GatewayApplication
@@ -42,7 +40,13 @@ from .java_analysis import (
     is_java_input,
 )
 from .refresh import persist_inspection, prepare_refresh
-from .run_events import append_entity_event, append_run_event
+from .review import (
+    ReviewError,
+    ReviewStaleError,
+    decide_review,
+    validation_errors,
+)
+from .run_events import append_run_event
 from .run_state import RunTransitionError, transition_run
 from .security import MAX_ANALYZABLE_FILE_BYTES, git_read, git_read_bytes
 from .source_identity import source_unit_id, stable_span_id
@@ -631,19 +635,7 @@ def run_validation_errors(
     obligations: list[dict],
     database: Path | None = None,
 ) -> list[str]:
-    coverage = json.loads(row["coverage_json"]) if row["coverage_json"] else None
-    staging = Path(row["staging_dir"])
-    errors = validate_bundle(staging, row["revision"], coverage)
-    expected_manifest = source_set.get("bundle_manifest")
-    if expected_manifest is not None and file_manifest(staging) != expected_manifest:
-        errors.append("Staged Bundle differs from the authoritative rendering")
-    expected_digest = source_set.get("authoritative_digest")
-    if (
-        expected_digest is not None
-        and authoritative_digest(database or db_path(), row["id"], obligations) != expected_digest
-    ):
-        errors.append("Authoritative knowledge changed after the Bundle was rendered")
-    return errors
+    return validation_errors(database or db_path(), row, source_set, obligations)
 
 
 def render_checkpoint(
@@ -675,6 +667,7 @@ def render_checkpoint(
     crash_if_requested("after_staging")
     crash_if_requested("before_review")
     source_set["authoritative_digest"] = authoritative_digest(database, run_id, obligations)
+    review["authoritative_digest"] = source_set["authoritative_digest"]
     source_set["bundle_manifest"] = file_manifest(Path(row["staging_dir"]))
     source_set["review"] = review
     with connection:
@@ -1045,175 +1038,10 @@ def check(target: str) -> int:
     return bool(errors)
 
 
-def publish(staging: Path, destination: Path, run_id: str) -> str | None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if os.path.lexists(destination) and not destination.is_symlink():
-        raise UserError("Published Bundle path must be absent or a producer-managed symlink")
-    previous_target = os.readlink(destination) if destination.is_symlink() else None
-    releases = destination.parent / f".{destination.name}.releases"
-    releases.mkdir(exist_ok=True)
-    final_release = releases / run_id
-    temporary_release = releases / f".{run_id}.tmp"
-    temporary_link = destination.parent / f".{destination.name}.{run_id}.tmp"
-    shutil.rmtree(temporary_release, ignore_errors=True)
-    temporary_link.unlink(missing_ok=True)
-    try:
-        if final_release.exists():
-            if file_manifest(final_release) != file_manifest(staging):
-                raise UserError("Existing release differs from the staged Bundle")
-        else:
-            shutil.copytree(staging, temporary_release)
-            os.replace(temporary_release, final_release)
-        os.symlink(
-            os.path.relpath(final_release, destination.parent),
-            temporary_link,
-            target_is_directory=True,
-        )
-        os.replace(temporary_link, destination)
-    finally:
-        shutil.rmtree(temporary_release, ignore_errors=True)
-        temporary_link.unlink(missing_ok=True)
-    return previous_target
-
-
-def restore_publication(destination: Path, previous_target: str | None, run_id: str) -> None:
-    temporary_link = destination.parent / f".{destination.name}.{run_id}.rollback"
-    temporary_link.unlink(missing_ok=True)
-    try:
-        if previous_target is None:
-            destination.unlink(missing_ok=True)
-        else:
-            os.symlink(previous_target, temporary_link, target_is_directory=True)
-            os.replace(temporary_link, destination)
-    finally:
-        temporary_link.unlink(missing_ok=True)
-
-
-def previous_publication_target(row: sqlite3.Row, source_set: dict) -> str | None:
-    base_run_id = source_set.get("base_run_id")
-    if not base_run_id:
-        return None
-    destination = Path(row["publish_dir"])
-    return os.path.relpath(
-        destination.parent / f".{destination.name}.releases" / base_run_id,
-        destination.parent,
-    )
-
-
-def complete_publication(connection: sqlite3.Connection, row: sqlite3.Row) -> None:
-    run_id = row["id"]
-    destination = Path(row["publish_dir"])
-    source_set = json.loads(row["source_set_json"])
-    previous_target = previous_publication_target(row, source_set)
-    failure: Exception | None = None
-    try:
-        with connection:
-            connection.execute("BEGIN IMMEDIATE")
-            current = connection.execute(
-                "SELECT state FROM runs WHERE id = ?", (run_id,)
-            ).fetchone()
-            if current is None or current["state"] != "publishing":
-                raise UserError(f"Run {run_id} is not in publishing")
-            connection.execute("SAVEPOINT publication")
-            try:
-                publish(Path(row["staging_dir"]), destination, run_id)
-                crash_if_requested("after_publication")
-                transition_run(connection, run_id, "publishing", "published")
-            except Exception as error:
-                connection.execute("ROLLBACK TO publication")
-                connection.execute("RELEASE publication")
-                try:
-                    restore_publication(destination, previous_target, run_id)
-                except Exception as rollback_error:
-                    error = UserError(f"{error}; publication rollback failed: {rollback_error}")
-                transition_run(connection, run_id, "publishing", "failed", error=str(error))
-                failure = error
-            else:
-                connection.execute("RELEASE publication")
-    except RunTransitionError as error:
-        raise UserError(str(error)) from error
-    if failure is not None:
-        raise UserError(str(failure)) from failure
-
-
-def review(run_id: str, approve: bool) -> int:
-    connection = connect()
-    row = get_run(connection, run_id)
-    if row["state"] != "review_required":
-        connection.close()
-        raise UserError(f"Run {run_id} is not Review Required")
-    if not approve:
-        knowledge = AcceptedKnowledgeStore(db_path())
-        with connection:
-            source_set = json.loads(row["source_set_json"]) if row["source_set_json"] else {}
-            transition_run(
-                connection,
-                run_id,
-                "review_required",
-                "exploring",
-                details={"decision": "rejected"},
-            )
-            reopened = [
-                (item[0], item[1])
-                for item in connection.execute(
-                    """SELECT id, disposition FROM coverage_obligations
-                       WHERE run_id = ?
-                         AND disposition IN ('covered', 'excluded', 'deferred')
-                       ORDER BY id""",
-                    (run_id,),
-                )
-            ]
-            connection.execute(
-                """UPDATE coverage_obligations SET disposition = 'open', reason = NULL
-                   WHERE run_id = ?
-                     AND disposition IN ('covered', 'excluded', 'deferred')""",
-                (run_id,),
-            )
-            for obligation_id, previous in reopened:
-                append_entity_event(
-                    connection,
-                    run_id,
-                    "coverage_obligation",
-                    obligation_id,
-                    previous,
-                    "open",
-                )
-            knowledge.reject_run(connection, run_id)
-            source_set["accepted_knowledge"] = []
-            connection.execute(
-                "UPDATE runs SET source_set_json = ?, updated_at = ? WHERE id = ?",
-                (json.dumps(source_set, sort_keys=True), now(), run_id),
-            )
-            refresh_run_coverage(connection, run_id)
-        connection.close()
-        emit({"decision": "rejected", "ok": True, "run_id": run_id, "state": "exploring"})
-        return 0
-    source_set = json.loads(row["source_set_json"]) if row["source_set_json"] else {}
-    obligations = obligation_rows(connection, run_id)
-    errors = run_validation_errors(row, source_set, obligations)
-    if errors:
-        transition(connection, run_id, "review_required", "failed", error="; ".join(errors))
-        connection.close()
-        emit({"errors": errors, "ok": False, "run_id": run_id, "state": "failed"})
-        return 1
-    blockers = verification_blockers(db_path(), run_id)
-    transition(
-        connection,
-        run_id,
-        "review_required",
-        "publishing",
-        details={"decision": "approved", "resolved_findings": blockers},
-    )
-    crash_if_requested("before_publication")
-    try:
-        complete_publication(connection, row)
-    except Exception as error:
-        connection.close()
-        emit({"errors": [str(error)], "ok": False, "run_id": run_id, "state": "failed"})
-        return 1
-    connection.close()
-    emit({"ok": True, "run_id": run_id, "state": "published"})
-    return 0
+def review(run_id: str, approve: bool, expected_digest: str) -> int:
+    result = decide_review(db_path(), run_id, "approve" if approve else "reject", expected_digest)
+    emit({"ok": "errors" not in result, **result})
+    return int("errors" in result)
 
 
 def cancel(run_id: str) -> int:
@@ -1411,6 +1239,7 @@ def parser() -> argparse.ArgumentParser:
     decision = review_command.add_mutually_exclusive_group(required=True)
     decision.add_argument("--approve", action="store_true")
     decision.add_argument("--reject", action="store_true")
+    review_command.add_argument("--expected-digest", required=True)
     cancel_command = subcommands.add_parser("cancel")
     cancel_command.add_argument("run_id")
     recover_command = subcommands.add_parser("recover")
@@ -1472,6 +1301,22 @@ def parser() -> argparse.ArgumentParser:
     workspace_run_status = workspace_commands.add_parser("run-status")
     workspace_run_status.add_argument("run_id")
     workspace_run_status.add_argument("root", nargs="?", default=".")
+    workspace_review_snapshot = workspace_commands.add_parser("review-snapshot")
+    workspace_review_snapshot.add_argument("run_id")
+    workspace_review_snapshot.add_argument("root", nargs="?", default=".")
+    workspace_review_evidence = workspace_commands.add_parser("review-evidence")
+    workspace_review_evidence.add_argument("run_id")
+    workspace_review_evidence.add_argument("evidence_id")
+    workspace_review_evidence.add_argument("root", nargs="?", default=".")
+    workspace_review_bundle = workspace_commands.add_parser("review-bundle")
+    workspace_review_bundle.add_argument("run_id")
+    workspace_review_bundle.add_argument("path")
+    workspace_review_bundle.add_argument("root", nargs="?", default=".")
+    workspace_review = workspace_commands.add_parser("review")
+    workspace_review.add_argument("run_id")
+    workspace_review.add_argument("decision", choices=("approve", "reject"))
+    workspace_review.add_argument("root", nargs="?", default=".")
+    workspace_review.add_argument("--expected-digest", required=True)
     workspace_cancel_run = workspace_commands.add_parser("cancel-run")
     workspace_cancel_run.add_argument("run_id")
     workspace_cancel_run.add_argument("root", nargs="?", default=".")
@@ -1531,7 +1376,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    from .workspace import WorkspaceApplication, WorkspaceError
+    from .workspace import WorkspaceApplication, WorkspaceError, WorkspaceReviewStaleError
 
     arguments = parser().parse_args()
     try:
@@ -1544,7 +1389,7 @@ def main() -> int:
         if arguments.command == "check":
             return check(arguments.target)
         if arguments.command == "review":
-            return review(arguments.run_id, arguments.approve)
+            return review(arguments.run_id, arguments.approve, arguments.expected_digest)
         if arguments.command == "cancel":
             return cancel(arguments.run_id)
         if arguments.command == "eval":
@@ -1646,6 +1491,39 @@ def main() -> int:
                 app = WorkspaceApplication(arguments.root)
                 emit({"ok": True, **app.run_status(arguments.run_id)})
                 return 0
+            elif arguments.workspace_command == "review-snapshot":
+                app = WorkspaceApplication(arguments.root)
+                emit({"ok": True, **app.review_snapshot(arguments.run_id)})
+                return 0
+            elif arguments.workspace_command == "review-evidence":
+                app = WorkspaceApplication(arguments.root)
+                emit(
+                    {
+                        "ok": True,
+                        **app.review_evidence(arguments.run_id, arguments.evidence_id),
+                    }
+                )
+                return 0
+            elif arguments.workspace_command == "review-bundle":
+                app = WorkspaceApplication(arguments.root)
+                emit(
+                    {
+                        "ok": True,
+                        **app.review_bundle_file(arguments.run_id, arguments.path),
+                    }
+                )
+                return 0
+            elif arguments.workspace_command == "review":
+                app = WorkspaceApplication(arguments.root)
+                result = app.decide_review(
+                    arguments.run_id,
+                    {
+                        "decision": arguments.decision,
+                        "expected_digest": arguments.expected_digest,
+                    },
+                )
+                emit({"ok": "errors" not in result, **result})
+                return int("errors" in result)
             elif arguments.workspace_command == "cancel-run":
                 app = WorkspaceApplication(arguments.root)
                 emit({"ok": True, **app.cancel_run(arguments.run_id)})
@@ -1737,7 +1615,16 @@ def main() -> int:
             emit({"ok": True, **snapshot.model_dump(mode="json")})
             return 0
         return recover(arguments.run_id)
-    except (GatewayError, UserError, WorkspaceError) as error:
+    except (ReviewStaleError, WorkspaceReviewStaleError) as error:
+        emit(
+            {
+                "errors": [str(error)],
+                "ok": False,
+                "review": {"ok": True, **error.snapshot},
+            }
+        )
+        return 1
+    except (GatewayError, ReviewError, UserError, WorkspaceError) as error:
         emit({"errors": [str(error)], "ok": False})
         return 1
 

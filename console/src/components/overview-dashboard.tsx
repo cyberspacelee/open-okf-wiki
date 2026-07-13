@@ -38,6 +38,7 @@ import { Separator } from "@/components/ui/separator"
 import { SettingsPage } from "@/components/settings-page"
 import { SourcesPage } from "@/components/sources-page"
 import { RunsPage } from "@/components/runs-page"
+import { ReviewPage } from "@/components/review-page"
 import {
   Sidebar,
   SidebarContent,
@@ -91,7 +92,8 @@ const actionLabels: Record<string, string> = {
   view_run: "View the active run",
 }
 
-type Page = "overview" | "sources" | "runs" | "settings" | "connections"
+type Page =
+  "overview" | "sources" | "runs" | "review" | "settings" | "connections"
 
 export function OverviewDashboard({
   overview,
@@ -103,7 +105,9 @@ export function OverviewDashboard({
   const query = new URLSearchParams(window.location.search)
   const [page, setPage] = useState<Page>(() => {
     const view = query.get("view")
-    return ["sources", "runs", "settings", "connections"].includes(String(view))
+    return ["sources", "runs", "review", "settings", "connections"].includes(
+      String(view)
+    )
       ? (view as Page)
       : "overview"
   })
@@ -129,11 +133,12 @@ export function OverviewDashboard({
   const navigate = useCallback((nextPage: Page, runId?: string) => {
     const parameters = new URLSearchParams()
     if (nextPage !== "overview") parameters.set("view", nextPage)
-    if (nextPage === "runs" && runId) parameters.set("run", runId)
+    if (["runs", "review"].includes(nextPage) && runId)
+      parameters.set("run", runId)
     const url = parameters.size ? `/?${parameters}` : "/"
     window.history.replaceState(null, "", url)
     setPage(nextPage)
-    if (nextPage === "runs") setSelectedRunId(runId ?? null)
+    if (["runs", "review"].includes(nextPage)) setSelectedRunId(runId ?? null)
   }, [])
   const selectRun = useCallback(
     (runId: string) => navigate("runs", runId),
@@ -195,7 +200,9 @@ export function OverviewDashboard({
                         ? "Source Checkouts"
                         : page === "runs"
                           ? "Production Runs"
-                          : "Gateway connections"}
+                          : page === "review"
+                            ? "Review & publish"
+                            : "Gateway connections"}
                 </p>
               </div>
             </div>
@@ -226,6 +233,12 @@ export function OverviewDashboard({
             token={token}
             selectedRunId={selectedRunId}
             onSelectRun={selectRun}
+          />
+        ) : page === "review" ? (
+          <ReviewPage
+            token={token}
+            selectedRunId={selectedRunId}
+            onSelectRun={(runId) => navigate("review", runId)}
           />
         ) : (
           <div className="mx-auto flex w-full max-w-[90rem] flex-col gap-8 px-5 py-7 lg:px-8 lg:py-9">
@@ -322,9 +335,11 @@ function PrimaryNavigation({
                 ? "sources"
                 : label === "Runs"
                   ? "runs"
-                  : label === "Settings"
-                    ? "settings"
-                    : "overview"
+                  : label === "Review"
+                    ? "review"
+                    : label === "Settings"
+                      ? "settings"
+                      : "overview"
           return (
             <SidebarMenuItem key={label}>
               {"href" in item ? (
@@ -346,6 +361,7 @@ function PrimaryNavigation({
                 </SidebarMenuButton>
               ) : label === "Sources" ||
                 label === "Runs" ||
+                label === "Review" ||
                 label === "Settings" ? (
                 <SidebarMenuButton
                   isActive={page === target}

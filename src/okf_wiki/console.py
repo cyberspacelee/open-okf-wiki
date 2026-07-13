@@ -9,7 +9,12 @@ from urllib.parse import quote, unquote, urlsplit
 
 from .gateway_common import GatewayError
 from .gateway_profiles import GatewayApplication
-from .workspace import WorkspaceApplication, WorkspaceError, WorkspaceStaleError
+from .workspace import (
+    WorkspaceApplication,
+    WorkspaceError,
+    WorkspaceReviewStaleError,
+    WorkspaceStaleError,
+)
 
 
 CSP = (
@@ -130,6 +135,30 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             elif path.startswith("/api/v1/runs/") and self.command in {"GET", "HEAD"}:
                 run_id = unquote(path.removeprefix("/api/v1/runs/"))
                 payload = {"ok": True, **self.server.application.run_status(run_id)}
+            elif path.startswith("/api/v1/reviews/"):
+                parts = path.removeprefix("/api/v1/reviews/").split("/")
+                run_id = unquote(parts[0])
+                if len(parts) == 1 and self.command in {"GET", "HEAD"}:
+                    payload = {"ok": True, **self.server.application.review_snapshot(run_id)}
+                elif len(parts) == 2 and parts[1] == "decision" and self.command == "POST":
+                    result = self.server.application.decide_review(run_id, self._json_body())
+                    if "errors" in result:
+                        self._json(422, {"ok": False, **result}, head=head)
+                        return
+                    payload = {"ok": True, **result}
+                elif len(parts) == 3 and parts[1] == "evidence" and self.command in {"GET", "HEAD"}:
+                    payload = {
+                        "ok": True,
+                        **self.server.application.review_evidence(run_id, unquote(parts[2])),
+                    }
+                elif len(parts) == 3 and parts[1] == "bundle" and self.command in {"GET", "HEAD"}:
+                    payload = {
+                        "ok": True,
+                        **self.server.application.review_bundle_file(run_id, unquote(parts[2])),
+                    }
+                else:
+                    self._json(404, {"errors": ["Not found"], "ok": False}, head=head)
+                    return
             elif path == "/api/v1/sources/clone" and self.command == "POST":
                 payload = {"ok": True, **self.server.application.clone_source(self._json_body())}
             elif path == "/api/v1/sources/link" and self.command == "POST":
@@ -215,6 +244,17 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 return
         except ConsoleRequestError as error:
             self._json(error.status, {"errors": [str(error)], "ok": False}, head=head)
+            return
+        except WorkspaceReviewStaleError as error:
+            self._json(
+                409,
+                {
+                    "errors": [str(error)],
+                    "ok": False,
+                    "review": {"ok": True, **error.snapshot},
+                },
+                head=head,
+            )
             return
         except WorkspaceStaleError as error:
             self._json(409, {"errors": [str(error)], "ok": False}, head=head)

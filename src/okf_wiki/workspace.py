@@ -19,6 +19,15 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from .bundle import verification_blockers
 from .coverage import major_blockers
 from .process_identity import process_start_identity
+from .review import (
+    ReviewError,
+    ReviewStaleError,
+    bundle_file_detail,
+    complete_publication,
+    decide_review,
+    evidence_excerpt,
+    review_snapshot,
+)
 from .source_checkouts import (
     FULL_COMMIT_RE,
     SourceCheckoutError,
@@ -45,6 +54,12 @@ class WorkspaceError(ValueError):
 
 class WorkspaceStaleError(WorkspaceError):
     pass
+
+
+class WorkspaceReviewStaleError(WorkspaceStaleError):
+    def __init__(self, snapshot: dict) -> None:
+        super().__init__("Review changed; refresh and decide against the new digest")
+        self.snapshot = snapshot
 
 
 class StrictModel(BaseModel):
@@ -449,7 +464,6 @@ def recover_run_checkpoint(database: Path, run_id: str) -> tuple[int, dict]:
         TERMINAL_STATES,
         advance_preparation,
         advance_rendering,
-        complete_publication,
         get_run,
         run_validation_errors,
     )
@@ -532,7 +546,7 @@ def recover_run_checkpoint(database: Path, run_id: str) -> tuple[int, dict]:
 
 def cancel_run_checkpoint(database: Path, run_id: str) -> dict:
     from .bundle import published_run_id
-    from .cli import previous_publication_target, restore_publication
+    from .review import previous_publication_target, restore_publication
     from .run_state import RunTransitionError, transition_run
 
     connection = sqlite3.connect(database)
@@ -1445,6 +1459,43 @@ class WorkspaceApplication:
                         raise WorkspaceError("Production Run has no recoverable execution mode")
                     self._launch_run_worker(run_id, launch)
         return {**self.run_status(run_id), "recovered_tasks": recovered_tasks}
+
+    def review_snapshot(self, run_id: str) -> dict:
+        self.open()
+        try:
+            return review_snapshot(self.database_path, run_id)
+        except ReviewError as error:
+            raise WorkspaceError(str(error)) from error
+
+    def review_evidence(self, run_id: str, evidence_id: str) -> dict:
+        self.open()
+        try:
+            return evidence_excerpt(self.database_path, run_id, evidence_id)
+        except ReviewError as error:
+            raise WorkspaceError(str(error)) from error
+
+    def review_bundle_file(self, run_id: str, path: str) -> dict:
+        self.open()
+        try:
+            return bundle_file_detail(self.database_path, run_id, path)
+        except ReviewError as error:
+            raise WorkspaceError(str(error)) from error
+
+    def decide_review(self, run_id: str, payload: object) -> dict:
+        if not isinstance(payload, dict) or set(payload) != {"decision", "expected_digest"}:
+            raise WorkspaceError("Review decision requires decision and expected_digest")
+        payload = cast(dict[str, object], payload)
+        decision = payload["decision"]
+        expected_digest = payload["expected_digest"]
+        if not isinstance(decision, str) or not isinstance(expected_digest, str):
+            raise WorkspaceError("Review decision fields must be strings")
+        self.open()
+        try:
+            return decide_review(self.database_path, run_id, decision, expected_digest)
+        except ReviewStaleError as error:
+            raise WorkspaceReviewStaleError(error.snapshot) from error
+        except ReviewError as error:
+            raise WorkspaceError(str(error)) from error
 
     @staticmethod
     def _validate_run_id(run_id: str) -> None:

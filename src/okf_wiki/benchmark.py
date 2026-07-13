@@ -44,6 +44,7 @@ from .benchmark_corpus import (
 from .cli import build, check, finish_run, review
 from .coverage import obligation_rows
 from .knowledge_contracts import AnalysisTask, WorkerBudgets, WorkerRunResult
+from .review import review_snapshot
 from .scheduler import PlannerLimits, PlannedTask, Scheduler, TaskPlan
 
 
@@ -663,12 +664,13 @@ def _execute_run(
         role_invocations or {"planner": 0, "worker": 0, "verifier": 0, "renderer": 0},
     )
     finish_run(run_id)
-    code, published = _capture(review, run_id, True)
+    database = workspace / ".okf-wiki" / "runs.db"
+    digest = review_snapshot(database, run_id)["authoritative_digest"]
+    code, published = _capture(review, run_id, True, digest)
     if code or published.get("state") != "published":
         raise ValueError(f"Benchmark Production Run did not publish: {published}")
     _, status = _capture(__import__("okf_wiki.cli", fromlist=["status"]).status, run_id)
     _, checked = _capture(check, str(publish_dir))
-    database = workspace / ".okf-wiki" / "runs.db"
     store = AcceptedKnowledgeStore(database)
     claims = store.list_claims(run_id)
     claims_by_id = {item["id"]: item for item in claims}

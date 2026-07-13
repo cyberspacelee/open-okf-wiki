@@ -15,7 +15,7 @@ from okf_wiki.gateway_profiles import GatewayApplication, GatewayProfileRegistry
 from okf_wiki.scheduler import Scheduler, SchedulerOutcome
 from okf_wiki.state_schema import migrate_worker_audit
 from okf_wiki.verification import REQUIRED_PERSPECTIVES, VerificationStore
-from okf_wiki.workspace import WorkspaceApplication, WorkspaceError
+from okf_wiki.workspace import WorkspaceApplication, WorkspaceError, WorkspaceReviewStaleError
 
 
 def git(repository: Path, *arguments: str) -> str:
@@ -494,6 +494,190 @@ def test_start_run_pins_preflight_inputs_and_worker_reaches_review_without_gatew
         "tool_calls": 0,
     }
     assert status["models"] is None
+
+
+def test_review_snapshot_exposes_authoritative_changes_and_fixed_evidence(
+    tmp_path: Path,
+) -> None:
+    repository, revision = source_repository(tmp_path)
+    workspace = tmp_path / "workspace"
+    application = WorkspaceApplication(workspace)
+    application.initialize("catalog")
+    application.link_source({"id": "code", "role": "implementation", "checkout": str(repository)})
+    settings = application.settings()
+    settings["definition"]["profile"]["dispositions"]["major"] = {
+        "disposition": "open",
+        "reason": None,
+    }
+    application.update_settings(
+        settings["definition"],
+        settings["local_settings"],
+        settings["configuration_digest"],
+    )
+    preflight = application.run_preflight()
+    started = application.start_run(
+        {
+            "configuration_digest": preflight["configuration_digest"],
+            "source_set_digest": preflight["source_set_digest"],
+            "fixture": "success",
+        }
+    )
+    wait_for_state(application, started["run_id"], "review_required")
+    (repository / "README.md").write_text("Uncommitted replacement.\n")
+
+    snapshot = application.review_snapshot(started["run_id"])
+
+    assert snapshot["state"] == "review_required"
+    assert len(snapshot["authoritative_digest"]) == 64
+    assert snapshot["coverage"]["by_source"]["code"]["total"] == 1
+    assert snapshot["coverage_obligations"][0]["reason"] == (
+        "Deterministic fixture accepted the source-grounded claim."
+    )
+    assert snapshot["knowledge_changes"]["claims"]["added"][0]["statement"].startswith(
+        "Security credential handling"
+    )
+    assert snapshot["knowledge_changes"]["concepts"]["added"][0]["page"].startswith("concepts/")
+    assert snapshot["verification_findings"][0]["perspective"]
+    assert snapshot["bundle_diff"]["added"]
+    evidence = snapshot["evidence_references"][0]
+
+    bundle_file = application.review_bundle_file(started["run_id"], "overview.md")
+    excerpt = application.review_evidence(started["run_id"], evidence["id"])
+
+    assert bundle_file["status"] == "added"
+    assert bundle_file["published"] is None
+    assert revision in bundle_file["staged"]
+    assert excerpt["revision"] == revision
+    assert excerpt["path"] == "README.md"
+    assert excerpt["start_line"] == excerpt["end_line"] == 3
+    assert excerpt["text"] == "Security credential handling MUST remain deterministic."
+    assert "Uncommitted replacement" not in excerpt["text"]
+
+
+def test_review_decision_rejects_stale_digest_and_rejection_reopens_work(
+    tmp_path: Path,
+) -> None:
+    repository, _revision = source_repository(tmp_path)
+    workspace = tmp_path / "workspace"
+    application = WorkspaceApplication(workspace)
+    application.initialize("catalog")
+    application.link_source({"id": "code", "role": "implementation", "checkout": str(repository)})
+    settings = application.settings()
+    settings["definition"]["profile"]["dispositions"]["major"] = {
+        "disposition": "open",
+        "reason": None,
+    }
+    application.update_settings(
+        settings["definition"],
+        settings["local_settings"],
+        settings["configuration_digest"],
+    )
+    preflight = application.run_preflight()
+    started = application.start_run(
+        {
+            "configuration_digest": preflight["configuration_digest"],
+            "source_set_digest": preflight["source_set_digest"],
+            "fixture": "success",
+        }
+    )
+    run_id = started["run_id"]
+    wait_for_state(application, run_id, "review_required")
+    stale = application.review_snapshot(run_id)
+    with sqlite3.connect(application.database_path) as connection:
+        connection.execute(
+            "UPDATE accepted_claims SET statement = statement || ' Changed.' WHERE run_id = ?",
+            (run_id,),
+        )
+
+    with pytest.raises(WorkspaceReviewStaleError) as raised:
+        application.decide_review(
+            run_id,
+            {"decision": "approve", "expected_digest": stale["authoritative_digest"]},
+        )
+
+    refreshed = raised.value.snapshot
+    assert refreshed["authoritative_digest"] != stale["authoritative_digest"]
+    assert application.run_status(run_id)["state"] == "review_required"
+    assert not (workspace / "published").exists()
+
+    rejected = application.decide_review(
+        run_id,
+        {"decision": "reject", "expected_digest": refreshed["authoritative_digest"]},
+    )
+
+    assert rejected == {"decision": "rejected", "run_id": run_id, "state": "exploring"}
+    assert application.run_status(run_id)["state"] == "exploring"
+    assert not (workspace / "published").exists()
+    with sqlite3.connect(application.database_path) as connection:
+        details = json.loads(
+            connection.execute(
+                "SELECT details FROM run_events WHERE run_id = ? AND state = 'exploring' "
+                "ORDER BY sequence DESC LIMIT 1",
+                (run_id,),
+            ).fetchone()[0]
+        )
+    assert details == {
+        "decision": "rejected",
+        "expected_digest": refreshed["authoritative_digest"],
+    }
+
+
+def test_review_approval_revalidates_before_atomic_publication(tmp_path: Path) -> None:
+    repository, _revision = source_repository(tmp_path)
+    workspace = tmp_path / "workspace"
+    application = WorkspaceApplication(workspace)
+    application.initialize("catalog")
+    application.link_source({"id": "code", "role": "implementation", "checkout": str(repository)})
+    preflight = application.run_preflight()
+    started = application.start_run(
+        {
+            "configuration_digest": preflight["configuration_digest"],
+            "source_set_digest": preflight["source_set_digest"],
+            "fixture": "success",
+        }
+    )
+    run_id = started["run_id"]
+    wait_for_state(application, run_id, "review_required")
+    snapshot = application.review_snapshot(run_id)
+    staging = application.root / ".okf-wiki" / "runs" / run_id / "staging"
+    overview = staging / "overview.md"
+    overview.write_text(overview.read_text() + "\nReviewer edit.\n")
+
+    failed = application.decide_review(
+        run_id,
+        {"decision": "approve", "expected_digest": snapshot["authoritative_digest"]},
+    )
+
+    assert failed["state"] == "failed"
+    assert "authoritative rendering" in " ".join(failed["errors"])
+    assert not (workspace / "published").exists()
+
+    clean_workspace = tmp_path / "clean-workspace"
+    clean = WorkspaceApplication(clean_workspace)
+    clean.initialize("catalog")
+    clean.link_source({"id": "code", "role": "implementation", "checkout": str(repository)})
+    clean_preflight = clean.run_preflight()
+    clean_started = clean.start_run(
+        {
+            "configuration_digest": clean_preflight["configuration_digest"],
+            "source_set_digest": clean_preflight["source_set_digest"],
+            "fixture": "success",
+        }
+    )
+    clean_run_id = clean_started["run_id"]
+    wait_for_state(clean, clean_run_id, "review_required")
+    clean_snapshot = clean.review_snapshot(clean_run_id)
+
+    approved = clean.decide_review(
+        clean_run_id,
+        {
+            "decision": "approve",
+            "expected_digest": clean_snapshot["authoritative_digest"],
+        },
+    )
+
+    assert approved["state"] == "published"
+    assert (clean_workspace / "published" / "overview.md").is_file()
 
 
 def test_failure_fixture_preserves_recorded_progress_and_actionable_error(
