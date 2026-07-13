@@ -13,7 +13,7 @@ from .coverage import obligation_rows
 from .knowledge_contracts import AnalysisTask, WorkerProposal, WorkerRunResult
 from .run_state import RUN_TRANSITIONS, transition_run
 from .scheduler import PlannedTask, PlannerSummary, Scheduler, TaskPlan
-from .security import git_read_bytes
+from .security import git_read_bytes, redact_secrets
 from .verification import (
     AcceptancePolicy,
     VerificationFinding,
@@ -234,6 +234,24 @@ def run(root: Path, run_id: str, fixture: str) -> None:
         advance_rendering(connection, run_id)
 
 
+def _safe_error(root: Path, run_id: str, error: Exception) -> str:
+    from .gateway_profiles import GatewayApplication
+
+    gateways = GatewayApplication()
+    secrets = [str(gateways.registry.root)]
+    try:
+        with sqlite3.connect(root / ".okf-wiki" / "runs.db") as connection:
+            connection.row_factory = sqlite3.Row
+            source_set = json.loads(get_run(connection, run_id)["source_set_json"])
+        profile_id = source_set["workspace_configuration"]["resolved_models"]["profile"]["id"]
+        profile = gateways.registry.get(profile_id)
+        secrets.extend(profile.headers.values())
+        secrets.append(gateways.registry.credential(profile_id))
+    except Exception:
+        pass
+    return redact_secrets(str(error), tuple(secrets))
+
+
 def main() -> int:
     if len(sys.argv) != 4:
         return 2
@@ -248,7 +266,13 @@ def main() -> int:
             row = get_run(connection, run_id)
             if row["state"] in RUN_TRANSITIONS and "failed" in RUN_TRANSITIONS[row["state"]]:
                 with connection:
-                    transition_run(connection, run_id, row["state"], "failed", error=str(error))
+                    transition_run(
+                        connection,
+                        run_id,
+                        row["state"],
+                        "failed",
+                        error=_safe_error(root, run_id, error),
+                    )
         return 1
     return 0
 
