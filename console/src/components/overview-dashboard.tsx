@@ -45,7 +45,6 @@ import { Separator } from "@/components/ui/separator"
 import { SettingsPage } from "@/components/settings-page"
 import { SourcesPage } from "@/components/sources-page"
 import { RunsPage } from "@/components/runs-page"
-import { ReviewPage } from "@/components/review-page"
 import {
   Sidebar,
   SidebarContent,
@@ -84,6 +83,12 @@ import { cn } from "@/lib/utils"
 const KnowledgePage = lazy(() =>
   import("@/components/knowledge-page").then((module) => ({
     default: module.KnowledgePage,
+  }))
+)
+
+const ReviewPage = lazy(() =>
+  import("@/components/review-page").then((module) => ({
+    default: module.ReviewPage,
   }))
 )
 
@@ -263,11 +268,19 @@ export function OverviewDashboard({
             onSelectRun={selectRun}
           />
         ) : page === "review" ? (
-          <ReviewPage
-            token={token}
-            selectedRunId={selectedRunId}
-            onSelectRun={(runId) => navigate("review", runId)}
-          />
+          <Suspense
+            fallback={
+              <p className="p-8 text-sm text-muted-foreground" role="status">
+                Loading review…
+              </p>
+            }
+          >
+            <ReviewPage
+              token={token}
+              selectedRunId={selectedRunId}
+              onSelectRun={(runId) => navigate("review", runId)}
+            />
+          </Suspense>
         ) : page === "knowledge" ? (
           <Suspense
             fallback={
