@@ -26,6 +26,8 @@ const identity = {
   state: "review_required",
 }
 
+const conceptId = `concept:${"c".repeat(64)}`
+
 const diffOptions = [
   {
     base: "previous",
@@ -570,6 +572,7 @@ async function mockKnowledge(page: Page) {
             }
           : identity),
         path,
+        concept_id: details ? null : conceptId,
         title: details
           ? "Details"
           : published

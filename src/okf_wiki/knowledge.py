@@ -343,10 +343,19 @@ class KnowledgeReader:
         backlinks = next(
             (item["backlinks"] for item in self.pages(selection) if item["path"] == path), []
         )
+        with sqlite3.connect(self.database) as connection:
+            concept_ids = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT concept_id FROM page_plans WHERE run_id = ? AND path = ?",
+                    (selection.run_id, path),
+                )
+            ]
         return {
             **selection.identity(),
             "backlinks": backlinks,
             "blocks": blocks,
+            "concept_id": concept_ids[0] if len(concept_ids) == 1 else None,
             "diagnostics": renderer.diagnostics,
             "metadata": metadata,
             "outline": renderer.outline,

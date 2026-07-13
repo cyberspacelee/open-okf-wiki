@@ -237,7 +237,28 @@ def _migration_5(connection: sqlite3.Connection) -> None:
     )
 
 
-MIGRATIONS = (_migration_1, _migration_2, _migration_3, _migration_4, _migration_5)
+def _migration_6(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS query_audit (
+            id TEXT PRIMARY KEY,
+            model TEXT NOT NULL,
+            usage_json TEXT NOT NULL,
+            latency_ms INTEGER NOT NULL,
+            outcome TEXT NOT NULL,
+            cited_claim_ids_json TEXT NOT NULL,
+            cited_evidence_ids_json TEXT NOT NULL
+        )"""
+    )
+
+
+MIGRATIONS = (
+    _migration_1,
+    _migration_2,
+    _migration_3,
+    _migration_4,
+    _migration_5,
+    _migration_6,
+)
 CURRENT_STATE_SCHEMA_VERSION = len(MIGRATIONS)
 
 

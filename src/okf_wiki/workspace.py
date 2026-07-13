@@ -1056,6 +1056,124 @@ class WorkspaceApplication:
         except ValueError as error:
             raise WorkspaceError(str(error)) from error
 
+    def query_knowledge(self, payload: object) -> dict:
+        required = {"question", "bundle", "run_id", "source_set_digest", "scope"}
+        if not isinstance(payload, dict) or set(payload) not in (required, required | {"page"}):
+            raise WorkspaceError(
+                "Knowledge Query requires question, Bundle, Run, Source Set digest, scope, "
+                "and a page for Concept scope"
+            )
+        values = cast(dict[str, object], payload)
+        if any(not isinstance(values[key], str) for key in required):
+            raise WorkspaceError("Knowledge Query fields must be strings")
+        question = cast(str, values["question"])
+        bundle = cast(str, values["bundle"])
+        run_id = cast(str, values["run_id"])
+        source_set_digest = cast(str, values["source_set_digest"])
+        scope = cast(str, values["scope"])
+        if not question.strip():
+            raise WorkspaceError("Knowledge Query must not be blank")
+        if len(question) > 4_000:
+            raise WorkspaceError("Knowledge Query exceeds 4000 characters")
+        self._validate_run_id(run_id)
+        if bundle not in {"staged", "published"}:
+            raise WorkspaceError("Knowledge Query Bundle must be staged or published")
+        if scope not in {"concept", "bundle"}:
+            raise WorkspaceError("Knowledge Query scope must be concept or bundle")
+        snapshot = self.open()
+        page = values.get("page")
+        if scope == "concept":
+            if not isinstance(page, str) or not page:
+                raise WorkspaceError("Concept-scoped Knowledge Query requires the current page")
+            with sqlite3.connect(self.database_path) as connection:
+                concepts = list(
+                    connection.execute(
+                        "SELECT concept_id FROM page_plans WHERE run_id = ? AND path = ?",
+                        (run_id, page),
+                    )
+                )
+            if len(concepts) != 1:
+                raise WorkspaceError("Current page does not identify one accepted Concept")
+            concept_id = concepts[0][0]
+        else:
+            if page is not None:
+                raise WorkspaceError("Bundle-scoped Knowledge Query must not include a page")
+            concept_id = None
+
+        import asyncio
+
+        from .gateway_common import GatewayError
+        from .gateway_profiles import GatewayApplication
+        from .query_agent import (
+            KnowledgeQueryContext,
+            QueryAgent,
+            QueryAnswer,
+            record_query_audit,
+        )
+        from .worker import GatewaySettings, build_gateway_model
+
+        context = KnowledgeQueryContext(
+            run_id=run_id,
+            source_set_digest=source_set_digest,
+            bundle=cast(Literal["staged", "published"], bundle),
+            scope=cast(Literal["concept", "bundle"], scope),
+            concept_id=concept_id,
+        )
+        gateways = GatewayApplication(self.config_root)
+        assigned_model = snapshot.models.role_overrides.get(
+            "query", snapshot.models.default_model or "unconfigured"
+        )
+        try:
+            resolved = gateways.resolve_models(snapshot.models)
+            profile, credential = gateways.execution_connection(resolved)
+            assigned_model = resolved["assignments"]["query"]
+            secrets = (
+                credential,
+                *profile.headers.values(),
+                str(gateways.registry.root),
+            )
+            limit = resolved["runtime_limits"].get("per_agent_call_total_tokens", 8_000)
+            answer = asyncio.run(
+                QueryAgent(
+                    build_gateway_model(
+                        GatewaySettings(
+                            base_url=profile.base_url,
+                            api_key=credential,
+                            model=assigned_model,
+                            default_headers=profile.headers,
+                        )
+                    ),
+                    database=self.database_path,
+                    model_name=assigned_model,
+                    total_tokens_limit=limit,
+                    secrets=secrets,
+                ).ask(context, question)
+            )
+        except GatewayError as error:
+            answer = QueryAnswer(
+                query_id=uuid.uuid4().hex,
+                outcome="error",
+                run_id=run_id,
+                source_set_digest=source_set_digest,
+                model=assigned_model,
+                scope=context.scope,
+                concept_id=concept_id,
+                segments=(),
+                usage={
+                    "requests": 0,
+                    "tool_calls": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                },
+                latency_ms=0,
+                error=str(error),
+            )
+            record_query_audit(self.database_path, answer)
+        except ValueError as error:
+            raise WorkspaceError(str(error)) from error
+        return answer.model_dump(mode="json")
+
     def sources(self) -> dict:
         with self._locked():
             self._recover_update_locked()

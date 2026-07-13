@@ -2,6 +2,7 @@ export type BundleKind = "staged" | "published"
 const MAX_MERMAID_EDGES = 32
 const MAX_MERMAID_NODES = MAX_MERMAID_EDGES * 2
 const MAX_MERMAID_LABEL_CHARS = 80
+const CONCEPT_ID_RE = /^concept:[0-9a-f]{64}$/
 export type BundleIdentity = {
   kind: BundleKind | "previous"
   run_id: string
@@ -81,6 +82,7 @@ export type KnowledgePage = BundleIdentity & {
   ok: true
   path: string
   title: string
+  concept_id: string | null
   source: string
   metadata: Record<string, unknown>
   blocks: MarkdownBlock[]
@@ -287,6 +289,9 @@ function isPage(value: unknown): value is KnowledgePage {
     value.ok === true &&
     strings(value, ["kind", "run_id", "source_set_digest", "state"]) &&
     strings(value, ["path", "title", "source"]) &&
+    (value.concept_id === null ||
+      (typeof value.concept_id === "string" &&
+        CONCEPT_ID_RE.test(value.concept_id))) &&
     isJsonObject(value.metadata) &&
     Array.isArray(value.blocks) &&
     value.blocks.every(isBlock) &&

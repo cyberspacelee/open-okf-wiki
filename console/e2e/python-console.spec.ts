@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test"
 import {
+  execFile,
   execFileSync,
   spawn,
   type ChildProcessWithoutNullStreams,
@@ -16,8 +17,10 @@ import {
 import { createServer, type Server } from "node:http"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { promisify } from "node:util"
 
 const repoRoot = resolve(process.cwd(), "..")
+const execFileAsync = promisify(execFile)
 const maxSourceId = `docs-${"x".repeat(123)}`
 const longBranch = `release/${"x".repeat(96)}`
 let consoleProcess: ChildProcessWithoutNullStreams
@@ -28,6 +31,8 @@ let gatewayUrl: string
 let rejectModelA = false
 let linkedSource: string
 let managedOrigin: string
+let queryFixture:
+  { conceptId: string; claimId: string; evidenceId: string } | undefined
 
 test.beforeAll(async () => {
   workspace = mkdtempSync(resolve(tmpdir(), "okf-wiki-console-"))
@@ -62,6 +67,11 @@ test.beforeAll(async () => {
       }
       if (rejectModelA && payload?.model === "model-a") {
         send({ error: { message: "gateway down" } }, 503)
+        return
+      }
+      const query = queryGatewayResponse(payload)
+      if (query) {
+        setTimeout(() => send(query), 30)
         return
       }
       setTimeout(
@@ -131,6 +141,83 @@ test.beforeAll(async () => {
   )
   sessionUrl = await readSessionUrl(consoleProcess)
 })
+
+function queryGatewayResponse(payload: {
+  model?: string
+  messages?: Array<{ role?: string }>
+  tools?: Array<{ function?: { name?: string } }>
+}) {
+  const names = (payload?.tools ?? []).flatMap((tool) =>
+    tool.function?.name ? [tool.function.name] : []
+  )
+  if (!names.includes("renderable_claims") || !queryFixture) return null
+  const output = names.find(
+    (name) =>
+      ![
+        "find_concepts",
+        "renderable_claims",
+        "get_claim",
+        "read_evidence",
+      ].includes(name)
+  )
+  if (!output) throw new Error("Query output tool is missing")
+  const returns = (payload.messages ?? []).filter(
+    (message) => message.role === "tool"
+  ).length
+  const bundle = JSON.stringify(payload.messages).includes(
+    '\\"scope\\": \\"bundle\\"'
+  )
+  let name: string
+  let args: object
+  if (bundle && returns === 0) {
+    name = "find_concepts"
+    args = { query: "Source" }
+  } else if ((bundle && returns === 1) || (!bundle && returns === 0)) {
+    name = "renderable_claims"
+    args = { concept_id: queryFixture.conceptId }
+  } else if ((bundle && returns === 2) || (!bundle && returns === 1)) {
+    name = "read_evidence"
+    args = {
+      claim_id: queryFixture.claimId,
+      evidence_id: queryFixture.evidenceId,
+    }
+  } else {
+    name = output
+    args = {
+      segments: [
+        {
+          kind: "fact",
+          claim_ids: [queryFixture.claimId],
+          evidence_ids: [queryFixture.evidenceId],
+        },
+      ],
+    }
+  }
+  return {
+    id: `query-${returns}`,
+    object: "chat.completion",
+    created: 1,
+    model: payload.model,
+    choices: [
+      {
+        index: 0,
+        finish_reason: "tool_calls",
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: `query-call-${returns}`,
+              type: "function",
+              function: { name, arguments: JSON.stringify(args) },
+            },
+          ],
+        },
+      },
+    ],
+    usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+  }
+}
 
 test.afterAll(async () => {
   if (consoleProcess?.exitCode === null) {
@@ -699,6 +786,8 @@ test("loads the built Console through the real Python launcher", async ({
   ).trimEnd()
   const claimId = `claim:${"a".repeat(64)}`
   const evidenceId = `evidence:${"b".repeat(64)}`
+  const conceptId = `concept:${"c".repeat(64)}`
+  const readerPagePath = "guides/secure-reader.md"
   const evidenceDigest = `sha256:${createHash("sha256").update(evidenceText).digest("hex")}`
   execFileSync(
     "uv",
@@ -706,7 +795,7 @@ test("loads the built Console through the real Python launcher", async ({
       "run",
       "python",
       "-c",
-      "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('insert into accepted_evidence values (?,?,?,?,?,?,?,?,?,?,?)',(sys.argv[2],sys.argv[3],sys.argv[5],sys.argv[6],'README.md','fixture:readme',1,1,sys.argv[7],'source_span','authoritative')); c.execute('insert into accepted_claims values (?,?,?,?,?,?,?,?)',(sys.argv[2],sys.argv[4],'Source','documents','Source knowledge.','asserted','[]','supported')); c.execute('insert into claim_evidence values (?,?,?)',(sys.argv[2],sys.argv[4],sys.argv[3])); c.commit()",
+      "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('insert into accepted_evidence values (?,?,?,?,?,?,?,?,?,?,?)',(sys.argv[2],sys.argv[3],sys.argv[5],sys.argv[6],'README.md','fixture:readme',1,1,sys.argv[7],'source_span','authoritative')); c.execute('insert into accepted_claims values (?,?,?,?,?,?,?,?)',(sys.argv[2],sys.argv[4],'Source','documents','Source knowledge.','asserted','[]','supported')); c.execute('insert into claim_evidence values (?,?,?)',(sys.argv[2],sys.argv[4],sys.argv[3])); c.execute('insert into accepted_concepts values (?,?,?,?,?,?)',(sys.argv[2],sys.argv[8],'Source','[]','Accepted source knowledge.','active')); c.execute('insert into concept_claims values (?,?,?,?)',(sys.argv[2],sys.argv[8],sys.argv[4],'defining')); c.execute('insert into page_plans values (?,?,?,?)',(sys.argv[2],sys.argv[8],sys.argv[9],'Secure reader fixture')); c.commit()",
       join(workspace, ".okf-wiki", "runs.db"),
       readerRunId,
       evidenceId,
@@ -714,6 +803,8 @@ test("loads the built Console through the real Python launcher", async ({
       readerSource.id,
       readerSource.revision,
       evidenceDigest,
+      conceptId,
+      readerPagePath,
     ],
     { cwd: repoRoot, stdio: "pipe" }
   )
@@ -726,6 +817,7 @@ test("loads the built Console through the real Python launcher", async ({
     "guides",
     "secure-reader.md"
   )
+  queryFixture = { conceptId, claimId, evidenceId }
   writeFileSync(
     join(
       workspace,
@@ -822,6 +914,123 @@ Accepted knowledge is source grounded.
     evidenceText
   )
   await page.getByRole("button", { name: "Close" }).click()
+
+  await execFileAsync(
+    "uv",
+    [
+      "run",
+      "python",
+      "-c",
+      "import sys; from okf_wiki.gateway_profiles import GatewayProfileRegistry; r=GatewayProfileRegistry(sys.argv[1]); r.save({'id':'enterprise','name':'Enterprise Gateway','gateway_id':'corp-openai','base_url':sys.argv[2],'headers':{'X-Tenant':'docs'}},credential='browser-secret'); r.test('enterprise',model='model-a'); r.test('enterprise',model='model-b')",
+      resolve(workspace, "machine"),
+      gatewayUrl,
+    ],
+    { cwd: repoRoot, stdio: "pipe" }
+  )
+  const authorityBeforeQuery = authoritativeKnowledgeState(
+    readerRunId,
+    readerPage
+  )
+  await page.getByRole("button", { name: "Ask accepted knowledge" }).click()
+  let queryDialog = page.getByRole("dialog")
+  await expect(
+    queryDialog.getByRole("button", { name: "Current page" })
+  ).toHaveAttribute("aria-pressed", "true")
+  const conceptQueryResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/api/v1/knowledge/query"
+  )
+  await queryDialog
+    .getByLabel("Ask a question")
+    .fill("What accepted knowledge is on this page?")
+  await queryDialog.getByRole("button", { name: "Ask", exact: true }).click()
+  expect((await conceptQueryResponse).status()).toBe(200)
+  await expect(
+    queryDialog.getByText("Source knowledge.", { exact: true })
+  ).toBeVisible()
+  await expect(queryDialog.getByText(claimId, { exact: true })).toBeVisible()
+  await expect(queryDialog.getByText(evidenceId, { exact: true })).toBeVisible()
+  await expect(queryDialog.getByText("model-a", { exact: true })).toBeVisible()
+  await expect(
+    queryDialog.getByText(`Run ${readerRunId}`, { exact: true })
+  ).toBeVisible()
+  await expect(
+    queryDialog.getByText(`Source Set ${readerSourceSet.digest}`, {
+      exact: true,
+    })
+  ).toBeVisible()
+
+  await queryDialog.getByRole("button", { name: "Complete bundle" }).click()
+  const bundleQueryResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/api/v1/knowledge/query"
+  )
+  await queryDialog
+    .getByLabel("Ask a question")
+    .fill("What accepted knowledge is in the complete bundle?")
+  await queryDialog.getByRole("button", { name: "Ask", exact: true }).click()
+  expect((await bundleQueryResponse).status()).toBe(200)
+  await expect(
+    queryDialog.getByText("Complete bundle", { exact: true }).last()
+  ).toBeVisible()
+  expect(authoritativeKnowledgeState(readerRunId, readerPage)).toBe(
+    authorityBeforeQuery
+  )
+  const queryAudit = execFileSync(
+    "uv",
+    [
+      "run",
+      "python",
+      "-c",
+      "import json,sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(json.dumps({'columns':[row[1] for row in c.execute('pragma table_info(query_audit)')],'rows':c.execute('select * from query_audit order by rowid').fetchall()}))",
+      join(workspace, ".okf-wiki", "runs.db"),
+    ],
+    { cwd: repoRoot, encoding: "utf-8" }
+  )
+  expect(JSON.parse(queryAudit).columns).toEqual([
+    "id",
+    "model",
+    "usage_json",
+    "latency_ms",
+    "outcome",
+    "cited_claim_ids_json",
+    "cited_evidence_ids_json",
+  ])
+  expect(JSON.parse(queryAudit).rows).toHaveLength(2)
+  expect(queryAudit).not.toContain("What accepted knowledge")
+  expect(queryAudit).not.toContain("Source knowledge.")
+
+  await page.screenshot({
+    path: "test-results/query-desktop-real.png",
+    fullPage: true,
+  })
+  await page.reload()
+  await expect(
+    page.getByRole("heading", { name: "Secure reader fixture" }).first()
+  ).toBeVisible()
+  await page.getByRole("button", { name: "Ask accepted knowledge" }).click()
+  queryDialog = page.getByRole("dialog")
+  await expect(queryDialog.getByText("Grounded answers only")).toBeVisible()
+  await expect(
+    page.getByText("What accepted knowledge is on this page?")
+  ).toHaveCount(0)
+  await expect(
+    page.getByText("What accepted knowledge is in the complete bundle?")
+  ).toHaveCount(0)
+  await page.setViewportSize({ width: 390, height: 844 })
+  const queryOverflow = await queryDialog.evaluate((element) => ({
+    client: element.clientWidth,
+    scroll: element.scrollWidth,
+  }))
+  expect(queryOverflow.scroll).toBe(queryOverflow.client)
+  await page.screenshot({
+    path: "test-results/query-mobile-real.png",
+    fullPage: true,
+  })
+  await page.setViewportSize({ width: 1280, height: 720 })
+  await queryDialog.getByRole("button", { name: "Close" }).click()
 
   await context.setOffline(true)
   await page.getByRole("button", { name: "Source", exact: true }).click()
@@ -1034,6 +1243,22 @@ function createGitSource(prefix: string) {
   execFileSync("git", ["add", "README.md"], { cwd: path })
   execFileSync("git", ["commit", "-qm", "source"], { cwd: path })
   return path
+}
+
+function authoritativeKnowledgeState(runId: string, pagePath: string) {
+  return execFileSync(
+    "uv",
+    [
+      "run",
+      "python",
+      "-c",
+      "import hashlib,json,pathlib,sqlite3,sys; c=sqlite3.connect(sys.argv[1]); run=sys.argv[2]; tables=('coverage_obligations','accepted_evidence','accepted_claims','claim_evidence','accepted_concepts','concept_claims','page_plans','verification_candidates','verification_findings'); payload={'run':c.execute('select state,source_set_json,coverage_json,error from runs where id=?',(run,)).fetchone(),'tables':{table:c.execute(f'select * from {table} where run_id=? order by rowid',(run,)).fetchall() for table in tables},'page':hashlib.sha256(pathlib.Path(sys.argv[3]).read_bytes()).hexdigest()}; print(json.dumps(payload,sort_keys=True))",
+      join(workspace, ".okf-wiki", "runs.db"),
+      runId,
+      pagePath,
+    ],
+    { cwd: repoRoot, encoding: "utf-8" }
+  ).trim()
 }
 
 function readSessionUrl(process: ChildProcessWithoutNullStreams) {

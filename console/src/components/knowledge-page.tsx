@@ -18,6 +18,7 @@ import {
   ShieldCheckIcon,
 } from "lucide-react"
 
+import { KnowledgeQuery } from "@/components/knowledge-query"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -315,6 +316,13 @@ export function KnowledgePage({ token }: { token: string }) {
           <Badge variant="secondary">
             Source Set {snapshot.selected.source_set_digest.slice(0, 12)}
           </Badge>
+          <KnowledgeQuery
+            token={token}
+            bundle={bundle}
+            runId={snapshot.selected.run_id}
+            sourceSetDigest={snapshot.selected.source_set_digest}
+            page={page?.concept_id ? page.path : null}
+          />
         </div>
       </header>
 
