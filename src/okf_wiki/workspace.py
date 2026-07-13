@@ -1364,9 +1364,7 @@ class WorkspaceApplication:
             "audit": audit,
             "coverage_obligations": coverage_obligations,
             "diagnostics": {
-                "actionable_errors": errors,
                 "active_tasks": len(scheduler["tasks"]["active"]),
-                "audit": audit,
                 "budgets": scheduler["budgets"],
                 "classification": classification,
                 "failed_tasks": len(scheduler["tasks"]["failed"]),

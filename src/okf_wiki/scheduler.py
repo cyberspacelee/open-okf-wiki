@@ -728,6 +728,16 @@ class Scheduler:
             return
         self.transition_task(run_id, task_id, "submitted")
         if result.status == "accepted":
+            with self._connect() as connection:
+                cancelled = self._run_state(connection, run_id) == "cancelled"
+            if cancelled:
+                await self._reject_task(
+                    run_id,
+                    task_id,
+                    "failed",
+                    ["Production Run was cancelled"],
+                )
+                return
             if self.verifier is None:
                 await self._reject_task(
                     run_id,

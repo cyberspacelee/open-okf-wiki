@@ -318,13 +318,8 @@ def assert_run_storage_is_secret_free(
     audit = application.root / ".okf-wiki" / "runs" / run_id / "worker.db"
     if audit.is_file():
         with sqlite3.connect(audit) as connection:
-            rows = list(
-                connection.execute(
-                    """SELECT proposal_json, errors_json, trajectory_json, provider_url
-                       FROM worker_candidates"""
-                )
-            )
-        assert_machine_secrets_absent(rows, config_root)
+            audit_dump = "\n".join(connection.iterdump())
+        assert_machine_secrets_absent(audit_dump, config_root)
 
 
 def test_cli_launcher_runs_semantic_roles_through_fake_gateway(tmp_path: Path) -> None:
@@ -400,8 +395,12 @@ def test_cli_recovers_interrupted_semantic_run_with_machine_config_root(tmp_path
         "verifier-model",
         "verifier-model",
     ]
+    assert all(headers["Authorization"] == f"Bearer {CREDENTIAL}" for headers, _ in server.requests)
+    assert all(headers["X-Tenant"] == HEADER_VALUE for headers, _ in server.requests)
     assert_machine_secrets_absent(json.loads(recovered.stdout), config_root)
     assert_machine_secrets_absent(status, config_root)
+    assert_machine_secrets_absent(application.list_runs(), config_root)
+    assert_run_storage_is_secret_free(application, started["run_id"], config_root)
 
 
 def test_cli_launcher_maps_gateway_failure_without_secret_diagnostics(tmp_path: Path) -> None:

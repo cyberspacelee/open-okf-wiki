@@ -47,7 +47,6 @@ from .run_state import RunTransitionError, transition_run
 from .security import MAX_ANALYZABLE_FILE_BYTES, git_read, git_read_bytes
 from .source_identity import source_unit_id, stable_span_id
 from .state_schema import migrate_state
-from .workspace import WorkspaceApplication, WorkspaceError
 
 
 TERMINAL_STATES = {"published", "failed", "cancelled"}
@@ -508,6 +507,8 @@ def load_config(path_text: str) -> tuple[str, list[dict], Path, dict, dict | Non
     if "schema_version" in config and path.name != "workspace.toml":
         raise UserError("Workspace configuration must be named workspace.toml")
     if "schema_version" in config:
+        from .workspace import WorkspaceApplication, WorkspaceError
+
         try:
             snapshot, preflight = WorkspaceApplication(path.parent).resolve_run_inputs()
         except WorkspaceError as error:
@@ -1512,6 +1513,8 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    from .workspace import WorkspaceApplication, WorkspaceError
+
     arguments = parser().parse_args()
     try:
         if arguments.command == "build":

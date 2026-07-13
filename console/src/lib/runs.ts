@@ -167,9 +167,7 @@ export type RunDetail = RunSummary & {
   entity_events: EntityEvent[]
   models: RunModels | null
   diagnostics: {
-    actionable_errors: string[]
     active_tasks: number
-    audit: RunAudit
     budgets: Record<string, { remaining: number; used: number }>
     classification: "active" | "interrupted" | "review_blocked" | "terminal"
     failed_tasks: number
@@ -354,10 +352,8 @@ function isRunDetail(value: unknown): value is RunDetail & { ok: true } {
 function isDiagnostics(value: unknown) {
   return (
     isRecord(value) &&
-    isStringArray(value.actionable_errors) &&
     Number.isInteger(value.active_tasks) &&
     Number(value.active_tasks) >= 0 &&
-    isAudit(value.audit) &&
     isRecord(value.budgets) &&
     Object.values(value.budgets).every(
       (budget) =>

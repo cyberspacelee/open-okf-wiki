@@ -563,17 +563,7 @@ function detail(state: string) {
       ],
     },
     diagnostics: {
-      actionable_errors: [],
       active_tasks: state === "exploring" ? 1 : 0,
-      audit: {
-        failures: 0,
-        latency_ms: 1250,
-        models: ["model-planner", "model-worker", "model-verifier"],
-        retries: 1,
-        tokens: 450,
-        tool_calls: 3,
-        by_role_model: [],
-      },
       budgets: {
         replans: { remaining: 2, used: 0 },
         task_slots: { remaining: 3, used: state === "exploring" ? 1 : 0 },

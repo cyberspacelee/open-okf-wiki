@@ -16,7 +16,7 @@ from okf_wiki.accepted_knowledge import AcceptedKnowledgeStore
 from okf_wiki.cli import create_run, initialize
 from okf_wiki.knowledge_contracts import AnalysisTask, WorkerRunResult
 from okf_wiki.planner import PlannerAgent
-from okf_wiki.scheduler import PlannerLimits, PlannerReceipt, Scheduler
+from okf_wiki.scheduler import PlannerLimits, PlannerReceipt, Scheduler, SchedulerOutcome
 from okf_wiki.run_state import transition_run
 from okf_wiki.verification import (
     REQUIRED_PERSPECTIVES,
@@ -359,27 +359,44 @@ def test_cancellation_before_acceptance_rejects_the_late_worker_result(tmp_path:
     )
     planned = asyncio.run(Scheduler(database, planner, worker=None).plan(run_id))
 
-    class CancellingWorker:
-        async def run(self, task: AnalysisTask) -> WorkerRunResult:
-            with sqlite3.connect(database) as connection, connection:
-                transition_run(connection, run_id, "exploring", "cancelled")
-            return WorkerRunResult.model_validate(
-                {
-                    "candidate_id": "late-candidate",
-                    "errors": [],
-                    "proposal": worker_proposal(revision, task.task_id, "obligation-1"),
-                    "status": "accepted",
-                }
-            )
+    verifier = StaticVerifier()
 
-    scheduler = Scheduler(database, planner, CancellingWorker(), verifier=StaticVerifier())
+    async def exercise() -> tuple[Scheduler, SchedulerOutcome]:
+        entered = asyncio.Event()
+        release = asyncio.Event()
 
-    outcome = asyncio.run(scheduler.run_ready(run_id, planned.task_ids))
+        class BlockingWorker:
+            async def run(self, task: AnalysisTask) -> WorkerRunResult:
+                entered.set()
+                await release.wait()
+                return WorkerRunResult.model_validate(
+                    {
+                        "candidate_id": "late-candidate",
+                        "errors": [],
+                        "proposal": worker_proposal(revision, task.task_id, "obligation-1"),
+                        "status": "accepted",
+                    }
+                )
+
+        scheduler = Scheduler(database, planner, BlockingWorker(), verifier=verifier)
+        running = asyncio.create_task(scheduler.run_ready(run_id, planned.task_ids))
+        await entered.wait()
+        with sqlite3.connect(database) as connection, connection:
+            transition_run(connection, run_id, "exploring", "cancelled")
+        release.set()
+        return scheduler, await running
+
+    scheduler, outcome = asyncio.run(exercise())
 
     assert outcome.status == "failed"
+    assert verifier.targets == []
     assert AcceptedKnowledgeStore(database).list_claims(run_id) == []
+    assert AcceptedKnowledgeStore(database).list_concepts(run_id) == []
     assert AcceptedKnowledgeStore(database).get_coverage_summary(run_id) == {"open": 1}
-    assert scheduler.get_task(run_id, planned.task_ids[0]).state == "rejected"
+    task = scheduler.get_task(run_id, planned.task_ids[0])
+    assert task.state == "failed"
+    assert task.error == "Production Run was cancelled"
+    assert not (tmp_path / "published").exists()
 
 
 def test_source_summary_limit_does_not_hide_the_only_uncovered_source(tmp_path: Path) -> None:
