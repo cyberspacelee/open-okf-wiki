@@ -6,6 +6,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 import pytest
@@ -65,6 +66,7 @@ def make_git_source(path: Path) -> None:
 
 
 def review_workspace(root: Path) -> tuple[WorkspaceApplication, str]:
+    root.mkdir(parents=True, exist_ok=True)
     source = root / "review-source"
     make_git_source(source)
     (source / "README.md").write_text(
@@ -197,6 +199,12 @@ def test_console_review_api_matches_cli_and_returns_refreshed_stale_snapshot(
         app.root,
     )
     assert code == 0
+    bundle_path = expected["bundle_diff"]["added"][0]
+    code, expected_bundle = cli(
+        ["workspace", "review-bundle", run_id, bundle_path, str(app.root)],
+        app.root,
+    )
+    assert code == 0
     with running_console(app.root, assets) as (server, _):
         base = f"http://127.0.0.1:{server.server_port}"
         headers = authorization(server)
@@ -205,8 +213,13 @@ def test_console_review_api_matches_cli_and_returns_refreshed_stale_snapshot(
             f"{base}/api/v1/reviews/{run_id}/evidence/{evidence_id}",
             headers=headers,
         )
+        bundle = httpx.get(
+            f"{base}/api/v1/reviews/{run_id}/bundle/{quote(bundle_path, safe='')}",
+            headers=headers,
+        )
         assert response.json() == expected
         assert evidence.json() == expected_evidence
+        assert bundle.json() == expected_bundle
 
         with sqlite3.connect(app.database_path) as connection:
             connection.execute(
@@ -230,6 +243,122 @@ def test_console_review_api_matches_cli_and_returns_refreshed_stale_snapshot(
     assert stale.status_code == 409
     assert stale.json()["review"] == refreshed
     assert app.run_status(run_id)["state"] == "review_required"
+
+
+@pytest.mark.parametrize("decision", ["approve", "reject"])
+def test_console_review_success_decisions_match_cli(
+    tmp_path: Path, assets: Path, decision: str
+) -> None:
+    cli_app, cli_run_id = review_workspace(tmp_path / "cli")
+    http_app, http_run_id = review_workspace(tmp_path / "http")
+    cli_digest = cli_app.review_snapshot(cli_run_id)["authoritative_digest"]
+    http_digest = http_app.review_snapshot(http_run_id)["authoritative_digest"]
+
+    code, expected = cli(
+        [
+            "workspace",
+            "review",
+            cli_run_id,
+            decision,
+            str(cli_app.root),
+            "--expected-digest",
+            cli_digest,
+        ],
+        cli_app.root,
+    )
+    with running_console(http_app.root, assets) as (server, _):
+        response = httpx.post(
+            f"http://127.0.0.1:{server.server_port}/api/v1/reviews/{http_run_id}/decision",
+            headers={**authorization(server), "Origin": server.origin},
+            json={"decision": decision, "expected_digest": http_digest},
+        )
+
+    assert code == 0
+    assert response.status_code == 200
+    assert {**response.json(), "run_id": "<run>"} == {
+        **expected,
+        "run_id": "<run>",
+    }
+
+
+def test_console_review_final_check_failure_matches_cli(tmp_path: Path, assets: Path) -> None:
+    cli_app, cli_run_id = review_workspace(tmp_path / "cli")
+    http_app, http_run_id = review_workspace(tmp_path / "http")
+    for app, run_id in ((cli_app, cli_run_id), (http_app, http_run_id)):
+        staging = app.root / ".okf-wiki" / "runs" / run_id / "staging" / "overview.md"
+        staging.write_text(staging.read_text() + "\nReviewer edit.\n")
+    cli_digest = cli_app.review_snapshot(cli_run_id)["authoritative_digest"]
+    http_digest = http_app.review_snapshot(http_run_id)["authoritative_digest"]
+
+    code, expected = cli(
+        [
+            "workspace",
+            "review",
+            cli_run_id,
+            "approve",
+            str(cli_app.root),
+            "--expected-digest",
+            cli_digest,
+        ],
+        cli_app.root,
+    )
+    with running_console(http_app.root, assets) as (server, _):
+        response = httpx.post(
+            f"http://127.0.0.1:{server.server_port}/api/v1/reviews/{http_run_id}/decision",
+            headers={**authorization(server), "Origin": server.origin},
+            json={"decision": "approve", "expected_digest": http_digest},
+        )
+
+    assert code == 1
+    assert response.status_code == 422
+    assert {**response.json(), "run_id": "<run>"} == {
+        **expected,
+        "run_id": "<run>",
+    }
+
+
+def test_console_review_publication_rollback_matches_cli(tmp_path: Path, assets: Path) -> None:
+    cli_app, cli_run_id = review_workspace(tmp_path / "cli")
+    http_app, http_run_id = review_workspace(tmp_path / "http")
+    for app in (cli_app, http_app):
+        with sqlite3.connect(app.database_path) as connection:
+            connection.execute(
+                """CREATE TRIGGER fail_published_review_event
+                   BEFORE INSERT ON run_events WHEN NEW.state = 'published'
+                   BEGIN SELECT RAISE(FAIL, 'seeded published event failure'); END"""
+            )
+    cli_digest = cli_app.review_snapshot(cli_run_id)["authoritative_digest"]
+    http_digest = http_app.review_snapshot(http_run_id)["authoritative_digest"]
+
+    code, expected = cli(
+        [
+            "workspace",
+            "review",
+            cli_run_id,
+            "approve",
+            str(cli_app.root),
+            "--expected-digest",
+            cli_digest,
+        ],
+        cli_app.root,
+    )
+    with running_console(http_app.root, assets) as (server, _):
+        response = httpx.post(
+            f"http://127.0.0.1:{server.server_port}/api/v1/reviews/{http_run_id}/decision",
+            headers={**authorization(server), "Origin": server.origin},
+            json={"decision": "approve", "expected_digest": http_digest},
+        )
+
+    assert code == 1
+    assert response.status_code == 422
+    assert {**response.json(), "run_id": "<run>"} == {
+        **expected,
+        "run_id": "<run>",
+    }
+    assert cli_app.run_status(cli_run_id)["state"] == "failed"
+    assert http_app.run_status(http_run_id)["state"] == "failed"
+    assert not (cli_app.root / "published").exists()
+    assert not (http_app.root / "published").exists()
 
 
 def test_console_overview_is_produced_by_workspace_application(

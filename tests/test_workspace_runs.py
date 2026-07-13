@@ -651,6 +651,20 @@ def test_review_approval_revalidates_before_atomic_publication(tmp_path: Path) -
     assert failed["state"] == "failed"
     assert "authoritative rendering" in " ".join(failed["errors"])
     assert not (workspace / "published").exists()
+    with sqlite3.connect(application.database_path) as connection:
+        failure_details = json.loads(
+            connection.execute(
+                "SELECT details FROM run_events WHERE run_id = ? AND state = 'failed' "
+                "ORDER BY sequence DESC LIMIT 1",
+                (run_id,),
+            ).fetchone()[0]
+        )
+    assert failure_details == {
+        "decision": "approved",
+        "error": "Staged Bundle differs from the authoritative rendering",
+        "expected_digest": snapshot["authoritative_digest"],
+        "resolved_findings": [],
+    }
 
     clean_workspace = tmp_path / "clean-workspace"
     clean = WorkspaceApplication(clean_workspace)

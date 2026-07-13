@@ -48,6 +48,21 @@ def _run(database: Path, run_id: str) -> sqlite3.Row:
     return row
 
 
+def _accepted_evidence(database: Path, run_ids: tuple[str, ...]) -> dict[str, tuple[dict, str]]:
+    records: dict[str, tuple[dict, str]] = {}
+    with sqlite3.connect(database) as connection:
+        connection.row_factory = sqlite3.Row
+        for evidence_run_id in run_ids:
+            for row in connection.execute(
+                "SELECT * FROM accepted_evidence WHERE run_id = ? ORDER BY id",
+                (evidence_run_id,),
+            ):
+                evidence = dict(row)
+                evidence.pop("run_id")
+                records.setdefault(evidence["id"], (evidence, evidence_run_id))
+    return records
+
+
 def _changes(database: Path, run_id: str, base_run_id: str | None) -> dict:
     store = AcceptedKnowledgeStore(database)
     current_claims = {item["id"]: item for item in store.list_claims(run_id)}
@@ -59,29 +74,150 @@ def _changes(database: Path, run_id: str, base_run_id: str | None) -> dict:
         {item["id"]: item for item in store.knowledge_summary(base_run_id)} if base_run_id else {}
     )
 
-    def grouped(current: dict, previous: dict, status_key: str, accepted: str) -> dict:
-        return {
-            "added": [current[item] for item in sorted(current.keys() - previous.keys())],
-            "changed": [
-                current[item]
-                for item in sorted(current.keys() & previous.keys())
-                if current[item] != previous[item]
-            ],
-            "removed": [previous[item] for item in sorted(previous.keys() - current.keys())],
-            "stale": [item for item in current.values() if item[status_key] == "stale"],
-            "disputed": [item for item in current.values() if item[status_key] == "disputed"],
-            "merged": [item for item in current.values() if item[status_key] == "merged"],
-            "split": [item for item in current.values() if item[status_key] == "split"],
-            "excluded": [
-                item
-                for item in current.values()
-                if item[status_key] not in {accepted, "stale", "disputed", "merged", "split"}
-            ],
+    claim_supersedes = {
+        claim_id: set(item["supersedes"]) & previous_claims.keys()
+        for claim_id, item in current_claims.items()
+    }
+    superseded_by: dict[str, set[str]] = {}
+    for claim_id, targets in claim_supersedes.items():
+        for target in targets:
+            superseded_by.setdefault(target, set()).add(claim_id)
+    merged_claims = {claim_id for claim_id, targets in claim_supersedes.items() if len(targets) > 1}
+    split_claims = {
+        claim_id
+        for claim_id, targets in claim_supersedes.items()
+        if any(len(superseded_by[target]) > 1 for target in targets)
+    }
+
+    current_defining = {
+        concept_id: set(item["defining_claim_ids"]) for concept_id, item in current_concepts.items()
+    }
+    previous_defining = {
+        concept_id: set(item["defining_claim_ids"])
+        for concept_id, item in previous_concepts.items()
+    }
+    concept_overlaps = {
+        concept_id: {
+            previous_id
+            for previous_id, defining in previous_defining.items()
+            if current_defining[concept_id] & defining
         }
+        for concept_id in current_concepts
+    }
+    overlapped_by: dict[str, set[str]] = {}
+    for concept_id, previous_ids in concept_overlaps.items():
+        for previous_id in previous_ids:
+            overlapped_by.setdefault(previous_id, set()).add(concept_id)
+    merged_concepts = {
+        concept_id for concept_id, previous_ids in concept_overlaps.items() if len(previous_ids) > 1
+    }
+    split_concepts = {
+        concept_id
+        for concept_id, previous_ids in concept_overlaps.items()
+        if any(len(overlapped_by[previous_id]) > 1 for previous_id in previous_ids)
+    }
+
+    excluded_obligations: set[str] = set()
+    claim_obligations: dict[str, set[str]] = {}
+    if base_run_id:
+        with sqlite3.connect(database) as connection:
+            excluded_obligations = {
+                row[0]
+                for row in connection.execute(
+                    """SELECT id FROM coverage_obligations
+                       WHERE run_id = ? AND disposition = 'excluded'""",
+                    (run_id,),
+                )
+            }
+            for obligation_id, claim_id in connection.execute(
+                "SELECT obligation_id, claim_id FROM obligation_claims WHERE run_id = ?",
+                (base_run_id,),
+            ):
+                claim_obligations.setdefault(claim_id, set()).add(obligation_id)
+    excluded_claims = {
+        claim_id
+        for claim_id in previous_claims.keys() - current_claims.keys()
+        if claim_obligations.get(claim_id) and claim_obligations[claim_id] <= excluded_obligations
+    }
+    excluded_concepts = {
+        concept_id
+        for concept_id in previous_concepts.keys() - current_concepts.keys()
+        if previous_defining[concept_id] and previous_defining[concept_id] <= excluded_claims
+    }
+
+    def grouped(
+        current: dict,
+        previous: dict,
+        status_key: str,
+        merged: set[str],
+        split: set[str],
+        excluded: set[str],
+    ) -> dict:
+        groups = {
+            bucket: []
+            for bucket in (
+                "added",
+                "changed",
+                "removed",
+                "stale",
+                "disputed",
+                "merged",
+                "split",
+                "excluded",
+            )
+        }
+        for item_id in sorted(current):
+            item = current[item_id]
+            status = item[status_key]
+            bucket = (
+                "disputed"
+                if status == "disputed"
+                else "stale"
+                if status == "stale"
+                else "merged"
+                if item_id in merged
+                else "split"
+                if item_id in split
+                else "added"
+                if item_id not in previous
+                else "changed"
+                if item != previous[item_id]
+                else None
+            )
+            if bucket is not None:
+                groups[bucket].append(item)
+        for item_id in sorted(previous.keys() - current.keys()):
+            item = previous[item_id]
+            status = item[status_key]
+            bucket = (
+                "disputed"
+                if status == "disputed"
+                else "stale"
+                if status == "stale"
+                else "excluded"
+                if item_id in excluded
+                else "removed"
+            )
+            groups[bucket].append(item)
+        return groups
 
     return {
-        "claims": grouped(current_claims, previous_claims, "epistemic_status", "supported"),
-        "concepts": grouped(current_concepts, previous_concepts, "status", "active"),
+        "claims": grouped(
+            current_claims,
+            previous_claims,
+            "epistemic_status",
+            merged_claims,
+            split_claims,
+            excluded_claims,
+        ),
+        "concepts": grouped(
+            current_concepts,
+            previous_concepts,
+            "status",
+            merged_concepts,
+            split_concepts,
+            excluded_concepts,
+        ),
     }
 
 
@@ -94,15 +230,10 @@ def review_snapshot(database: Path, run_id: str) -> dict:
         connection.row_factory = sqlite3.Row
         obligations = obligation_rows(connection, run_id)
     changes = _changes(database, run_id, source_set.get("base_run_id"))
-    store = AcceptedKnowledgeStore(database)
-    evidence = {
-        item["id"]: item
-        for claim in [
-            *store.list_claims(run_id),
-            *changes["claims"]["removed"],
-        ]
-        for item in claim.get("evidence", [])
-    }
+    evidence_records = _accepted_evidence(
+        database, tuple(filter(None, (run_id, source_set.get("base_run_id"))))
+    )
+    evidence = {evidence_id: record[0] for evidence_id, record in evidence_records.items()}
     findings = verification_findings(database, run_id)
     with sqlite3.connect(database) as connection:
         proposals = {
@@ -163,23 +294,14 @@ def review_snapshot(database: Path, run_id: str) -> dict:
 def evidence_excerpt(database: Path, run_id: str, evidence_id: str) -> dict:
     row = _run(database, run_id)
     source_set = json.loads(row["source_set_json"] or "{}")
-    store = AcceptedKnowledgeStore(database)
-    evidence = None
-    for evidence_run_id in filter(None, (run_id, source_set.get("base_run_id"))):
-        evidence = next(
-            (
-                item
-                for claim in store.list_claims(evidence_run_id)
-                for item in claim["evidence"]
-                if item["id"] == evidence_id
-            ),
-            None,
-        )
-        if evidence is not None:
-            source_set = json.loads(_run(database, evidence_run_id)["source_set_json"] or "{}")
-            break
-    if evidence is None:
+    evidence_records = _accepted_evidence(
+        database, tuple(filter(None, (run_id, source_set.get("base_run_id"))))
+    )
+    record = evidence_records.get(evidence_id)
+    if record is None:
         raise ReviewError(f"Unknown Evidence Reference: {evidence_id}")
+    evidence, evidence_run_id = record
+    source_set = json.loads(_run(database, evidence_run_id)["source_set_json"] or "{}")
     source = next(
         (
             item
@@ -427,6 +549,12 @@ def decide_review(database: Path, run_id: str, decision: str, expected_digest: s
                 refresh_run_coverage(connection, run_id)
         return {"decision": "rejected", "run_id": run_id, "state": "exploring"}
 
+    blockers = verification_blockers(database, run_id)
+    approval_details = {
+        "decision": "approved",
+        "expected_digest": expected_digest,
+        "resolved_findings": blockers,
+    }
     errors = validation_errors(database, row, source_set)
     if errors:
         with sqlite3.connect(database) as connection, connection:
@@ -436,20 +564,16 @@ def decide_review(database: Path, run_id: str, decision: str, expected_digest: s
                 "review_required",
                 "failed",
                 error="; ".join(errors),
+                details=approval_details,
             )
         return {"errors": errors, "run_id": run_id, "state": "failed"}
-    blockers = verification_blockers(database, run_id)
     with sqlite3.connect(database) as connection, connection:
         transition_run(
             connection,
             run_id,
             "review_required",
             "publishing",
-            details={
-                "decision": "approved",
-                "expected_digest": expected_digest,
-                "resolved_findings": blockers,
-            },
+            details=approval_details,
         )
     crash_if_requested("before_publication")
     try:
