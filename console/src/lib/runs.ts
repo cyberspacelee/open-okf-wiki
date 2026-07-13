@@ -166,6 +166,22 @@ export type RunDetail = RunSummary & {
   events: RunEvent[]
   entity_events: EntityEvent[]
   models: RunModels | null
+  diagnostics: {
+    actionable_errors: string[]
+    active_tasks: number
+    audit: RunAudit
+    budgets: Record<string, { remaining: number; used: number }>
+    classification: "active" | "interrupted" | "review_blocked" | "terminal"
+    failed_tasks: number
+    review_blockers: string[]
+    staging: { exists: boolean; path: string }
+    terminal_outcome: "published" | "failed" | "cancelled" | null
+  }
+  operations: {
+    can_cancel: boolean
+    can_recover: boolean
+    recover_reason: string | null
+  }
   sources: Array<{
     id: string
     role: string
@@ -218,6 +234,28 @@ export async function startRun(
 ) {
   const result = await request("/api/v1/runs", "POST", token, payload)
   if (!isRunDetail(result)) throw invalidResponse("started Run")
+  return result
+}
+
+export async function cancelRun(token: string, runId: string) {
+  return runAction(token, runId, "cancel")
+}
+
+export async function recoverRun(token: string, runId: string) {
+  return runAction(token, runId, "recover")
+}
+
+async function runAction(
+  token: string,
+  runId: string,
+  action: "cancel" | "recover"
+) {
+  const result = await request(
+    `/api/v1/runs/${encodeURIComponent(runId)}/${action}`,
+    "POST",
+    token
+  )
+  if (!isRunDetail(result)) throw invalidResponse(`${action} Run`)
   return result
 }
 
@@ -304,10 +342,51 @@ function isRunDetail(value: unknown): value is RunDetail & { ok: true } {
         (typeof source.tree_digest === "string" || source.tree_digest === null)
     ) &&
     (value.models === null || isRunModels(value.models)) &&
+    isDiagnostics(value.diagnostics) &&
+    isOperations(value.operations) &&
     isRecord(value.tasks) &&
     [value.tasks.active, value.tasks.completed, value.tasks.failed].every(
       (tasks) => Array.isArray(tasks) && tasks.every(isTask)
     )
+  )
+}
+
+function isDiagnostics(value: unknown) {
+  return (
+    isRecord(value) &&
+    isStringArray(value.actionable_errors) &&
+    Number.isInteger(value.active_tasks) &&
+    Number(value.active_tasks) >= 0 &&
+    isAudit(value.audit) &&
+    isRecord(value.budgets) &&
+    Object.values(value.budgets).every(
+      (budget) =>
+        isRecord(budget) &&
+        Number.isInteger(budget.remaining) &&
+        Number.isInteger(budget.used)
+    ) &&
+    ["active", "interrupted", "review_blocked", "terminal"].includes(
+      String(value.classification)
+    ) &&
+    Number.isInteger(value.failed_tasks) &&
+    Number(value.failed_tasks) >= 0 &&
+    isStringArray(value.review_blockers) &&
+    isRecord(value.staging) &&
+    typeof value.staging.exists === "boolean" &&
+    typeof value.staging.path === "string" &&
+    (value.terminal_outcome === null ||
+      ["published", "failed", "cancelled"].includes(
+        String(value.terminal_outcome)
+      ))
+  )
+}
+
+function isOperations(value: unknown) {
+  return (
+    isRecord(value) &&
+    typeof value.can_cancel === "boolean" &&
+    typeof value.can_recover === "boolean" &&
+    (value.recover_reason === null || typeof value.recover_reason === "string")
   )
 }
 

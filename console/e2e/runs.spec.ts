@@ -305,6 +305,84 @@ test("shows controlled semantic failures without exposing hidden input", async (
   await expect(page.getByText("browser-secret")).toHaveCount(0)
 })
 
+test("recovers and cancels from persisted operator controls", async ({
+  page,
+}) => {
+  await mockShell(page)
+  let current = {
+    ...detail("exploring"),
+    diagnostics: {
+      ...detail("exploring").diagnostics,
+      classification: "interrupted",
+    },
+    operations: {
+      can_cancel: true,
+      can_recover: true,
+      recover_reason: null,
+    },
+  }
+  const actions: string[] = []
+  await page.route("**/api/v1/runs/run-active/*", async (route) => {
+    const action = new URL(route.request().url()).pathname.split("/").at(-1)!
+    actions.push(action)
+    current =
+      action === "recover"
+        ? {
+            ...detail("review_required"),
+            diagnostics: {
+              ...detail("review_required").diagnostics,
+              review_blockers: ["Human approval is required"],
+            },
+          }
+        : {
+            ...detail("cancelled"),
+            outcome: "cancelled",
+          }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(current),
+    })
+  })
+  await page.route("**/api/v1/runs/run-active", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(current),
+    })
+  })
+  await page.route("**/api/v1/runs", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, runs: [summary(current.state)] }),
+    })
+  })
+
+  await page.goto("/?view=runs&run=run-active#token=operations-token")
+
+  await expect(page.getByText("Interrupted", { exact: true })).toBeVisible()
+  await page.getByRole("button", { name: "Recover Run" }).click()
+  await expect(page.getByText("Review blockers")).toBeVisible()
+  await expect(page.getByText("Human approval is required")).toBeVisible()
+
+  await page.getByRole("button", { name: "Cancel Run" }).click()
+  const dialog = page.getByRole("alertdialog")
+  await expect(dialog.getByText("Cancel this Production Run?")).toBeVisible()
+  await dialog.getByRole("button", { name: "Cancel Run" }).click()
+  await expect(
+    page.getByText("Cancelled", { exact: true }).first()
+  ).toBeVisible()
+  expect(actions).toEqual(["recover", "cancel"])
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  const overflow = await page.evaluate(() => ({
+    viewport: document.documentElement.clientWidth,
+    width: document.documentElement.scrollWidth,
+  }))
+  expect(overflow.width).toBe(overflow.viewport)
+})
+
 test("polling errors preserve the last valid phase and expose retry", async ({
   page,
 }) => {
@@ -437,6 +515,8 @@ function detail(state: string) {
     "review_required",
   ]
   const limit = Math.max(0, all.indexOf(state))
+  const terminal = ["published", "failed", "cancelled"].includes(state)
+  const reviewBlocked = state === "review_required"
   return {
     ok: true,
     ...summary(state),
@@ -481,6 +561,49 @@ function detail(state: string) {
           tool_calls: 0,
         },
       ],
+    },
+    diagnostics: {
+      actionable_errors: [],
+      active_tasks: state === "exploring" ? 1 : 0,
+      audit: {
+        failures: 0,
+        latency_ms: 1250,
+        models: ["model-planner", "model-worker", "model-verifier"],
+        retries: 1,
+        tokens: 450,
+        tool_calls: 3,
+        by_role_model: [],
+      },
+      budgets: {
+        replans: { remaining: 2, used: 0 },
+        task_slots: { remaining: 3, used: state === "exploring" ? 1 : 0 },
+      },
+      classification: terminal
+        ? "terminal"
+        : reviewBlocked
+          ? "review_blocked"
+          : "active",
+      failed_tasks: 0,
+      review_blockers: [],
+      staging: {
+        exists: [
+          "rendering",
+          "checking",
+          "review_required",
+          "published",
+        ].includes(state),
+        path: "/workspace/.okf-wiki/runs/run-active/staging",
+      },
+      terminal_outcome: terminal ? state : null,
+    },
+    operations: {
+      can_cancel: !terminal,
+      can_recover: false,
+      recover_reason: reviewBlocked
+        ? "Production Run is waiting for review, not recovery"
+        : terminal
+          ? `${state} Production Runs are terminal`
+          : "Run Worker is still active",
     },
     coverage_obligations: [
       {

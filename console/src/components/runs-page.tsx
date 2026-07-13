@@ -5,9 +5,22 @@ import {
   Clock3Icon,
   PlayIcon,
   RefreshCwIcon,
+  RotateCcwIcon,
+  XCircleIcon,
 } from "lucide-react"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -26,6 +39,7 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Spinner } from "@/components/ui/spinner"
 import {
   Table,
   TableBody,
@@ -37,10 +51,12 @@ import {
 import {
   ACTIVE_RUN_STATES,
   RUN_PHASES,
+  cancelRun,
   fetchRun,
   fetchRuns,
   formatDate,
   runStateLabel,
+  recoverRun,
   titleCase,
   type RunDetail,
   type RunsError,
@@ -61,7 +77,39 @@ export function RunsPage({
   const [runs, setRuns] = useState<RunSummary[] | null>(null)
   const [detail, setDetail] = useState<RunDetail | null>(null)
   const [error, setError] = useState<RunsError | null>(null)
+  const [operationError, setOperationError] = useState<RunsError | null>(null)
+  const [working, setWorking] = useState<"cancel" | "recover" | null>(null)
   const [reload, setReload] = useState(0)
+
+  async function operate(action: "cancel" | "recover") {
+    if (!detail) return
+    setWorking(action)
+    setOperationError(null)
+    try {
+      const next = await (action === "cancel"
+        ? cancelRun(token, detail.run_id)
+        : recoverRun(token, detail.run_id))
+      setDetail(next)
+      setRuns(
+        (current) =>
+          current?.map((run) =>
+            run.run_id === next.run_id
+              ? {
+                  ...run,
+                  state: next.state,
+                  phase: next.phase,
+                  outcome: next.outcome,
+                  updated_at: next.updated_at,
+                }
+              : run
+          ) ?? null
+      )
+    } catch (reason) {
+      setOperationError(reason as RunsError)
+    } finally {
+      setWorking(null)
+    }
+  }
 
   useEffect(() => {
     const controller = new AbortController()
@@ -163,12 +211,25 @@ export function RunsPage({
         </Alert>
       )}
 
+      {operationError && (
+        <Alert variant="destructive">
+          <CircleAlertIcon />
+          <AlertTitle>Run operation failed</AlertTitle>
+          <AlertDescription>{operationError.message}</AlertDescription>
+        </Alert>
+      )}
+
       <RunHistory
         runs={runs}
         selectedRunId={selectedRunId}
         onSelectRun={onSelectRun}
       />
-      <RunDetails detail={detail} selectedRunId={selectedRunId} />
+      <RunDetails
+        detail={detail}
+        selectedRunId={selectedRunId}
+        working={working}
+        onAction={operate}
+      />
     </main>
   )
 }
@@ -271,9 +332,13 @@ function RunHistory({
 function RunDetails({
   detail,
   selectedRunId,
+  working,
+  onAction,
 }: {
   detail: RunDetail | null
   selectedRunId: string | null
+  working: "cancel" | "recover" | null
+  onAction: (action: "cancel" | "recover") => Promise<void>
 }) {
   if (!selectedRunId) return null
   if (!detail || detail.run_id !== selectedRunId)
@@ -308,7 +373,58 @@ function RunDetails({
                   ? "Semantic execution through the recorded Gateway Profile"
                   : "Legacy Production Run"}
             </CardDescription>
-            <CardAction>
+            <CardAction className="flex flex-wrap items-center justify-end gap-2">
+              {detail.operations.can_recover && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={working !== null}
+                  onClick={() => void onAction("recover")}
+                >
+                  {working === "recover" ? (
+                    <Spinner data-icon="inline-start" />
+                  ) : (
+                    <RotateCcwIcon data-icon="inline-start" />
+                  )}
+                  Recover Run
+                </Button>
+              )}
+              {detail.operations.can_cancel && (
+                <AlertDialog>
+                  <AlertDialogTrigger
+                    render={
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        disabled={working !== null}
+                      />
+                    }
+                  >
+                    <XCircleIcon data-icon="inline-start" />
+                    Cancel Run
+                  </AlertDialogTrigger>
+                  <AlertDialogContent size="sm">
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>
+                        Cancel this Production Run?
+                      </AlertDialogTitle>
+                      <AlertDialogDescription>
+                        The Run becomes terminal. Accepted state and diagnostics
+                        remain available, but staging output will never publish.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Keep running</AlertDialogCancel>
+                      <AlertDialogAction
+                        variant="destructive"
+                        onClick={() => void onAction("cancel")}
+                      >
+                        Cancel Run
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              )}
               <StateBadge state={detail.state} />
             </CardAction>
           </CardHeader>
@@ -343,10 +459,12 @@ function RunDetails({
           </CardContent>
         </Card>
 
+        <OperationalDiagnostics detail={detail} />
+
         {detail.actionable_errors.length > 0 && (
           <Alert variant="destructive">
             <CircleAlertIcon />
-            <AlertTitle>Production Run failed</AlertTitle>
+            <AlertTitle>Actionable failure</AlertTitle>
             <AlertDescription>
               <ul className="flex flex-col gap-1">
                 {detail.actionable_errors.map((message) => (
@@ -440,6 +558,79 @@ function RunDetails({
         <TaskCard title="Failed Analysis Tasks" tasks={detail.tasks.failed} />
       </div>
     </div>
+  )
+}
+
+function OperationalDiagnostics({ detail }: { detail: RunDetail }) {
+  const diagnostics = detail.diagnostics
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Operational diagnostics</CardTitle>
+        <CardDescription>
+          Checkpoint-safe state and redacted operator data from the control
+          plane.
+        </CardDescription>
+        <CardAction>
+          <Badge variant="outline">
+            {titleCase(diagnostics.classification)}
+          </Badge>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <dl className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
+          <div>
+            <dt className="text-xs text-muted-foreground">Active tasks</dt>
+            <dd className="mt-1 font-semibold">{diagnostics.active_tasks}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-muted-foreground">Failed tasks</dt>
+            <dd className="mt-1 font-semibold">{diagnostics.failed_tasks}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-muted-foreground">Staging</dt>
+            <dd className="mt-1 font-semibold">
+              {diagnostics.staging.exists ? "Preserved" : "Not created"}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-xs text-muted-foreground">Outcome</dt>
+            <dd className="mt-1 font-semibold">
+              {diagnostics.terminal_outcome
+                ? runStateLabel(diagnostics.terminal_outcome)
+                : "Not terminal"}
+            </dd>
+          </div>
+        </dl>
+        <div className="flex flex-wrap gap-2">
+          {Object.entries(diagnostics.budgets).map(([name, budget]) => (
+            <Badge key={name} variant="secondary">
+              {titleCase(name)} {formatNumber(budget.used)} used ·{" "}
+              {formatNumber(budget.remaining)} remaining
+            </Badge>
+          ))}
+        </div>
+        {diagnostics.review_blockers.length > 0 && (
+          <Alert>
+            <CircleAlertIcon />
+            <AlertTitle>Review blockers</AlertTitle>
+            <AlertDescription>
+              <ul className="flex flex-col gap-1">
+                {diagnostics.review_blockers.map((blocker) => (
+                  <li key={blocker}>{blocker}</li>
+                ))}
+              </ul>
+            </AlertDescription>
+          </Alert>
+        )}
+        {detail.operations.recover_reason &&
+          diagnostics.classification !== "terminal" && (
+            <p className="text-xs text-muted-foreground">
+              {detail.operations.recover_reason}
+            </p>
+          )}
+      </CardContent>
+    </Card>
   )
 }
 

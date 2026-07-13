@@ -244,6 +244,7 @@ test("configures, tests, and selects a Gateway Profile through Connections", asy
 test("loads the built Console through the real Python launcher", async ({
   page,
 }) => {
+  test.setTimeout(60_000)
   const externalRequests: string[] = []
   const consoleErrors: string[] = []
   const origin = new URL(sessionUrl).origin
@@ -591,6 +592,22 @@ test("loads the built Console through the real Python launcher", async ({
     width: document.documentElement.scrollWidth,
   }))
   expect(runsOverflow.width).toBe(runsOverflow.viewport)
+  await page.getByRole("button", { name: "Cancel Run" }).click()
+  const cancelDialog = page.getByRole("alertdialog")
+  await expect(
+    cancelDialog.getByText("Cancel this Production Run?")
+  ).toBeVisible()
+  const cancelResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname.endsWith("/cancel")
+  )
+  await cancelDialog.getByRole("button", { name: "Cancel Run" }).click()
+  expect((await cancelResponse).status()).toBe(200)
+  await expect(page.getByText("Terminal", { exact: true })).toBeVisible()
+  await expect(
+    page.getByText("Cancelled", { exact: true }).first()
+  ).toBeVisible()
   await page.screenshot({
     path: "test-results/runs-mobile-real.png",
     fullPage: true,
