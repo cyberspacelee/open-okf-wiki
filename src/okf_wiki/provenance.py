@@ -15,6 +15,8 @@ from .verification import AcceptanceDecision, VerificationFinding
 
 MAX_GRAPH_NODES = 200
 MAX_GRAPH_EDGES = 200
+MAX_REPLAY_EVENTS = 100
+MAX_REPLAY_PATHS = 100
 MAX_FINDINGS = 5
 MAX_FINDING_EVIDENCE = 20
 MAX_DECISION_REASONS = 20
@@ -33,6 +35,10 @@ PROVENANCE_FILTER_STATES = frozenset(
         "blocked",
     }
 )
+
+
+def _bounded_text(value: str) -> str:
+    return value[:MAX_DETAIL_TEXT]
 
 
 class ConceptProvenanceStore:
@@ -153,6 +159,724 @@ class ConceptProvenanceStore:
                     offset > 0 or next_offset is not None or len(page_edges) > len(bounded_edges)
                 ),
             },
+        }
+
+    def replay(
+        self,
+        run_id: str,
+        *,
+        event_limit: int = 50,
+        event_offset: int = 0,
+        event_sequence: int | None = None,
+        entity_id: str | None = None,
+        impact_limit: int = 100,
+        impact_offset: int = 0,
+        path_limit: int = 50,
+        path_offset: int = 0,
+    ) -> dict[str, Any]:
+        if not 1 <= event_limit <= MAX_REPLAY_EVENTS:
+            raise ValueError(f"event_limit must be between 1 and {MAX_REPLAY_EVENTS}")
+        if event_offset < 0:
+            raise ValueError("event_offset must be non-negative")
+        if event_sequence is not None and event_sequence < 1:
+            raise ValueError("event_sequence must be positive")
+        if entity_id is not None and (not entity_id or len(entity_id) > MAX_DETAIL_TEXT):
+            raise ValueError("entity_id must be a non-empty bounded string")
+        if event_sequence is not None and entity_id is not None:
+            raise ValueError("Choose either event_sequence or entity_id")
+        if not 1 <= impact_limit <= MAX_GRAPH_NODES:
+            raise ValueError(f"impact_limit must be between 1 and {MAX_GRAPH_NODES}")
+        if impact_offset < 0:
+            raise ValueError("impact_offset must be non-negative")
+        if not 1 <= path_limit <= MAX_REPLAY_PATHS:
+            raise ValueError(f"path_limit must be between 1 and {MAX_REPLAY_PATHS}")
+        if path_offset < 0:
+            raise ValueError("path_offset must be non-negative")
+        with self._connect() as connection:
+            run = connection.execute(
+                "SELECT state, source_set_json FROM runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            if run is None:
+                raise ValueError(f"Unknown Production Run: {run_id}")
+            lineage = self._lineage_run_ids(connection, run_id)
+            placeholders = ",".join("?" for _ in lineage)
+            event_where = f"""run_id IN ({placeholders}) AND json_valid(details) AND (
+                (json_extract(details, '$.entity_type') = 'verification_candidate'
+                 AND state IN ('staged', 'accepted', 'rejected',
+                               'review_required', 'revision_required'))
+                OR (json_extract(details, '$.entity_type') = 'claim'
+                    AND state IN ('supported', 'disputed', 'stale'))
+                OR (json_extract(details, '$.entity_type') = 'concept'
+                    AND state IN ('active', 'disputed', 'stale'))
+                OR (state = 'published' AND (
+                    json_extract(details, '$.entity_type') IS NULL
+                    OR json_extract(details, '$.entity_type') = 'production_run'
+                ))
+            )"""
+            total = connection.execute(
+                f"SELECT COUNT(*) FROM run_events WHERE {event_where}", lineage
+            ).fetchone()[0]
+            located_sequence = event_sequence
+            if entity_id is not None:
+                located = connection.execute(
+                    f"""SELECT sequence FROM run_events WHERE {event_where} AND
+                        CASE
+                          WHEN state = 'published'
+                               AND json_extract(details, '$.entity_id') IS NULL
+                            THEN run_id
+                          ELSE json_extract(details, '$.entity_id')
+                        END = ?
+                        ORDER BY sequence LIMIT 1""",
+                    (*lineage, entity_id),
+                ).fetchone()
+                if located is None:
+                    raise ValueError(f"Unknown replay entity: {entity_id}")
+                located_sequence = located[0]
+            elif event_sequence is not None:
+                located = connection.execute(
+                    f"""SELECT sequence FROM run_events
+                        WHERE {event_where} AND sequence = ?""",
+                    (*lineage, event_sequence),
+                ).fetchone()
+                if located is None:
+                    raise ValueError(f"Unknown replay event sequence: {event_sequence}")
+            if located_sequence is not None:
+                rank = (
+                    connection.execute(
+                        f"""SELECT COUNT(*) FROM run_events
+                        WHERE {event_where} AND sequence <= ?""",
+                        (*lineage, located_sequence),
+                    ).fetchone()[0]
+                    - 1
+                )
+                event_offset = (rank // event_limit) * event_limit
+            rows = list(
+                connection.execute(
+                    f"""SELECT * FROM run_events WHERE {event_where}
+                        ORDER BY sequence LIMIT ? OFFSET ?""",
+                    (*lineage, event_limit, event_offset),
+                )
+            )
+            events = [event for row in rows if (event := self._replay_event(row, {})) is not None]
+            labels = self._replay_labels(connection, lineage, events)
+            for event in events:
+                event["entity_label"] = _bounded_text(
+                    labels.get(
+                        (event["entity_type"], event["entity_id"]),
+                        event["entity_id"],
+                    )
+                )
+            try:
+                source_set = json.loads(run["source_set_json"] or "{}")
+            except json.JSONDecodeError:
+                source_set = {}
+            if not isinstance(source_set, dict):
+                source_set = {}
+            impact = self._bounded_impact_snapshot(
+                connection,
+                run_id,
+                source_set,
+                limit=impact_limit,
+                offset=impact_offset,
+                path_limit=path_limit,
+                path_offset=path_offset,
+            )
+        return {
+            "run_id": run_id,
+            "run_state": run["state"],
+            "lineage_run_ids": list(lineage),
+            "events": events,
+            "located_event_sequence": located_sequence,
+            "event_bounds": {
+                "limit": event_limit,
+                "offset": event_offset,
+                "previous_offset": max(0, event_offset - event_limit) if event_offset else None,
+                "next_offset": event_offset + event_limit
+                if event_offset + event_limit < total
+                else None,
+                "total": total,
+                "truncated": event_offset > 0 or event_offset + event_limit < total,
+            },
+            "impact": impact,
+        }
+
+    def _bounded_impact_snapshot(
+        self,
+        connection: sqlite3.Connection,
+        run_id: str,
+        source_set: dict[str, Any],
+        *,
+        limit: int,
+        offset: int,
+        path_limit: int,
+        path_offset: int,
+    ) -> dict[str, Any]:
+        refresh = source_set.get("refresh")
+        refresh = refresh if isinstance(refresh, dict) else {}
+        diff = refresh.get("diff")
+        diff = diff if isinstance(diff, dict) else {}
+        changes = self._impact_changes(diff)
+        graph_run_id = source_set.get("base_run_id")
+        if (
+            not isinstance(graph_run_id, str)
+            or not connection.execute("SELECT 1 FROM runs WHERE id = ?", (graph_run_id,)).fetchone()
+        ):
+            graph_run_id = run_id
+        mode = refresh.get("mode") if refresh.get("mode") in {"incremental", "full"} else "full"
+        recorded_reason = refresh.get("fallback_reason")
+        fallback_reason = (
+            _bounded_text(recorded_reason)
+            if isinstance(recorded_reason, str) and recorded_reason
+            else None
+        )
+        full_analysis = mode == "full"
+        affected_claims = self._string_set(refresh.get("reverify_claims"))
+        affected_concepts = self._string_set(refresh.get("reverify_concepts"))
+        affected_pages = self._string_set(refresh.get("rerender_pages"))
+
+        change_nodes: list[dict[str, Any]] = []
+        source_nodes: dict[str, str] = {}
+        for change in changes:
+            unit = change["after"] or change["before"]
+            if unit is None:
+                continue
+            node_id = f"source-unit:{change['status']}:{unit['id']}"
+            change_nodes.append(
+                {
+                    "id": node_id,
+                    "entity_id": unit["id"],
+                    "type": "source_unit",
+                    "label": _bounded_text(unit["label"] or unit["path"]),
+                    "status": change["status"],
+                    "before": change["before"],
+                    "after": change["after"],
+                }
+            )
+            if change["status"] in {"changed", "removed"} and change["before"]:
+                source_nodes[change["before"]["id"]] = node_id
+        connection.execute(
+            "CREATE TEMP TABLE replay_changed_units (source_unit TEXT PRIMARY KEY, node_id TEXT)"
+        )
+        connection.executemany(
+            "INSERT INTO replay_changed_units VALUES (?, ?)", source_nodes.items()
+        )
+
+        counts = {
+            "evidence": connection.execute(
+                "SELECT COUNT(*) FROM accepted_evidence WHERE run_id = ?", (graph_run_id,)
+            ).fetchone()[0],
+            "claims": connection.execute(
+                "SELECT COUNT(*) FROM accepted_claims WHERE run_id = ?", (graph_run_id,)
+            ).fetchone()[0],
+            "concepts": connection.execute(
+                "SELECT COUNT(*) FROM accepted_concepts WHERE run_id = ?", (graph_run_id,)
+            ).fetchone()[0],
+            "pages": connection.execute(
+                "SELECT COUNT(*) FROM page_plans WHERE run_id = ?", (graph_run_id,)
+            ).fetchone()[0],
+        }
+        affected_evidence_count = (
+            counts["evidence"]
+            if full_analysis
+            else connection.execute(
+                """SELECT COUNT(*) FROM accepted_evidence evidence
+                   JOIN replay_changed_units changed
+                     ON changed.source_unit = evidence.source_unit
+                   WHERE evidence.run_id = ?""",
+                (graph_run_id,),
+            ).fetchone()[0]
+        )
+        total_nodes = len(change_nodes) + sum(counts.values())
+        remaining = limit
+        skipped = offset
+        page_nodes: list[dict[str, Any]] = []
+
+        if skipped < len(change_nodes):
+            selected = change_nodes[skipped : skipped + remaining]
+            page_nodes.extend(selected)
+            remaining -= len(selected)
+            skipped = 0
+        else:
+            skipped -= len(change_nodes)
+
+        def take(total: int, query: str) -> list[sqlite3.Row]:
+            nonlocal remaining, skipped
+            if remaining == 0:
+                return []
+            if skipped >= total:
+                skipped -= total
+                return []
+            rows = list(connection.execute(query, (graph_run_id, remaining, skipped)))
+            remaining -= len(rows)
+            skipped = 0
+            return rows
+
+        for row in take(
+            counts["evidence"],
+            """SELECT evidence.*,
+                      EXISTS (
+                        SELECT 1 FROM replay_changed_units changed
+                        WHERE changed.source_unit = evidence.source_unit
+                      ) AS affected
+               FROM accepted_evidence evidence WHERE evidence.run_id = ?
+               ORDER BY evidence.id LIMIT ? OFFSET ?""",
+        ):
+            page_nodes.append(
+                {
+                    "id": row["id"],
+                    "entity_id": row["id"],
+                    "type": "evidence",
+                    "label": _bounded_text(f"{row['path']}:{row['start_line']}-{row['end_line']}"),
+                    "status": "affected" if full_analysis or row["affected"] else "stable",
+                    "before": None,
+                    "after": None,
+                }
+            )
+        for row in take(
+            counts["claims"],
+            """SELECT id, statement FROM accepted_claims WHERE run_id = ?
+               ORDER BY id LIMIT ? OFFSET ?""",
+        ):
+            page_nodes.append(
+                {
+                    "id": row["id"],
+                    "entity_id": row["id"],
+                    "type": "claim",
+                    "label": _bounded_text(row["statement"]),
+                    "status": "affected"
+                    if full_analysis or row["id"] in affected_claims
+                    else "stable",
+                    "before": None,
+                    "after": None,
+                }
+            )
+        for row in take(
+            counts["concepts"],
+            """SELECT id, canonical_name FROM accepted_concepts WHERE run_id = ?
+               ORDER BY id LIMIT ? OFFSET ?""",
+        ):
+            page_nodes.append(
+                {
+                    "id": row["id"],
+                    "entity_id": row["id"],
+                    "type": "concept",
+                    "label": _bounded_text(row["canonical_name"]),
+                    "status": "affected"
+                    if full_analysis or row["id"] in affected_concepts
+                    else "stable",
+                    "before": None,
+                    "after": None,
+                }
+            )
+        for row in take(
+            counts["pages"],
+            """SELECT path, title FROM page_plans WHERE run_id = ?
+               ORDER BY path LIMIT ? OFFSET ?""",
+        ):
+            page_nodes.append(
+                {
+                    "id": f"page:{row['path']}",
+                    "entity_id": row["path"],
+                    "type": "page",
+                    "label": _bounded_text(row["title"]),
+                    "status": "affected"
+                    if full_analysis or row["path"] in affected_pages
+                    else "stable",
+                    "before": None,
+                    "after": None,
+                }
+            )
+
+        paths, path_total = self._impact_paths(
+            connection,
+            graph_run_id,
+            source_nodes,
+            change_nodes,
+            limit=path_limit,
+            offset=path_offset,
+        )
+        visible = {node["id"]: node for node in page_nodes}
+        visible_evidence = [node["id"] for node in page_nodes if node["type"] == "evidence"]
+        visible_claims = [node["id"] for node in page_nodes if node["type"] == "claim"]
+        visible_concepts = [node["id"] for node in page_nodes if node["type"] == "concept"]
+        visible_pages = [node["entity_id"] for node in page_nodes if node["type"] == "page"]
+        visible_sources = {
+            node["entity_id"]: node["id"]
+            for node in page_nodes
+            if node["type"] == "source_unit" and node["status"] in {"changed", "removed"}
+        }
+        edges: list[dict[str, str]] = []
+        if visible_sources and visible_evidence:
+            source_placeholders = ",".join("?" for _ in visible_sources)
+            evidence_placeholders = ",".join("?" for _ in visible_evidence)
+            for row in connection.execute(
+                f"""SELECT source_unit, id FROM accepted_evidence
+                    WHERE run_id = ? AND source_unit IN ({source_placeholders})
+                      AND id IN ({evidence_placeholders}) LIMIT {MAX_GRAPH_EDGES + 1}""",
+                (graph_run_id, *visible_sources, *visible_evidence),
+            ):
+                self._add_impact_edge(
+                    edges, visible_sources[row["source_unit"]], row["id"], "contains"
+                )
+        for source_ids, target_ids, table, source_column, target_column, relation in (
+            (
+                visible_evidence,
+                visible_claims,
+                "claim_evidence",
+                "evidence_id",
+                "claim_id",
+                "grounds",
+            ),
+            (
+                visible_claims,
+                visible_concepts,
+                "concept_claims",
+                "claim_id",
+                "concept_id",
+                "forms",
+            ),
+        ):
+            if not source_ids or not target_ids:
+                continue
+            source_placeholders = ",".join("?" for _ in source_ids)
+            target_placeholders = ",".join("?" for _ in target_ids)
+            for row in connection.execute(
+                f"""SELECT {source_column}, {target_column} FROM {table}
+                    WHERE run_id = ? AND {source_column} IN ({source_placeholders})
+                      AND {target_column} IN ({target_placeholders})
+                    LIMIT {MAX_GRAPH_EDGES + 1}""",
+                (graph_run_id, *source_ids, *target_ids),
+            ):
+                self._add_impact_edge(edges, row[source_column], row[target_column], relation)
+        if visible_concepts and visible_pages:
+            concept_placeholders = ",".join("?" for _ in visible_concepts)
+            page_placeholders = ",".join("?" for _ in visible_pages)
+            for row in connection.execute(
+                f"""SELECT concept_id, path FROM page_plans
+                    WHERE run_id = ? AND concept_id IN ({concept_placeholders})
+                      AND path IN ({page_placeholders}) LIMIT {MAX_GRAPH_EDGES + 1}""",
+                (graph_run_id, *visible_concepts, *visible_pages),
+            ):
+                self._add_impact_edge(edges, row["concept_id"], f"page:{row['path']}", "renders")
+        edges = [
+            edge
+            for edge in edges[:MAX_GRAPH_EDGES]
+            if edge["source"] in visible and edge["target"] in visible
+        ]
+        total_edges = (
+            connection.execute(
+                """SELECT COUNT(*) FROM accepted_evidence evidence
+                   JOIN replay_changed_units changed
+                     ON changed.source_unit = evidence.source_unit
+                   WHERE evidence.run_id = ?""",
+                (graph_run_id,),
+            ).fetchone()[0]
+            + connection.execute(
+                "SELECT COUNT(*) FROM claim_evidence WHERE run_id = ?", (graph_run_id,)
+            ).fetchone()[0]
+            + connection.execute(
+                "SELECT COUNT(*) FROM concept_claims WHERE run_id = ?", (graph_run_id,)
+            ).fetchone()[0]
+            + counts["pages"]
+        )
+        next_offset = offset + limit if offset + limit < total_nodes else None
+        return {
+            "mode": mode,
+            "fallback_reason": fallback_reason,
+            "summary": {
+                "changes": {
+                    kind: sum(change["status"] == kind for change in changes)
+                    for kind in ("added", "changed", "moved", "removed")
+                },
+                "affected": {
+                    "evidence": affected_evidence_count,
+                    "claims": counts["claims"] if full_analysis else len(affected_claims),
+                    "concepts": counts["concepts"] if full_analysis else len(affected_concepts),
+                    "pages": counts["pages"] if full_analysis else len(affected_pages),
+                },
+                "stable": {
+                    "evidence": max(0, counts["evidence"] - affected_evidence_count),
+                    "claims": 0
+                    if full_analysis
+                    else max(0, counts["claims"] - len(affected_claims)),
+                    "concepts": 0
+                    if full_analysis
+                    else max(0, counts["concepts"] - len(affected_concepts)),
+                    "pages": 0 if full_analysis else max(0, counts["pages"] - len(affected_pages)),
+                },
+            },
+            "nodes": page_nodes,
+            "edges": edges,
+            "paths": paths,
+            "path_bounds": {
+                "limit": path_limit,
+                "offset": path_offset,
+                "previous_offset": max(0, path_offset - path_limit) if path_offset else None,
+                "next_offset": path_offset + path_limit
+                if path_offset + path_limit < path_total
+                else None,
+                "total": path_total,
+                "truncated": path_offset > 0 or path_offset + path_limit < path_total,
+            },
+            "bounds": {
+                "limit": limit,
+                "offset": offset,
+                "previous_offset": max(0, offset - limit) if offset else None,
+                "next_offset": next_offset,
+                "total_nodes": total_nodes,
+                "total_edges": total_edges,
+                "truncated": offset > 0 or next_offset is not None or len(edges) < total_edges,
+            },
+        }
+
+    @staticmethod
+    def _impact_paths(
+        connection: sqlite3.Connection,
+        run_id: str,
+        source_nodes: dict[str, str],
+        nodes: list[dict[str, Any]],
+        *,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        if not source_nodes:
+            return [], 0
+        joins = """FROM replay_changed_units changed
+            JOIN accepted_evidence evidence ON evidence.source_unit = changed.source_unit
+            JOIN claim_evidence claim_evidence
+              ON claim_evidence.run_id = evidence.run_id
+             AND claim_evidence.evidence_id = evidence.id
+            JOIN accepted_claims claim
+              ON claim.run_id = claim_evidence.run_id
+             AND claim.id = claim_evidence.claim_id
+            JOIN concept_claims concept_claim
+              ON concept_claim.run_id = claim.run_id
+             AND concept_claim.claim_id = claim.id
+            JOIN accepted_concepts concept
+              ON concept.run_id = concept_claim.run_id
+             AND concept.id = concept_claim.concept_id
+            JOIN page_plans page
+              ON page.run_id = concept.run_id
+             AND page.concept_id = concept.id
+            WHERE evidence.run_id = ?"""
+        total = connection.execute(f"SELECT COUNT(*) {joins}", (run_id,)).fetchone()[0]
+        rows = connection.execute(
+            f"""SELECT changed.node_id, changed.source_unit,
+                       evidence.id AS evidence_id, evidence.path AS evidence_path,
+                       evidence.start_line, evidence.end_line,
+                       claim.id AS claim_id, claim.statement,
+                       concept.id AS concept_id, concept.canonical_name,
+                       page.path AS page_path, page.title AS page_title
+                {joins}
+                ORDER BY changed.source_unit, evidence.id, claim.id, concept.id, page.path
+                LIMIT ? OFFSET ?""",
+            (run_id, limit, offset),
+        )
+        source_by_id = {node["id"]: node for node in nodes if node["type"] == "source_unit"}
+        paths = []
+        for row in rows:
+            source = source_by_id[row["node_id"]]
+            items = {
+                "source": {
+                    "id": source["id"],
+                    "entity_id": row["source_unit"],
+                    "type": "source_unit",
+                    "label": _bounded_text(source["label"]),
+                },
+                "evidence": {
+                    "id": row["evidence_id"],
+                    "entity_id": row["evidence_id"],
+                    "type": "evidence",
+                    "label": _bounded_text(
+                        f"{row['evidence_path']}:{row['start_line']}-{row['end_line']}"
+                    ),
+                },
+                "claim": {
+                    "id": row["claim_id"],
+                    "entity_id": row["claim_id"],
+                    "type": "claim",
+                    "label": _bounded_text(row["statement"]),
+                },
+                "concept": {
+                    "id": row["concept_id"],
+                    "entity_id": row["concept_id"],
+                    "type": "concept",
+                    "label": _bounded_text(row["canonical_name"]),
+                },
+                "page": {
+                    "id": f"page:{row['page_path']}",
+                    "entity_id": row["page_path"],
+                    "type": "page",
+                    "label": _bounded_text(row["page_title"]),
+                },
+            }
+            paths.append(
+                {
+                    "id": "|".join(items[stage]["id"] for stage in items),
+                    **items,
+                }
+            )
+        return paths, total
+
+    @classmethod
+    def _impact_changes(cls, diff: dict[str, Any]) -> list[dict[str, Any]]:
+        changes: list[dict[str, Any]] = []
+        for status in ("added", "removed"):
+            values = diff.get(status)
+            if not isinstance(values, list):
+                continue
+            for value in values:
+                if unit := cls._impact_unit(value):
+                    changes.append(
+                        {
+                            "status": status,
+                            "before": unit if status == "removed" else None,
+                            "after": unit if status == "added" else None,
+                        }
+                    )
+        for status in ("changed", "moved"):
+            values = diff.get(status)
+            if not isinstance(values, list):
+                continue
+            for value in values:
+                if not isinstance(value, dict):
+                    continue
+                before = cls._impact_unit(value.get("before"))
+                after = cls._impact_unit(value.get("after"))
+                if before is not None and after is not None:
+                    changes.append({"status": status, "before": before, "after": after})
+        order = {"changed": 0, "moved": 1, "added": 2, "removed": 3}
+        return sorted(
+            changes,
+            key=lambda item: (
+                order[item["status"]],
+                (item["after"] or item["before"])["source_id"],
+                (item["after"] or item["before"])["path"],
+                (item["after"] or item["before"])["id"],
+            ),
+        )
+
+    @staticmethod
+    def _impact_unit(value: object) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        required = ("id", "source_id", "revision", "path", "kind")
+        unit = {key: value.get(key) for key in required}
+        if any(
+            not isinstance(item, str) or not item or len(item) > MAX_DETAIL_TEXT
+            for item in unit.values()
+        ):
+            return None
+        digest = value.get("digest")
+        label = value.get("label")
+        if digest is not None:
+            if not isinstance(digest, str):
+                return None
+            if re.fullmatch(r"[0-9a-f]{64}", digest):
+                digest = f"sha256:{digest}"
+            elif re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
+                return None
+        if label is not None and not isinstance(label, str):
+            return None
+        return {
+            **unit,
+            "digest": digest,
+            "label": _bounded_text(label) if label else None,
+        }
+
+    @staticmethod
+    def _string_set(value: object) -> set[str]:
+        return (
+            {item for item in value if isinstance(item, str)} if isinstance(value, list) else set()
+        )
+
+    @staticmethod
+    def _add_impact_edge(
+        edges: list[dict[str, str]], source: str, target: str, relation: str
+    ) -> None:
+        edges.append(
+            {
+                "id": f"{source}|{relation}|{target}",
+                "source": source,
+                "target": target,
+                "relation": relation,
+            }
+        )
+
+    @staticmethod
+    def _replay_labels(
+        connection: sqlite3.Connection,
+        run_ids: tuple[str, ...],
+        events: list[dict[str, Any]],
+    ) -> dict[tuple[str, str], str]:
+        placeholders = ",".join("?" for _ in run_ids)
+        labels: dict[tuple[str, str], str] = {}
+        for entity_type, table, column in (
+            ("claim", "accepted_claims", "statement"),
+            ("concept", "accepted_concepts", "canonical_name"),
+        ):
+            ids = sorted(
+                {event["entity_id"] for event in events if event["entity_type"] == entity_type}
+            )
+            if not ids:
+                continue
+            id_placeholders = ",".join("?" for _ in ids)
+            labels.update(
+                {
+                    (entity_type, row["id"]): _bounded_text(row[column])
+                    for row in connection.execute(
+                        f"""SELECT id, {column} FROM {table}
+                            WHERE run_id IN ({placeholders})
+                              AND id IN ({id_placeholders}) ORDER BY rowid""",
+                        (*run_ids, *ids),
+                    )
+                }
+            )
+        return labels
+
+    @staticmethod
+    def _replay_event(
+        row: sqlite3.Row, labels: dict[tuple[str, str], str]
+    ) -> dict[str, Any] | None:
+        try:
+            details = json.loads(row["details"])
+        except json.JSONDecodeError:
+            return None
+        entity_type = details.get("entity_type")
+        entity_id = details.get("entity_id")
+        state = row["state"]
+        if entity_type is None and state == "published":
+            entity_type = "production_run"
+            entity_id = row["run_id"]
+        if not isinstance(entity_type, str) or not isinstance(entity_id, str):
+            return None
+        if entity_type == "verification_candidate":
+            if state == "staged":
+                stage = "proposed"
+            elif state == "rejected":
+                stage = "rejected"
+            elif state in {"accepted", "review_required", "revision_required"}:
+                stage = "verified"
+            else:
+                return None
+        elif entity_type in {"claim", "concept"}:
+            stage = "stale" if state == "stale" else "accepted"
+        elif entity_type == "production_run" and state == "published":
+            stage = "published"
+        else:
+            return None
+        candidate_id = details.get("candidate_id")
+        return {
+            "run_id": row["run_id"],
+            "sequence": row["sequence"],
+            "occurred_at": row["occurred_at"],
+            "stage": stage,
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "entity_label": _bounded_text(labels.get((entity_type, entity_id), entity_id)),
+            "previous_state": row["previous_state"],
+            "state": state,
+            "candidate_id": candidate_id if isinstance(candidate_id, str) else None,
         }
 
     def _graph(

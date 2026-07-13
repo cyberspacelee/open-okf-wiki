@@ -574,6 +574,7 @@ test("loads the built Console through the real Python launcher", async ({
     "Review Required"
   )
   const successfulRunUrl = page.url()
+  const successfulRunId = new URL(successfulRunUrl).searchParams.get("run")!
   await page.screenshot({
     path: "test-results/runs-desktop.png",
     fullPage: true,
@@ -608,6 +609,80 @@ test("loads the built Console through the real Python launcher", async ({
     path: "test-results/concepts-desktop-real.png",
     fullPage: true,
   })
+  seedReplayImpact(successfulRunId)
+  const replayResponse = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/v1/replay"
+  )
+  await page.getByRole("button", { name: "Replay history" }).click()
+  expect((await replayResponse).status()).toBe(200)
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Concept and impact replay" })
+  ).toBeVisible()
+  await expect(page.getByText("Changed", { exact: true }).first()).toBeVisible()
+  await expect(page.getByText("Affected propagation paths")).toBeVisible()
+  const replayKeyboard = page.getByRole("region", {
+    name: "Replay keyboard controls",
+  })
+  await replayKeyboard.focus()
+  await replayKeyboard.press("ArrowRight")
+  await expect(page.getByRole("status")).toContainText(/Verified|Accepted/)
+  await page.screenshot({
+    path: "test-results/replay-desktop-real.png",
+    fullPage: true,
+  })
+  await page.emulateMedia({ reducedMotion: "reduce" })
+  await expect(
+    page.getByRole("heading", { name: "Ordered replay (reduced motion)" })
+  ).toBeVisible()
+  expect(
+    await page.getByTestId("reduced-replay-event").count()
+  ).toBeGreaterThan(0)
+  await page.setViewportSize({ width: 390, height: 844 })
+  const replayOverflow = await page.evaluate(() => ({
+    viewport: document.documentElement.clientWidth,
+    width: document.documentElement.scrollWidth,
+  }))
+  expect(replayOverflow.width).toBe(replayOverflow.viewport)
+  const replayPagination = page.getByRole("button", {
+    name: /^(Previous|Next) (history|path|impact) page$/,
+  })
+  for (let index = 0; index < (await replayPagination.count()); index += 1) {
+    const button = replayPagination.nth(index)
+    if (!(await button.isVisible())) continue
+    const bounds = await button.boundingBox()
+    const layout = await button.evaluate((element) => {
+      const footer = element.closest('[data-slot="card-footer"]')
+      const card = element.closest('[data-slot="card"]')
+      const rect = (target: Element | null) => {
+        const value = target?.getBoundingClientRect()
+        return value
+          ? { left: value.left, right: value.right, width: value.width }
+          : null
+      }
+      return {
+        label: element.textContent?.trim(),
+        button: rect(element),
+        footer: rect(footer),
+        card: rect(card),
+      }
+    })
+    expect(bounds).not.toBeNull()
+    expect(bounds!.x).toBeGreaterThanOrEqual(0)
+    expect(
+      bounds!.x + bounds!.width,
+      JSON.stringify(layout)
+    ).toBeLessThanOrEqual(replayOverflow.viewport)
+  }
+  await page.screenshot({
+    path: "test-results/replay-mobile-reduced-real.png",
+    fullPage: true,
+  })
+  await page.emulateMedia({ reducedMotion: "no-preference" })
+  await page.setViewportSize({ width: 1280, height: 720 })
+  await page.getByRole("button", { name: "Back to Concepts" }).click()
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Concept provenance" })
+  ).toBeVisible()
   await page.setViewportSize({ width: 390, height: 844 })
   await page.getByRole("button", { name: "Toggle Sidebar" }).click()
   const conceptsMobileSidebar = page.locator(
@@ -1034,6 +1109,41 @@ function createGitSource(prefix: string) {
   execFileSync("git", ["add", "README.md"], { cwd: path })
   execFileSync("git", ["commit", "-qm", "source"], { cwd: path })
   return path
+}
+
+function seedReplayImpact(runId: string) {
+  execFileSync(
+    "uv",
+    [
+      "run",
+      "python",
+      "-c",
+      `import json,sqlite3,sys
+database,run_id=sys.argv[1:]
+c=sqlite3.connect(database)
+c.row_factory=sqlite3.Row
+row=c.execute("select source_set_json from runs where id=?",(run_id,)).fetchone()
+link=c.execute("""select e.*, cl.id claim_id, co.id concept_id, p.path page_path
+from accepted_evidence e
+join claim_evidence ce on ce.run_id=e.run_id and ce.evidence_id=e.id
+join accepted_claims cl on cl.run_id=ce.run_id and cl.id=ce.claim_id
+join concept_claims cc on cc.run_id=cl.run_id and cc.claim_id=cl.id
+join accepted_concepts co on co.run_id=cc.run_id and co.id=cc.concept_id
+join page_plans p on p.run_id=co.run_id and p.concept_id=co.id
+where e.run_id=? order by e.id limit 1""",(run_id,)).fetchone()
+assert row and link
+source_set=json.loads(row[0])
+unit=next(item for item in source_set["source_universe"] if item["source_unit"]==link["source_unit"])
+before={"id":link["source_unit"],"source_id":link["source_id"],"revision":link["revision"],"path":link["path"],"kind":unit["source_unit_kind"],"digest":unit.get("content_digest") or link["digest"],"label":None}
+after={**before,"revision":"f"*40,"digest":"9"*64}
+source_set["refresh"]={"mode":"incremental","fallback_reason":None,"new_source_units":[],"reverify_claims":[link["claim_id"]],"reverify_concepts":[link["concept_id"]],"rerender_pages":[link["page_path"]],"relocations":{},"diff":{"added":[],"changed":[{"kind":"changed","before":before,"after":after}],"moved":[],"removed":[],"by_source":{}}}
+c.execute("update runs set source_set_json=? where id=?",(json.dumps(source_set,sort_keys=True),run_id))
+c.commit()`,
+      join(workspace, ".okf-wiki", "runs.db"),
+      runId,
+    ],
+    { cwd: repoRoot, stdio: "pipe" }
+  )
 }
 
 function readSessionUrl(process: ChildProcessWithoutNullStreams) {

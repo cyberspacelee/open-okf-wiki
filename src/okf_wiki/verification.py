@@ -148,6 +148,16 @@ class VerificationStore:
                 "INSERT INTO verification_candidates VALUES (?, ?, ?, ?, 'staged', NULL)",
                 (run_id, candidate_id, task_id, json.dumps(proposal, sort_keys=True)),
             )
+            if connection.execute("SELECT 1 FROM runs WHERE id = ?", (run_id,)).fetchone():
+                append_entity_event(
+                    connection,
+                    run_id,
+                    "verification_candidate",
+                    candidate_id,
+                    None,
+                    "staged",
+                    candidate_id=candidate_id,
+                )
 
     def record_findings(
         self,

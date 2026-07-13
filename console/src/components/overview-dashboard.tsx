@@ -92,6 +92,12 @@ const ConceptsPage = lazy(() =>
   }))
 )
 
+const ReplayPage = lazy(() =>
+  import("@/components/replay-page").then((module) => ({
+    default: module.ReplayPage,
+  }))
+)
+
 const ReviewPage = lazy(() =>
   import("@/components/review-page").then((module) => ({
     default: module.ReviewPage,
@@ -123,6 +129,7 @@ type Page =
   | "review"
   | "knowledge"
   | "concepts"
+  | "replay"
   | "settings"
   | "connections"
 
@@ -142,6 +149,7 @@ export function OverviewDashboard({
       "review",
       "knowledge",
       "concepts",
+      "replay",
       "settings",
       "connections",
     ].includes(String(view))
@@ -170,12 +178,13 @@ export function OverviewDashboard({
   const navigate = useCallback((nextPage: Page, runId?: string) => {
     const parameters = new URLSearchParams()
     if (nextPage !== "overview") parameters.set("view", nextPage)
-    if (["runs", "review"].includes(nextPage) && runId)
+    if (["runs", "review", "replay"].includes(nextPage) && runId)
       parameters.set("run", runId)
     const url = parameters.size ? `/?${parameters}` : "/"
     window.history.replaceState(null, "", url)
     setPage(nextPage)
-    if (["runs", "review"].includes(nextPage)) setSelectedRunId(runId ?? null)
+    if (["runs", "review", "replay"].includes(nextPage))
+      setSelectedRunId(runId ?? null)
   }, [])
   const selectRun = useCallback(
     (runId: string) => navigate("runs", runId),
@@ -243,7 +252,9 @@ export function OverviewDashboard({
                               ? "Knowledge Bundle"
                               : page === "concepts"
                                 ? "Concept provenance"
-                                : "Gateway connections"}
+                                : page === "replay"
+                                  ? "Concept & impact replay"
+                                  : "Gateway connections"}
                 </p>
               </div>
             </div>
@@ -307,7 +318,24 @@ export function OverviewDashboard({
               </p>
             }
           >
-            <ConceptsPage token={token} />
+            <ConceptsPage
+              token={token}
+              onReplay={(runId) => navigate("replay", runId)}
+            />
+          </Suspense>
+        ) : page === "replay" ? (
+          <Suspense
+            fallback={
+              <p className="p-8 text-sm text-muted-foreground" role="status">
+                Loading replay…
+              </p>
+            }
+          >
+            <ReplayPage
+              token={token}
+              selectedRunId={selectedRunId}
+              onBack={() => navigate("concepts")}
+            />
           </Suspense>
         ) : (
           <div className="mx-auto flex w-full max-w-[90rem] flex-col gap-8 px-5 py-7 lg:px-8 lg:py-9">
@@ -417,11 +445,19 @@ function PrimaryNavigation({
             <SidebarMenuItem key={label}>
               {"href" in item ? (
                 <SidebarMenuButton
-                  isActive={page === target}
+                  isActive={
+                    page === target ||
+                    (target === "concepts" && page === "replay")
+                  }
                   render={
                     <a
                       href={item.href}
-                      aria-current={page === target ? "page" : undefined}
+                      aria-current={
+                        page === target ||
+                        (target === "concepts" && page === "replay")
+                          ? "page"
+                          : undefined
+                      }
                       onClick={(event) => {
                         event.preventDefault()
                         navigate(target)
@@ -439,9 +475,17 @@ function PrimaryNavigation({
                 label === "Concepts" ||
                 label === "Settings" ? (
                 <SidebarMenuButton
-                  isActive={page === target}
+                  isActive={
+                    page === target ||
+                    (target === "concepts" && page === "replay")
+                  }
                   type="button"
-                  aria-current={page === target ? "page" : undefined}
+                  aria-current={
+                    page === target ||
+                    (target === "concepts" && page === "replay")
+                      ? "page"
+                      : undefined
+                  }
                   onClick={() => navigate(target)}
                 >
                   <Icon />
