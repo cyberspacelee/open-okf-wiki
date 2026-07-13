@@ -58,6 +58,9 @@ const EDGE_RELATIONS = [
   "blocked_by",
 ] as const
 const SHA256 = /^sha256:[0-9a-f]{64}$/
+const CLAIM_ID = /^claim:[0-9a-f]{64}$/
+const CONCEPT_ID = /^concept:[0-9a-f]{64}$/
+const EVIDENCE_ID = /^evidence:[0-9a-f]{64}$/
 const MAX_GRAPH_ITEMS = 200
 const MAX_FINDINGS = 5
 const MAX_FINDING_EVIDENCE = 20
@@ -127,6 +130,7 @@ export type ProvenanceNode = {
   decision: ProvenanceDecision | null
   role?: "defining" | "supporting"
   candidate_id?: string
+  obligation_id?: string
   metadata?:
     | { findings: VerificationFinding[]; reasons: string[] }
     | { reason: string | null }
@@ -304,6 +308,7 @@ function isConcept(value: unknown) {
   return (
     isRecord(value) &&
     nonEmptyString(value.id) &&
+    CONCEPT_ID.test(value.id) &&
     nonEmptyString(value.name) &&
     includes(CONCEPT_STATUSES, value.status) &&
     optionalStringOrNull(value.page)
@@ -344,6 +349,7 @@ function isNode(value: unknown): value is ProvenanceNode {
       )
     case "evidence":
       return (
+        EVIDENCE_ID.test(value.id) &&
         states.length === 0 &&
         value.events.length === 0 &&
         nonEmptyString(value.revision) &&
@@ -356,6 +362,7 @@ function isNode(value: unknown): value is ProvenanceNode {
       )
     case "claim":
       return (
+        CLAIM_ID.test(value.id) &&
         states.every((state) => includes(CLAIM_STATES, state)) &&
         includes(["supported", "disputed", "stale"] as const, value.decision) &&
         states[0] === value.decision &&
@@ -363,10 +370,12 @@ function isNode(value: unknown): value is ProvenanceNode {
         ["defining", "supporting"].includes(String(value.role)) &&
         nullLocation(value) &&
         value.candidate_id === undefined &&
+        value.obligation_id === undefined &&
         value.metadata === undefined
       )
     case "concept":
       return (
+        CONCEPT_ID.test(value.id) &&
         states.length === 1 &&
         includes(CONCEPT_STATUSES, states[0]) &&
         states[0] === value.decision &&
@@ -376,6 +385,7 @@ function isNode(value: unknown): value is ProvenanceNode {
       )
     case "page":
       return (
+        value.id === `page:${value.run_id}:${value.path}` &&
         states.length === 0 &&
         value.events.length === 0 &&
         nonEmptyString(value.revision) &&
@@ -394,6 +404,9 @@ function isNode(value: unknown): value is ProvenanceNode {
           states.length === 1 &&
           states[0] === "blocked" &&
           value.candidate_id === undefined &&
+          nonEmptyString(value.obligation_id) &&
+          value.id ===
+            `verification:${value.run_id}:obligation:${value.obligation_id}` &&
           value.events.every((event) =>
             isEntityEvent(event, "coverage_obligation")
           ) &&
@@ -406,6 +419,9 @@ function isNode(value: unknown): value is ProvenanceNode {
         states[0] === value.decision &&
         states.slice(1).every((state) => state === "disputed") &&
         nonEmptyString(value.candidate_id) &&
+        value.obligation_id === undefined &&
+        value.id ===
+          `verification:${value.run_id}:candidate:${value.candidate_id}` &&
         value.events.every((event) =>
           isEntityEvent(event, "verification_candidate")
         ) &&
@@ -537,6 +553,7 @@ function noTypedDetails(value: Record<string, unknown>) {
   return (
     value.role === undefined &&
     value.candidate_id === undefined &&
+    value.obligation_id === undefined &&
     value.metadata === undefined
   )
 }

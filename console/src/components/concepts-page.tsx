@@ -530,6 +530,9 @@ function NodeDetails({ node }: { node?: ProvenanceNode }) {
               {node.candidate_id && (
                 <Detail label="Candidate" value={node.candidate_id} mono />
               )}
+              {node.obligation_id && (
+                <Detail label="Obligation" value={node.obligation_id} mono />
+              )}
               {node.revision && (
                 <Detail label="Revision" value={node.revision} mono />
               )}

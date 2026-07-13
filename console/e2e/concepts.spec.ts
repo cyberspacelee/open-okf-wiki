@@ -1,5 +1,16 @@
 import { expect, test, type Page } from "@playwright/test"
 
+const CONCEPT_ID = `concept:${"c".repeat(64)}`
+const DEFINING_CLAIM_ID = `claim:${"d".repeat(64)}`
+const SUPPORTING_CLAIM_ID = `claim:${"f".repeat(64)}`
+const EVIDENCE_ID = `evidence:${"e".repeat(64)}`
+const ACCEPTED_VERIFICATION_ID = "verification:run-1:candidate:candidate-1"
+const REJECTED_VERIFICATION_ID =
+  "verification:run-1:candidate:candidate-rejected"
+const BLOCKED_VERIFICATION_ID = "verification:run-1:obligation:obligation-2"
+const PAGE_PATH = "concepts/workspace.md"
+const PAGE_ID = `page:run-1:${PAGE_PATH}`
+
 const overview = {
   ok: true,
   project: { id: "catalog", name: "Catalog Platform" },
@@ -24,13 +35,13 @@ const concepts = {
   ok: true,
   run_id: "run-1",
   run_state: "review_required",
-  selected_concept_id: "concept:workspace",
+  selected_concept_id: CONCEPT_ID,
   concepts: [
     {
-      id: "concept:workspace",
+      id: CONCEPT_ID,
       name: "Workspace",
       status: "stale",
-      page: "concepts/workspace.md",
+      page: PAGE_PATH,
     },
   ],
   nodes: [
@@ -49,8 +60,8 @@ const concepts = {
       decision: null,
     },
     {
-      id: "evidence:guide",
-      stable_id: "evidence:guide",
+      id: EVIDENCE_ID,
+      stable_id: EVIDENCE_ID,
       run_id: "run-1",
       type: "evidence",
       label: "guide.md:3-4",
@@ -63,8 +74,8 @@ const concepts = {
       decision: null,
     },
     {
-      id: "claim:defining",
-      stable_id: "claim:defining",
+      id: DEFINING_CLAIM_ID,
+      stable_id: DEFINING_CLAIM_ID,
       run_id: "run-1",
       type: "claim",
       label: "A Workspace represents one product.",
@@ -78,8 +89,8 @@ const concepts = {
       decision: "supported",
     },
     {
-      id: "claim:supporting",
-      stable_id: "claim:supporting",
+      id: SUPPORTING_CLAIM_ID,
+      stable_id: SUPPORTING_CLAIM_ID,
       run_id: "run-1",
       type: "claim",
       label: "A Workspace can include documentation.",
@@ -93,8 +104,8 @@ const concepts = {
       decision: "disputed",
     },
     {
-      id: "verification:run-1:candidate:candidate-1",
-      stable_id: "verification:run-1:candidate:candidate-1",
+      id: ACCEPTED_VERIFICATION_ID,
+      stable_id: ACCEPTED_VERIFICATION_ID,
       run_id: "run-1",
       type: "verification",
       label: "Verification · candidate-1",
@@ -117,8 +128,8 @@ const concepts = {
       metadata: { findings: [], reasons: [] },
     },
     {
-      id: "verification:run-1:candidate:candidate-rejected",
-      stable_id: "verification:run-1:candidate:candidate-rejected",
+      id: REJECTED_VERIFICATION_ID,
+      stable_id: REJECTED_VERIFICATION_ID,
       run_id: "run-1",
       type: "verification",
       label: "Verification · candidate-rejected",
@@ -146,8 +157,8 @@ const concepts = {
       },
     },
     {
-      id: "verification:run-1:obligation:obligation-2",
-      stable_id: "verification:run-1:obligation:obligation-2",
+      id: BLOCKED_VERIFICATION_ID,
+      stable_id: BLOCKED_VERIFICATION_ID,
       run_id: "run-1",
       type: "verification",
       label: "Blocked · obligation-2",
@@ -158,11 +169,12 @@ const concepts = {
       span: null,
       digest: null,
       decision: "blocked",
+      obligation_id: "obligation-2",
       metadata: { reason: "Missing input" },
     },
     {
-      id: "concept:workspace",
-      stable_id: "concept:workspace",
+      id: CONCEPT_ID,
+      stable_id: CONCEPT_ID,
       run_id: "run-1",
       type: "concept",
       label: "Workspace",
@@ -182,15 +194,15 @@ const concepts = {
       decision: "stale",
     },
     {
-      id: "page:run-1:concepts/workspace.md",
-      stable_id: "page:run-1:concepts/workspace.md",
+      id: PAGE_ID,
+      stable_id: PAGE_ID,
       run_id: "run-1",
       type: "page",
       label: "Workspace",
       states: [],
       events: [],
       revision: "a".repeat(40),
-      path: "concepts/workspace.md",
+      path: PAGE_PATH,
       span: null,
       digest: `sha256:${"3".repeat(64)}`,
       decision: null,
@@ -198,45 +210,45 @@ const concepts = {
   ],
   edges: [
     {
-      id: "source:guide|contains|evidence:guide",
+      id: `source:guide|contains|${EVIDENCE_ID}`,
       source: "source:guide",
-      target: "evidence:guide",
+      target: EVIDENCE_ID,
       relation: "contains",
     },
     {
-      id: "evidence:guide|grounds|claim:defining",
-      source: "evidence:guide",
-      target: "claim:defining",
+      id: `${EVIDENCE_ID}|grounds|${DEFINING_CLAIM_ID}`,
+      source: EVIDENCE_ID,
+      target: DEFINING_CLAIM_ID,
       relation: "grounds",
     },
     {
-      id: "claim:defining|verified_by|verification:run-1:candidate:candidate-1",
-      source: "claim:defining",
-      target: "verification:run-1:candidate:candidate-1",
+      id: `${DEFINING_CLAIM_ID}|verified_by|${ACCEPTED_VERIFICATION_ID}`,
+      source: DEFINING_CLAIM_ID,
+      target: ACCEPTED_VERIFICATION_ID,
       relation: "verified_by",
     },
     {
-      id: "verification:run-1:candidate:candidate-1|forms|concept:workspace",
-      source: "verification:run-1:candidate:candidate-1",
-      target: "concept:workspace",
+      id: `${ACCEPTED_VERIFICATION_ID}|forms|${CONCEPT_ID}`,
+      source: ACCEPTED_VERIFICATION_ID,
+      target: CONCEPT_ID,
       relation: "forms",
     },
     {
-      id: "concept:workspace|renders|page:run-1:concepts/workspace.md",
-      source: "concept:workspace",
-      target: "page:run-1:concepts/workspace.md",
+      id: `${CONCEPT_ID}|renders|${PAGE_ID}`,
+      source: CONCEPT_ID,
+      target: PAGE_ID,
       relation: "renders",
     },
     {
-      id: "verification:run-1:candidate:candidate-rejected|proposes|concept:workspace",
-      source: "verification:run-1:candidate:candidate-rejected",
-      target: "concept:workspace",
+      id: `${REJECTED_VERIFICATION_ID}|proposes|${CONCEPT_ID}`,
+      source: REJECTED_VERIFICATION_ID,
+      target: CONCEPT_ID,
       relation: "proposes",
     },
     {
-      id: "concept:workspace|assesses|verification:run-1:candidate:candidate-rejected",
-      source: "concept:workspace",
-      target: "verification:run-1:candidate:candidate-rejected",
+      id: `${CONCEPT_ID}|assesses|${REJECTED_VERIFICATION_ID}`,
+      source: CONCEPT_ID,
+      target: REJECTED_VERIFICATION_ID,
       relation: "assesses",
     },
   ],
@@ -315,7 +327,7 @@ test("filters persisted provenance and opens complete node details", async ({
   await page
     .getByRole("button", { name: /A Workspace represents one product/ })
     .click()
-  await expect(details).toContainText("claim:defining")
+  await expect(details).toContainText(DEFINING_CLAIM_ID)
   await expect(details).toContainText("candidate-1")
   await expect(details).toContainText(/Jul.*13.*2026|13.*Jul.*2026/)
 
@@ -388,6 +400,9 @@ test("rejects malformed provenance invariants instead of rendering invented data
     "duplicate node",
     "duplicate edge",
     "stable identity",
+    "candidate composite identity",
+    "page composite identity",
+    "blocked composite identity",
     "edge identity",
     "selected concept",
     "bounds",
@@ -534,6 +549,26 @@ function malformedConceptResponse(url: URL, kind: string) {
     case "stable identity":
       payload.nodes[0].stable_id = "different"
       break
+    case "candidate composite identity": {
+      const candidate = payload.nodes.find(
+        (node) => node.candidate_id === "candidate-1"
+      )
+      if (!candidate) throw new Error("Mock candidate missing")
+      candidate.candidate_id = "candidate-changed"
+      break
+    }
+    case "page composite identity": {
+      const page = payload.nodes.find((node) => node.type === "page")
+      if (!page) throw new Error("Mock page missing")
+      page.path = "concepts/changed.md"
+      break
+    }
+    case "blocked composite identity": {
+      const blocked = payload.nodes.find((node) => node.decision === "blocked")
+      if (!blocked) throw new Error("Mock blocked verification missing")
+      blocked.obligation_id = "obligation-changed"
+      break
+    }
     case "edge identity":
       payload.edges[0].id = "not-canonical"
       break

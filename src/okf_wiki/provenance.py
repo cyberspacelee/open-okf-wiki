@@ -388,6 +388,7 @@ class ConceptProvenanceStore:
                 ["blocked"],
                 events.get(("coverage_obligation", obligation["id"]), []),
                 run_id=run_id,
+                obligation_id=obligation["id"],
                 decision="blocked",
                 metadata={
                     "reason": obligation["reason"][:MAX_DETAIL_TEXT]

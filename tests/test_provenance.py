@@ -318,6 +318,9 @@ def test_provenance_reconstructs_only_persisted_relationships_after_restart(
         node for node in by_type["verification"] if node.get("candidate_id") == "candidate-rejected"
     )
     assert accepted["run_id"] == rejected["run_id"] == "run-1"
+    blocked = next(node for node in by_type["verification"] if node["decision"] == "blocked")
+    assert blocked["obligation_id"] == "obligation-blocked"
+    assert blocked["id"] == "verification:run-1:obligation:obligation-blocked"
     assert rejected["metadata"]["findings"][0]["target_id"] == "concept-a"
     assert rejected["metadata"]["findings"][0]["rationale"].startswith("The rejected")
     assert rejected["metadata"]["findings"][0]["evidence"] == ["evidence-a"]
