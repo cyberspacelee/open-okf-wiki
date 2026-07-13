@@ -17,6 +17,7 @@ MAX_GRAPH_NODES = 200
 MAX_GRAPH_EDGES = 200
 MAX_REPLAY_EVENTS = 100
 MAX_REPLAY_PATHS = 100
+MAX_REPLAY_LINEAGE = 1_000
 MAX_FINDINGS = 5
 MAX_FINDING_EVIDENCE = 20
 MAX_DECISION_REASONS = 20
@@ -35,6 +36,7 @@ PROVENANCE_FILTER_STATES = frozenset(
         "blocked",
     }
 )
+REPLAY_ENTITY_TYPES = frozenset({"verification_candidate", "claim", "concept", "production_run"})
 
 
 def _bounded_text(value: str) -> str:
@@ -168,6 +170,7 @@ class ConceptProvenanceStore:
         event_limit: int = 50,
         event_offset: int = 0,
         event_sequence: int | None = None,
+        entity_type: str | None = None,
         entity_id: str | None = None,
         impact_limit: int = 100,
         impact_offset: int = 0,
@@ -180,10 +183,14 @@ class ConceptProvenanceStore:
             raise ValueError("event_offset must be non-negative")
         if event_sequence is not None and event_sequence < 1:
             raise ValueError("event_sequence must be positive")
+        if entity_type is not None and entity_type not in REPLAY_ENTITY_TYPES:
+            raise ValueError(f"Unknown replay entity type: {entity_type}")
         if entity_id is not None and (not entity_id or len(entity_id) > MAX_DETAIL_TEXT):
             raise ValueError("entity_id must be a non-empty bounded string")
+        if (entity_type is None) != (entity_id is None):
+            raise ValueError("Provide both entity_type and entity_id")
         if event_sequence is not None and entity_id is not None:
-            raise ValueError("Choose either event_sequence or entity_id")
+            raise ValueError("Choose either event_sequence or an entity locator")
         if not 1 <= impact_limit <= MAX_GRAPH_NODES:
             raise ValueError(f"impact_limit must be between 1 and {MAX_GRAPH_NODES}")
         if impact_offset < 0:
@@ -193,9 +200,7 @@ class ConceptProvenanceStore:
         if path_offset < 0:
             raise ValueError("path_offset must be non-negative")
         with self._connect() as connection:
-            run = connection.execute(
-                "SELECT state, source_set_json FROM runs WHERE id = ?", (run_id,)
-            ).fetchone()
+            run = connection.execute("SELECT state FROM runs WHERE id = ?", (run_id,)).fetchone()
             if run is None:
                 raise ValueError(f"Unknown Production Run: {run_id}")
             lineage = self._lineage_run_ids(connection, run_id)
@@ -222,15 +227,21 @@ class ConceptProvenanceStore:
                     f"""SELECT sequence FROM run_events WHERE {event_where} AND
                         CASE
                           WHEN state = 'published'
+                               AND json_extract(details, '$.entity_type') IS NULL
+                            THEN 'production_run'
+                          ELSE json_extract(details, '$.entity_type')
+                        END = ? AND
+                        CASE
+                          WHEN state = 'published'
                                AND json_extract(details, '$.entity_id') IS NULL
                             THEN run_id
                           ELSE json_extract(details, '$.entity_id')
                         END = ?
                         ORDER BY sequence LIMIT 1""",
-                    (*lineage, entity_id),
+                    (*lineage, entity_type, entity_id),
                 ).fetchone()
                 if located is None:
-                    raise ValueError(f"Unknown replay entity: {entity_id}")
+                    raise ValueError(f"Unknown replay entity: {entity_type}:{entity_id}")
                 located_sequence = located[0]
             elif event_sequence is not None:
                 located = connection.execute(
@@ -266,16 +277,9 @@ class ConceptProvenanceStore:
                         event["entity_id"],
                     )
                 )
-            try:
-                source_set = json.loads(run["source_set_json"] or "{}")
-            except json.JSONDecodeError:
-                source_set = {}
-            if not isinstance(source_set, dict):
-                source_set = {}
             impact = self._bounded_impact_snapshot(
                 connection,
                 run_id,
-                source_set,
                 limit=impact_limit,
                 offset=impact_offset,
                 path_limit=path_limit,
@@ -300,104 +304,360 @@ class ConceptProvenanceStore:
             "impact": impact,
         }
 
+    @staticmethod
+    def _valid_impact_unit_sql(column: str) -> str:
+        required = ("id", "source_id", "revision", "path", "kind")
+        required_sql = " AND ".join(
+            f"json_type({column}, '$.{key}') = 'text' "
+            f"AND length(json_extract({column}, '$.{key}')) BETWEEN 1 AND {MAX_DETAIL_TEXT}"
+            for key in required
+        )
+        digest = f"json_extract({column}, '$.digest')"
+        return f"""json_type({column}) = 'object' AND {required_sql} AND
+            (json_type({column}, '$.digest') IS NULL
+             OR json_type({column}, '$.digest') = 'null'
+             OR (json_type({column}, '$.digest') = 'text' AND (
+                 (length({digest}) = 64 AND {digest} NOT GLOB '*[^0-9a-f]*')
+                 OR (length({digest}) = 71 AND substr({digest}, 1, 7) = 'sha256:'
+                     AND substr({digest}, 8) NOT GLOB '*[^0-9a-f]*')))) AND
+            (json_type({column}, '$.label') IS NULL
+             OR json_type({column}, '$.label') = 'null'
+             OR json_type({column}, '$.label') = 'text')"""
+
+    @staticmethod
+    def _normalized_impact_unit_sql(column: str) -> str:
+        digest = f"json_extract({column}, '$.digest')"
+        return f"""json_object(
+            'id', json_extract({column}, '$.id'),
+            'source_id', json_extract({column}, '$.source_id'),
+            'revision', json_extract({column}, '$.revision'),
+            'path', json_extract({column}, '$.path'),
+            'kind', json_extract({column}, '$.kind'),
+            'digest', CASE WHEN length({digest}) = 64
+                        THEN 'sha256:' || {digest} ELSE {digest} END,
+            'label', CASE WHEN json_type({column}, '$.label') = 'text'
+                       AND length(json_extract({column}, '$.label')) > 0
+                     THEN substr(json_extract({column}, '$.label'), 1, {MAX_DETAIL_TEXT})
+                     ELSE NULL END
+        )"""
+
+    @classmethod
+    def _prepare_impact_tables(
+        cls, connection: sqlite3.Connection, run_id: str
+    ) -> tuple[sqlite3.Row, str]:
+        guarded = "CASE WHEN json_valid(source_set_json) THEN source_set_json ELSE '{}' END"
+        metadata = connection.execute(
+            f"""WITH source AS (
+                    SELECT {guarded} AS value FROM runs WHERE id = ?
+                )
+                SELECT CASE json_extract(value, '$.refresh.mode')
+                         WHEN 'incremental' THEN 'incremental'
+                         WHEN 'full' THEN 'full'
+                         ELSE 'full'
+                       END AS mode,
+                       CASE
+                         WHEN json_type(value, '$.refresh.fallback_reason') = 'text'
+                              AND length(json_extract(
+                                  value, '$.refresh.fallback_reason'
+                              )) > 0
+                           THEN substr(json_extract(
+                               value, '$.refresh.fallback_reason'
+                           ), 1, {MAX_DETAIL_TEXT})
+                       END AS fallback_reason,
+                       CASE WHEN json_type(value, '$.base_run_id') = 'text'
+                         THEN json_extract(value, '$.base_run_id')
+                       END AS base_run_id
+                FROM source""",
+            (run_id,),
+        ).fetchone()
+        if metadata is None:
+            raise ValueError(f"Unknown Production Run: {run_id}")
+        graph_run_id = metadata["base_run_id"]
+        if (
+            not isinstance(graph_run_id, str)
+            or not connection.execute("SELECT 1 FROM runs WHERE id = ?", (graph_run_id,)).fetchone()
+        ):
+            graph_run_id = run_id
+
+        for table, path in (
+            ("replay_affected_claims", "$.refresh.reverify_claims"),
+            ("replay_affected_concepts", "$.refresh.reverify_concepts"),
+            ("replay_affected_pages", "$.refresh.rerender_pages"),
+        ):
+            connection.execute(f"CREATE TEMP TABLE {table} (id TEXT PRIMARY KEY)")
+            connection.execute(
+                f"""INSERT OR IGNORE INTO {table}
+                    SELECT item.value FROM runs,
+                         json_each({guarded}, ?) AS item
+                    WHERE runs.id = ? AND item.type = 'text'
+                      AND length(item.value) BETWEEN 1 AND {MAX_DETAIL_TEXT}""",
+                (path, run_id),
+            )
+
+        active_unit = "COALESCE(after_json, before_json)"
+        valid_active = cls._valid_impact_unit_sql(active_unit)
+        valid_before = cls._valid_impact_unit_sql("before_json")
+        valid_after = cls._valid_impact_unit_sql("after_json")
+        normalized_before = cls._normalized_impact_unit_sql("before_json")
+        normalized_after = cls._normalized_impact_unit_sql("after_json")
+        connection.execute(
+            f"""CREATE TEMP TABLE replay_changes AS
+                WITH source AS (
+                    SELECT {guarded} AS value FROM runs WHERE id = ?
+                ), raw(status, status_order, before_json, after_json) AS (
+                    SELECT 'added', 2, NULL, item.value
+                      FROM source, json_each(source.value, '$.refresh.diff.added') AS item
+                     WHERE item.type = 'object'
+                    UNION ALL
+                    SELECT 'removed', 3, item.value, NULL
+                      FROM source, json_each(source.value, '$.refresh.diff.removed') AS item
+                     WHERE item.type = 'object'
+                    UNION ALL
+                    SELECT 'changed', 0,
+                           json_extract(item.value, '$.before'),
+                           json_extract(item.value, '$.after')
+                      FROM source, json_each(source.value, '$.refresh.diff.changed') AS item
+                     WHERE item.type = 'object'
+                    UNION ALL
+                    SELECT 'moved', 1,
+                           json_extract(item.value, '$.before'),
+                           json_extract(item.value, '$.after')
+                      FROM source, json_each(source.value, '$.refresh.diff.moved') AS item
+                     WHERE item.type = 'object'
+                ), units AS (
+                    SELECT *, {active_unit} AS unit_json FROM raw
+                )
+                SELECT status, status_order,
+                       CASE WHEN before_json IS NULL THEN NULL
+                         ELSE {normalized_before} END AS before_json,
+                       CASE WHEN after_json IS NULL THEN NULL
+                         ELSE {normalized_after} END AS after_json,
+                       json_extract(unit_json, '$.source_id') AS source_id,
+                       json_extract(unit_json, '$.id') AS source_unit,
+                       json_extract(unit_json, '$.path') AS path,
+                       substr(COALESCE(
+                           NULLIF(json_extract(unit_json, '$.label'), ''),
+                           json_extract(unit_json, '$.path')
+                       ), 1, {MAX_DETAIL_TEXT}) AS label,
+                       'source-unit:' || status || ':' ||
+                           json_extract(unit_json, '$.id') AS node_id
+                  FROM units
+                 WHERE {valid_active}
+                   AND (status NOT IN ('changed', 'moved')
+                        OR ({valid_before} AND {valid_after}))""",
+            (run_id,),
+        )
+        connection.execute(
+            """CREATE INDEX replay_changes_order
+               ON replay_changes(status_order, source_id, path, source_unit)"""
+        )
+        connection.execute(
+            """CREATE TEMP TABLE replay_changed_units AS
+               SELECT status, status_order, node_id, source_unit AS node_entity_id,
+                      label AS node_label,
+                      CASE WHEN status = 'added' THEN ? ELSE ? END AS graph_run_id,
+                      CASE WHEN status = 'added'
+                        THEN json_extract(after_json, '$.source_id')
+                        ELSE json_extract(before_json, '$.source_id')
+                      END AS source_id,
+                      CASE WHEN status = 'added'
+                        THEN json_extract(after_json, '$.id')
+                        ELSE json_extract(before_json, '$.id')
+                      END AS source_unit
+                 FROM replay_changes""",
+            (run_id, graph_run_id),
+        )
+        connection.execute(
+            """CREATE INDEX replay_changed_units_lookup
+               ON replay_changed_units(graph_run_id, source_id, source_unit)"""
+        )
+        added_joins = """FROM replay_changed_units changed
+            JOIN accepted_evidence evidence
+              ON evidence.run_id = changed.graph_run_id
+             AND evidence.source_id = changed.source_id
+             AND evidence.source_unit = changed.source_unit
+            JOIN claim_evidence claim_evidence
+              ON claim_evidence.run_id = evidence.run_id
+             AND claim_evidence.evidence_id = evidence.id
+            JOIN accepted_claims claim
+              ON claim.run_id = claim_evidence.run_id
+             AND claim.id = claim_evidence.claim_id
+            JOIN concept_claims concept_claim
+              ON concept_claim.run_id = claim.run_id
+             AND concept_claim.claim_id = claim.id
+            JOIN accepted_concepts concept
+              ON concept.run_id = concept_claim.run_id
+             AND concept.id = concept_claim.concept_id
+            JOIN page_plans page
+              ON page.run_id = concept.run_id
+             AND page.concept_id = concept.id
+            WHERE changed.status = 'added'"""
+        for table, column in (
+            ("replay_added_evidence", "evidence.id"),
+            ("replay_added_claims", "claim.id"),
+            ("replay_added_concepts", "concept.id"),
+            ("replay_added_pages", "page.path"),
+        ):
+            connection.execute(f"CREATE TEMP TABLE {table} (id TEXT PRIMARY KEY)")
+            connection.execute(f"INSERT OR IGNORE INTO {table} SELECT {column} {added_joins}")
+        return metadata, graph_run_id
+
     def _bounded_impact_snapshot(
         self,
         connection: sqlite3.Connection,
         run_id: str,
-        source_set: dict[str, Any],
         *,
         limit: int,
         offset: int,
         path_limit: int,
         path_offset: int,
     ) -> dict[str, Any]:
-        refresh = source_set.get("refresh")
-        refresh = refresh if isinstance(refresh, dict) else {}
-        diff = refresh.get("diff")
-        diff = diff if isinstance(diff, dict) else {}
-        changes = self._impact_changes(diff)
-        graph_run_id = source_set.get("base_run_id")
-        if (
-            not isinstance(graph_run_id, str)
-            or not connection.execute("SELECT 1 FROM runs WHERE id = ?", (graph_run_id,)).fetchone()
-        ):
-            graph_run_id = run_id
-        mode = refresh.get("mode") if refresh.get("mode") in {"incremental", "full"} else "full"
-        recorded_reason = refresh.get("fallback_reason")
-        fallback_reason = (
-            _bounded_text(recorded_reason)
-            if isinstance(recorded_reason, str) and recorded_reason
-            else None
-        )
+        metadata, graph_run_id = self._prepare_impact_tables(connection, run_id)
+        mode = metadata["mode"]
+        fallback_reason = metadata["fallback_reason"]
         full_analysis = mode == "full"
-        affected_claims = self._string_set(refresh.get("reverify_claims"))
-        affected_concepts = self._string_set(refresh.get("reverify_concepts"))
-        affected_pages = self._string_set(refresh.get("rerender_pages"))
+        change_counts = {kind: 0 for kind in ("added", "changed", "moved", "removed")}
+        for row in connection.execute(
+            "SELECT status, COUNT(*) AS count FROM replay_changes GROUP BY status"
+        ):
+            change_counts[row["status"]] = row["count"]
+        change_total = sum(change_counts.values())
 
-        change_nodes: list[dict[str, Any]] = []
-        source_nodes: dict[str, str] = {}
-        for change in changes:
-            unit = change["after"] or change["before"]
-            if unit is None:
-                continue
-            node_id = f"source-unit:{change['status']}:{unit['id']}"
-            change_nodes.append(
-                {
-                    "id": node_id,
-                    "entity_id": unit["id"],
-                    "type": "source_unit",
-                    "label": _bounded_text(unit["label"] or unit["path"]),
-                    "status": change["status"],
-                    "before": change["before"],
-                    "after": change["after"],
-                }
-            )
-            if change["status"] in {"changed", "removed"} and change["before"]:
-                source_nodes[change["before"]["id"]] = node_id
-        connection.execute(
-            "CREATE TEMP TABLE replay_changed_units (source_unit TEXT PRIMARY KEY, node_id TEXT)"
-        )
-        connection.executemany(
-            "INSERT INTO replay_changed_units VALUES (?, ?)", source_nodes.items()
-        )
-
-        counts = {
-            "evidence": connection.execute(
-                "SELECT COUNT(*) FROM accepted_evidence WHERE run_id = ?", (graph_run_id,)
-            ).fetchone()[0],
-            "claims": connection.execute(
-                "SELECT COUNT(*) FROM accepted_claims WHERE run_id = ?", (graph_run_id,)
-            ).fetchone()[0],
-            "concepts": connection.execute(
-                "SELECT COUNT(*) FROM accepted_concepts WHERE run_id = ?", (graph_run_id,)
-            ).fetchone()[0],
-            "pages": connection.execute(
-                "SELECT COUNT(*) FROM page_plans WHERE run_id = ?", (graph_run_id,)
-            ).fetchone()[0],
-        }
-        affected_evidence_count = (
-            counts["evidence"]
-            if full_analysis
-            else connection.execute(
-                """SELECT COUNT(*) FROM accepted_evidence evidence
-                   JOIN replay_changed_units changed
-                     ON changed.source_unit = evidence.source_unit
-                   WHERE evidence.run_id = ?""",
-                (graph_run_id,),
+        def count_with_added(table: str, key: str, added_table: str) -> tuple[int, int]:
+            base = connection.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE run_id = ?", (graph_run_id,)
             ).fetchone()[0]
+            added = connection.execute(
+                f"""SELECT COUNT(*) FROM {table} current
+                    JOIN {added_table} added ON added.id = current.{key}
+                   WHERE current.run_id = ? AND NOT EXISTS (
+                       SELECT 1 FROM {table} base
+                        WHERE base.run_id = ? AND base.{key} = current.{key}
+                   )""",
+                (run_id, graph_run_id),
+            ).fetchone()[0]
+            return base + added, added
+
+        evidence_count, added_evidence_count = count_with_added(
+            "accepted_evidence", "id", "replay_added_evidence"
         )
-        total_nodes = len(change_nodes) + sum(counts.values())
+        claim_count, added_claim_count = count_with_added(
+            "accepted_claims", "id", "replay_added_claims"
+        )
+        concept_count, added_concept_count = count_with_added(
+            "accepted_concepts", "id", "replay_added_concepts"
+        )
+        page_count, added_page_count = count_with_added("page_plans", "path", "replay_added_pages")
+        counts = {
+            "evidence": evidence_count,
+            "claims": claim_count,
+            "concepts": concept_count,
+            "pages": page_count,
+        }
+        if full_analysis:
+            affected_evidence_count = evidence_count
+            affected_claim_count = claim_count
+            affected_concept_count = concept_count
+            affected_page_count = page_count
+        else:
+            affected_evidence_count = (
+                connection.execute(
+                    """SELECT COUNT(*) FROM accepted_evidence evidence
+                       WHERE evidence.run_id = ? AND (
+                           EXISTS (
+                               SELECT 1 FROM replay_changed_units changed
+                                WHERE changed.graph_run_id = evidence.run_id
+                                  AND changed.source_id = evidence.source_id
+                                  AND changed.source_unit = evidence.source_unit
+                                  AND changed.status IN ('changed', 'removed')
+                           ) OR EXISTS (
+                               SELECT 1 FROM replay_added_evidence added
+                                WHERE added.id = evidence.id
+                           )
+                       )""",
+                    (graph_run_id,),
+                ).fetchone()[0]
+                + added_evidence_count
+            )
+
+            def affected_count(
+                table: str, key: str, affected_table: str, added_table: str, added: int
+            ) -> int:
+                return (
+                    connection.execute(
+                        f"""SELECT COUNT(*) FROM {table} item
+                           WHERE item.run_id = ? AND (
+                               EXISTS (SELECT 1 FROM {affected_table} affected
+                                        WHERE affected.id = item.{key})
+                               OR EXISTS (SELECT 1 FROM {added_table} added
+                                           WHERE added.id = item.{key})
+                           )""",
+                        (graph_run_id,),
+                    ).fetchone()[0]
+                    + added
+                )
+
+            affected_claim_count = affected_count(
+                "accepted_claims",
+                "id",
+                "replay_affected_claims",
+                "replay_added_claims",
+                added_claim_count,
+            )
+            affected_concept_count = affected_count(
+                "accepted_concepts",
+                "id",
+                "replay_affected_concepts",
+                "replay_added_concepts",
+                added_concept_count,
+            )
+            affected_page_count = affected_count(
+                "page_plans",
+                "path",
+                "replay_affected_pages",
+                "replay_added_pages",
+                added_page_count,
+            )
+        total_nodes = change_total + sum(counts.values())
         remaining = limit
         skipped = offset
         page_nodes: list[dict[str, Any]] = []
 
-        if skipped < len(change_nodes):
-            selected = change_nodes[skipped : skipped + remaining]
-            page_nodes.extend(selected)
+        if skipped < change_total:
+            selected = list(
+                connection.execute(
+                    """SELECT * FROM replay_changes
+                       ORDER BY status_order, source_id, path, source_unit
+                       LIMIT ? OFFSET ?""",
+                    (remaining, skipped),
+                )
+            )
+            for row in selected:
+                before = (
+                    self._impact_unit(json.loads(row["before_json"]))
+                    if row["before_json"] is not None
+                    else None
+                )
+                after = (
+                    self._impact_unit(json.loads(row["after_json"]))
+                    if row["after_json"] is not None
+                    else None
+                )
+                page_nodes.append(
+                    {
+                        "id": row["node_id"],
+                        "entity_id": row["source_unit"],
+                        "type": "source_unit",
+                        "label": row["label"],
+                        "status": row["status"],
+                        "before": before,
+                        "after": after,
+                    }
+                )
             remaining -= len(selected)
             skipped = 0
         else:
-            skipped -= len(change_nodes)
+            skipped -= change_total
 
         def take(total: int, query: str) -> list[sqlite3.Row]:
             nonlocal remaining, skipped
@@ -406,20 +666,37 @@ class ConceptProvenanceStore:
             if skipped >= total:
                 skipped -= total
                 return []
-            rows = list(connection.execute(query, (graph_run_id, remaining, skipped)))
+            rows = list(
+                connection.execute(query, (graph_run_id, run_id, graph_run_id, remaining, skipped))
+            )
             remaining -= len(rows)
             skipped = 0
             return rows
 
         for row in take(
             counts["evidence"],
-            """SELECT evidence.*,
-                      EXISTS (
-                        SELECT 1 FROM replay_changed_units changed
-                        WHERE changed.source_unit = evidence.source_unit
-                      ) AS affected
-               FROM accepted_evidence evidence WHERE evidence.run_id = ?
-               ORDER BY evidence.id LIMIT ? OFFSET ?""",
+            """SELECT * FROM (
+                   SELECT evidence.*,
+                          (EXISTS (
+                              SELECT 1 FROM replay_changed_units changed
+                               WHERE changed.graph_run_id = evidence.run_id
+                                 AND changed.source_id = evidence.source_id
+                                 AND changed.source_unit = evidence.source_unit
+                                 AND changed.status IN ('changed', 'removed')
+                           ) OR EXISTS (
+                              SELECT 1 FROM replay_added_evidence added
+                               WHERE added.id = evidence.id
+                           )) AS affected
+                     FROM accepted_evidence evidence WHERE evidence.run_id = ?
+                   UNION ALL
+                   SELECT evidence.*, 1 AS affected
+                     FROM accepted_evidence evidence
+                     JOIN replay_added_evidence added ON added.id = evidence.id
+                    WHERE evidence.run_id = ? AND NOT EXISTS (
+                        SELECT 1 FROM accepted_evidence base
+                         WHERE base.run_id = ? AND base.id = evidence.id
+                    )
+               ) ORDER BY id LIMIT ? OFFSET ?""",
         ):
             page_nodes.append(
                 {
@@ -434,8 +711,22 @@ class ConceptProvenanceStore:
             )
         for row in take(
             counts["claims"],
-            """SELECT id, statement FROM accepted_claims WHERE run_id = ?
-               ORDER BY id LIMIT ? OFFSET ?""",
+            """SELECT * FROM (
+                   SELECT claim.id, claim.statement,
+                          (EXISTS (SELECT 1 FROM replay_affected_claims affected
+                                   WHERE affected.id = claim.id)
+                           OR EXISTS (SELECT 1 FROM replay_added_claims added
+                                      WHERE added.id = claim.id)) AS affected
+                     FROM accepted_claims claim WHERE claim.run_id = ?
+                   UNION ALL
+                   SELECT claim.id, claim.statement, 1 AS affected
+                     FROM accepted_claims claim
+                     JOIN replay_added_claims added ON added.id = claim.id
+                    WHERE claim.run_id = ? AND NOT EXISTS (
+                        SELECT 1 FROM accepted_claims base
+                         WHERE base.run_id = ? AND base.id = claim.id
+                    )
+               ) ORDER BY id LIMIT ? OFFSET ?""",
         ):
             page_nodes.append(
                 {
@@ -443,17 +734,29 @@ class ConceptProvenanceStore:
                     "entity_id": row["id"],
                     "type": "claim",
                     "label": _bounded_text(row["statement"]),
-                    "status": "affected"
-                    if full_analysis or row["id"] in affected_claims
-                    else "stable",
+                    "status": "affected" if full_analysis or row["affected"] else "stable",
                     "before": None,
                     "after": None,
                 }
             )
         for row in take(
             counts["concepts"],
-            """SELECT id, canonical_name FROM accepted_concepts WHERE run_id = ?
-               ORDER BY id LIMIT ? OFFSET ?""",
+            """SELECT * FROM (
+                   SELECT concept.id, concept.canonical_name,
+                          (EXISTS (SELECT 1 FROM replay_affected_concepts affected
+                                   WHERE affected.id = concept.id)
+                           OR EXISTS (SELECT 1 FROM replay_added_concepts added
+                                      WHERE added.id = concept.id)) AS affected
+                     FROM accepted_concepts concept WHERE concept.run_id = ?
+                   UNION ALL
+                   SELECT concept.id, concept.canonical_name, 1 AS affected
+                     FROM accepted_concepts concept
+                     JOIN replay_added_concepts added ON added.id = concept.id
+                    WHERE concept.run_id = ? AND NOT EXISTS (
+                        SELECT 1 FROM accepted_concepts base
+                         WHERE base.run_id = ? AND base.id = concept.id
+                    )
+               ) ORDER BY id LIMIT ? OFFSET ?""",
         ):
             page_nodes.append(
                 {
@@ -461,17 +764,29 @@ class ConceptProvenanceStore:
                     "entity_id": row["id"],
                     "type": "concept",
                     "label": _bounded_text(row["canonical_name"]),
-                    "status": "affected"
-                    if full_analysis or row["id"] in affected_concepts
-                    else "stable",
+                    "status": "affected" if full_analysis or row["affected"] else "stable",
                     "before": None,
                     "after": None,
                 }
             )
         for row in take(
             counts["pages"],
-            """SELECT path, title FROM page_plans WHERE run_id = ?
-               ORDER BY path LIMIT ? OFFSET ?""",
+            """SELECT * FROM (
+                   SELECT page.path, page.title,
+                          (EXISTS (SELECT 1 FROM replay_affected_pages affected
+                                   WHERE affected.id = page.path)
+                           OR EXISTS (SELECT 1 FROM replay_added_pages added
+                                      WHERE added.id = page.path)) AS affected
+                     FROM page_plans page WHERE page.run_id = ?
+                   UNION ALL
+                   SELECT page.path, page.title, 1 AS affected
+                     FROM page_plans page
+                     JOIN replay_added_pages added ON added.id = page.path
+                    WHERE page.run_id = ? AND NOT EXISTS (
+                        SELECT 1 FROM page_plans base
+                         WHERE base.run_id = ? AND base.path = page.path
+                    )
+               ) ORDER BY path LIMIT ? OFFSET ?""",
         ):
             page_nodes.append(
                 {
@@ -479,9 +794,7 @@ class ConceptProvenanceStore:
                     "entity_id": row["path"],
                     "type": "page",
                     "label": _bounded_text(row["title"]),
-                    "status": "affected"
-                    if full_analysis or row["path"] in affected_pages
-                    else "stable",
+                    "status": "affected" if full_analysis or row["affected"] else "stable",
                     "before": None,
                     "after": None,
                 }
@@ -489,9 +802,7 @@ class ConceptProvenanceStore:
 
         paths, path_total = self._impact_paths(
             connection,
-            graph_run_id,
-            source_nodes,
-            change_nodes,
+            full_analysis=full_analysis,
             limit=path_limit,
             offset=path_offset,
         )
@@ -500,24 +811,24 @@ class ConceptProvenanceStore:
         visible_claims = [node["id"] for node in page_nodes if node["type"] == "claim"]
         visible_concepts = [node["id"] for node in page_nodes if node["type"] == "concept"]
         visible_pages = [node["entity_id"] for node in page_nodes if node["type"] == "page"]
-        visible_sources = {
-            node["entity_id"]: node["id"]
-            for node in page_nodes
-            if node["type"] == "source_unit" and node["status"] in {"changed", "removed"}
-        }
+        visible_sources = [node["id"] for node in page_nodes if node["type"] == "source_unit"]
         edges: list[dict[str, str]] = []
         if visible_sources and visible_evidence:
             source_placeholders = ",".join("?" for _ in visible_sources)
             evidence_placeholders = ",".join("?" for _ in visible_evidence)
             for row in connection.execute(
-                f"""SELECT source_unit, id FROM accepted_evidence
-                    WHERE run_id = ? AND source_unit IN ({source_placeholders})
-                      AND id IN ({evidence_placeholders}) LIMIT {MAX_GRAPH_EDGES + 1}""",
-                (graph_run_id, *visible_sources, *visible_evidence),
+                f"""SELECT changed.node_id, evidence.id
+                      FROM replay_changed_units changed
+                      JOIN accepted_evidence evidence
+                        ON evidence.run_id = changed.graph_run_id
+                       AND evidence.source_id = changed.source_id
+                       AND evidence.source_unit = changed.source_unit
+                     WHERE changed.node_id IN ({source_placeholders})
+                       AND evidence.id IN ({evidence_placeholders})
+                     LIMIT {MAX_GRAPH_EDGES + 1}""",
+                (*visible_sources, *visible_evidence),
             ):
-                self._add_impact_edge(
-                    edges, visible_sources[row["source_unit"]], row["id"], "contains"
-                )
+                self._add_impact_edge(edges, row["node_id"], row["id"], "contains")
         for source_ids, target_ids, table, source_column, target_column, relation in (
             (
                 visible_evidence,
@@ -541,21 +852,21 @@ class ConceptProvenanceStore:
             source_placeholders = ",".join("?" for _ in source_ids)
             target_placeholders = ",".join("?" for _ in target_ids)
             for row in connection.execute(
-                f"""SELECT {source_column}, {target_column} FROM {table}
-                    WHERE run_id = ? AND {source_column} IN ({source_placeholders})
+                f"""SELECT DISTINCT {source_column}, {target_column} FROM {table}
+                    WHERE run_id IN (?, ?) AND {source_column} IN ({source_placeholders})
                       AND {target_column} IN ({target_placeholders})
                     LIMIT {MAX_GRAPH_EDGES + 1}""",
-                (graph_run_id, *source_ids, *target_ids),
+                (graph_run_id, run_id, *source_ids, *target_ids),
             ):
                 self._add_impact_edge(edges, row[source_column], row[target_column], relation)
         if visible_concepts and visible_pages:
             concept_placeholders = ",".join("?" for _ in visible_concepts)
             page_placeholders = ",".join("?" for _ in visible_pages)
             for row in connection.execute(
-                f"""SELECT concept_id, path FROM page_plans
-                    WHERE run_id = ? AND concept_id IN ({concept_placeholders})
+                f"""SELECT DISTINCT concept_id, path FROM page_plans
+                    WHERE run_id IN (?, ?) AND concept_id IN ({concept_placeholders})
                       AND path IN ({page_placeholders}) LIMIT {MAX_GRAPH_EDGES + 1}""",
-                (graph_run_id, *visible_concepts, *visible_pages),
+                (graph_run_id, run_id, *visible_concepts, *visible_pages),
             ):
                 self._add_impact_edge(edges, row["concept_id"], f"page:{row['path']}", "renders")
         edges = [
@@ -567,42 +878,53 @@ class ConceptProvenanceStore:
             connection.execute(
                 """SELECT COUNT(*) FROM accepted_evidence evidence
                    JOIN replay_changed_units changed
-                     ON changed.source_unit = evidence.source_unit
-                   WHERE evidence.run_id = ?""",
-                (graph_run_id,),
+                     ON changed.graph_run_id = evidence.run_id
+                    AND changed.source_id = evidence.source_id
+                    AND changed.source_unit = evidence.source_unit"""
             ).fetchone()[0]
             + connection.execute(
-                "SELECT COUNT(*) FROM claim_evidence WHERE run_id = ?", (graph_run_id,)
+                """SELECT COUNT(*) FROM (
+                       SELECT DISTINCT evidence_id, claim_id FROM claim_evidence
+                        WHERE run_id IN (?, ?)
+                   )""",
+                (graph_run_id, run_id),
             ).fetchone()[0]
             + connection.execute(
-                "SELECT COUNT(*) FROM concept_claims WHERE run_id = ?", (graph_run_id,)
+                """SELECT COUNT(*) FROM (
+                       SELECT DISTINCT claim_id, concept_id FROM concept_claims
+                        WHERE run_id IN (?, ?)
+                   )""",
+                (graph_run_id, run_id),
             ).fetchone()[0]
-            + counts["pages"]
+            + connection.execute(
+                """SELECT COUNT(*) FROM (
+                       SELECT DISTINCT concept_id, path FROM page_plans
+                        WHERE run_id IN (?, ?)
+                   )""",
+                (graph_run_id, run_id),
+            ).fetchone()[0]
         )
         next_offset = offset + limit if offset + limit < total_nodes else None
         return {
             "mode": mode,
             "fallback_reason": fallback_reason,
             "summary": {
-                "changes": {
-                    kind: sum(change["status"] == kind for change in changes)
-                    for kind in ("added", "changed", "moved", "removed")
-                },
+                "changes": change_counts,
                 "affected": {
                     "evidence": affected_evidence_count,
-                    "claims": counts["claims"] if full_analysis else len(affected_claims),
-                    "concepts": counts["concepts"] if full_analysis else len(affected_concepts),
-                    "pages": counts["pages"] if full_analysis else len(affected_pages),
+                    "claims": counts["claims"] if full_analysis else affected_claim_count,
+                    "concepts": counts["concepts"] if full_analysis else affected_concept_count,
+                    "pages": counts["pages"] if full_analysis else affected_page_count,
                 },
                 "stable": {
                     "evidence": max(0, counts["evidence"] - affected_evidence_count),
                     "claims": 0
                     if full_analysis
-                    else max(0, counts["claims"] - len(affected_claims)),
+                    else max(0, counts["claims"] - affected_claim_count),
                     "concepts": 0
                     if full_analysis
-                    else max(0, counts["concepts"] - len(affected_concepts)),
-                    "pages": 0 if full_analysis else max(0, counts["pages"] - len(affected_pages)),
+                    else max(0, counts["concepts"] - affected_concept_count),
+                    "pages": 0 if full_analysis else max(0, counts["pages"] - affected_page_count),
                 },
             },
             "nodes": page_nodes,
@@ -632,17 +954,16 @@ class ConceptProvenanceStore:
     @staticmethod
     def _impact_paths(
         connection: sqlite3.Connection,
-        run_id: str,
-        source_nodes: dict[str, str],
-        nodes: list[dict[str, Any]],
         *,
+        full_analysis: bool,
         limit: int,
         offset: int,
     ) -> tuple[list[dict[str, Any]], int]:
-        if not source_nodes:
-            return [], 0
         joins = """FROM replay_changed_units changed
-            JOIN accepted_evidence evidence ON evidence.source_unit = changed.source_unit
+            JOIN accepted_evidence evidence
+              ON evidence.run_id = changed.graph_run_id
+             AND evidence.source_id = changed.source_id
+             AND evidence.source_unit = changed.source_unit
             JOIN claim_evidence claim_evidence
               ON claim_evidence.run_id = evidence.run_id
              AND claim_evidence.evidence_id = evidence.id
@@ -657,31 +978,46 @@ class ConceptProvenanceStore:
              AND concept.id = concept_claim.concept_id
             JOIN page_plans page
               ON page.run_id = concept.run_id
-             AND page.concept_id = concept.id
-            WHERE evidence.run_id = ?"""
-        total = connection.execute(f"SELECT COUNT(*) {joins}", (run_id,)).fetchone()[0]
+             AND page.concept_id = concept.id"""
+        total = connection.execute(f"SELECT COUNT(*) {joins}").fetchone()[0]
+        full = int(full_analysis)
         rows = connection.execute(
-            f"""SELECT changed.node_id, changed.source_unit,
+            f"""SELECT changed.node_id, changed.node_entity_id,
+                       changed.node_label, changed.status AS source_status,
                        evidence.id AS evidence_id, evidence.path AS evidence_path,
                        evidence.start_line, evidence.end_line,
+                       CASE WHEN ? OR changed.status IN ('added', 'changed', 'removed')
+                         THEN 'affected' ELSE 'stable' END AS evidence_status,
                        claim.id AS claim_id, claim.statement,
+                       CASE WHEN ? OR changed.status = 'added' OR EXISTS (
+                           SELECT 1 FROM replay_affected_claims affected
+                           WHERE affected.id = claim.id
+                       ) THEN 'affected' ELSE 'stable' END AS claim_status,
                        concept.id AS concept_id, concept.canonical_name,
-                       page.path AS page_path, page.title AS page_title
+                       CASE WHEN ? OR changed.status = 'added' OR EXISTS (
+                           SELECT 1 FROM replay_affected_concepts affected
+                           WHERE affected.id = concept.id
+                       ) THEN 'affected' ELSE 'stable' END AS concept_status,
+                       page.path AS page_path, page.title AS page_title,
+                       CASE WHEN ? OR changed.status = 'added' OR EXISTS (
+                           SELECT 1 FROM replay_affected_pages affected
+                           WHERE affected.id = page.path
+                       ) THEN 'affected' ELSE 'stable' END AS page_status
                 {joins}
-                ORDER BY changed.source_unit, evidence.id, claim.id, concept.id, page.path
+                ORDER BY changed.status_order, changed.source_id, changed.source_unit,
+                         evidence.id, claim.id, concept.id, page.path
                 LIMIT ? OFFSET ?""",
-            (run_id, limit, offset),
+            (full, full, full, full, limit, offset),
         )
-        source_by_id = {node["id"]: node for node in nodes if node["type"] == "source_unit"}
         paths = []
         for row in rows:
-            source = source_by_id[row["node_id"]]
             items = {
                 "source": {
-                    "id": source["id"],
-                    "entity_id": row["source_unit"],
+                    "id": row["node_id"],
+                    "entity_id": row["node_entity_id"],
                     "type": "source_unit",
-                    "label": _bounded_text(source["label"]),
+                    "label": row["node_label"],
+                    "status": row["source_status"],
                 },
                 "evidence": {
                     "id": row["evidence_id"],
@@ -690,24 +1026,28 @@ class ConceptProvenanceStore:
                     "label": _bounded_text(
                         f"{row['evidence_path']}:{row['start_line']}-{row['end_line']}"
                     ),
+                    "status": row["evidence_status"],
                 },
                 "claim": {
                     "id": row["claim_id"],
                     "entity_id": row["claim_id"],
                     "type": "claim",
                     "label": _bounded_text(row["statement"]),
+                    "status": row["claim_status"],
                 },
                 "concept": {
                     "id": row["concept_id"],
                     "entity_id": row["concept_id"],
                     "type": "concept",
                     "label": _bounded_text(row["canonical_name"]),
+                    "status": row["concept_status"],
                 },
                 "page": {
                     "id": f"page:{row['page_path']}",
                     "entity_id": row["page_path"],
                     "type": "page",
                     "label": _bounded_text(row["page_title"]),
+                    "status": row["page_status"],
                 },
             }
             paths.append(
@@ -717,44 +1057,6 @@ class ConceptProvenanceStore:
                 }
             )
         return paths, total
-
-    @classmethod
-    def _impact_changes(cls, diff: dict[str, Any]) -> list[dict[str, Any]]:
-        changes: list[dict[str, Any]] = []
-        for status in ("added", "removed"):
-            values = diff.get(status)
-            if not isinstance(values, list):
-                continue
-            for value in values:
-                if unit := cls._impact_unit(value):
-                    changes.append(
-                        {
-                            "status": status,
-                            "before": unit if status == "removed" else None,
-                            "after": unit if status == "added" else None,
-                        }
-                    )
-        for status in ("changed", "moved"):
-            values = diff.get(status)
-            if not isinstance(values, list):
-                continue
-            for value in values:
-                if not isinstance(value, dict):
-                    continue
-                before = cls._impact_unit(value.get("before"))
-                after = cls._impact_unit(value.get("after"))
-                if before is not None and after is not None:
-                    changes.append({"status": status, "before": before, "after": after})
-        order = {"changed": 0, "moved": 1, "added": 2, "removed": 3}
-        return sorted(
-            changes,
-            key=lambda item: (
-                order[item["status"]],
-                (item["after"] or item["before"])["source_id"],
-                (item["after"] or item["before"])["path"],
-                (item["after"] or item["before"])["id"],
-            ),
-        )
 
     @staticmethod
     def _impact_unit(value: object) -> dict[str, Any] | None:
@@ -783,12 +1085,6 @@ class ConceptProvenanceStore:
             "digest": digest,
             "label": _bounded_text(label) if label else None,
         }
-
-    @staticmethod
-    def _string_set(value: object) -> set[str]:
-        return (
-            {item for item in value if isinstance(item, str)} if isinstance(value, list) else set()
-        )
 
     @staticmethod
     def _add_impact_edge(
@@ -1190,33 +1486,30 @@ class ConceptProvenanceStore:
 
     @staticmethod
     def _lineage_run_ids(connection: sqlite3.Connection, run_id: str) -> tuple[str, ...]:
-        lineage: list[str] = []
-        visiting: set[str] = set()
-
-        def visit(current: str) -> None:
-            if current in lineage:
-                return
-            if current in visiting:
+        newest_first: list[str] = []
+        seen: set[str] = set()
+        current: str | None = run_id
+        while current is not None:
+            if current in seen:
                 raise ValueError("Production Run lineage contains a cycle")
-            visiting.add(current)
+            if len(newest_first) >= MAX_REPLAY_LINEAGE:
+                raise ValueError(f"Production Run lineage exceeds {MAX_REPLAY_LINEAGE} runs")
+            seen.add(current)
             row = connection.execute(
-                "SELECT source_set_json FROM runs WHERE id = ?", (current,)
+                """SELECT json_extract(
+                           CASE WHEN json_valid(source_set_json)
+                             THEN source_set_json ELSE '{}' END,
+                           '$.base_run_id'
+                       )
+                     FROM runs WHERE id = ?""",
+                (current,),
             ).fetchone()
             if row is None:
-                visiting.remove(current)
-                return
-            try:
-                source_set = json.loads(row["source_set_json"] or "{}")
-            except json.JSONDecodeError:
-                source_set = {}
-            base_run_id = source_set.get("base_run_id")
-            if isinstance(base_run_id, str) and base_run_id:
-                visit(base_run_id)
-            visiting.remove(current)
-            lineage.append(current)
-
-        visit(run_id)
-        return tuple(lineage)
+                break
+            newest_first.append(current)
+            base_run_id = row[0]
+            current = base_run_id if isinstance(base_run_id, str) and base_run_id else None
+        return tuple(reversed(newest_first))
 
     @staticmethod
     def _events(

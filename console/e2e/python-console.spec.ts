@@ -619,7 +619,13 @@ test("loads the built Console through the real Python launcher", async ({
     page.getByRole("heading", { level: 1, name: "Concept and impact replay" })
   ).toBeVisible()
   await expect(page.getByText("Changed", { exact: true }).first()).toBeVisible()
-  await expect(page.getByText("Affected propagation paths")).toBeVisible()
+  await expect(page.getByText("Downstream propagation paths")).toBeVisible()
+  await expect(
+    page
+      .getByLabel("Jump within page to event")
+      .locator("option")
+      .filter({ hasText: "Stale" })
+  ).toHaveCount(1)
   const replayKeyboard = page.getByRole("region", {
     name: "Replay keyboard controls",
   })
@@ -1119,6 +1125,7 @@ function seedReplayImpact(runId: string) {
       "python",
       "-c",
       `import json,sqlite3,sys
+from okf_wiki.run_events import append_entity_event
 database,run_id=sys.argv[1:]
 c=sqlite3.connect(database)
 c.row_factory=sqlite3.Row
@@ -1138,6 +1145,7 @@ before={"id":link["source_unit"],"source_id":link["source_id"],"revision":link["
 after={**before,"revision":"f"*40,"digest":"9"*64}
 source_set["refresh"]={"mode":"incremental","fallback_reason":None,"new_source_units":[],"reverify_claims":[link["claim_id"]],"reverify_concepts":[link["concept_id"]],"rerender_pages":[link["page_path"]],"relocations":{},"diff":{"added":[],"changed":[{"kind":"changed","before":before,"after":after}],"moved":[],"removed":[],"by_source":{}}}
 c.execute("update runs set source_set_json=? where id=?",(json.dumps(source_set,sort_keys=True),run_id))
+append_entity_event(c,run_id,"claim",link["claim_id"],"supported","stale",candidate_id="persisted-stale-candidate")
 c.commit()`,
       join(workspace, ".okf-wiki", "runs.db"),
       runId,

@@ -49,9 +49,11 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Slider } from "@/components/ui/slider"
 import {
   fetchReplay,
+  REPLAY_ENTITY_TYPES,
   REPLAY_STAGES,
   type ImpactNode,
   type ReplayError,
+  type ReplayEntityType,
   type ReplayEvent,
   type ReplaySnapshot,
   type ReplayStage,
@@ -82,6 +84,10 @@ const impactTypeLabels: Record<ImpactNode["type"], string> = {
 
 const paginationButtonClassName = "w-full min-w-0 sm:w-auto"
 
+function entityLocator(entity: Pick<ReplayEvent, "entity_type" | "entity_id">) {
+  return JSON.stringify([entity.entity_type, entity.entity_id])
+}
+
 export function ReplayPage({
   token,
   selectedRunId,
@@ -96,6 +102,7 @@ export function ReplayPage({
   const [pathOffset, setPathOffset] = useState(0)
   const [location, setLocation] = useState<{
     eventSequence?: number
+    entityType?: ReplayEntityType
     entityId?: string
   }>({})
   const requestKey = [
@@ -105,6 +112,7 @@ export function ReplayPage({
     impactOffset,
     pathOffset,
     location.eventSequence,
+    location.entityType,
     location.entityId,
   ].join("\0")
   const [state, setState] = useState<LoadState | null>(null)
@@ -167,6 +175,9 @@ export function ReplayPage({
     <ReplayContent
       key={`${state.replay.run_id}:${state.replay.event_bounds.offset}:${state.replay.located_event_sequence ?? "page"}`}
       replay={state.replay}
+      focusLocated={
+        location.eventSequence !== undefined || location.entityId !== undefined
+      }
       onBack={onBack}
       onEventOffsetChange={(offset) => {
         setLocation({})
@@ -178,9 +189,9 @@ export function ReplayPage({
         setEventOffset(0)
         setLocation({ eventSequence })
       }}
-      onLocateEntity={(entityId) => {
+      onLocateEntity={(entityType, entityId) => {
         setEventOffset(0)
-        setLocation({ entityId })
+        setLocation({ entityType, entityId })
       }}
     />
   )
@@ -188,6 +199,7 @@ export function ReplayPage({
 
 function ReplayContent({
   replay,
+  focusLocated,
   onBack,
   onEventOffsetChange,
   onImpactOffsetChange,
@@ -196,17 +208,20 @@ function ReplayContent({
   onLocateEntity,
 }: {
   replay: ReplaySnapshot
+  focusLocated: boolean
   onBack: () => void
   onEventOffsetChange: (offset: number) => void
   onImpactOffsetChange: (offset: number) => void
   onPathOffsetChange: (offset: number) => void
   onLocateEvent: (sequence: number) => void
-  onLocateEntity: (entityId: string) => void
+  onLocateEntity: (entityType: ReplayEntityType, entityId: string) => void
 }) {
   const [playing, setPlaying] = useState(false)
   const focusedEvent = useRef<HTMLElement>(null)
   const focusAfterJump = useRef(false)
   const [sequenceQuery, setSequenceQuery] = useState("")
+  const [entityTypeQuery, setEntityTypeQuery] =
+    useState<ReplayEntityType>("claim")
   const [entityQuery, setEntityQuery] = useState("")
   const events = replay.events
   const [currentIndex, setCurrentIndex] = useState(() => {
@@ -232,6 +247,10 @@ function ReplayContent({
   }, [currentIndex, events.length, playing])
 
   useEffect(() => {
+    if (focusLocated) focusedEvent.current?.focus()
+  }, [focusLocated])
+
+  useEffect(() => {
     if (!focusAfterJump.current) return
     focusAfterJump.current = false
     focusedEvent.current?.focus()
@@ -239,7 +258,7 @@ function ReplayContent({
 
   const entities = useMemo(
     () => [
-      ...new Map(events.map((event) => [event.entity_id, event])).values(),
+      ...new Map(events.map((event) => [entityLocator(event), event])).values(),
     ],
     [events]
   )
@@ -321,7 +340,7 @@ function ReplayContent({
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <FieldGroup className="grid gap-4 md:grid-cols-2">
+          <FieldGroup className="grid gap-4 md:grid-cols-3">
             <Field>
               <FieldLabel htmlFor="global-event-sequence">
                 Event sequence
@@ -350,13 +369,31 @@ function ReplayContent({
               </form>
             </Field>
             <Field>
+              <FieldLabel htmlFor="global-entity-type">Entity type</FieldLabel>
+              <NativeSelect
+                id="global-entity-type"
+                value={entityTypeQuery}
+                onChange={(event) =>
+                  setEntityTypeQuery(event.target.value as ReplayEntityType)
+                }
+                className="w-full"
+              >
+                {REPLAY_ENTITY_TYPES.map((entityType) => (
+                  <NativeSelectOption key={entityType} value={entityType}>
+                    {titleCase(entityType)}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+            </Field>
+            <Field>
               <FieldLabel htmlFor="global-entity-id">
                 Entity identity
               </FieldLabel>
               <form
                 onSubmit={(event) => {
                   event.preventDefault()
-                  if (entityQuery.trim()) onLocateEntity(entityQuery.trim())
+                  if (entityQuery.trim())
+                    onLocateEntity(entityTypeQuery, entityQuery.trim())
                 }}
               >
                 <InputGroup>
@@ -483,11 +520,11 @@ function ReplayContent({
                     </FieldLabel>
                     <NativeSelect
                       id="replay-entity-jump"
-                      value={current.entity_id}
+                      value={entityLocator(current)}
                       onChange={(event) =>
                         selectIndex(
                           events.findIndex(
-                            (item) => item.entity_id === event.target.value
+                            (item) => entityLocator(item) === event.target.value
                           ),
                           true
                         )
@@ -496,8 +533,8 @@ function ReplayContent({
                     >
                       {entities.map((event) => (
                         <NativeSelectOption
-                          key={event.entity_id}
-                          value={event.entity_id}
+                          key={entityLocator(event)}
+                          value={entityLocator(event)}
                         >
                           {titleCase(event.entity_type)} · {event.entity_label}
                         </NativeSelectOption>
@@ -825,16 +862,17 @@ function ImpactPanel({
 
       <Card>
         <CardHeader>
-          <CardTitle>Affected propagation paths</CardTitle>
+          <CardTitle>Downstream propagation paths</CardTitle>
           <CardDescription>
             Every bounded row preserves one complete persisted Source Unit →
-            Evidence Reference → Claim → Concept → Bundle page path.
+            Evidence Reference → Claim → Concept → Bundle page path, including
+            stable relocation paths.
           </CardDescription>
         </CardHeader>
         <CardContent>
           {impact.paths.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              No safely explainable affected path is recorded on this page.
+              No safely explainable downstream path is recorded on this page.
             </p>
           ) : (
             <ol className="flex flex-col gap-3">
@@ -856,6 +894,14 @@ function ImpactPanel({
                       >
                         <Badge variant="outline">
                           {impactTypeLabels[item.type]}
+                        </Badge>
+                        <Badge
+                          className="ml-1"
+                          variant={
+                            item.status === "stable" ? "secondary" : "outline"
+                          }
+                        >
+                          {titleCase(item.status)}
                         </Badge>
                         <p className="mt-2 text-xs font-medium break-words">
                           {item.label}

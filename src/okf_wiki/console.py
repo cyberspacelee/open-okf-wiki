@@ -169,6 +169,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                         "event_limit",
                         "event_offset",
                         "event_sequence",
+                        "entity_type",
                         "entity_id",
                         "impact_limit",
                         "impact_offset",
@@ -190,6 +191,14 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                     raise ConsoleRequestError(
                         400, "Replay limits and offsets must be integers"
                     ) from error
+                entity_type = query.get("entity_type") or None
+                entity_id = query.get("entity_id") or None
+                if (entity_type is None) != (entity_id is None):
+                    raise ConsoleRequestError(400, "Provide both entity_type and entity_id")
+                if event_sequence is not None and entity_id is not None:
+                    raise ConsoleRequestError(
+                        400, "Choose either event_sequence or an entity locator"
+                    )
                 payload = {
                     "ok": True,
                     **self.server.application.concept_replay(
@@ -197,7 +206,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                         event_limit=event_limit,
                         event_offset=event_offset,
                         event_sequence=event_sequence,
-                        entity_id=query.get("entity_id") or None,
+                        entity_type=entity_type,
+                        entity_id=entity_id,
                         impact_limit=impact_limit,
                         impact_offset=impact_offset,
                         path_limit=path_limit,

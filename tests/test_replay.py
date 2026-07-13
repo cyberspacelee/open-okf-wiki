@@ -17,6 +17,12 @@ AFFECTED_CLAIM = f"claim:{'c' * 64}"
 STABLE_CLAIM = f"claim:{'d' * 64}"
 AFFECTED_CONCEPT = f"concept:{'e' * 64}"
 STABLE_CONCEPT = f"concept:{'f' * 64}"
+MOVED_EVIDENCE = f"evidence:{'7' * 64}"
+MOVED_CLAIM = f"claim:{'8' * 64}"
+MOVED_CONCEPT = f"concept:{'9' * 64}"
+ADDED_EVIDENCE = f"evidence:{'1' * 64}"
+ADDED_CLAIM = f"claim:{'2' * 64}"
+ADDED_CONCEPT = f"concept:{'3' * 64}"
 
 
 def seed_replay_events(database: Path) -> None:
@@ -301,6 +307,122 @@ def test_replay_exposes_persisted_incremental_changes_affected_relations_and_sta
     }
 
 
+def test_replay_paths_follow_moved_base_and_added_current_source_units(tmp_path: Path) -> None:
+    database = tmp_path / "runs.db"
+    seed_incremental_impact(database)
+    with sqlite3.connect(database) as connection:
+        connection.executemany(
+            "INSERT INTO accepted_evidence VALUES (?, ?, 'docs', ?, ?, ?, 1, 2, ?, 'direct', 'primary')",
+            [
+                (
+                    "run-base",
+                    MOVED_EVIDENCE,
+                    "a" * 40,
+                    "old.md",
+                    "file:moved",
+                    f"sha256:{'3' * 64}",
+                ),
+                (
+                    "run-2",
+                    ADDED_EVIDENCE,
+                    "b" * 40,
+                    "added.md",
+                    "file:added",
+                    f"sha256:{'2' * 64}",
+                ),
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO accepted_claims VALUES (?, ?, '', '', ?, 'must', '[]', 'supported')",
+            [
+                ("run-base", MOVED_CLAIM, "Moved behavior remains stable."),
+                ("run-2", ADDED_CLAIM, "Added behavior."),
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO claim_evidence VALUES (?, ?, ?)",
+            [
+                ("run-base", MOVED_CLAIM, MOVED_EVIDENCE),
+                ("run-2", ADDED_CLAIM, ADDED_EVIDENCE),
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO accepted_concepts VALUES (?, ?, ?, '[]', '', 'active')",
+            [
+                ("run-base", MOVED_CONCEPT, "Moved Concept"),
+                ("run-2", ADDED_CONCEPT, "Added Concept"),
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO concept_claims VALUES (?, ?, ?, 'defining')",
+            [
+                ("run-base", MOVED_CONCEPT, MOVED_CLAIM),
+                ("run-2", ADDED_CONCEPT, ADDED_CLAIM),
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO page_plans VALUES (?, ?, ?, ?)",
+            [
+                ("run-base", MOVED_CONCEPT, "concepts/moved.md", "Moved Concept"),
+                ("run-2", ADDED_CONCEPT, "concepts/added.md", "Added Concept"),
+            ],
+        )
+
+    impact = ConceptProvenanceStore(database).replay("run-2", impact_limit=50, path_limit=50)[
+        "impact"
+    ]
+    paths = {path["source"]["id"]: path for path in impact["paths"]}
+
+    moved = paths["source-unit:moved:file:moved-new"]
+    assert [
+        moved[stage]["entity_id"] for stage in ("source", "evidence", "claim", "concept", "page")
+    ] == [
+        "file:moved-new",
+        MOVED_EVIDENCE,
+        MOVED_CLAIM,
+        MOVED_CONCEPT,
+        "concepts/moved.md",
+    ]
+    assert [moved[stage]["status"] for stage in ("evidence", "claim", "concept", "page")] == [
+        "stable",
+        "stable",
+        "stable",
+        "stable",
+    ]
+    added = paths["source-unit:added:file:added"]
+    assert [
+        added[stage]["entity_id"] for stage in ("source", "evidence", "claim", "concept", "page")
+    ] == [
+        "file:added",
+        ADDED_EVIDENCE,
+        ADDED_CLAIM,
+        ADDED_CONCEPT,
+        "concepts/added.md",
+    ]
+    assert [added[stage]["status"] for stage in ("evidence", "claim", "concept", "page")] == [
+        "affected",
+        "affected",
+        "affected",
+        "affected",
+    ]
+    assert impact["summary"]["affected"] == {
+        "evidence": 2,
+        "claims": 2,
+        "concepts": 2,
+        "pages": 2,
+    }
+    assert {(node["type"], node["entity_id"], node["status"]) for node in impact["nodes"]} >= {
+        ("evidence", ADDED_EVIDENCE, "affected"),
+        ("claim", ADDED_CLAIM, "affected"),
+        ("concept", ADDED_CONCEPT, "affected"),
+        ("page", "concepts/added.md", "affected"),
+    }
+    assert (
+        next(node for node in impact["nodes"] if node["entity_id"] == MOVED_CLAIM)["status"]
+        == "stable"
+    )
+
+
 def test_replay_paginates_events_and_impact_without_dangling_edges(tmp_path: Path) -> None:
     event_database = tmp_path / "events.db"
     seed_replay_events(event_database)
@@ -474,6 +596,9 @@ def test_replay_bounds_transport_labels_and_fallback_reason(tmp_path: Path) -> N
     assert replay["impact"]["fallback_reason"] == long_text[:2_000]
     assert long_text[:2_000] in labels
     assert all(0 < len(label) <= 2_000 for label in labels)
+    changed = next(node for node in replay["impact"]["nodes"] if node["status"] == "changed")
+    assert changed["label"] == long_text[:2_000]
+    assert changed["before"]["label"] == changed["after"]["label"] == long_text[:2_000]
 
 
 def test_proposed_event_and_candidate_are_committed_atomically(tmp_path: Path) -> None:
@@ -574,12 +699,60 @@ def test_replay_locates_an_event_or_entity_across_server_pages(tmp_path: Path) -
     store = ConceptProvenanceStore(database)
 
     by_sequence = store.replay("run-1", event_limit=10, event_sequence=target_sequence)
-    by_entity = store.replay("run-1", event_limit=10, entity_id="claim:target")
+    by_entity = store.replay("run-1", event_limit=10, entity_type="claim", entity_id="claim:target")
 
     for located in (by_sequence, by_entity):
         assert located["located_event_sequence"] == target_sequence
         assert located["event_bounds"]["offset"] > 0
         assert target_sequence in {event["sequence"] for event in located["events"]}
+
+
+def test_replay_entity_locator_uses_type_and_id_as_one_identity(tmp_path: Path) -> None:
+    database = tmp_path / "runs.db"
+    seed_replay_events(database)
+    with sqlite3.connect(database) as connection:
+        append_entity_event(
+            connection,
+            "run-1",
+            "verification_candidate",
+            "run-1",
+            None,
+            "staged",
+            candidate_id="run-1",
+        )
+        candidate_sequence = connection.execute(
+            """SELECT sequence FROM run_events
+               WHERE json_extract(details, '$.entity_type') = 'verification_candidate'
+                 AND json_extract(details, '$.entity_id') = 'run-1'"""
+        ).fetchone()[0]
+        run_sequence = connection.execute(
+            """SELECT sequence FROM run_events
+               WHERE json_extract(details, '$.entity_type') = 'production_run'
+                 AND json_extract(details, '$.entity_id') = 'run-1'"""
+        ).fetchone()[0]
+    store = ConceptProvenanceStore(database)
+
+    candidate = store.replay(
+        "run-1",
+        event_limit=10,
+        entity_type="verification_candidate",
+        entity_id="run-1",
+    )
+    production_run = store.replay(
+        "run-1", event_limit=10, entity_type="production_run", entity_id="run-1"
+    )
+
+    assert candidate["located_event_sequence"] == candidate_sequence
+    assert production_run["located_event_sequence"] == run_sequence
+    with pytest.raises(ValueError, match="both entity_type and entity_id"):
+        store.replay("run-1", entity_id="run-1")
+    with pytest.raises(ValueError, match="either event_sequence or an entity locator"):
+        store.replay(
+            "run-1",
+            event_sequence=run_sequence,
+            entity_type="production_run",
+            entity_id="run-1",
+        )
 
 
 def test_replay_event_page_has_a_bounded_memory_cost_for_large_histories(
@@ -676,3 +849,117 @@ def test_impact_node_page_has_a_bounded_memory_cost_for_large_knowledge_models(
     assert len(impact["nodes"]) == 10
     assert impact["bounds"]["total_nodes"] == 5_012
     assert peak < 4_000_000
+
+
+def test_impact_change_page_has_a_bounded_memory_cost_for_large_source_diffs(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "runs.db"
+    seed_incremental_impact(database)
+    with sqlite3.connect(database) as connection:
+        source_set = json.loads(
+            connection.execute("SELECT source_set_json FROM runs WHERE id = 'run-2'").fetchone()[0]
+        )
+        source_set["refresh"]["diff"] = {
+            "added": [
+                impact_unit(
+                    f"file:added-{index}",
+                    "b" * 40,
+                    f"added/{index}.md",
+                    f"{index:064x}",
+                )
+                for index in range(20_000)
+            ],
+            "changed": [],
+            "moved": [],
+            "removed": [],
+            "by_source": {},
+        }
+        connection.execute(
+            "UPDATE runs SET source_set_json = ? WHERE id = 'run-2'",
+            (json.dumps(source_set),),
+        )
+
+    tracemalloc.start()
+    impact = ConceptProvenanceStore(database).replay("run-2", impact_limit=1, path_limit=1)[
+        "impact"
+    ]
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert impact["summary"]["changes"]["added"] == 20_000
+    assert len(impact["nodes"]) == 1
+    assert peak < 4_000_000
+
+
+def test_replay_treats_malformed_source_set_json_as_bounded_empty_impact(tmp_path: Path) -> None:
+    database = tmp_path / "runs.db"
+    seed_incremental_impact(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE runs SET source_set_json = '{malformed' WHERE id = 'run-2'")
+
+    replay = ConceptProvenanceStore(database).replay("run-2", impact_limit=1, path_limit=1)
+
+    assert replay["lineage_run_ids"] == ["run-2"]
+    assert replay["impact"]["summary"]["changes"] == {
+        "added": 0,
+        "changed": 0,
+        "moved": 0,
+        "removed": 0,
+    }
+
+
+def test_workspace_rejects_overlong_run_lineage_without_recursion(tmp_path: Path) -> None:
+    application = WorkspaceApplication(tmp_path / "workspace")
+    application.initialize("project-1")
+    with sqlite3.connect(application.database_path) as connection:
+        connection.executemany(
+            """INSERT INTO runs
+               (id, project_id, repository, revision, publish_dir, staging_dir, state,
+                source_set_json, created_at, updated_at)
+               VALUES (?, 'project-1', '.', ?, '.', '.', 'published', ?, ?, ?)""",
+            [
+                (
+                    f"run-{index}",
+                    f"{index:040x}"[-40:],
+                    json.dumps({"base_run_id": f"run-{index - 1}"}) if index else "{}",
+                    "2026-07-13T00:00:00+00:00",
+                    "2026-07-13T00:00:00+00:00",
+                )
+                for index in range(1_100)
+            ],
+        )
+
+    with pytest.raises(WorkspaceError, match="lineage exceeds"):
+        application.concept_replay(run_id="run-1099")
+
+
+def test_workspace_rejects_a_run_lineage_cycle(tmp_path: Path) -> None:
+    application = WorkspaceApplication(tmp_path / "workspace")
+    application.initialize("project-1")
+    with sqlite3.connect(application.database_path) as connection:
+        connection.executemany(
+            """INSERT INTO runs
+               (id, project_id, repository, revision, publish_dir, staging_dir, state,
+                source_set_json, created_at, updated_at)
+               VALUES (?, 'project-1', '.', ?, '.', '.', 'published', ?, ?, ?)""",
+            [
+                (
+                    "run-a",
+                    "a" * 40,
+                    json.dumps({"base_run_id": "run-b"}),
+                    "2026-07-13T00:00:00+00:00",
+                    "2026-07-13T00:00:00+00:00",
+                ),
+                (
+                    "run-b",
+                    "b" * 40,
+                    json.dumps({"base_run_id": "run-a"}),
+                    "2026-07-13T00:00:00+00:00",
+                    "2026-07-13T00:00:00+00:00",
+                ),
+            ],
+        )
+
+    with pytest.raises(WorkspaceError, match="lineage contains a cycle"):
+        application.concept_replay(run_id="run-a")

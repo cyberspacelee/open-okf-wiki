@@ -7,7 +7,7 @@ export const REPLAY_STAGES = [
   "published",
 ] as const
 
-const EVENT_ENTITY_TYPES = [
+export const REPLAY_ENTITY_TYPES = [
   "verification_candidate",
   "claim",
   "concept",
@@ -34,17 +34,19 @@ const EVIDENCE_ID = /^evidence:[0-9a-f]{64}$/
 const CLAIM_ID = /^claim:[0-9a-f]{64}$/
 const CONCEPT_ID = /^concept:[0-9a-f]{64}$/
 const MAX_EVENTS = 100
+const MAX_LINEAGE_RUNS = 1_000
 const MAX_IMPACT_NODES = 200
 const MAX_IMPACT_EDGES = 200
 const MAX_TEXT = 2_000
 
 export type ReplayStage = (typeof REPLAY_STAGES)[number]
+export type ReplayEntityType = (typeof REPLAY_ENTITY_TYPES)[number]
 export type ReplayEvent = {
   run_id: string
   sequence: number
   occurred_at: string
   stage: ReplayStage
-  entity_type: (typeof EVENT_ENTITY_TYPES)[number]
+  entity_type: ReplayEntityType
   entity_id: string
   entity_label: string
   previous_state: string | null
@@ -88,7 +90,10 @@ export type ImpactEdge = {
   relation: (typeof IMPACT_RELATIONS)[number]
 }
 
-type ImpactPathItem = Pick<ImpactNode, "id" | "entity_id" | "type" | "label">
+type ImpactPathItem = Pick<
+  ImpactNode,
+  "id" | "entity_id" | "type" | "label" | "status"
+>
 
 export type ImpactPath = {
   id: string
@@ -153,10 +158,19 @@ export async function fetchReplay(
     pathLimit?: number
     pathOffset?: number
     eventSequence?: number
+    entityType?: ReplayEntityType
     entityId?: string
   } = {},
   signal?: AbortSignal
 ): Promise<ReplaySnapshot> {
+  if (
+    (options.entityType === undefined) !== (options.entityId === undefined) ||
+    (options.eventSequence !== undefined && options.entityId !== undefined)
+  )
+    throw {
+      kind: "invalid",
+      message: "Choose an event sequence or a complete entity locator.",
+    } satisfies ReplayError
   const query = new URLSearchParams({
     event_limit: String(options.eventLimit ?? 50),
     event_offset: String(options.eventOffset ?? 0),
@@ -168,6 +182,7 @@ export async function fetchReplay(
   if (options.runId) query.set("run_id", options.runId)
   if (options.eventSequence !== undefined)
     query.set("event_sequence", String(options.eventSequence))
+  if (options.entityType) query.set("entity_type", options.entityType)
   if (options.entityId) query.set("entity_id", options.entityId)
   let response: Response
   try {
@@ -194,7 +209,7 @@ export async function fetchReplay(
           : "Replay could not be loaded.",
     } satisfies ReplayError
   }
-  if (!isReplay(payload)) {
+  if (!isReplay(payload, options)) {
     throw {
       kind: "server",
       message: "The local service returned an invalid replay response.",
@@ -203,13 +218,21 @@ export async function fetchReplay(
   return payload
 }
 
-function isReplay(value: unknown): value is ReplaySnapshot {
+function isReplay(
+  value: unknown,
+  request: {
+    runId?: string
+    eventSequence?: number
+    entityType?: ReplayEntityType
+    entityId?: string
+  }
+): value is ReplaySnapshot {
   if (
     !isRecord(value) ||
     value.ok !== true ||
     !nullableString(value.run_id) ||
     !nullableString(value.run_state) ||
-    !isBoundedStrings(value.lineage_run_ids, 10_000, 128) ||
+    !isBoundedStrings(value.lineage_run_ids, MAX_LINEAGE_RUNS, 128) ||
     hasDuplicates(value.lineage_run_ids) ||
     !Array.isArray(value.events) ||
     !value.events.every(isReplayEvent) ||
@@ -222,6 +245,8 @@ function isReplay(value: unknown): value is ReplaySnapshot {
   const events = value.events as ReplayEvent[]
   const bounds = value.event_bounds as ReplayBounds
   const lineage = new Set(value.lineage_run_ids as string[])
+  if (request.runId !== undefined && value.run_id !== request.runId)
+    return false
   if (
     value.run_id === null
       ? value.run_state !== null || lineage.size !== 0 || events.length !== 0
@@ -237,11 +262,25 @@ function isReplay(value: unknown): value is ReplaySnapshot {
     hasDuplicates(events.map((event) => event.sequence))
   )
     return false
-  if (
-    value.located_event_sequence !== null &&
-    !events.some((event) => event.sequence === value.located_event_sequence)
+  const located = events.find(
+    (event) => event.sequence === value.located_event_sequence
   )
-    return false
+  if (request.eventSequence !== undefined) {
+    if (
+      value.located_event_sequence !== request.eventSequence ||
+      located === undefined
+    )
+      return false
+  } else if (
+    request.entityType !== undefined &&
+    request.entityId !== undefined
+  ) {
+    if (
+      located?.entity_type !== request.entityType ||
+      located.entity_id !== request.entityId
+    )
+      return false
+  } else if (value.located_event_sequence !== null) return false
   const expectedLength = Math.min(
     bounds.limit,
     Math.max(0, bounds.total - bounds.offset)
@@ -261,70 +300,20 @@ function isReplay(value: unknown): value is ReplaySnapshot {
 }
 
 function isReplayEvent(value: unknown): value is ReplayEvent {
-  if (
-    !isRecord(value) ||
-    !nonEmptyBoundedString(value.run_id, 128) ||
-    !positiveInteger(value.sequence) ||
-    typeof value.occurred_at !== "string" ||
-    Number.isNaN(Date.parse(value.occurred_at)) ||
-    !includes(REPLAY_STAGES, value.stage) ||
-    !includes(EVENT_ENTITY_TYPES, value.entity_type) ||
-    !nonEmptyBoundedString(value.entity_id, MAX_TEXT) ||
-    !nonEmptyBoundedString(value.entity_label, MAX_TEXT) ||
-    !nullableString(value.previous_state) ||
-    !nonEmptyBoundedString(value.state, 64) ||
-    !nullableString(value.candidate_id)
+  return (
+    isRecord(value) &&
+    nonEmptyBoundedString(value.run_id, 128) &&
+    positiveInteger(value.sequence) &&
+    typeof value.occurred_at === "string" &&
+    !Number.isNaN(Date.parse(value.occurred_at)) &&
+    includes(REPLAY_STAGES, value.stage) &&
+    includes(REPLAY_ENTITY_TYPES, value.entity_type) &&
+    nonEmptyBoundedString(value.entity_id, MAX_TEXT) &&
+    nonEmptyBoundedString(value.entity_label, MAX_TEXT) &&
+    nullableBoundedString(value.previous_state, 64) &&
+    nonEmptyBoundedString(value.state, 64) &&
+    nullableBoundedString(value.candidate_id, 128)
   )
-    return false
-  switch (value.stage) {
-    case "proposed":
-      return (
-        value.entity_type === "verification_candidate" &&
-        value.state === "staged" &&
-        value.previous_state === null &&
-        value.candidate_id === value.entity_id
-      )
-    case "verified":
-      return (
-        value.entity_type === "verification_candidate" &&
-        ["accepted", "review_required", "revision_required"].includes(
-          value.state
-        ) &&
-        value.previous_state === "staged" &&
-        value.candidate_id === value.entity_id
-      )
-    case "rejected":
-      return (
-        value.entity_type === "verification_candidate" &&
-        value.state === "rejected" &&
-        value.previous_state === "staged" &&
-        value.candidate_id === value.entity_id
-      )
-    case "accepted":
-      return (
-        nonEmptyBoundedString(value.candidate_id, 128) &&
-        ((value.entity_type === "claim" &&
-          CLAIM_ID.test(value.entity_id) &&
-          ["supported", "disputed"].includes(value.state)) ||
-          (value.entity_type === "concept" &&
-            CONCEPT_ID.test(value.entity_id) &&
-            ["active", "disputed"].includes(value.state)))
-      )
-    case "stale":
-      return (
-        value.candidate_id === null &&
-        value.state === "stale" &&
-        ((value.entity_type === "claim" && CLAIM_ID.test(value.entity_id)) ||
-          (value.entity_type === "concept" && CONCEPT_ID.test(value.entity_id)))
-      )
-    case "published":
-      return (
-        value.entity_type === "production_run" &&
-        value.entity_id === value.run_id &&
-        value.state === "published" &&
-        value.candidate_id === null
-      )
-  }
 }
 
 function isImpact(value: unknown): value is ImpactSnapshot {
@@ -335,7 +324,6 @@ function isImpact(value: unknown): value is ImpactSnapshot {
       value.fallback_reason === null ||
       nonEmptyBoundedString(value.fallback_reason, MAX_TEXT)
     ) ||
-    (value.mode === "incremental" && value.fallback_reason !== null) ||
     !isImpactSummary(value.summary) ||
     !Array.isArray(value.nodes) ||
     !value.nodes.every(isImpactNode) ||
@@ -352,31 +340,19 @@ function isImpact(value: unknown): value is ImpactSnapshot {
   const paths = value.paths as ImpactPath[]
   const pathBounds = value.path_bounds as ReplayBounds
   const bounds = value.bounds as ImpactSnapshot["bounds"]
-  const summary = value.summary as ImpactSnapshot["summary"]
   if (
     hasDuplicates(nodes.map((node) => node.id)) ||
     hasDuplicates(edges.map((edge) => edge.id)) ||
-    hasDuplicates(paths.map((path) => path.id)) ||
-    (value.mode === "full" &&
-      (Object.values(summary.stable).some((count) => count !== 0) ||
-        nodes.some(
-          (node) => node.type !== "source_unit" && node.status !== "affected"
-        )))
+    hasDuplicates(paths.map((path) => path.id))
   )
     return false
   const ids = new Set(nodes.map((node) => node.id))
-  const nodesById = new Map(nodes.map((node) => [node.id, node]))
   if (
     edges.some(
       (edge) =>
         !ids.has(edge.source) ||
         !ids.has(edge.target) ||
-        edge.id !== `${edge.source}|${edge.relation}|${edge.target}` ||
-        !isSemanticImpactEdge(
-          edge,
-          nodesById.get(edge.source),
-          nodesById.get(edge.target)
-        )
+        edge.id !== `${edge.source}|${edge.relation}|${edge.target}`
     )
   )
     return false
@@ -432,8 +408,8 @@ function isImpactPath(value: unknown): value is ImpactPath {
   const items = stages.map((stage) => value[stage] as ImpactPathItem)
   return (
     value.id === items.map((item) => item.id).join("|") &&
-    /^source-unit:(changed|removed):/.test(items[0].id) &&
-    items[0].id.endsWith(`:${items[0].entity_id}`) &&
+    ["added", "changed", "moved", "removed"].includes(items[0].status) &&
+    items[0].id === `source-unit:${items[0].status}:${items[0].entity_id}` &&
     EVIDENCE_ID.test(items[1].id) &&
     items[1].id === items[1].entity_id &&
     CLAIM_ID.test(items[2].id) &&
@@ -451,26 +427,9 @@ function isImpactPathItem(value: unknown, type: ImpactNode["type"]): boolean {
     nonEmptyBoundedString(value.id, MAX_TEXT) &&
     nonEmptyBoundedString(value.entity_id, MAX_TEXT) &&
     nonEmptyBoundedString(value.label, MAX_TEXT) &&
-    Object.keys(value).length === 4
+    includes(IMPACT_STATUSES, value.status) &&
+    Object.keys(value).length === 5
   )
-}
-
-function isSemanticImpactEdge(
-  edge: ImpactEdge,
-  source: ImpactNode | undefined,
-  target: ImpactNode | undefined
-) {
-  if (!source || !target) return false
-  return edge.relation === "contains"
-    ? source.type === "source_unit" &&
-        ["changed", "removed"].includes(source.status) &&
-        target.type === "evidence" &&
-        target.status === "affected"
-    : edge.relation === "grounds"
-      ? source.type === "evidence" && target.type === "claim"
-      : edge.relation === "forms"
-        ? source.type === "claim" && target.type === "concept"
-        : source.type === "concept" && target.type === "page"
 }
 
 function isImpactNode(value: unknown): value is ImpactNode {
@@ -489,24 +448,14 @@ function isImpactNode(value: unknown): value is ImpactNode {
     const unit = value.after ?? value.before
     if (
       !unit ||
+      !["added", "changed", "moved", "removed"].includes(value.status) ||
       value.entity_id !== unit.id ||
       value.id !== `source-unit:${value.status}:${unit.id}`
     )
       return false
-    return value.status === "added"
-      ? value.before === null && value.after !== null
-      : value.status === "removed"
-        ? value.before !== null && value.after === null
-        : ["changed", "moved"].includes(value.status) &&
-          value.before !== null &&
-          value.after !== null
+    return true
   }
-  if (
-    !["affected", "stable"].includes(value.status) ||
-    value.before !== null ||
-    value.after !== null
-  )
-    return false
+  if (value.before !== null || value.after !== null) return false
   return value.type === "evidence"
     ? value.id === value.entity_id && EVIDENCE_ID.test(value.id)
     : value.type === "claim"
@@ -616,6 +565,10 @@ function nonEmptyBoundedString(
 
 function nullableString(value: unknown): value is string | null {
   return value === null || typeof value === "string"
+}
+
+function nullableBoundedString(value: unknown, maximum: number) {
+  return value === null || nonEmptyBoundedString(value, maximum)
 }
 
 function positiveInteger(value: unknown) {

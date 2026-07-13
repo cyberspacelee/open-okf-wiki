@@ -1398,6 +1398,7 @@ class WorkspaceApplication:
         event_limit: int = 50,
         event_offset: int = 0,
         event_sequence: int | None = None,
+        entity_type: str | None = None,
         entity_id: str | None = None,
         impact_limit: int = 100,
         impact_offset: int = 0,
@@ -1410,6 +1411,7 @@ class WorkspaceApplication:
             MAX_GRAPH_NODES,
             MAX_REPLAY_EVENTS,
             MAX_REPLAY_PATHS,
+            REPLAY_ENTITY_TYPES,
             ConceptProvenanceStore,
         )
 
@@ -1419,10 +1421,14 @@ class WorkspaceApplication:
             raise WorkspaceError("event_offset must be non-negative")
         if event_sequence is not None and event_sequence < 1:
             raise WorkspaceError("event_sequence must be positive")
+        if entity_type is not None and entity_type not in REPLAY_ENTITY_TYPES:
+            raise WorkspaceError(f"Unknown replay entity type: {entity_type}")
         if entity_id is not None and (not entity_id or len(entity_id) > MAX_DETAIL_TEXT):
             raise WorkspaceError("entity_id must be a non-empty bounded string")
+        if (entity_type is None) != (entity_id is None):
+            raise WorkspaceError("Provide both entity_type and entity_id")
         if event_sequence is not None and entity_id is not None:
-            raise WorkspaceError("Choose either event_sequence or entity_id")
+            raise WorkspaceError("Choose either event_sequence or an entity locator")
         if not 1 <= impact_limit <= MAX_GRAPH_NODES:
             raise WorkspaceError(f"impact_limit must be between 1 and {MAX_GRAPH_NODES}")
         if impact_offset < 0:
@@ -1498,6 +1504,7 @@ class WorkspaceApplication:
                 event_limit=event_limit,
                 event_offset=event_offset,
                 event_sequence=event_sequence,
+                entity_type=entity_type,
                 entity_id=entity_id,
                 impact_limit=impact_limit,
                 impact_offset=impact_offset,

@@ -292,7 +292,9 @@ test("plays, scrubs, steps and jumps through persisted replay and impact", async
     page.getByRole("article", { name: "Current replay event" })
   ).toBeFocused()
 
-  await page.getByLabel("Jump within page to entity").selectOption(CLAIM)
+  await page
+    .getByLabel("Jump within page to entity")
+    .selectOption(entityLocator("claim", CLAIM))
   await expect(page.getByRole("status")).toContainText(
     "Accepted · A Workspace represents one product."
   )
@@ -317,7 +319,7 @@ test("plays, scrubs, steps and jumps through persisted replay and impact", async
     page.getByText("Stable knowledge", { exact: true })
   ).toBeVisible()
   await expect(page.getByText("The API remains stable.")).toBeVisible()
-  await expect(page.getByText("Affected propagation paths")).toBeVisible()
+  await expect(page.getByText("Downstream propagation paths")).toBeVisible()
 
   await page.getByLabel("Event sequence").fill("51")
   await page.getByLabel("Event sequence").press("Enter")
@@ -325,8 +327,19 @@ test("plays, scrubs, steps and jumps through persisted replay and impact", async
     `Accepted · ${TARGET_CONCEPT}`
   )
   await expect(
+    page.getByRole("article", { name: "Current replay event" })
+  ).toBeFocused()
+  await expect(
     page.getByRole("button", { name: "Previous history page" }).first()
   ).toBeEnabled()
+  await page
+    .getByRole("button", { name: "Previous history page" })
+    .first()
+    .click()
+  await expect(page.getByRole("status")).toContainText("Proposed")
+  await expect(
+    page.getByRole("article", { name: "Current replay event" })
+  ).not.toBeFocused()
   expect(errors).toEqual([])
 })
 
@@ -352,6 +365,7 @@ test("supports keyboard replay and reduced-motion ordered equivalence", async ({
     page.getByRole("heading", { name: "Ordered replay (reduced motion)" })
   ).toBeVisible()
   await expect(page.getByRole("button", { name: "Play replay" })).toBeHidden()
+  await page.getByLabel("Entity type").selectOption("concept")
   await page.getByLabel("Entity identity").fill(TARGET_CONCEPT)
   await page.getByLabel("Entity identity").press("Enter")
   await expect(page.getByTestId("reduced-replay-event")).toHaveCount(2)
@@ -414,37 +428,36 @@ test("does not promise stable knowledge during a full-analysis fallback", async 
   ).toHaveCount(0)
 })
 
-test("rejects malformed replay ordering and impact identities", async ({
+test("rejects malformed replay ordering and structural identities", async ({
   page,
 }) => {
   await mockOverview(page)
   for (const kind of [
     "sequence",
-    "candidate identity",
-    "claim identity",
-    "published identity",
-    "edge semantics",
+    "duplicate node",
+    "dangling edge",
     "path semantics",
-    "fallback stability",
+    "lineage bound",
   ]) {
     await test.step(kind, async () => {
       await page.unroute("**/api/v1/replay**")
       await page.route("**/api/v1/replay**", async (route) => {
         const malformed = structuredClone(replay)
         if (kind === "sequence") malformed.events[1].sequence = 1
-        else if (kind === "candidate identity")
-          malformed.events[0].candidate_id = "candidate-changed"
-        else if (kind === "claim identity")
-          malformed.events[2].entity_id = "claim:missing"
-        else if (kind === "published identity")
-          malformed.events[6].entity_id = "run-other"
-        else if (kind === "edge semantics")
-          malformed.impact.edges[0] = impactEdge(EVIDENCE, "contains", CLAIM)
-        else if (kind === "fallback stability") {
-          malformed.impact.mode = "full"
-          malformed.impact.fallback_reason =
-            "Fallback cannot preserve stability"
-        } else malformed.impact.paths[0].claim.type = "concept"
+        else if (kind === "duplicate node")
+          malformed.impact.nodes[1].id = malformed.impact.nodes[0].id
+        else if (kind === "dangling edge")
+          malformed.impact.edges[0] = impactEdge(
+            "missing",
+            "contains",
+            EVIDENCE
+          )
+        else if (kind === "lineage bound")
+          malformed.lineage_run_ids = [
+            ...Array.from({ length: 1_000 }, (_, index) => `lineage-${index}`),
+            "run-1",
+          ]
+        else malformed.impact.paths[0].claim.type = "concept"
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -459,6 +472,152 @@ test("rejects malformed replay ordering and impact identities", async ({
       )
     })
   }
+})
+
+test("accepts persisted state combinations owned by the Python control plane", async ({
+  page,
+}) => {
+  await mockOverview(page)
+  await page.route("**/api/v1/replay**", async (route) => {
+    const persisted = structuredClone(replay)
+    persisted.events[5].candidate_id = "candidate-1"
+    persisted.impact.edges[0] = impactEdge(EVIDENCE, "contains", CLAIM)
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(persisted),
+    })
+  })
+
+  await page.goto("/?view=replay&run=run-1#token=control-plane")
+
+  await expect(
+    page.getByRole("heading", { name: "Concept and impact replay" })
+  ).toBeVisible()
+})
+
+test("fails closed when a replay response is not bound to the requested run or locator", async ({
+  page,
+}) => {
+  await mockOverview(page)
+  for (const mismatch of ["run", "sequence", "entity"] as const) {
+    await test.step(mismatch, async () => {
+      await page.unroute("**/api/v1/replay**")
+      await page.route("**/api/v1/replay**", async (route) => {
+        const url = new URL(route.request().url())
+        const hasLocator =
+          url.searchParams.has("event_sequence") ||
+          url.searchParams.has("entity_id")
+        if (mismatch !== "run" && !hasLocator) {
+          await route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify(replay),
+          })
+          return
+        }
+        const malformed = structuredClone(locatedReplay)
+        if (mismatch === "run") {
+          malformed.run_id = "run-other"
+          malformed.lineage_run_ids = ["run-base", "run-other"]
+          for (const event of malformed.events) event.run_id = "run-other"
+        } else if (mismatch === "sequence") {
+          malformed.located_event_sequence = 52
+        } else {
+          malformed.located_event_sequence = 51
+          malformed.events[0].entity_type = "claim"
+          malformed.events[0].entity_id = CLAIM
+        }
+        expect(url.searchParams.get("run_id")).toBe("run-1")
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(malformed),
+        })
+      })
+      const query =
+        mismatch === "entity"
+          ? "&locate=entity"
+          : mismatch === "sequence"
+            ? "&locate=sequence"
+            : ""
+      await page.goto(
+        `/?view=replay&run=run-1&mismatch=${mismatch}${query}#token=mismatch`
+      )
+      if (mismatch === "sequence") {
+        await page.getByLabel("Event sequence").fill("51")
+        await page.getByLabel("Event sequence").press("Enter")
+      } else if (mismatch === "entity") {
+        await page.getByLabel("Entity type").selectOption("concept")
+        await page.getByLabel("Entity identity").fill(TARGET_CONCEPT)
+        await page.getByLabel("Entity identity").press("Enter")
+      }
+      await expect(page.getByRole("alert")).toContainText(
+        "invalid replay response"
+      )
+    })
+  }
+})
+
+test("distinguishes a candidate and Production Run that share one id", async ({
+  page,
+}) => {
+  await mockOverview(page)
+  const collision = structuredClone(replay)
+  collision.events = [
+    replayEvent(
+      1,
+      "proposed",
+      "verification_candidate",
+      "run-1",
+      null,
+      "staged",
+      "run-1"
+    ),
+    replayEvent(
+      2,
+      "published",
+      "production_run",
+      "run-1",
+      "publishing",
+      "published"
+    ),
+  ]
+  collision.event_bounds.total = 2
+  await page.route("**/api/v1/replay**", async (route) => {
+    const url = new URL(route.request().url())
+    const located = structuredClone(collision)
+    const entityType = url.searchParams.get("entity_type")
+    located.located_event_sequence = entityType
+      ? entityType === "production_run"
+        ? 2
+        : 1
+      : null
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(located),
+    })
+  })
+  await page.goto("/?view=replay&run=run-1#token=composite")
+
+  const withinPage = page.getByLabel("Jump within page to entity")
+  await expect(withinPage.locator("option")).toHaveCount(2)
+  await withinPage.selectOption(entityLocator("production_run", "run-1"))
+  await expect(page.getByRole("status")).toContainText("Published")
+  await withinPage.selectOption(
+    entityLocator("verification_candidate", "run-1")
+  )
+  await expect(page.getByRole("status")).toContainText("Proposed")
+
+  await page.getByLabel("Entity type").selectOption("production_run")
+  await page.getByLabel("Entity identity").fill("run-1")
+  await page.getByLabel("Entity identity").press("Enter")
+  await expect(page.getByRole("status")).toContainText("Published")
+  await page.getByLabel("Entity type").selectOption("verification_candidate")
+  await page.getByLabel("Entity identity").fill("run-1")
+  await page.getByLabel("Entity identity").press("Enter")
+  await expect(page.getByRole("status")).toContainText("Proposed")
 })
 
 test("opens replay from Concepts and returns without adding primary navigation", async ({
@@ -491,13 +650,18 @@ async function mockReplayRoute(page: Page) {
     const url = new URL(route.request().url())
     const located =
       url.searchParams.get("event_sequence") === "51" ||
-      url.searchParams.get("entity_id") === TARGET_CONCEPT
+      (url.searchParams.get("entity_type") === "concept" &&
+        url.searchParams.get("entity_id") === TARGET_CONCEPT)
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify(located ? locatedReplay : replay),
     })
   })
+}
+
+function entityLocator(entityType: string, entityId: string) {
+  return JSON.stringify([entityType, entityId])
 }
 
 async function mockConcepts(page: Page) {
@@ -606,5 +770,11 @@ function impactPathItem(
   type: string,
   label: string
 ) {
-  return { id, entity_id: entityId, type, label }
+  return {
+    id,
+    entity_id: entityId,
+    type,
+    label,
+    status: type === "source_unit" ? id.split(":", 3)[1] : "affected",
+  }
 }
