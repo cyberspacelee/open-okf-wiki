@@ -249,8 +249,25 @@ def recover_tasks(database: Path, run_id: str) -> list[str]:
                 (run_id,),
             )
         )
+        verification_tables = connection.execute(
+            """SELECT COUNT(*) FROM sqlite_master
+               WHERE type = 'table'
+                 AND name IN ('verification_candidates', 'verification_findings')"""
+        ).fetchone()[0]
         with connection:
             for task in tasks:
+                if verification_tables == 2:
+                    connection.execute(
+                        """DELETE FROM verification_candidates
+                           WHERE run_id = ? AND task_id = ? AND status = 'staged'
+                             AND NOT EXISTS (
+                               SELECT 1 FROM verification_findings
+                               WHERE verification_findings.run_id = verification_candidates.run_id
+                                 AND verification_findings.candidate_id =
+                                     verification_candidates.candidate_id
+                             )""",
+                        (run_id, task["id"]),
+                    )
                 _transition_task(connection, run_id, task["id"], "planned")
     return [task["id"] for task in tasks]
 
@@ -746,12 +763,15 @@ class Scheduler:
                     ["semantic verification unavailable"],
                 )
                 return
-            decision = await self._verify_candidate(run_id, task, result)
+            decision, findings = await self._verify_candidate(run_id, task, result)
             if decision.outcome not in {"accepted", "review_required"}:
-                self.verification.record_decision(run_id, result.candidate_id, decision)
-                await self._reject_task(
+                await asyncio.to_thread(
+                    self._reject_candidate,
                     run_id,
                     task_id,
+                    result,
+                    findings,
+                    decision,
                     "rejected",
                     [decision.outcome, *decision.reasons],
                 )
@@ -759,18 +779,28 @@ class Scheduler:
             try:
                 async with self._writer:
                     await asyncio.to_thread(
-                        self._accept_candidate, run_id, task_id, result, decision
+                        self._accept_candidate,
+                        run_id,
+                        task_id,
+                        result,
+                        findings,
+                        decision,
                     )
             except Exception as error:
-                self.verification.record_decision(
-                    run_id,
-                    result.candidate_id,
-                    AcceptanceDecision(
-                        outcome="rejected",
-                        reasons=(f"accepted knowledge validation failed: {error}",),
-                    ),
+                failed_decision = AcceptanceDecision(
+                    outcome="rejected",
+                    reasons=(f"accepted knowledge validation failed: {error}",),
                 )
-                await self._reject_task(run_id, task_id, "rejected", [str(error)])
+                await asyncio.to_thread(
+                    self._reject_candidate,
+                    run_id,
+                    task_id,
+                    result,
+                    findings,
+                    failed_decision,
+                    "rejected",
+                    [str(error)],
+                )
                 return
             return
         terminal = (
@@ -798,7 +828,7 @@ class Scheduler:
 
     async def _verify_candidate(
         self, run_id: str, task: PersistedTask, result: WorkerRunResult
-    ) -> AcceptanceDecision:
+    ) -> tuple[AcceptanceDecision, tuple[VerificationFinding, ...]]:
         if self.verifier is None or result.proposal is None:
             raise ValueError("Semantic verification requires a Verifier and proposal")
         verifier = self.verifier
@@ -869,19 +899,20 @@ class Scheduler:
         findings = tuple(
             outcome for outcome in outcomes if isinstance(outcome, VerificationFinding)
         )
-        if findings:
-            self.verification.record_findings(run_id, result.candidate_id, findings)
         failures = tuple(
             self._warning(str(outcome))
             for outcome in outcomes
             if isinstance(outcome, BaseException)
         )
         if failures:
-            return AcceptanceDecision(outcome="revision_required", reasons=failures)
-        return self.acceptance_policy.decide(
-            structural_valid=True,
-            findings=findings,
-            risk_categories=risk_categories,
+            return AcceptanceDecision(outcome="revision_required", reasons=failures), findings
+        return (
+            self.acceptance_policy.decide(
+                structural_valid=True,
+                findings=findings,
+                risk_categories=risk_categories,
+            ),
+            findings,
         )
 
     def _accept_candidate(
@@ -889,17 +920,58 @@ class Scheduler:
         run_id: str,
         task_id: str,
         result: WorkerRunResult,
+        findings: tuple[VerificationFinding, ...],
         decision: AcceptanceDecision,
     ) -> None:
         with self._connect() as connection, connection:
+            self.verification.record_findings(
+                run_id,
+                result.candidate_id,
+                findings,
+                connection=connection,
+            )
+            crash_if_requested("after_findings")
             self.verification.record_decision(
                 run_id,
                 result.candidate_id,
                 decision,
                 connection=connection,
             )
+            crash_if_requested("after_decision")
             accepted = self.knowledge.accept(run_id, result, connection=connection)
+            crash_if_requested("after_acceptance")
             self._accept_task(connection, run_id, task_id, accepted)
+
+    def _reject_candidate(
+        self,
+        run_id: str,
+        task_id: str,
+        result: WorkerRunResult,
+        findings: tuple[VerificationFinding, ...],
+        decision: AcceptanceDecision,
+        terminal: str,
+        warnings: list[str],
+    ) -> None:
+        with self._connect() as connection, connection:
+            self.verification.record_findings(
+                run_id,
+                result.candidate_id,
+                findings,
+                connection=connection,
+            )
+            self.verification.record_decision(
+                run_id,
+                result.candidate_id,
+                decision,
+                connection=connection,
+            )
+            self._reject_task_transaction(
+                connection,
+                run_id,
+                task_id,
+                terminal,
+                warnings,
+            )
 
     def _accept_task(
         self,
@@ -942,33 +1014,56 @@ class Scheduler:
     async def _reject_task(
         self, run_id: str, task_id: str, terminal: str, warnings: list[str]
     ) -> None:
-        task = self.get_task(run_id, task_id)
+        with self._connect() as connection, connection:
+            self._reject_task_transaction(
+                connection,
+                run_id,
+                task_id,
+                terminal,
+                warnings,
+            )
+
+    def _reject_task_transaction(
+        self,
+        connection: sqlite3.Connection,
+        run_id: str,
+        task_id: str,
+        terminal: str,
+        warnings: list[str],
+    ) -> None:
+        row = connection.execute(
+            "SELECT obligation_ids_json FROM analysis_tasks WHERE run_id = ? AND id = ?",
+            (run_id, task_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown Analysis Task: {task_id}")
+        obligation_ids = tuple(json.loads(row["obligation_ids_json"]))
         bounded_warnings = tuple(self._warning(warning) for warning in warnings[:10])
         receipt = PlannerReceipt(
-            unresolved_ids=task.obligation_ids,
+            unresolved_ids=obligation_ids,
             warnings=bounded_warnings or (terminal,),
         )
-        with self._connect() as connection, connection:
-            for obligation_id in task.obligation_ids:
-                changed = connection.execute(
-                    """UPDATE coverage_obligations SET disposition = 'open', reason = NULL
-                       WHERE run_id = ? AND id = ? AND disposition = 'assigned'""",
-                    (run_id, obligation_id),
+        for obligation_id in obligation_ids:
+            changed = connection.execute(
+                """UPDATE coverage_obligations SET disposition = 'open', reason = NULL
+                   WHERE run_id = ? AND id = ? AND disposition = 'assigned'""",
+                (run_id, obligation_id),
+            )
+            if changed.rowcount:
+                append_entity_event(
+                    connection,
+                    run_id,
+                    "coverage_obligation",
+                    obligation_id,
+                    "assigned",
+                    "open",
                 )
-                if changed.rowcount:
-                    append_entity_event(
-                        connection,
-                        run_id,
-                        "coverage_obligation",
-                        obligation_id,
-                        "assigned",
-                        "open",
-                    )
-        self.transition_task(
+        _transition_task(
+            connection,
             run_id,
             task_id,
             terminal,
-            receipt=receipt,
+            receipt_json=receipt.model_dump_json(),
             error="; ".join(bounded_warnings) or terminal,
         )
 

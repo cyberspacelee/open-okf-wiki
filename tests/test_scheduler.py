@@ -16,7 +16,13 @@ from okf_wiki.accepted_knowledge import AcceptedKnowledgeStore
 from okf_wiki.cli import create_run, initialize
 from okf_wiki.knowledge_contracts import AnalysisTask, WorkerRunResult
 from okf_wiki.planner import PlannerAgent
-from okf_wiki.scheduler import PlannerLimits, PlannerReceipt, Scheduler, SchedulerOutcome
+from okf_wiki.scheduler import (
+    PlannerLimits,
+    PlannerReceipt,
+    Scheduler,
+    SchedulerOutcome,
+    recover_tasks,
+)
 from okf_wiki.run_state import transition_run
 from okf_wiki.verification import (
     REQUIRED_PERSPECTIVES,
@@ -706,6 +712,81 @@ def test_atomic_acceptance_failure_rolls_back_authoritative_state(
             ).fetchone()[0]
             == 1
         )
+
+
+@pytest.mark.parametrize("fault_point", ["after_findings", "after_decision", "after_acceptance"])
+def test_recovery_discards_incomplete_candidate_before_reverification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault_point: str
+) -> None:
+    class SimulatedCrash(BaseException):
+        pass
+
+    database, revision, run_id = make_run(tmp_path, [("obligation-1", "major", "open")])
+    planner = PlannerAgent(
+        TestModel(call_tools=[], custom_output_args={"tasks": [planned_task("obligation-1")]})
+    )
+    scheduler = Scheduler(database, planner, worker=None)
+    planned = asyncio.run(scheduler.plan(run_id))
+
+    def crash_at_selected_point(point: str) -> None:
+        if point == fault_point:
+            raise SimulatedCrash
+
+    monkeypatch.setattr("okf_wiki.scheduler.crash_if_requested", crash_at_selected_point)
+    worker = WorkerAgent(
+        TestModel(
+            call_tools=[],
+            custom_output_args=worker_proposal(revision, planned.task_ids[0], "obligation-1"),
+        ),
+        audit_path=tmp_path / "worker.db",
+        gateway_id="test",
+        model_name="test",
+        max_concurrency=1,
+    )
+    with pytest.raises(SimulatedCrash):
+        asyncio.run(
+            Scheduler(database, planner, worker, verifier=StaticVerifier()).run_ready(
+                run_id, planned.task_ids
+            )
+        )
+
+    assert scheduler.get_task(run_id, planned.task_ids[0]).state == "submitted"
+    assert AcceptedKnowledgeStore(database).list_claims(run_id) == []
+    assert AcceptedKnowledgeStore(database).list_concepts(run_id) == []
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT status FROM verification_candidates").fetchall() == [
+            ("staged",)
+        ]
+        assert connection.execute("SELECT COUNT(*) FROM verification_findings").fetchone()[0] == 0
+
+    assert recover_tasks(database, run_id) == [planned.task_ids[0]]
+    assert scheduler.get_task(run_id, planned.task_ids[0]).state == "planned"
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM verification_candidates").fetchone()[0] == 0
+
+    monkeypatch.setattr("okf_wiki.scheduler.crash_if_requested", lambda _point: None)
+    retry_worker = WorkerAgent(
+        TestModel(
+            call_tools=[],
+            custom_output_args=worker_proposal(revision, planned.task_ids[0], "obligation-1"),
+        ),
+        audit_path=tmp_path / "retry-worker.db",
+        gateway_id="test",
+        model_name="test",
+        max_concurrency=1,
+    )
+    outcome = asyncio.run(
+        Scheduler(database, planner, retry_worker, verifier=StaticVerifier()).run_ready(
+            run_id, planned.task_ids
+        )
+    )
+
+    assert outcome.status == "complete"
+    assert len(AcceptedKnowledgeStore(database).list_claims(run_id)) == 1
+    assert len(AcceptedKnowledgeStore(database).list_concepts(run_id)) == 1
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM verification_candidates").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM verification_findings").fetchone()[0] == 5
 
 
 def test_accepted_candidate_cannot_bypass_semantic_verification(tmp_path: Path) -> None:

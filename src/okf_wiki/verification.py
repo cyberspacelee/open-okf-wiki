@@ -153,15 +153,25 @@ class VerificationStore:
         run_id: str,
         candidate_id: str,
         findings: tuple[VerificationFinding, ...],
+        *,
+        connection: sqlite3.Connection | None = None,
     ) -> None:
-        with self._connect() as connection:
-            connection.executemany(
-                "INSERT INTO verification_findings VALUES (?, ?, ?, ?)",
-                [
-                    (run_id, candidate_id, finding.perspective, finding.model_dump_json())
-                    for finding in findings
-                ],
-            )
+        if connection is None:
+            with self._connect() as owned_connection:
+                self.record_findings(
+                    run_id,
+                    candidate_id,
+                    findings,
+                    connection=owned_connection,
+                )
+            return
+        connection.executemany(
+            "INSERT INTO verification_findings VALUES (?, ?, ?, ?)",
+            [
+                (run_id, candidate_id, finding.perspective, finding.model_dump_json())
+                for finding in findings
+            ],
+        )
 
     def record_decision(
         self,
