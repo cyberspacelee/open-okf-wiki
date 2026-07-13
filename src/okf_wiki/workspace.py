@@ -1180,29 +1180,9 @@ class WorkspaceApplication:
         }
 
     def _run_audit(self, run_id: str) -> dict:
-        path = self.root / ".okf-wiki" / "runs" / run_id / "worker.db"
-        totals = {
-            "failures": 0,
-            "latency_ms": 0,
-            "models": set(),
-            "retries": 0,
-            "tokens": 0,
-            "tool_calls": 0,
-        }
-        if path.is_file():
-            with sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True) as connection:
-                for status, usage_json, latency_ms, retries, model in connection.execute(
-                    """SELECT status, usage_json, latency_ms, retry_count, response_model
-                       FROM worker_candidates"""
-                ):
-                    usage = json.loads(usage_json)
-                    totals["failures"] += status != "accepted"
-                    totals["latency_ms"] += latency_ms
-                    totals["models"].add(model)
-                    totals["retries"] += retries
-                    totals["tokens"] += usage.get("total_tokens", 0)
-                    totals["tool_calls"] += usage.get("tool_calls", 0)
-        return {**totals, "models": sorted(totals["models"])}
+        from .semantic_audit import aggregate_semantic_audit
+
+        return aggregate_semantic_audit(self.root / ".okf-wiki" / "runs" / run_id / "worker.db")
 
     @staticmethod
     def _run_summary(row: sqlite3.Row) -> dict:

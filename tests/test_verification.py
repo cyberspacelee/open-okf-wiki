@@ -1,9 +1,11 @@
 import hashlib
 import json
+import sqlite3
 import subprocess
 
 import asyncio
-from pydantic_ai import ModelRequest, ModelResponse, ToolCallPart
+import pytest
+from pydantic_ai import ModelRequest, ModelResponse, RequestUsage, ToolCallPart
 from pydantic_ai.messages import UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
@@ -313,10 +315,19 @@ def test_fresh_verifier_agents_reread_original_snapshot_evidence(tmp_path) -> No
                     },
                     perspective,
                 )
-            ]
+            ],
+            usage=RequestUsage(input_tokens=7, output_tokens=3),
+            model_name="verifier-response-model",
         )
 
-    verifier = VerifierAgent(FunctionModel(verify), secrets=(credential,))
+    audit = tmp_path / "semantic-audit.db"
+    verifier_model = FunctionModel(verify)
+    verifier = VerifierAgent(
+        verifier_model,
+        audit_path=audit,
+        model_name="verifier-assigned-model",
+        secrets=(credential,),
+    )
 
     async def run_verifiers():
         return await asyncio.gather(
@@ -359,3 +370,37 @@ def test_fresh_verifier_agents_reread_original_snapshot_evidence(tmp_path) -> No
         next(item["text"] for item in contradiction_evidence if item["id"] == "evidence-accepted")
         == accepted_text
     )
+
+    def explode(_messages: list[ModelRequest | ModelResponse], _info: AgentInfo) -> ModelResponse:
+        raise ValueError(f"gateway rejected {credential}")
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"ValueError: gateway rejected \[REDACTED CREDENTIAL\]",
+    ):
+        asyncio.run(
+            VerifierAgent(
+                FunctionModel(explode),
+                audit_path=audit,
+                model_name="verifier-assigned-model",
+                secrets=(credential,),
+            ).verify("evidence_entailment", target)
+        )
+    with sqlite3.connect(audit) as connection:
+        rows = list(
+            connection.execute(
+                """SELECT status, usage_json, retry_count, model, error
+                   FROM agent_invocations WHERE role = 'verifier'
+                   ORDER BY created_at, id"""
+            )
+        )
+    accepted_rows = [row for row in rows if row[0] == "accepted"]
+    failed_row = next(row for row in rows if row[0] == "failed")
+    assert len(accepted_rows) == 5
+    assert all(json.loads(row[1])["total_tokens"] == 10 for row in accepted_rows)
+    assert all(row[2:4] == (0, verifier_model.model_name) for row in accepted_rows)
+    assert failed_row[3:] == (
+        "verifier-assigned-model",
+        "ValueError: gateway rejected [REDACTED CREDENTIAL]",
+    )
+    assert credential.encode() not in audit.read_bytes()

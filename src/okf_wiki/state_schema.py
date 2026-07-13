@@ -314,7 +314,23 @@ def _worker_audit_migration_1(connection: sqlite3.Connection) -> None:
     )
 
 
-WORKER_AUDIT_MIGRATIONS = (_worker_audit_migration_1,)
+def _worker_audit_migration_2(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS agent_invocations (
+            id TEXT PRIMARY KEY,
+            role TEXT NOT NULL CHECK (role IN ('planner', 'verifier')),
+            status TEXT NOT NULL,
+            usage_json TEXT NOT NULL,
+            latency_ms INTEGER NOT NULL,
+            retry_count INTEGER NOT NULL,
+            model TEXT NOT NULL,
+            error TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )"""
+    )
+
+
+WORKER_AUDIT_MIGRATIONS = (_worker_audit_migration_1, _worker_audit_migration_2)
 
 
 def migrate_worker_audit(

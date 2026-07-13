@@ -9,6 +9,7 @@ import pytest
 from okf_wiki import run_worker
 from okf_wiki.gateway_profiles import GatewayApplication, GatewayProfileRegistry
 from okf_wiki.scheduler import SchedulerOutcome
+from okf_wiki.state_schema import migrate_worker_audit
 from okf_wiki.workspace import WorkspaceApplication
 
 
@@ -246,6 +247,103 @@ def test_semantic_worker_terminalizes_noncomplete_scheduler_outcome(
     ]
 
 
+def test_run_audit_aggregates_real_records_by_role_and_response_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    application, _config_root, _profile = semantic_workspace(tmp_path)
+    monkeypatch.setattr(application, "_launch_run_worker", lambda *_args: None)
+    preflight = application.run_preflight()
+    started = application.start_run(
+        {
+            "configuration_digest": preflight["configuration_digest"],
+            "source_set_digest": preflight["source_set_digest"],
+        }
+    )
+    audit = application.root / ".okf-wiki" / "runs" / started["run_id"] / "worker.db"
+    audit.parent.mkdir(parents=True)
+    with sqlite3.connect(audit) as connection:
+        migrate_worker_audit(connection)
+        connection.execute(
+            """INSERT INTO worker_candidates
+               (id, task_id, obligation_ids_json, source_id, revision, status,
+                proposal_json, errors_json, error_type, trajectory_json, retry_count,
+                usage_json, latency_ms, gateway_id, model, prompt_version, tool_version,
+                schema_version, response_model, provider_url)
+               VALUES ('work', 'task', '[]', 'code', 'revision', 'accepted', NULL, '[]',
+                       NULL, '[]', 0, '{"total_tokens":200,"tool_calls":3}', 20,
+                       'gateway', 'assigned-worker', 'prompt', 'tool', 'schema',
+                       'work-model', NULL)"""
+        )
+        connection.executemany(
+            """INSERT INTO agent_invocations
+               (id, role, status, usage_json, latency_ms, retry_count, model, error)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                (
+                    "plan",
+                    "planner",
+                    "accepted",
+                    '{"total_tokens":100,"tool_calls":0}',
+                    10,
+                    1,
+                    "plan-model",
+                    None,
+                ),
+                (
+                    "verify",
+                    "verifier",
+                    "failed",
+                    '{"total_tokens":300,"tool_calls":1}',
+                    30,
+                    2,
+                    "verify-model",
+                    "safe failure",
+                ),
+            ],
+        )
+
+    assert application.run_status(started["run_id"])["audit"] == {
+        "failures": 1,
+        "latency_ms": 60,
+        "models": ["plan-model", "verify-model", "work-model"],
+        "retries": 3,
+        "tokens": 600,
+        "tool_calls": 4,
+        "by_role_model": [
+            {
+                "role": "planner",
+                "model": "plan-model",
+                "calls": 1,
+                "failures": 0,
+                "latency_ms": 10,
+                "retries": 1,
+                "tokens": 100,
+                "tool_calls": 0,
+            },
+            {
+                "role": "verifier",
+                "model": "verify-model",
+                "calls": 1,
+                "failures": 1,
+                "latency_ms": 30,
+                "retries": 2,
+                "tokens": 300,
+                "tool_calls": 1,
+            },
+            {
+                "role": "worker",
+                "model": "work-model",
+                "calls": 1,
+                "failures": 0,
+                "latency_ms": 20,
+                "retries": 0,
+                "tokens": 200,
+                "tool_calls": 3,
+            },
+        ],
+    }
+
+
 def test_start_run_pins_preflight_inputs_and_worker_reaches_review_without_gateway(
     tmp_path: Path,
 ) -> None:
@@ -319,6 +417,7 @@ def test_start_run_pins_preflight_inputs_and_worker_reaches_review_without_gatew
         "covered",
     ]
     assert status["audit"] == {
+        "by_role_model": [],
         "failures": 0,
         "latency_ms": 0,
         "models": [],

@@ -665,7 +665,21 @@ def test_worker_audit_uses_versioned_migration_and_rolls_back_failure(tmp_path: 
             )"""
         )
         migrate_worker_audit(connection)
-        assert connection.execute("SELECT version FROM schema_migrations").fetchone()[0] == 1
+        assert [
+            row[0]
+            for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
+        ] == [1, 2]
+        assert {row[1] for row in connection.execute("PRAGMA table_info(agent_invocations)")} == {
+            "id",
+            "role",
+            "status",
+            "usage_json",
+            "latency_ms",
+            "retry_count",
+            "model",
+            "error",
+            "created_at",
+        }
 
         def fail(database_connection: sqlite3.Connection) -> None:
             database_connection.execute("CREATE TABLE worker_must_rollback (value TEXT)")
@@ -679,7 +693,7 @@ def test_worker_audit_uses_versioned_migration_and_rolls_back_failure(tmp_path: 
             ).fetchone()
             is None
         )
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 1
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 2
 
 
 def test_failed_state_open_rolls_back_configuration_update(tmp_path: Path) -> None:

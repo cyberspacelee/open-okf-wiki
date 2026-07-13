@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 from pydantic_ai import ModelRequest, ModelResponse, RequestUsage, ToolCallPart
-from pydantic_ai.messages import UserPromptPart
+from pydantic_ai.messages import RetryPromptPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 
@@ -872,6 +872,96 @@ def test_budget_exhaustion_replans_once_then_stops_without_retry_loop(tmp_path: 
     assert second.warnings == (
         "RuntimeError: Agent budget exhausted; increase the per-agent-call limit or narrow the work",
     )
+
+
+def test_planner_audit_records_real_usage_retry_model_and_redacted_failure(
+    tmp_path: Path,
+) -> None:
+    audit = tmp_path / "semantic-audit.db"
+    (tmp_path / "success").mkdir()
+    database, _revision, run_id = make_run(
+        tmp_path / "success", [("obligation-1", "major", "open")]
+    )
+
+    def retry_then_plan(
+        messages: list[ModelRequest | ModelResponse], info: AgentInfo
+    ) -> ModelResponse:
+        retried = any(
+            isinstance(part, RetryPromptPart)
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+        )
+        payload = {"tasks": [planned_task("obligation-1")]} if retried else {"tasks": []}
+        if not retried:
+            payload = {"tasks": "invalid"}
+        return ModelResponse(
+            [ToolCallPart(info.output_tools[0].name, payload, "plan")],
+            usage=RequestUsage(input_tokens=10, output_tokens=5),
+            model_name="planner-response-model",
+        )
+
+    planner_model = FunctionModel(retry_then_plan)
+    planned = asyncio.run(
+        Scheduler(
+            database,
+            PlannerAgent(
+                planner_model,
+                audit_path=audit,
+                model_name="planner-assigned-model",
+            ),
+            worker=None,
+        ).plan(run_id)
+    )
+    assert planned.status == "planned"
+
+    credential = "planner-secret-value"
+    (tmp_path / "failure").mkdir()
+    failed_database, _revision, failed_run_id = make_run(
+        tmp_path / "failure", [("obligation-2", "major", "open")]
+    )
+
+    def explode(_messages: list[ModelRequest | ModelResponse], _info: AgentInfo) -> ModelResponse:
+        raise ValueError(f"gateway rejected {credential}")
+
+    failed = asyncio.run(
+        Scheduler(
+            failed_database,
+            PlannerAgent(
+                FunctionModel(explode),
+                audit_path=audit,
+                model_name="planner-assigned-model",
+                secrets=(credential,),
+            ),
+            worker=None,
+        ).plan(failed_run_id)
+    )
+    assert failed.status == "replan"
+    assert failed.warnings == ("RuntimeError: ValueError: gateway rejected [REDACTED CREDENTIAL]",)
+
+    with sqlite3.connect(audit) as connection:
+        rows = list(
+            connection.execute(
+                """SELECT status, usage_json, retry_count, model, error
+                   FROM agent_invocations ORDER BY created_at, id"""
+            )
+        )
+    accepted = next(row for row in rows if row[0] == "accepted")
+    rejected = next(row for row in rows if row[0] == "failed")
+    assert json.loads(accepted[1]) == {
+        "requests": 2,
+        "tool_calls": 0,
+        "input_tokens": 20,
+        "output_tokens": 10,
+        "total_tokens": 30,
+    }
+    assert accepted[2:4] == (1, planner_model.model_name)
+    assert accepted[4] is None
+    assert rejected[3:] == (
+        "planner-assigned-model",
+        "ValueError: gateway rejected [REDACTED CREDENTIAL]",
+    )
+    assert credential.encode() not in audit.read_bytes()
 
 
 def test_scheduler_control_plane_has_no_agent_framework_imports() -> None:

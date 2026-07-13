@@ -4,6 +4,8 @@ import tempfile
 from pathlib import Path
 from typing import Literal, TypeAlias
 
+from .security import redact_secrets
+
 
 PROFILE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 GatewayErrorCategory: TypeAlias = Literal[
@@ -54,6 +56,12 @@ def actionable_model_error(error: Exception) -> str | None:
     if name == "UnexpectedModelBehavior":
         return "Gateway returned invalid structured output; verify model capabilities"
     return None
+
+
+def safe_agent_error(error: Exception, secrets: tuple[str, ...]) -> str:
+    return actionable_model_error(error) or (
+        f"{type(error).__name__}: {redact_secrets(str(error), secrets)}"
+    )
 
 
 def atomic_write(path: Path, content: str, mode: int) -> None:

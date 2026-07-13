@@ -1,18 +1,28 @@
 import asyncio
 import hashlib
 import json
+import time
+from pathlib import Path
 
-from pydantic_ai import Agent, UsageLimits
+from pydantic_ai import (
+    Agent,
+    ModelRequest,
+    ModelResponse,
+    UsageLimits,
+    capture_run_messages,
+)
 from pydantic_ai.models import Model
+from pydantic_ai.usage import RunUsage
 
-from .gateway_common import actionable_model_error
+from .gateway_common import safe_agent_error
+from .semantic_audit import initialize_semantic_audit, record_agent_invocation
+from .security import contains_secret, redact_secrets
 from .verification import (
     VerificationFinding,
     VerificationPerspective,
     VerificationTarget,
 )
 from .worker import GitObjectSnapshotReader
-from .security import contains_secret, redact_secrets
 
 
 PERSPECTIVE_INSTRUCTIONS = {
@@ -87,6 +97,8 @@ class VerifierAgent:
         output_tokens_limit: int = 2_000,
         total_tokens_limit: int | None = None,
         wall_time_seconds: float = 30,
+        audit_path: Path | None = None,
+        model_name: str | None = None,
         secrets: tuple[str, ...] = (),
     ) -> None:
         self.model = model
@@ -97,9 +109,21 @@ class VerifierAgent:
             total_tokens_limit=total_tokens_limit,
         )
         self.wall_time_seconds = wall_time_seconds
+        self.audit_path = audit_path
+        self.model_name = model_name or model.model_name
         self.secrets = secrets
+        if audit_path is not None:
+            initialize_semantic_audit(audit_path)
 
     async def verify(
+        self, perspective: VerificationPerspective, target: VerificationTarget
+    ) -> VerificationFinding:
+        try:
+            return await self._verify(perspective, target)
+        except Exception as error:
+            raise RuntimeError(safe_agent_error(error, self.secrets)) from None
+
+    async def _verify(
         self, perspective: VerificationPerspective, target: VerificationTarget
     ) -> VerificationFinding:
         references = [item.model_dump(mode="json") for item in target.proposal.evidence]
@@ -169,39 +193,62 @@ class VerifierAgent:
             retries={"output": 1},
             max_concurrency=1,
         )
+        started = time.monotonic()
+        messages: list[ModelRequest | ModelResponse] = []
+        usage: RunUsage | None = None
+        response_model = self.model_name
+        status = "failed"
+        audit_error = None
         try:
-            async with asyncio.timeout(self.wall_time_seconds):
-                result = await agent.run(
-                    prompt,
-                    usage_limits=self.usage_limits,
-                    metadata={
-                        "run_id": target.run_id,
-                        "candidate_id": target.candidate_id,
-                        "agent_role": "verifier",
-                        "perspective": perspective,
-                    },
-                )
+            with capture_run_messages() as captured:
+                async with asyncio.timeout(self.wall_time_seconds):
+                    result = await agent.run(
+                        prompt,
+                        usage_limits=self.usage_limits,
+                        metadata={
+                            "run_id": target.run_id,
+                            "candidate_id": target.candidate_id,
+                            "agent_role": "verifier",
+                            "perspective": perspective,
+                        },
+                    )
+            messages = result.new_messages()
+            usage = result.usage
+            response_model = result.response.model_name or self.model_name
+            finding = result.output
+            if contains_secret(finding.model_dump_json(), self.secrets):
+                raise ValueError("Verifier disclosed a protected credential")
+            known_targets = {
+                target.candidate_id,
+                *target.proposal.obligation_ids,
+                *(item.id for item in target.proposal.claims),
+                *(item.id for item in target.proposal.concepts),
+                *(item["id"] for item in target.accepted_claims),
+                *(item["id"] for item in target.accepted_concepts),
+            }
+            known_evidence = {item["id"] for item in evidence}
+            if finding.perspective != perspective:
+                raise ValueError("Verifier returned the wrong perspective")
+            if finding.target_id not in known_targets:
+                raise ValueError("Verifier returned a target outside the bounded candidate")
+            if not set(finding.evidence) <= known_evidence:
+                raise ValueError("Verifier cited evidence outside the bounded candidate")
+            status = "accepted"
+            return finding
         except Exception as error:
-            actionable = actionable_model_error(error)
-            if actionable:
-                raise RuntimeError(actionable) from None
+            messages = list(captured) if "captured" in locals() else messages
+            audit_error = safe_agent_error(error, self.secrets)
             raise
-        finding = result.output
-        if contains_secret(finding.model_dump_json(), self.secrets):
-            raise ValueError("Verifier disclosed a protected credential")
-        known_targets = {
-            target.candidate_id,
-            *target.proposal.obligation_ids,
-            *(item.id for item in target.proposal.claims),
-            *(item.id for item in target.proposal.concepts),
-            *(item["id"] for item in target.accepted_claims),
-            *(item["id"] for item in target.accepted_concepts),
-        }
-        known_evidence = {item["id"] for item in evidence}
-        if finding.perspective != perspective:
-            raise ValueError("Verifier returned the wrong perspective")
-        if finding.target_id not in known_targets:
-            raise ValueError("Verifier returned a target outside the bounded candidate")
-        if not set(finding.evidence) <= known_evidence:
-            raise ValueError("Verifier cited evidence outside the bounded candidate")
-        return finding
+        finally:
+            if self.audit_path is not None:
+                record_agent_invocation(
+                    self.audit_path,
+                    role="verifier",
+                    status=status,
+                    messages=messages,
+                    usage=usage,
+                    latency_ms=round((time.monotonic() - started) * 1000),
+                    model=response_model,
+                    error=audit_error,
+                    secrets=self.secrets,
+                )

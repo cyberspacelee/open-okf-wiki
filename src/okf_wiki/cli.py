@@ -1374,12 +1374,13 @@ def execute_semantic_run(
             for name in {assignments[role] for role in ("planner", "worker", "verifier")}
         }
         try:
+            audit_path = state_dir() / "runs" / run_id / "worker.db"
             worker_budgets = WorkerBudgets(
                 **({"total_tokens_limit": total_tokens} if total_tokens else {})
             )
             worker = WorkerAgent(
                 models[assignments["worker"]],
-                audit_path=state_dir() / "runs" / run_id / "worker.db",
+                audit_path=audit_path,
                 gateway_id=gateway_id,
                 model_name=assignments["worker"],
                 max_concurrency=concurrency,
@@ -1390,6 +1391,8 @@ def execute_semantic_run(
                 PlannerAgent(
                     models[assignments["planner"]],
                     total_tokens_limit=total_tokens,
+                    audit_path=audit_path,
+                    model_name=assignments["planner"],
                     secrets=secrets,
                 ),
                 worker,
@@ -1398,6 +1401,8 @@ def execute_semantic_run(
                 verifier=VerifierAgent(
                     models[assignments["verifier"]],
                     total_tokens_limit=total_tokens,
+                    audit_path=audit_path,
+                    model_name=assignments["verifier"],
                     secrets=secrets,
                 ),
             )
