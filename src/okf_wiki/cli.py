@@ -1105,17 +1105,35 @@ def complete_publication(connection: sqlite3.Connection, row: sqlite3.Row) -> No
     destination = Path(row["publish_dir"])
     source_set = json.loads(row["source_set_json"])
     previous_target = previous_publication_target(row, source_set)
+    failure: Exception | None = None
     try:
-        publish(Path(row["staging_dir"]), destination, run_id)
-        crash_if_requested("after_publication")
-        transition(connection, run_id, "publishing", "published")
-    except Exception as error:
-        try:
-            restore_publication(destination, previous_target, run_id)
-        except Exception as rollback_error:
-            error = UserError(f"{error}; publication rollback failed: {rollback_error}")
-        transition(connection, run_id, "publishing", "failed", error=str(error))
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                "SELECT state FROM runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            if current is None or current["state"] != "publishing":
+                raise UserError(f"Run {run_id} is not in publishing")
+            connection.execute("SAVEPOINT publication")
+            try:
+                publish(Path(row["staging_dir"]), destination, run_id)
+                crash_if_requested("after_publication")
+                transition_run(connection, run_id, "publishing", "published")
+            except Exception as error:
+                connection.execute("ROLLBACK TO publication")
+                connection.execute("RELEASE publication")
+                try:
+                    restore_publication(destination, previous_target, run_id)
+                except Exception as rollback_error:
+                    error = UserError(f"{error}; publication rollback failed: {rollback_error}")
+                transition_run(connection, run_id, "publishing", "failed", error=str(error))
+                failure = error
+            else:
+                connection.execute("RELEASE publication")
+    except RunTransitionError as error:
         raise UserError(str(error)) from error
+    if failure is not None:
+        raise UserError(str(failure)) from failure
 
 
 def review(run_id: str, approve: bool) -> int:

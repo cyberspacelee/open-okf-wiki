@@ -1036,39 +1036,53 @@ def test_publication_and_cancellation_race_keeps_state_and_link_consistent(
     ).fetchone()
     assert row is not None
     barrier = threading.Barrier(2)
-    original_publish = cli.publish
-
-    def synchronized_publish(staging: Path, destination: Path, run_id: str) -> str | None:
-        result = original_publish(staging, destination, run_id)
-        barrier.wait()
-        return result
-
-    monkeypatch.setattr(cli, "publish", synchronized_publish)
     if winner == "publisher":
-        publisher_connection.execute("BEGIN IMMEDIATE")
+        original_publish = cli.publish
+
+        def synchronized_publish(staging: Path, destination: Path, run_id: str) -> str | None:
+            result = original_publish(staging, destination, run_id)
+            barrier.wait()
+            return result
+
+        monkeypatch.setattr(cli, "publish", synchronized_publish)
+
+        def publication_competitor() -> None:
+            cli.complete_publication(publisher_connection, row)
 
         def cancel_competitor() -> dict:
             barrier.wait()
             return workspace_module.cancel_run_checkpoint(database, second["run_id"])
 
     else:
+
+        class SimulatedCrash(BaseException):
+            pass
+
         original_restore = cli.restore_publication
-        synchronized = False
+        after_publication_reached = False
 
         def synchronized_restore(destination: Path, previous: str | None, run_id: str) -> None:
-            nonlocal synchronized
             original_restore(destination, previous, run_id)
-            if not synchronized:
-                synchronized = True
-                barrier.wait()
+            barrier.wait()
+
+        def crash_after_publication(point: str) -> None:
+            nonlocal after_publication_reached
+            if point == "after_publication":
+                after_publication_reached = True
+                raise SimulatedCrash
 
         monkeypatch.setattr(cli, "restore_publication", synchronized_restore)
+        monkeypatch.setattr(cli, "crash_if_requested", crash_after_publication)
+
+        def publication_competitor() -> None:
+            barrier.wait()
+            cli.complete_publication(publisher_connection, row)
 
         def cancel_competitor() -> dict:
             return workspace_module.cancel_run_checkpoint(database, second["run_id"])
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        publication = executor.submit(cli.complete_publication, publisher_connection, row)
+        publication = executor.submit(publication_competitor)
         cancellation = executor.submit(cancel_competitor)
         if winner == "publisher":
             publication.result(timeout=10)
@@ -1078,6 +1092,7 @@ def test_publication_and_cancellation_race_keeps_state_and_link_consistent(
             assert cancellation.result(timeout=10)["state"] == "cancelled"
             with pytest.raises(UserError):
                 publication.result(timeout=10)
+            assert after_publication_reached is False
     publisher_connection.close()
 
     with sqlite3.connect(database) as connection:
