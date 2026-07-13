@@ -468,7 +468,17 @@ def recover_run_checkpoint(database: Path, run_id: str) -> tuple[int, dict]:
         raise WorkspaceError(f"Run {run_id} is {row['state']} and terminal")
 
     recovered_tasks = recover_tasks(database, run_id)
+    row = get_run(connection, run_id)
     state = row["state"]
+    if state == "failed":
+        connection.close()
+        return 1, {
+            "errors": [row["error"] or "Run recovery failed"],
+            "ok": False,
+            "recovered_tasks": recovered_tasks,
+            "run_id": run_id,
+            "state": state,
+        }
     try:
         if state == "preparing":
             state, _coverage = advance_preparation(connection, run_id, database=database)
@@ -527,22 +537,24 @@ def cancel_run_checkpoint(database: Path, run_id: str) -> dict:
 
     connection = sqlite3.connect(database)
     connection.row_factory = sqlite3.Row
-    row = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
-    if row is None:
-        connection.close()
-        raise WorkspaceError(f"Unknown Production Run: {run_id}")
-    if row["state"] in {"published", "failed", "cancelled"}:
-        connection.close()
-        raise WorkspaceError(f"Run {run_id} is already terminal")
     try:
-        if row["state"] == "publishing" and published_run_id(Path(row["publish_dir"])) == run_id:
-            source_set = json.loads(row["source_set_json"]) if row["source_set_json"] else {}
-            restore_publication(
-                Path(row["publish_dir"]),
-                previous_publication_target(row, source_set),
-                run_id,
-            )
         with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+            if row is None:
+                raise WorkspaceError(f"Unknown Production Run: {run_id}")
+            if row["state"] in {"published", "failed", "cancelled"}:
+                raise WorkspaceError(f"Run {run_id} is already terminal")
+            if (
+                row["state"] == "publishing"
+                and published_run_id(Path(row["publish_dir"])) == run_id
+            ):
+                source_set = json.loads(row["source_set_json"]) if row["source_set_json"] else {}
+                restore_publication(
+                    Path(row["publish_dir"]),
+                    previous_publication_target(row, source_set),
+                    run_id,
+                )
             transition_run(connection, run_id, row["state"], "cancelled")
     except RunTransitionError as error:
         raise WorkspaceError(str(error)) from error

@@ -32,6 +32,7 @@ from okf_wiki.verification import (
     VerificationTarget,
 )
 from okf_wiki.worker import WorkerAgent
+from okf_wiki.workspace import recover_run_checkpoint
 
 
 def make_run(tmp_path: Path, obligations: list[tuple[str, str, str]]) -> tuple[Path, str, str]:
@@ -754,15 +755,31 @@ def test_recovery_discards_incomplete_candidate_before_reverification(
     assert AcceptedKnowledgeStore(database).list_claims(run_id) == []
     assert AcceptedKnowledgeStore(database).list_concepts(run_id) == []
     with sqlite3.connect(database) as connection:
-        assert connection.execute("SELECT status FROM verification_candidates").fetchall() == [
-            ("staged",)
-        ]
+        candidate_id, status = connection.execute(
+            "SELECT candidate_id, status FROM verification_candidates"
+        ).fetchone()
+        assert status == "staged"
         assert connection.execute("SELECT COUNT(*) FROM verification_findings").fetchone()[0] == 0
+    VerificationStore(database).record_findings(
+        run_id,
+        candidate_id,
+        (
+            VerificationFinding(
+                target_id=candidate_id,
+                perspective="coverage",
+                verdict="pass",
+                severity="info",
+                evidence=("legacy-evidence",),
+                rationale="Legacy ledgers could persist findings before a decision.",
+            ),
+        ),
+    )
 
     assert recover_tasks(database, run_id) == [planned.task_ids[0]]
     assert scheduler.get_task(run_id, planned.task_ids[0]).state == "planned"
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT COUNT(*) FROM verification_candidates").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM verification_findings").fetchone()[0] == 0
 
     monkeypatch.setattr("okf_wiki.scheduler.crash_if_requested", lambda _point: None)
     retry_worker = WorkerAgent(
@@ -787,6 +804,63 @@ def test_recovery_discards_incomplete_candidate_before_reverification(
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT COUNT(*) FROM verification_candidates").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM verification_findings").fetchone()[0] == 5
+
+
+def test_recovery_fails_inconsistent_decided_candidate_without_rerunning(
+    tmp_path: Path,
+) -> None:
+    class TrackingWorker:
+        called = False
+
+        async def run(self, task: AnalysisTask) -> WorkerRunResult:
+            self.called = True
+            raise AssertionError(f"Decided candidate task {task.task_id} must not be rerun")
+
+    database, _revision, run_id = make_run(tmp_path, [("obligation-1", "major", "open")])
+    planner = PlannerAgent(
+        TestModel(call_tools=[], custom_output_args={"tasks": [planned_task("obligation-1")]})
+    )
+    scheduler = Scheduler(database, planner, worker=None)
+    planned = asyncio.run(scheduler.plan(run_id))
+    task_id = planned.task_ids[0]
+    scheduler.transition_task(run_id, task_id, "running")
+    scheduler.transition_task(run_id, task_id, "submitted")
+    verification = VerificationStore(database)
+    verification.stage(run_id, "decided-candidate", task_id, {})
+    verification.record_decision(
+        run_id,
+        "decided-candidate",
+        AcceptanceDecision(outcome="accepted"),
+    )
+
+    code, recovery = recover_run_checkpoint(database, run_id)
+
+    assert code == 1
+    assert recovery["state"] == "failed"
+    assert "decided candidates" in recovery["errors"][0]
+    assert recovery["recovered_tasks"] == []
+    assert scheduler.get_task(run_id, task_id).state == "failed"
+    with sqlite3.connect(database) as connection:
+        assert (
+            connection.execute("SELECT state FROM runs WHERE id = ?", (run_id,)).fetchone()[0]
+            == "failed"
+        )
+        assert (
+            connection.execute(
+                "SELECT status FROM verification_candidates WHERE candidate_id = 'decided-candidate'"
+            ).fetchone()[0]
+            == "accepted"
+        )
+
+    worker = TrackingWorker()
+    asyncio.run(Scheduler(database, planner, worker).run_ready(run_id, planned.task_ids))
+
+    assert worker.called is False
+    with sqlite3.connect(database) as connection:
+        assert (
+            connection.execute("SELECT state FROM runs WHERE id = ?", (run_id,)).fetchone()[0]
+            == "failed"
+        )
 
 
 def test_accepted_candidate_cannot_bypass_semantic_verification(tmp_path: Path) -> None:

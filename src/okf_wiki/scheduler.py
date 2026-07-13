@@ -236,7 +236,8 @@ def _transition_task(
 
 
 def recover_tasks(database: Path, run_id: str) -> list[str]:
-    with _connect(database) as connection:
+    with _connect(database) as connection, connection:
+        connection.execute("BEGIN IMMEDIATE")
         exists = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'analysis_tasks'"
         ).fetchone()
@@ -244,31 +245,72 @@ def recover_tasks(database: Path, run_id: str) -> list[str]:
             return []
         tasks = list(
             connection.execute(
-                """SELECT id FROM analysis_tasks
+                """SELECT id, state FROM analysis_tasks
                    WHERE run_id = ? AND state IN ('running', 'submitted') ORDER BY id""",
                 (run_id,),
             )
         )
-        verification_tables = connection.execute(
-            """SELECT COUNT(*) FROM sqlite_master
-               WHERE type = 'table'
-                 AND name IN ('verification_candidates', 'verification_findings')"""
-        ).fetchone()[0]
-        with connection:
-            for task in tasks:
-                if verification_tables == 2:
+        verification_tables = {
+            row["name"]
+            for row in connection.execute(
+                """SELECT name FROM sqlite_master
+                   WHERE type = 'table'
+                     AND name IN ('verification_candidates', 'verification_findings')"""
+            )
+        }
+        if "verification_candidates" in verification_tables:
+            decided = (
+                list(
                     connection.execute(
-                        """DELETE FROM verification_candidates
-                           WHERE run_id = ? AND task_id = ? AND status = 'staged'
-                             AND NOT EXISTS (
-                               SELECT 1 FROM verification_findings
-                               WHERE verification_findings.run_id = verification_candidates.run_id
-                                 AND verification_findings.candidate_id =
-                                     verification_candidates.candidate_id
-                             )""",
-                        (run_id, task["id"]),
+                        """SELECT candidate_id, status FROM verification_candidates
+                       WHERE run_id = ?
+                         AND task_id IN ({})
+                         AND status != 'staged'
+                       ORDER BY candidate_id""".format(",".join("?" for _ in tasks)),
+                        (run_id, *(task["id"] for task in tasks)),
                     )
-                _transition_task(connection, run_id, task["id"], "planned")
+                )
+                if tasks
+                else []
+            )
+            if decided:
+                error = "Inconsistent recovery checkpoint has decided candidates: " + ", ".join(
+                    f"{row['candidate_id']} ({row['status']})" for row in decided
+                )
+                for task in tasks:
+                    if task["state"] == "running":
+                        _transition_task(connection, run_id, task["id"], "submitted")
+                    _transition_task(connection, run_id, task["id"], "failed", error=error)
+                run = connection.execute(
+                    "SELECT state FROM runs WHERE id = ?", (run_id,)
+                ).fetchone()
+                if run is not None and run["state"] not in {"published", "failed", "cancelled"}:
+                    transition_run(
+                        connection,
+                        run_id,
+                        run["state"],
+                        "failed",
+                        error=error,
+                        details={"entity_id": run_id, "entity_type": "production_run"},
+                    )
+                return []
+        for task in tasks:
+            if "verification_candidates" in verification_tables:
+                if "verification_findings" in verification_tables:
+                    connection.execute(
+                        """DELETE FROM verification_findings
+                           WHERE run_id = ? AND candidate_id IN (
+                               SELECT candidate_id FROM verification_candidates
+                               WHERE run_id = ? AND task_id = ? AND status = 'staged'
+                           )""",
+                        (run_id, run_id, task["id"]),
+                    )
+                connection.execute(
+                    """DELETE FROM verification_candidates
+                       WHERE run_id = ? AND task_id = ? AND status = 'staged'""",
+                    (run_id, task["id"]),
+                )
+            _transition_task(connection, run_id, task["id"], "planned")
     return [task["id"] for task in tasks]
 
 

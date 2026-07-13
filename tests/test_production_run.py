@@ -6,6 +6,8 @@ import re
 import sqlite3
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,7 @@ from pydantic_ai.messages import RetryPromptPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 import okf_wiki.cli as cli
+from okf_wiki import workspace as workspace_module
 from okf_wiki.accepted_knowledge import AcceptedKnowledgeStore
 from okf_wiki.cli import UserError, transition
 from okf_wiki.coverage import refresh_run_coverage
@@ -1003,6 +1006,91 @@ def test_illegal_transition_is_rejected_and_publishing_run_can_be_cancelled(
     assert status["state"] == "cancelled"
     assert status["events"][-1]["state"] == "cancelled"
     assert not (workspace / "published").exists()
+
+
+@pytest.mark.parametrize("winner", ["publisher", "canceller"])
+def test_publication_and_cancellation_race_keeps_state_and_link_consistent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, winner: str
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "source"
+    first_revision = make_source(source)
+    first = build_run(workspace, source, first_revision)
+    run(["review", first["run_id"], "--approve"], workspace)
+    published = workspace / "published"
+    previous_target = os.readlink(published)
+
+    second_revision = commit_source(source, "# Example\n\nSecond revision.\n")
+    second = build_run(workspace, source, second_revision)
+    interrupted = run_with_fault(
+        ["review", second["run_id"], "--approve"], workspace, "after_publication"
+    )
+    assert interrupted.returncode == 86
+
+    database = workspace / ".okf-wiki" / "runs.db"
+    publisher_connection = sqlite3.connect(database, check_same_thread=False)
+    publisher_connection.row_factory = sqlite3.Row
+    row = publisher_connection.execute(
+        "SELECT * FROM runs WHERE id = ?", (second["run_id"],)
+    ).fetchone()
+    assert row is not None
+    barrier = threading.Barrier(2)
+    original_publish = cli.publish
+
+    def synchronized_publish(staging: Path, destination: Path, run_id: str) -> str | None:
+        result = original_publish(staging, destination, run_id)
+        barrier.wait()
+        return result
+
+    monkeypatch.setattr(cli, "publish", synchronized_publish)
+    if winner == "publisher":
+        publisher_connection.execute("BEGIN IMMEDIATE")
+
+        def cancel_competitor() -> dict:
+            barrier.wait()
+            return workspace_module.cancel_run_checkpoint(database, second["run_id"])
+
+    else:
+        original_restore = cli.restore_publication
+        synchronized = False
+
+        def synchronized_restore(destination: Path, previous: str | None, run_id: str) -> None:
+            nonlocal synchronized
+            original_restore(destination, previous, run_id)
+            if not synchronized:
+                synchronized = True
+                barrier.wait()
+
+        monkeypatch.setattr(cli, "restore_publication", synchronized_restore)
+
+        def cancel_competitor() -> dict:
+            return workspace_module.cancel_run_checkpoint(database, second["run_id"])
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        publication = executor.submit(cli.complete_publication, publisher_connection, row)
+        cancellation = executor.submit(cancel_competitor)
+        if winner == "publisher":
+            publication.result(timeout=10)
+            with pytest.raises(workspace_module.WorkspaceError, match="already terminal"):
+                cancellation.result(timeout=10)
+        else:
+            assert cancellation.result(timeout=10)["state"] == "cancelled"
+            with pytest.raises(UserError):
+                publication.result(timeout=10)
+    publisher_connection.close()
+
+    with sqlite3.connect(database) as connection:
+        state = connection.execute(
+            "SELECT state FROM runs WHERE id = ?", (second["run_id"],)
+        ).fetchone()[0]
+    if winner == "publisher":
+        assert state == "published"
+        assert second_revision in (published / "overview.md").read_text(encoding="utf-8")
+    else:
+        assert state == "cancelled"
+        assert os.readlink(published) == previous_target
+        assert first_revision in (published / "overview.md").read_text(encoding="utf-8")
 
 
 def test_staged_source_revision_must_match_the_run_and_bundle(tmp_path: Path) -> None:
