@@ -550,45 +550,47 @@ function GatewaySnapshotCard({ models }: { models: RunDetail["models"] }) {
           {models.profile.revision ?? "unavailable"}
         </CardDescription>
       </CardHeader>
-      <CardContent className="flex flex-col gap-4 text-xs">
-        <dl className="grid grid-cols-2 gap-3">
-          <div>
-            <dt className="text-muted-foreground">Gateway</dt>
-            <dd className="mt-1 font-medium break-all">
-              {models.profile.gateway_id ?? models.profile.id}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-muted-foreground">Concurrency</dt>
-            <dd className="mt-1 font-medium">{models.concurrency}</dd>
-          </div>
-        </dl>
-        <div>
-          <p className="font-medium">Model assignments</p>
-          <dl className="mt-2 flex flex-col gap-2">
-            {Object.entries(models.assignments).map(([role, model]) => (
-              <div
-                key={role}
-                className="flex items-start justify-between gap-3"
-              >
-                <dt className="text-muted-foreground">{titleCase(role)}</dt>
-                <dd className="text-right font-mono break-all">{model}</dd>
-              </div>
-            ))}
-          </dl>
-        </div>
-        {Object.keys(models.budgets).length > 0 && (
-          <div>
-            <p className="font-medium">Run budgets</p>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {Object.entries(models.budgets).map(([name, value]) => (
-                <Badge key={name} variant="secondary">
-                  {titleCase(name)} {formatNumber(value)}
-                </Badge>
-              ))}
+      <CardContent>
+        <div className="flex flex-col gap-4 text-xs">
+          <dl className="grid grid-cols-2 gap-3">
+            <div>
+              <dt className="text-muted-foreground">Gateway</dt>
+              <dd className="mt-1 font-medium break-all">
+                {models.profile.gateway_id ?? models.profile.id}
+              </dd>
             </div>
+            <div>
+              <dt className="text-muted-foreground">Concurrency</dt>
+              <dd className="mt-1 font-medium">{models.concurrency}</dd>
+            </div>
+          </dl>
+          <div>
+            <p className="font-medium">Model assignments</p>
+            <dl className="mt-2 flex flex-col gap-2">
+              {Object.entries(models.assignments).map(([role, model]) => (
+                <div
+                  key={role}
+                  className="flex items-start justify-between gap-3"
+                >
+                  <dt className="text-muted-foreground">{titleCase(role)}</dt>
+                  <dd className="text-right font-mono break-all">{model}</dd>
+                </div>
+              ))}
+            </dl>
           </div>
-        )}
+          {Object.keys(models.budgets).length > 0 && (
+            <div>
+              <p className="font-medium">Run budgets</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {Object.entries(models.budgets).map(([name, value]) => (
+                  <Badge key={name} variant="secondary">
+                    {titleCase(name)} {formatNumber(value)}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       </CardContent>
     </Card>
   )
