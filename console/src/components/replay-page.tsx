@@ -82,6 +82,14 @@ const impactTypeLabels: Record<ImpactNode["type"], string> = {
   page: "Bundle page",
 }
 
+const impactStageTypes = [
+  "source_unit",
+  "evidence",
+  "claim",
+  "concept",
+  "page",
+] as const
+
 const paginationButtonClassName = "w-full min-w-0 sm:w-auto"
 
 function entityLocator(entity: Pick<ReplayEvent, "entity_type" | "entity_id">) {
@@ -604,7 +612,7 @@ function ReplayContent({
                     aria-current={index === currentIndex ? "step" : undefined}
                     aria-label={
                       index === currentIndex
-                        ? "Current reduced-motion replay event"
+                        ? `Current reduced-motion replay event: ${titleCase(event.entity_type)} ${event.entity_id}`
                         : undefined
                     }
                     data-testid="reduced-replay-event"
@@ -613,9 +621,15 @@ function ReplayContent({
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge variant="outline">#{event.sequence}</Badge>
                       <StageBadge stage={event.stage} />
+                      <Badge variant="outline">
+                        {titleCase(event.entity_type)}
+                      </Badge>
                     </div>
                     <p className="text-sm font-medium break-words">
                       {event.entity_label}
+                    </p>
+                    <p className="font-mono text-xs break-all text-muted-foreground">
+                      {event.entity_id}
                     </p>
                     <p className="text-xs text-muted-foreground">
                       {event.previous_state
@@ -704,6 +718,7 @@ function CurrentEvent({
       </div>
       <p
         role="status"
+        aria-label="Current replay event status"
         aria-live="polite"
         aria-atomic="true"
         className="text-sm"
@@ -778,10 +793,39 @@ function ImpactPanel({
   onPathOffsetChange: (offset: number) => void
 }) {
   const { impact } = replay
+  const [currentStageIndex, setCurrentStageIndex] = useState(0)
+  const [playing, setPlaying] = useState(false)
   const changes = impact.nodes.filter((node) => node.type === "source_unit")
   const affected = impact.nodes.filter((node) => node.status === "affected")
   const stable = impact.nodes.filter((node) => node.status === "stable")
   const nodes = new Map(impact.nodes.map((node) => [node.id, node]))
+
+  useEffect(() => {
+    if (!playing || currentStageIndex >= impactStageTypes.length - 1) return
+    const nextIndex = currentStageIndex + 1
+    const timeout = window.setTimeout(() => {
+      setCurrentStageIndex(nextIndex)
+      if (nextIndex >= impactStageTypes.length - 1) setPlaying(false)
+    }, 900)
+    return () => window.clearTimeout(timeout)
+  }, [currentStageIndex, playing])
+
+  const selectStage = (index: number) => {
+    if (index < 0 || index >= impactStageTypes.length) return
+    setPlaying(false)
+    setCurrentStageIndex(index)
+  }
+
+  const togglePlaying = () => {
+    if (playing) {
+      setPlaying(false)
+      return
+    }
+    if (currentStageIndex >= impactStageTypes.length - 1)
+      setCurrentStageIndex(0)
+    setPlaying(true)
+  }
+
   return (
     <section aria-labelledby="impact-title" className="flex flex-col gap-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -888,7 +932,119 @@ function ImpactPanel({
             stable relocation paths.
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="flex flex-col gap-5">
+          {impact.paths.length > 0 && (
+            <>
+              <div className="flex flex-col gap-4 motion-reduce:hidden">
+                <p className="text-sm text-muted-foreground">
+                  This control reveals persisted Knowledge Impact Graph
+                  topology. It does not replay model reasoning or Run Event
+                  time.
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    aria-label="Previous impact stage"
+                    disabled={currentStageIndex === 0}
+                    onClick={() => selectStage(currentStageIndex - 1)}
+                  >
+                    <ArrowLeftIcon />
+                  </Button>
+                  <Button
+                    aria-label={
+                      playing
+                        ? "Pause impact propagation"
+                        : "Play impact propagation"
+                    }
+                    onClick={togglePlaying}
+                  >
+                    {playing ? (
+                      <PauseIcon data-icon="inline-start" />
+                    ) : (
+                      <PlayIcon data-icon="inline-start" />
+                    )}
+                    {playing ? "Pause" : "Play"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    aria-label="Next impact stage"
+                    disabled={currentStageIndex === impactStageTypes.length - 1}
+                    onClick={() => selectStage(currentStageIndex + 1)}
+                  >
+                    <ArrowRightIcon />
+                  </Button>
+                </div>
+                <Slider
+                  aria-label="Impact propagation position"
+                  value={currentStageIndex}
+                  min={0}
+                  max={impactStageTypes.length - 1}
+                  step={1}
+                  onValueChange={(value) =>
+                    selectStage(Array.isArray(value) ? value[0] : value)
+                  }
+                />
+                <p
+                  role="status"
+                  aria-label="Current impact propagation stage"
+                  aria-live="polite"
+                  aria-atomic="true"
+                  className="text-sm"
+                >
+                  Current impact stage {currentStageIndex + 1} of{" "}
+                  {impactStageTypes.length}:{" "}
+                  {impactTypeLabels[impactStageTypes[currentStageIndex]]}
+                </p>
+                <ol
+                  aria-label="Impact propagation stages"
+                  className="grid gap-2 sm:grid-cols-5"
+                >
+                  {impactStageTypes.map((stage, index) => (
+                    <li
+                      key={stage}
+                      aria-label={`${impactTypeLabels[stage]} impact stage`}
+                      aria-current={
+                        index === currentStageIndex ? "step" : undefined
+                      }
+                    >
+                      <Badge
+                        className="w-full justify-center"
+                        variant={
+                          index === currentStageIndex ? "secondary" : "outline"
+                        }
+                      >
+                        {impactTypeLabels[stage]}
+                      </Badge>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+              <div className="hidden flex-col gap-3 motion-reduce:flex">
+                <p className="text-sm text-muted-foreground">
+                  All five persisted Knowledge Impact Graph stages are shown at
+                  once without playback. This is topology, not model reasoning
+                  or event time.
+                </p>
+                <ol
+                  aria-label="Impact propagation stages (reduced motion)"
+                  className="grid gap-2 sm:grid-cols-5"
+                >
+                  {impactStageTypes.map((stage) => (
+                    <li key={stage}>
+                      <Badge
+                        className="w-full justify-center"
+                        variant="outline"
+                      >
+                        {impactTypeLabels[stage]}
+                      </Badge>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            </>
+          )}
           {impact.paths.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               No safely explainable downstream path is recorded on this page.
@@ -906,30 +1062,46 @@ function ImpactPanel({
                         path.concept,
                         path.page,
                       ] as const
-                    ).map((item) => (
-                      <li
-                        key={item.id}
-                        className="min-w-0 rounded-lg bg-muted/30 p-2"
-                      >
-                        <Badge variant="outline">
-                          {impactTypeLabels[item.type]}
-                        </Badge>
-                        <Badge
-                          className="ml-1"
-                          variant={
-                            item.status === "stable" ? "secondary" : "outline"
-                          }
+                    ).map((item) => {
+                      const stageIndex = impactStageTypes.indexOf(item.type)
+                      const state =
+                        stageIndex < currentStageIndex
+                          ? "revealed"
+                          : stageIndex === currentStageIndex
+                            ? "current"
+                            : "pending"
+                      return (
+                        <li
+                          key={item.id}
+                          data-testid={`impact-path-stage-${item.type}`}
+                          data-state={state}
+                          className={cn(
+                            "min-w-0 rounded-lg bg-muted/30 p-2 transition-[opacity,visibility]",
+                            state === "pending" && "invisible opacity-0",
+                            state === "current" && "ring-2 ring-ring/50",
+                            "motion-reduce:visible motion-reduce:opacity-100 motion-reduce:ring-0 motion-reduce:transition-none"
+                          )}
                         >
-                          {titleCase(item.status)}
-                        </Badge>
-                        <p className="mt-2 text-xs font-medium break-words">
-                          {item.label}
-                        </p>
-                        <p className="mt-1 font-mono text-xs break-all text-muted-foreground">
-                          {item.entity_id}
-                        </p>
-                      </li>
-                    ))}
+                          <Badge variant="outline">
+                            {impactTypeLabels[item.type]}
+                          </Badge>
+                          <Badge
+                            className="ml-1"
+                            variant={
+                              item.status === "stable" ? "secondary" : "outline"
+                            }
+                          >
+                            {titleCase(item.status)}
+                          </Badge>
+                          <p className="mt-2 text-xs font-medium break-words">
+                            {item.label}
+                          </p>
+                          <p className="mt-1 font-mono text-xs break-all text-muted-foreground">
+                            {item.entity_id}
+                          </p>
+                        </li>
+                      )
+                    })}
                   </ol>
                 </li>
               ))}

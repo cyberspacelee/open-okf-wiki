@@ -7,6 +7,10 @@ const CONCEPT = `concept:${"d".repeat(64)}`
 const STABLE_CONCEPT = `concept:${"e".repeat(64)}`
 const TARGET_CONCEPT = `concept:${"f".repeat(64)}`
 
+function currentReplayStatus(page: Page) {
+  return page.getByRole("status", { name: "Current replay event status" })
+}
+
 const overview = {
   ok: true,
   project: { id: "catalog", name: "Catalog Platform" },
@@ -284,10 +288,10 @@ test("plays, scrubs, steps and jumps through persisted replay and impact", async
   ).toBeVisible()
 
   await page.getByRole("button", { name: "Next event" }).click()
-  await expect(page.getByRole("status")).toContainText("Verified")
+  await expect(currentReplayStatus(page)).toContainText("Verified")
 
   await page.getByLabel("Jump within page to event").selectOption("3")
-  await expect(page.getByRole("status")).toContainText("Accepted · Workspace")
+  await expect(currentReplayStatus(page)).toContainText("Accepted · Workspace")
   await expect(
     page.getByRole("article", { name: "Current replay event" })
   ).toBeFocused()
@@ -295,17 +299,17 @@ test("plays, scrubs, steps and jumps through persisted replay and impact", async
   await page
     .getByLabel("Jump within page to entity")
     .selectOption(entityLocator("claim", CLAIM))
-  await expect(page.getByRole("status")).toContainText(
+  await expect(currentReplayStatus(page)).toContainText(
     "Accepted · A Workspace represents one product."
   )
 
   await page.getByRole("slider", { name: "Replay position" }).press("End")
-  await expect(page.getByRole("status")).toContainText("Published")
+  await expect(currentReplayStatus(page)).toContainText("Published")
 
   await page.getByRole("button", { name: "Previous event" }).click()
   await page.getByRole("button", { name: "Play replay" }).click()
   await expect(page.getByRole("button", { name: "Pause replay" })).toBeVisible()
-  await expect(page.getByRole("status")).toContainText("Published", {
+  await expect(currentReplayStatus(page)).toContainText("Published", {
     timeout: 3_000,
   })
 
@@ -321,10 +325,48 @@ test("plays, scrubs, steps and jumps through persisted replay and impact", async
   await expect(page.getByText("The API remains stable.")).toBeVisible()
   await expect(page.getByText("Downstream propagation paths")).toBeVisible()
 
+  const impactStatus = page.getByRole("status", {
+    name: "Current impact propagation stage",
+  })
+  const impactSlider = page.getByRole("slider", {
+    name: "Impact propagation position",
+  })
+  await expect(impactStatus).toContainText("Source Unit")
+  await expect(
+    page.getByTestId("impact-path-stage-source_unit").first()
+  ).toBeVisible()
+  await expect(
+    page.getByTestId("impact-path-stage-evidence").first()
+  ).toBeHidden()
+
+  await page.getByRole("button", { name: "Next impact stage" }).click()
+  await expect(impactStatus).toContainText("Evidence Reference")
+  await expect(
+    page
+      .getByRole("listitem", { name: "Evidence Reference impact stage" })
+      .first()
+  ).toHaveAttribute("aria-current", "step")
+  await expect(
+    page.getByTestId("impact-path-stage-evidence").first()
+  ).toBeVisible()
+
+  await impactSlider.press("End")
+  await expect(impactStatus).toContainText("Bundle page")
+  await expect(page.getByTestId("impact-path-stage-page").first()).toBeVisible()
+  await impactSlider.press("Home")
+  await page.getByRole("button", { name: "Play impact propagation" }).click()
+  await expect(
+    page.getByRole("button", { name: "Pause impact propagation" })
+  ).toBeVisible()
+  await page.getByRole("button", { name: "Pause impact propagation" }).click()
+  await expect(
+    page.getByRole("button", { name: "Play impact propagation" })
+  ).toBeVisible()
+
   const eventSequence = page.getByLabel("Event sequence")
   await eventSequence.fill("51")
   await eventSequence.press("Enter")
-  await expect(page.getByRole("status")).toContainText(
+  await expect(currentReplayStatus(page)).toContainText(
     `Accepted · ${TARGET_CONCEPT}`
   )
   await expect(
@@ -342,7 +384,7 @@ test("plays, scrubs, steps and jumps through persisted replay and impact", async
     .getByRole("button", { name: "Previous history page" })
     .first()
     .click()
-  await expect(page.getByRole("status")).toContainText("Proposed")
+  await expect(currentReplayStatus(page)).toContainText("Proposed")
   await expect(
     page.getByRole("article", { name: "Current replay event" })
   ).not.toBeFocused()
@@ -360,11 +402,11 @@ test("supports keyboard replay and reduced-motion ordered equivalence", async ({
   })
   await keyboard.focus()
   await keyboard.press("ArrowRight")
-  await expect(page.getByRole("status")).toContainText("Verified")
+  await expect(currentReplayStatus(page)).toContainText("Verified")
   await keyboard.press("End")
-  await expect(page.getByRole("status")).toContainText("Published")
+  await expect(currentReplayStatus(page)).toContainText("Published")
   await keyboard.press("Home")
-  await expect(page.getByRole("status")).toContainText("Proposed")
+  await expect(currentReplayStatus(page)).toContainText("Proposed")
 
   await page.emulateMedia({ reducedMotion: "reduce" })
   await expect(
@@ -377,8 +419,11 @@ test("supports keyboard replay and reduced-motion ordered equivalence", async ({
   await entityIdentity.press("Enter")
   await expect(page.getByTestId("reduced-replay-event")).toHaveCount(2)
   const currentStaticEvent = page.getByRole("listitem", {
-    name: "Current reduced-motion replay event",
+    name: /^Current reduced-motion replay event:/,
   })
+  await expect(currentStaticEvent).toHaveAccessibleName(
+    `Current reduced-motion replay event: Concept ${TARGET_CONCEPT}`
+  )
   await expect(currentStaticEvent).toBeFocused()
   await page.getByLabel("Entity type").selectOption("concept")
   await entityIdentity.fill(TARGET_CONCEPT)
@@ -390,6 +435,26 @@ test("supports keyboard replay and reduced-motion ordered equivalence", async ({
   await expect(page.getByTestId("reduced-replay-event").last()).toContainText(
     "Published"
   )
+  await expect(currentStaticEvent).toContainText("Concept")
+  await expect(currentStaticEvent).toContainText(TARGET_CONCEPT)
+  await expect(
+    page.getByRole("button", { name: "Play impact propagation" })
+  ).toBeHidden()
+  await expect(
+    page.getByRole("slider", { name: "Impact propagation position" })
+  ).toBeHidden()
+  await expect(
+    page
+      .getByRole("list", {
+        name: "Impact propagation stages (reduced motion)",
+      })
+      .getByRole("listitem")
+  ).toHaveCount(5)
+  for (const stage of ["source_unit", "evidence", "claim", "concept", "page"]) {
+    await expect(
+      page.getByTestId(`impact-path-stage-${stage}`).first()
+    ).toBeVisible()
+  }
   const previousPage = page.getByRole("button", {
     name: "Previous history page",
   })
@@ -426,6 +491,8 @@ test("does not promise stable knowledge during a full-analysis fallback", async 
     for (const node of fullReplay.impact.nodes) {
       if (node.status === "stable") node.status = "affected"
     }
+    fullReplay.impact.paths = []
+    fullReplay.impact.path_bounds.total = 0
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -448,6 +515,14 @@ test("does not promise stable knowledge during a full-analysis fallback", async 
   ).toBeVisible()
   await expect(
     page.getByText(/Unaffected knowledge remains stable/)
+  ).toHaveCount(0)
+  await expect(
+    page.getByText(
+      "No safely explainable downstream path is recorded on this page."
+    )
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Play impact propagation" })
   ).toHaveCount(0)
 })
 
@@ -627,20 +702,20 @@ test("distinguishes a candidate and Production Run that share one id", async ({
   const withinPage = page.getByLabel("Jump within page to entity")
   await expect(withinPage.locator("option")).toHaveCount(2)
   await withinPage.selectOption(entityLocator("production_run", "run-1"))
-  await expect(page.getByRole("status")).toContainText("Published")
+  await expect(currentReplayStatus(page)).toContainText("Published")
   await withinPage.selectOption(
     entityLocator("verification_candidate", "run-1")
   )
-  await expect(page.getByRole("status")).toContainText("Proposed")
+  await expect(currentReplayStatus(page)).toContainText("Proposed")
 
   await page.getByLabel("Entity type").selectOption("production_run")
   await page.getByLabel("Entity identity").fill("run-1")
   await page.getByLabel("Entity identity").press("Enter")
-  await expect(page.getByRole("status")).toContainText("Published")
+  await expect(currentReplayStatus(page)).toContainText("Published")
   await page.getByLabel("Entity type").selectOption("verification_candidate")
   await page.getByLabel("Entity identity").fill("run-1")
   await page.getByLabel("Entity identity").press("Enter")
-  await expect(page.getByRole("status")).toContainText("Proposed")
+  await expect(currentReplayStatus(page)).toContainText("Proposed")
 })
 
 test("opens replay from Concepts and returns without adding primary navigation", async ({

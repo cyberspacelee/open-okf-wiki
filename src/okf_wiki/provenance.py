@@ -374,6 +374,10 @@ class ConceptProvenanceStore:
                   AND changed.source_unit = evidence.source_unit""",
             (run_id,),
         )
+        connection.execute(
+            """CREATE INDEX replay_changed_evidence_lookup
+               ON replay_changed_evidence (graph_run_id, evidence_id, status)"""
+        )
         added_joins = """FROM replay_changed_evidence changed
             JOIN claim_evidence claim_evidence
               ON claim_evidence.run_id = changed.graph_run_id

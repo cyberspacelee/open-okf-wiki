@@ -27,6 +27,41 @@ ADDED_EVIDENCE = f"evidence:{'1' * 64}"
 ADDED_CLAIM = f"claim:{'2' * 64}"
 ADDED_CONCEPT = f"concept:{'3' * 64}"
 
+FRESH_CHILD_REPLAY = """
+import json
+import sys
+import time
+from pathlib import Path
+
+from okf_wiki.provenance import ConceptProvenanceStore
+
+started = time.perf_counter()
+impact = ConceptProvenanceStore(Path(sys.argv[1])).replay(
+    "run-2", impact_limit=1, path_limit=1
+)["impact"]
+print(json.dumps({
+    "added": impact["summary"]["changes"]["added"],
+    "affected_evidence": impact["summary"]["affected"]["evidence"],
+    "nodes": len(impact["nodes"]),
+    "peak_rss_kib": int(next(
+        line.split()[1]
+        for line in Path("/proc/self/status").read_text().splitlines()
+        if line.startswith("VmHWM:")
+    )),
+    "seconds": time.perf_counter() - started,
+}))
+"""
+
+
+def fresh_child_replay_metrics(database: Path) -> dict[str, int | float]:
+    completed = subprocess.run(
+        [sys.executable, "-c", FRESH_CHILD_REPLAY, str(database)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(completed.stdout)
+
 
 def seed_replay_events(database: Path) -> None:
     verification = VerificationStore(database)
@@ -237,6 +272,54 @@ def seed_incremental_impact(database: Path) -> None:
                 (AFFECTED_CONCEPT, "concepts/affected.md", "Affected Concept"),
                 (STABLE_CONCEPT, "concepts/stable.md", "Stable Concept"),
             ],
+        )
+
+
+def seed_matched_evidence_changes(database: Path, count: int) -> None:
+    seed_incremental_impact(database)
+    old_revision = "a" * 40
+    new_revision = "b" * 40
+    changes = []
+    evidence = []
+    for index in range(count):
+        unit_id = f"file:matched-{index}"
+        path = f"matched/{index}.md"
+        digest = f"{index:064x}"
+        changes.append(
+            {
+                "kind": "changed",
+                "before": impact_unit(unit_id, old_revision, path, digest),
+                "after": impact_unit(unit_id, new_revision, path, f"{index + count:064x}"),
+            }
+        )
+        evidence.append(
+            (
+                f"evidence:{index:064x}",
+                old_revision,
+                path,
+                unit_id,
+                f"sha256:{digest}",
+            )
+        )
+    with sqlite3.connect(database) as connection:
+        source_set = json.loads(
+            connection.execute("SELECT source_set_json FROM runs WHERE id = 'run-2'").fetchone()[0]
+        )
+        source_set["refresh"]["diff"] = {
+            "added": [],
+            "changed": changes,
+            "moved": [],
+            "removed": [],
+            "by_source": {},
+        }
+        connection.execute(
+            "UPDATE runs SET source_set_json = ? WHERE id = 'run-2'",
+            (json.dumps(source_set),),
+        )
+        connection.executemany(
+            """INSERT INTO accepted_evidence
+               VALUES ('run-base', ?, 'docs', ?, ?, ?, 1, 2, ?, 'direct', 'primary')""",
+            evidence,
         )
 
 
@@ -858,29 +941,6 @@ def test_impact_node_page_has_a_bounded_memory_cost_for_large_knowledge_models(
 def test_impact_change_page_has_a_bounded_process_memory_cost_for_large_source_diffs(
     tmp_path: Path,
 ) -> None:
-    child = """
-import json
-import sys
-import time
-from pathlib import Path
-
-from okf_wiki.provenance import ConceptProvenanceStore
-
-started = time.perf_counter()
-impact = ConceptProvenanceStore(Path(sys.argv[1])).replay(
-    "run-2", impact_limit=1, path_limit=1
-)["impact"]
-print(json.dumps({
-    "added": impact["summary"]["changes"]["added"],
-    "nodes": len(impact["nodes"]),
-    "peak_rss_kib": int(next(
-        line.split()[1]
-        for line in Path("/proc/self/status").read_text().splitlines()
-        if line.startswith("VmHWM:")
-    )),
-    "seconds": time.perf_counter() - started,
-}))
-"""
     results = {}
     for count in (1_000, 20_000, 40_000):
         database = tmp_path / f"runs-{count}.db"
@@ -910,19 +970,32 @@ print(json.dumps({
                 "UPDATE runs SET source_set_json = ? WHERE id = 'run-2'",
                 (json.dumps(source_set),),
             )
-        completed = subprocess.run(
-            [sys.executable, "-c", child, str(database)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        results[count] = json.loads(completed.stdout)
+        results[count] = fresh_child_replay_metrics(database)
 
     assert results[40_000]["added"] == 40_000
     assert results[40_000]["nodes"] == 1
     assert results[20_000]["peak_rss_kib"] - results[1_000]["peak_rss_kib"] < 10 * 1024
     assert results[40_000]["peak_rss_kib"] - results[20_000]["peak_rss_kib"] < 4 * 1024
     assert results[40_000]["seconds"] < 1
+    assert results[40_000]["seconds"] < results[20_000]["seconds"] * 3
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="VmHWM is available on Linux")
+def test_matched_evidence_replay_has_bounded_time_and_process_memory(
+    tmp_path: Path,
+) -> None:
+    results = {}
+    for count in (1_000, 20_000, 40_000):
+        database = tmp_path / f"matched-{count}.db"
+        seed_matched_evidence_changes(database, count)
+        results[count] = fresh_child_replay_metrics(database)
+
+    assert results[40_000]["affected_evidence"] == 40_000
+    assert results[40_000]["nodes"] == 1
+    assert results[20_000]["peak_rss_kib"] - results[1_000]["peak_rss_kib"] < 10 * 1024
+    assert results[40_000]["peak_rss_kib"] - results[20_000]["peak_rss_kib"] < 4 * 1024
+    assert results[40_000]["seconds"] < 1
+    assert results[40_000]["seconds"] < results[20_000]["seconds"] * 3
 
 
 def test_replay_treats_malformed_source_set_json_as_bounded_empty_impact(tmp_path: Path) -> None:

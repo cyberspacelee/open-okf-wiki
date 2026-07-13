@@ -631,7 +631,9 @@ test("loads the built Console through the real Python launcher", async ({
   })
   await replayKeyboard.focus()
   await replayKeyboard.press("ArrowRight")
-  await expect(page.getByRole("status")).toContainText(/Verified|Accepted/)
+  await expect(
+    page.getByRole("status", { name: "Current replay event status" })
+  ).toContainText(/Verified|Accepted/)
   await page.screenshot({
     path: "test-results/replay-desktop-real.png",
     fullPage: true,
