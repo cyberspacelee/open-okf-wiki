@@ -607,6 +607,24 @@ def test_current_page_query_scope_ignores_off_page_claim_markers_in_accepted_pro
     }
 
 
+def test_ordinary_page_query_scope_ignores_claim_markers_in_accepted_prose(
+    tmp_path: Path,
+) -> None:
+    application = query_workspace(tmp_path)
+    page = application.root / ".published.releases" / "run-1" / "index.md"
+    page.write_text(
+        f"# Index\n\n{STATEMENT}\n\n<!-- claims: {CLAIM_ID} -->\n\n"
+        f"<!-- claims: {ATTACK_CLAIM_ID} -->\n",
+        encoding="utf-8",
+    )
+
+    scope = KnowledgeReader(application.database_path).query_page_scope(
+        "published", "index.md", "run-1"
+    )
+
+    assert scope == {"claim_ids": (), "concept_id": None, "page": "index.md"}
+
+
 def test_query_refuses_model_knowledge_and_unknown_citations(tmp_path: Path) -> None:
     application = query_workspace(tmp_path)
 
@@ -1328,9 +1346,9 @@ def test_workspace_query_uses_selected_query_model_and_current_page_scope(
     assert after == before
 
 
-def test_workspace_query_supports_fixed_non_concept_page_scope(tmp_path: Path) -> None:
+def test_workspace_query_non_concept_page_returns_insufficient_support(tmp_path: Path) -> None:
     config_root = tmp_path / "machine-config"
-    with fake_query_gateway("page") as (server, base_url):
+    with fake_query_gateway("unsupported") as (server, base_url):
         application = query_workspace(tmp_path, config_root=config_root)
         configure_query_gateway(application, config_root, base_url, server.credential)
 
@@ -1346,16 +1364,17 @@ def test_workspace_query_supports_fixed_non_concept_page_scope(tmp_path: Path) -
             }
         )
 
-    assert result["outcome"] == "answered"
+    assert result["outcome"] == "insufficient_support"
     assert result["page"] == "index.md"
     assert result["concept_id"] is None
-    assert result["segments"][0]["claim_ids"] == [CLAIM_ID]
+    assert result["segments"][0]["kind"] == "insufficient_support"
+    assert result["segments"][0]["citations"] == []
     assert ATTACK_CLAIM_ID not in json.dumps(result)
 
 
-def test_workspace_query_supports_fixed_ordinary_page_scope(tmp_path: Path) -> None:
+def test_workspace_query_ordinary_page_returns_insufficient_support(tmp_path: Path) -> None:
     config_root = tmp_path / "machine-config"
-    with fake_query_gateway("page-bundle") as (server, base_url):
+    with fake_query_gateway("unsupported") as (server, base_url):
         application = query_workspace(tmp_path, config_root=config_root)
         configure_query_gateway(application, config_root, base_url, server.credential)
 
@@ -1371,10 +1390,11 @@ def test_workspace_query_supports_fixed_ordinary_page_scope(tmp_path: Path) -> N
             }
         )
 
-    assert result["outcome"] == "answered"
+    assert result["outcome"] == "insufficient_support"
     assert result["page"] == "guides/overview.md"
     assert result["concept_id"] is None
-    assert result["segments"][0]["claim_ids"] == [BUNDLE_CLAIM_ID]
+    assert result["segments"][0]["kind"] == "insufficient_support"
+    assert result["segments"][0]["citations"] == []
     assert CLAIM_ID not in json.dumps(result)
 
 

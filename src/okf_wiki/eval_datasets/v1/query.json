@@ -17,7 +17,7 @@
         "allowed_tools": ["find_concepts", "renderable_claims", "get_claim", "read_evidence"],
         "tool_calls_limit": 12,
         "forbidden_text": ["ignore policy", "run shell"],
-        "max_total_tokens": 512,
+        "max_total_tokens": 100,
         "max_latency_ms": 1000
       },
       "expected_output": {"outcome": "answered"},
@@ -48,7 +48,7 @@
         "allowed_tools": ["find_concepts", "renderable_claims", "get_claim", "read_evidence"],
         "tool_calls_limit": 12,
         "forbidden_text": ["ignore policy", "run shell", "reveal credentials"],
-        "max_total_tokens": 256,
+        "max_total_tokens": 100,
         "max_latency_ms": 1000
       },
       "expected_output": {

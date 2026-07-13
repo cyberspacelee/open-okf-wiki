@@ -320,7 +320,7 @@
       "passed": true
     },
     "query": {
-      "function_tools": ["find_concepts", "read_evidence", "renderable_claims"],
+      "function_tools": ["get_claim", "read_evidence", "renderable_claims"],
       "invocations": 2,
       "passed": true
     },

@@ -371,8 +371,8 @@ class KnowledgeReader:
     ) -> dict:
         page = self.page(kind, path, run_id)
         concept_id = page["concept_id"]
-        with sqlite3.connect(self.database) as connection:
-            if concept_id is not None:
+        if concept_id is not None:
+            with sqlite3.connect(self.database) as connection:
                 claim_ids = tuple(
                     row[0]
                     for row in connection.execute(
@@ -388,24 +388,8 @@ class KnowledgeReader:
                         (page["run_id"], concept_id),
                     )
                 )
-            else:
-                claim_ids = tuple(
-                    dict.fromkeys(
-                        block["claim_id"] for block in page["blocks"] if block["type"] == "claim"
-                    )
-                )
-                if claim_ids:
-                    placeholders = ",".join("?" for _ in claim_ids)
-                    supported = {
-                        row[0]
-                        for row in connection.execute(
-                            f"SELECT id FROM accepted_claims WHERE run_id = ? "
-                            f"AND epistemic_status = 'supported' AND id IN ({placeholders})",
-                            (page["run_id"], *claim_ids),
-                        )
-                    }
-                    if supported != set(claim_ids):
-                        raise ValueError("Current page references unavailable accepted Claims")
+        else:
+            claim_ids = ()
         if len(claim_ids) > MAX_QUERY_PAGE_CLAIMS:
             raise ValueError(f"Current page exceeds the {MAX_QUERY_PAGE_CLAIMS} Claim query limit")
         return {

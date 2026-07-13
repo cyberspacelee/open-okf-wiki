@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import cast
 
 from pydantic import BaseModel, ConfigDict
-from pydantic_ai import Agent, ModelResponse
+from pydantic_ai import Agent, ModelResponse, RequestUsage
 from pydantic_ai.messages import RetryPromptPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
@@ -309,7 +309,7 @@ def _renderer_output(function_tools: dict[str, list[str]]) -> dict:
     return result.output.model_dump(mode="json")
 
 
-def _query_database(workspace: Path) -> Path:
+def _build_query_eval_fixture(workspace: Path) -> Path:
     root = workspace / "agent-eval-query"
     source = root / "source"
     source.mkdir(parents=True)
@@ -365,7 +365,10 @@ def _query_database(workspace: Path) -> Path:
             ),
         )
         connection.execute(
-            "INSERT INTO accepted_evidence VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            """INSERT INTO accepted_evidence
+               (run_id, id, source_id, revision, path, source_unit, start_line, end_line,
+                digest, evidence_kind, authority)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 QUERY_RUN_ID,
                 QUERY_EVIDENCE_ID,
@@ -381,7 +384,10 @@ def _query_database(workspace: Path) -> Path:
             ),
         )
         connection.execute(
-            "INSERT INTO accepted_claims VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            """INSERT INTO accepted_claims
+               (run_id, id, subject, predicate, statement, modality, conditions_json,
+                epistemic_status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 QUERY_RUN_ID,
                 QUERY_CLAIM_ID,
@@ -394,11 +400,14 @@ def _query_database(workspace: Path) -> Path:
             ),
         )
         connection.execute(
-            "INSERT INTO claim_evidence VALUES (?, ?, ?)",
+            """INSERT INTO claim_evidence (run_id, claim_id, evidence_id)
+               VALUES (?, ?, ?)""",
             (QUERY_RUN_ID, QUERY_CLAIM_ID, QUERY_EVIDENCE_ID),
         )
         connection.execute(
-            "INSERT INTO accepted_concepts VALUES (?, ?, ?, ?, ?, ?)",
+            """INSERT INTO accepted_concepts
+               (run_id, id, canonical_name, aliases_json, description, status)
+               VALUES (?, ?, ?, ?, ?, ?)""",
             (
                 QUERY_RUN_ID,
                 QUERY_CONCEPT_ID,
@@ -409,11 +418,13 @@ def _query_database(workspace: Path) -> Path:
             ),
         )
         connection.execute(
-            "INSERT INTO concept_claims VALUES (?, ?, ?, ?)",
+            """INSERT INTO concept_claims (run_id, concept_id, claim_id, role)
+               VALUES (?, ?, ?, ?)""",
             (QUERY_RUN_ID, QUERY_CONCEPT_ID, QUERY_CLAIM_ID, "defining"),
         )
         connection.execute(
-            "INSERT INTO page_plans VALUES (?, ?, ?, ?)",
+            """INSERT INTO page_plans (run_id, concept_id, path, title)
+               VALUES (?, ?, ?, ?)""",
             (QUERY_RUN_ID, QUERY_CONCEPT_ID, "concepts/query.md", "Query Agent"),
         )
     return database
@@ -438,63 +449,105 @@ def _query_trajectory(messages) -> list[dict[str, str]]:
     return trajectory
 
 
-def _query_output(
-    database: Path, model_version: str, case_name: str
-) -> tuple[dict, list[dict[str, str]]]:
-    case = next(case for case in load_role_dataset("query").cases if case.name == case_name)
-    question = cast(str, case.inputs["question"])
-    messages = []
-
-    def function(current, info: AgentInfo) -> ModelResponse:
-        messages[:] = current
-        returns = [
-            part
-            for message in current
-            for part in message.parts
-            if isinstance(part, ToolReturnPart)
-        ]
-        if case_name == "grounded-answer":
-            if not returns:
-                part = ToolCallPart("renderable_claims", {"concept_id": QUERY_CONCEPT_ID}, "claims")
-            elif len(returns) == 1:
+def _query_model_response(
+    messages,
+    info: AgentInfo,
+    context: KnowledgeQueryContext,
+    question: str,
+    forbidden_text: tuple[str, ...],
+) -> ModelResponse:
+    returns = [
+        part for message in messages for part in message.parts if isinstance(part, ToolReturnPart)
+    ]
+    retries = [
+        part for message in messages for part in message.parts if isinstance(part, RetryPromptPart)
+    ]
+    adversarial = any(term.casefold() in question.casefold() for term in forbidden_text)
+    if not returns:
+        if adversarial and not retries:
+            part = ToolCallPart("get_claim", {"claim_id": QUERY_CLAIM_ID}, "expand-scope")
+        elif adversarial:
+            part = ToolCallPart(
+                info.output_tools[0].name,
+                {"segments": [{"kind": "insufficient_support"}]},
+                "refuse",
+            )
+        else:
+            part = ToolCallPart("renderable_claims", {"concept_id": context.concept_id}, "claims")
+    else:
+        claims_return = next(
+            (item for item in returns if item.tool_name in {"renderable_claims", "get_claim"}),
+            None,
+        )
+        claims = claims_return.content if claims_return is not None else None
+        if claims_return is not None and claims_return.tool_name == "get_claim":
+            claims = [claims]
+        claim = claims[0] if isinstance(claims, list) and claims else None
+        references = claim.get("evidence") if isinstance(claim, dict) else None
+        reference = references[0] if isinstance(references, list) and references else None
+        claim_id = claim.get("id") if isinstance(claim, dict) else None
+        evidence_id = reference.get("id") if isinstance(reference, dict) else None
+        if not isinstance(claim_id, str) or not isinstance(evidence_id, str):
+            part = ToolCallPart(
+                info.output_tools[0].name,
+                {"segments": [{"kind": "insufficient_support"}]},
+                "refuse",
+            )
+        else:
+            evidence_return = next(
+                (item for item in returns if item.tool_name == "read_evidence"), None
+            )
+            if evidence_return is None:
                 part = ToolCallPart(
                     "read_evidence",
-                    {"claim_id": QUERY_CLAIM_ID, "evidence_id": QUERY_EVIDENCE_ID},
+                    {"claim_id": claim_id, "evidence_id": evidence_id},
                     "evidence",
                 )
             else:
+                evidence = evidence_return.content
+                supported = (
+                    isinstance(evidence, dict)
+                    and evidence.get("id") == evidence_id
+                    and isinstance(evidence.get("excerpt"), str)
+                )
                 part = ToolCallPart(
                     info.output_tools[0].name,
                     {
                         "segments": [
                             {
                                 "kind": "fact",
-                                "claim_ids": [QUERY_CLAIM_ID],
-                                "evidence_ids": [QUERY_EVIDENCE_ID],
+                                "claim_ids": [claim_id],
+                                "evidence_ids": [evidence_id],
                             }
                         ]
+                        if supported
+                        else [{"kind": "insufficient_support"}]
                     },
-                    "answer",
+                    "answer" if supported else "refuse",
                 )
-        elif not returns:
-            part = ToolCallPart("find_concepts", {"query": question}, "find")
-        else:
-            part = ToolCallPart(
-                info.output_tools[0].name,
-                {"segments": [{"kind": "insufficient_support"}]},
-                "refuse",
-            )
-        return ModelResponse([part])
+    return ModelResponse([part], usage=RequestUsage(input_tokens=10, output_tokens=5))
 
-    context = KnowledgeQueryContext(
-        run_id=QUERY_RUN_ID,
-        source_set_digest=QUERY_SOURCE_SET_DIGEST,
-        bundle="published",
-        scope="concept",
-        page="concepts/query.md",
-        concept_id=QUERY_CONCEPT_ID,
-        claim_ids=(QUERY_CLAIM_ID,) if case_name == "grounded-answer" else (),
+
+def _query_output(
+    database: Path, model_version: str, case_name: str
+) -> tuple[dict, list[dict[str, str]]]:
+    case = next(case for case in load_role_dataset("query").cases if case.name == case_name)
+    inputs = case.inputs
+    question = cast(str, inputs["question"])
+    forbidden_text = tuple(cast(list[str], inputs["forbidden_text"]))
+    context = KnowledgeQueryContext.model_validate(
+        {
+            **cast(dict[str, object], inputs["fixed_identity"]),
+            "bundle": "published",
+            "claim_ids": inputs["allowed_claim_ids"],
+        }
     )
+    messages = []
+
+    def function(current, info: AgentInfo) -> ModelResponse:
+        messages[:] = current
+        return _query_model_response(current, info, context, question, forbidden_text)
+
     try:
         answer = asyncio.run(
             QueryAgent(
@@ -519,7 +572,7 @@ def execute_agent_eval(
     worker, candidate_id = _worker_output(corpus, materialized, workspace, model_version)
     verifier = _verifier_output(materialized, tools)
     renderer = _renderer_output(tools)
-    query_database = _query_database(workspace)
+    query_database = _build_query_eval_fixture(workspace)
     queries = {
         case: _query_output(query_database, model_version, case)
         for case in ("grounded-answer", "prompt-injection-refusal")

@@ -99,7 +99,19 @@ test("defaults ordinary pages to fixed current-page scope", async ({
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify(answer("concept", "index.md", null)),
+      body: JSON.stringify({
+        ...answer("concept", "index.md", null),
+        outcome: "insufficient_support",
+        segments: [
+          {
+            kind: "insufficient_support",
+            text: "Accepted knowledge does not contain enough support for this part of the question.",
+            claim_ids: [],
+            evidence_ids: [],
+            citations: [],
+          },
+        ],
+      }),
     })
   })
 
@@ -113,8 +125,12 @@ test("defaults ordinary pages to fixed current-page scope", async ({
   await dialog.getByLabel("Ask a question").fill("What is accepted?")
   await dialog.getByRole("button", { name: "Ask", exact: true }).click()
   await expect(
-    dialog.getByText("Accepted answers use exact evidence.")
+    dialog.getByText(
+      "Accepted knowledge does not contain enough support for this part of the question."
+    )
   ).toBeVisible()
+  await expect(dialog.getByText(claimId, { exact: true })).toHaveCount(0)
+  await expect(dialog.getByText(evidenceId, { exact: true })).toHaveCount(0)
   expect(request).toEqual({
     question: "What is accepted?",
     bundle: "staged",

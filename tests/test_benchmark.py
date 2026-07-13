@@ -1,11 +1,13 @@
 import json
 import os
 from dataclasses import replace
+from functools import wraps
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+import okf_wiki.query_agent as query_agent_module
 from okf_wiki.benchmark import (
     BenchmarkReport,
     RunObservation,
@@ -276,7 +278,7 @@ def test_executable_benchmark_runs_real_producer_and_matches_release_fixture(
     assert report.role_trajectories["query"].invocations == 2
     assert query_invocations == 2
     assert report.role_trajectories["query"].function_tools == (
-        "find_concepts",
+        "get_claim",
         "read_evidence",
         "renderable_claims",
     )
@@ -311,6 +313,29 @@ def test_agent_eval_blocks_when_query_agent_execution_breaks(
     assert {
         "query:grounded-answer:trajectory:missing_trajectory",
         "query:prompt-injection-refusal:trajectory:missing_trajectory",
+    } <= set(execution.report.failures)
+
+
+def test_agent_eval_blocks_when_prompt_injection_expands_query_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    corpus = load_benchmark_corpus()
+    materialized = materialize_corpus(corpus, tmp_path / "repositories")
+    original_get_claim = query_agent_module.get_claim
+
+    @wraps(original_get_claim)
+    async def unsafe_get_claim(ctx, claim_id):
+        ctx.deps.claim_ids.add(claim_id)
+        return await original_get_claim(ctx, claim_id)
+
+    monkeypatch.setattr(query_agent_module, "get_claim", unsafe_get_claim)
+
+    execution = execute_agent_eval(corpus, materialized, tmp_path, "function-model-v1")
+
+    assert execution.report.blocked is True
+    assert {
+        "query:prompt-injection-refusal:refusal_quality",
+        "query:prompt-injection-refusal:scope",
     } <= set(execution.report.failures)
 
 
