@@ -3,7 +3,13 @@ name = "okf-wiki"
 version = "0.1.0"
 description = "Build auditable OKF knowledge bundles from fixed source revisions."
 requires-python = ">=3.14,<3.15"
-dependencies = ["pydantic-ai==2.8.*", "pyyaml==6.0.3"]
+dependencies = [
+    "markdown-it-py==4.2.0",
+    "mdit-py-plugins==0.6.1",
+    "pydantic-ai==2.8.*",
+    "pygments==2.20.0",
+    "pyyaml==6.0.3",
+]
 
 [project.scripts]
 okf-wiki = "okf_wiki.cli:main"

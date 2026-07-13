@@ -4,6 +4,7 @@ import {
   spawn,
   type ChildProcessWithoutNullStreams,
 } from "node:child_process"
+import { createHash } from "node:crypto"
 import { once } from "node:events"
 import {
   existsSync,
@@ -612,6 +613,164 @@ test("loads the built Console through the real Python launcher", async ({
     path: "test-results/runs-mobile-real.png",
     fullPage: true,
   })
+  await page.setViewportSize({ width: 1280, height: 720 })
+
+  const readerRunId = new URL(successfulRunUrl).searchParams.get("run")!
+  const readerSourceSet = JSON.parse(
+    execFileSync(
+      "uv",
+      [
+        "run",
+        "python",
+        "-c",
+        "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(c.execute('select source_set_json from runs where id=?',(sys.argv[2],)).fetchone()[0])",
+        join(workspace, ".okf-wiki", "runs.db"),
+        readerRunId,
+      ],
+      { cwd: repoRoot, encoding: "utf-8" }
+    )
+  )
+  const readerSource = readerSourceSet.sources[0]
+  const evidenceText = execFileSync(
+    "git",
+    ["show", `${readerSource.revision}:README.md`],
+    { cwd: readerSource.repository, encoding: "utf-8" }
+  ).trimEnd()
+  const claimId = `claim:${"a".repeat(64)}`
+  const evidenceId = `evidence:${"b".repeat(64)}`
+  const evidenceDigest = `sha256:${createHash("sha256").update(evidenceText).digest("hex")}`
+  execFileSync(
+    "uv",
+    [
+      "run",
+      "python",
+      "-c",
+      "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('insert into accepted_evidence values (?,?,?,?,?,?,?,?,?,?,?)',(sys.argv[2],sys.argv[3],sys.argv[5],sys.argv[6],'README.md','fixture:readme',1,1,sys.argv[7],'source_span','authoritative')); c.execute('insert into accepted_claims values (?,?,?,?,?,?,?,?)',(sys.argv[2],sys.argv[4],'Source','documents','Source knowledge.','asserted','[]','supported')); c.execute('insert into claim_evidence values (?,?,?)',(sys.argv[2],sys.argv[4],sys.argv[3])); c.commit()",
+      join(workspace, ".okf-wiki", "runs.db"),
+      readerRunId,
+      evidenceId,
+      claimId,
+      readerSource.id,
+      readerSource.revision,
+      evidenceDigest,
+    ],
+    { cwd: repoRoot, stdio: "pipe" }
+  )
+  const readerPage = join(
+    workspace,
+    ".okf-wiki",
+    "runs",
+    readerRunId,
+    "staging",
+    "guides",
+    "secure-reader.md"
+  )
+  writeFileSync(
+    join(
+      workspace,
+      ".okf-wiki",
+      "runs",
+      readerRunId,
+      "staging",
+      "guides",
+      "pixel.png"
+    ),
+    Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64"
+    )
+  )
+  writeFileSync(
+    readerPage,
+    `---
+type: Guide
+id: secure-reader
+title: Secure reader fixture
+---
+
+# Secure reader fixture
+
+- [x] Parsed task
+
+| Boundary | State |
+| --- | --- |
+| CSP | strict |
+
+\`\`\`python
+print("safe")
+\`\`\`
+
+\`\`\`mermaid
+flowchart LR
+  A[Source] --> B[Claim]
+  A[Source] --> C[Bundle]
+\`\`\`
+
+Math $x^2$ renders locally.
+
+![Pixel](pixel.png)
+
+Accepted knowledge is source grounded.
+
+<!-- claims: ${claimId} -->
+
+<script>window.readerPwned = true</script>
+
+[Unsafe](javascript:alert(1))
+`
+  )
+
+  await page.getByRole("button", { name: "Knowledge" }).click()
+  await page.getByRole("button", { name: "Secure reader fixture" }).click()
+  await expect(
+    page.getByRole("heading", { name: "Secure reader fixture" }).first()
+  ).toBeVisible()
+  await expect(
+    page.getByRole("checkbox", { name: "Completed task" })
+  ).toBeChecked()
+  await expect(page.getByRole("cell", { name: "strict" })).toBeVisible()
+  await expect(
+    page.getByRole("img", {
+      name: "Mermaid flowchart with 3 nodes and 2 edges",
+    })
+  ).toContainText("Bundle")
+  await expect(page.getByLabel("Mathematical notation: x^2")).toContainText(
+    "x2"
+  )
+  await expect(page.getByRole("img", { name: "Pixel" })).toBeVisible()
+  await expect(page.getByRole("alert")).toContainText("Raw HTML was omitted")
+  await expect(page.getByRole("alert")).toContainText(
+    "Unsafe URL was omitted: javascript:alert(1)"
+  )
+  expect(
+    await page.evaluate(
+      () => (window as Window & { readerPwned?: boolean }).readerPwned
+    )
+  ).toBeUndefined()
+  await page.getByRole("button", { name: "View accepted Claim" }).click()
+  await expect(page.getByRole("dialog")).toContainText("Evidence excerpts")
+  await expect(page.getByRole("dialog").locator("pre")).not.toBeEmpty()
+  await page.getByRole("button", { name: "Close" }).click()
+  await page.getByRole("button", { name: "Source", exact: true }).click()
+  await expect(page.getByLabel("Generated Markdown source")).toContainText(
+    "<script>window.readerPwned"
+  )
+  await page.getByRole("button", { name: "Rendered" }).click()
+  await page.screenshot({
+    path: "test-results/knowledge-desktop-real.png",
+    fullPage: true,
+  })
+  await page.setViewportSize({ width: 390, height: 844 })
+  const knowledgeOverflow = await page.evaluate(() => ({
+    viewport: document.documentElement.clientWidth,
+    width: document.documentElement.scrollWidth,
+  }))
+  expect(knowledgeOverflow.width).toBe(knowledgeOverflow.viewport)
+  await page.screenshot({
+    path: "test-results/knowledge-mobile-real.png",
+    fullPage: true,
+  })
+
   await page.setViewportSize({ width: 1280, height: 720 })
   await page.getByRole("button", { name: "Sources" }).click()
   await expect(preflightCard).toBeVisible()

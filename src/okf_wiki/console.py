@@ -5,7 +5,7 @@ import webbrowser
 from hmac import compare_digest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from .gateway_common import GatewayError
 from .gateway_profiles import GatewayApplication
@@ -90,15 +90,16 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             if self.headers.get("Origin") != self.server.origin:
                 self._json(403, {"errors": ["Invalid request origin"], "ok": False}, head=head)
                 return
-        path = urlsplit(self.path).path
+        request_url = urlsplit(self.path)
+        path = request_url.path
         if path.startswith("/api/"):
-            self._api(path, head=head)
+            self._api(path, request_url.query, head=head)
         elif self.command in {"GET", "HEAD"}:
             self._asset(path, head=head)
         else:
             self._json(404, {"errors": ["Not found"], "ok": False}, head=head)
 
-    def _api(self, path: str, *, head: bool) -> None:
+    def _api(self, path: str, query_string: str, *, head: bool) -> None:
         if not self._authorized():
             self._json(401, {"errors": ["Unauthorized"], "ok": False}, head=head)
             return
@@ -239,6 +240,54 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "models": self.server.gateways.run_snapshot(self.server.application.root),
                 }
+            elif path == "/api/v1/knowledge" and self.command in {"GET", "HEAD"}:
+                query = self._query(query_string, {"bundle", "run_id"})
+                payload = {
+                    "ok": True,
+                    **self.server.application.knowledge_snapshot(
+                        query.get("bundle", "staged"), query.get("run_id")
+                    ),
+                }
+            elif path == "/api/v1/knowledge/page" and self.command in {"GET", "HEAD"}:
+                query = self._query(query_string, {"bundle", "path", "run_id"}, {"path"})
+                payload = {
+                    "ok": True,
+                    **self.server.application.knowledge_page(
+                        query.get("bundle", "staged"), query["path"], query.get("run_id")
+                    ),
+                }
+            elif path == "/api/v1/knowledge/search" and self.command in {"GET", "HEAD"}:
+                query = self._query(query_string, {"bundle", "query", "run_id"}, {"query"})
+                payload = {
+                    "ok": True,
+                    "results": self.server.application.search_knowledge(
+                        query["query"], query.get("bundle", "staged"), query.get("run_id")
+                    ),
+                }
+            elif path == "/api/v1/knowledge/diff" and self.command in {"GET", "HEAD"}:
+                query = self._query(
+                    query_string,
+                    {"base", "path", "run_id", "target"},
+                    {"path"},
+                )
+                payload = {
+                    "ok": True,
+                    **self.server.application.diff_knowledge(
+                        query["path"],
+                        query.get("base", "published"),
+                        query.get("target", "staged"),
+                        query.get("run_id"),
+                    ),
+                }
+            elif path.startswith("/api/v1/knowledge/claims/") and self.command in {"GET", "HEAD"}:
+                query = self._query(query_string, {"bundle", "run_id"})
+                claim_id = unquote(path.removeprefix("/api/v1/knowledge/claims/"))
+                payload = {
+                    "ok": True,
+                    **self.server.application.knowledge_claim(
+                        claim_id, query.get("bundle", "staged"), query.get("run_id")
+                    ),
+                }
             else:
                 self._json(404, {"errors": ["Not found"], "ok": False}, head=head)
                 return
@@ -293,6 +342,25 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         if not isinstance(value, str) or not value.strip():
             raise GatewayError(f"invalid field '{name}': must be a non-empty string")
         return value
+
+    @staticmethod
+    def _query(
+        query_string: str, allowed: set[str], required: set[str] | None = None
+    ) -> dict[str, str]:
+        try:
+            values = parse_qs(query_string, keep_blank_values=True, strict_parsing=True)
+        except ValueError as error:
+            raise ConsoleRequestError(400, "Invalid query string") from error
+        if unknown := set(values) - allowed:
+            raise ConsoleRequestError(400, f"Unknown query parameter: {sorted(unknown)[0]}")
+        if duplicate := next((key for key, items in values.items() if len(items) != 1), None):
+            raise ConsoleRequestError(400, f"Duplicate query parameter: {duplicate}")
+        query = {key: items[0] for key, items in values.items()}
+        if missing := next(
+            (key for key in sorted(required or set()) if not query.get(key, "").strip()), None
+        ):
+            raise ConsoleRequestError(400, f"Missing query parameter: {missing}")
+        return query
 
     def _authorized(self) -> bool:
         received = self.headers.get("Authorization", "").encode(errors="surrogatepass")

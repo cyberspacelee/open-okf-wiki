@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useState, type CSSProperties } from "react"
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useState,
+  type CSSProperties,
+} from "react"
 import {
   BookOpenIcon,
   BoxesIcon,
@@ -74,6 +81,12 @@ import {
 import { fetchSettings } from "@/lib/settings"
 import { cn } from "@/lib/utils"
 
+const KnowledgePage = lazy(() =>
+  import("@/components/knowledge-page").then((module) => ({
+    default: module.KnowledgePage,
+  }))
+)
+
 const navItems = [
   { label: "Overview", icon: LayoutDashboardIcon, href: "/" },
   { label: "Sources", icon: GitBranchIcon },
@@ -93,7 +106,13 @@ const actionLabels: Record<string, string> = {
 }
 
 type Page =
-  "overview" | "sources" | "runs" | "review" | "settings" | "connections"
+  | "overview"
+  | "sources"
+  | "runs"
+  | "review"
+  | "knowledge"
+  | "settings"
+  | "connections"
 
 export function OverviewDashboard({
   overview,
@@ -105,7 +124,14 @@ export function OverviewDashboard({
   const query = new URLSearchParams(window.location.search)
   const [page, setPage] = useState<Page>(() => {
     const view = query.get("view")
-    return ["sources", "runs", "review", "settings", "connections"].includes(
+    return [
+      "sources",
+      "runs",
+      "review",
+      "knowledge",
+      "settings",
+      "connections",
+    ].includes(
       String(view)
     )
       ? (view as Page)
@@ -202,7 +228,9 @@ export function OverviewDashboard({
                           ? "Production Runs"
                           : page === "review"
                             ? "Review & publish"
-                            : "Gateway connections"}
+                            : page === "knowledge"
+                              ? "Knowledge Bundle"
+                              : "Gateway connections"}
                 </p>
               </div>
             </div>
@@ -240,6 +268,16 @@ export function OverviewDashboard({
             selectedRunId={selectedRunId}
             onSelectRun={(runId) => navigate("review", runId)}
           />
+        ) : page === "knowledge" ? (
+          <Suspense
+            fallback={
+              <p className="p-8 text-sm text-muted-foreground" role="status">
+                Loading Knowledge reader…
+              </p>
+            }
+          >
+            <KnowledgePage token={token} />
+          </Suspense>
         ) : (
           <div className="mx-auto flex w-full max-w-[90rem] flex-col gap-8 px-5 py-7 lg:px-8 lg:py-9">
             {page === "connections" ? (
@@ -331,12 +369,14 @@ function PrimaryNavigation({
           const target: Page =
             label === "Connections"
               ? "connections"
-              : label === "Sources"
-                ? "sources"
-                : label === "Runs"
-                  ? "runs"
-                  : label === "Review"
-                    ? "review"
+              : label === "Knowledge"
+                ? "knowledge"
+                : label === "Sources"
+                  ? "sources"
+                  : label === "Runs"
+                    ? "runs"
+                    : label === "Review"
+                      ? "review"
                     : label === "Settings"
                       ? "settings"
                       : "overview"
@@ -362,6 +402,7 @@ function PrimaryNavigation({
               ) : label === "Sources" ||
                 label === "Runs" ||
                 label === "Review" ||
+                label === "Knowledge" ||
                 label === "Settings" ? (
                 <SidebarMenuButton
                   isActive={page === target}

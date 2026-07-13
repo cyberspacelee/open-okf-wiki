@@ -983,6 +983,81 @@ class WorkspaceApplication:
             "next_actions": next_actions,
         }
 
+    def knowledge_snapshot(self, bundle: str = "staged", run_id: str | None = None) -> dict:
+        from .knowledge import KnowledgeReader
+
+        if bundle not in {"staged", "published"}:
+            raise WorkspaceError("Knowledge Bundle must be staged or published")
+        try:
+            return KnowledgeReader(self.database_path).snapshot(
+                cast(Literal["staged", "published"], bundle), run_id
+            )
+        except ValueError as error:
+            raise WorkspaceError(str(error)) from error
+
+    def knowledge_page(self, bundle: str, path: str, run_id: str | None = None) -> dict:
+        from .knowledge import KnowledgeReader
+
+        if bundle not in {"staged", "published"}:
+            raise WorkspaceError("Knowledge Bundle must be staged or published")
+        try:
+            return KnowledgeReader(self.database_path).page(
+                cast(Literal["staged", "published"], bundle), path, run_id
+            )
+        except ValueError as error:
+            raise WorkspaceError(str(error)) from error
+
+    def search_knowledge(
+        self, query: str, bundle: str = "staged", run_id: str | None = None
+    ) -> list[dict[str, str]]:
+        from .knowledge import KnowledgeReader
+
+        if bundle not in {"staged", "published"}:
+            raise WorkspaceError("Knowledge Bundle must be staged or published")
+        try:
+            return KnowledgeReader(self.database_path).search(
+                query, cast(Literal["staged", "published"], bundle), run_id
+            )
+        except ValueError as error:
+            raise WorkspaceError(str(error)) from error
+
+    def diff_knowledge(
+        self,
+        path: str,
+        base: str = "published",
+        target: str = "staged",
+        run_id: str | None = None,
+    ) -> dict:
+        from .knowledge import KnowledgeReader
+
+        if base not in {"published", "previous"} or target not in {"staged", "published"}:
+            raise WorkspaceError("Knowledge diff selections are invalid")
+        try:
+            return KnowledgeReader(self.database_path).diff(
+                path,
+                cast(Literal["published", "previous"], base),
+                cast(Literal["staged", "published"], target),
+                run_id,
+            )
+        except ValueError as error:
+            raise WorkspaceError(str(error)) from error
+
+    def knowledge_claim(
+        self, claim_id: str, bundle: str = "staged", run_id: str | None = None
+    ) -> dict:
+        from .knowledge import KnowledgeReader
+
+        if bundle not in {"staged", "published"}:
+            raise WorkspaceError("Knowledge Bundle must be staged or published")
+        if not re.fullmatch(r"claim:[0-9a-f]{64}", claim_id):
+            raise WorkspaceError("Invalid Accepted Claim ID")
+        try:
+            return KnowledgeReader(self.database_path).claim(
+                claim_id, cast(Literal["staged", "published"], bundle), run_id
+            )
+        except ValueError as error:
+            raise WorkspaceError(str(error)) from error
+
     def sources(self) -> dict:
         with self._locked():
             self._recover_update_locked()
