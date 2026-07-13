@@ -317,6 +317,15 @@ class AcceptedKnowledgeStore:
                         claim.epistemic_status,
                     ),
                 )
+                append_entity_event(
+                    connection,
+                    run_id,
+                    "claim",
+                    accepted_id,
+                    previous["epistemic_status"] if previous is not None else None,
+                    claim.epistemic_status,
+                    candidate_id=candidate.candidate_id,
+                )
                 connection.executemany(
                     "INSERT OR IGNORE INTO claim_evidence VALUES (?, ?, ?)",
                     [(run_id, accepted_id, evidence_id) for evidence_id in accepted_evidence],
@@ -401,6 +410,15 @@ class AcceptedKnowledgeStore:
                         concept.description,
                         concept.status,
                     ),
+                )
+                append_entity_event(
+                    connection,
+                    run_id,
+                    "concept",
+                    accepted_id,
+                    previous["status"] if previous is not None else None,
+                    concept.status,
+                    candidate_id=candidate.candidate_id,
                 )
                 connection.executemany(
                     "INSERT OR IGNORE INTO concept_claims VALUES (?, ?, ?, ?)",

@@ -92,8 +92,9 @@ export type RunEvent = {
 }
 
 export type EntityEvent = RunEvent & {
-  entity_type: "analysis_task" | "coverage_obligation"
+  entity_type: string
   entity_id: string
+  candidate_id?: string
 }
 
 export type RunTask = {
@@ -325,10 +326,10 @@ function isRunDetail(value: unknown): value is RunDetail & { ok: true } {
     value.entity_events.every(
       (event) =>
         isEvent(event) &&
-        ["analysis_task", "coverage_obligation"].includes(
-          String(event.entity_type)
-        ) &&
-        typeof event.entity_id === "string"
+        typeof event.entity_type === "string" &&
+        typeof event.entity_id === "string" &&
+        (event.candidate_id === undefined ||
+          typeof event.candidate_id === "string")
     ) &&
     Array.isArray(value.sources) &&
     value.sources.every(

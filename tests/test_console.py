@@ -403,6 +403,44 @@ def test_console_overview_is_produced_by_workspace_application(
     assert expected["blockers"] == ["gateway unavailable", "1 major obligations remain open"]
 
 
+def test_console_concepts_query_uses_workspace_application_and_validates_bounds(
+    tmp_path: Path, assets: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    WorkspaceApplication(tmp_path).initialize("catalog")
+    received = []
+
+    def provenance(_self, **query):
+        received.append(query)
+        return {
+            "run_id": "run-1",
+            "run_state": "review_required",
+            "selected_concept_id": "concept:1",
+            "concepts": [],
+            "nodes": [],
+            "edges": [],
+            "bounds": {
+                "limit": query["limit"],
+                "total_nodes": 0,
+                "total_edges": 0,
+                "truncated": False,
+            },
+        }
+
+    monkeypatch.setattr(WorkspaceApplication, "concept_provenance", provenance)
+    with running_console(tmp_path, assets) as (server, _):
+        base = f"http://127.0.0.1:{server.server_port}"
+        response = httpx.get(
+            base + "/api/v1/concepts?run_id=run-1&concept_id=concept%3A1&limit=25",
+            headers=authorization(server),
+        )
+        invalid = httpx.get(base + "/api/v1/concepts?limit=many", headers=authorization(server))
+
+    assert response.status_code == 200
+    assert response.json()["bounds"]["limit"] == 25
+    assert received == [{"run_id": "run-1", "concept_id": "concept:1", "limit": 25}]
+    assert invalid.status_code == 400
+
+
 def test_console_overview_reports_source_setup_blockers(tmp_path: Path) -> None:
     app = WorkspaceApplication(tmp_path)
     app.initialize("catalog")

@@ -2,6 +2,7 @@ import hashlib
 import json
 import sqlite3
 import subprocess
+from pathlib import Path
 
 import asyncio
 import pytest
@@ -86,6 +87,44 @@ def test_verification_store_persists_staged_candidate_findings_and_decision(tmp_
 
     assert store.get_findings("run-1", "candidate-1") == list(stored_findings)
     assert store.get_decision("run-1", "candidate-1") == decision
+
+
+def test_verification_decision_event_is_atomic_and_attributed(tmp_path: Path) -> None:
+    database = tmp_path / "runs.db"
+    store = VerificationStore(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """INSERT INTO runs
+               (id, project_id, repository, revision, publish_dir, staging_dir, state,
+                created_at, updated_at)
+               VALUES ('run-1', 'project-1', '.', ?, '.', '.', 'verifying', ?, ?)""",
+            ("a" * 40, "2026-07-13T00:00:00+00:00", "2026-07-13T00:00:00+00:00"),
+        )
+    store.stage("run-1", "candidate-1", "task-1", {})
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """CREATE TRIGGER reject_verification_event BEFORE INSERT ON run_events
+               WHEN json_extract(NEW.details, '$.entity_type') = 'verification_candidate'
+               BEGIN SELECT RAISE(ABORT, 'seeded verification event failure'); END"""
+        )
+
+    decision = AcceptanceDecision(outcome="rejected", reasons=("critical conflict",))
+    with pytest.raises(sqlite3.IntegrityError, match="seeded verification event failure"):
+        store.record_decision("run-1", "candidate-1", decision)
+    assert store.get_decision("run-1", "candidate-1") is None
+
+    with sqlite3.connect(database) as connection:
+        connection.execute("DROP TRIGGER reject_verification_event")
+    store.record_decision("run-1", "candidate-1", decision)
+    with sqlite3.connect(database) as connection:
+        event = connection.execute(
+            """SELECT previous_state, state, details FROM run_events
+               WHERE json_extract(details, '$.entity_type') = 'verification_candidate'"""
+        ).fetchone()
+
+    assert event is not None
+    assert event[:2] == ("staged", "rejected")
+    assert json.loads(event[2])["candidate_id"] == "candidate-1"
 
 
 def test_later_accepted_candidate_supersedes_historical_review_finding(tmp_path) -> None:

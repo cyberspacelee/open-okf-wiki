@@ -261,6 +261,48 @@ def test_accepted_candidate_is_queryable_with_stable_ids_and_page_plan(tmp_path:
     )
 
 
+def test_claim_and_concept_events_are_atomic_and_keep_candidate_attribution(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "runs.db"
+    make_ledger(database)
+    knowledge = AcceptedKnowledgeStore(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """CREATE TRIGGER reject_claim_event BEFORE INSERT ON run_events
+               WHEN NEW.state = 'supported'
+                AND json_extract(NEW.details, '$.entity_type') = 'claim'
+               BEGIN SELECT RAISE(ABORT, 'seeded entity event failure'); END"""
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="seeded entity event failure"):
+        knowledge.accept("run-1", candidate("candidate-1"))
+
+    assert knowledge.list_claims("run-1") == []
+    assert knowledge.list_concepts("run-1") == []
+    assert knowledge.get_coverage_summary("run-1") == {"open": 1}
+
+    with sqlite3.connect(database) as connection:
+        connection.execute("DROP TRIGGER reject_claim_event")
+    receipt = knowledge.accept("run-1", candidate("candidate-1"))
+    with sqlite3.connect(database) as connection:
+        events = [
+            (row[0], row[1], row[2], json.loads(row[3])["candidate_id"])
+            for row in connection.execute(
+                """SELECT previous_state, state, occurred_at, details FROM run_events
+                   WHERE json_extract(details, '$.entity_type') IN ('claim', 'concept')
+                   ORDER BY sequence"""
+            )
+        ]
+
+    assert [(previous, current, candidate_id) for previous, current, _, candidate_id in events] == [
+        (None, "supported", "candidate-1"),
+        (None, "active", "candidate-1"),
+    ]
+    assert all(occurred_at.endswith("+00:00") for _, _, occurred_at, _ in events)
+    assert receipt.claim_ids and receipt.concept_ids
+
+
 def test_knowledge_summary_requires_page_plans_with_or_without_caller_transaction(
     tmp_path: Path,
 ) -> None:

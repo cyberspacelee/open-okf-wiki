@@ -121,6 +121,23 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 payload = {"ok": True, **self.server.application.run_preflight()}
             elif path == "/api/v1/runs" and self.command in {"GET", "HEAD"}:
                 payload = {"ok": True, **self.server.application.list_runs()}
+            elif path == "/api/v1/concepts" and self.command in {"GET", "HEAD"}:
+                query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+                unknown = set(query) - {"run_id", "concept_id", "limit"}
+                if unknown or any(len(values) != 1 for values in query.values()):
+                    raise ConsoleRequestError(400, "Invalid Concepts query")
+                try:
+                    limit = int(query.get("limit", ["100"])[0])
+                except ValueError as error:
+                    raise ConsoleRequestError(400, "Concept limit must be an integer") from error
+                payload = {
+                    "ok": True,
+                    **self.server.application.concept_provenance(
+                        run_id=query.get("run_id", [None])[0] or None,
+                        concept_id=query.get("concept_id", [None])[0] or None,
+                        limit=limit,
+                    ),
+                }
             elif path == "/api/v1/runs" and self.command == "POST":
                 payload = {"ok": True, **self.server.application.start_run(self._json_body())}
             elif path.startswith("/api/v1/runs/") and self.command == "POST":

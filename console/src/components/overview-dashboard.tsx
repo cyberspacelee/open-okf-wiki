@@ -86,6 +86,12 @@ const KnowledgePage = lazy(() =>
   }))
 )
 
+const ConceptsPage = lazy(() =>
+  import("@/components/concepts-page").then((module) => ({
+    default: module.ConceptsPage,
+  }))
+)
+
 const ReviewPage = lazy(() =>
   import("@/components/review-page").then((module) => ({
     default: module.ReviewPage,
@@ -116,6 +122,7 @@ type Page =
   | "runs"
   | "review"
   | "knowledge"
+  | "concepts"
   | "settings"
   | "connections"
 
@@ -134,11 +141,10 @@ export function OverviewDashboard({
       "runs",
       "review",
       "knowledge",
+      "concepts",
       "settings",
       "connections",
-    ].includes(
-      String(view)
-    )
+    ].includes(String(view))
       ? (view as Page)
       : "overview"
   })
@@ -235,7 +241,9 @@ export function OverviewDashboard({
                             ? "Review & publish"
                             : page === "knowledge"
                               ? "Knowledge Bundle"
-                              : "Gateway connections"}
+                              : page === "concepts"
+                                ? "Concept provenance"
+                                : "Gateway connections"}
                 </p>
               </div>
             </div>
@@ -290,6 +298,16 @@ export function OverviewDashboard({
             }
           >
             <KnowledgePage token={token} />
+          </Suspense>
+        ) : page === "concepts" ? (
+          <Suspense
+            fallback={
+              <p className="p-8 text-sm text-muted-foreground" role="status">
+                Loading Concept provenance…
+              </p>
+            }
+          >
+            <ConceptsPage token={token} />
           </Suspense>
         ) : (
           <div className="mx-auto flex w-full max-w-[90rem] flex-col gap-8 px-5 py-7 lg:px-8 lg:py-9">
@@ -390,9 +408,11 @@ function PrimaryNavigation({
                     ? "runs"
                     : label === "Review"
                       ? "review"
-                    : label === "Settings"
-                      ? "settings"
-                      : "overview"
+                      : label === "Concepts"
+                        ? "concepts"
+                        : label === "Settings"
+                          ? "settings"
+                          : "overview"
           return (
             <SidebarMenuItem key={label}>
               {"href" in item ? (
@@ -416,6 +436,7 @@ function PrimaryNavigation({
                 label === "Runs" ||
                 label === "Review" ||
                 label === "Knowledge" ||
+                label === "Concepts" ||
                 label === "Settings" ? (
                 <SidebarMenuButton
                   isActive={page === target}

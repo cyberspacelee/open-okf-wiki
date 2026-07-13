@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .accepted_knowledge import ClaimRecord, ConceptRecord
 from .knowledge_contracts import ObligationSummary, WorkerProposal
+from .run_events import append_entity_event
 from .state_schema import migrate_state
 
 
@@ -197,6 +198,16 @@ class VerificationStore:
         )
         if changed.rowcount != 1:
             raise ValueError(f"Candidate is not staged: {candidate_id}")
+        if connection.execute("SELECT 1 FROM runs WHERE id = ?", (run_id,)).fetchone():
+            append_entity_event(
+                connection,
+                run_id,
+                "verification_candidate",
+                candidate_id,
+                "staged",
+                decision.outcome,
+                candidate_id=candidate_id,
+            )
 
     def get_findings(self, run_id: str, candidate_id: str) -> list[VerificationFinding]:
         with self._connect() as connection:

@@ -343,6 +343,10 @@ test("loads the built Console through the real Python launcher", async ({
   )
   delete external.ok
   external.definition.project.name = "External Settings Update"
+  external.definition.profile.dispositions.major = {
+    disposition: "open",
+    reason: null,
+  }
   external.definition.sources = [
     {
       id: "code",
@@ -412,7 +416,10 @@ test("loads the built Console through the real Python launcher", async ({
     encoding: "utf-8",
   }).trim()
   execFileSync("git", ["switch", "-c", longBranch], { cwd: managedOrigin })
-  writeFileSync(join(managedOrigin, "RELEASE.md"), "release branch\n")
+  writeFileSync(
+    join(managedOrigin, "RELEASE.md"),
+    "# Requirements\n\nSecurity credential handling MUST remain deterministic.\n"
+  )
   execFileSync("git", ["add", "RELEASE.md"], { cwd: managedOrigin })
   execFileSync("git", ["commit", "-qm", "release branch"], {
     cwd: managedOrigin,
@@ -576,7 +583,47 @@ test("loads the built Console through the real Python launcher", async ({
   await expect(page.locator('[aria-current="step"]')).toHaveText(
     "Review Required"
   )
+  const provenanceResponse = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/v1/concepts"
+  )
+  await page.getByRole("button", { name: "Concepts" }).click()
+  const provenanceApi = await provenanceResponse
+  expect(provenanceApi.status()).toBe(200)
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Concept provenance" })
+  ).toBeVisible()
+  await expect(
+    page.getByText("Source Unit", { exact: true }).first()
+  ).toBeVisible()
+  await expect(
+    page.getByText("Evidence Reference", { exact: true }).first()
+  ).toBeVisible()
+  const definingNode = page.locator('button[aria-label*="defining"]').first()
+  await definingNode.focus()
+  await page.keyboard.press("Enter")
+  await expect(
+    page.getByRole("region", { name: "Node details" })
+  ).toContainText("fixture:")
+  await page.screenshot({
+    path: "test-results/concepts-desktop-real.png",
+    fullPage: true,
+  })
   await page.setViewportSize({ width: 390, height: 844 })
+  await page.getByRole("button", { name: "Toggle Sidebar" }).click()
+  const conceptsMobileSidebar = page.locator(
+    '[data-slot="sidebar"][data-mobile="true"]'
+  )
+  await conceptsMobileSidebar.getByRole("button", { name: "Concepts" }).click()
+  await expect(conceptsMobileSidebar).toHaveCount(0)
+  const conceptsOverflow = await page.evaluate(() => ({
+    viewport: document.documentElement.clientWidth,
+    width: document.documentElement.scrollWidth,
+  }))
+  expect(conceptsOverflow.width).toBe(conceptsOverflow.viewport)
+  await page.screenshot({
+    path: "test-results/concepts-mobile-real.png",
+    fullPage: true,
+  })
   await page.getByRole("button", { name: "Toggle Sidebar" }).click()
   const runsMobileSidebar = page.locator(
     '[data-slot="sidebar"][data-mobile="true"]'

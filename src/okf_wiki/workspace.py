@@ -1322,6 +1322,51 @@ class WorkspaceApplication:
             rows = list(connection.execute("SELECT * FROM runs ORDER BY created_at DESC, id DESC"))
         return {"runs": [self._run_summary(row) for row in rows]}
 
+    def concept_provenance(
+        self,
+        *,
+        run_id: str | None = None,
+        concept_id: str | None = None,
+        limit: int = 100,
+    ) -> dict:
+        self.open()
+        from .provenance import MAX_GRAPH_NODES, ConceptProvenanceStore
+
+        if not 1 <= limit <= MAX_GRAPH_NODES:
+            raise WorkspaceError(f"limit must be between 1 and {MAX_GRAPH_NODES}")
+        if run_id is not None:
+            self._validate_run_id(run_id)
+        else:
+            with sqlite3.connect(self.database_path) as connection:
+                row = connection.execute(
+                    """SELECT r.id FROM runs r
+                       WHERE EXISTS (
+                         SELECT 1 FROM accepted_concepts c WHERE c.run_id = r.id
+                       ) ORDER BY r.created_at DESC, r.id DESC LIMIT 1"""
+                ).fetchone()
+            run_id = row[0] if row else None
+        if run_id is None:
+            return {
+                "run_id": None,
+                "run_state": None,
+                "selected_concept_id": None,
+                "concepts": [],
+                "nodes": [],
+                "edges": [],
+                "bounds": {
+                    "limit": limit,
+                    "total_nodes": 0,
+                    "total_edges": 0,
+                    "truncated": False,
+                },
+            }
+        try:
+            return ConceptProvenanceStore(self.database_path).snapshot(
+                run_id, concept_id=concept_id, limit=limit
+            )
+        except ValueError as error:
+            raise WorkspaceError(str(error)) from error
+
     def run_status(self, run_id: str) -> dict:
         self._validate_run_id(run_id)
         self.open()
@@ -1343,8 +1388,7 @@ class WorkspaceApplication:
                     "state": event["state"],
                 }
                 for event in event_rows
-                if json.loads(event["details"]).get("entity_type")
-                not in {"coverage_obligation", "analysis_task"}
+                if json.loads(event["details"]).get("entity_type") in {None, "production_run"}
             ]
             entity_events = [
                 {
@@ -1355,9 +1399,14 @@ class WorkspaceApplication:
                     "sequence": event["sequence"],
                     "state": event["state"],
                 }
+                | (
+                    {"candidate_id": details["candidate_id"]}
+                    if isinstance(details.get("candidate_id"), str)
+                    else {}
+                )
                 for event in event_rows
-                if (details := json.loads(event["details"])).get("entity_type")
-                in {"coverage_obligation", "analysis_task"}
+                if isinstance((details := json.loads(event["details"])).get("entity_type"), str)
+                and details["entity_type"] != "production_run"
                 and isinstance(details.get("entity_id"), str)
             ]
             task_rows = [
