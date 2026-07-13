@@ -11,6 +11,7 @@ from urllib.parse import unquote_to_bytes
 from .cli import advance_preparation, advance_rendering, execute_semantic_run, get_run
 from .coverage import obligation_rows
 from .knowledge_contracts import AnalysisTask, WorkerProposal, WorkerRunResult
+from .process_identity import process_start_identity
 from .run_state import RUN_TRANSITIONS, transition_run
 from .scheduler import PlannedTask, PlannerSummary, Scheduler, TaskPlan
 from .security import git_read_bytes, redact_secrets
@@ -157,15 +158,8 @@ class FixtureAcceptancePolicy(AcceptancePolicy):
         )
 
 
-def _process_start_identity(pid: int) -> str | None:
-    try:
-        return Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21]
-    except IndexError, OSError:
-        return None
-
-
 def _register_worker(marker: Path, acknowledgement: Path) -> dict:
-    identity = {"pid": os.getpid(), "started": _process_start_identity(os.getpid())}
+    identity = {"pid": os.getpid(), "started": process_start_identity(os.getpid())}
     temporary = marker.with_name(f".{marker.name}.{os.getpid()}.tmp")
     descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     try:

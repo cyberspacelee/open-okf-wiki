@@ -1198,25 +1198,9 @@ def review(run_id: str, approve: bool) -> int:
 
 
 def cancel(run_id: str) -> int:
-    connection = connect()
-    row = get_run(connection, run_id)
-    if row["state"] in TERMINAL_STATES:
-        connection.close()
-        raise UserError(f"Run {run_id} is already terminal")
-    try:
-        if row["state"] == "publishing" and published_run_id(Path(row["publish_dir"])) == run_id:
-            source_set = json.loads(row["source_set_json"])
-            restore_publication(
-                Path(row["publish_dir"]),
-                previous_publication_target(row, source_set),
-                run_id,
-            )
-        transition(connection, run_id, row["state"], "cancelled")
-    except OSError as error:
-        raise UserError(f"Cannot restore the previous published Bundle: {error}") from error
-    finally:
-        connection.close()
-    emit({"ok": True, "run_id": run_id, "state": "cancelled"})
+    from .workspace import cancel_run_checkpoint
+
+    emit(cancel_run_checkpoint(db_path(), run_id))
     return 0
 
 
@@ -1475,6 +1459,7 @@ def parser() -> argparse.ArgumentParser:
     workspace_recover_run = workspace_commands.add_parser("recover-run")
     workspace_recover_run.add_argument("run_id")
     workspace_recover_run.add_argument("root", nargs="?", default=".")
+    workspace_recover_run.add_argument("--config-root")
     workspace_start_run = workspace_commands.add_parser("start-run")
     workspace_start_run.add_argument("root", nargs="?", default=".")
     workspace_start_run.add_argument("--configuration-digest", required=True)
@@ -1645,7 +1630,7 @@ def main() -> int:
                 emit({"ok": True, **app.cancel_run(arguments.run_id)})
                 return 0
             elif arguments.workspace_command == "recover-run":
-                app = WorkspaceApplication(arguments.root)
+                app = WorkspaceApplication(arguments.root, config_root=arguments.config_root)
                 emit({"ok": True, **app.recover_run(arguments.run_id)})
                 return 0
             elif arguments.workspace_command == "start-run":

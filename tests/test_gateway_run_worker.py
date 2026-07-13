@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -91,7 +92,13 @@ def semantic_workspace(tmp_path: Path, base_url: str) -> tuple[WorkspaceApplicat
     return application, config_root, application.run_preflight()
 
 
-def start_from_cli(application: WorkspaceApplication, config_root: Path, preflight: dict) -> dict:
+def start_from_cli(
+    application: WorkspaceApplication,
+    config_root: Path,
+    preflight: dict,
+    *,
+    worker_fault: str | None = None,
+) -> dict:
     result = subprocess.run(
         [
             sys.executable,
@@ -108,6 +115,10 @@ def start_from_cli(application: WorkspaceApplication, config_root: Path, preflig
             str(config_root),
         ],
         cwd=application.root.parent,
+        env={
+            **os.environ,
+            **({"OKF_WIKI_WORKER_FAULT": worker_fault} if worker_fault else {}),
+        },
         text=True,
         capture_output=True,
         check=False,
@@ -343,6 +354,54 @@ def test_cli_launcher_runs_semantic_roles_through_fake_gateway(tmp_path: Path) -
     assert_machine_secrets_absent(status, config_root)
     assert_machine_secrets_absent(application.list_runs(), config_root)
     assert_run_storage_is_secret_free(application, started["run_id"], config_root)
+
+
+def test_cli_recovers_interrupted_semantic_run_with_machine_config_root(tmp_path: Path) -> None:
+    with fake_semantic_gateway() as (server, base_url):
+        application, config_root, preflight = semantic_workspace(tmp_path, base_url)
+        server.config_root = str(config_root)
+        started = start_from_cli(application, config_root, preflight, worker_fault="after_state")
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            interrupted = application.run_status(started["run_id"])
+            if interrupted["operations"]["can_recover"]:
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError(f"Run did not become recoverable: {interrupted}")
+
+        recovered = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "okf_wiki",
+                "workspace",
+                "recover-run",
+                started["run_id"],
+                str(application.root),
+                "--config-root",
+                str(config_root),
+            ],
+            cwd=application.root.parent,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert recovered.returncode == 0, recovered.stderr or recovered.stdout
+        status = wait_for_terminal(application, started["run_id"])
+
+    assert status["state"] == "review_required"
+    assert [request[1]["model"] for request in server.requests] == [
+        "planner-model",
+        "worker-model",
+        "verifier-model",
+        "verifier-model",
+        "verifier-model",
+        "verifier-model",
+        "verifier-model",
+    ]
+    assert_machine_secrets_absent(json.loads(recovered.stdout), config_root)
+    assert_machine_secrets_absent(status, config_root)
 
 
 def test_cli_launcher_maps_gateway_failure_without_secret_diagnostics(tmp_path: Path) -> None:

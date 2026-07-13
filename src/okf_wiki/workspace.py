@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from .bundle import verification_blockers
 from .coverage import major_blockers
+from .process_identity import process_start_identity
 from .source_checkouts import (
     FULL_COMMIT_RE,
     SourceCheckoutError,
@@ -443,13 +444,6 @@ def _replace_durable(source: Path, target: Path) -> None:
     _fsync_directory(target.parent)
 
 
-def _process_start_identity(pid: int) -> str | None:
-    try:
-        return Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21]
-    except IndexError, OSError:
-        return None
-
-
 def recover_run_checkpoint(database: Path, run_id: str) -> tuple[int, dict]:
     from .cli import (
         TERMINAL_STATES,
@@ -524,6 +518,39 @@ def recover_run_checkpoint(database: Path, run_id: str) -> tuple[int, dict]:
         "run_id": run_id,
         "state": final_state,
     }
+
+
+def cancel_run_checkpoint(database: Path, run_id: str) -> dict:
+    from .bundle import published_run_id
+    from .cli import previous_publication_target, restore_publication
+    from .run_state import RunTransitionError, transition_run
+
+    connection = sqlite3.connect(database)
+    connection.row_factory = sqlite3.Row
+    row = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+    if row is None:
+        connection.close()
+        raise WorkspaceError(f"Unknown Production Run: {run_id}")
+    if row["state"] in {"published", "failed", "cancelled"}:
+        connection.close()
+        raise WorkspaceError(f"Run {run_id} is already terminal")
+    try:
+        if row["state"] == "publishing" and published_run_id(Path(row["publish_dir"])) == run_id:
+            source_set = json.loads(row["source_set_json"]) if row["source_set_json"] else {}
+            restore_publication(
+                Path(row["publish_dir"]),
+                previous_publication_target(row, source_set),
+                run_id,
+            )
+        with connection:
+            transition_run(connection, run_id, row["state"], "cancelled")
+    except RunTransitionError as error:
+        raise WorkspaceError(str(error)) from error
+    except OSError as error:
+        raise WorkspaceError(f"Cannot restore the previous published Bundle: {error}") from error
+    finally:
+        connection.close()
+    return {"ok": True, "run_id": run_id, "state": "cancelled"}
 
 
 class WorkspaceApplication:
@@ -1157,7 +1184,7 @@ class WorkspaceApplication:
             env=environment,
         )
         try:
-            expected_start = _process_start_identity(process.pid)
+            expected_start = process_start_identity(process.pid)
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
                 if process.poll() is not None:
@@ -1197,8 +1224,7 @@ class WorkspaceApplication:
         return {"runs": [self._run_summary(row) for row in rows]}
 
     def run_status(self, run_id: str) -> dict:
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", run_id):
-            raise WorkspaceError("Invalid Production Run ID")
+        self._validate_run_id(run_id)
         self.open()
         with sqlite3.connect(self.database_path) as connection:
             connection.row_factory = sqlite3.Row
@@ -1371,36 +1397,8 @@ class WorkspaceApplication:
 
     def cancel_run(self, run_id: str) -> dict:
         self._validate_run_id(run_id)
-        from .bundle import published_run_id
-        from .cli import previous_publication_target, restore_publication
-        from .run_state import RunTransitionError, transition_run
-
-        with self._locked(), sqlite3.connect(self.database_path) as connection:
-            connection.row_factory = sqlite3.Row
-            row = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
-            if row is None:
-                raise WorkspaceError(f"Unknown Production Run: {run_id}")
-            if row["state"] in {"published", "failed", "cancelled"}:
-                raise WorkspaceError(f"Run {run_id} is already terminal")
-            try:
-                if (
-                    row["state"] == "publishing"
-                    and published_run_id(Path(row["publish_dir"])) == run_id
-                ):
-                    source_set = self._source_set_for_row(row)
-                    restore_publication(
-                        Path(row["publish_dir"]),
-                        previous_publication_target(row, source_set),
-                        run_id,
-                    )
-                with connection:
-                    transition_run(connection, run_id, row["state"], "cancelled")
-            except RunTransitionError as error:
-                raise WorkspaceError(str(error)) from error
-            except OSError as error:
-                raise WorkspaceError(
-                    f"Cannot restore the previous published Bundle: {error}"
-                ) from error
+        with self._locked():
+            cancel_run_checkpoint(self.database_path, run_id)
         return self.run_status(run_id)
 
     def recover_run(self, run_id: str) -> dict:
@@ -1463,7 +1461,7 @@ class WorkspaceApplication:
                 pass
             os.kill(pid, 0)
             started = identity.get("started")
-            if started is not None and _process_start_identity(pid) != started:
+            if started is not None and process_start_identity(pid) != started:
                 marker.unlink(missing_ok=True)
                 return False
         except (
