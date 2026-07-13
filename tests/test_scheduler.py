@@ -869,7 +869,9 @@ def test_budget_exhaustion_replans_once_then_stops_without_retry_loop(tmp_path: 
     assert first.status == "replan"
     assert second.status == "failed"
     assert third == second
-    assert second.warnings and "UsageLimitExceeded" in second.warnings[0]
+    assert second.warnings == (
+        "RuntimeError: Agent budget exhausted; increase the per-agent-call limit or narrow the work",
+    )
 
 
 def test_scheduler_control_plane_has_no_agent_framework_imports() -> None:

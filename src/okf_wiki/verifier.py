@@ -184,8 +184,6 @@ class VerifierAgent:
         except Exception as error:
             actionable = actionable_model_error(error)
             if actionable:
-                if type(error).__name__ in {"UsageLimitExceeded", "TimeoutError"}:
-                    raise type(error)(actionable) from None
                 raise RuntimeError(actionable) from None
             raise
         finding = result.output
