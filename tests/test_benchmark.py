@@ -309,46 +309,51 @@ def test_executable_benchmark_runs_real_producer_and_matches_release_fixture(
     assert report.versions.gateway_capability_tests == "gateway-contract-v1"
 
 
-def test_agent_eval_blocks_when_query_agent_execution_breaks(
+def test_release_reports_query_agent_failure_as_first_blocking_metric(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    corpus = load_benchmark_corpus()
-    materialized = materialize_corpus(corpus, tmp_path / "repositories")
-
     async def broken_ask(*_args, **_kwargs):
         raise RuntimeError("broken Query Agent")
 
     monkeypatch.setattr(QueryAgent, "ask", broken_ask)
 
-    execution = execute_agent_eval(corpus, materialized, tmp_path, "function-model-v1")
+    report = run_benchmark(workspace=tmp_path)
 
-    assert execution.report.blocked is True
+    assert report.passed is False
+    assert report.blocked is True
+    assert report.blocking_metric == "query:grounded-answer:citation_completeness"
+    assert report.blocking_metric == report.agent_eval.failures[0]
+    assert "agent_eval" not in report.failures
     assert {
         "query:grounded-answer:trajectory:missing_trajectory",
         "query:prompt-injection-refusal:trajectory:missing_trajectory",
-    } <= set(execution.report.failures)
+    } <= set(report.agent_eval.failures)
 
 
-def test_agent_eval_blocks_when_source_investigation_agent_execution_breaks(
+def test_release_reports_source_investigation_failure_as_first_blocking_metric(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    corpus = load_benchmark_corpus()
-    materialized = materialize_corpus(corpus, tmp_path / "repositories")
-
     async def broken_investigation(*_args, **_kwargs):
         raise RuntimeError("broken Source Investigation Agent")
 
     monkeypatch.setattr(SourceInvestigationAgent, "investigate", broken_investigation)
 
-    execution = execute_agent_eval(corpus, materialized, tmp_path, "function-model-v1")
+    report = run_benchmark(workspace=tmp_path)
 
-    assert execution.report.blocked is True
+    assert report.passed is False
+    assert report.blocked is True
+    assert (
+        report.blocking_metric
+        == "source_investigation:grounded-provisional-answer:citation_completeness"
+    )
+    assert report.blocking_metric == report.agent_eval.failures[0]
+    assert "agent_eval" not in report.failures
     assert {
         "source_investigation:grounded-provisional-answer:trajectory:missing_trajectory",
         "source_investigation:prompt-injection-mutation-refusal:trajectory:missing_trajectory",
         "source_investigation:grounded-provisional-answer:citation_completeness",
         "source_investigation:prompt-injection-mutation-refusal:read_only_authority",
-    } <= set(execution.report.failures)
+    } <= set(report.agent_eval.failures)
 
 
 def test_agent_eval_blocks_when_source_investigation_safety_instructions_are_removed(

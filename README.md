@@ -1,150 +1,166 @@
 # OKF Wiki
 
-OKF Wiki 是一个 OKF Knowledge Bundle Producer：它从一个或多个 Git 仓库的固定提交中生成可审计的 Knowledge Bundle。它只读取源仓库，支持 Java 与 Markdown，记录 Coverage Obligation、证据、Run Event 和审核结果，并在人工批准后原子发布。
+OKF Wiki 是一个 OKF Knowledge Bundle Producer：它把一个产品或项目的多个 Git 仓库固定到精确提交，生成可审计的 Knowledge Bundle。确定性控制平面负责 Source 范围、Coverage Obligation、证据验收、审核和发布；Agent 只能提出语义结果，不能直接改变权威知识。
 
-## 环境准备
+## 安装与启动
 
-需要：
-
-- Python 3.14
-- [uv](https://docs.astral.sh/uv/)
-- Git
-
-安装锁定版本的依赖：
+仓库开发需要 Python 3.14、[uv](https://docs.astral.sh/uv/) 和 Git：
 
 ```bash
 uv sync --locked
 uv run --locked okf-wiki --help
 ```
 
-所有运行状态都保存在当前工作目录的 `.okf-wiki/` 中。`build`、`status`、`explore`、`check`、`review`、`cancel` 和 `recover` 应在同一工作目录执行。
+初始化一个 Workspace 并启动本地 Console：
 
-## 配置项目
-
-创建 `project.toml`。单仓库配置示例：
-
-```toml
-project_id = "example"
-repository = "../example-service"
-revision = "0123456789abcdef0123456789abcdef01234567"
-publish_dir = "published"
+```bash
+uv run --locked okf-wiki workspace init catalog --name "Catalog" --root ./catalog-wiki
+uv run --locked okf-wiki workspace console ./catalog-wiki
 ```
 
-`revision` 必须是源仓库中存在的精确 Git 提交。相对的 `repository` 和 `publish_dir` 路径以配置文件所在目录为基准。
+Workspace Console 只绑定 loopback，由 Python 进程提供 API 和已构建的静态页面。安装后的日常使用不需要 Node、Bun、CDN 或单独的 JavaScript 服务。
 
-需要组合多个仓库时，使用 `sources`：
+## Workspace 配置范围
+
+一个 Workspace 代表一个产品或项目，只生成一个 Knowledge Bundle；不同产品、受众或发布边界应使用不同 Workspace。Workspace 可以组合任意多个 `implementation`、`documentation`、`requirements` 和 `contract` Source。
+
+- `workspace.toml` 是可共享的 Workspace Definition：产品身份、Sources、revision policy、Producer Profile 和发布意图。
+- `.okf-wiki/settings.toml` 是本机设置：checkout 路径、Gateway Profile 选择、模型、预算和 UI 偏好。
+- `.okf-wiki/runs.db` 和其他 `.okf-wiki/` 内容是本地运行状态，不是共享配置。
+
+`workspace init` 创建最小配置。随后可在 Console 中编辑，也可直接编辑 `workspace.toml`：
 
 ```toml
-project_id = "example"
-publish_dir = "published"
+schema_version = 1
+
+[project]
+id = "catalog"
+name = "Catalog"
+
+[publication]
+path = "published"
+bundle_name = "Catalog Knowledge"
 
 [[sources]]
-id = "implementation"
+id = "code"
 role = "implementation"
-repository = "../example-service"
-revision = "0123456789abcdef0123456789abcdef01234567"
+revision = "main"
+revision_policy = "follow_branch"
+remote = "git@github.com:example/catalog.git"
+
+[[sources]]
+id = "docs"
+role = "documentation"
+revision = "main"
+revision_policy = "follow_branch"
+remote = "git@github.com:example/catalog-docs.git"
 
 [[sources]]
 id = "requirements"
 role = "requirements"
-repository = "../example-requirements"
+revision = "0123456789abcdef0123456789abcdef01234567"
+revision_policy = "pinned_commit"
+remote = "git@github.com:example/catalog-requirements.git"
+
+[[sources]]
+id = "contracts"
+role = "contract"
 revision = "89abcdef0123456789abcdef0123456789abcdef"
+revision_policy = "pinned_commit"
+remote = "git@github.com:example/catalog-contracts.git"
 ```
 
-每个 `sources.id` 必须唯一。可用下面的命令取得当前提交：
+`follow_branch` 会在 Run 前解析分支，`pinned_commit` 必须使用完整 commit ID；无论采用哪种 policy，每个 Production Run 都只读取记录在 Run snapshot 中的精确提交。
+
+## Source Checkout 与 Git 所有权
+
+配置 Source 后，可让 Workspace clone，或绑定已有 checkout：
 
 ```bash
-git -C ../example-service rev-parse HEAD
+uv run --locked okf-wiki workspace clone-configured-source code ./catalog-wiki
+uv run --locked okf-wiki workspace clone-configured-source docs ./catalog-wiki
+uv run --locked okf-wiki workspace link-configured-source requirements ../catalog-requirements ./catalog-wiki
+uv run --locked okf-wiki workspace sources ./catalog-wiki
 ```
 
-### 覆盖策略
-
-默认策略将发现的 Major 和 Supporting Coverage Obligation 标记为 `covered`，但会排除 `generated/**`、`vendor/**`、`**/generated/**`、`**/generated-sources/**` 和 `**/vendor/**` 下的 Java 文件。如果希望交给语义分析 Agent 处理，可显式设为 `open`：
-
-```toml
-[profile.dispositions.major]
-disposition = "open"
-
-[profile.dispositions.supporting]
-disposition = "open"
-```
-
-也可以排除或推迟覆盖义务，但必须给出原因；`deferred` 仅适用于 Supporting：
-
-```toml
-[profile.dispositions.supporting]
-disposition = "deferred"
-reason = "本次发布暂不处理补充材料。"
-```
-
-## 运行流程
-
-先创建 Production Run：
+Workspace 管理的 clone 位于 `<workspace>/sources/<source-id>/`；linked checkout 仍由原目录的用户拥有，Workspace 不移动、复制或删除它。clone 和 pull 使用用户已有的 Git 配置、SSH agent 和 credential helper，remote URL 不得内嵌凭据。
 
 ```bash
-uv run --locked okf-wiki build project.toml
+uv run --locked okf-wiki workspace pull-source code ./catalog-wiki
 ```
 
-命令输出 JSON，其中包含 `run_id` 和当前 `state`。如果存在 `open` 覆盖义务，`build` 会以非零状态退出，但 Run 已经创建，状态为 `exploring`；这是需要继续执行语义分析的正常信号。
+pull 遇到 tracked、untracked 或并发变化会失败关闭；工具不会替用户 stash、reset、clean 或覆盖工作树。修改 revision policy 时需使用 `workspace sources` 返回的最新 `configuration_digest`，防止覆盖并发配置更新。
 
-复制输出中的 `run_id`，后续命令以 `RUN_ID` 代指它：
+## Gateway Profile 与凭据
+
+Gateway Profile 是可复用的本机 LLM 连接，不属于 `workspace.toml`。它保存 endpoint、非秘密 header、能力测试结果和凭据引用；Workspace 只选择 Profile、模型、并发和预算。Profile registry 默认位于 `$XDG_CONFIG_HOME/okf-wiki`，未设置 XDG 时位于 `~/.config/okf-wiki`。
 
 ```bash
-uv run --locked okf-wiki status RUN_ID
+read -rsp "Gateway credential: " GATEWAY_CREDENTIAL
+printf '\n'
+printf '%s' "$GATEWAY_CREDENTIAL" | uv run --locked okf-wiki gateway save enterprise \
+  --name "Enterprise Gateway" \
+  --gateway-id corp-openai \
+  --base-url https://gateway.example.com/v1 \
+  --header X-Tenant=catalog \
+  --credential-stdin
+unset GATEWAY_CREDENTIAL
+
+uv run --locked okf-wiki gateway test enterprise --model model-a
+uv run --locked okf-wiki gateway select ./catalog-wiki enterprise --model model-a
 ```
 
-如果状态为 `exploring`，先配置兼容 OpenAI API 的企业网关：
+凭据优先进入操作系统 credential store；不可用时才写入权限为 `0700/0600` 的本地 fallback。凭据和配置 header 值不会进入 Workspace Definition、Run snapshot、prompt、trace 或 Bundle，CLI/API 也只返回是否已配置及 header 名称。
+
+执行 capability test、Production Run、Knowledge Query 或 Source Investigation 时，请求会发往 Profile 配置的 `base_url`，并携带该凭据和配置 header；这就是模型数据的外发边界。非 loopback endpoint 必须使用 HTTPS，capability test 拒绝 redirect，保存 Profile 前应确认 endpoint 属于可信 Gateway。Source Investigation 复用 Query Agent 的模型分配，不增加第二套连接配置。
+
+## 权威知识与 provisional 调查
+
+- Workspace Console 是确定性控制平面的适配器，不直接拥有状态，也不是 Markdown 编辑器。
+- Production Run 从固定 Source Snapshots 生成候选知识；只有确定性验证和所需人工审核通过后，Accepted Knowledge Model 才能发布为 Bundle。
+- Knowledge Query 只读取固定的 Accepted Knowledge Model，并返回 Claim 与 Evidence Reference；证据不足时明确返回 insufficient support。
+- Source Investigation 是用户另行发起的只读调查，只能读取同一 Run 的固定 Source Snapshots。结果带精确 source、revision、path、span 和 digest，并始终标记为 provisional。
+- Source Investigation 不能关闭 Coverage Obligation、改变审核、写入 Accepted Knowledge Model 或发布 Bundle。调查结论只有经过后续正常 Production Run、验证和审核，才可能成为权威知识。
+
+## 不使用 Console 的 CLI 流程
+
+CLI 与 HTTP adapter 都调用同一个 `WorkspaceApplication`。现有契约测试覆盖 settings、Sources、pull/revision/preflight、Run 创建与状态、review、cancel/recover 以及权威 domain error 的一致性。
+
+完成前面的 Workspace、Source 和 Gateway 配置后，先运行 preflight，并从 JSON 输出复制两个 digest：
 
 ```bash
-export OKF_GATEWAY_BASE_URL="https://gateway.example.com/v1"
-export OKF_GATEWAY_API_KEY="..."
-export OKF_GATEWAY_MODEL="..."
-
-uv run --locked okf-wiki explore RUN_ID
+uv run --locked okf-wiki workspace preflight ./catalog-wiki
+uv run --locked okf-wiki workspace start-run ./catalog-wiki \
+  --configuration-digest CONFIGURATION_DIGEST \
+  --source-set-digest SOURCE_SET_DIGEST
+uv run --locked okf-wiki workspace run-status RUN_ID ./catalog-wiki
 ```
 
-可选网关参数：
+Run 到达 `review_required` 后，读取 review snapshot、证据和 staged Bundle，再以最新权威 digest 决策：
 
 ```bash
-export OKF_GATEWAY_ID="enterprise"
-export OKF_GATEWAY_CONCURRENCY="4"
-export OKF_GATEWAY_HEADERS='{"X-Tenant":"example"}'
+uv run --locked okf-wiki workspace review-snapshot RUN_ID ./catalog-wiki
+uv run --locked okf-wiki workspace review-evidence RUN_ID EVIDENCE_ID ./catalog-wiki
+uv run --locked okf-wiki workspace review-bundle RUN_ID concepts/example.md ./catalog-wiki
+uv run --locked okf-wiki workspace review RUN_ID approve ./catalog-wiki \
+  --expected-digest AUTHORITATIVE_DIGEST
 ```
 
-Run 到达 `review_required` 后，先检查再审核：
+也可使用 `reject` 退回语义分析。中断或取消命令为：
 
 ```bash
-uv run --locked okf-wiki check RUN_ID
-uv run --locked okf-wiki review RUN_ID --approve
+uv run --locked okf-wiki workspace recover-run RUN_ID ./catalog-wiki
+uv run --locked okf-wiki workspace cancel-run RUN_ID ./catalog-wiki
+uv run --locked okf-wiki check ./catalog-wiki/published
 ```
 
-批准后知识包发布到 `publish_dir`。发布目录是指向不可变版本目录的符号链接，后续使用新 revision 再次 `build` 即可生成增量刷新 Run。
+已发布 Bundle 是普通 Markdown，可直接从 publication path 阅读。当前 CLI 不提供 Knowledge Query 或 Source Investigation 子命令；这两项能力仅通过受 session token 保护的本地 Console HTTP API 使用，因此不能宣称它们已有 CLI/HTTP parity。
 
-如需拒绝本次审核并重新分析：
+旧 `project.toml` 可一次性迁移，新的 Workspace 配置不再使用顶层 `repository`、`revision`、`publish_dir` 或 `models.api_key/base_url/headers`：
 
 ```bash
-uv run --locked okf-wiki review RUN_ID --reject
+uv run --locked okf-wiki workspace migrate ./legacy/project.toml --root ./catalog-wiki
 ```
-
-拒绝会把已处理的覆盖义务重新打开，并将 Run 返回 `exploring`。
-
-## 检查与恢复
-
-`check` 既可以检查 Run，也可以直接检查已发布的知识包目录：
-
-```bash
-uv run --locked okf-wiki check RUN_ID
-uv run --locked okf-wiki check published
-```
-
-取消非终态 Run，或恢复中断中的任务和发布流程：
-
-```bash
-uv run --locked okf-wiki cancel RUN_ID
-uv run --locked okf-wiki recover RUN_ID
-```
-
-`failed` 和 `cancelled` 是终态，不能恢复。
 
 ## 评估与基准
 
@@ -161,7 +177,7 @@ uv run --locked okf-wiki benchmark \
   src/okf_wiki/benchmark_corpus/v1/release-manifest.json
 ```
 
-已提交的基准报告位于 `src/okf_wiki/benchmark_corpus/v1/release-report.json`。
+已提交的基准报告位于 `src/okf_wiki/benchmark_corpus/v1/release-report.json`。Query Agent 或 Source Investigation Agent 的具体 metric/trajectory 失败会成为 release report 的阻断项。
 
 ## 开发验证
 
@@ -174,4 +190,4 @@ uv run --locked ruff format --check .
 uv run --locked ty check src tests
 ```
 
-需要真实企业网关凭据的测试默认跳过；未配置凭据时，不代表已经验证了实时网关兼容性。
+需要真实企业 Gateway 凭据的测试默认跳过；未配置凭据时，不代表已经验证实时 Gateway 兼容性。

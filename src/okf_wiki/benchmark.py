@@ -1338,7 +1338,7 @@ def run_benchmark(
     if clean_before != clean_after:
         failures.append("read_only_sources")
     if not agent_eval.passed:
-        failures.append("agent_eval")
+        failures.extend(agent_eval.failures or ("agent_eval",))
     if not all(item.passed for item in role_trajectories.values()):
         failures.append("agent_role_trajectories")
     if not gateway.passed:
