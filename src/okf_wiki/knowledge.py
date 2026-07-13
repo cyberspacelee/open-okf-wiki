@@ -104,7 +104,7 @@ class KnowledgeReader:
                 (
                     item
                     for item in candidates
-                    if item["state"] != "published" and Path(item["staging_dir"]).is_dir()
+                    if item["state"] == "review_required" and Path(item["staging_dir"]).is_dir()
                 ),
                 None,
             )

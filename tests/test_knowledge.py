@@ -242,6 +242,25 @@ def test_knowledge_snapshot_distinguishes_staged_and_published_bundles(
     assert {bundle["kind"] for bundle in snapshot["bundles"]} == {"staged", "published"}
 
 
+@pytest.mark.parametrize("state", ["rendering", "checking", "failed", "cancelled", "publishing"])
+def test_staged_reader_only_exposes_review_required_runs(
+    knowledge_workspace: tuple[WorkspaceApplication, str], state: str
+) -> None:
+    app, _ = knowledge_workspace
+    with sqlite3.connect(app.database_path) as connection:
+        connection.execute("UPDATE runs SET state = ? WHERE id = 'run-new'", (state,))
+
+    published = app.knowledge_snapshot("published")
+
+    assert [(bundle["kind"], bundle["run_id"]) for bundle in published["bundles"]] == [
+        ("published", "run-old")
+    ]
+    with pytest.raises(WorkspaceError, match="Staged Knowledge Bundle is not available"):
+        app.knowledge_snapshot("staged", "run-new")
+    with pytest.raises(WorkspaceError, match="Staged Knowledge Bundle is not available"):
+        app.knowledge_page("staged", "guide.md", "run-new")
+
+
 def test_published_run_with_retained_staging_is_not_also_staged(
     knowledge_workspace: tuple[WorkspaceApplication, str],
 ) -> None:
