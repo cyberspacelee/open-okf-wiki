@@ -28,7 +28,10 @@ dev = [
 
 [tool.pytest.ini_options]
 addopts = "-q"
-markers = ["gateway_live: requires an explicitly configured enterprise gateway"]
+markers = [
+  "gateway_live: requires an explicitly configured enterprise gateway",
+  "package_release: builds and runs fresh distribution artifacts",
+]
 testpaths = ["tests"]
 
 [tool.ruff]

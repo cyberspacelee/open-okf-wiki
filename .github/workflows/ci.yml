@@ -13,12 +13,44 @@ jobs:
         with:
           version: "0.11.28"
           enable-cache: true
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
       - run: uv python install
       - run: uv lock --check
       - run: uv sync --locked
-      - run: uv run --locked pytest
-      - run: uv run --locked ruff check .
       - run: uv run --locked ruff format --check .
-      - name: Advisory type check
-        continue-on-error: true
-        run: uv run --locked ty check src tests
+      - run: uv run --locked ruff check .
+      - run: uv run --locked ty check src tests
+      - run: bun install --frozen-lockfile
+        working-directory: console
+      - run: bun run prettier --check "**/*.{ts,tsx}"
+        working-directory: console
+      - run: bun run typecheck
+        working-directory: console
+      - run: bun run lint
+        working-directory: console
+      - run: bun run build
+        working-directory: console
+      - run: git diff --exit-code -- console/bun.lock src/okf_wiki/console_assets
+      - run: uv run --locked pytest -m "not package_release"
+      - run: uv run --locked pytest -m package_release tests/test_package_release.py
+        env:
+          OKF_WIKI_RELEASE_DIST: ${{ github.workspace }}/dist
+      - run: bunx playwright install --with-deps chromium
+        working-directory: console
+      - run: CI=1 bun run test:e2e -- --workers=1
+        working-directory: console
+      - run: >-
+          uv run --locked okf-wiki benchmark
+          src/okf_wiki/benchmark_corpus/v1/release-manifest.json |
+          tee release-report.json
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: release-artifacts
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+            release-report.json
+          if-no-files-found: error
