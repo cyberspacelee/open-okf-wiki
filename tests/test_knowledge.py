@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import shutil
 import sqlite3
 import subprocess
 import threading
@@ -239,6 +240,69 @@ def test_knowledge_snapshot_distinguishes_staged_and_published_bundles(
         "malformed.md",
     }
     assert {bundle["kind"] for bundle in snapshot["bundles"]} == {"staged", "published"}
+
+
+def test_published_run_with_retained_staging_is_not_also_staged(
+    knowledge_workspace: tuple[WorkspaceApplication, str],
+) -> None:
+    app, _ = knowledge_workspace
+    staging = app.root / ".okf-wiki" / "runs" / "run-new" / "staging"
+    release = app.root / ".published.releases" / "run-new"
+    shutil.copytree(staging, release)
+    published = app.root / "published"
+    published.unlink()
+    published.symlink_to(release.relative_to(app.root), target_is_directory=True)
+    with sqlite3.connect(app.database_path) as connection:
+        connection.execute(
+            "UPDATE runs SET state = 'published', updated_at = '2026-01-03' WHERE id = 'run-new'"
+        )
+
+    snapshot = app.knowledge_snapshot("published")
+
+    assert snapshot["selected"]["run_id"] == "run-new"
+    assert snapshot["bundles"] == [snapshot["selected"]]
+    assert all(
+        option["base_run_id"] != option["target_run_id"] for option in snapshot["diff_options"]
+    )
+
+
+def test_published_run_and_distinct_unpublished_staging_are_both_available(
+    knowledge_workspace: tuple[WorkspaceApplication, str],
+) -> None:
+    app, _ = knowledge_workspace
+    staging = app.root / ".okf-wiki" / "runs" / "run-new" / "staging"
+    release = app.root / ".published.releases" / "run-new"
+    shutil.copytree(staging, release)
+    next_staging = app.root / ".okf-wiki" / "runs" / "run-next" / "staging"
+    _bundle(next_staging, "Next", "# Next\n\nUnpublished.\n")
+    published = app.root / "published"
+    published.unlink()
+    published.symlink_to(release.relative_to(app.root), target_is_directory=True)
+    with sqlite3.connect(app.database_path) as connection:
+        connection.execute(
+            "UPDATE runs SET state = 'published', updated_at = '2026-01-03' WHERE id = 'run-new'"
+        )
+        connection.execute(
+            """INSERT INTO runs
+               (id, project_id, repository, revision, publish_dir, staging_dir, state,
+                source_set_json, created_at, updated_at)
+               SELECT 'run-next', project_id, repository, revision, publish_dir, ?,
+                      'review_required', json_set(source_set_json, '$.base_run_id', 'run-new'),
+                      '2026-01-04', '2026-01-04'
+               FROM runs WHERE id = 'run-new'""",
+            (str(next_staging),),
+        )
+
+    snapshot = app.knowledge_snapshot("staged")
+
+    assert snapshot["selected"]["run_id"] == "run-next"
+    assert {(bundle["kind"], bundle["run_id"]) for bundle in snapshot["bundles"]} == {
+        ("published", "run-new"),
+        ("staged", "run-next"),
+    }
+    assert all(
+        option["base_run_id"] != option["target_run_id"] for option in snapshot["diff_options"]
+    )
 
 
 def test_knowledge_page_returns_safe_structured_markdown(
@@ -529,6 +593,24 @@ def test_console_exposes_validated_read_only_knowledge_dtos(
             base + "/api/v1/knowledge/page?bundle=published&run_id=run-new&path=guide.md",
             headers=headers,
         )
+        published_to_published = httpx.get(
+            base
+            + "/api/v1/knowledge/diff?path=guide.md&base=published&base_run_id=run-older"
+            + "&target=published&target_run_id=run-old",
+            headers=headers,
+        )
+        fake_previous = httpx.get(
+            base
+            + "/api/v1/knowledge/diff?path=guide.md&base=previous&base_run_id=run-old"
+            + "&target=published&target_run_id=run-old",
+            headers=headers,
+        )
+        indirect_previous = httpx.get(
+            base
+            + "/api/v1/knowledge/diff?path=guide.md&base=previous&base_run_id=run-older"
+            + "&target=staged&target_run_id=run-new",
+            headers=headers,
+        )
         duplicate = httpx.get(base + "/api/v1/knowledge?page=a&page=b", headers=headers)
         malformed = httpx.get(base + "/api/v1/knowledge?broken", headers=headers)
 
@@ -542,6 +624,9 @@ def test_console_exposes_validated_read_only_knowledge_dtos(
         traversal.status_code
         == unpinned.status_code
         == wrong_kind.status_code
+        == published_to_published.status_code
+        == fake_previous.status_code
+        == indirect_previous.status_code
         == duplicate.status_code
         == malformed.status_code
         == 400

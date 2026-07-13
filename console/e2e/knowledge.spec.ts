@@ -289,7 +289,7 @@ test("renders and navigates the Bundle without executing generated content", asy
     page.getByRole("table", { name: "unified page diff" })
   ).toContainText("Old text")
   await page.getByRole("button", { name: "Previous → Staged" }).click()
-  await expect(page.getByText("Run run-older → Run run-new")).toBeVisible()
+  await expect(page.getByText("Run run-old → Run run-new")).toBeVisible()
   await page.getByRole("button", { name: "Split" }).click()
   await expect(
     page.getByRole("table", { name: "split page diff" })
@@ -382,6 +382,99 @@ test("turns malformed and missing reader responses into retryable errors", async
     page.getByRole("heading", { name: "Safe reader", exact: true }).first()
   ).toBeVisible()
   await expect(page.getByLabel("Loading Knowledge page")).toHaveCount(0)
+})
+
+test("clears the old page and Claim while a new snapshot is loading", async ({
+  page,
+}) => {
+  let releaseSnapshot = () => undefined
+  const snapshotPending = new Promise<void>((resolve) => {
+    releaseSnapshot = resolve
+  })
+  let releaseClaim = () => undefined
+  const claimPending = new Promise<void>((resolve) => {
+    releaseClaim = resolve
+  })
+  await page.unroute("**/api/v1/knowledge?*")
+  await page.route("**/api/v1/knowledge?*", async (route) => {
+    const url = new URL(route.request().url())
+    if (url.pathname !== "/api/v1/knowledge") return route.fallback()
+    const published = url.searchParams.get("bundle") === "published"
+    if (published) await snapshotPending
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(snapshotPayload(published)),
+    })
+  })
+  await page.unroute("**/api/v1/knowledge/claims/*")
+  await page.route("**/api/v1/knowledge/claims/*", async (route) => {
+    await claimPending
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(claimPayload()),
+    }).catch(() => undefined)
+  })
+
+  await page.goto("/?view=knowledge#token=identity-race")
+  await expect(
+    page.getByRole("heading", { name: "Safe reader", exact: true }).first()
+  ).toBeVisible()
+  await page.getByRole("button", { name: "View accepted Claim" }).click()
+  await expect(page.getByRole("dialog")).toBeVisible()
+  await page.getByRole("button", { name: "Close" }).click()
+
+  await page.getByRole("button", { name: "Published", exact: true }).click()
+  await expect(page.getByLabel("Loading Knowledge Bundle")).toBeVisible()
+  await expect(page.getByRole("dialog")).toHaveCount(0)
+  await expect(
+    page.getByRole("heading", { name: "Safe reader", exact: true })
+  ).toHaveCount(0)
+
+  releaseClaim()
+  releaseSnapshot()
+  await expect(
+    page.getByRole("heading", { name: "Published guide" }).first()
+  ).toBeVisible()
+})
+
+test("drops a search response from the previous snapshot", async ({ page }) => {
+  let searchStarted = () => undefined
+  const started = new Promise<void>((resolve) => {
+    searchStarted = resolve
+  })
+  let releaseSearch = () => undefined
+  const searchPending = new Promise<void>((resolve) => {
+    releaseSearch = resolve
+  })
+  await page.unroute("**/api/v1/knowledge/search?*")
+  await page.route("**/api/v1/knowledge/search?*", async (route) => {
+    searchStarted()
+    await searchPending
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        results: [
+          { path: "guide.md", title: "Old search", excerpt: "stale-result" },
+        ],
+      }),
+    }).catch(() => undefined)
+  })
+
+  await page.goto("/?view=knowledge#token=search-race")
+  await page.getByLabel("Search Knowledge Bundle").fill("stale")
+  await page.getByRole("button", { name: "Search", exact: true }).click()
+  await started
+  await page.getByRole("button", { name: "Published", exact: true }).click()
+  await expect(
+    page.getByRole("heading", { name: "Published guide" }).first()
+  ).toBeVisible()
+  releaseSearch()
+  await expect(page.getByText("stale-result")).toHaveCount(0)
+  await expect(page.getByRole("region", { name: "Search results" })).toHaveCount(0)
 })
 
 async function mockKnowledge(page: Page) {
@@ -499,33 +592,7 @@ async function mockKnowledge(page: Page) {
     return route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        ok: true,
-        id: `claim:${"a".repeat(64)}`,
-        subject: "Gateway",
-        predicate: "stores credentials",
-        statement: "Credentials stay outside the Workspace.",
-        modality: "asserted",
-        conditions: [],
-        epistemic_status: "supported",
-        conflicts_with: [],
-        supersedes: [],
-        evidence: [
-          {
-            id: `evidence:${"b".repeat(64)}`,
-            source_id: "docs",
-            revision: "1".repeat(40),
-            path: "README.md",
-            start_line: 1,
-            end_line: 1,
-            digest: `sha256:${"c".repeat(64)}`,
-            evidence_kind: "source_span",
-            authority: "authoritative",
-            excerpt: "Credentials stay outside the Workspace.",
-            error: null,
-          },
-        ],
-      }),
+      body: JSON.stringify(claimPayload()),
     })
   })
 }
@@ -565,6 +632,7 @@ function snapshotPayload(published: boolean) {
 
 function diffPayload(url: URL) {
   const base = url.searchParams.get("base")
+  const baseRunId = url.searchParams.get("base_run_id")
   const target = url.searchParams.get("target")
   return {
     ok: true,
@@ -572,9 +640,9 @@ function diffPayload(url: URL) {
     page_change: "changed",
     base: {
       kind: base,
-      run_id: base === "previous" ? "run-older" : "run-old",
+      run_id: baseRunId,
       source_set_digest:
-        base === "previous" ? "source-set-older" : "source-set-old",
+        baseRunId === "run-older" ? "source-set-older" : "source-set-old",
       state: "published",
     },
     target:
@@ -600,6 +668,36 @@ function diffPayload(url: URL) {
         left_number: null,
         right: "Strict CSP",
         right_number: 2,
+      },
+    ],
+  }
+}
+
+function claimPayload() {
+  return {
+    ok: true,
+    id: `claim:${"a".repeat(64)}`,
+    subject: "Gateway",
+    predicate: "stores credentials",
+    statement: "Credentials stay outside the Workspace.",
+    modality: "asserted",
+    conditions: [],
+    epistemic_status: "supported",
+    conflicts_with: [],
+    supersedes: [],
+    evidence: [
+      {
+        id: `evidence:${"b".repeat(64)}`,
+        source_id: "docs",
+        revision: "1".repeat(40),
+        path: "README.md",
+        start_line: 1,
+        end_line: 1,
+        digest: `sha256:${"c".repeat(64)}`,
+        evidence_kind: "source_span",
+        authority: "authoritative",
+        excerpt: "Credentials stay outside the Workspace.",
+        error: null,
       },
     ],
   }

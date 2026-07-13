@@ -158,7 +158,12 @@ export async function fetchKnowledgePage(
     token,
     signal
   )
-  if (!isPage(payload)) throw invalid("Knowledge page")
+  if (
+    !isPage(payload) ||
+    payload.kind !== bundle ||
+    payload.run_id !== runId
+  )
+    throw invalid("Knowledge page")
   return payload
 }
 
@@ -201,7 +206,14 @@ export async function fetchKnowledgeDiff(
     token,
     signal
   )
-  if (!isDiff(payload)) throw invalid("Knowledge diff")
+  if (
+    !isDiff(payload) ||
+    payload.base.kind !== option.base ||
+    payload.base.run_id !== option.base_run_id ||
+    payload.target.kind !== option.target ||
+    payload.target.run_id !== option.target_run_id
+  )
+    throw invalid("Knowledge diff")
   return payload
 }
 

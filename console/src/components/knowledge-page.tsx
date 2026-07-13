@@ -100,11 +100,29 @@ export function KnowledgePage({ token }: { token: string }) {
   const [searching, setSearching] = useState(false)
   const articleRef = useRef<HTMLElement>(null)
   const pendingFragment = useRef<string | null>(null)
+  const searchController = useRef<AbortController | null>(null)
+
+  const clearSnapshotContent = useCallback(() => {
+    searchController.current?.abort()
+    searchController.current = null
+    setSnapshot(null)
+    setPage(null)
+    setDiff(null)
+    setResults([])
+    setSearching(false)
+    setError(null)
+  }, [])
 
   useEffect(() => {
+    searchController.current?.abort()
     const controller = new AbortController()
     fetchKnowledgeSnapshot(token, bundle, controller.signal).then(
       (next) => {
+        if (controller.signal.aborted) return
+        setPage(null)
+        setDiff(null)
+        setResults([])
+        setSearching(false)
         setError(null)
         setSnapshot(next)
         setComparison((current) => {
@@ -130,7 +148,10 @@ export function KnowledgePage({ token }: { token: string }) {
         if (!controller.signal.aborted) setError(nextError)
       }
     )
-    return () => controller.abort()
+    return () => {
+      controller.abort()
+      searchController.current?.abort()
+    }
   }, [bundle, retryKey, token])
 
   useEffect(() => {
@@ -144,6 +165,7 @@ export function KnowledgePage({ token }: { token: string }) {
       controller.signal
     ).then(
       (next) => {
+        if (controller.signal.aborted) return
         setError(null)
         setPage(next)
       },
@@ -168,6 +190,7 @@ export function KnowledgePage({ token }: { token: string }) {
     const controller = new AbortController()
     fetchKnowledgeDiff(token, path, option, controller.signal).then(
       (next) => {
+        if (controller.signal.aborted) return
         setError(null)
         setDiff(next)
       },
@@ -214,26 +237,32 @@ export function KnowledgePage({ token }: { token: string }) {
   async function submitSearch(event: FormEvent) {
     event.preventDefault()
     if (!queryText.trim() || !snapshot) return
+    searchController.current?.abort()
+    const controller = new AbortController()
+    searchController.current = controller
     setSearching(true)
     setError(null)
     try {
-      setResults(
-        await searchKnowledge(
-          token,
-          bundle,
-          snapshot.selected.run_id,
-          queryText
-        )
+      const next = await searchKnowledge(
+        token,
+        bundle,
+        snapshot.selected.run_id,
+        queryText,
+        controller.signal
       )
+      if (!controller.signal.aborted) setResults(next)
     } catch (nextError) {
-      setError(nextError as KnowledgeError)
+      if (!controller.signal.aborted) setError(nextError as KnowledgeError)
     } finally {
-      setSearching(false)
+      if (searchController.current === controller) {
+        searchController.current = null
+        setSearching(false)
+      }
     }
   }
 
   function retry() {
-    setError(null)
+    clearSnapshotContent()
     setRetryKey((value) => value + 1)
   }
 
@@ -268,9 +297,7 @@ export function KnowledgePage({ token }: { token: string }) {
             onValueChange={(values) => {
               const selected = values[0] as BundleKind | undefined
               if (selected) {
-                setSnapshot(null)
-                setPage(null)
-                setError(null)
+                clearSnapshotContent()
                 setBundle(selected)
               }
             }}
@@ -492,7 +519,7 @@ export function KnowledgePage({ token }: { token: string }) {
                 <MarkdownReader
                   blocks={page.blocks}
                   bundle={bundle}
-                  runId={snapshot.selected.run_id}
+                  runId={page.run_id}
                   token={token}
                   onNavigate={navigate}
                 />
@@ -901,7 +928,9 @@ function ClaimMarker({
     if (!open || claim) return
     const controller = new AbortController()
     fetchKnowledgeClaim(token, bundle, runId, claimId, controller.signal).then(
-      setClaim,
+      (next) => {
+        if (!controller.signal.aborted) setClaim(next)
+      },
       (nextError: KnowledgeError) => {
         if (!controller.signal.aborted) setError(nextError)
       }

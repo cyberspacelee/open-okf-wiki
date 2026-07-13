@@ -100,7 +100,14 @@ class KnowledgeReader:
         by_id = {row["id"]: row for row in rows}
         if kind == "staged":
             candidates = [by_id[run_id]] if run_id in by_id else ([] if run_id else rows)
-            row = next((item for item in candidates if Path(item["staging_dir"]).is_dir()), None)
+            row = next(
+                (
+                    item
+                    for item in candidates
+                    if item["state"] != "published" and Path(item["staging_dir"]).is_dir()
+                ),
+                None,
+            )
             root = Path(row["staging_dir"]) if row is not None else None
         elif kind == "published":
             candidates = [by_id[run_id]] if run_id in by_id else ([] if run_id else rows)
@@ -141,43 +148,49 @@ class KnowledgeReader:
             raise ValueError("Previous Knowledge Bundle is not available")
         return self.selection("previous", base_run_id)
 
-    def diff_options(self, selected: BundleSelection) -> list[dict[str, str]]:
-        options = []
+    def _diff_options_for_target(self, target: BundleSelection) -> list[dict[str, str]]:
         try:
-            published = selected if selected.kind == "published" else self.selection("published")
-            previous = self._previous_of(published.run_id)
-            options.append(
+            previous = self._previous_of(target.run_id)
+        except ValueError:
+            return []
+        if previous.run_id == target.run_id:
+            return []
+        if target.kind == "published":
+            return [
                 {
                     "base": "previous",
                     "base_run_id": previous.run_id,
                     "target": "published",
-                    "target_run_id": published.run_id,
+                    "target_run_id": target.run_id,
                 }
-            )
-        except ValueError:
-            published = None
-        try:
-            staged = selected if selected.kind == "staged" else self.selection("staged")
-            if published is not None:
-                options.append(
-                    {
-                        "base": "published",
-                        "base_run_id": published.run_id,
-                        "target": "staged",
-                        "target_run_id": staged.run_id,
-                    }
-                )
-            previous = self._previous_of(staged.run_id)
-            options.append(
-                {
-                    "base": "previous",
-                    "base_run_id": previous.run_id,
-                    "target": "staged",
-                    "target_run_id": staged.run_id,
-                }
-            )
-        except ValueError:
-            pass
+            ]
+        return [
+            {
+                "base": "published",
+                "base_run_id": previous.run_id,
+                "target": "staged",
+                "target_run_id": target.run_id,
+            },
+            {
+                "base": "previous",
+                "base_run_id": previous.run_id,
+                "target": "staged",
+                "target_run_id": target.run_id,
+            },
+        ]
+
+    def diff_options(self, selected: BundleSelection) -> list[dict[str, str]]:
+        targets = []
+        for kind in ("published", "staged"):
+            try:
+                target = selected if selected.kind == kind else self.selection(kind)
+            except ValueError:
+                continue
+            if all(item.run_id != target.run_id or item.kind != target.kind for item in targets):
+                targets.append(target)
+        options = []
+        for target in targets:
+            options.extend(self._diff_options_for_target(target))
         return options
 
     @staticmethod
@@ -371,8 +384,16 @@ class KnowledgeReader:
         base_run_id: str,
         target_run_id: str,
     ) -> dict:
-        base_selection = self.selection(base, base_run_id)
         target_selection = self.selection(target, target_run_id)
+        requested = {
+            "base": base,
+            "base_run_id": base_run_id,
+            "target": target,
+            "target_run_id": target_run_id,
+        }
+        if requested not in self._diff_options_for_target(target_selection):
+            raise ValueError("Knowledge diff selection is not an authoritative Run relationship")
+        base_selection = self.selection(base, base_run_id)
         left_text = self._optional_read(base_selection.root, path)
         right_text = self._optional_read(target_selection.root, path)
         if left_text is None and right_text is None:
