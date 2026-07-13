@@ -74,9 +74,11 @@ def _changes(database: Path, run_id: str, base_run_id: str | None) -> dict:
         {item["id"]: item for item in store.knowledge_summary(base_run_id)} if base_run_id else {}
     )
 
+    new_claims = current_claims.keys() - previous_claims.keys()
     claim_supersedes = {
         claim_id: set(item["supersedes"]) & previous_claims.keys()
         for claim_id, item in current_claims.items()
+        if claim_id in new_claims
     }
     superseded_by: dict[str, set[str]] = {}
     for claim_id, targets in claim_supersedes.items():
@@ -89,6 +91,7 @@ def _changes(database: Path, run_id: str, base_run_id: str | None) -> dict:
         if any(len(superseded_by[target]) > 1 for target in targets)
     }
 
+    new_concepts = current_concepts.keys() - previous_concepts.keys()
     current_defining = {
         concept_id: set(item["defining_claim_ids"]) for concept_id, item in current_concepts.items()
     }
@@ -102,7 +105,7 @@ def _changes(database: Path, run_id: str, base_run_id: str | None) -> dict:
             for previous_id, defining in previous_defining.items()
             if current_defining[concept_id] & defining
         }
-        for concept_id in current_concepts
+        for concept_id in new_concepts
     }
     overlapped_by: dict[str, set[str]] = {}
     for concept_id, previous_ids in concept_overlaps.items():
@@ -117,32 +120,58 @@ def _changes(database: Path, run_id: str, base_run_id: str | None) -> dict:
         if any(len(overlapped_by[previous_id]) > 1 for previous_id in previous_ids)
     }
 
-    excluded_obligations: set[str] = set()
-    claim_obligations: dict[str, set[str]] = {}
+    current_obligations: dict[str, str] = {}
+    current_claim_obligations: dict[str, set[str]] = {}
+    base_claim_obligations: dict[str, set[str]] = {}
     if base_run_id:
         with sqlite3.connect(database) as connection:
-            excluded_obligations = {
-                row[0]
+            current_obligations = {
+                row[0]: row[1]
                 for row in connection.execute(
-                    """SELECT id FROM coverage_obligations
-                       WHERE run_id = ? AND disposition = 'excluded'""",
+                    "SELECT id, disposition FROM coverage_obligations WHERE run_id = ?",
                     (run_id,),
                 )
             }
             for obligation_id, claim_id in connection.execute(
                 "SELECT obligation_id, claim_id FROM obligation_claims WHERE run_id = ?",
+                (run_id,),
+            ):
+                current_claim_obligations.setdefault(claim_id, set()).add(obligation_id)
+            for obligation_id, claim_id in connection.execute(
+                "SELECT obligation_id, claim_id FROM obligation_claims WHERE run_id = ?",
                 (base_run_id,),
             ):
-                claim_obligations.setdefault(claim_id, set()).add(obligation_id)
+                base_claim_obligations.setdefault(claim_id, set()).add(obligation_id)
     excluded_claims = {
         claim_id
-        for claim_id in previous_claims.keys() - current_claims.keys()
-        if claim_obligations.get(claim_id) and claim_obligations[claim_id] <= excluded_obligations
+        for claim_id in current_claims.keys() | previous_claims.keys()
+        for obligations in [
+            current_claim_obligations.get(claim_id) or base_claim_obligations.get(claim_id, set())
+        ]
+        if obligations
+        and all(
+            current_obligations.get(obligation_id) == "excluded" for obligation_id in obligations
+        )
     }
+    removed_claims = {
+        target for targets in claim_supersedes.values() for target in targets
+    } - excluded_claims
     excluded_concepts = {
         concept_id
-        for concept_id in previous_concepts.keys() - current_concepts.keys()
-        if previous_defining[concept_id] and previous_defining[concept_id] <= excluded_claims
+        for concept_id in current_concepts.keys() | previous_concepts.keys()
+        for defining in [
+            current_defining.get(concept_id) or previous_defining.get(concept_id, set())
+        ]
+        if defining and defining <= excluded_claims
+    }
+    replacement_concepts: dict[str, set[str]] = {}
+    for concept_id, previous_ids in concept_overlaps.items():
+        for previous_id in previous_ids:
+            replacement_concepts.setdefault(previous_id, set()).add(concept_id)
+    removed_concepts = {
+        concept_id
+        for concept_id, defining in previous_defining.items()
+        if defining and defining <= removed_claims and replacement_concepts.get(concept_id)
     }
 
     def grouped(
@@ -152,6 +181,7 @@ def _changes(database: Path, run_id: str, base_run_id: str | None) -> dict:
         merged: set[str],
         split: set[str],
         excluded: set[str],
+        removed: set[str],
     ) -> dict:
         groups = {
             bucket: []
@@ -170,7 +200,11 @@ def _changes(database: Path, run_id: str, base_run_id: str | None) -> dict:
             item = current[item_id]
             status = item[status_key]
             bucket = (
-                "disputed"
+                "excluded"
+                if item_id in excluded
+                else "removed"
+                if item_id in removed
+                else "disputed"
                 if status == "disputed"
                 else "stale"
                 if status == "stale"
@@ -190,15 +224,18 @@ def _changes(database: Path, run_id: str, base_run_id: str | None) -> dict:
             item = previous[item_id]
             status = item[status_key]
             bucket = (
-                "disputed"
+                "excluded"
+                if item_id in excluded
+                else "removed"
+                if item_id in removed
+                else "disputed"
                 if status == "disputed"
                 else "stale"
                 if status == "stale"
-                else "excluded"
-                if item_id in excluded
-                else "removed"
+                else None
             )
-            groups[bucket].append(item)
+            if bucket is not None:
+                groups[bucket].append(item)
         return groups
 
     return {
@@ -209,6 +246,7 @@ def _changes(database: Path, run_id: str, base_run_id: str | None) -> dict:
             merged_claims,
             split_claims,
             excluded_claims,
+            removed_claims,
         ),
         "concepts": grouped(
             current_concepts,
@@ -217,6 +255,7 @@ def _changes(database: Path, run_id: str, base_run_id: str | None) -> dict:
             merged_concepts,
             split_concepts,
             excluded_concepts,
+            removed_concepts,
         ),
     }
 
