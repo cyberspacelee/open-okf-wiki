@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 import okf_wiki.query_agent as query_agent_module
+import okf_wiki.source_investigation as source_investigation_module
 from okf_wiki.benchmark import (
     BenchmarkReport,
     RunObservation,
@@ -25,7 +26,7 @@ from okf_wiki.benchmark_agent_eval import execute_agent_eval
 from okf_wiki.cli import main
 from okf_wiki.query_agent import QueryAgent
 from okf_wiki.security import git_read
-from okf_wiki.source_investigation import SourceInvestigator
+from okf_wiki.source_investigation import SourceInvestigationAgent
 
 
 def _semantic_observation() -> RunObservation:
@@ -232,9 +233,9 @@ def test_executable_benchmark_runs_real_producer_and_matches_release_fixture(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     query_invocations = 0
-    investigator_invocations = 0
+    source_investigation_invocations = 0
     original_ask = QueryAgent.ask
-    original_investigate = SourceInvestigator.investigate
+    original_investigate = SourceInvestigationAgent.investigate
 
     async def tracked_ask(self, *args, **kwargs):
         nonlocal query_invocations
@@ -242,12 +243,12 @@ def test_executable_benchmark_runs_real_producer_and_matches_release_fixture(
         return await original_ask(self, *args, **kwargs)
 
     async def tracked_investigate(self, *args, **kwargs):
-        nonlocal investigator_invocations
-        investigator_invocations += 1
+        nonlocal source_investigation_invocations
+        source_investigation_invocations += 1
         return await original_investigate(self, *args, **kwargs)
 
     monkeypatch.setattr(QueryAgent, "ask", tracked_ask)
-    monkeypatch.setattr(SourceInvestigator, "investigate", tracked_investigate)
+    monkeypatch.setattr(SourceInvestigationAgent, "investigate", tracked_investigate)
     report = run_benchmark(workspace=tmp_path)
     expected = BenchmarkReport.model_validate_json(
         (
@@ -267,7 +268,7 @@ def test_executable_benchmark_runs_real_producer_and_matches_release_fixture(
     assert report.executed_runs == 18
     assert report.repeated_runs == 3
     assert report.hard_gates["reviewed_major_inventory"] is True
-    assert investigator_invocations == 2
+    assert source_investigation_invocations == 2
     assert report.hard_gates["reviewed_conflicts_exclusions_data_contracts"] is True
     assert report.incremental_full_equivalent is True
     assert all(item.applied and item.equivalent and item.passed for item in report.mutations)
@@ -292,8 +293,8 @@ def test_executable_benchmark_runs_real_producer_and_matches_release_fixture(
         "read_evidence",
         "renderable_claims",
     )
-    assert report.role_trajectories["investigator"].invocations == 2
-    assert report.role_trajectories["investigator"].function_tools == ("read_text",)
+    assert report.role_trajectories["source_investigation"].invocations == 2
+    assert report.role_trajectories["source_investigation"].function_tools == ("read_text",)
     assert report.gateway.live is False
     assert report.gateway.status == "not_required"
     assert report.costs.tokens >= 0
@@ -328,25 +329,45 @@ def test_agent_eval_blocks_when_query_agent_execution_breaks(
     } <= set(execution.report.failures)
 
 
-def test_agent_eval_blocks_when_source_investigator_execution_breaks(
+def test_agent_eval_blocks_when_source_investigation_agent_execution_breaks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     corpus = load_benchmark_corpus()
     materialized = materialize_corpus(corpus, tmp_path / "repositories")
 
     async def broken_investigation(*_args, **_kwargs):
-        raise RuntimeError("broken Source Investigator")
+        raise RuntimeError("broken Source Investigation Agent")
 
-    monkeypatch.setattr(SourceInvestigator, "investigate", broken_investigation)
+    monkeypatch.setattr(SourceInvestigationAgent, "investigate", broken_investigation)
 
     execution = execute_agent_eval(corpus, materialized, tmp_path, "function-model-v1")
 
     assert execution.report.blocked is True
     assert {
-        "investigator:grounded-provisional-answer:trajectory:missing_trajectory",
-        "investigator:prompt-injection-mutation-refusal:trajectory:missing_trajectory",
-        "investigator:grounded-provisional-answer:citation_completeness",
-        "investigator:prompt-injection-mutation-refusal:read_only_authority",
+        "source_investigation:grounded-provisional-answer:trajectory:missing_trajectory",
+        "source_investigation:prompt-injection-mutation-refusal:trajectory:missing_trajectory",
+        "source_investigation:grounded-provisional-answer:citation_completeness",
+        "source_investigation:prompt-injection-mutation-refusal:read_only_authority",
+    } <= set(execution.report.failures)
+
+
+def test_agent_eval_blocks_when_source_investigation_safety_instructions_are_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    corpus = load_benchmark_corpus()
+    materialized = materialize_corpus(corpus, tmp_path / "repositories")
+    monkeypatch.setattr(
+        source_investigation_module,
+        "INVESTIGATION_INSTRUCTIONS",
+        "",
+    )
+
+    execution = execute_agent_eval(corpus, materialized, tmp_path, "function-model-v1")
+
+    assert execution.report.blocked is True
+    assert {
+        "source_investigation:prompt-injection-mutation-refusal:refusal_quality",
+        "source_investigation:prompt-injection-mutation-refusal:prompt_injection_resistance",
     } <= set(execution.report.failures)
 
 

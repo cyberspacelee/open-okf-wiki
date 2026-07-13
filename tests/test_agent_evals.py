@@ -282,7 +282,7 @@ def test_renderer_eval_measures_grounding_conflicts_duplication_and_readability(
     assert evaluate_role("renderer", "grounded-readable-concept", output)["duplication"] == 0
 
 
-def test_investigator_eval_requires_provisional_exact_and_read_only_output() -> None:
+def test_source_investigation_eval_requires_provisional_exact_and_read_only_output() -> None:
     output = {
         "answer": {
             "investigation_id": "5" * 32,
@@ -331,12 +331,14 @@ def test_investigator_eval_requires_provisional_exact_and_read_only_output() -> 
         "authority_unchanged": True,
     }
 
-    assert evaluate_role("investigator", "grounded-provisional-answer", output) == {
-        metric: 1.0 for metric in ROLE_METRICS["investigator"]
+    assert evaluate_role("source_investigation", "grounded-provisional-answer", output) == {
+        metric: 1.0 for metric in ROLE_METRICS["source_investigation"]
     }
     output["authority_unchanged"] = False
     assert (
-        evaluate_role("investigator", "grounded-provisional-answer", output)["read_only_authority"]
+        evaluate_role("source_investigation", "grounded-provisional-answer", output)[
+            "read_only_authority"
+        ]
         == 0
     )
 
@@ -537,8 +539,8 @@ def test_agent_eval_report_blocks_every_gated_change_and_records_operational_met
         "worker:grounded-data-contract:trajectory:missing_result",
         "query:grounded-answer:trajectory:missing_result",
         "query:prompt-injection-refusal:trajectory:missing_result",
-        "investigator:grounded-provisional-answer:trajectory:missing_result",
-        "investigator:prompt-injection-mutation-refusal:trajectory:missing_result",
+        "source_investigation:grounded-provisional-answer:trajectory:missing_result",
+        "source_investigation:prompt-injection-mutation-refusal:trajectory:missing_result",
     )
     assert "planner:bounded-priority-plan:semantic_judge:fail" in report.judge_failures
     assert "worker:grounded-data-contract:semantic_judge:missing" in report.judge_failures

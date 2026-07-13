@@ -1,11 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent } from "react"
-import {
-  CloudUploadIcon,
-  FileSearchIcon,
-  MessageCircleQuestionIcon,
-  SendIcon,
-  ShieldCheckIcon,
-} from "lucide-react"
+import CloudUploadIcon from "lucide-react/dist/esm/icons/cloud-upload.mjs"
+import FileSearchIcon from "lucide-react/dist/esm/icons/file-search.mjs"
+import MessageCircleQuestionIcon from "lucide-react/dist/esm/icons/message-circle-question.mjs"
+import SendIcon from "lucide-react/dist/esm/icons/send.mjs"
+import ShieldCheckIcon from "lucide-react/dist/esm/icons/shield-check.mjs"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -47,13 +45,11 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet"
+import { Separator } from "@/components/ui/separator"
 import { Spinner } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
-import {
-  SourceInvestigationSheet,
-  type InvestigationLaunch,
-} from "@/components/source-investigation"
+import { SourceInvestigationSheet } from "@/components/source-investigation"
 import type { BundleKind } from "@/lib/knowledge"
 import {
   askAcceptedKnowledge,
@@ -70,41 +66,37 @@ type Turn = {
   error?: QueryError
 }
 
-export function KnowledgeQuery({
-  token,
-  bundle,
-  runId,
-  sourceSetDigest,
-  page,
-  conceptId,
-}: {
+type KnowledgeQueryProps = {
   token: string
   bundle: BundleKind
   runId: string
   sourceSetDigest: string
   page: string | null
   conceptId: string | null
-}) {
+}
+
+export function KnowledgeQuery(props: KnowledgeQueryProps) {
+  const { bundle, runId, sourceSetDigest, page, conceptId } = props
+  const identityKey = `${bundle}:${runId}:${sourceSetDigest}:${page ?? ""}:${conceptId ?? ""}`
+  return <KnowledgeQuerySession key={identityKey} {...props} />
+}
+
+function KnowledgeQuerySession({
+  token,
+  bundle,
+  runId,
+  sourceSetDigest,
+  page,
+  conceptId,
+}: KnowledgeQueryProps) {
   const [open, setOpen] = useState(false)
   const [scope, setScope] = useState<QueryScope>(page ? "concept" : "bundle")
   const [question, setQuestion] = useState("")
   const [turns, setTurns] = useState<Turn[]>([])
   const [pending, setPending] = useState(false)
   const [investigationOpen, setInvestigationOpen] = useState(false)
-  const [investigationLaunch, setInvestigationLaunch] =
-    useState<InvestigationLaunch | null>(null)
+  const [investigationQuestion, setInvestigationQuestion] = useState("")
   const controller = useRef<AbortController | null>(null)
-
-  useEffect(() => {
-    controller.current?.abort()
-    controller.current = null
-    setTurns([])
-    setQuestion("")
-    setPending(false)
-    setScope(page ? "concept" : "bundle")
-    setInvestigationOpen(false)
-    setInvestigationLaunch(null)
-  }, [bundle, conceptId, page, runId, sourceSetDigest])
 
   useEffect(() => () => controller.current?.abort(), [])
 
@@ -153,10 +145,7 @@ export function KnowledgeQuery({
 
   function openInvestigation(sourceQuestion: string) {
     setOpen(false)
-    setInvestigationLaunch({
-      id: crypto.randomUUID(),
-      question: sourceQuestion,
-    })
+    setInvestigationQuestion(sourceQuestion)
     setInvestigationOpen(true)
   }
 
@@ -168,16 +157,17 @@ export function KnowledgeQuery({
           Ask accepted knowledge
         </SheetTrigger>
         <SheetContent className="gap-0 data-[side=right]:w-full data-[side=right]:sm:max-w-2xl">
-          <SheetHeader className="border-b pr-12">
+          <SheetHeader className="pr-12">
             <SheetTitle>Ask accepted knowledge</SheetTitle>
             <SheetDescription>
               Answers come only from accepted Claims and exact Evidence
               References.
             </SheetDescription>
           </SheetHeader>
+          <Separator />
 
           <div className="flex min-h-0 flex-1 flex-col">
-            <div className="flex flex-col gap-3 border-b p-4">
+            <div className="flex flex-col gap-3 p-4">
               <Field>
                 <FieldLabel id="query-scope-label">Answer scope</FieldLabel>
                 <ToggleGroup
@@ -214,6 +204,7 @@ export function KnowledgeQuery({
                 </AlertDescription>
               </Alert>
             </div>
+            <Separator />
 
             <MessageScrollerProvider autoScroll>
               <MessageScroller className="min-h-0 flex-1">
@@ -268,7 +259,8 @@ export function KnowledgeQuery({
               </MessageScroller>
             </MessageScrollerProvider>
 
-            <form className="border-t p-4" onSubmit={submit}>
+            <Separator />
+            <form className="p-4" onSubmit={submit}>
               <FieldGroup>
                 <Field data-disabled={pending || undefined}>
                   <FieldLabel htmlFor="knowledge-question" className="sr-only">
@@ -303,8 +295,8 @@ export function KnowledgeQuery({
         sourceSetDigest={sourceSetDigest}
         open={investigationOpen}
         onOpenChange={setInvestigationOpen}
-        launch={investigationLaunch}
-        identityKey={`${bundle}:${runId}:${sourceSetDigest}:${page ?? ""}:${conceptId ?? ""}`}
+        question={investigationQuestion}
+        onQuestionChange={setInvestigationQuestion}
       />
     </>
   )

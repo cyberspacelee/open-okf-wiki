@@ -1236,7 +1236,7 @@ class WorkspaceApplication:
             InvestigationSource,
             InvestigationSourceIdentity,
             SourceInvestigationAnswer,
-            SourceInvestigator,
+            SourceInvestigationAgent,
             record_source_investigation_audit,
         )
         from .worker import GatewaySettings, build_gateway_model
@@ -1306,7 +1306,7 @@ class WorkspaceApplication:
             )
             limit = resolved["runtime_limits"].get("per_agent_call_total_tokens", 8_000)
             answer = asyncio.run(
-                SourceInvestigator(
+                SourceInvestigationAgent(
                     build_gateway_model(
                         GatewaySettings(
                             base_url=profile.base_url,

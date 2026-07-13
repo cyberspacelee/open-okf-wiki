@@ -1,7 +1,7 @@
 import json
 import sqlite3
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Annotated, Literal, cast
 
@@ -14,7 +14,7 @@ from .query_evals import QUERY_METRICS, evaluate_query
 from .scheduler import TaskPlan
 
 
-AgentRole = Literal["planner", "worker", "verifier", "renderer", "query", "investigator"]
+AgentRole = Literal["planner", "worker", "verifier", "renderer", "query", "source_investigation"]
 ChangeKind = Literal[
     "model", "prompt", "tool", "classifier", "workflow", "profile", "policy", "schema"
 ]
@@ -61,7 +61,15 @@ ROLE_METRICS: dict[AgentRole, tuple[str, ...]] = {
         "readability",
     ),
     "query": QUERY_METRICS,
-    "investigator": INVESTIGATION_METRICS,
+    "source_investigation": INVESTIGATION_METRICS,
+}
+ROLE_ALLOWED_TOOLS: dict[str, frozenset[str]] = {
+    "planner": frozenset(),
+    "worker": frozenset({"read_text"}),
+    "verifier": frozenset(),
+    "renderer": frozenset(),
+    "query": frozenset({"find_concepts", "renderable_claims", "get_claim", "read_evidence"}),
+    "source_investigation": frozenset({"list_paths", "search_text", "read_text"}),
 }
 DATASET_VERSION = "v1"
 DATASET_ROOT = Path(__file__).with_name("eval_datasets")
@@ -412,25 +420,35 @@ def _renderer_metrics(
     }
 
 
+DatasetEvaluator = Callable[
+    [dict[str, object], dict[str, object], Mapping[str, object]], dict[str, float]
+]
+ReadOnlyEvaluator = Callable[[str, dict[str, object]], dict[str, float]]
+DATASET_EVALUATORS: dict[str, DatasetEvaluator] = {
+    "planner": _planner_metrics,
+    "worker": _worker_metrics,
+    "verifier": _verifier_metrics,
+    "renderer": _renderer_metrics,
+}
+READ_ONLY_EVALUATORS: dict[str, ReadOnlyEvaluator] = {
+    "query": evaluate_query,
+    "source_investigation": evaluate_investigation,
+}
+READ_ONLY_ROLES = frozenset(READ_ONLY_EVALUATORS)
+
+
 def evaluate_role(
     role: AgentRole, case_name: str, output: Mapping[str, object]
 ) -> dict[str, float]:
     case = _case(role, case_name)
-    inputs = cast(dict[str, object], case.inputs)
-    expected = cast(dict[str, object], case.expected_output)
-    if role == "planner":
-        return _planner_metrics(inputs, expected, output)
-    if role == "worker":
-        return _worker_metrics(inputs, expected, output)
-    if role == "verifier":
-        return _verifier_metrics(inputs, expected, output)
-    if role == "renderer":
-        return _renderer_metrics(inputs, expected, output)
-    if role == "query":
-        return evaluate_query(case_name, dict(output))
-    if role == "investigator":
-        return evaluate_investigation(case_name, dict(output))
-    raise ValueError(f"Agent Eval is not implemented for role: {role}")
+    evaluator = DATASET_EVALUATORS.get(role)
+    if evaluator is not None:
+        return evaluator(
+            cast(dict[str, object], case.inputs),
+            cast(dict[str, object], case.expected_output),
+            output,
+        )
+    return READ_ONLY_EVALUATORS[role](case_name, dict(output))
 
 
 def _metric_failures(
@@ -499,7 +517,7 @@ def _worker_trajectory_failures(
 
 
 def _read_only_trajectory_failures(
-    role: Literal["query", "investigator"],
+    role: AgentRole,
     case_name: str,
     inputs: dict[str, object],
     result: RoleEvalResult | None,
@@ -589,13 +607,9 @@ def evaluate_release(manifest: ReleaseEvalManifest) -> AgentEvalReport:
                         result,
                     )
                 )
-            elif role == "query":
+            elif role in READ_ONLY_ROLES:
                 trajectory_failures.extend(
-                    _read_only_trajectory_failures("query", case.name, case.inputs, result)
-                )
-            elif role == "investigator":
-                trajectory_failures.extend(
-                    _read_only_trajectory_failures("investigator", case.name, case.inputs, result)
+                    _read_only_trajectory_failures(role, case.name, case.inputs, result)
                 )
     failures.extend(trajectory_failures)
     failures.extend(judge_failures)

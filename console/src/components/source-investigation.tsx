@@ -1,10 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent } from "react"
-import {
-  CloudUploadIcon,
-  FileSearchIcon,
-  SearchIcon,
-  ShieldAlertIcon,
-} from "lucide-react"
+import CloudUploadIcon from "lucide-react/dist/esm/icons/cloud-upload.mjs"
+import FileSearchIcon from "lucide-react/dist/esm/icons/file-search.mjs"
+import SearchIcon from "lucide-react/dist/esm/icons/search.mjs"
+import ShieldAlertIcon from "lucide-react/dist/esm/icons/shield-alert.mjs"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -45,6 +43,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
+import { Separator } from "@/components/ui/separator"
 import { Spinner } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
 import {
@@ -53,11 +52,6 @@ import {
   type SourceInvestigationAnswer,
   type SourceInvestigationError,
 } from "@/lib/source-investigation"
-
-export type InvestigationLaunch = {
-  id: string
-  question: string
-}
 
 type Turn = {
   id: string
@@ -72,33 +66,20 @@ export function SourceInvestigationSheet({
   sourceSetDigest,
   open,
   onOpenChange,
-  launch,
-  identityKey,
+  question,
+  onQuestionChange,
 }: {
   token: string
   runId: string
   sourceSetDigest: string
   open: boolean
   onOpenChange: (open: boolean) => void
-  launch: InvestigationLaunch | null
-  identityKey: string
+  question: string
+  onQuestionChange: (question: string) => void
 }) {
-  const [question, setQuestion] = useState("")
   const [turns, setTurns] = useState<Turn[]>([])
   const [pending, setPending] = useState(false)
   const controller = useRef<AbortController | null>(null)
-
-  useEffect(() => {
-    controller.current?.abort()
-    controller.current = null
-    setTurns([])
-    setQuestion("")
-    setPending(false)
-  }, [identityKey, runId, sourceSetDigest])
-
-  useEffect(() => {
-    if (launch) setQuestion(launch.question)
-  }, [launch])
 
   useEffect(() => () => controller.current?.abort(), [])
 
@@ -109,7 +90,7 @@ export function SourceInvestigationSheet({
     const id = crypto.randomUUID()
     const next = new AbortController()
     controller.current = next
-    setQuestion("")
+    onQuestionChange("")
     setPending(true)
     setTurns((current) => [...current, { id, question: text }])
     try {
@@ -146,7 +127,7 @@ export function SourceInvestigationSheet({
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="gap-0 data-[side=right]:w-full data-[side=right]:sm:max-w-2xl">
-        <SheetHeader className="border-b pr-12">
+        <SheetHeader className="pr-12">
           <div className="flex flex-wrap items-center gap-2">
             <SheetTitle>Investigate fixed sources</SheetTitle>
             <Badge variant="secondary">
@@ -162,9 +143,10 @@ export function SourceInvestigationSheet({
             <Badge variant="outline">Source Set {sourceSetDigest}</Badge>
           </div>
         </SheetHeader>
+        <Separator />
 
         <div className="flex min-h-0 flex-1 flex-col">
-          <div className="flex flex-col gap-3 border-b p-4">
+          <div className="flex flex-col gap-3 p-4">
             <Alert>
               <ShieldAlertIcon />
               <AlertTitle>Explicit provisional investigation</AlertTitle>
@@ -183,6 +165,7 @@ export function SourceInvestigationSheet({
               </AlertDescription>
             </Alert>
           </div>
+          <Separator />
 
           <MessageScrollerProvider autoScroll>
             <MessageScroller className="min-h-0 flex-1">
@@ -236,7 +219,8 @@ export function SourceInvestigationSheet({
             </MessageScroller>
           </MessageScrollerProvider>
 
-          <form className="border-t p-4" onSubmit={submit}>
+          <Separator />
+          <form className="p-4" onSubmit={submit}>
             <FieldGroup>
               <Field data-disabled={pending || undefined}>
                 <FieldLabel
@@ -248,7 +232,7 @@ export function SourceInvestigationSheet({
                 <Textarea
                   id="source-investigation-question"
                   value={question}
-                  onChange={(event) => setQuestion(event.target.value)}
+                  onChange={(event) => onQuestionChange(event.target.value)}
                   placeholder="Investigate the fixed Source Snapshots…"
                   maxLength={4000}
                   rows={3}
@@ -280,7 +264,9 @@ function InvestigationResponse({ turn }: { turn: Turn }) {
     return (
       <Message align="start">
         <MessageContent>
-          <MessageHeader>Source Investigator · provisional</MessageHeader>
+          <MessageHeader>
+            Source Investigation Agent · provisional
+          </MessageHeader>
           <Bubble variant="destructive">
             <BubbleContent>{turn.error.message}</BubbleContent>
           </Bubble>
@@ -291,7 +277,9 @@ function InvestigationResponse({ turn }: { turn: Turn }) {
     return (
       <Message align="start">
         <MessageContent>
-          <MessageHeader>Source Investigator · provisional</MessageHeader>
+          <MessageHeader>
+            Source Investigation Agent · provisional
+          </MessageHeader>
           <Bubble variant="muted">
             <BubbleContent>
               <span className="shimmer">Reading fixed Source Snapshots…</span>
@@ -305,7 +293,9 @@ function InvestigationResponse({ turn }: { turn: Turn }) {
     return (
       <Message align="start">
         <MessageContent>
-          <MessageHeader>Source Investigator · provisional</MessageHeader>
+          <MessageHeader>
+            Source Investigation Agent · provisional
+          </MessageHeader>
           <Bubble variant="destructive">
             <BubbleContent>{answer.error}</BubbleContent>
           </Bubble>
@@ -316,7 +306,7 @@ function InvestigationResponse({ turn }: { turn: Turn }) {
   return (
     <Message align="start">
       <MessageContent>
-        <MessageHeader>Source Investigator · provisional</MessageHeader>
+        <MessageHeader>Source Investigation Agent · provisional</MessageHeader>
         <BubbleGroup>
           {answer.segments.map((segment, index) => (
             <InvestigationAnswerSegment key={index} segment={segment} />

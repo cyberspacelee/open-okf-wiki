@@ -5,7 +5,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated, Literal, TypeVar, cast
+from typing import Annotated, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_ai import (
@@ -23,7 +23,7 @@ from pydantic_ai.usage import RunUsage
 from .accepted_knowledge import AcceptedKnowledgeStore, ConceptSummary, RenderableClaimRecord
 from .gateway_common import safe_agent_error
 from .knowledge import KnowledgeReader
-from .security import contains_secret, redact_secrets
+from .security import contains_secret, redact_secret_values, redact_secrets
 from .state_schema import migrate_state
 
 
@@ -209,10 +209,7 @@ class QueryDeps:
 
 
 def _public(value: PublicT, secrets: tuple[str, ...]) -> PublicT:
-    return cast(
-        PublicT,
-        json.loads(redact_secrets(json.dumps(value, ensure_ascii=False), secrets)),
-    )
+    return redact_secret_values(value, secrets)
 
 
 def _allowed_concept(deps: QueryDeps, concept_id: str) -> None:
@@ -571,15 +568,15 @@ class QueryAgent:
             with capture_run_messages():
                 async with asyncio.timeout(self.wall_time_seconds):
                     result = await agent.run(
-                        redact_secrets(
-                            json.dumps(
+                        json.dumps(
+                            redact_secret_values(
                                 {
                                     "fixed_context": context.model_dump(mode="json"),
                                     "question": question,
                                 },
-                                sort_keys=True,
+                                self.secrets,
                             ),
-                            self.secrets,
+                            sort_keys=True,
                         ),
                         deps=deps,
                         usage_limits=self.usage_limits,

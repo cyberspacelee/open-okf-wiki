@@ -160,6 +160,10 @@ _Avoid_: Analysis Task, Web Enrichment, knowledge mutation
 An explicitly requested read-only investigation of a fixed Source Snapshot when accepted knowledge cannot answer a question. Its result is provisional, source-cited, and never part of the Accepted Knowledge Model unless it later passes the normal production and review process.
 _Avoid_: Knowledge Query, accepted Claim, Web Enrichment
 
+**Source Investigation Agent**:
+A short-lived read-only Agent that performs one Source Investigation with bounded list, literal search, and read tools against fixed Source Snapshots without changing authoritative knowledge.
+_Avoid_: Query Agent, Worker Agent, knowledge editor
+
 **Verification Finding**:
 A typed assessment of a proposed or accepted knowledge item from one explicit semantic verification perspective.
 _Avoid_: Vote, direct state mutation

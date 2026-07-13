@@ -257,7 +257,7 @@ test("offers an explicit separate provisional Source Investigation", async ({
     dialog.getByText("The fixed Source Snapshot uses bounded read tools.")
   ).toBeVisible()
   await expect(
-    dialog.getByText("investigator-model", { exact: true })
+    dialog.getByText("source-investigation-model", { exact: true })
   ).toBeVisible()
   await expect(
     dialog.getByText(`Run ${runId}`, { exact: true }).first()
@@ -531,7 +531,7 @@ function investigationAnswer() {
     notice: "Provisional · not part of Knowledge Bundle",
     run_id: runId,
     source_set_digest: digest,
-    model: "investigator-model",
+    model: "source-investigation-model",
     sources: [{ source_id: "docs", revision: "1".repeat(40) }],
     segments: [
       {

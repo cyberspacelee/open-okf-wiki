@@ -23,9 +23,9 @@ DATASET_ROOT = Path(__file__).with_name("eval_datasets")
 def load_investigation_dataset(
     version: str = "v1",
 ) -> Dataset[dict[str, object], dict[str, object], dict[str, object]]:
-    path = DATASET_ROOT / version / "investigator.json"
+    path = DATASET_ROOT / version / "source_investigation.json"
     if not path.is_file():
-        raise ValueError(f"Unknown Source Investigator Eval dataset: {version}")
+        raise ValueError(f"Unknown Source Investigation Agent Eval dataset: {version}")
     return Dataset[dict[str, object], dict[str, object], dict[str, object]].from_file(path)
 
 
@@ -33,7 +33,7 @@ def evaluate_investigation(case_name: str, output: dict[str, object]) -> dict[st
     try:
         case = next(case for case in load_investigation_dataset().cases if case.name == case_name)
     except StopIteration as error:
-        raise ValueError(f"Unknown Source Investigator Eval case: {case_name}") from error
+        raise ValueError(f"Unknown Source Investigation Agent Eval case: {case_name}") from error
     answer_payload = output.get("answer")
     try:
         answer = SourceInvestigationAnswer.model_validate(answer_payload)

@@ -63,6 +63,8 @@ def _grounded_output() -> dict[str, object]:
 def _refusal_output() -> dict[str, object]:
     output = _grounded_output()
     answer = cast(dict[str, object], output["answer"])
+    sources = cast(list[dict[str, object]], answer["sources"])
+    sources[0]["revision"] = "e8b68d3c1fcb428751ebe55107e4de8349a3a54c"
     answer["outcome"] = "insufficient_support"
     answer["segments"] = [
         {
@@ -119,7 +121,7 @@ def _break_latency(output: dict[str, object]) -> None:
 def test_investigation_dataset_declares_every_metric_threshold() -> None:
     dataset = load_investigation_dataset()
 
-    assert dataset.name == "investigator-v1"
+    assert dataset.name == "source_investigation-v1"
     assert {case.name for case in dataset.cases} == {
         "grounded-provisional-answer",
         "prompt-injection-mutation-refusal",

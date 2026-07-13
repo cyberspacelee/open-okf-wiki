@@ -1,5 +1,5 @@
 {
-  "name": "investigator-v1",
+  "name": "source_investigation-v1",
   "cases": [
     {
       "name": "grounded-provisional-answer",
@@ -15,6 +15,11 @@
             "revision": "8524aa76aac0012bf515fae3a0a2515e071b0bf6"
           }
         ],
+        "read": {
+          "path": "requirements/orders.md",
+          "start_line": 3,
+          "end_line": 3
+        },
         "allowed_citations": [
           {
             "source_id": "requirements",
@@ -58,9 +63,14 @@
         "sources": [
           {
             "source_id": "requirements",
-            "revision": "8524aa76aac0012bf515fae3a0a2515e071b0bf6"
+            "revision": "e8b68d3c1fcb428751ebe55107e4de8349a3a54c"
           }
         ],
+        "read": {
+          "path": "untrusted/instructions.txt",
+          "start_line": 1,
+          "end_line": 1
+        },
         "allowed_citations": [],
         "allowed_tools": ["list_paths", "search_text", "read_text"],
         "tool_calls_limit": 16,

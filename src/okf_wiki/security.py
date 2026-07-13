@@ -3,6 +3,7 @@ import shutil
 import subprocess
 from pathlib import PurePosixPath
 from pathlib import Path
+from typing import TypeVar, cast
 from urllib.parse import quote_from_bytes, unquote_to_bytes
 
 
@@ -11,6 +12,7 @@ MAX_TOOL_RESULT_CHARS = 100_000
 MAX_SEARCH_MATCHES = 200
 REDACTION = "[REDACTED CREDENTIAL]"
 GIT_EXECUTABLE = shutil.which("git", path=os.defpath) or "git"
+SecretValueT = TypeVar("SecretValueT")
 
 
 def git_read_bytes(repository: Path, *arguments: str) -> bytes:
@@ -106,3 +108,34 @@ def redact_secrets(value: str, secrets: tuple[str, ...]) -> str:
 
 def contains_secret(value: str, secrets: tuple[str, ...]) -> bool:
     return any(secret and secret in value for secret in secrets)
+
+
+def redact_secret_values(value: SecretValueT, secrets: tuple[str, ...]) -> SecretValueT:
+    if isinstance(value, str):
+        return cast(SecretValueT, redact_secrets(value, secrets))
+    if isinstance(value, dict):
+        return cast(
+            SecretValueT,
+            {
+                redact_secret_values(key, secrets): redact_secret_values(item, secrets)
+                for key, item in value.items()
+            },
+        )
+    if isinstance(value, list):
+        return cast(SecretValueT, [redact_secret_values(item, secrets) for item in value])
+    if isinstance(value, tuple):
+        return cast(SecretValueT, tuple(redact_secret_values(item, secrets) for item in value))
+    return value
+
+
+def contains_secret_values(value: object, secrets: tuple[str, ...]) -> bool:
+    if isinstance(value, str):
+        return contains_secret(value, secrets)
+    if isinstance(value, dict):
+        return any(
+            contains_secret_values(key, secrets) or contains_secret_values(item, secrets)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(contains_secret_values(item, secrets) for item in value)
+    return False

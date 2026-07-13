@@ -52,6 +52,20 @@ INVESTIGATION_SECOND_TEXT = "Provisional findings require a later normal Product
 INVESTIGATION_MULTI_ANSWER = "The fixed sources require grounded, provisional investigation."
 
 
+def nested_strings(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [
+            text
+            for key, item in value.items()
+            for text in (*nested_strings(key), *nested_strings(item))
+        ]
+    if isinstance(value, list):
+        return [text for item in value for text in nested_strings(item)]
+    return []
+
+
 def _git(repository: Path, *arguments: str) -> str:
     return subprocess.run(
         ["git", *arguments],
@@ -2324,6 +2338,67 @@ def test_console_source_investigation_uses_independent_secured_endpoint(
     assert wrong_origin.status_code == 403
     assert malformed.status_code == 400
     assert "requires question" in malformed.json()["errors"][0]
+
+
+def test_console_source_investigation_redacts_json_escaped_credentials_before_egress(
+    tmp_path: Path,
+) -> None:
+    credential = 'quoted"slash\\secret'
+    escaped_credential = json.dumps(credential, ensure_ascii=False)[1:-1]
+    config_root = tmp_path / "machine-config"
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / "index.html").write_text("ok", encoding="utf-8")
+    with fake_query_gateway("investigation") as (gateway, base_url):
+        gateway.credential = credential
+        application = query_workspace(tmp_path, config_root=config_root)
+        source = tmp_path / "source"
+        (source / "README.md").write_text(
+            f"{STATEMENT} {credential}\n{ATTACK_TEXT}\n{BUNDLE_STATEMENT}\n",
+            encoding="utf-8",
+        )
+        _git(source, "add", "README.md")
+        _git(source, "commit", "-qm", "credential fixture")
+        revision = _git(source, "rev-parse", "HEAD")
+        with sqlite3.connect(application.database_path) as connection:
+            source_set = json.loads(
+                connection.execute(
+                    "SELECT source_set_json FROM runs WHERE id = 'run-1'"
+                ).fetchone()[0]
+            )
+            source_set["sources"][0]["revision"] = revision
+            connection.execute(
+                "UPDATE runs SET revision = ?, source_set_json = ? WHERE id = 'run-1'",
+                (revision, json.dumps(source_set)),
+            )
+        configure_query_gateway(application, config_root, base_url, credential)
+        with running_console(application, assets, config_root) as server:
+            response = httpx.post(
+                f"http://127.0.0.1:{server.server_port}/api/v1/source-investigations",
+                headers={
+                    "Authorization": f"Bearer {server.session_token}",
+                    "Content-Type": "application/json",
+                    "Origin": server.origin,
+                },
+                json={
+                    "question": f"What does the fixed Source say about {credential}?",
+                    "run_id": "run-1",
+                    "source_set_digest": "source-set-1",
+                },
+            )
+
+    assert response.status_code == 200
+    assert any(
+        message["role"] == "tool"
+        for _headers, payload in gateway.requests
+        for message in payload["messages"]
+    )
+    for _headers, payload in gateway.requests:
+        for value in nested_strings(payload["messages"]):
+            assert credential not in value
+            assert escaped_credential not in value
+    assert credential not in response.text
+    assert escaped_credential not in response.text
 
 
 def test_console_source_investigation_stale_identity_never_calls_gateway_or_audits(

@@ -20,7 +20,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from .accepted_knowledge import AcceptedKnowledgeStore, ClaimRecord, ConceptRecord
-from .agent_evals import AgentEvalReport
+from .agent_evals import ROLE_ALLOWED_TOOLS, AgentEvalReport
 from .benchmark_agent_eval import (
     aggregate_worker_audits,
     execute_agent_eval,
@@ -660,24 +660,8 @@ def _execute_run(
         materialized,
         revisions,
         mutation_id,
-        role_function_tools
-        or {
-            "planner": [],
-            "worker": [],
-            "verifier": [],
-            "renderer": [],
-            "query": [],
-            "investigator": [],
-        },
-        role_invocations
-        or {
-            "planner": 0,
-            "worker": 0,
-            "verifier": 0,
-            "renderer": 0,
-            "query": 0,
-            "investigator": 0,
-        },
+        role_function_tools or {role: [] for role in ROLE_ALLOWED_TOOLS},
+        role_invocations or {role: 0 for role in ROLE_ALLOWED_TOOLS},
     )
     finish_run(run_id)
     database = workspace / ".okf-wiki" / "runs.db"
@@ -1160,22 +1144,8 @@ def run_benchmark(
     observations: list[RunObservation] = []
     expected_source_revisions: list[dict[str, str]] = []
     mutations: list[MutationReport] = []
-    role_function_tools = {
-        "planner": [],
-        "worker": [],
-        "verifier": [],
-        "renderer": [],
-        "query": [],
-        "investigator": [],
-    }
-    role_invocations = {
-        "planner": 0,
-        "worker": 0,
-        "verifier": 0,
-        "renderer": 0,
-        "query": 0,
-        "investigator": 0,
-    }
+    role_function_tools = {role: [] for role in ROLE_ALLOWED_TOOLS}
+    role_invocations = {role: 0 for role in ROLE_ALLOWED_TOOLS}
     with _working_directory(root):
         publish = root / "published" / "baseline"
         baseline = _execute_run(
@@ -1340,16 +1310,7 @@ def run_benchmark(
         role: RoleTrajectoryReport(
             invocations=role_invocations[role],
             function_tools=tuple(sorted(set(tools))),
-            passed=(
-                set(tools) <= {"read_text"}
-                if role == "worker"
-                else set(tools)
-                <= {"find_concepts", "renderable_claims", "get_claim", "read_evidence"}
-                if role == "query"
-                else set(tools) <= {"list_paths", "search_text", "read_text"}
-                if role == "investigator"
-                else not tools
-            ),
+            passed=set(tools) <= ROLE_ALLOWED_TOOLS[role],
         )
         for role, tools in role_function_tools.items()
     }

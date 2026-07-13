@@ -7,7 +7,7 @@ from pydantic_ai import ModelRequest, ModelResponse, RequestUsage, ToolCallPart
 from pydantic_ai.messages import RetryPromptPart, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from okf_wiki.source_investigation import InvestigationSource, SourceInvestigator
+from okf_wiki.source_investigation import InvestigationSource, SourceInvestigationAgent
 
 
 def git(repository: Path, *arguments: str) -> str:
@@ -38,10 +38,10 @@ def source_repository(tmp_path: Path, *, credential: str = "") -> tuple[Path, st
     return repository, git(repository, "rev-parse", "HEAD")
 
 
-def test_investigator_limits_tools_retries_traversal_and_downgrades_unread_fact(
+def test_source_investigation_agent_limits_tools_retries_traversal_and_downgrades_unread_fact(
     tmp_path: Path,
 ) -> None:
-    credential = "investigator-gateway-secret"
+    credential = "source-investigation-gateway-secret"
     repository, revision = source_repository(tmp_path, credential=credential)
     source = InvestigationSource.open("docs", repository, revision)
 
@@ -114,9 +114,9 @@ def test_investigator_limits_tools_retries_traversal_and_downgrades_unread_fact(
         return ModelResponse([part])
 
     result = asyncio.run(
-        SourceInvestigator(
+        SourceInvestigationAgent(
             FunctionModel(attack),
-            model_name="investigator-model",
+            model_name="source-investigation-model",
             secrets=(credential,),
         ).investigate(
             run_id="run-1",
@@ -132,7 +132,9 @@ def test_investigator_limits_tools_retries_traversal_and_downgrades_unread_fact(
     assert credential not in result.model_dump_json()
 
 
-def test_investigator_rejects_secret_bearing_citation_metadata(tmp_path: Path) -> None:
+def test_source_investigation_agent_rejects_secret_bearing_citation_metadata(
+    tmp_path: Path,
+) -> None:
     credential = "protected-path-secret"
     repository, revision = source_repository(tmp_path)
     protected_path = f"{credential}.md"
@@ -186,9 +188,9 @@ def test_investigator_rejects_secret_bearing_citation_metadata(tmp_path: Path) -
         return ModelResponse([part])
 
     result = asyncio.run(
-        SourceInvestigator(
+        SourceInvestigationAgent(
             FunctionModel(cite_secret),
-            model_name="investigator-model",
+            model_name="source-investigation-model",
             secrets=(credential,),
         ).investigate(
             run_id="run-1",
@@ -203,7 +205,9 @@ def test_investigator_rejects_secret_bearing_citation_metadata(tmp_path: Path) -
     assert credential not in result.model_dump_json()
 
 
-def test_investigator_does_not_authorize_a_redacted_citation_digest(tmp_path: Path) -> None:
+def test_source_investigation_agent_does_not_authorize_a_redacted_citation_digest(
+    tmp_path: Path,
+) -> None:
     repository, revision = source_repository(tmp_path)
     source = InvestigationSource.open("docs", repository, revision)
     digest_secret = "sha256:"
@@ -254,9 +258,9 @@ def test_investigator_does_not_authorize_a_redacted_citation_digest(tmp_path: Pa
         return ModelResponse([part])
 
     result = asyncio.run(
-        SourceInvestigator(
+        SourceInvestigationAgent(
             FunctionModel(cite_redacted_digest),
-            model_name="investigator-model",
+            model_name="source-investigation-model",
             secrets=(digest_secret,),
         ).investigate(
             run_id="run-1",
@@ -271,7 +275,9 @@ def test_investigator_does_not_authorize_a_redacted_citation_digest(tmp_path: Pa
     assert digest_secret not in result.model_dump_json()
 
 
-def test_investigator_requires_narrow_paths_before_literal_search(tmp_path: Path) -> None:
+def test_source_investigation_agent_requires_narrow_paths_before_literal_search(
+    tmp_path: Path,
+) -> None:
     repository, _revision = source_repository(tmp_path)
     for index in range(33):
         (repository / f"file-{index}.md").write_text("needle\n", encoding="utf-8")
@@ -320,9 +326,9 @@ def test_investigator_requires_narrow_paths_before_literal_search(tmp_path: Path
         return ModelResponse([part])
 
     result = asyncio.run(
-        SourceInvestigator(
+        SourceInvestigationAgent(
             FunctionModel(broad_search),
-            model_name="investigator-model",
+            model_name="source-investigation-model",
         ).investigate(
             run_id="run-1",
             source_set_digest="source-set-1",
@@ -348,7 +354,7 @@ def test_snapshot_literal_search_limits_total_result_characters(tmp_path: Path) 
         asyncio.run(source.reader.search_text("needle", paths=list(allowed), allowed=allowed))
 
 
-def test_investigator_budget_and_timeout_fail_with_actionable_safe_errors(
+def test_source_investigation_agent_budget_and_timeout_fail_with_actionable_safe_errors(
     tmp_path: Path,
 ) -> None:
     repository, revision = source_repository(tmp_path)
@@ -374,9 +380,9 @@ def test_investigator_budget_and_timeout_fail_with_actionable_safe_errors(
         )
 
     budget = asyncio.run(
-        SourceInvestigator(
+        SourceInvestigationAgent(
             FunctionModel(costly),
-            model_name="investigator-model",
+            model_name="source-investigation-model",
             total_tokens_limit=1,
         ).investigate(
             run_id="run-1",
@@ -406,9 +412,9 @@ def test_investigator_budget_and_timeout_fail_with_actionable_safe_errors(
         )
 
     timeout = asyncio.run(
-        SourceInvestigator(
+        SourceInvestigationAgent(
             FunctionModel(slow),
-            model_name="investigator-model",
+            model_name="source-investigation-model",
             wall_time_seconds=0.01,
         ).investigate(
             run_id="run-1",

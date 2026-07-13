@@ -145,7 +145,7 @@ def candidate(
                 {
                     "id": "worker-concept-1",
                     "name": concept_name,
-                    "description": "A bounded source investigator.",
+                    "description": "A bounded Source Investigation Agent.",
                     "claim_ids": ["worker-claim-1"],
                 }
             ],
@@ -204,7 +204,7 @@ def ordered_candidate(
                 {
                     "id": "concept-ordered",
                     "name": concept_name,
-                    "description": "A bounded source investigator.",
+                    "description": "A bounded Source Investigation Agent.",
                     "claim_ids": claim_order,
                 }
             ],
@@ -256,7 +256,7 @@ def test_accepted_candidate_is_queryable_with_stable_ids_and_page_plan(tmp_path:
     assert "Workers only read fixed snapshots." in knowledge.derive_concept_page(
         "run-1", first.concept_ids[0]
     )
-    assert "A bounded source investigator." not in knowledge.derive_concept_page(
+    assert "A bounded Source Investigation Agent." not in knowledge.derive_concept_page(
         "run-1", first.concept_ids[0]
     )
 
@@ -559,7 +559,7 @@ def test_acceptance_preserves_concept_roles_conflicts_and_supersession(tmp_path:
                     "id": "concept-worker",
                     "name": "Worker Agent",
                     "aliases": ["Bounded Worker"],
-                    "description": "A bounded source investigator.",
+                    "description": "A bounded Source Investigation Agent.",
                     "claim_ids": ["claim-current", "claim-replacement"],
                     "defining_claim_ids": ["claim-current"],
                     "supporting_claim_ids": ["claim-replacement"],
