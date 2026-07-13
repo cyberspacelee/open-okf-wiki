@@ -1,6 +1,5 @@
-import { expect, test } from "@playwright/test"
+import { expect, test, type Locator, type Page } from "@playwright/test"
 import {
-  execFile,
   execFileSync,
   spawn,
   type ChildProcessWithoutNullStreams,
@@ -17,10 +16,8 @@ import {
 import { createServer, type Server } from "node:http"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { promisify } from "node:util"
 
 const repoRoot = resolve(process.cwd(), "..")
-const execFileAsync = promisify(execFile)
 const maxSourceId = `docs-${"x".repeat(123)}`
 const longBranch = `release/${"x".repeat(96)}`
 let consoleProcess: ChildProcessWithoutNullStreams
@@ -31,6 +28,54 @@ let gatewayUrl: string
 let rejectModelA = false
 let linkedSource: string
 let managedOrigin: string
+type GatewayPayload = {
+  model?: string
+  messages?: Array<{
+    role?: string
+    content?: string | Array<{ text?: string }>
+  }>
+  tools?: Array<{ function?: { name?: string } }>
+}
+type ReleaseRunDetail = {
+  source_set_digest: string
+  sources: Array<{
+    id: string
+    role: string
+    revision: string
+  }>
+  models: {
+    profile: { id: string }
+    assignments: Record<string, string>
+  } | null
+}
+type ReleaseKnowledgeSnapshot = {
+  selected: {
+    kind: string
+    run_id: string
+    source_set_digest: string
+  }
+  pages: Array<{ path: string; title: string }>
+}
+type ReleaseKnowledgePage = {
+  path: string
+  title: string
+  concept_id: string | null
+  blocks: unknown[]
+}
+type ReleaseKnowledgeClaim = {
+  id: string
+  statement: string
+  evidence: Array<{
+    id: string
+    source_id: string
+    revision: string
+    path: string
+    start_line: number
+    end_line: number
+    digest: string
+    excerpt: string | null
+  }>
+}
 let queryFixture:
   | {
       conceptId: string
@@ -39,6 +84,8 @@ let queryFixture:
       sourceId: string
       sourcePath: string
       sourceText: string
+      startLine: number
+      endLine: number
     }
   | undefined
 
@@ -51,7 +98,7 @@ test.beforeAll(async () => {
     request.on("data", (chunk) => chunks.push(chunk))
     request.on("end", () => {
       const payload = chunks.length
-        ? JSON.parse(Buffer.concat(chunks).toString())
+        ? (JSON.parse(Buffer.concat(chunks).toString()) as GatewayPayload)
         : null
       const send = (body: unknown, status = 200) => {
         const content = JSON.stringify(body)
@@ -80,6 +127,11 @@ test.beforeAll(async () => {
       const query = queryGatewayResponse(payload)
       if (query) {
         setTimeout(() => send(query), 30)
+        return
+      }
+      const semanticRun = semanticRunGatewayResponse(payload)
+      if (semanticRun) {
+        setTimeout(() => send(semanticRun), 30)
         return
       }
       setTimeout(
@@ -150,15 +202,11 @@ test.beforeAll(async () => {
   sessionUrl = await readSessionUrl(consoleProcess)
 })
 
-function queryGatewayResponse(payload: {
-  model?: string
-  messages?: Array<{ role?: string }>
-  tools?: Array<{ function?: { name?: string } }>
-}) {
+function queryGatewayResponse(payload: GatewayPayload | null) {
   const names = (payload?.tools ?? []).flatMap((tool) =>
     tool.function?.name ? [tool.function.name] : []
   )
-  if (!queryFixture) return null
+  if (!payload || !queryFixture) return null
   const serialized = JSON.stringify(payload.messages)
   const investigationTools = ["list_paths", "search_text", "read_text"]
   if (investigationTools.every((name) => names.includes(name))) {
@@ -173,8 +221,8 @@ function queryGatewayResponse(payload: {
         ? {
             source_id: queryFixture.sourceId,
             path: queryFixture.sourcePath,
-            start_line: 1,
-            end_line: 1,
+            start_line: queryFixture.startLine,
+            end_line: queryFixture.endLine,
           }
         : {
             segments: [
@@ -185,8 +233,8 @@ function queryGatewayResponse(payload: {
                   {
                     source_id: queryFixture.sourceId,
                     path: queryFixture.sourcePath,
-                    start_line: 1,
-                    end_line: 1,
+                    start_line: queryFixture.startLine,
+                    end_line: queryFixture.endLine,
                   },
                 ],
               },
@@ -246,6 +294,157 @@ function queryGatewayResponse(payload: {
   return gatewayToolResponse(payload.model, name, args, `query-${returns}`)
 }
 
+function semanticRunGatewayResponse(payload: GatewayPayload | null) {
+  if (!payload) return null
+  const message = gatewayMessageText(payload)
+  const sourceTools = new Set(["list_paths", "search_text", "read_text"])
+  const output = (payload.tools ?? [])
+    .flatMap((tool) => (tool.function?.name ? [tool.function.name] : []))
+    .find((name) => !sourceTools.has(name))
+
+  if (message.includes('"prioritized_obligations"')) {
+    if (!output) throw new Error("Planner output tool is missing")
+    const summary = JSON.parse(message) as {
+      prioritized_obligations?: Array<{
+        id: string
+        source_id: string
+        path: string
+      }>
+      remaining_budgets?: { worker?: object }
+    }
+    const obligation = summary.prioritized_obligations?.[0]
+    const budgets = summary.remaining_budgets?.worker
+    if (!obligation || !budgets)
+      throw new Error("Planner summary is missing an obligation or budgets")
+    return gatewayToolResponse(
+      payload.model,
+      output,
+      {
+        tasks: [
+          {
+            obligation_ids: [obligation.id],
+            source_id: obligation.source_id,
+            allowed_paths: [obligation.path],
+            agent_role: "extraction",
+            allowed_tools: [...sourceTools],
+            prompt: "Extract the assigned source-grounded obligation.",
+            budgets,
+          },
+        ],
+      },
+      `semantic-planner-${obligation.id}`
+    )
+  }
+
+  const assignmentMarker = "Task assignment: "
+  if (message.includes(assignmentMarker)) {
+    if (!output) throw new Error("Worker output tool is missing")
+    const assignment = JSON.parse(
+      message.slice(message.indexOf(assignmentMarker) + assignmentMarker.length)
+    ) as {
+      task_id: string
+      obligation_ids: string[]
+      source_id: string
+      revision: string
+      allowed_paths: string[]
+    }
+    const path = assignment.allowed_paths[0]
+    if (!path) throw new Error("Worker assignment has no allowed path")
+    const checkout =
+      assignment.source_id === "code"
+        ? join(workspace, "sources", "code")
+        : linkedSource
+    const source = execFileSync(
+      "git",
+      ["show", `${assignment.revision}:${path}`],
+      { cwd: checkout, encoding: "utf-8" }
+    )
+    const lines = source.split(/\r?\n/)
+    let lineIndex = lines.length - 1
+    while (lineIndex > 0 && !lines[lineIndex].trim()) lineIndex -= 1
+    const text = lines[lineIndex]
+    const evidenceId = `evidence:${assignment.task_id}`
+    const claimId = `claim:${assignment.task_id}`
+    const conceptId = `concept:${assignment.task_id}`
+    return gatewayToolResponse(
+      payload.model,
+      output,
+      {
+        task_id: assignment.task_id,
+        obligation_ids: assignment.obligation_ids,
+        evidence: [
+          {
+            id: evidenceId,
+            source_id: assignment.source_id,
+            path,
+            revision: assignment.revision,
+            start_line: lineIndex + 1,
+            end_line: lineIndex + 1,
+            digest: `sha256:${createHash("sha256").update(text).digest("hex")}`,
+          },
+        ],
+        claims: [{ id: claimId, text, evidence_ids: [evidenceId] }],
+        concepts: [
+          {
+            id: conceptId,
+            name: "Deterministic source knowledge",
+            description: text,
+            claim_ids: [claimId],
+          },
+        ],
+        relations: [],
+        dispositions: [
+          {
+            obligation_id: assignment.obligation_ids[0],
+            disposition: "covered",
+            reason: "The fixed Source Snapshot supports the Claim.",
+            evidence_ids: [evidenceId],
+          },
+        ],
+      },
+      `semantic-worker-${assignment.task_id}`
+    )
+  }
+
+  if (message.includes('"perspective"') && message.includes('"target"')) {
+    if (!output) throw new Error("Verifier output tool is missing")
+    const prompt = JSON.parse(message) as {
+      perspective?: string
+      target?: { candidate_id?: string }
+      evidence?: Array<{ id?: string }>
+    }
+    const perspective = prompt.perspective
+    const targetId = prompt.target?.candidate_id
+    const evidenceId = prompt.evidence?.[0]?.id
+    if (!perspective || !targetId || !evidenceId)
+      throw new Error("Verifier prompt is missing its bounded target")
+    return gatewayToolResponse(
+      payload.model,
+      output,
+      {
+        target_id: targetId,
+        perspective,
+        verdict: "pass",
+        severity: "info",
+        evidence: [evidenceId],
+        rationale: "The fixed Source Snapshot supports the candidate.",
+      },
+      `semantic-verifier-${perspective}`
+    )
+  }
+
+  return null
+}
+
+function gatewayMessageText(payload: GatewayPayload) {
+  const content = payload.messages?.at(-1)?.content
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  return content
+    .map((part) => (typeof part.text === "string" ? part.text : ""))
+    .join("")
+}
+
 function gatewayToolResponse(
   model: string | undefined,
   name: string,
@@ -278,6 +477,141 @@ function gatewayToolResponse(
   }
 }
 
+function firstClaimId(value: unknown): string | null {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const claimId = firstClaimId(item)
+      if (claimId) return claimId
+    }
+    return null
+  }
+  if (!value || typeof value !== "object") return null
+  const record = value as Record<string, unknown>
+  if (record.type === "claim" && typeof record.claim_id === "string")
+    return record.claim_id
+  for (const item of Object.values(record)) {
+    const claimId = firstClaimId(item)
+    if (claimId) return claimId
+  }
+  return null
+}
+
+async function expectDesktopViewport(
+  page: Page,
+  width: number,
+  height: number
+) {
+  await page.setViewportSize({ width, height })
+  const layout = await page.evaluate(() => ({
+    viewport: document.documentElement.clientWidth,
+    content: document.documentElement.scrollWidth,
+  }))
+  expect(page.viewportSize()).toEqual({ width, height })
+  expect(layout.content).toBe(layout.viewport)
+}
+
+async function contrastRatio(locator: Locator) {
+  return locator.evaluate((element) => {
+    const canvas = document.createElement("canvas")
+    canvas.width = 1
+    canvas.height = 1
+    const context = canvas.getContext("2d")
+    if (!context) throw new Error("Canvas color sampling is unavailable")
+    const sample = (color: string) => {
+      context.clearRect(0, 0, 1, 1)
+      context.fillStyle = color
+      context.fillRect(0, 0, 1, 1)
+      const [red, green, blue, alpha] = context.getImageData(0, 0, 1, 1).data
+      return [red, green, blue, alpha] as const
+    }
+    const layers: Array<readonly [number, number, number, number]> = []
+    let current: Element | null = element
+    while (current) {
+      const background = sample(getComputedStyle(current).backgroundColor)
+      if (background[3] > 0) layers.push(background)
+      current = current.parentElement
+    }
+    let backdrop = [255, 255, 255]
+    for (const [red, green, blue, alphaByte] of layers.reverse()) {
+      const alpha = alphaByte / 255
+      backdrop = [
+        red * alpha + backdrop[0] * (1 - alpha),
+        green * alpha + backdrop[1] * (1 - alpha),
+        blue * alpha + backdrop[2] * (1 - alpha),
+      ]
+    }
+    const [red, green, blue, alphaByte] = sample(
+      getComputedStyle(element).color
+    )
+    const alpha = alphaByte / 255
+    const foreground = [
+      red * alpha + backdrop[0] * (1 - alpha),
+      green * alpha + backdrop[1] * (1 - alpha),
+      blue * alpha + backdrop[2] * (1 - alpha),
+    ]
+    const luminance = (rgb: number[]) =>
+      rgb
+        .map((channel) => channel / 255)
+        .map((channel) =>
+          channel <= 0.04045
+            ? channel / 12.92
+            : ((channel + 0.055) / 1.055) ** 2.4
+        )
+        .reduce(
+          (total, channel, index) =>
+            total + channel * [0.2126, 0.7152, 0.0722][index],
+          0
+        )
+    const foregroundLuminance = luminance(foreground)
+    const backgroundLuminance = luminance(backdrop)
+    return (
+      (Math.max(foregroundLuminance, backgroundLuminance) + 0.05) /
+      (Math.min(foregroundLuminance, backgroundLuminance) + 0.05)
+    )
+  })
+}
+
+async function publicKnowledgeState(
+  page: Page,
+  origin: string,
+  token: string,
+  runId: string,
+  pagePath: string,
+  claimId: string
+) {
+  const headers = { Authorization: `Bearer ${token}` }
+  const navigationQuery = new URLSearchParams({
+    bundle: "published",
+    run_id: runId,
+  })
+  const pageQuery = new URLSearchParams({
+    bundle: "published",
+    run_id: runId,
+    path: pagePath,
+  })
+  const claimQuery = new URLSearchParams({
+    bundle: "published",
+    run_id: runId,
+  })
+  const responses = await Promise.all([
+    page.request.get(`${origin}/api/v1/knowledge?${navigationQuery}`, {
+      headers,
+    }),
+    page.request.get(`${origin}/api/v1/knowledge/page?${pageQuery}`, {
+      headers,
+    }),
+    page.request.get(
+      `${origin}/api/v1/knowledge/claims/${encodeURIComponent(claimId)}?${claimQuery}`,
+      { headers }
+    ),
+  ])
+  for (const response of responses) expect(response.ok()).toBe(true)
+  const [navigation, knowledgePage, claim] = await Promise.all(
+    responses.map((response) => response.json())
+  )
+  return { navigation, page: knowledgePage, claim }
+}
+
 test.afterAll(async () => {
   if (consoleProcess?.exitCode === null) {
     consoleProcess.kill("SIGTERM")
@@ -300,6 +634,7 @@ test.afterAll(async () => {
 test("configures, tests, and selects a Gateway Profile through Connections", async ({
   page,
 }) => {
+  test.setTimeout(60_000)
   await page.goto(sessionUrl)
   await page.getByRole("link", { name: "Connections" }).click()
   await expect(
@@ -388,11 +723,48 @@ test("configures, tests, and selects a Gateway Profile through Connections", asy
     .getByLabel("Optional non-secret headers")
     .fill("X-Tenant=browser-tenant")
   await page.getByLabel("Credential").fill("invalid-browser-secret")
+  const invalidCredentialResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/api/v1/gateway-profiles"
+  )
   await page.getByRole("button", { name: "Save profile" }).click()
+  expect((await invalidCredentialResponse).status()).toBe(200)
   await expect(page.getByText("Not tested")).toBeVisible()
+
+  await expect(page.getByRole("button", { name: "Save profile" })).toBeEnabled()
+  await page.getByLabel("Profile name").fill("Enterprise Gateway")
+  await page.getByLabel("Profile ID").fill("enterprise")
+  await page.getByLabel("Gateway ID").fill("corp-openai")
+  await page.getByLabel("OpenAI-compatible base URL").fill(gatewayUrl)
+  await page
+    .getByLabel("Optional non-secret headers")
+    .fill("X-Tenant=browser-tenant")
+  await page.getByLabel("Credential").fill("browser-secret")
+  const restoredProfileResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/api/v1/gateway-profiles"
+  )
+  await page.getByRole("button", { name: "Save profile" }).focus()
+  await page.keyboard.press("Enter")
+  expect((await restoredProfileResponse).status()).toBe(200)
+  await expect(page.getByLabel("Credential")).toHaveValue("")
+  for (const model of ["model-a", "model-b"]) {
+    await page.getByLabel("Capability test model").fill(model)
+    const restoredTestResponse = page.waitForResponse((response) =>
+      new URL(response.url()).pathname.endsWith("/test")
+    )
+    await page.getByRole("button", { name: "Test" }).focus()
+    await page.keyboard.press("Enter")
+    expect((await restoredTestResponse).status()).toBe(200)
+  }
+  await page.getByRole("button", { name: "Save Workspace selection" }).focus()
+  await page.keyboard.press("Enter")
+  await expect(page.getByText("Workspace selection completed.")).toBeVisible()
 })
 
-test("loads the built Console through the real Python launcher", async ({
+test("completes the real multi-source release journey accessibly", async ({
   page,
   context,
 }) => {
@@ -403,6 +775,7 @@ test("loads the built Console through the real Python launcher", async ({
   const token = new URLSearchParams(new URL(sessionUrl).hash.slice(1)).get(
     "token"
   )
+  if (!token) throw new Error("Python Console did not provide a session token")
 
   page.on("request", (request) => {
     if (new URL(request.url()).origin !== origin) {
@@ -456,7 +829,8 @@ test("loads the built Console through the real Python launcher", async ({
   await page.keyboard.press("Space")
   await page.getByRole("button", { name: "Save settings" }).focus()
   await page.keyboard.press("Enter")
-  await expect(page.getByRole("status")).toContainText("Settings saved")
+  const settingsStatus = page.getByRole("status")
+  await expect(settingsStatus).toContainText("Settings saved")
   await expect(
     page.locator('[data-slot="sidebar"][data-state="collapsed"]')
   ).toBeVisible()
@@ -543,6 +917,7 @@ test("loads the built Console through the real Python launcher", async ({
   await expect(
     page.getByRole("heading", { level: 1, name: "Sources" })
   ).toBeVisible()
+  await expectDesktopViewport(page, 1024, 768)
   const configuredSources = page
     .getByText("Configured Sources", { exact: true })
     .locator("xpath=../..")
@@ -724,7 +1099,6 @@ test("loads the built Console through the real Python launcher", async ({
     "Review Required"
   )
   const successfulRunUrl = page.url()
-  const successfulRunId = new URL(successfulRunUrl).searchParams.get("run")!
   await page.screenshot({
     path: "test-results/runs-desktop.png",
     fullPage: true,
@@ -759,7 +1133,6 @@ test("loads the built Console through the real Python launcher", async ({
     path: "test-results/concepts-desktop-real.png",
     fullPage: true,
   })
-  seedReplayImpact(successfulRunId)
   const replayResponse = page.waitForResponse(
     (response) => new URL(response.url()).pathname === "/api/v1/replay"
   )
@@ -768,27 +1141,26 @@ test("loads the built Console through the real Python launcher", async ({
   await expect(
     page.getByRole("heading", { level: 1, name: "Concept and impact replay" })
   ).toBeVisible()
-  await expect(page.getByText("Changed", { exact: true }).first()).toBeVisible()
-  await expect(page.getByText("Downstream propagation paths")).toBeVisible()
-  await expect(
-    page
-      .getByLabel("Jump within page to event")
-      .locator("option")
-      .filter({ hasText: "Stale" })
-  ).toHaveCount(1)
   const replayKeyboard = page.getByRole("region", {
     name: "Replay keyboard controls",
   })
   await replayKeyboard.focus()
   await replayKeyboard.press("ArrowRight")
-  await expect(
-    page.getByRole("status", { name: "Current replay event status" })
-  ).toContainText(/Verified|Accepted/)
+  const replayStatus = page.getByRole("status", {
+    name: "Current replay event status",
+  })
+  await expect(replayStatus).toContainText(/Verified|Accepted/)
+  await expect(replayStatus).toHaveAttribute("aria-live", "polite")
   await page.screenshot({
     path: "test-results/replay-desktop-real.png",
     fullPage: true,
   })
   await page.emulateMedia({ reducedMotion: "reduce" })
+  expect(
+    await page.evaluate(
+      () => window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    )
+  ).toBe(true)
   await expect(
     page.getByRole("heading", { name: "Ordered replay (reduced motion)" })
   ).toBeVisible()
@@ -874,11 +1246,19 @@ test("loads the built Console through the real Python launcher", async ({
     width: document.documentElement.scrollWidth,
   }))
   expect(runsOverflow.width).toBe(runsOverflow.viewport)
-  await page.getByRole("button", { name: "Cancel Run" }).click()
+  const cancelRunTrigger = page
+    .getByRole("button", { name: "Cancel Run" })
+    .and(page.locator('[aria-haspopup="dialog"]'))
+  await cancelRunTrigger.focus()
+  await page.keyboard.press("Enter")
   const cancelDialog = page.getByRole("alertdialog")
   await expect(
     cancelDialog.getByText("Cancel this Production Run?")
   ).toBeVisible()
+  await expect(cancelDialog).toHaveAccessibleName("Cancel this Production Run?")
+  await page.keyboard.press("Escape")
+  await expect(cancelRunTrigger).toBeFocused()
+  await page.keyboard.press("Enter")
   const cancelResponse = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
@@ -896,196 +1276,232 @@ test("loads the built Console through the real Python launcher", async ({
   })
   await page.setViewportSize({ width: 1280, height: 720 })
 
-  await page.getByRole("button", { name: "Sources" }).click()
+  await page.getByRole("button", { name: "Sources" }).focus()
+  await page.keyboard.press("Enter")
   await expect(preflightCard).toBeVisible()
-  await preflightCard.getByRole("button", { name: "Review Required" }).click()
+  await expect(
+    preflightCard.getByRole("button", { name: "Gateway Semantic" })
+  ).toHaveAttribute("aria-pressed", "true")
   const readerRunResponse = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
       new URL(response.url()).pathname === "/api/v1/runs"
   )
-  await preflightCard.getByRole("button", { name: "Start Run" }).click()
+  await preflightCard.getByRole("button", { name: "Start Run" }).focus()
+  await page.keyboard.press("Enter")
   expect((await readerRunResponse).status()).toBe(200)
   await expect(page.locator('[aria-current="step"]')).toHaveText(
     "Review Required"
   )
   const readerRunId = new URL(page.url()).searchParams.get("run")!
-  const readerSourceSet = JSON.parse(
-    execFileSync(
-      "uv",
-      [
-        "run",
-        "python",
-        "-c",
-        "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(c.execute('select source_set_json from runs where id=?',(sys.argv[2],)).fetchone()[0])",
-        join(workspace, ".okf-wiki", "runs.db"),
-        readerRunId,
-      ],
-      { cwd: repoRoot, encoding: "utf-8" }
+  const readerRunResponseDetail = await page.request.get(
+    `${origin}/api/v1/runs/${readerRunId}`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  )
+  expect(readerRunResponseDetail.ok()).toBe(true)
+  const readerRun = (await readerRunResponseDetail.json()) as ReleaseRunDetail
+  expect(readerRun.sources.map((source) => source.role).sort()).toEqual([
+    "documentation",
+    "implementation",
+  ])
+  expect(readerRun.models?.profile.id).toBe("enterprise")
+  expect(readerRun.models?.assignments.planner).toBe("model-a")
+  expect(readerRun.models?.assignments.verifier).toBe("model-b")
+
+  await page.getByRole("button", { name: "Review", exact: true }).focus()
+  await page.keyboard.press("Enter")
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Review & publish" })
+  ).toBeVisible()
+  await expectDesktopViewport(page, 1440, 900)
+  await expect(page.getByTestId("review-digest")).toHaveText(/[0-9a-f]{64}/)
+  const bundleDetailsTrigger = page
+    .getByRole("row", { name: /overview\.md Added/ })
+    .getByRole("button", { name: "Details" })
+  await bundleDetailsTrigger.focus()
+  await page.keyboard.press("Enter")
+  const bundleDetailsDialog = page.getByRole("dialog")
+  await expect(bundleDetailsDialog).toHaveAccessibleName(
+    "Generated Bundle detail"
+  )
+  await expect(bundleDetailsDialog).toContainText(
+    "Overview of the fixed source revision."
+  )
+  await page.keyboard.press("Escape")
+  await expect(bundleDetailsTrigger).toBeFocused()
+
+  const approveTrigger = page.getByRole("button", {
+    name: "Approve & publish",
+  })
+  await approveTrigger.focus()
+  await page.keyboard.press("Enter")
+  const publishDialog = page.getByRole("alertdialog")
+  await expect(publishDialog).toHaveAccessibleName("Approve & publish?")
+  await expect(publishDialog.locator(":focus")).toHaveCount(1)
+  await page.keyboard.press("Escape")
+  await expect(approveTrigger).toBeFocused()
+  await page.keyboard.press("Enter")
+  const approvalResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname.endsWith("/decision")
+  )
+  const confirmPublication = publishDialog.getByRole("button", {
+    name: "Confirm publication",
+  })
+  await confirmPublication.focus()
+  await page.keyboard.press("Enter")
+  expect((await approvalResponse).status()).toBe(200)
+  await expect(page.getByRole("alert")).toContainText("published atomically")
+  expect(existsSync(join(workspace, "published", "overview.md"))).toBe(true)
+
+  const initialKnowledgeResponsePromise = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/v1/knowledge"
+  )
+  const knowledgeTrigger = page.getByRole("button", {
+    name: "Knowledge",
+    exact: true,
+  })
+  await knowledgeTrigger.focus()
+  await page.keyboard.press("Enter")
+  const initialKnowledgeResponse = await initialKnowledgeResponsePromise
+  let knowledgeSnapshot: ReleaseKnowledgeSnapshot
+  if (initialKnowledgeResponse.ok()) {
+    knowledgeSnapshot =
+      (await initialKnowledgeResponse.json()) as ReleaseKnowledgeSnapshot
+  } else {
+    await expect(
+      page.getByText("No staged Knowledge Bundle", { exact: true })
+    ).toBeVisible()
+    const publishedKnowledgeResponse = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/api/v1/knowledge" &&
+        new URL(response.url()).searchParams.get("bundle") === "published"
     )
+    const tryPublished = page.getByRole("button", { name: "Try published" })
+    await tryPublished.focus()
+    await page.keyboard.press("Enter")
+    knowledgeSnapshot = (await (
+      await publishedKnowledgeResponse
+    ).json()) as ReleaseKnowledgeSnapshot
+  }
+  expect(knowledgeSnapshot.selected.kind).toBe("published")
+  expect(knowledgeSnapshot.selected.run_id).toBe(readerRunId)
+  expect(knowledgeSnapshot.selected.source_set_digest).toBe(
+    readerRun.source_set_digest
   )
-  const readerSource = readerSourceSet.sources[0]
-  const evidenceText = execFileSync(
-    "git",
-    ["show", `${readerSource.revision}:README.md`],
-    { cwd: readerSource.repository, encoding: "utf-8" }
-  ).trimEnd()
-  const claimId = `claim:${"a".repeat(64)}`
-  const evidenceId = `evidence:${"b".repeat(64)}`
-  const conceptId = `concept:${"c".repeat(64)}`
-  const readerPagePath = "guides/secure-reader.md"
-  const evidenceDigest = `sha256:${createHash("sha256").update(evidenceText).digest("hex")}`
-  execFileSync(
-    "uv",
-    [
-      "run",
-      "python",
-      "-c",
-      "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('insert into accepted_evidence values (?,?,?,?,?,?,?,?,?,?,?)',(sys.argv[2],sys.argv[3],sys.argv[5],sys.argv[6],'README.md','fixture:readme',1,1,sys.argv[7],'source_span','authoritative')); c.execute('insert into accepted_claims values (?,?,?,?,?,?,?,?)',(sys.argv[2],sys.argv[4],'Source','documents','Source knowledge.','asserted','[]','supported')); c.execute('insert into claim_evidence values (?,?,?)',(sys.argv[2],sys.argv[4],sys.argv[3])); c.execute('insert into accepted_concepts values (?,?,?,?,?,?)',(sys.argv[2],sys.argv[8],'Source','[]','Accepted source knowledge.','active')); c.execute('insert into concept_claims values (?,?,?,?)',(sys.argv[2],sys.argv[8],sys.argv[4],'defining')); c.execute('insert into page_plans values (?,?,?,?)',(sys.argv[2],sys.argv[8],sys.argv[9],'Secure reader fixture')); c.commit()",
-      join(workspace, ".okf-wiki", "runs.db"),
-      readerRunId,
-      evidenceId,
-      claimId,
-      readerSource.id,
-      readerSource.revision,
-      evidenceDigest,
-      conceptId,
-      readerPagePath,
-    ],
-    { cwd: repoRoot, stdio: "pipe" }
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Knowledge" })
+  ).toBeVisible()
+  await expectDesktopViewport(page, 1920, 1080)
+
+  const conceptPage = knowledgeSnapshot.pages.find(
+    (item) =>
+      item.path.startsWith("concepts/") && !item.path.endsWith("/index.md")
   )
-  const readerPage = join(
-    workspace,
-    ".okf-wiki",
-    "runs",
-    readerRunId,
-    "staging",
-    "guides",
-    "secure-reader.md"
+  if (!conceptPage) throw new Error("Published Bundle has no Concept page")
+  const readerPageResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url())
+    return (
+      url.pathname === "/api/v1/knowledge/page" &&
+      url.searchParams.get("path") === conceptPage.path
+    )
+  })
+  const conceptPageTrigger = page
+    .getByRole("navigation", { name: "Knowledge pages" })
+    .getByRole("button", { name: conceptPage.title, exact: true })
+  await conceptPageTrigger.focus()
+  await page.keyboard.press("Enter")
+  const readerPagePayload = (await (
+    await readerPageResponse
+  ).json()) as ReleaseKnowledgePage
+  expect(readerPagePayload.path).toBe(conceptPage.path)
+  if (!readerPagePayload.concept_id)
+    throw new Error("Published Concept page has no Concept identity")
+  const conceptId = readerPagePayload.concept_id
+  const claimId = firstClaimId(readerPagePayload.blocks)
+  if (!claimId) throw new Error("Published Concept page has no Claim marker")
+  await expect(
+    page.getByRole("heading", { name: conceptPage.title, exact: true }).first()
+  ).toBeVisible()
+  await expect(conceptPageTrigger).toHaveAttribute("aria-current", "page")
+  expect(
+    await contrastRatio(
+      page.getByRole("heading", { level: 1, name: "Knowledge" })
+    )
+  ).toBeGreaterThanOrEqual(3)
+  expect(
+    await contrastRatio(
+      page.getByRole("button", { name: "Ask accepted knowledge" })
+    )
+  ).toBeGreaterThanOrEqual(4.5)
+
+  const claimResponse = page.waitForResponse((response) =>
+    new URL(response.url()).pathname.startsWith("/api/v1/knowledge/claims/")
   )
+  const claimSheetTrigger = page
+    .getByRole("button", { name: "View accepted Claim" })
+    .first()
+  await claimSheetTrigger.focus()
+  await page.keyboard.press("Enter")
+  const readerClaim = (await (
+    await claimResponse
+  ).json()) as ReleaseKnowledgeClaim
+  expect(readerClaim.id).toBe(claimId)
+  const claimSheet = page.getByRole("dialog")
+  await expect(claimSheet).toHaveAccessibleName("Accepted Claim")
+  await expect(claimSheet).toContainText(readerClaim.statement)
+  const evidence = readerClaim.evidence[0]
+  if (!evidence?.excerpt)
+    throw new Error("Published Claim has no resolved Evidence excerpt")
+  const readerSource = readerRun.sources.find(
+    (source) => source.id === evidence.source_id
+  )
+  if (!readerSource)
+    throw new Error("Published Claim Evidence is outside the fixed Source Set")
+  expect(evidence.revision).toBe(readerSource.revision)
+  await page.keyboard.press("Escape")
+  await expect(claimSheetTrigger).toBeFocused()
+
+  const evidenceText = evidence.excerpt
+  const evidenceId = evidence.id
+  const evidenceDigest = evidence.digest
+  const readerPagePath = conceptPage.path
+  const readerPage = join(workspace, "published", readerPagePath)
+  expect(existsSync(readerPage)).toBe(true)
   queryFixture = {
     conceptId,
     claimId,
     evidenceId,
-    sourceId: readerSource.id,
-    sourcePath: "README.md",
+    sourceId: evidence.source_id,
+    sourcePath: evidence.path,
     sourceText: evidenceText,
+    startLine: evidence.start_line,
+    endLine: evidence.end_line,
   }
-  writeFileSync(
-    join(
-      workspace,
-      ".okf-wiki",
-      "runs",
-      readerRunId,
-      "staging",
-      "guides",
-      "pixel.png"
-    ),
-    Buffer.from(
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
-      "base64"
-    )
+  const publicKnowledgeBeforeQuery = await publicKnowledgeState(
+    page,
+    origin,
+    token,
+    readerRunId,
+    readerPagePath,
+    claimId
   )
-  writeFileSync(
-    readerPage,
-    `---
-type: Guide
-id: secure-reader
-title: Secure reader fixture
----
-
-# Secure reader fixture
-
-- [x] Parsed task
-
-| Boundary | State |
-| --- | --- |
-| CSP | strict |
-
-\`\`\`python
-print("safe")
-\`\`\`
-
-\`\`\`mermaid
-flowchart LR
-  A[Source] --> B[Claim]
-  A[Source] --> C[Bundle]
-\`\`\`
-
-Math $x^2$ renders locally.
-
-![Pixel](pixel.png)
-
-Accepted knowledge is source grounded.
-
-<!-- claims: ${claimId} -->
-
-# Citations
-
-* \`${claimId}\` — \`repo://${readerSource.id}@${readerSource.revision}/README.md#L1-L1\`
-
-<script>window.readerPwned = true</script>
-
-[Unsafe](javascript:alert(1))
-`
-  )
-
-  await page.getByRole("button", { name: "Knowledge" }).click()
-  await page.getByRole("button", { name: "Secure reader fixture" }).click()
-  await expect(
-    page.getByRole("heading", { name: "Secure reader fixture" }).first()
-  ).toBeVisible()
-  await expect(
-    page.getByRole("checkbox", { name: "Completed task" })
-  ).toBeChecked()
-  await expect(page.getByRole("cell", { name: "strict" })).toBeVisible()
-  await expect(
-    page.getByRole("img", {
-      name: "Mermaid flowchart. Nodes: Source, Claim, Bundle. Relations: Source → Claim; Source → Bundle.",
-    })
-  ).toContainText("Bundle")
-  await expect(page.getByLabel("Mathematical notation: x^2")).toContainText(
-    "x2"
-  )
-  await expect(page.getByRole("img", { name: "Pixel" })).toBeVisible()
-  await expect(page.getByRole("alert")).toContainText("Raw HTML was omitted")
-  await expect(page.getByRole("alert")).toContainText(
-    "Unsafe URL was omitted: javascript:alert(1)"
-  )
-  expect(
-    await page.evaluate(
-      () => (window as Window & { readerPwned?: boolean }).readerPwned
-    )
-  ).toBeUndefined()
-  await page.getByRole("button", { name: "View accepted Claim" }).click()
-  await expect(page.getByRole("dialog")).toContainText("Evidence excerpts")
-  await expect(page.getByRole("dialog").locator("pre")).not.toBeEmpty()
-  await page.getByRole("button", { name: "Close" }).click()
-  await page.getByRole("button", { name: "Claim aaaaaaaa" }).click()
-  await expect(page.getByRole("dialog")).toContainText("README.md#L1-L1")
-  await expect(page.getByRole("dialog").locator("pre")).toContainText(
-    evidenceText
-  )
-  await page.getByRole("button", { name: "Close" }).click()
-
-  await execFileAsync(
-    "uv",
-    [
-      "run",
-      "python",
-      "-c",
-      "import sys; from okf_wiki.gateway_profiles import GatewayProfileRegistry; r=GatewayProfileRegistry(sys.argv[1]); r.save({'id':'enterprise','name':'Enterprise Gateway','gateway_id':'corp-openai','base_url':sys.argv[2],'headers':{'X-Tenant':'browser-tenant'}},credential='browser-secret'); r.test('enterprise',model='model-a'); r.test('enterprise',model='model-b')",
-      resolve(workspace, "machine"),
-      gatewayUrl,
-    ],
-    { cwd: repoRoot, stdio: "pipe" }
-  )
-  const authorityBeforeQuery = authoritativeKnowledgeState(
+  const persistenceBeforeQuery = authoritativePersistenceState(
     readerRunId,
     readerPage
   )
-  await page.getByRole("button", { name: "Ask accepted knowledge" }).click()
+  const askKnowledgeTrigger = page.getByRole("button", {
+    name: "Ask accepted knowledge",
+  })
+  await askKnowledgeTrigger.focus()
+  await page.keyboard.press("Enter")
   let queryDialog = page.getByRole("dialog")
+  await expect(queryDialog).toHaveAccessibleName("Ask accepted knowledge")
+  await page.keyboard.press("Escape")
+  await expect(askKnowledgeTrigger).toBeFocused()
+  await page.keyboard.press("Enter")
+  queryDialog = page.getByRole("dialog")
   await expect(
     queryDialog.getByRole("button", { name: "Current page" })
   ).toHaveAttribute("aria-pressed", "true")
@@ -1097,7 +1513,8 @@ Accepted knowledge is source grounded.
   await queryDialog
     .getByLabel("Ask a question")
     .fill("What accepted knowledge is on this page?")
-  await queryDialog.getByRole("button", { name: "Ask", exact: true }).click()
+  await queryDialog.getByRole("button", { name: "Ask", exact: true }).focus()
+  await page.keyboard.press("Enter")
   const conceptResponse = await conceptQueryResponse
   expect(conceptResponse.status()).toBe(200)
   expect(conceptResponse.request().postDataJSON()).toMatchObject({
@@ -1106,7 +1523,7 @@ Accepted knowledge is source grounded.
     concept_id: conceptId,
   })
   await expect(
-    queryDialog.getByText("Source knowledge.", { exact: true })
+    queryDialog.getByText(readerClaim.statement, { exact: true })
   ).toBeVisible()
   await expect(queryDialog.getByText(claimId, { exact: true })).toBeVisible()
   await expect(queryDialog.getByText(evidenceId, { exact: true })).toBeVisible()
@@ -1115,7 +1532,7 @@ Accepted knowledge is source grounded.
     queryDialog.getByText(`Run ${readerRunId}`, { exact: true })
   ).toBeVisible()
   await expect(
-    queryDialog.getByText(`Source Set ${readerSourceSet.digest}`, {
+    queryDialog.getByText(`Source Set ${readerRun.source_set_digest}`, {
       exact: true,
     })
   ).toBeVisible()
@@ -1123,7 +1540,8 @@ Accepted knowledge is source grounded.
     queryDialog.getByText(`Page ${readerPagePath}`, { exact: true })
   ).toBeVisible()
 
-  await queryDialog.getByRole("button", { name: "Complete bundle" }).click()
+  await queryDialog.getByRole("button", { name: "Complete bundle" }).focus()
+  await page.keyboard.press("Enter")
   const bundleQueryResponse = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
@@ -1132,13 +1550,24 @@ Accepted knowledge is source grounded.
   await queryDialog
     .getByLabel("Ask a question")
     .fill("What accepted knowledge is in the complete bundle?")
-  await queryDialog.getByRole("button", { name: "Ask", exact: true }).click()
+  await queryDialog.getByRole("button", { name: "Ask", exact: true }).focus()
+  await page.keyboard.press("Enter")
   expect((await bundleQueryResponse).status()).toBe(200)
   await expect(
     queryDialog.getByText("Complete bundle", { exact: true }).last()
   ).toBeVisible()
-  expect(authoritativeKnowledgeState(readerRunId, readerPage)).toBe(
-    authorityBeforeQuery
+  expect(
+    await publicKnowledgeState(
+      page,
+      origin,
+      token,
+      readerRunId,
+      readerPagePath,
+      claimId
+    )
+  ).toEqual(publicKnowledgeBeforeQuery)
+  expect(authoritativePersistenceState(readerRunId, readerPage)).toBe(
+    persistenceBeforeQuery
   )
   const queryAudit = execFileSync(
     "uv",
@@ -1162,7 +1591,7 @@ Accepted knowledge is source grounded.
   ])
   expect(JSON.parse(queryAudit).rows).toHaveLength(2)
   expect(queryAudit).not.toContain("What accepted knowledge")
-  expect(queryAudit).not.toContain("Source knowledge.")
+  expect(queryAudit).not.toContain(readerClaim.statement)
 
   const investigationQuestion = "Which source-only detail remains provisional?"
   let sourceInvestigationPosts = 0
@@ -1179,19 +1608,32 @@ Accepted knowledge is source grounded.
       new URL(response.url()).pathname === "/api/v1/knowledge/query"
   )
   await queryDialog.getByLabel("Ask a question").fill(investigationQuestion)
-  await queryDialog.getByRole("button", { name: "Ask", exact: true }).click()
+  await queryDialog.getByRole("button", { name: "Ask", exact: true }).focus()
+  await page.keyboard.press("Enter")
   expect((await unsupportedQueryResponse).status()).toBe(200)
   await expect(
     queryDialog.getByText(
       "Accepted knowledge does not contain enough support for this part of the question."
     )
   ).toBeVisible()
-  const authorityBeforeInvestigation = authoritativeKnowledgeState(
+  const publicKnowledgeBeforeInvestigation = await publicKnowledgeState(
+    page,
+    origin,
+    token,
+    readerRunId,
+    readerPagePath,
+    claimId
+  )
+  const persistenceBeforeInvestigation = authoritativePersistenceState(
     readerRunId,
     readerPage
   )
-  await queryDialog.getByRole("button", { name: "Investigate source" }).click()
+  await queryDialog.getByRole("button", { name: "Investigate source" }).focus()
+  await page.keyboard.press("Enter")
   const investigationDialog = page.getByRole("dialog")
+  await expect(investigationDialog).toHaveAccessibleName(
+    "Investigate fixed sources"
+  )
   await expect(
     investigationDialog.getByRole("heading", {
       name: "Investigate fixed sources",
@@ -1209,20 +1651,21 @@ Accepted knowledge is source grounded.
   )
   await investigationDialog
     .getByRole("button", { name: "Investigate fixed sources", exact: true })
-    .click()
+    .focus()
+  await page.keyboard.press("Enter")
   const investigationResponse = await sourceInvestigationResponse
   expect(investigationResponse.status()).toBe(200)
   expect(investigationResponse.request().postDataJSON()).toEqual({
     question: investigationQuestion,
     run_id: readerRunId,
-    source_set_digest: readerSourceSet.digest,
+    source_set_digest: readerRun.source_set_digest,
   })
   await expect(
     investigationDialog.getByText(evidenceText, { exact: true })
   ).toBeVisible()
   await expect(
     investigationDialog.getByText(
-      `${readerSource.id}@${readerSource.revision}/README.md#L1-L1`,
+      `${readerSource.id}@${readerSource.revision}/${evidence.path}#L${evidence.start_line}-L${evidence.end_line}`,
       { exact: true }
     )
   ).toBeVisible()
@@ -1241,7 +1684,7 @@ Accepted knowledge is source grounded.
   ).toBeVisible()
   await expect(
     investigationDialog
-      .getByText(`Source Set ${readerSourceSet.digest}`, { exact: true })
+      .getByText(`Source Set ${readerRun.source_set_digest}`, { exact: true })
       .first()
   ).toBeVisible()
   await expect(
@@ -1260,8 +1703,18 @@ Accepted knowledge is source grounded.
     investigationDialog.getByRole("button", { name: /accept/i })
   ).toHaveCount(0)
   expect(sourceInvestigationPosts).toBe(1)
-  expect(authoritativeKnowledgeState(readerRunId, readerPage)).toBe(
-    authorityBeforeInvestigation
+  expect(
+    await publicKnowledgeState(
+      page,
+      origin,
+      token,
+      readerRunId,
+      readerPagePath,
+      claimId
+    )
+  ).toEqual(publicKnowledgeBeforeInvestigation)
+  expect(authoritativePersistenceState(readerRunId, readerPage)).toBe(
+    persistenceBeforeInvestigation
   )
 
   const investigationAudit = execFileSync(
@@ -1290,20 +1743,20 @@ Accepted knowledge is source grounded.
   expect(parsedInvestigationAudit.rows).toHaveLength(1)
   expect(parsedInvestigationAudit.rows[0].slice(1, 4)).toEqual([
     readerRunId,
-    readerSourceSet.digest,
+    readerRun.source_set_digest,
     "model-a",
   ])
   expect(parsedInvestigationAudit.rows[0][6]).toBe("answered")
   expect(JSON.parse(parsedInvestigationAudit.rows[0][7])).toEqual(
-    readerSourceSet.sources.map((source: { id: string }) => source.id).sort()
+    readerRun.sources.map((source: { id: string }) => source.id).sort()
   )
   expect(JSON.parse(parsedInvestigationAudit.rows[0][8])).toEqual([
     {
-      source_id: readerSource.id,
-      revision: readerSource.revision,
-      path: "README.md",
-      start_line: 1,
-      end_line: 1,
+      source_id: evidence.source_id,
+      revision: evidence.revision,
+      path: evidence.path,
+      start_line: evidence.start_line,
+      end_line: evidence.end_line,
       digest: evidenceDigest,
     },
   ])
@@ -1313,124 +1766,61 @@ Accepted knowledge is source grounded.
     path: "test-results/source-investigation-desktop-real.png",
     fullPage: true,
   })
-  await investigationDialog.getByRole("button", { name: "Close" }).click()
-  await page.getByRole("button", { name: "Ask accepted knowledge" }).click()
-  await expect(page.getByRole("dialog")).toBeVisible()
-
-  await page.screenshot({
-    path: "test-results/query-desktop-real.png",
-    fullPage: true,
+  const closeInvestigation = investigationDialog.getByRole("button", {
+    name: "Close",
   })
+  await closeInvestigation.focus()
+  await page.keyboard.press("Enter")
+  await expect(investigationDialog).toHaveCount(0)
+
   await page.reload()
   await expect(
-    page.getByRole("heading", { name: "Secure reader fixture" }).first()
+    page.getByRole("heading", { name: conceptPage.title, exact: true }).first()
   ).toBeVisible()
-  await page.getByRole("button", { name: "Ask accepted knowledge" }).click()
+  await expectDesktopViewport(page, 1920, 1080)
+  await askKnowledgeTrigger.focus()
+  await page.keyboard.press("Enter")
   queryDialog = page.getByRole("dialog")
-  await expect(queryDialog.getByText("Grounded answers only")).toBeVisible()
+  await expect(queryDialog).toHaveAccessibleName("Ask accepted knowledge")
   await expect(
-    page.getByText("What accepted knowledge is on this page?")
+    queryDialog.getByText("What accepted knowledge is on this page?")
   ).toHaveCount(0)
   await expect(
-    page.getByText("What accepted knowledge is in the complete bundle?")
+    queryDialog.getByText("What accepted knowledge is in the complete bundle?")
   ).toHaveCount(0)
-  await page.setViewportSize({ width: 390, height: 844 })
-  const queryOverflow = await queryDialog.evaluate((element) => ({
-    client: element.clientWidth,
-    scroll: element.scrollWidth,
-  }))
-  expect(queryOverflow.client).toBeGreaterThanOrEqual(389)
-  expect(queryOverflow.scroll).toBe(queryOverflow.client)
-  await page.screenshot({
-    path: "test-results/query-mobile-real.png",
-    fullPage: true,
-  })
-  await page.setViewportSize({ width: 1280, height: 720 })
-  await queryDialog.getByRole("button", { name: "Close" }).click()
+  const closeQuery = queryDialog.getByRole("button", { name: "Close" })
+  await closeQuery.focus()
+  await page.keyboard.press("Enter")
+  await expect(askKnowledgeTrigger).toBeFocused()
 
   await context.setOffline(true)
-  await page.getByRole("button", { name: "Source", exact: true }).click()
+  const sourceMode = page.getByRole("button", { name: "Source", exact: true })
+  await sourceMode.focus()
+  await page.keyboard.press("Enter")
   await expect(page.getByLabel("Generated Markdown source")).toContainText(
-    "<script>window.readerPwned"
+    readerClaim.statement
   )
-  await page.getByRole("button", { name: "Rendered" }).click()
-  await expect(page.getByLabel("Mathematical notation: x^2")).toContainText(
-    "x2"
+  await expect(page.getByLabel("Generated Markdown source")).toContainText(
+    claimId
   )
-  await page
-    .getByRole("navigation", { name: "On this page" })
-    .getByRole("link", { name: "Secure reader fixture" })
-    .click()
-  await expect(page).toHaveURL(/#secure-reader-fixture$/)
-  await page.screenshot({
-    path: "test-results/knowledge-desktop-real.png",
-    fullPage: true,
+  const renderedMode = page.getByRole("button", {
+    name: "Rendered",
+    exact: true,
   })
-  await page.setViewportSize({ width: 390, height: 844 })
-  const knowledgeOverflow = await page.evaluate(() => ({
-    viewport: document.documentElement.clientWidth,
-    width: document.documentElement.scrollWidth,
-  }))
-  expect(knowledgeOverflow.width).toBe(knowledgeOverflow.viewport)
-  await page.screenshot({
-    path: "test-results/knowledge-mobile-real.png",
-    fullPage: true,
-  })
-
-  await context.setOffline(false)
-  await page.setViewportSize({ width: 1280, height: 720 })
-  await page.getByRole("button", { name: "Runs", exact: true }).click()
-  await expect(page.locator('[aria-current="step"]')).toHaveText(
-    "Review Required"
-  )
-  await page.getByRole("button", { name: "Cancel Run" }).click()
-  const readerCancelDialog = page.getByRole("alertdialog")
-  const readerCancelResponse = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      new URL(response.url()).pathname.endsWith("/cancel")
-  )
-  await readerCancelDialog.getByRole("button", { name: "Cancel Run" }).click()
-  expect((await readerCancelResponse).status()).toBe(200)
-
-  await page.getByRole("button", { name: "Sources" }).click()
-  await expect(preflightCard).toBeVisible()
-  await preflightCard.getByRole("button", { name: "Review Required" }).click()
-  const reviewRunResponse = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      new URL(response.url()).pathname === "/api/v1/runs"
-  )
-  await preflightCard.getByRole("button", { name: "Start Run" }).click()
-  expect((await reviewRunResponse).status()).toBe(200)
-  await expect(page.locator('[aria-current="step"]')).toHaveText(
-    "Review Required"
-  )
-  await page.getByRole("button", { name: "Review", exact: true }).click()
+  await renderedMode.focus()
+  await page.keyboard.press("Enter")
   await expect(
-    page.getByRole("heading", { level: 1, name: "Review & publish" })
+    page.getByRole("heading", { name: conceptPage.title, exact: true }).first()
   ).toBeVisible()
-  await expect(page.getByTestId("review-digest")).toHaveText(/[0-9a-f]{64}/)
-  await page
-    .getByRole("row", { name: /overview\.md Added/ })
-    .getByRole("button", { name: "Details" })
-    .click()
-  await expect(page.getByRole("dialog")).toContainText(
-    "Overview of the fixed source revision."
-  )
-  await page.keyboard.press("Escape")
-  const approvalResponse = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      new URL(response.url()).pathname.endsWith("/decision")
-  )
-  await page.getByRole("button", { name: "Approve & publish" }).click()
-  await page.getByRole("button", { name: "Confirm publication" }).click()
-  expect((await approvalResponse).status()).toBe(200)
-  await expect(page.getByRole("alert")).toContainText("published atomically")
-  expect(existsSync(join(workspace, "published", "overview.md"))).toBe(true)
+  await context.setOffline(false)
 
-  await page.getByRole("button", { name: "Sources" }).click()
+  await expectDesktopViewport(page, 1024, 768)
+  const sourcesTrigger = page.getByRole("button", {
+    name: "Sources",
+    exact: true,
+  })
+  await sourcesTrigger.focus()
+  await page.keyboard.press("Enter")
   await expect(preflightCard).toBeVisible()
 
   await page.screenshot({
@@ -1561,7 +1951,7 @@ function createGitSource(prefix: string) {
   return path
 }
 
-function authoritativeKnowledgeState(runId: string, pagePath: string) {
+function authoritativePersistenceState(runId: string, pagePath: string) {
   return execFileSync(
     "uv",
     [
@@ -1588,43 +1978,6 @@ print(json.dumps(payload,sort_keys=True))`,
     ],
     { cwd: repoRoot, encoding: "utf-8" }
   ).trim()
-}
-
-function seedReplayImpact(runId: string) {
-  execFileSync(
-    "uv",
-    [
-      "run",
-      "python",
-      "-c",
-      `import json,sqlite3,sys
-from okf_wiki.run_events import append_entity_event
-database,run_id=sys.argv[1:]
-c=sqlite3.connect(database)
-c.row_factory=sqlite3.Row
-row=c.execute("select source_set_json from runs where id=?",(run_id,)).fetchone()
-link=c.execute("""select e.*, cl.id claim_id, co.id concept_id, p.path page_path
-from accepted_evidence e
-join claim_evidence ce on ce.run_id=e.run_id and ce.evidence_id=e.id
-join accepted_claims cl on cl.run_id=ce.run_id and cl.id=ce.claim_id
-join concept_claims cc on cc.run_id=cl.run_id and cc.claim_id=cl.id
-join accepted_concepts co on co.run_id=cc.run_id and co.id=cc.concept_id
-join page_plans p on p.run_id=co.run_id and p.concept_id=co.id
-where e.run_id=? order by e.id limit 1""",(run_id,)).fetchone()
-assert row and link
-source_set=json.loads(row[0])
-unit=next(item for item in source_set["source_universe"] if item["source_unit"]==link["source_unit"])
-before={"id":link["source_unit"],"source_id":link["source_id"],"revision":link["revision"],"path":link["path"],"kind":unit["source_unit_kind"],"digest":unit.get("content_digest") or link["digest"],"label":None}
-after={**before,"revision":"f"*40,"digest":"9"*64}
-source_set["refresh"]={"mode":"incremental","fallback_reason":None,"new_source_units":[],"reverify_claims":[link["claim_id"]],"reverify_concepts":[link["concept_id"]],"rerender_pages":[link["page_path"]],"relocations":{},"diff":{"added":[],"changed":[{"kind":"changed","before":before,"after":after}],"moved":[],"removed":[],"by_source":{}}}
-c.execute("update runs set source_set_json=? where id=?",(json.dumps(source_set,sort_keys=True),run_id))
-append_entity_event(c,run_id,"claim",link["claim_id"],"supported","stale",candidate_id="persisted-stale-candidate")
-c.commit()`,
-      join(workspace, ".okf-wiki", "runs.db"),
-      runId,
-    ],
-    { cwd: repoRoot, stdio: "pipe" }
-  )
 }
 
 function readSessionUrl(process: ChildProcessWithoutNullStreams) {
