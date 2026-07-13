@@ -995,7 +995,7 @@ class WorkspaceApplication:
         except ValueError as error:
             raise WorkspaceError(str(error)) from error
 
-    def knowledge_page(self, bundle: str, path: str, run_id: str | None = None) -> dict:
+    def knowledge_page(self, bundle: str, path: str, run_id: str) -> dict:
         from .knowledge import KnowledgeReader
 
         if bundle not in {"staged", "published"}:
@@ -1007,9 +1007,7 @@ class WorkspaceApplication:
         except ValueError as error:
             raise WorkspaceError(str(error)) from error
 
-    def search_knowledge(
-        self, query: str, bundle: str = "staged", run_id: str | None = None
-    ) -> list[dict[str, str]]:
+    def search_knowledge(self, query: str, bundle: str, run_id: str) -> list[dict[str, str]]:
         from .knowledge import KnowledgeReader
 
         if bundle not in {"staged", "published"}:
@@ -1024,9 +1022,10 @@ class WorkspaceApplication:
     def diff_knowledge(
         self,
         path: str,
-        base: str = "published",
-        target: str = "staged",
-        run_id: str | None = None,
+        base: str,
+        target: str,
+        base_run_id: str,
+        target_run_id: str,
     ) -> dict:
         from .knowledge import KnowledgeReader
 
@@ -1037,14 +1036,13 @@ class WorkspaceApplication:
                 path,
                 cast(Literal["published", "previous"], base),
                 cast(Literal["staged", "published"], target),
-                run_id,
+                base_run_id,
+                target_run_id,
             )
         except ValueError as error:
             raise WorkspaceError(str(error)) from error
 
-    def knowledge_claim(
-        self, claim_id: str, bundle: str = "staged", run_id: str | None = None
-    ) -> dict:
+    def knowledge_claim(self, claim_id: str, bundle: str, run_id: str) -> dict:
         from .knowledge import KnowledgeReader
 
         if bundle not in {"staged", "published"}:

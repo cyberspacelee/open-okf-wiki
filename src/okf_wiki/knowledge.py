@@ -28,6 +28,9 @@ from .worker import GitObjectSnapshotReader
 MAX_BUNDLE_PAGE_BYTES = 1_000_000
 MAX_BUNDLE_ASSET_BYTES = 1_000_000
 MAX_SEARCH_RESULTS = 50
+MAX_MERMAID_EDGES = 32
+MAX_MERMAID_NODES = MAX_MERMAID_EDGES * 2
+MAX_MERMAID_LABEL_CHARS = 80
 CLAIM_MARKER_RE = re.compile(r"<!--\s*claims:\s*(claim:[0-9a-f]{64})\s*-->")
 MERMAID_NODE_RE = re.compile(
     r"(?P<id>[A-Za-z][A-Za-z0-9_-]*)(?:\[(?P<square>[^\]\n]+)\]|"
@@ -107,11 +110,13 @@ class KnowledgeReader:
             if run_id is None:
                 current = self.selection("staged")
                 current_row = by_id[current.run_id]
+                current_source_set = self._source_set(current_row)
+                base_run_id = current_source_set.get("base_run_id")
+                row = by_id.get(base_run_id) if isinstance(base_run_id, str) else None
             else:
-                current_row = by_id.get(run_id)
-            current_source_set = self._source_set(current_row) if current_row is not None else {}
-            base_run_id = current_source_set.get("base_run_id")
-            row = by_id.get(base_run_id) if isinstance(base_run_id, str) else None
+                row = by_id.get(run_id)
+            if row is not None and row["state"] != "published":
+                row = None
             root = self._published_root(row) if row is not None else None
         if row is None or root is None or not root.is_dir():
             label = kind.title()
@@ -127,24 +132,50 @@ class KnowledgeReader:
                 pass
         return bundles
 
-    def diff_options(self) -> list[dict[str, str]]:
+    def _previous_of(self, run_id: str) -> BundleSelection:
+        rows = {row["id"]: row for row in self._rows()}
+        row = rows.get(run_id)
+        source_set = self._source_set(row) if row is not None else {}
+        base_run_id = source_set.get("base_run_id")
+        if not isinstance(base_run_id, str):
+            raise ValueError("Previous Knowledge Bundle is not available")
+        return self.selection("previous", base_run_id)
+
+    def diff_options(self, selected: BundleSelection) -> list[dict[str, str]]:
         options = []
         try:
-            published = self.selection("published")
-            self.selection("previous", published.run_id)
+            published = selected if selected.kind == "published" else self.selection("published")
+            previous = self._previous_of(published.run_id)
             options.append(
-                {"base": "previous", "target": "published", "target_run_id": published.run_id}
+                {
+                    "base": "previous",
+                    "base_run_id": previous.run_id,
+                    "target": "published",
+                    "target_run_id": published.run_id,
+                }
             )
         except ValueError:
             published = None
         try:
-            staged = self.selection("staged")
+            staged = selected if selected.kind == "staged" else self.selection("staged")
             if published is not None:
                 options.append(
-                    {"base": "published", "target": "staged", "target_run_id": staged.run_id}
+                    {
+                        "base": "published",
+                        "base_run_id": published.run_id,
+                        "target": "staged",
+                        "target_run_id": staged.run_id,
+                    }
                 )
-            self.selection("previous", staged.run_id)
-            options.append({"base": "previous", "target": "staged", "target_run_id": staged.run_id})
+            previous = self._previous_of(staged.run_id)
+            options.append(
+                {
+                    "base": "previous",
+                    "base_run_id": previous.run_id,
+                    "target": "staged",
+                    "target_run_id": staged.run_id,
+                }
+            )
         except ValueError:
             pass
         return options
@@ -284,7 +315,7 @@ class KnowledgeReader:
         return {
             "bundles": self.available(),
             "default_page": default,
-            "diff_options": self.diff_options(),
+            "diff_options": self.diff_options(selected),
             "pages": pages,
             "selected": selected.identity(),
         }
@@ -337,12 +368,11 @@ class KnowledgeReader:
         path: str,
         base: Literal["published", "previous"],
         target: Literal["staged", "published"],
-        run_id: str | None,
+        base_run_id: str,
+        target_run_id: str,
     ) -> dict:
-        target_selection = self.selection(target, run_id)
-        base_selection = self.selection(
-            base, target_selection.run_id if base == "previous" else None
-        )
+        base_selection = self.selection(base, base_run_id)
+        target_selection = self.selection(target, target_run_id)
         left_text = self._optional_read(base_selection.root, path)
         right_text = self._optional_read(target_selection.root, path)
         if left_text is None and right_text is None:
@@ -787,6 +817,15 @@ def _mermaid(source: str) -> dict[str, Any]:
         }
     nodes: dict[str, str] = {}
     edges = []
+    if len(lines) - 1 > MAX_MERMAID_EDGES:
+        return {
+            "type": "mermaid",
+            "direction": header.group(1).upper(),
+            "nodes": [],
+            "edges": [],
+            "source": source,
+            "error": "Mermaid flowchart exceeds the safe edge limit",
+        }
     for line in lines[1:]:
         match = MERMAID_EDGE_RE.fullmatch(line)
         if (
@@ -815,6 +854,22 @@ def _mermaid(source: str) -> dict[str, Any]:
                 "source": source,
                 "error": "Mermaid statement is outside the safe flowchart subset",
             }
+        values = [
+            left.group("id"),
+            left.group("square") or left.group("round") or left.group("brace") or "",
+            right.group("id"),
+            right.group("square") or right.group("round") or right.group("brace") or "",
+            match.group(2) or "",
+        ]
+        if any(len(value) > MAX_MERMAID_LABEL_CHARS for value in values):
+            return {
+                "type": "mermaid",
+                "direction": header.group(1).upper(),
+                "nodes": [],
+                "edges": [],
+                "source": source,
+                "error": "Mermaid flowchart label exceeds the safe length limit",
+            }
         for node in (left, right):
             nodes[node.group("id")] = (
                 node.group("square")
@@ -823,6 +878,15 @@ def _mermaid(source: str) -> dict[str, Any]:
                 or node.group("id")
             )
         edges.append({"from": left.group("id"), "to": right.group("id"), "label": match.group(2)})
+        if len(nodes) > MAX_MERMAID_NODES:
+            return {
+                "type": "mermaid",
+                "direction": header.group(1).upper(),
+                "nodes": [],
+                "edges": [],
+                "source": source,
+                "error": "Mermaid flowchart exceeds the safe node limit",
+            }
     return {
         "type": "mermaid",
         "direction": header.group(1).upper(),

@@ -213,9 +213,24 @@ def test_knowledge_snapshot_distinguishes_staged_and_published_bundles(
     }
     assert snapshot["default_page"] == "index.md"
     assert snapshot["diff_options"] == [
-        {"base": "previous", "target": "published", "target_run_id": "run-old"},
-        {"base": "published", "target": "staged", "target_run_id": "run-new"},
-        {"base": "previous", "target": "staged", "target_run_id": "run-new"},
+        {
+            "base": "previous",
+            "base_run_id": "run-older",
+            "target": "published",
+            "target_run_id": "run-old",
+        },
+        {
+            "base": "published",
+            "base_run_id": "run-old",
+            "target": "staged",
+            "target_run_id": "run-new",
+        },
+        {
+            "base": "previous",
+            "base_run_id": "run-old",
+            "target": "staged",
+            "target_run_id": "run-new",
+        },
     ]
     assert {page["path"] for page in snapshot["pages"]} == {
         "added.md",
@@ -231,7 +246,7 @@ def test_knowledge_page_returns_safe_structured_markdown(
 ) -> None:
     app, claim_id = knowledge_workspace
 
-    page = app.knowledge_page("staged", "guide.md")
+    page = app.knowledge_page("staged", "guide.md", "run-new")
 
     assert page["metadata"]["title"] == "Safe reader"
     assert page["source"].startswith("---\ntype: Guide")
@@ -281,9 +296,9 @@ def test_knowledge_search_diff_and_claim_use_fixed_read_only_inputs(
 ) -> None:
     app, claim_id = knowledge_workspace
 
-    results = app.search_knowledge("strict", "staged")
-    diff = app.diff_knowledge("guide.md", "published", "staged")
-    claim = app.knowledge_claim(claim_id, "staged")
+    results = app.search_knowledge("strict", "staged", "run-new")
+    diff = app.diff_knowledge("guide.md", "published", "staged", "run-old", "run-new")
+    claim = app.knowledge_claim(claim_id, "staged", "run-new")
 
     assert results == [{"path": "guide.md", "title": "Safe reader", "excerpt": "| CSP | strict |"}]
     assert diff["base"]["run_id"] == "run-old"
@@ -294,20 +309,93 @@ def test_knowledge_search_diff_and_claim_use_fixed_read_only_inputs(
     assert "repository" not in json.dumps(claim)
 
 
+def test_snapshot_pins_page_search_claim_and_diff_across_new_runs(
+    knowledge_workspace: tuple[WorkspaceApplication, str],
+) -> None:
+    app, claim_id = knowledge_workspace
+    staged_snapshot = app.knowledge_snapshot("staged")
+    published_snapshot = app.knowledge_snapshot("published")
+    published_to_staged = next(
+        option
+        for option in staged_snapshot["diff_options"]
+        if option["base"] == "published" and option["target"] == "staged"
+    )
+
+    latest_release = app.root / ".published.releases" / "run-latest-published"
+    _bundle(latest_release, "Latest published", "# Latest published\n\nRaced publication.\n")
+    latest_staging = app.root / ".okf-wiki" / "runs" / "run-latest-staged" / "staging"
+    _bundle(latest_staging, "Latest staged", "# Latest staged\n\nRaced staging.\n")
+    published = app.root / "published"
+    published.unlink()
+    published.symlink_to(latest_release.relative_to(app.root), target_is_directory=True)
+    with sqlite3.connect(app.database_path) as connection:
+        source_set = json.loads(
+            connection.execute("SELECT source_set_json FROM runs WHERE id = 'run-new'").fetchone()[
+                0
+            ]
+        )
+    with sqlite3.connect(app.database_path) as connection:
+        connection.execute(
+            """INSERT INTO runs
+               (id, project_id, repository, revision, publish_dir, staging_dir, state,
+                source_set_json, created_at, updated_at)
+               SELECT 'run-latest-published', project_id, repository, revision, publish_dir, ?,
+                      'published', ?, '2026-01-03', '2026-01-03'
+               FROM runs WHERE id = 'run-new'""",
+            (str(latest_release), json.dumps({**source_set, "base_run_id": "run-old"})),
+        )
+        connection.execute(
+            """INSERT INTO runs
+               (id, project_id, repository, revision, publish_dir, staging_dir, state,
+                source_set_json, created_at, updated_at)
+               SELECT 'run-latest-staged', project_id, repository, revision, publish_dir, ?,
+                      'review_required', ?, '2026-01-04', '2026-01-04'
+               FROM runs WHERE id = 'run-new'""",
+            (
+                str(latest_staging),
+                json.dumps({**source_set, "base_run_id": "run-latest-published"}),
+            ),
+        )
+
+    page = app.knowledge_page("staged", "guide.md", run_id=staged_snapshot["selected"]["run_id"])
+    published_page = app.knowledge_page(
+        "published", "guide.md", run_id=published_snapshot["selected"]["run_id"]
+    )
+    results = app.search_knowledge("strict", "staged", run_id=staged_snapshot["selected"]["run_id"])
+    claim = app.knowledge_claim(claim_id, "staged", run_id=staged_snapshot["selected"]["run_id"])
+    diff = app.diff_knowledge(
+        "guide.md",
+        published_to_staged["base"],
+        published_to_staged["target"],
+        base_run_id=published_to_staged["base_run_id"],
+        target_run_id=published_to_staged["target_run_id"],
+    )
+
+    assert page["run_id"] == "run-new"
+    assert page["title"] == "Safe reader"
+    assert published_page["run_id"] == "run-old"
+    assert published_page["title"] == "Published guide"
+    assert results[0]["title"] == "Safe reader"
+    assert claim["statement"] == "The gateway keeps credentials outside the Workspace."
+    assert claim["evidence"][0]["excerpt"] == claim["statement"]
+    assert diff["base"]["run_id"] == "run-old"
+    assert diff["target"]["run_id"] == "run-new"
+
+
 def test_knowledge_diff_represents_added_and_removed_pages(
     knowledge_workspace: tuple[WorkspaceApplication, str],
 ) -> None:
     app, _ = knowledge_workspace
 
-    added = app.diff_knowledge("added.md", "published", "staged")
-    removed = app.diff_knowledge("removed.md", "published", "staged")
+    added = app.diff_knowledge("added.md", "published", "staged", "run-old", "run-new")
+    removed = app.diff_knowledge("removed.md", "published", "staged", "run-old", "run-new")
 
     assert added["page_change"] == "added"
     assert [line["kind"] for line in added["lines"]] == ["added"]
     assert removed["page_change"] == "removed"
     assert [line["kind"] for line in removed["lines"]] == ["removed"]
 
-    previous = app.diff_knowledge("guide.md", "previous", "published", run_id="run-old")
+    previous = app.diff_knowledge("guide.md", "previous", "published", "run-older", "run-old")
     assert previous["base"]["run_id"] == "run-older"
     assert previous["target"]["run_id"] == "run-old"
 
@@ -330,10 +418,27 @@ def test_malformed_mermaid_is_a_controlled_reader_error(
     knowledge_workspace: tuple[WorkspaceApplication, str],
 ) -> None:
     app, _ = knowledge_workspace
-    page = app.knowledge_page("staged", "malformed.md")
+    page = app.knowledge_page("staged", "malformed.md", "run-new")
     diagram = page["blocks"][0]
     assert diagram["type"] == "mermaid"
     assert diagram["error"] == "Mermaid statement is outside the safe flowchart subset"
+    assert diagram["nodes"] == diagram["edges"] == []
+
+
+def test_mermaid_accessibility_payload_is_bounded(
+    knowledge_workspace: tuple[WorkspaceApplication, str],
+) -> None:
+    app, _ = knowledge_workspace
+    staging = app.root / ".okf-wiki" / "runs" / "run-new" / "staging"
+    edges = "\n".join(f"A{index}[Source] --> B{index}[Claim]" for index in range(33))
+    (staging / "large-diagram.md").write_text(
+        f"```mermaid\nflowchart LR\n{edges}\n```\n", encoding="utf-8"
+    )
+
+    page = app.knowledge_page("staged", "large-diagram.md", "run-new")
+
+    diagram = page["blocks"][0]
+    assert diagram["error"] == "Mermaid flowchart exceeds the safe edge limit"
     assert diagram["nodes"] == diagram["edges"] == []
 
 
@@ -348,12 +453,12 @@ def test_knowledge_page_failures_are_actionable_and_safe(
     (staging / "broken.md").write_text("[Missing](gone.md)\n", encoding="utf-8")
 
     with pytest.raises(WorkspaceError, match="exceeds the 1 MB"):
-        app.knowledge_page("staged", "oversized.md")
+        app.knowledge_page("staged", "oversized.md", "run-new")
     with pytest.raises(WorkspaceError, match="not valid UTF-8"):
-        app.knowledge_page("staged", "binary.md")
+        app.knowledge_page("staged", "binary.md", "run-new")
     with pytest.raises(WorkspaceError, match="malformed YAML frontmatter"):
-        app.knowledge_page("staged", "frontmatter.md")
-    assert app.knowledge_page("staged", "broken.md")["diagnostics"] == [
+        app.knowledge_page("staged", "frontmatter.md", "run-new")
+    assert app.knowledge_page("staged", "broken.md", "run-new")["diagnostics"] == [
         "Broken internal link: gone.md"
     ]
 
@@ -361,9 +466,18 @@ def test_knowledge_page_failures_are_actionable_and_safe(
 @pytest.mark.parametrize(
     ("operation", "message"),
     [
-        (lambda app: app.knowledge_page("staged", "../secret.md"), "canonical Bundle path"),
-        (lambda app: app.knowledge_page("staged", "missing.md"), "Bundle page does not exist"),
-        (lambda app: app.search_knowledge("", "staged"), "Search query must not be blank"),
+        (
+            lambda app: app.knowledge_page("staged", "../secret.md", "run-new"),
+            "canonical Bundle path",
+        ),
+        (
+            lambda app: app.knowledge_page("staged", "missing.md", "run-new"),
+            "Bundle page does not exist",
+        ),
+        (
+            lambda app: app.search_knowledge("", "staged", "run-new"),
+            "Search query must not be blank",
+        ),
     ],
 )
 def test_knowledge_reader_rejects_untrusted_inputs(
@@ -387,20 +501,32 @@ def test_console_exposes_validated_read_only_knowledge_dtos(
         headers = {"Authorization": f"Bearer {server.session_token}"}
         snapshot = httpx.get(base + "/api/v1/knowledge?bundle=staged", headers=headers)
         page = httpx.get(
-            base + "/api/v1/knowledge/page?bundle=staged&path=guide.md", headers=headers
+            base + "/api/v1/knowledge/page?bundle=staged&run_id=run-new&path=guide.md",
+            headers=headers,
         )
         search = httpx.get(
-            base + "/api/v1/knowledge/search?bundle=staged&query=strict", headers=headers
+            base + "/api/v1/knowledge/search?bundle=staged&run_id=run-new&query=strict",
+            headers=headers,
         )
         diff = httpx.get(
-            base + "/api/v1/knowledge/diff?path=guide.md&base=published&target=staged",
+            base
+            + "/api/v1/knowledge/diff?path=guide.md&base=published&base_run_id=run-old"
+            + "&target=staged&target_run_id=run-new",
             headers=headers,
         )
         claim = httpx.get(
-            base + f"/api/v1/knowledge/claims/{claim_id}?bundle=staged", headers=headers
+            base + f"/api/v1/knowledge/claims/{claim_id}?bundle=staged&run_id=run-new",
+            headers=headers,
         )
         traversal = httpx.get(
-            base + "/api/v1/knowledge/page?bundle=staged&path=../workspace.toml",
+            base + "/api/v1/knowledge/page?bundle=staged&run_id=run-new&path=../workspace.toml",
+            headers=headers,
+        )
+        unpinned = httpx.get(
+            base + "/api/v1/knowledge/page?bundle=staged&path=guide.md", headers=headers
+        )
+        wrong_kind = httpx.get(
+            base + "/api/v1/knowledge/page?bundle=published&run_id=run-new&path=guide.md",
             headers=headers,
         )
         duplicate = httpx.get(base + "/api/v1/knowledge?page=a&page=b", headers=headers)
@@ -412,4 +538,11 @@ def test_console_exposes_validated_read_only_knowledge_dtos(
     assert page.json()["path"] == "guide.md"
     assert search.json()["results"][0]["path"] == "guide.md"
     assert claim_id in claim.text
-    assert traversal.status_code == duplicate.status_code == malformed.status_code == 400
+    assert (
+        traversal.status_code
+        == unpinned.status_code
+        == wrong_kind.status_code
+        == duplicate.status_code
+        == malformed.status_code
+        == 400
+    )

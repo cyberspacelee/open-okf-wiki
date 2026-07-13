@@ -27,9 +27,24 @@ const identity = {
 }
 
 const diffOptions = [
-  { base: "previous", target: "published", target_run_id: "run-old" },
-  { base: "published", target: "staged", target_run_id: "run-new" },
-  { base: "previous", target: "staged", target_run_id: "run-new" },
+  {
+    base: "previous",
+    base_run_id: "run-older",
+    target: "published",
+    target_run_id: "run-old",
+  },
+  {
+    base: "published",
+    base_run_id: "run-old",
+    target: "staged",
+    target_run_id: "run-new",
+  },
+  {
+    base: "previous",
+    base_run_id: "run-old",
+    target: "staged",
+    target_run_id: "run-new",
+  },
 ]
 
 const source = `---
@@ -218,7 +233,7 @@ test("renders and navigates the Bundle without executing generated content", asy
   await expect(page.getByText("print", { exact: true })).toBeVisible()
   await expect(
     page.getByRole("img", {
-      name: "Mermaid flowchart with 2 nodes and 1 edges",
+      name: "Mermaid flowchart. Nodes: Source, Claim. Relations: Source → Claim.",
     })
   ).toContainText("Source")
   await expect(page.getByLabel("Mathematical notation: x^2")).toContainText(
@@ -383,6 +398,9 @@ async function mockKnowledge(page: Page) {
   await page.route("**/api/v1/knowledge/page?*", async (route) => {
     const url = new URL(route.request().url())
     const published = url.searchParams.get("bundle") === "published"
+    expect(url.searchParams.get("run_id")).toBe(
+      published ? "run-old" : "run-new"
+    )
     const path = url.searchParams.get("path")
     const details = path === "details.md"
     await route.fulfill({
@@ -444,8 +462,11 @@ async function mockKnowledge(page: Page) {
       }),
     })
   })
-  await page.route("**/api/v1/knowledge/search?*", (route) =>
-    route.fulfill({
+  await page.route("**/api/v1/knowledge/search?*", (route) => {
+    expect(new URL(route.request().url()).searchParams.get("run_id")).toBe(
+      "run-new"
+    )
+    return route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
@@ -455,16 +476,27 @@ async function mockKnowledge(page: Page) {
         ],
       }),
     })
-  )
-  await page.route("**/api/v1/knowledge/diff?*", (route) =>
-    route.fulfill({
+  })
+  await page.route("**/api/v1/knowledge/diff?*", (route) => {
+    const url = new URL(route.request().url())
+    const option = diffOptions.find(
+      (item) =>
+        item.base === url.searchParams.get("base") &&
+        item.target === url.searchParams.get("target")
+    )
+    expect(url.searchParams.get("base_run_id")).toBe(option?.base_run_id)
+    expect(url.searchParams.get("target_run_id")).toBe(option?.target_run_id)
+    return route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify(diffPayload(new URL(route.request().url()))),
+      body: JSON.stringify(diffPayload(url)),
     })
-  )
-  await page.route("**/api/v1/knowledge/claims/*", (route) =>
-    route.fulfill({
+  })
+  await page.route("**/api/v1/knowledge/claims/*", (route) => {
+    expect(new URL(route.request().url()).searchParams.get("run_id")).toBe(
+      "run-new"
+    )
+    return route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
@@ -495,7 +527,7 @@ async function mockKnowledge(page: Page) {
         ],
       }),
     })
-  )
+  })
 }
 
 function snapshotPayload(published: boolean) {

@@ -1,4 +1,7 @@
 export type BundleKind = "staged" | "published"
+const MAX_MERMAID_EDGES = 32
+const MAX_MERMAID_NODES = MAX_MERMAID_EDGES * 2
+const MAX_MERMAID_LABEL_CHARS = 80
 export type BundleIdentity = {
   kind: BundleKind | "previous"
   run_id: string
@@ -69,6 +72,7 @@ export type KnowledgeSnapshot = {
 
 export type DiffOption = {
   base: "published" | "previous"
+  base_run_id: string
   target: BundleKind
   target_run_id: string
 }
@@ -145,11 +149,12 @@ export async function fetchKnowledgeSnapshot(
 export async function fetchKnowledgePage(
   token: string,
   bundle: BundleKind,
+  runId: string,
   path: string,
   signal?: AbortSignal
 ) {
   const payload = await request(
-    `/api/v1/knowledge/page?bundle=${bundle}&path=${encodeURIComponent(path)}`,
+    `/api/v1/knowledge/page?bundle=${bundle}&run_id=${encodeURIComponent(runId)}&path=${encodeURIComponent(path)}`,
     token,
     signal
   )
@@ -160,11 +165,12 @@ export async function fetchKnowledgePage(
 export async function searchKnowledge(
   token: string,
   bundle: BundleKind,
+  runId: string,
   query: string,
   signal?: AbortSignal
 ) {
   const payload = await request(
-    `/api/v1/knowledge/search?bundle=${bundle}&query=${encodeURIComponent(query)}`,
+    `/api/v1/knowledge/search?bundle=${bundle}&run_id=${encodeURIComponent(runId)}&query=${encodeURIComponent(query)}`,
     token,
     signal
   )
@@ -191,7 +197,7 @@ export async function fetchKnowledgeDiff(
   signal?: AbortSignal
 ) {
   const payload = await request(
-    `/api/v1/knowledge/diff?base=${option.base}&target=${option.target}&run_id=${encodeURIComponent(option.target_run_id)}&path=${encodeURIComponent(path)}`,
+    `/api/v1/knowledge/diff?base=${option.base}&base_run_id=${encodeURIComponent(option.base_run_id)}&target=${option.target}&target_run_id=${encodeURIComponent(option.target_run_id)}&path=${encodeURIComponent(path)}`,
     token,
     signal
   )
@@ -202,11 +208,12 @@ export async function fetchKnowledgeDiff(
 export async function fetchKnowledgeClaim(
   token: string,
   bundle: BundleKind,
+  runId: string,
   claimId: string,
   signal?: AbortSignal
 ) {
   const payload = await request(
-    `/api/v1/knowledge/claims/${encodeURIComponent(claimId)}?bundle=${bundle}`,
+    `/api/v1/knowledge/claims/${encodeURIComponent(claimId)}?bundle=${bundle}&run_id=${encodeURIComponent(runId)}`,
     token,
     signal
   )
@@ -325,15 +332,26 @@ function isBlock(value: unknown): value is MarkdownBlock {
       strings(value, ["direction", "source"]) &&
       (value.error === null || typeof value.error === "string") &&
       Array.isArray(value.nodes) &&
+      value.nodes.length <= MAX_MERMAID_NODES &&
       value.nodes.every(
-        (node) => isRecord(node) && strings(node, ["id", "label"])
+        (node) =>
+          isRecord(node) &&
+          typeof node.id === "string" &&
+          typeof node.label === "string" &&
+          node.id.length <= MAX_MERMAID_LABEL_CHARS &&
+          node.label.length <= MAX_MERMAID_LABEL_CHARS
       ) &&
       Array.isArray(value.edges) &&
+      value.edges.length <= MAX_MERMAID_EDGES &&
       value.edges.every(
         (edge) =>
           isRecord(edge) &&
-          strings(edge, ["from", "to"]) &&
-          nullableString(edge.label)
+          typeof edge.from === "string" &&
+          typeof edge.to === "string" &&
+          edge.from.length <= MAX_MERMAID_LABEL_CHARS &&
+          edge.to.length <= MAX_MERMAID_LABEL_CHARS &&
+          nullableString(edge.label) &&
+          (edge.label === null || edge.label.length <= MAX_MERMAID_LABEL_CHARS)
       )
     )
   if (value.type === "math")
@@ -442,6 +460,7 @@ function isDiffOption(value: unknown): value is DiffOption {
     isRecord(value) &&
     (value.base === "published" || value.base === "previous") &&
     (value.target === "staged" || value.target === "published") &&
+    typeof value.base_run_id === "string" &&
     typeof value.target_run_id === "string"
   )
 }

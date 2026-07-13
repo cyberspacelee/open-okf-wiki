@@ -736,7 +736,7 @@ Accepted knowledge is source grounded.
   await expect(page.getByRole("cell", { name: "strict" })).toBeVisible()
   await expect(
     page.getByRole("img", {
-      name: "Mermaid flowchart with 3 nodes and 2 edges",
+      name: "Mermaid flowchart. Nodes: Source, Claim, Bundle. Relations: Source → Claim; Source → Bundle.",
     })
   ).toContainText("Bundle")
   await expect(page.getByLabel("Mathematical notation: x^2")).toContainText(

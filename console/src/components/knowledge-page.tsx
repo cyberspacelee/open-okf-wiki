@@ -76,7 +76,7 @@ type ReaderMode = "rendered" | "source" | "diff"
 type DiffMode = "unified" | "split"
 
 function diffOptionValue(option: DiffOption) {
-  return `${option.base}:${option.target}:${option.target_run_id}`
+  return `${option.base}:${option.base_run_id}:${option.target}:${option.target_run_id}`
 }
 
 export function KnowledgePage({ token }: { token: string }) {
@@ -134,9 +134,15 @@ export function KnowledgePage({ token }: { token: string }) {
   }, [bundle, retryKey, token])
 
   useEffect(() => {
-    if (!path) return
+    if (!path || !snapshot) return
     const controller = new AbortController()
-    fetchKnowledgePage(token, bundle, path, controller.signal).then(
+    fetchKnowledgePage(
+      token,
+      bundle,
+      snapshot.selected.run_id,
+      path,
+      controller.signal
+    ).then(
       (next) => {
         setError(null)
         setPage(next)
@@ -151,7 +157,7 @@ export function KnowledgePage({ token }: { token: string }) {
     parameters.set("page", path)
     window.history.replaceState(null, "", `/?${parameters}`)
     return () => controller.abort()
-  }, [bundle, path, retryKey, token])
+  }, [bundle, path, retryKey, snapshot, token])
 
   useEffect(() => {
     if (mode !== "diff" || !path || !snapshot) return
@@ -207,11 +213,18 @@ export function KnowledgePage({ token }: { token: string }) {
 
   async function submitSearch(event: FormEvent) {
     event.preventDefault()
-    if (!queryText.trim()) return
+    if (!queryText.trim() || !snapshot) return
     setSearching(true)
     setError(null)
     try {
-      setResults(await searchKnowledge(token, bundle, queryText))
+      setResults(
+        await searchKnowledge(
+          token,
+          bundle,
+          snapshot.selected.run_id,
+          queryText
+        )
+      )
     } catch (nextError) {
       setError(nextError as KnowledgeError)
     } finally {
@@ -479,6 +492,7 @@ export function KnowledgePage({ token }: { token: string }) {
                 <MarkdownReader
                   blocks={page.blocks}
                   bundle={bundle}
+                  runId={snapshot.selected.run_id}
                   token={token}
                   onNavigate={navigate}
                 />
@@ -522,11 +536,13 @@ export function KnowledgePage({ token }: { token: string }) {
 function MarkdownReader({
   blocks,
   bundle,
+  runId,
   token,
   onNavigate,
 }: {
   blocks: MarkdownBlock[]
   bundle: BundleKind
+  runId: string
   token: string
   onNavigate: (path: string, fragment?: string | null) => void
 }) {
@@ -537,6 +553,7 @@ function MarkdownReader({
           key={`${block.type}-${index}`}
           block={block}
           bundle={bundle}
+          runId={runId}
           token={token}
           onNavigate={onNavigate}
         />
@@ -548,11 +565,13 @@ function MarkdownReader({
 function Block({
   block,
   bundle,
+  runId,
   token,
   onNavigate,
 }: {
   block: MarkdownBlock
   bundle: BundleKind
+  runId: string
   token: string
   onNavigate: (path: string, fragment?: string | null) => void
 }) {
@@ -574,6 +593,7 @@ function Block({
         <Inline
           nodes={block.children}
           bundle={bundle}
+          runId={runId}
           token={token}
           onNavigate={onNavigate}
         />
@@ -586,6 +606,7 @@ function Block({
         <Inline
           nodes={block.children}
           bundle={bundle}
+          runId={runId}
           token={token}
           onNavigate={onNavigate}
         />
@@ -593,7 +614,12 @@ function Block({
     )
   if (block.type === "claim")
     return (
-      <ClaimMarker claimId={block.claim_id} bundle={bundle} token={token} />
+      <ClaimMarker
+        claimId={block.claim_id}
+        bundle={bundle}
+        runId={runId}
+        token={token}
+      />
     )
   if (block.type === "separator") return <Separator />
   if (block.type === "blockquote")
@@ -602,6 +628,7 @@ function Block({
         <MarkdownReader
           blocks={block.children}
           bundle={bundle}
+          runId={runId}
           token={token}
           onNavigate={onNavigate}
         />
@@ -633,6 +660,7 @@ function Block({
                 <MarkdownReader
                   blocks={item.children}
                   bundle={bundle}
+                  runId={runId}
                   token={token}
                   onNavigate={onNavigate}
                 />
@@ -654,6 +682,7 @@ function Block({
                   <Inline
                     nodes={cell}
                     bundle={bundle}
+                    runId={runId}
                     token={token}
                     onNavigate={onNavigate}
                   />
@@ -669,6 +698,7 @@ function Block({
                     <Inline
                       nodes={cell}
                       bundle={bundle}
+                      runId={runId}
                       token={token}
                       onNavigate={onNavigate}
                     />
@@ -722,11 +752,13 @@ function Block({
 function Inline({
   nodes,
   bundle,
+  runId,
   token,
   onNavigate,
 }: {
   nodes: InlineNode[]
   bundle: BundleKind
+  runId: string
   token: string
   onNavigate: (path: string, fragment?: string | null) => void
 }) {
@@ -748,6 +780,7 @@ function Inline({
           key={index}
           claimId={node.claim_id}
           bundle={bundle}
+          runId={runId}
           token={token}
           inline
         />
@@ -770,6 +803,7 @@ function Inline({
           <Inline
             nodes={node.children}
             bundle={bundle}
+            runId={runId}
             token={token}
             onNavigate={onNavigate}
           />
@@ -781,6 +815,7 @@ function Inline({
           <Inline
             nodes={node.children}
             bundle={bundle}
+            runId={runId}
             token={token}
             onNavigate={onNavigate}
           />
@@ -792,6 +827,7 @@ function Inline({
           <Inline
             nodes={node.children}
             bundle={bundle}
+            runId={runId}
             token={token}
             onNavigate={onNavigate}
           />
@@ -809,6 +845,7 @@ function Inline({
           <Inline
             nodes={node.children}
             bundle={bundle}
+            runId={runId}
             token={token}
             onNavigate={onNavigate}
           />
@@ -833,6 +870,7 @@ function Inline({
         <Inline
           nodes={node.children}
           bundle={bundle}
+          runId={runId}
           token={token}
           onNavigate={onNavigate}
         />
@@ -844,11 +882,13 @@ function Inline({
 function ClaimMarker({
   claimId,
   bundle,
+  runId,
   token,
   inline = false,
 }: {
   claimId: string
   bundle: BundleKind
+  runId: string
   token: string
   inline?: boolean
 }) {
@@ -860,14 +900,14 @@ function ClaimMarker({
   useEffect(() => {
     if (!open || claim) return
     const controller = new AbortController()
-    fetchKnowledgeClaim(token, bundle, claimId, controller.signal).then(
+    fetchKnowledgeClaim(token, bundle, runId, claimId, controller.signal).then(
       setClaim,
       (nextError: KnowledgeError) => {
         if (!controller.signal.aborted) setError(nextError)
       }
     )
     return () => controller.abort()
-  }, [attempt, bundle, claim, claimId, open, token])
+  }, [attempt, bundle, claim, claimId, open, runId, token])
 
   return (
     <Sheet open={open} onOpenChange={setOpen}>
@@ -967,10 +1007,17 @@ function MermaidDiagram({
       </Alert>
     )
   const labels = new Map(block.nodes.map((node) => [node.id, node.label]))
+  const nodeNames = block.nodes.map((node) => node.label).join(", ")
+  const relations = block.edges
+    .map((edge) => {
+      const relation = `${labels.get(edge.from) ?? edge.from} → ${labels.get(edge.to) ?? edge.to}`
+      return edge.label ? `${relation} (${edge.label})` : relation
+    })
+    .join("; ")
   return (
     <figure
       role="img"
-      aria-label={`Mermaid flowchart with ${block.nodes.length} nodes and ${block.edges.length} edges`}
+      aria-label={`Mermaid flowchart. Nodes: ${nodeNames}. Relations: ${relations}.`}
       className="flex flex-col gap-3 rounded-lg border bg-muted/30 p-4"
     >
       <div className="flex flex-col gap-3">

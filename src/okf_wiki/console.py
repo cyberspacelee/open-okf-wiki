@@ -249,43 +249,46 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                     ),
                 }
             elif path == "/api/v1/knowledge/page" and self.command in {"GET", "HEAD"}:
-                query = self._query(query_string, {"bundle", "path", "run_id"}, {"path"})
+                query = self._query(query_string, {"bundle", "path", "run_id"}, {"path", "run_id"})
                 payload = {
                     "ok": True,
                     **self.server.application.knowledge_page(
-                        query.get("bundle", "staged"), query["path"], query.get("run_id")
+                        query.get("bundle", "staged"), query["path"], query["run_id"]
                     ),
                 }
             elif path == "/api/v1/knowledge/search" and self.command in {"GET", "HEAD"}:
-                query = self._query(query_string, {"bundle", "query", "run_id"}, {"query"})
+                query = self._query(
+                    query_string, {"bundle", "query", "run_id"}, {"query", "run_id"}
+                )
                 payload = {
                     "ok": True,
                     "results": self.server.application.search_knowledge(
-                        query["query"], query.get("bundle", "staged"), query.get("run_id")
+                        query["query"], query.get("bundle", "staged"), query["run_id"]
                     ),
                 }
             elif path == "/api/v1/knowledge/diff" and self.command in {"GET", "HEAD"}:
                 query = self._query(
                     query_string,
-                    {"base", "path", "run_id", "target"},
-                    {"path"},
+                    {"base", "base_run_id", "path", "target", "target_run_id"},
+                    {"base", "base_run_id", "path", "target", "target_run_id"},
                 )
                 payload = {
                     "ok": True,
                     **self.server.application.diff_knowledge(
                         query["path"],
-                        query.get("base", "published"),
-                        query.get("target", "staged"),
-                        query.get("run_id"),
+                        query["base"],
+                        query["target"],
+                        query["base_run_id"],
+                        query["target_run_id"],
                     ),
                 }
             elif path.startswith("/api/v1/knowledge/claims/") and self.command in {"GET", "HEAD"}:
-                query = self._query(query_string, {"bundle", "run_id"})
+                query = self._query(query_string, {"bundle", "run_id"}, {"run_id"})
                 claim_id = unquote(path.removeprefix("/api/v1/knowledge/claims/"))
                 payload = {
                     "ok": True,
                     **self.server.application.knowledge_claim(
-                        claim_id, query.get("bundle", "staged"), query.get("run_id")
+                        claim_id, query.get("bundle", "staged"), query["run_id"]
                     ),
                 }
             else:
