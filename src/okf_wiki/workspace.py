@@ -1328,12 +1328,26 @@ class WorkspaceApplication:
         run_id: str | None = None,
         concept_id: str | None = None,
         limit: int = 100,
+        offset: int = 0,
+        node_types: tuple[str, ...] = (),
+        states: tuple[str, ...] = (),
     ) -> dict:
         self.open()
-        from .provenance import MAX_GRAPH_NODES, ConceptProvenanceStore
+        from .provenance import (
+            MAX_GRAPH_NODES,
+            PROVENANCE_FILTER_STATES,
+            PROVENANCE_NODE_TYPES,
+            ConceptProvenanceStore,
+        )
 
         if not 1 <= limit <= MAX_GRAPH_NODES:
             raise WorkspaceError(f"limit must be between 1 and {MAX_GRAPH_NODES}")
+        if offset < 0:
+            raise WorkspaceError("offset must be non-negative")
+        if unknown := set(node_types) - PROVENANCE_NODE_TYPES:
+            raise WorkspaceError(f"Unknown provenance node type: {sorted(unknown)[0]}")
+        if unknown := set(states) - PROVENANCE_FILTER_STATES:
+            raise WorkspaceError(f"Unknown provenance state: {sorted(unknown)[0]}")
         if run_id is not None:
             self._validate_run_id(run_id)
         else:
@@ -1355,14 +1369,24 @@ class WorkspaceApplication:
                 "edges": [],
                 "bounds": {
                     "limit": limit,
+                    "offset": offset,
+                    "previous_offset": None,
+                    "next_offset": None,
                     "total_nodes": 0,
                     "total_edges": 0,
+                    "filtered_total_nodes": 0,
+                    "filtered_total_edges": 0,
                     "truncated": False,
                 },
             }
         try:
             return ConceptProvenanceStore(self.database_path).snapshot(
-                run_id, concept_id=concept_id, limit=limit
+                run_id,
+                concept_id=concept_id,
+                limit=limit,
+                offset=offset,
+                node_types=node_types,
+                states=states,
             )
         except ValueError as error:
             raise WorkspaceError(str(error)) from error

@@ -123,19 +123,42 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 payload = {"ok": True, **self.server.application.list_runs()}
             elif path == "/api/v1/concepts" and self.command in {"GET", "HEAD"}:
                 query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
-                unknown = set(query) - {"run_id", "concept_id", "limit"}
+                unknown = set(query) - {
+                    "run_id",
+                    "concept_id",
+                    "limit",
+                    "offset",
+                    "types",
+                    "states",
+                }
                 if unknown or any(len(values) != 1 for values in query.values()):
                     raise ConsoleRequestError(400, "Invalid Concepts query")
                 try:
                     limit = int(query.get("limit", ["100"])[0])
+                    offset = int(query.get("offset", ["0"])[0])
                 except ValueError as error:
-                    raise ConsoleRequestError(400, "Concept limit must be an integer") from error
+                    raise ConsoleRequestError(
+                        400, "Concept limit and offset must be integers"
+                    ) from error
+
+                def comma_values(name: str) -> tuple[str, ...]:
+                    raw = query.get(name, [""])[0]
+                    if not raw:
+                        return ()
+                    values = tuple(raw.split(","))
+                    if any(not value or value.strip() != value for value in values):
+                        raise ConsoleRequestError(400, "Invalid Concepts query")
+                    return values
+
                 payload = {
                     "ok": True,
                     **self.server.application.concept_provenance(
                         run_id=query.get("run_id", [None])[0] or None,
                         concept_id=query.get("concept_id", [None])[0] or None,
                         limit=limit,
+                        offset=offset,
+                        node_types=comma_values("types"),
+                        states=comma_values("states"),
                     ),
                 }
             elif path == "/api/v1/runs" and self.command == "POST":

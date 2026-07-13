@@ -420,8 +420,13 @@ def test_console_concepts_query_uses_workspace_application_and_validates_bounds(
             "edges": [],
             "bounds": {
                 "limit": query["limit"],
+                "offset": query["offset"],
+                "previous_offset": None,
+                "next_offset": None,
                 "total_nodes": 0,
                 "total_edges": 0,
+                "filtered_total_nodes": 0,
+                "filtered_total_edges": 0,
                 "truncated": False,
             },
         }
@@ -430,15 +435,31 @@ def test_console_concepts_query_uses_workspace_application_and_validates_bounds(
     with running_console(tmp_path, assets) as (server, _):
         base = f"http://127.0.0.1:{server.server_port}"
         response = httpx.get(
-            base + "/api/v1/concepts?run_id=run-1&concept_id=concept%3A1&limit=25",
+            base
+            + "/api/v1/concepts?run_id=run-1&concept_id=concept%3A1&limit=25"
+            + "&offset=50&types=claim%2Cverification&states=stale%2Crejected",
             headers=authorization(server),
         )
         invalid = httpx.get(base + "/api/v1/concepts?limit=many", headers=authorization(server))
+        invalid_filter = httpx.get(
+            base + "/api/v1/concepts?types=claim%2C",
+            headers=authorization(server),
+        )
 
     assert response.status_code == 200
     assert response.json()["bounds"]["limit"] == 25
-    assert received == [{"run_id": "run-1", "concept_id": "concept:1", "limit": 25}]
+    assert received == [
+        {
+            "run_id": "run-1",
+            "concept_id": "concept:1",
+            "limit": 25,
+            "offset": 50,
+            "node_types": ("claim", "verification"),
+            "states": ("stale", "rejected"),
+        }
+    ]
     assert invalid.status_code == 400
+    assert invalid_filter.status_code == 400
 
 
 def test_console_overview_reports_source_setup_blockers(tmp_path: Path) -> None:

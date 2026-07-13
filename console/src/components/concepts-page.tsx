@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useState } from "react"
 import {
   ArchiveIcon,
   BanIcon,
@@ -71,14 +71,21 @@ export function ConceptsPage({ token }: { token: string }) {
   const [load, setLoad] = useState<LoadState>({ status: "loading" })
   const [conceptId, setConceptId] = useState<string>()
   const [limit, setLimit] = useState(100)
+  const [offset, setOffset] = useState(0)
   const [selectedNodeId, setSelectedNodeId] = useState<string>()
   const [types, setTypes] = useState<ProvenanceNodeType[]>([])
   const [states, setStates] = useState<ProvenanceFilterState[]>([])
 
   useEffect(() => {
     const controller = new AbortController()
-    fetchProvenance(token, { conceptId, limit }, controller.signal).then(
-      (snapshot) => setLoad({ status: "ready", snapshot }),
+    fetchProvenance(
+      token,
+      { conceptId, limit, offset, types, states },
+      controller.signal
+    ).then(
+      (snapshot) => {
+        if (!controller.signal.aborted) setLoad({ status: "ready", snapshot })
+      },
       (error: unknown) => {
         if (!controller.signal.aborted)
           setLoad({
@@ -94,7 +101,7 @@ export function ConceptsPage({ token }: { token: string }) {
       }
     )
     return () => controller.abort()
-  }, [conceptId, limit, token])
+  }, [conceptId, limit, offset, states, token, types])
 
   if (load.status === "loading") return <ConceptsLoading />
   if (load.status === "error")
@@ -137,12 +144,25 @@ export function ConceptsPage({ token }: { token: string }) {
       onConceptChange={(next) => {
         setConceptId(next)
         setLimit(100)
+        setOffset(0)
         setSelectedNodeId(undefined)
       }}
       onNodeSelect={setSelectedNodeId}
-      onTypesChange={setTypes}
-      onStatesChange={setStates}
-      onShowMore={() => setLimit(200)}
+      onTypesChange={(next) => {
+        setTypes(next)
+        setOffset(0)
+        setSelectedNodeId(undefined)
+      }}
+      onStatesChange={(next) => {
+        setStates(next)
+        setOffset(0)
+        setSelectedNodeId(undefined)
+      }}
+      onShowMore={() => {
+        setLimit(200)
+        setOffset(0)
+      }}
+      onOffsetChange={setOffset}
     />
   )
 }
@@ -158,6 +178,7 @@ function ConceptsReady({
   onTypesChange,
   onStatesChange,
   onShowMore,
+  onOffsetChange,
 }: {
   snapshot: ProvenanceSnapshot
   conceptId: string
@@ -169,24 +190,10 @@ function ConceptsReady({
   onTypesChange: (value: ProvenanceNodeType[]) => void
   onStatesChange: (value: ProvenanceFilterState[]) => void
   onShowMore: () => void
+  onOffsetChange: (value: number) => void
 }) {
-  const visibleNodes = useMemo(
-    () =>
-      snapshot.nodes.filter(
-        (node) =>
-          (types.length === 0 || types.includes(node.type)) &&
-          (states.length === 0 ||
-            states.some((state) => node.states.includes(state)))
-      ),
-    [snapshot.nodes, states, types]
-  )
-  const visibleIds = useMemo(
-    () => new Set(visibleNodes.map((node) => node.id)),
-    [visibleNodes]
-  )
-  const visibleEdges = snapshot.edges.filter(
-    (edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target)
-  )
+  const visibleNodes = snapshot.nodes
+  const visibleEdges = snapshot.edges
   const nodesById = new Map(snapshot.nodes.map((node) => [node.id, node]))
   const selectedNode = nodesById.get(selectedNodeId ?? conceptId)
 
@@ -220,8 +227,8 @@ function ConceptsReady({
             <CardHeader>
               <CardTitle>Scope and filters</CardTitle>
               <CardDescription>
-                No pressed filter means all values. The server still bounds
-                every response.
+                No pressed filter means all values. Filters are applied before
+                the server returns each bounded page.
               </CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-4">
@@ -265,9 +272,9 @@ function ConceptsReady({
             <CardHeader>
               <CardTitle>Persisted provenance graph</CardTitle>
               <CardDescription>
-                {visibleNodes.length} of {snapshot.bounds.total_nodes} nodes ·{" "}
-                {visibleEdges.length} of {snapshot.bounds.total_edges} edges
-                loaded
+                {visibleNodes.length} of {snapshot.bounds.filtered_total_nodes}{" "}
+                filtered nodes · {visibleEdges.length} of{" "}
+                {snapshot.bounds.filtered_total_edges} filtered edges loaded
               </CardDescription>
             </CardHeader>
             <CardContent className="min-w-0">
@@ -327,14 +334,49 @@ function ConceptsReady({
               {snapshot.bounds.truncated && snapshot.bounds.limit < 200 && (
                 <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
                   <p className="text-xs text-muted-foreground">
-                    Showing a bounded subset. Filters apply to loaded
-                    authoritative nodes only.
+                    Start with 100 authoritative nodes, then expand to the
+                    maximum page size.
                   </p>
                   <Button variant="outline" size="sm" onClick={onShowMore}>
                     Show more
                   </Button>
                 </div>
               )}
+              {snapshot.bounds.limit === 200 &&
+                (snapshot.bounds.previous_offset !== null ||
+                  snapshot.bounds.next_offset !== null) && (
+                  <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-xs text-muted-foreground">
+                      Showing {snapshot.bounds.offset + 1}–
+                      {snapshot.bounds.offset + visibleNodes.length} of{" "}
+                      {snapshot.bounds.filtered_total_nodes} filtered nodes
+                    </p>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={snapshot.bounds.previous_offset === null}
+                        onClick={() =>
+                          snapshot.bounds.previous_offset !== null &&
+                          onOffsetChange(snapshot.bounds.previous_offset)
+                        }
+                      >
+                        Previous
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={snapshot.bounds.next_offset === null}
+                        onClick={() =>
+                          snapshot.bounds.next_offset !== null &&
+                          onOffsetChange(snapshot.bounds.next_offset)
+                        }
+                      >
+                        Next
+                      </Button>
+                    </div>
+                  </div>
+                )}
             </CardContent>
           </Card>
         </div>
@@ -480,6 +522,7 @@ function NodeDetails({ node }: { node?: ProvenanceNode }) {
             </div>
             <dl className="flex min-w-0 flex-col gap-3 text-sm">
               <Detail label="Stable ID" value={node.stable_id} mono />
+              <Detail label="Run" value={node.run_id} mono />
               <Detail label="Type" value={stageLabels[node.type]} />
               {node.role && (
                 <Detail label="Claim role" value={titleCase(node.role)} />
@@ -515,7 +558,7 @@ function NodeDetails({ node }: { node?: ProvenanceNode }) {
                 <ol className="flex flex-col gap-2">
                   {node.events.map((event) => (
                     <li
-                      key={event.sequence}
+                      key={`${event.run_id}-${event.sequence}`}
                       className="rounded-lg border p-3 text-xs"
                     >
                       <p className="font-medium">
@@ -527,6 +570,9 @@ function NodeDetails({ node }: { node?: ProvenanceNode }) {
                       <p className="mt-1 text-muted-foreground">
                         {formatDate(event.occurred_at)}
                       </p>
+                      <p className="mt-1 font-mono break-all text-muted-foreground">
+                        {event.run_id} · {titleCase(event.entity_type)}
+                      </p>
                       {event.candidate_id && (
                         <p className="mt-1 font-mono break-all text-muted-foreground">
                           {event.candidate_id}
@@ -537,6 +583,76 @@ function NodeDetails({ node }: { node?: ProvenanceNode }) {
                 </ol>
               )}
             </div>
+            {node.metadata && "reason" in node.metadata && (
+              <div className="flex flex-col gap-2">
+                <h3 className="text-sm font-semibold">Blocking reason</h3>
+                <p className="text-xs leading-5 text-muted-foreground">
+                  {node.metadata.reason ?? "No reason recorded."}
+                </p>
+              </div>
+            )}
+            {node.metadata && "findings" in node.metadata && (
+              <div className="flex flex-col gap-4">
+                <div className="flex flex-col gap-2">
+                  <h3 className="text-sm font-semibold">Decision reasons</h3>
+                  {node.metadata.reasons.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      No decision reasons recorded.
+                    </p>
+                  ) : (
+                    <ul className="list-disc pl-5 text-xs leading-5 text-muted-foreground">
+                      {node.metadata.reasons.map((reason, index) => (
+                        <li key={`${index}-${reason}`}>{reason}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <div className="flex flex-col gap-2">
+                  <h3 className="text-sm font-semibold">
+                    Verification findings
+                  </h3>
+                  {node.metadata.findings.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      No findings recorded.
+                    </p>
+                  ) : (
+                    <ol className="flex flex-col gap-2">
+                      {node.metadata.findings.map((finding, index) => (
+                        <li
+                          key={`${finding.perspective}-${index}`}
+                          className="flex min-w-0 flex-col gap-2 rounded-lg border p-3 text-xs"
+                        >
+                          <div className="flex flex-wrap gap-1">
+                            <Badge variant="outline">
+                              {titleCase(finding.perspective)}
+                            </Badge>
+                            <Badge
+                              variant={
+                                finding.severity === "critical" ||
+                                finding.severity === "error"
+                                  ? "destructive"
+                                  : "secondary"
+                              }
+                            >
+                              {titleCase(finding.verdict)} ·{" "}
+                              {titleCase(finding.severity)}
+                            </Badge>
+                          </div>
+                          <p className="font-mono break-all text-muted-foreground">
+                            {titleCase(finding.target_type)} ·{" "}
+                            {finding.target_id}
+                          </p>
+                          <p className="leading-5">{finding.rationale}</p>
+                          <p className="font-mono break-all text-muted-foreground">
+                            Evidence · {finding.evidence.join(", ")}
+                          </p>
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </CardContent>

@@ -109,6 +109,24 @@ def evidence_record_id(
     )
 
 
+def claim_record_id(
+    *,
+    subject: str,
+    predicate: str,
+    statement: str,
+    modality: str,
+    conditions: list[str],
+) -> str:
+    return _stable_id(
+        "claim",
+        [subject, predicate, statement, modality, sorted(conditions)],
+    )
+
+
+def concept_record_id(defining_claim_ids: list[str]) -> str:
+    return _stable_id("concept", sorted(defining_claim_ids))
+
+
 def _slug(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.casefold()).strip("-") or "concept"
 
@@ -274,15 +292,12 @@ class AcceptedKnowledgeStore:
             claim_ids: dict[str, str] = {}
             for claim in proposal.claims:
                 accepted_evidence = sorted(evidence_ids[item] for item in claim.evidence_ids)
-                accepted_id = _stable_id(
-                    "claim",
-                    [
-                        claim.subject,
-                        claim.predicate,
-                        claim.text,
-                        claim.modality,
-                        sorted(claim.conditions),
-                    ],
+                accepted_id = claim_record_id(
+                    subject=claim.subject,
+                    predicate=claim.predicate,
+                    statement=claim.text,
+                    modality=claim.modality,
+                    conditions=claim.conditions,
                 )
                 claim_ids[claim.id] = accepted_id
                 previous = connection.execute(
@@ -367,7 +382,7 @@ class AcceptedKnowledgeStore:
                     supporting_proposals = []
                 defining = [claim_ids[item] for item in defining_proposals]
                 supporting = [claim_ids[item] for item in supporting_proposals]
-                accepted_id = _stable_id("concept", sorted(defining))
+                accepted_id = concept_record_id(defining)
                 concept_ids[concept.id] = accepted_id
                 previous = connection.execute(
                     "SELECT status FROM accepted_concepts WHERE run_id = ? AND id = ?",
@@ -609,10 +624,24 @@ class AcceptedKnowledgeStore:
                FROM accepted_claims WHERE run_id = ?""",
             (run_id, base_run_id),
         )
-        connection.executemany(
-            "UPDATE accepted_claims SET epistemic_status = 'stale' WHERE run_id = ? AND id = ?",
-            [(run_id, claim_id) for claim_id in stale_claim_ids],
-        )
+        for row in connection.execute(
+            "SELECT id, epistemic_status FROM accepted_claims WHERE run_id = ? ORDER BY id",
+            (run_id,),
+        ):
+            if row["id"] not in stale_claim_ids or row["epistemic_status"] == "stale":
+                continue
+            connection.execute(
+                "UPDATE accepted_claims SET epistemic_status = 'stale' WHERE run_id = ? AND id = ?",
+                (run_id, row["id"]),
+            )
+            append_entity_event(
+                connection,
+                run_id,
+                "claim",
+                row["id"],
+                row["epistemic_status"],
+                "stale",
+            )
         connection.executemany(
             "INSERT INTO claim_evidence VALUES (?, ?, ?)",
             [
@@ -646,10 +675,24 @@ class AcceptedKnowledgeStore:
                FROM accepted_concepts WHERE run_id = ?""",
             (run_id, base_run_id),
         )
-        connection.executemany(
-            "UPDATE accepted_concepts SET status = 'stale' WHERE run_id = ? AND id = ?",
-            [(run_id, concept_id) for concept_id in stale_concept_ids],
-        )
+        for row in connection.execute(
+            "SELECT id, status FROM accepted_concepts WHERE run_id = ? ORDER BY id",
+            (run_id,),
+        ):
+            if row["id"] not in stale_concept_ids or row["status"] == "stale":
+                continue
+            connection.execute(
+                "UPDATE accepted_concepts SET status = 'stale' WHERE run_id = ? AND id = ?",
+                (run_id, row["id"]),
+            )
+            append_entity_event(
+                connection,
+                run_id,
+                "concept",
+                row["id"],
+                row["status"],
+                "stale",
+            )
         for table, columns in (
             ("concept_claims", "concept_id, claim_id, role"),
             (
