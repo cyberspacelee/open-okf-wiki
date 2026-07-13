@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .accepted_knowledge import AcceptedKnowledgeStore, AcceptanceReceipt
 from .coverage import refresh_run_coverage
+from .fault_injection import crash_if_requested
 from .knowledge_contracts import (
     AnalysisTask,
     ObligationSummary,
@@ -196,6 +197,7 @@ def _transition_task(
     receipt_json: str | None = None,
     error: str | None = None,
 ) -> None:
+    crash_if_requested("before_task")
     if next_state in {"running", "accepted"}:
         active = connection.execute(
             """UPDATE runs SET updated_at = updated_at
@@ -230,6 +232,7 @@ def _transition_task(
     if changed.rowcount != 1:
         raise ValueError(f"Analysis Task is no longer in {previous}")
     append_entity_event(connection, run_id, "analysis_task", task_id, previous, next_state)
+    crash_if_requested("after_task")
 
 
 def recover_tasks(database: Path, run_id: str) -> list[str]:

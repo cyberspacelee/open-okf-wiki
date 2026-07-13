@@ -624,7 +624,12 @@ def producer_profile_id(profile: dict) -> str:
     return f"profile:{digest}"
 
 
-def run_validation_errors(row: sqlite3.Row, source_set: dict, obligations: list[dict]) -> list[str]:
+def run_validation_errors(
+    row: sqlite3.Row,
+    source_set: dict,
+    obligations: list[dict],
+    database: Path | None = None,
+) -> list[str]:
     coverage = json.loads(row["coverage_json"]) if row["coverage_json"] else None
     staging = Path(row["staging_dir"])
     errors = validate_bundle(staging, row["revision"], coverage)
@@ -634,18 +639,21 @@ def run_validation_errors(row: sqlite3.Row, source_set: dict, obligations: list[
     expected_digest = source_set.get("authoritative_digest")
     if (
         expected_digest is not None
-        and authoritative_digest(db_path(), row["id"], obligations) != expected_digest
+        and authoritative_digest(database or db_path(), row["id"], obligations) != expected_digest
     ):
         errors.append("Authoritative knowledge changed after the Bundle was rendered")
     return errors
 
 
-def render_checkpoint(connection: sqlite3.Connection, row: sqlite3.Row) -> None:
+def render_checkpoint(
+    connection: sqlite3.Connection, row: sqlite3.Row, database: Path | None = None
+) -> None:
+    database = database or db_path()
     run_id = row["id"]
     source_set = json.loads(row["source_set_json"])
     obligations = obligation_rows(connection, run_id)
     coverage = json.loads(row["coverage_json"])
-    accepted_knowledge = AcceptedKnowledgeStore(db_path()).knowledge_summary(run_id)
+    accepted_knowledge = AcceptedKnowledgeStore(database).knowledge_summary(run_id)
     source_set["accepted_knowledge"] = accepted_knowledge
     crash_if_requested("before_staging")
     review = render_bundle(
@@ -658,14 +666,14 @@ def render_checkpoint(connection: sqlite3.Connection, row: sqlite3.Row) -> None:
         coverage,
         source_set["bundle_date"],
         accepted_knowledge,
-        db_path(),
+        database,
         run_id,
         source_set.get("base_run_id"),
         Path(row["publish_dir"]),
     )
     crash_if_requested("after_staging")
     crash_if_requested("before_review")
-    source_set["authoritative_digest"] = authoritative_digest(db_path(), run_id, obligations)
+    source_set["authoritative_digest"] = authoritative_digest(database, run_id, obligations)
     source_set["bundle_manifest"] = file_manifest(Path(row["staging_dir"]))
     source_set["review"] = review
     with connection:
@@ -677,14 +685,19 @@ def render_checkpoint(connection: sqlite3.Connection, row: sqlite3.Row) -> None:
 
 
 def advance_rendering(
-    connection: sqlite3.Connection, run_id: str, *, rerender_checking: bool = False
+    connection: sqlite3.Connection,
+    run_id: str,
+    *,
+    rerender_checking: bool = False,
+    database: Path | None = None,
 ) -> str:
+    database = database or db_path()
     row = get_run(connection, run_id)
     state = row["state"]
     if state == "verifying":
         source_set = json.loads(row["source_set_json"])
         accept_data_contracts(
-            db_path(), run_id, source_set["source_universe"], obligation_rows(connection, run_id)
+            database, run_id, source_set["source_universe"], obligation_rows(connection, run_id)
         )
         transition(
             connection,
@@ -695,16 +708,18 @@ def advance_rendering(
         )
         state = "rendering"
     if state == "rendering":
-        render_checkpoint(connection, get_run(connection, run_id))
+        render_checkpoint(connection, get_run(connection, run_id), database)
         transition(connection, run_id, "rendering", "checking")
         state = "checking"
     elif state == "checking" and rerender_checking:
-        render_checkpoint(connection, get_run(connection, run_id))
+        render_checkpoint(connection, get_run(connection, run_id), database)
     if state != "checking":
         raise UserError(f"Run {run_id} is not ready to render")
     current = get_run(connection, run_id)
     source_set = json.loads(current["source_set_json"])
-    errors = run_validation_errors(current, source_set, obligation_rows(connection, run_id))
+    errors = run_validation_errors(
+        current, source_set, obligation_rows(connection, run_id), database
+    )
     if errors:
         raise UserError("; ".join(errors))
     transition(connection, run_id, "checking", "review_required")
@@ -724,7 +739,13 @@ def finish_run(run_id: str) -> None:
         connection.close()
 
 
-def inspect_run(connection: sqlite3.Connection, run_id: str, profile: dict) -> tuple[dict, dict]:
+def inspect_run(
+    connection: sqlite3.Connection,
+    run_id: str,
+    profile: dict,
+    database: Path | None = None,
+) -> tuple[dict, dict]:
+    database = database or db_path()
     row = get_run(connection, run_id)
     initial = json.loads(row["source_set_json"])
     configured_sources = initial["sources"]
@@ -749,7 +770,7 @@ def inspect_run(connection: sqlite3.Connection, run_id: str, profile: dict) -> t
     digest = source_set_digest(sources)
     prepared = prepare_refresh(
         connection,
-        db_path(),
+        database,
         base_run_id=initial.get("base_run_id"),
         project_id=row["project_id"],
         profile_id=profile_id,
@@ -760,7 +781,7 @@ def inspect_run(connection: sqlite3.Connection, run_id: str, profile: dict) -> t
     with connection:
         _, coverage, source_set = persist_inspection(
             connection,
-            AcceptedKnowledgeStore(db_path()),
+            AcceptedKnowledgeStore(database),
             run_id=run_id,
             bundle_revision=sources[0]["revision"] if len(sources) == 1 else digest,
             base_run_id=initial.get("base_run_id"),
@@ -778,8 +799,12 @@ def inspect_run(connection: sqlite3.Connection, run_id: str, profile: dict) -> t
 
 
 def advance_preparation(
-    connection: sqlite3.Connection, run_id: str, profile: dict | None = None
+    connection: sqlite3.Connection,
+    run_id: str,
+    profile: dict | None = None,
+    database: Path | None = None,
 ) -> tuple[str, dict]:
+    database = database or db_path()
     row = get_run(connection, run_id)
     source_set = json.loads(row["source_set_json"])
     if "bundle_date" not in source_set:
@@ -788,7 +813,7 @@ def advance_preparation(
             if profile is None:
                 raise UserError("Preparing Run lacks its persisted Producer Profile")
             profile["priority_overrides"] = set(profile["priority_overrides"])
-        coverage, source_set = inspect_run(connection, run_id, profile)
+        coverage, source_set = inspect_run(connection, run_id, profile, database)
     else:
         coverage = json.loads(row["coverage_json"])
     if not source_set["evidence"]:
@@ -1196,60 +1221,11 @@ def cancel(run_id: str) -> int:
 
 
 def recover(run_id: str) -> int:
-    connection = connect()
-    row = get_run(connection, run_id)
-    if row["state"] == "published":
-        connection.close()
-        emit({"ok": True, "recovered_tasks": [], "run_id": run_id, "state": "published"})
-        return 0
-    if row["state"] in {"failed", "cancelled"}:
-        connection.close()
-        raise UserError(f"Run {run_id} is {row['state']} and terminal")
-    from .scheduler import recover_tasks
+    from .workspace import recover_run_checkpoint
 
-    recovered_tasks = recover_tasks(db_path(), run_id)
-    state = row["state"]
-    try:
-        if state == "preparing":
-            state, _coverage = advance_preparation(connection, run_id)
-            if state == "failed":
-                raise UserError("Major Coverage Obligations are blocked or failed")
-        if state in {"verifying", "rendering", "checking"}:
-            state = advance_rendering(connection, run_id, rerender_checking=state == "checking")
-    except Exception as error:
-        current = get_run(connection, run_id)["state"]
-        if current not in TERMINAL_STATES:
-            transition(connection, run_id, current, "failed", error=str(error))
-            current = "failed"
-        connection.close()
-        emit({"errors": [str(error)], "ok": False, "run_id": run_id, "state": current})
-        return 1
-    if state == "publishing":
-        current = get_run(connection, run_id)
-        source_set = json.loads(current["source_set_json"])
-        errors = run_validation_errors(current, source_set, obligation_rows(connection, run_id))
-        if errors:
-            transition(connection, run_id, "publishing", "failed", error="; ".join(errors))
-            connection.close()
-            emit({"errors": errors, "ok": False, "run_id": run_id, "state": "failed"})
-            return 1
-        try:
-            complete_publication(connection, current)
-        except Exception as error:
-            connection.close()
-            emit({"errors": [str(error)], "ok": False, "run_id": run_id, "state": "failed"})
-            return 1
-    final_state = get_run(connection, run_id)["state"]
-    connection.close()
-    emit(
-        {
-            "ok": True,
-            "recovered_tasks": recovered_tasks,
-            "run_id": run_id,
-            "state": final_state,
-        }
-    )
-    return 0
+    code, payload = recover_run_checkpoint(db_path(), run_id)
+    emit(payload)
+    return code
 
 
 def agent_eval(manifest_path: str) -> int:
@@ -1493,6 +1469,12 @@ def parser() -> argparse.ArgumentParser:
     workspace_run_status = workspace_commands.add_parser("run-status")
     workspace_run_status.add_argument("run_id")
     workspace_run_status.add_argument("root", nargs="?", default=".")
+    workspace_cancel_run = workspace_commands.add_parser("cancel-run")
+    workspace_cancel_run.add_argument("run_id")
+    workspace_cancel_run.add_argument("root", nargs="?", default=".")
+    workspace_recover_run = workspace_commands.add_parser("recover-run")
+    workspace_recover_run.add_argument("run_id")
+    workspace_recover_run.add_argument("root", nargs="?", default=".")
     workspace_start_run = workspace_commands.add_parser("start-run")
     workspace_start_run.add_argument("root", nargs="?", default=".")
     workspace_start_run.add_argument("--configuration-digest", required=True)
@@ -1657,6 +1639,14 @@ def main() -> int:
             elif arguments.workspace_command == "run-status":
                 app = WorkspaceApplication(arguments.root)
                 emit({"ok": True, **app.run_status(arguments.run_id)})
+                return 0
+            elif arguments.workspace_command == "cancel-run":
+                app = WorkspaceApplication(arguments.root)
+                emit({"ok": True, **app.cancel_run(arguments.run_id)})
+                return 0
+            elif arguments.workspace_command == "recover-run":
+                app = WorkspaceApplication(arguments.root)
+                emit({"ok": True, **app.recover_run(arguments.run_id)})
                 return 0
             elif arguments.workspace_command == "start-run":
                 app = WorkspaceApplication(arguments.root, config_root=arguments.config_root)

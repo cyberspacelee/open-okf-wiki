@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import okf_wiki.workspace as workspace_module
 from okf_wiki import run_worker
 from okf_wiki.accepted_knowledge import AcceptedKnowledgeStore
 from okf_wiki.cli import advance_preparation, advance_rendering
@@ -14,7 +15,7 @@ from okf_wiki.gateway_profiles import GatewayApplication, GatewayProfileRegistry
 from okf_wiki.scheduler import Scheduler, SchedulerOutcome
 from okf_wiki.state_schema import migrate_worker_audit
 from okf_wiki.verification import REQUIRED_PERSPECTIVES, VerificationStore
-from okf_wiki.workspace import WorkspaceApplication
+from okf_wiki.workspace import WorkspaceApplication, WorkspaceError
 
 
 def git(repository: Path, *arguments: str) -> str:
@@ -521,6 +522,221 @@ def test_failure_fixture_preserves_recorded_progress_and_actionable_error(
     ]
     assert status["outcome"] == "failed"
     assert status["actionable_errors"] == ["Deterministic failure fixture stopped during Exploring"]
+
+
+def test_workspace_can_cancel_an_active_run_and_reports_terminal_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository, _revision = source_repository(tmp_path)
+    application = WorkspaceApplication(tmp_path / "workspace")
+    application.initialize("catalog")
+    application.link_source({"id": "code", "role": "implementation", "checkout": str(repository)})
+    preflight = application.run_preflight()
+    monkeypatch.setattr(application, "_launch_run_worker", lambda *_args: None)
+    started = application.start_run(
+        {
+            "configuration_digest": preflight["configuration_digest"],
+            "source_set_digest": preflight["source_set_digest"],
+            "fixture": "success",
+        }
+    )
+
+    cancelled = application.cancel_run(started["run_id"])
+
+    assert cancelled["state"] == "cancelled"
+    assert cancelled["diagnostics"]["classification"] == "terminal"
+    assert cancelled["diagnostics"]["terminal_outcome"] == "cancelled"
+    assert cancelled["operations"] == {
+        "can_cancel": False,
+        "can_recover": False,
+        "recover_reason": "Cancelled Production Runs are terminal",
+    }
+    assert cancelled["events"][-1]["state"] == "cancelled"
+    with pytest.raises(WorkspaceError, match="already terminal"):
+        application.cancel_run(started["run_id"])
+
+
+def test_cancelling_a_live_worker_stops_progress_and_never_publishes_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository, _revision = source_repository(tmp_path)
+    application = WorkspaceApplication(tmp_path / "workspace")
+    application.initialize("catalog")
+    application.link_source({"id": "code", "role": "implementation", "checkout": str(repository)})
+    preflight = application.run_preflight()
+    launcher = application._launch_run_worker
+    monkeypatch.setattr(application, "_launch_run_worker", lambda *_args: None)
+    started = application.start_run(
+        {
+            "configuration_digest": preflight["configuration_digest"],
+            "source_set_digest": preflight["source_set_digest"],
+            "fixture": "failure",
+        }
+    )
+    monkeypatch.setattr(application, "_launch_run_worker", launcher)
+    launcher(started["run_id"], "failure")
+
+    cancelled = application.cancel_run(started["run_id"])
+    time.sleep(1.5)
+    final = application.run_status(started["run_id"])
+    run_root = application.root / ".okf-wiki" / "runs" / started["run_id"]
+
+    assert cancelled["state"] == final["state"] == "cancelled"
+    assert [event["state"] for event in final["events"]] in (
+        ["preparing", "cancelled"],
+        ["preparing", "exploring", "cancelled"],
+    )
+    assert not (run_root / "worker.pid").exists()
+    assert not (run_root / "worker.ready").exists()
+    assert not (run_root / "staging").exists()
+    assert not (application.root / "published").exists()
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "after_state",
+        "before_task",
+        "after_task",
+    ],
+)
+def test_workspace_recovers_an_interrupted_worker_without_duplicate_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    repository, _revision = source_repository(tmp_path)
+    application = WorkspaceApplication(tmp_path / "workspace")
+    application.initialize("catalog")
+    application.link_source({"id": "code", "role": "implementation", "checkout": str(repository)})
+    settings = application.settings()
+    settings["definition"]["profile"]["dispositions"]["major"] = {
+        "disposition": "open",
+        "reason": None,
+    }
+    application.update_settings(
+        settings["definition"],
+        settings["local_settings"],
+        settings["configuration_digest"],
+    )
+    preflight = application.run_preflight()
+    monkeypatch.setenv("OKF_WIKI_WORKER_FAULT", fault)
+    started = application.start_run(
+        {
+            "configuration_digest": preflight["configuration_digest"],
+            "source_set_digest": preflight["source_set_digest"],
+            "fixture": "success",
+        }
+    )
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        interrupted = application.run_status(started["run_id"])
+        if interrupted.get("operations", {}).get("can_recover"):
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError(f"Run Worker did not become recoverable: {interrupted}")
+    monkeypatch.delenv("OKF_WIKI_WORKER_FAULT")
+
+    recovered = application.recover_run(started["run_id"])
+    completed = wait_for_state(application, started["run_id"], "review_required")
+    repeated = application.recover_run(started["run_id"])
+
+    assert recovered["recovered_tasks"] == []
+    assert completed["diagnostics"]["classification"] == "review_blocked"
+    assert repeated["state"] == "review_required"
+    assert repeated["recovered_tasks"] == []
+    event_keys = [
+        (event["sequence"], event["entity_type"], event["entity_id"], event["state"])
+        for event in completed["entity_events"]
+    ]
+    assert len(event_keys) == len(set(event_keys))
+    assert len(completed["tasks"]["completed"]) == 1
+
+
+def test_worker_startup_marker_failure_stops_child_before_run_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository, _revision = source_repository(tmp_path)
+    application = WorkspaceApplication(tmp_path / "workspace")
+    application.initialize("catalog")
+    application.link_source({"id": "code", "role": "implementation", "checkout": str(repository)})
+    preflight = application.run_preflight()
+    real_write_temp = workspace_module._write_temp
+
+    def fail_acknowledgement(path: Path, content: str, mode: int) -> Path:
+        if path.name == "worker.ready":
+            raise OSError("seeded acknowledgement failure")
+        return real_write_temp(path, content, mode)
+
+    monkeypatch.setattr(workspace_module, "_write_temp", fail_acknowledgement)
+
+    with pytest.raises(WorkspaceError, match="Could not start Run Worker"):
+        application.start_run(
+            {
+                "configuration_digest": preflight["configuration_digest"],
+                "source_set_digest": preflight["source_set_digest"],
+                "fixture": "success",
+            }
+        )
+
+    time.sleep(0.2)
+    with sqlite3.connect(application.database_path) as connection:
+        state = connection.execute("SELECT state FROM runs").fetchone()[0]
+        events = [row[0] for row in connection.execute("SELECT state FROM run_events")]
+    assert state == "failed"
+    assert events == ["preparing", "failed"]
+    assert not any((application.root / ".okf-wiki" / "runs").glob("*/worker.pid"))
+
+
+def test_run_diagnostics_are_read_only_and_redact_machine_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    application, config_root, _profile = semantic_workspace(tmp_path)
+    monkeypatch.setattr(application, "_launch_run_worker", lambda *_args: None)
+    preflight = application.run_preflight()
+    started = application.start_run(
+        {
+            "configuration_digest": preflight["configuration_digest"],
+            "source_set_digest": preflight["source_set_digest"],
+        }
+    )
+    database = application.database_path
+    secret_error = (
+        f"credential never-persist-this-secret tenant private-tenant-value config {config_root}"
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE runs SET error = ? WHERE id = ?", (secret_error, started["run_id"])
+        )
+        before = tuple(
+            connection.execute(
+                "SELECT state, updated_at FROM runs WHERE id = ?", (started["run_id"],)
+            ).fetchone()
+        )
+        event_count = connection.execute(
+            "SELECT COUNT(*) FROM run_events WHERE run_id = ?", (started["run_id"],)
+        ).fetchone()[0]
+
+    status = application.run_status(started["run_id"])
+
+    with sqlite3.connect(database) as connection:
+        after = tuple(
+            connection.execute(
+                "SELECT state, updated_at FROM runs WHERE id = ?", (started["run_id"],)
+            ).fetchone()
+        )
+        after_event_count = connection.execute(
+            "SELECT COUNT(*) FROM run_events WHERE run_id = ?", (started["run_id"],)
+        ).fetchone()[0]
+    serialized = json.dumps(status)
+    assert before == after
+    assert event_count == after_event_count
+    assert "never-persist-this-secret" not in serialized
+    assert "private-tenant-value" not in serialized
+    assert str(config_root) not in serialized
+    assert status["diagnostics"]["classification"] == "interrupted"
+    assert status["diagnostics"]["active_tasks"] == 0
+    assert status["diagnostics"]["failed_tasks"] == 0
+    assert status["diagnostics"]["staging"]["exists"] is False
 
 
 def test_run_worker_ignores_workspace_package_and_stdlib_import_shadows(

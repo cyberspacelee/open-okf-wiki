@@ -117,6 +117,16 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 payload = {"ok": True, **self.server.application.list_runs()}
             elif path == "/api/v1/runs" and self.command == "POST":
                 payload = {"ok": True, **self.server.application.start_run(self._json_body())}
+            elif path.startswith("/api/v1/runs/") and self.command == "POST":
+                run_path = path.removeprefix("/api/v1/runs/")
+                if run_path.endswith("/cancel"):
+                    run_id = unquote(run_path.removesuffix("/cancel"))
+                    payload = {"ok": True, **self.server.application.cancel_run(run_id)}
+                elif run_path.endswith("/recover"):
+                    run_id = unquote(run_path.removesuffix("/recover"))
+                    payload = {"ok": True, **self.server.application.recover_run(run_id)}
+                else:
+                    raise ConsoleRequestError(404, "Not found")
             elif path.startswith("/api/v1/runs/") and self.command in {"GET", "HEAD"}:
                 run_id = unquote(path.removeprefix("/api/v1/runs/"))
                 payload = {"ok": True, **self.server.application.run_status(run_id)}

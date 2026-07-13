@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import uuid
 from contextlib import contextmanager
@@ -442,6 +443,89 @@ def _replace_durable(source: Path, target: Path) -> None:
     _fsync_directory(target.parent)
 
 
+def _process_start_identity(pid: int) -> str | None:
+    try:
+        return Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21]
+    except IndexError, OSError:
+        return None
+
+
+def recover_run_checkpoint(database: Path, run_id: str) -> tuple[int, dict]:
+    from .cli import (
+        TERMINAL_STATES,
+        advance_preparation,
+        advance_rendering,
+        complete_publication,
+        get_run,
+        run_validation_errors,
+    )
+    from .coverage import obligation_rows
+    from .run_state import transition_run
+    from .scheduler import recover_tasks
+
+    connection = sqlite3.connect(database)
+    connection.row_factory = sqlite3.Row
+    row = get_run(connection, run_id)
+    if row["state"] == "published":
+        connection.close()
+        return 0, {"ok": True, "recovered_tasks": [], "run_id": run_id, "state": "published"}
+    if row["state"] in {"failed", "cancelled"}:
+        connection.close()
+        raise WorkspaceError(f"Run {run_id} is {row['state']} and terminal")
+
+    recovered_tasks = recover_tasks(database, run_id)
+    state = row["state"]
+    try:
+        if state == "preparing":
+            state, _coverage = advance_preparation(connection, run_id, database=database)
+            if state == "failed":
+                raise WorkspaceError("Major Coverage Obligations are blocked or failed")
+        if state in {"verifying", "rendering", "checking"}:
+            state = advance_rendering(
+                connection,
+                run_id,
+                rerender_checking=state == "checking",
+                database=database,
+            )
+    except Exception as error:
+        current = get_run(connection, run_id)["state"]
+        if current not in TERMINAL_STATES:
+            with connection:
+                transition_run(connection, run_id, current, "failed", error=str(error))
+            current = "failed"
+        connection.close()
+        return 1, {"errors": [str(error)], "ok": False, "run_id": run_id, "state": current}
+    if state == "publishing":
+        current = get_run(connection, run_id)
+        source_set = json.loads(current["source_set_json"])
+        errors = run_validation_errors(
+            current, source_set, obligation_rows(connection, run_id), database
+        )
+        if errors:
+            with connection:
+                transition_run(connection, run_id, "publishing", "failed", error="; ".join(errors))
+            connection.close()
+            return 1, {"errors": errors, "ok": False, "run_id": run_id, "state": "failed"}
+        try:
+            complete_publication(connection, current)
+        except Exception as error:
+            connection.close()
+            return 1, {
+                "errors": [str(error)],
+                "ok": False,
+                "run_id": run_id,
+                "state": "failed",
+            }
+    final_state = get_run(connection, run_id)["state"]
+    connection.close()
+    return 0, {
+        "ok": True,
+        "recovered_tasks": recovered_tasks,
+        "run_id": run_id,
+        "state": final_state,
+    }
+
+
 class WorkspaceApplication:
     def __init__(self, root: Path | str, *, config_root: Path | str | None = None) -> None:
         self.root = Path(root).resolve()
@@ -451,6 +535,7 @@ class WorkspaceApplication:
         self.database_path = self.root / ".okf-wiki" / "runs.db"
         self.update_journal_path = self.root / ".okf-wiki" / "config-update.json"
         self.lock_path = self.root / ".okf-wiki" / "workspace-lock.db"
+        self._workers: dict[str, subprocess.Popen] = {}
 
     def initialize(self, project_id: str, name: str | None = None) -> WorkspaceSnapshot:
         with self._locked():
@@ -1042,10 +1127,18 @@ class WorkspaceApplication:
     def _launch_run_worker(self, run_id: str, fixture: str) -> None:
         run_state = self.root / ".okf-wiki" / "runs" / run_id
         run_state.mkdir(parents=True, exist_ok=True)
+        marker = run_state / "worker.pid"
+        acknowledgement = run_state / "worker.ready"
+        marker.unlink(missing_ok=True)
+        acknowledgement.unlink(missing_ok=True)
         environment = os.environ.copy()
+        environment["OKF_WIKI_WORKER_HANDSHAKE"] = "1"
+        worker_fault = environment.pop("OKF_WIKI_WORKER_FAULT", None)
+        if worker_fault:
+            environment["OKF_WIKI_FAULT"] = worker_fault
         if self.config_root is not None:
             environment["OKF_WIKI_CONFIG_HOME"] = str(self.config_root)
-        subprocess.Popen(
+        process = subprocess.Popen(
             [
                 sys.executable,
                 "-I",
@@ -1063,6 +1156,38 @@ class WorkspaceApplication:
             start_new_session=True,
             env=environment,
         )
+        try:
+            expected_start = _process_start_identity(process.pid)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    raise OSError("Run Worker exited before startup completed")
+                try:
+                    identity = json.loads(marker.read_text(encoding="utf-8"))
+                except FileNotFoundError, json.JSONDecodeError:
+                    time.sleep(0.01)
+                    continue
+                if identity == {"pid": process.pid, "started": expected_start}:
+                    temporary = _write_temp(acknowledgement, "ready\n", 0o600)
+                    try:
+                        _replace_durable(temporary, acknowledgement)
+                    finally:
+                        temporary.unlink(missing_ok=True)
+                    self._workers[run_id] = process
+                    return
+                raise OSError("Run Worker startup identity did not match")
+            raise OSError("Run Worker startup timed out")
+        except Exception:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+            marker.unlink(missing_ok=True)
+            acknowledgement.unlink(missing_ok=True)
+            raise
 
     def list_runs(self) -> dict:
         self.open()
@@ -1149,6 +1274,15 @@ class WorkspaceApplication:
         from .scheduler import scheduler_status
 
         source_set = self._source_set_for_row(row)
+        secrets = self._run_secrets(source_set)
+        for task in task_rows:
+            if task["error"]:
+                task["error"] = self._redact(str(task["error"]), secrets)
+            if task["receipt"]:
+                task["receipt"]["warnings"] = [
+                    self._redact(str(warning), secrets)
+                    for warning in task["receipt"].get("warnings", [])
+                ]
         scheduler = scheduler_status(self.database_path, run_id)
         scheduler["tasks"] = {
             "active": [
@@ -1157,16 +1291,72 @@ class WorkspaceApplication:
             "completed": [task for task in task_rows if task["state"] == "accepted"],
             "failed": [task for task in task_rows if task["state"] in {"rejected", "failed"}],
         }
-        errors = list(dict.fromkeys(filter(None, [row["error"], *scheduler["errors"]])))
+        errors = list(
+            dict.fromkeys(
+                self._redact(str(error), secrets)
+                for error in [row["error"], *scheduler["errors"]]
+                if error
+            )
+        )
+        review_blockers = (
+            [
+                self._redact(str(blocker), secrets)
+                for blocker in verification_blockers(self.database_path, run_id)
+            ]
+            if row["state"] == "review_required"
+            else []
+        )
+        audit = self._run_audit(run_id)
+        if row["state"] in {"review_required", "published", "failed", "cancelled"}:
+            self._reap_worker(run_id)
+        worker_running = self._worker_running(run_id)
+        terminal = row["state"] in {"published", "failed", "cancelled"}
+        can_recover = not terminal and row["state"] != "review_required" and not worker_running
+        if row["state"] in {"failed", "cancelled"}:
+            recover_reason = f"{row['state'].title()} Production Runs are terminal"
+        elif row["state"] == "published":
+            recover_reason = "Published Production Runs are already complete"
+        elif row["state"] == "review_required":
+            recover_reason = "Production Run is waiting for review, not recovery"
+        elif worker_running:
+            recover_reason = "Run Worker is still active"
+        else:
+            recover_reason = None
+        classification = (
+            "terminal"
+            if terminal
+            else "review_blocked"
+            if row["state"] == "review_required"
+            else "active"
+            if worker_running
+            else "interrupted"
+        )
+        staging = Path(row["staging_dir"])
         return {
             **self._run_summary(row),
             "actionable_errors": errors,
-            "audit": self._run_audit(run_id),
+            "audit": audit,
             "coverage_obligations": coverage_obligations,
+            "diagnostics": {
+                "actionable_errors": errors,
+                "active_tasks": len(scheduler["tasks"]["active"]),
+                "audit": audit,
+                "budgets": scheduler["budgets"],
+                "classification": classification,
+                "failed_tasks": len(scheduler["tasks"]["failed"]),
+                "review_blockers": review_blockers,
+                "staging": {"exists": staging.is_dir(), "path": str(staging)},
+                "terminal_outcome": row["state"] if terminal else None,
+            },
             "entity_events": entity_events,
             "events": events,
             "models": source_set.get("workspace_configuration", {}).get("resolved_models"),
             "project_id": row["project_id"],
+            "operations": {
+                "can_cancel": not terminal,
+                "can_recover": can_recover,
+                "recover_reason": recover_reason,
+            },
             "sources": [
                 {
                     "id": source["id"],
@@ -1178,6 +1368,148 @@ class WorkspaceApplication:
             ],
             "tasks": scheduler["tasks"],
         }
+
+    def cancel_run(self, run_id: str) -> dict:
+        self._validate_run_id(run_id)
+        from .bundle import published_run_id
+        from .cli import previous_publication_target, restore_publication
+        from .run_state import RunTransitionError, transition_run
+
+        with self._locked(), sqlite3.connect(self.database_path) as connection:
+            connection.row_factory = sqlite3.Row
+            row = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+            if row is None:
+                raise WorkspaceError(f"Unknown Production Run: {run_id}")
+            if row["state"] in {"published", "failed", "cancelled"}:
+                raise WorkspaceError(f"Run {run_id} is already terminal")
+            try:
+                if (
+                    row["state"] == "publishing"
+                    and published_run_id(Path(row["publish_dir"])) == run_id
+                ):
+                    source_set = self._source_set_for_row(row)
+                    restore_publication(
+                        Path(row["publish_dir"]),
+                        previous_publication_target(row, source_set),
+                        run_id,
+                    )
+                with connection:
+                    transition_run(connection, run_id, row["state"], "cancelled")
+            except RunTransitionError as error:
+                raise WorkspaceError(str(error)) from error
+            except OSError as error:
+                raise WorkspaceError(
+                    f"Cannot restore the previous published Bundle: {error}"
+                ) from error
+        return self.run_status(run_id)
+
+    def recover_run(self, run_id: str) -> dict:
+        self._validate_run_id(run_id)
+        recovered_tasks: list[str] = []
+        with self._locked():
+            with sqlite3.connect(self.database_path) as connection:
+                connection.row_factory = sqlite3.Row
+                row = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+            if row is None:
+                raise WorkspaceError(f"Unknown Production Run: {run_id}")
+            if row["state"] in {"failed", "cancelled"}:
+                raise WorkspaceError(f"Run {run_id} is {row['state']} and terminal")
+            if row["state"] not in {"published", "review_required"}:
+                if self._worker_running(run_id):
+                    raise WorkspaceError(f"Run {run_id} still has an active Run Worker")
+                code, outcome = recover_run_checkpoint(self.database_path, run_id)
+                if code or not outcome.get("ok"):
+                    errors = outcome.get("errors")
+                    message = (
+                        errors[0] if isinstance(errors, list) and errors else "Run recovery failed"
+                    )
+                    raise WorkspaceError(str(message))
+                recovered_tasks = [str(task_id) for task_id in outcome["recovered_tasks"]]
+                if outcome["state"] == "exploring":
+                    source_set = self._source_set_for_row(row)
+                    execution = source_set.get("execution", {})
+                    launch = (
+                        execution.get("requested_outcome")
+                        if execution.get("mode") == "deterministic_fixture"
+                        else "gateway_semantic"
+                    )
+                    if launch not in {"success", "failure", "gateway_semantic"}:
+                        raise WorkspaceError("Production Run has no recoverable execution mode")
+                    self._launch_run_worker(run_id, launch)
+        return {**self.run_status(run_id), "recovered_tasks": recovered_tasks}
+
+    @staticmethod
+    def _validate_run_id(run_id: str) -> None:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", run_id):
+            raise WorkspaceError("Invalid Production Run ID")
+
+    def _worker_running(self, run_id: str) -> bool:
+        process = self._workers.get(run_id)
+        if process is not None:
+            if process.poll() is None:
+                return True
+            process.wait()
+            self._workers.pop(run_id, None)
+        marker = self.root / ".okf-wiki" / "runs" / run_id / "worker.pid"
+        try:
+            identity = json.loads(marker.read_text(encoding="utf-8"))
+            pid = int(identity["pid"])
+            try:
+                finished, _status = os.waitpid(pid, os.WNOHANG)
+                if finished:
+                    marker.unlink(missing_ok=True)
+                    return False
+            except ChildProcessError:
+                pass
+            os.kill(pid, 0)
+            started = identity.get("started")
+            if started is not None and _process_start_identity(pid) != started:
+                marker.unlink(missing_ok=True)
+                return False
+        except (
+            FileNotFoundError,
+            json.JSONDecodeError,
+            KeyError,
+            ProcessLookupError,
+            TypeError,
+            ValueError,
+        ):
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    def _reap_worker(self, run_id: str) -> None:
+        process = self._workers.get(run_id)
+        if process is None:
+            return
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            return
+        self._workers.pop(run_id, None)
+
+    def _run_secrets(self, source_set: dict) -> tuple[str, ...]:
+        from .gateway_profiles import GatewayApplication
+
+        gateways = GatewayApplication(self.config_root)
+        secrets = [str(gateways.registry.root)]
+        resolved = source_set.get("workspace_configuration", {}).get("resolved_models")
+        profile_id = resolved.get("profile", {}).get("id") if isinstance(resolved, dict) else None
+        if isinstance(profile_id, str):
+            try:
+                profile = gateways.registry.get(profile_id)
+                secrets.extend(profile.headers.values())
+                secrets.append(gateways.registry.credential(profile_id))
+            except Exception:
+                pass
+        return tuple(secrets)
+
+    @staticmethod
+    def _redact(value: str, secrets: tuple[str, ...]) -> str:
+        from .security import redact_secrets
+
+        return redact_secrets(value, secrets)
 
     def _run_audit(self, run_id: str) -> dict:
         from .semantic_audit import aggregate_semantic_audit

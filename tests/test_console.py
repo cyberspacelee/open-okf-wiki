@@ -772,3 +772,71 @@ def test_console_and_cli_share_run_creation_status_and_stale_errors(
             break
         time.sleep(0.05)
     assert command_status["state"] == "failed"
+
+
+def test_console_and_cli_share_cancel_recover_outcomes(
+    tmp_path: Path, assets: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    source = tmp_path / "source"
+    make_git_source(source)
+    app = WorkspaceApplication(workspace)
+    app.initialize("catalog")
+    app.link_source({"id": "code", "role": "implementation", "checkout": str(source)})
+    preflight = app.run_preflight()
+    monkeypatch.setenv("OKF_WIKI_WORKER_FAULT", "after_state")
+    started = app.start_run(
+        {
+            "configuration_digest": preflight["configuration_digest"],
+            "source_set_digest": preflight["source_set_digest"],
+            "fixture": "success",
+        }
+    )
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if app.run_status(started["run_id"])["operations"]["can_recover"]:
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("Run Worker did not become recoverable")
+    monkeypatch.delenv("OKF_WIKI_WORKER_FAULT")
+
+    with running_console(workspace, assets) as (server, _):
+        base = f"http://127.0.0.1:{server.server_port}"
+        headers = {**authorization(server), "Origin": base}
+        recovered = httpx.post(base + f"/api/v1/runs/{started['run_id']}/recover", headers=headers)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if app.run_status(started["run_id"])["state"] == "review_required":
+                break
+            time.sleep(0.05)
+        repeated_http = httpx.post(
+            base + f"/api/v1/runs/{started['run_id']}/recover", headers=headers
+        )
+
+    repeated_code, repeated_cli = cli(
+        ["workspace", "recover-run", started["run_id"], str(workspace)], tmp_path
+    )
+
+    assert recovered.status_code == 200
+    assert recovered.json()["recovered_tasks"] == []
+    assert repeated_http.status_code == 200
+    assert repeated_code == 0
+    assert repeated_http.json() == repeated_cli
+
+    with running_console(workspace, assets) as (server, _):
+        base = f"http://127.0.0.1:{server.server_port}"
+        headers = {**authorization(server), "Origin": base}
+        cancelled = httpx.post(base + f"/api/v1/runs/{started['run_id']}/cancel", headers=headers)
+        repeated_cancel = httpx.post(
+            base + f"/api/v1/runs/{started['run_id']}/cancel", headers=headers
+        )
+    cancel_code, command_cancel = cli(
+        ["workspace", "cancel-run", started["run_id"], str(workspace)], tmp_path
+    )
+
+    assert cancelled.status_code == 200
+    assert cancelled.json()["state"] == "cancelled"
+    assert repeated_cancel.status_code == 400
+    assert cancel_code == 1
+    assert repeated_cancel.json() == command_cancel

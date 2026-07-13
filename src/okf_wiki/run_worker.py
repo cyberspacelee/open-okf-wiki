@@ -157,6 +157,33 @@ class FixtureAcceptancePolicy(AcceptancePolicy):
         )
 
 
+def _process_start_identity(pid: int) -> str | None:
+    try:
+        return Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21]
+    except IndexError, OSError:
+        return None
+
+
+def _register_worker(marker: Path, acknowledgement: Path) -> dict:
+    identity = {"pid": os.getpid(), "started": _process_start_identity(os.getpid())}
+    temporary = marker.with_name(f".{marker.name}.{os.getpid()}.tmp")
+    descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(identity, stream, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, marker)
+    finally:
+        temporary.unlink(missing_ok=True)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if acknowledgement.is_file():
+            return identity
+        time.sleep(0.01)
+    raise OSError("Run Worker startup acknowledgement timed out")
+
+
 def run(root: Path, run_id: str, fixture: str) -> None:
     os.chdir(root)
     database = root / ".okf-wiki" / "runs.db"
@@ -184,7 +211,9 @@ def run(root: Path, run_id: str, fixture: str) -> None:
             if not isinstance(resolved_models, dict):
                 raise ValueError("Production Run has no resolved Gateway snapshot")
             profile, credential = GatewayApplication().execution_connection(resolved_models)
-            state, _coverage = advance_preparation(connection, run_id)
+            state = get_run(connection, run_id)["state"]
+            if state == "preparing":
+                state, _coverage = advance_preparation(connection, run_id)
             if state == "exploring":
                 outcome = execute_semantic_run(
                     run_id,
@@ -214,7 +243,9 @@ def run(root: Path, run_id: str, fixture: str) -> None:
             advance_rendering(connection, run_id)
             return
         time.sleep(FIXTURE_PHASE_DELAY)
-        state, _coverage = advance_preparation(connection, run_id)
+        state = get_run(connection, run_id)["state"]
+        if state == "preparing":
+            state, _coverage = advance_preparation(connection, run_id)
         if state == "exploring":
             outcome = asyncio.run(
                 Scheduler(
@@ -257,6 +288,14 @@ def main() -> int:
         return 2
     root = Path(sys.argv[1]).resolve()
     run_id = sys.argv[2]
+    marker = root / ".okf-wiki" / "runs" / run_id / "worker.pid"
+    acknowledgement = marker.with_name("worker.ready")
+    identity = None
+    if os.environ.pop("OKF_WIKI_WORKER_HANDSHAKE", None) == "1":
+        try:
+            identity = _register_worker(marker, acknowledgement)
+        except OSError:
+            return 1
     try:
         run(root, run_id, sys.argv[3])
     except Exception as error:
@@ -274,6 +313,15 @@ def main() -> int:
                         error=_safe_error(root, run_id, error),
                     )
         return 1
+    finally:
+        if identity is not None:
+            try:
+                recorded = json.loads(marker.read_text(encoding="utf-8"))
+                if recorded == identity:
+                    marker.unlink(missing_ok=True)
+                    acknowledgement.unlink(missing_ok=True)
+            except AttributeError, json.JSONDecodeError, OSError, ValueError:
+                pass
     return 0
 
 
