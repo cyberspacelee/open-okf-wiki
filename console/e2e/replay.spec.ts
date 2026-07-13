@@ -321,11 +321,17 @@ test("plays, scrubs, steps and jumps through persisted replay and impact", async
   await expect(page.getByText("The API remains stable.")).toBeVisible()
   await expect(page.getByText("Downstream propagation paths")).toBeVisible()
 
-  await page.getByLabel("Event sequence").fill("51")
-  await page.getByLabel("Event sequence").press("Enter")
+  const eventSequence = page.getByLabel("Event sequence")
+  await eventSequence.fill("51")
+  await eventSequence.press("Enter")
   await expect(page.getByRole("status")).toContainText(
     `Accepted · ${TARGET_CONCEPT}`
   )
+  await expect(
+    page.getByRole("article", { name: "Current replay event" })
+  ).toBeFocused()
+  await eventSequence.fill("51")
+  await eventSequence.press("Enter")
   await expect(
     page.getByRole("article", { name: "Current replay event" })
   ).toBeFocused()
@@ -366,18 +372,35 @@ test("supports keyboard replay and reduced-motion ordered equivalence", async ({
   ).toBeVisible()
   await expect(page.getByRole("button", { name: "Play replay" })).toBeHidden()
   await page.getByLabel("Entity type").selectOption("concept")
-  await page.getByLabel("Entity identity").fill(TARGET_CONCEPT)
-  await page.getByLabel("Entity identity").press("Enter")
+  const entityIdentity = page.getByLabel("Entity identity")
+  await entityIdentity.fill(TARGET_CONCEPT)
+  await entityIdentity.press("Enter")
   await expect(page.getByTestId("reduced-replay-event")).toHaveCount(2)
+  const currentStaticEvent = page.getByRole("listitem", {
+    name: "Current reduced-motion replay event",
+  })
+  await expect(currentStaticEvent).toBeFocused()
+  await page.getByLabel("Entity type").selectOption("concept")
+  await entityIdentity.fill(TARGET_CONCEPT)
+  await entityIdentity.press("Enter")
+  await expect(currentStaticEvent).toBeFocused()
   await expect(page.getByTestId("reduced-replay-event").first()).toContainText(
     "Accepted"
   )
   await expect(page.getByTestId("reduced-replay-event").last()).toContainText(
     "Published"
   )
-  await expect(
-    page.getByRole("button", { name: "Previous history page" })
-  ).toBeVisible()
+  const previousPage = page.getByRole("button", {
+    name: "Previous history page",
+  })
+  await previousPage.click()
+  await expect(currentStaticEvent).not.toBeFocused()
+
+  await page.getByLabel("Event sequence").fill("51")
+  await page.getByLabel("Event sequence").press("Enter")
+  await expect(currentStaticEvent).toBeFocused()
+  await page.getByRole("button", { name: "Previous history page" }).click()
+  await expect(currentStaticEvent).not.toBeFocused()
 })
 
 test("does not promise stable knowledge during a full-analysis fallback", async ({

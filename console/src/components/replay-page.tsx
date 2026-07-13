@@ -100,6 +100,8 @@ export function ReplayPage({
   const [eventOffset, setEventOffset] = useState(0)
   const [impactOffset, setImpactOffset] = useState(0)
   const [pathOffset, setPathOffset] = useState(0)
+  const locateNonce = useRef(0)
+  const [focusRequest, setFocusRequest] = useState<number | null>(null)
   const [location, setLocation] = useState<{
     eventSequence?: number
     entityType?: ReplayEntityType
@@ -114,6 +116,7 @@ export function ReplayPage({
     location.eventSequence,
     location.entityType,
     location.entityId,
+    focusRequest,
   ].join("\0")
   const [state, setState] = useState<LoadState | null>(null)
 
@@ -175,21 +178,24 @@ export function ReplayPage({
     <ReplayContent
       key={`${state.replay.run_id}:${state.replay.event_bounds.offset}:${state.replay.located_event_sequence ?? "page"}`}
       replay={state.replay}
-      focusLocated={
-        location.eventSequence !== undefined || location.entityId !== undefined
-      }
+      focusRequest={focusRequest}
       onBack={onBack}
       onEventOffsetChange={(offset) => {
+        setFocusRequest(null)
         setLocation({})
         setEventOffset(offset)
       }}
       onImpactOffsetChange={setImpactOffset}
       onPathOffsetChange={setPathOffset}
       onLocateEvent={(eventSequence) => {
+        locateNonce.current += 1
+        setFocusRequest(locateNonce.current)
         setEventOffset(0)
         setLocation({ eventSequence })
       }}
       onLocateEntity={(entityType, entityId) => {
+        locateNonce.current += 1
+        setFocusRequest(locateNonce.current)
         setEventOffset(0)
         setLocation({ entityType, entityId })
       }}
@@ -199,7 +205,7 @@ export function ReplayPage({
 
 function ReplayContent({
   replay,
-  focusLocated,
+  focusRequest,
   onBack,
   onEventOffsetChange,
   onImpactOffsetChange,
@@ -208,7 +214,7 @@ function ReplayContent({
   onLocateEntity,
 }: {
   replay: ReplaySnapshot
-  focusLocated: boolean
+  focusRequest: number | null
   onBack: () => void
   onEventOffsetChange: (offset: number) => void
   onImpactOffsetChange: (offset: number) => void
@@ -218,6 +224,7 @@ function ReplayContent({
 }) {
   const [playing, setPlaying] = useState(false)
   const focusedEvent = useRef<HTMLElement>(null)
+  const staticEvent = useRef<HTMLLIElement>(null)
   const focusAfterJump = useRef(false)
   const [sequenceQuery, setSequenceQuery] = useState("")
   const [entityTypeQuery, setEntityTypeQuery] =
@@ -247,8 +254,12 @@ function ReplayContent({
   }, [currentIndex, events.length, playing])
 
   useEffect(() => {
-    if (focusLocated) focusedEvent.current?.focus()
-  }, [focusLocated])
+    if (focusRequest === null) return
+    const target = window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      ? staticEvent
+      : focusedEvent
+    target.current?.focus()
+  }, [focusRequest])
 
   useEffect(() => {
     if (!focusAfterJump.current) return
@@ -585,11 +596,19 @@ function ReplayContent({
             </CardHeader>
             <CardContent>
               <ol className="flex flex-col gap-3">
-                {events.map((event) => (
+                {events.map((event, index) => (
                   <li
                     key={event.sequence}
+                    ref={index === currentIndex ? staticEvent : undefined}
+                    tabIndex={index === currentIndex ? -1 : undefined}
+                    aria-current={index === currentIndex ? "step" : undefined}
+                    aria-label={
+                      index === currentIndex
+                        ? "Current reduced-motion replay event"
+                        : undefined
+                    }
                     data-testid="reduced-replay-event"
-                    className="flex min-w-0 flex-col gap-2 rounded-lg border p-3"
+                    className="flex min-w-0 flex-col gap-2 rounded-lg border p-3 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
                   >
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge variant="outline">#{event.sequence}</Badge>

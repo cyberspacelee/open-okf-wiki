@@ -613,6 +613,7 @@ def test_state_schema_migrations_are_ordered_and_reject_future_versions(tmp_path
             3,
             4,
             5,
+            6,
         ]
         connection.execute("INSERT INTO schema_migrations VALUES (99, 'future')")
         before = list(connection.execute("SELECT version, applied_at FROM schema_migrations"))

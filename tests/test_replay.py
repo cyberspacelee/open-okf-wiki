@@ -1,5 +1,7 @@
 import json
 import sqlite3
+import subprocess
+import sys
 import tracemalloc
 from pathlib import Path
 
@@ -7,6 +9,7 @@ import pytest
 
 from okf_wiki.provenance import ConceptProvenanceStore
 from okf_wiki.run_events import append_entity_event
+from okf_wiki.state_schema import MIGRATIONS, migrate_state
 from okf_wiki.verification import AcceptanceDecision, VerificationStore
 from okf_wiki.workspace import WorkspaceApplication, WorkspaceError
 
@@ -851,45 +854,75 @@ def test_impact_node_page_has_a_bounded_memory_cost_for_large_knowledge_models(
     assert peak < 4_000_000
 
 
-def test_impact_change_page_has_a_bounded_memory_cost_for_large_source_diffs(
+@pytest.mark.skipif(sys.platform != "linux", reason="VmHWM is available on Linux")
+def test_impact_change_page_has_a_bounded_process_memory_cost_for_large_source_diffs(
     tmp_path: Path,
 ) -> None:
-    database = tmp_path / "runs.db"
-    seed_incremental_impact(database)
-    with sqlite3.connect(database) as connection:
-        source_set = json.loads(
-            connection.execute("SELECT source_set_json FROM runs WHERE id = 'run-2'").fetchone()[0]
-        )
-        source_set["refresh"]["diff"] = {
-            "added": [
-                impact_unit(
-                    f"file:added-{index}",
-                    "b" * 40,
-                    f"added/{index}.md",
-                    f"{index:064x}",
-                )
-                for index in range(20_000)
-            ],
-            "changed": [],
-            "moved": [],
-            "removed": [],
-            "by_source": {},
-        }
-        connection.execute(
-            "UPDATE runs SET source_set_json = ? WHERE id = 'run-2'",
-            (json.dumps(source_set),),
-        )
+    child = """
+import json
+import sys
+import time
+from pathlib import Path
 
-    tracemalloc.start()
-    impact = ConceptProvenanceStore(database).replay("run-2", impact_limit=1, path_limit=1)[
-        "impact"
-    ]
-    _, peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
+from okf_wiki.provenance import ConceptProvenanceStore
 
-    assert impact["summary"]["changes"]["added"] == 20_000
-    assert len(impact["nodes"]) == 1
-    assert peak < 4_000_000
+started = time.perf_counter()
+impact = ConceptProvenanceStore(Path(sys.argv[1])).replay(
+    "run-2", impact_limit=1, path_limit=1
+)["impact"]
+print(json.dumps({
+    "added": impact["summary"]["changes"]["added"],
+    "nodes": len(impact["nodes"]),
+    "peak_rss_kib": int(next(
+        line.split()[1]
+        for line in Path("/proc/self/status").read_text().splitlines()
+        if line.startswith("VmHWM:")
+    )),
+    "seconds": time.perf_counter() - started,
+}))
+"""
+    results = {}
+    for count in (1_000, 20_000, 40_000):
+        database = tmp_path / f"runs-{count}.db"
+        seed_incremental_impact(database)
+        with sqlite3.connect(database) as connection:
+            source_set = json.loads(
+                connection.execute(
+                    "SELECT source_set_json FROM runs WHERE id = 'run-2'"
+                ).fetchone()[0]
+            )
+            source_set["refresh"]["diff"] = {
+                "added": [
+                    impact_unit(
+                        f"file:added-{index}",
+                        "b" * 40,
+                        f"added/{index}.md",
+                        f"{index:064x}",
+                    )
+                    for index in range(count)
+                ],
+                "changed": [],
+                "moved": [],
+                "removed": [],
+                "by_source": {},
+            }
+            connection.execute(
+                "UPDATE runs SET source_set_json = ? WHERE id = 'run-2'",
+                (json.dumps(source_set),),
+            )
+        completed = subprocess.run(
+            [sys.executable, "-c", child, str(database)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        results[count] = json.loads(completed.stdout)
+
+    assert results[40_000]["added"] == 40_000
+    assert results[40_000]["nodes"] == 1
+    assert results[20_000]["peak_rss_kib"] - results[1_000]["peak_rss_kib"] < 10 * 1024
+    assert results[40_000]["peak_rss_kib"] - results[20_000]["peak_rss_kib"] < 4 * 1024
+    assert results[40_000]["seconds"] < 1
 
 
 def test_replay_treats_malformed_source_set_json_as_bounded_empty_impact(tmp_path: Path) -> None:
@@ -901,6 +934,52 @@ def test_replay_treats_malformed_source_set_json_as_bounded_empty_impact(tmp_pat
     replay = ConceptProvenanceStore(database).replay("run-2", impact_limit=1, path_limit=1)
 
     assert replay["lineage_run_ids"] == ["run-2"]
+    assert replay["impact"]["summary"]["changes"] == {
+        "added": 0,
+        "changed": 0,
+        "moved": 0,
+        "removed": 0,
+    }
+
+
+def test_replay_marks_runs_that_predate_persisted_impact_tracking(tmp_path: Path) -> None:
+    database = tmp_path / "runs.db"
+    with sqlite3.connect(database) as connection:
+        migrate_state(connection, MIGRATIONS[:-1])
+        connection.execute(
+            """INSERT INTO runs
+               (id, project_id, repository, revision, publish_dir, staging_dir, state,
+                source_set_json, created_at, updated_at)
+               VALUES ('legacy', 'project-1', '.', ?, '.', '.', 'published', ?, ?, ?)""",
+            (
+                "a" * 40,
+                json.dumps(
+                    {
+                        "refresh": {
+                            "mode": "incremental",
+                            "diff": {
+                                "added": [
+                                    impact_unit(
+                                        "file:legacy",
+                                        "a" * 40,
+                                        "legacy.md",
+                                        "1" * 64,
+                                    )
+                                ]
+                            },
+                        }
+                    }
+                ),
+                "2026-07-13T00:00:00+00:00",
+                "2026-07-13T00:00:00+00:00",
+            ),
+        )
+
+    replay = ConceptProvenanceStore(database).replay("legacy")
+
+    assert replay["lineage_run_ids"] == ["legacy"]
+    assert replay["impact"]["mode"] == "full"
+    assert replay["impact"]["fallback_reason"] == "Run predates persisted impact tracking"
     assert replay["impact"]["summary"]["changes"] == {
         "added": 0,
         "changed": 0,
