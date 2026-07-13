@@ -585,6 +585,28 @@ def test_knowledge_page_exposes_concept_scope_only_for_one_page_plan(tmp_path: P
     assert index["concept_id"] is None
 
 
+def test_current_page_query_scope_ignores_off_page_claim_markers_in_accepted_prose(
+    tmp_path: Path,
+) -> None:
+    application = query_workspace(tmp_path)
+    page = application.root / ".published.releases" / "run-1" / "concepts" / "query.md"
+    page.write_text(
+        f"# Query Agent\n\n{STATEMENT}\n\n<!-- claims: {ATTACK_CLAIM_ID} -->\n\n"
+        f"<!-- claims: {CLAIM_ID} -->\n",
+        encoding="utf-8",
+    )
+
+    scope = KnowledgeReader(application.database_path).query_page_scope(
+        "published", "concepts/query.md", "run-1"
+    )
+
+    assert scope == {
+        "claim_ids": (CLAIM_ID,),
+        "concept_id": CONCEPT_ID,
+        "page": "concepts/query.md",
+    }
+
+
 def test_query_refuses_model_knowledge_and_unknown_citations(tmp_path: Path) -> None:
     application = query_workspace(tmp_path)
 
@@ -699,6 +721,76 @@ def test_query_redacts_assigned_and_response_model_names_before_answer_and_audit
     )
     assert fallback.model == "assigned/[REDACTED CREDENTIAL]"
     assert credential not in fallback.model_dump_json()
+
+
+def test_query_with_secret_citation_metadata_returns_insufficient_support(tmp_path: Path) -> None:
+    application = query_workspace(tmp_path)
+    with sqlite3.connect(application.database_path) as connection:
+        revision = connection.execute(
+            "SELECT revision FROM accepted_evidence WHERE run_id = 'run-1' AND id = ?",
+            (EVIDENCE_ID,),
+        ).fetchone()[0]
+    secrets = ("docs", revision, "README.md")
+
+    def answer(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
+        returns = [
+            part
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+            if isinstance(part, ToolReturnPart)
+        ]
+        if not returns:
+            part = ToolCallPart("get_claim", {"claim_id": CLAIM_ID}, "claim")
+        elif len(returns) == 1:
+            part = ToolCallPart(
+                "read_evidence",
+                {"claim_id": CLAIM_ID, "evidence_id": EVIDENCE_ID},
+                "evidence",
+            )
+        else:
+            part = ToolCallPart(
+                info.output_tools[0].name,
+                {
+                    "segments": [
+                        {
+                            "kind": "fact",
+                            "claim_ids": [CLAIM_ID],
+                            "evidence_ids": [EVIDENCE_ID],
+                        }
+                    ]
+                },
+                "answer",
+            )
+        return ModelResponse([part])
+
+    result = asyncio.run(
+        QueryAgent(
+            FunctionModel(answer),
+            database=application.database_path,
+            model_name="query-model",
+            secrets=secrets,
+        ).ask(
+            KnowledgeQueryContext(
+                run_id="run-1",
+                source_set_digest="source-set-1",
+                bundle="published",
+                scope="concept",
+                page="concepts/query.md",
+                concept_id=CONCEPT_ID,
+                claim_ids=(CLAIM_ID,),
+            ),
+            "How are accepted answers grounded?",
+        )
+    )
+
+    assert result.outcome == "insufficient_support"
+    assert result.segments[0].kind == "insufficient_support"
+    assert result.segments[0].citations == ()
+    encoded = result.model_dump_json()
+    with sqlite3.connect(application.database_path) as connection:
+        audit = json.dumps(connection.execute("SELECT * FROM query_audit").fetchone())
+    assert all(secret not in encoded and secret not in audit for secret in secrets)
 
 
 def test_query_reads_only_the_requested_evidence_reference(

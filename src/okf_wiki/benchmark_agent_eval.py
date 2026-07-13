@@ -4,14 +4,26 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from pydantic import BaseModel, ConfigDict
 from pydantic_ai import Agent, ModelResponse
-from pydantic_ai.messages import ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import RetryPromptPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from .agent_evals import AgentEvalReport, ReleaseEvalManifest, evaluate_release
-from .benchmark_corpus import BenchmarkCorpus, CORPUS_ROOT, MaterializedCorpus, source_text
+from .agent_evals import (
+    AgentEvalReport,
+    ReleaseEvalManifest,
+    evaluate_release,
+    load_role_dataset,
+)
+from .benchmark_corpus import (
+    BenchmarkCorpus,
+    CORPUS_ROOT,
+    MaterializedCorpus,
+    git_write,
+    source_text,
+)
 from .knowledge_contracts import (
     AnalysisTask,
     ObligationSummary,
@@ -19,10 +31,20 @@ from .knowledge_contracts import (
     WorkerProposal,
 )
 from .planner import PlannerAgent
+from .query_agent import KnowledgeQueryContext, QueryAgent
 from .scheduler import PlannerSummary, RemainingBudgets, SourceSummary
+from .state_schema import migrate_state
 from .verification import VerificationSource, VerificationTarget
 from .verifier import VerifierAgent
 from .worker import WorkerAgent
+
+
+QUERY_RUN_ID = "run-1"
+QUERY_SOURCE_SET_DIGEST = "digest-1"
+QUERY_CLAIM_ID = "claim:" + "a" * 64
+QUERY_EVIDENCE_ID = "evidence:" + "b" * 64
+QUERY_CONCEPT_ID = "concept:" + "c" * 64
+QUERY_STATEMENT = "Accepted query answers use exact evidence."
 
 
 @dataclass(frozen=True)
@@ -287,6 +309,205 @@ def _renderer_output(function_tools: dict[str, list[str]]) -> dict:
     return result.output.model_dump(mode="json")
 
 
+def _query_database(workspace: Path) -> Path:
+    root = workspace / "agent-eval-query"
+    source = root / "source"
+    source.mkdir(parents=True)
+    (source / "README.md").write_text(QUERY_STATEMENT + "\n", encoding="utf-8")
+    git_write(source, "init", "-q")
+    git_write(source, "add", "README.md")
+    git_write(
+        source,
+        "-c",
+        "user.name=OKF Benchmark",
+        "-c",
+        "user.email=benchmark@example.invalid",
+        "-c",
+        "commit.gpgSign=false",
+        "commit",
+        "-qm",
+        "query eval",
+    )
+    revision = git_write(source, "rev-parse", "HEAD")
+    release = root / ".published.releases" / QUERY_RUN_ID
+    (release / "concepts").mkdir(parents=True)
+    (release / "concepts" / "query.md").write_text(
+        f"# Query Agent\n\n{QUERY_STATEMENT}\n\n<!-- claims: {QUERY_CLAIM_ID} -->\n",
+        encoding="utf-8",
+    )
+    source_set = {
+        "digest": QUERY_SOURCE_SET_DIGEST,
+        "sources": [
+            {
+                "id": "docs",
+                "repository": str(source),
+                "revision": revision,
+                "role": "documentation",
+            }
+        ],
+    }
+    database = root / "runs.db"
+    with sqlite3.connect(database) as connection:
+        migrate_state(connection)
+        connection.execute(
+            """INSERT INTO runs
+               (id, project_id, repository, revision, publish_dir, staging_dir, state,
+                source_set_json, created_at, updated_at)
+               VALUES (?, 'agent-eval', ?, ?, ?, ?, 'published', ?, '2026-01-01',
+                       '2026-01-01')""",
+            (
+                QUERY_RUN_ID,
+                str(source),
+                revision,
+                str(root / "published"),
+                str(release),
+                json.dumps(source_set),
+            ),
+        )
+        connection.execute(
+            "INSERT INTO accepted_evidence VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                QUERY_RUN_ID,
+                QUERY_EVIDENCE_ID,
+                "docs",
+                revision,
+                "README.md",
+                "unit:readme",
+                1,
+                1,
+                "sha256:" + hashlib.sha256(QUERY_STATEMENT.encode()).hexdigest(),
+                "source_span",
+                "source_snapshot",
+            ),
+        )
+        connection.execute(
+            "INSERT INTO accepted_claims VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                QUERY_RUN_ID,
+                QUERY_CLAIM_ID,
+                "Query Agent",
+                "uses",
+                QUERY_STATEMENT,
+                "asserted",
+                "[]",
+                "supported",
+            ),
+        )
+        connection.execute(
+            "INSERT INTO claim_evidence VALUES (?, ?, ?)",
+            (QUERY_RUN_ID, QUERY_CLAIM_ID, QUERY_EVIDENCE_ID),
+        )
+        connection.execute(
+            "INSERT INTO accepted_concepts VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                QUERY_RUN_ID,
+                QUERY_CONCEPT_ID,
+                "Query Agent",
+                "[]",
+                "Grounded answers.",
+                "active",
+            ),
+        )
+        connection.execute(
+            "INSERT INTO concept_claims VALUES (?, ?, ?, ?)",
+            (QUERY_RUN_ID, QUERY_CONCEPT_ID, QUERY_CLAIM_ID, "defining"),
+        )
+        connection.execute(
+            "INSERT INTO page_plans VALUES (?, ?, ?, ?)",
+            (QUERY_RUN_ID, QUERY_CONCEPT_ID, "concepts/query.md", "Query Agent"),
+        )
+    return database
+
+
+def _query_trajectory(messages) -> list[dict[str, str]]:
+    trajectory = []
+    for message in messages:
+        for part in message.parts:
+            if isinstance(part, ToolCallPart) and part.tool_kind != "output":
+                trajectory.append({"event": "call", "tool": part.tool_name, "outcome": "requested"})
+            elif isinstance(part, ToolReturnPart):
+                trajectory.append(
+                    {
+                        "event": "return",
+                        "tool": part.tool_name,
+                        "outcome": "empty" if part.content in (None, "", [], {}) else "ok",
+                    }
+                )
+            elif isinstance(part, RetryPromptPart) and part.tool_name != "final_result":
+                trajectory.append({"event": "retry", "tool": part.tool_name, "outcome": "rejected"})
+    return trajectory
+
+
+def _query_output(
+    database: Path, model_version: str, case_name: str
+) -> tuple[dict, list[dict[str, str]]]:
+    case = next(case for case in load_role_dataset("query").cases if case.name == case_name)
+    question = cast(str, case.inputs["question"])
+    messages = []
+
+    def function(current, info: AgentInfo) -> ModelResponse:
+        messages[:] = current
+        returns = [
+            part
+            for message in current
+            for part in message.parts
+            if isinstance(part, ToolReturnPart)
+        ]
+        if case_name == "grounded-answer":
+            if not returns:
+                part = ToolCallPart("renderable_claims", {"concept_id": QUERY_CONCEPT_ID}, "claims")
+            elif len(returns) == 1:
+                part = ToolCallPart(
+                    "read_evidence",
+                    {"claim_id": QUERY_CLAIM_ID, "evidence_id": QUERY_EVIDENCE_ID},
+                    "evidence",
+                )
+            else:
+                part = ToolCallPart(
+                    info.output_tools[0].name,
+                    {
+                        "segments": [
+                            {
+                                "kind": "fact",
+                                "claim_ids": [QUERY_CLAIM_ID],
+                                "evidence_ids": [QUERY_EVIDENCE_ID],
+                            }
+                        ]
+                    },
+                    "answer",
+                )
+        elif not returns:
+            part = ToolCallPart("find_concepts", {"query": question}, "find")
+        else:
+            part = ToolCallPart(
+                info.output_tools[0].name,
+                {"segments": [{"kind": "insufficient_support"}]},
+                "refuse",
+            )
+        return ModelResponse([part])
+
+    context = KnowledgeQueryContext(
+        run_id=QUERY_RUN_ID,
+        source_set_digest=QUERY_SOURCE_SET_DIGEST,
+        bundle="published",
+        scope="concept",
+        page="concepts/query.md",
+        concept_id=QUERY_CONCEPT_ID,
+        claim_ids=(QUERY_CLAIM_ID,) if case_name == "grounded-answer" else (),
+    )
+    try:
+        answer = asyncio.run(
+            QueryAgent(
+                FunctionModel(function),
+                database=database,
+                model_name=model_version,
+            ).ask(context, question)
+        )
+    except Exception:
+        return {}, _query_trajectory(messages)
+    return answer.model_dump(mode="json"), _query_trajectory(messages)
+
+
 def execute_agent_eval(
     corpus: BenchmarkCorpus,
     materialized: MaterializedCorpus,
@@ -298,21 +519,33 @@ def execute_agent_eval(
     worker, candidate_id = _worker_output(corpus, materialized, workspace, model_version)
     verifier = _verifier_output(materialized, tools)
     renderer = _renderer_output(tools)
+    query_database = _query_database(workspace)
+    queries = {
+        case: _query_output(query_database, model_version, case)
+        for case in ("grounded-answer", "prompt-injection-refusal")
+    }
     payload = json.loads((CORPUS_ROOT / corpus.version / "agent-eval.json").read_text())
     outputs = {"planner": planner, "worker": worker, "verifier": verifier, "renderer": renderer}
     for result in payload["results"]:
-        if result["role"] != "query":
-            result["output"] = outputs[result["role"]]
-        if result["role"] == "worker":
-            result["candidate_id"] = candidate_id
         if result["role"] == "query":
+            result["output"], result["trajectory"] = queries[result["case"]]
             tools["query"].extend(
                 event["tool"] for event in result["trajectory"] if event["event"] == "call"
             )
+        else:
+            result["output"] = outputs[result["role"]]
+        if result["role"] == "worker":
+            result["candidate_id"] = candidate_id
     payload["worker_audit_path"] = str(workspace / "agent-eval-worker.db")
     report = evaluate_release(ReleaseEvalManifest.model_validate(payload))
     return AgentEvalExecution(
         report=report,
-        invocations={"planner": 1, "worker": 1, "verifier": 2, "renderer": 1, "query": 2},
+        invocations={
+            "planner": 1,
+            "worker": 1,
+            "verifier": 2,
+            "renderer": 1,
+            "query": len(queries),
+        },
         function_tools={key: tuple(value) for key, value in tools.items()},
     )

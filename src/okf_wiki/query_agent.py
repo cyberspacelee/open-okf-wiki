@@ -369,8 +369,10 @@ async def read_evidence(ctx: RunContext[QueryDeps], claim_id: str, evidence_id: 
             "excerpt",
         )
     }
-    ctx.deps.evidence[(claim_id, evidence_id)] = payload
-    return _public(payload, ctx.deps.secrets)
+    public_payload = _public(payload, ctx.deps.secrets)
+    if all(public_payload[key] == payload[key] for key in ("id", "source_id", "revision", "path")):
+        ctx.deps.evidence[(claim_id, evidence_id)] = public_payload
+    return public_payload
 
 
 def _usage(value: RunUsage | None) -> dict[str, int]:

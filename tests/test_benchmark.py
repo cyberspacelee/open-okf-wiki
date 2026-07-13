@@ -19,7 +19,9 @@ from okf_wiki.benchmark import (
     source_revisions_applied,
     verify_gateway_contract_requirement,
 )
+from okf_wiki.benchmark_agent_eval import execute_agent_eval
 from okf_wiki.cli import main
+from okf_wiki.query_agent import QueryAgent
 from okf_wiki.security import git_read
 
 
@@ -224,8 +226,17 @@ def test_semantic_snapshot_detects_knowledge_coverage_review_and_bundle_drift() 
 
 
 def test_executable_benchmark_runs_real_producer_and_matches_release_fixture(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    query_invocations = 0
+    original_ask = QueryAgent.ask
+
+    async def tracked_ask(self, *args, **kwargs):
+        nonlocal query_invocations
+        query_invocations += 1
+        return await original_ask(self, *args, **kwargs)
+
+    monkeypatch.setattr(QueryAgent, "ask", tracked_ask)
     report = run_benchmark(workspace=tmp_path)
     expected = BenchmarkReport.model_validate_json(
         (
@@ -263,6 +274,7 @@ def test_executable_benchmark_runs_real_producer_and_matches_release_fixture(
     assert report.role_trajectories["renderer"].invocations == 1
     assert report.role_trajectories["renderer"].function_tools == ()
     assert report.role_trajectories["query"].invocations == 2
+    assert query_invocations == 2
     assert report.role_trajectories["query"].function_tools == (
         "find_concepts",
         "read_evidence",
@@ -280,6 +292,26 @@ def test_executable_benchmark_runs_real_producer_and_matches_release_fixture(
     assert report.versions.prompt == "benchmark-semantic-v1"
     assert report.versions.tool_schema == "git-snapshot-v1"
     assert report.versions.gateway_capability_tests == "gateway-contract-v1"
+
+
+def test_agent_eval_blocks_when_query_agent_execution_breaks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    corpus = load_benchmark_corpus()
+    materialized = materialize_corpus(corpus, tmp_path / "repositories")
+
+    async def broken_ask(*_args, **_kwargs):
+        raise RuntimeError("broken Query Agent")
+
+    monkeypatch.setattr(QueryAgent, "ask", broken_ask)
+
+    execution = execute_agent_eval(corpus, materialized, tmp_path, "function-model-v1")
+
+    assert execution.report.blocked is True
+    assert {
+        "query:grounded-answer:trajectory:missing_trajectory",
+        "query:prompt-injection-refusal:trajectory:missing_trajectory",
+    } <= set(execution.report.failures)
 
 
 def test_benchmark_report_rejects_incomplete_incremental_equivalence() -> None:

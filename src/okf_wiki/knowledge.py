@@ -370,25 +370,47 @@ class KnowledgeReader:
         self, kind: Literal["staged", "published"], path: str, run_id: str
     ) -> dict:
         page = self.page(kind, path, run_id)
-        claim_ids = tuple(dict.fromkeys(CLAIM_MARKER_RE.findall(page["source"])))
-        if len(claim_ids) > MAX_QUERY_PAGE_CLAIMS:
-            raise ValueError(f"Current page exceeds the {MAX_QUERY_PAGE_CLAIMS} Claim query limit")
-        if claim_ids:
-            placeholders = ",".join("?" for _ in claim_ids)
-            with sqlite3.connect(self.database) as connection:
-                supported = {
+        concept_id = page["concept_id"]
+        with sqlite3.connect(self.database) as connection:
+            if concept_id is not None:
+                claim_ids = tuple(
                     row[0]
                     for row in connection.execute(
-                        f"SELECT id FROM accepted_claims WHERE run_id = ? "
-                        f"AND epistemic_status = 'supported' AND id IN ({placeholders})",
-                        (run_id, *claim_ids),
+                        """SELECT claim.id
+                           FROM concept_claims membership
+                           JOIN accepted_claims claim
+                             ON claim.run_id = membership.run_id
+                            AND claim.id = membership.claim_id
+                          WHERE membership.run_id = ? AND membership.concept_id = ?
+                            AND claim.epistemic_status = 'supported'
+                          ORDER BY CASE membership.role WHEN 'defining' THEN 0 ELSE 1 END,
+                                   claim.id""",
+                        (page["run_id"], concept_id),
                     )
-                }
-            if supported != set(claim_ids):
-                raise ValueError("Current page references unavailable accepted Claims")
+                )
+            else:
+                claim_ids = tuple(
+                    dict.fromkeys(
+                        block["claim_id"] for block in page["blocks"] if block["type"] == "claim"
+                    )
+                )
+                if claim_ids:
+                    placeholders = ",".join("?" for _ in claim_ids)
+                    supported = {
+                        row[0]
+                        for row in connection.execute(
+                            f"SELECT id FROM accepted_claims WHERE run_id = ? "
+                            f"AND epistemic_status = 'supported' AND id IN ({placeholders})",
+                            (page["run_id"], *claim_ids),
+                        )
+                    }
+                    if supported != set(claim_ids):
+                        raise ValueError("Current page references unavailable accepted Claims")
+        if len(claim_ids) > MAX_QUERY_PAGE_CLAIMS:
+            raise ValueError(f"Current page exceeds the {MAX_QUERY_PAGE_CLAIMS} Claim query limit")
         return {
             "claim_ids": claim_ids,
-            "concept_id": page["concept_id"],
+            "concept_id": concept_id,
             "page": page["path"],
         }
 
