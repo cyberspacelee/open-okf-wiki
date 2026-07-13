@@ -196,6 +196,17 @@ def run(root: Path, run_id: str, fixture: str) -> None:
                     secrets=(credential, *profile.headers.values()),
                 )
                 if outcome.status != "complete":
+                    current = get_run(connection, run_id)
+                    if "failed" in RUN_TRANSITIONS.get(current["state"], set()):
+                        with connection:
+                            transition_run(
+                                connection,
+                                run_id,
+                                current["state"],
+                                "failed",
+                                error="; ".join(outcome.warnings)
+                                or "Semantic execution did not complete",
+                            )
                     return
                 state = "verifying"
             if state != "verifying":
