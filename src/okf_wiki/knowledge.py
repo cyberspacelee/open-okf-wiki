@@ -6,6 +6,7 @@ import mimetypes
 import posixpath
 import re
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
@@ -27,6 +28,7 @@ from .worker import GitObjectSnapshotReader
 
 MAX_BUNDLE_PAGE_BYTES = 1_000_000
 MAX_BUNDLE_ASSET_BYTES = 1_000_000
+MAX_QUERY_PAGE_CLAIMS = 16
 MAX_SEARCH_RESULTS = 50
 MAX_MERMAID_EDGES = 32
 MAX_MERMAID_NODES = MAX_MERMAID_EDGES * 2
@@ -364,6 +366,32 @@ class KnowledgeReader:
             "title": self._title(metadata, body, path),
         }
 
+    def query_page_scope(
+        self, kind: Literal["staged", "published"], path: str, run_id: str
+    ) -> dict:
+        page = self.page(kind, path, run_id)
+        claim_ids = tuple(dict.fromkeys(CLAIM_MARKER_RE.findall(page["source"])))
+        if len(claim_ids) > MAX_QUERY_PAGE_CLAIMS:
+            raise ValueError(f"Current page exceeds the {MAX_QUERY_PAGE_CLAIMS} Claim query limit")
+        if claim_ids:
+            placeholders = ",".join("?" for _ in claim_ids)
+            with sqlite3.connect(self.database) as connection:
+                supported = {
+                    row[0]
+                    for row in connection.execute(
+                        f"SELECT id FROM accepted_claims WHERE run_id = ? "
+                        f"AND epistemic_status = 'supported' AND id IN ({placeholders})",
+                        (run_id, *claim_ids),
+                    )
+                }
+            if supported != set(claim_ids):
+                raise ValueError("Current page references unavailable accepted Claims")
+        return {
+            "claim_ids": claim_ids,
+            "concept_id": page["concept_id"],
+            "page": page["path"],
+        }
+
     def search(
         self, query: str, kind: Literal["staged", "published"], run_id: str | None
     ) -> list[dict[str, str]]:
@@ -473,48 +501,64 @@ class KnowledgeReader:
         claim = AcceptedKnowledgeStore(self.database).get_claim(selection.run_id, claim_id)
         if claim is None:
             raise ValueError(f"Accepted Claim does not exist: {claim_id}")
-        sources = {source["id"]: source for source in selection.source_set.get("sources", [])}
-        evidence_payload = []
-        for evidence in claim["evidence"]:
-            payload = {
-                "authority": evidence["authority"],
-                "digest": evidence["digest"],
-                "end_line": evidence["end_line"],
-                "evidence_kind": evidence["evidence_kind"],
-                "id": evidence["id"],
-                "path": evidence["path"],
-                "revision": evidence["revision"],
-                "source_id": evidence["source_id"],
-                "start_line": evidence["start_line"],
-            }
-            source = sources.get(evidence["source_id"])
-            try:
-                if (
-                    source is None
-                    or source["revision"].casefold() != evidence["revision"].casefold()
-                ):
-                    raise ValueError("Evidence Source Snapshot is unavailable")
-                reader = GitObjectSnapshotReader(
-                    Path(source["repository"]), evidence["source_id"], evidence["revision"]
-                )
-                excerpt = reader.read_text_sync(
-                    evidence["path"],
-                    evidence["start_line"],
-                    evidence["end_line"],
-                    allowed=(evidence["path"],),
-                )
-                if "sha256:" + hashlib.sha256(excerpt.encode()).hexdigest() != evidence["digest"]:
-                    raise ValueError("Evidence excerpt digest no longer matches")
-                payload["excerpt"] = excerpt
-                payload["error"] = None
-            except (OSError, UnicodeError, ValueError) as error:
-                payload["excerpt"] = None
-                payload["error"] = str(error)
-            evidence_payload.append(payload)
+        evidence_payload = [
+            self._resolve_evidence(selection, evidence) for evidence in claim["evidence"]
+        ]
         return {
             **{key: value for key, value in claim.items() if key != "evidence"},
             "evidence": evidence_payload,
         }
+
+    def evidence(
+        self,
+        claim_id: str,
+        evidence_id: str,
+        kind: Literal["staged", "published"],
+        run_id: str | None,
+    ) -> dict:
+        selection = self.selection(kind, run_id)
+        evidence = AcceptedKnowledgeStore(self.database).get_claim_evidence(
+            selection.run_id, claim_id, evidence_id
+        )
+        if evidence is None:
+            raise ValueError(f"Evidence is not attached to accepted Claim: {evidence_id}")
+        return self._resolve_evidence(selection, evidence)
+
+    @staticmethod
+    def _resolve_evidence(selection: BundleSelection, evidence: Mapping[str, Any]) -> dict:
+        payload = {
+            "authority": evidence["authority"],
+            "digest": evidence["digest"],
+            "end_line": evidence["end_line"],
+            "evidence_kind": evidence["evidence_kind"],
+            "id": evidence["id"],
+            "path": evidence["path"],
+            "revision": evidence["revision"],
+            "source_id": evidence["source_id"],
+            "start_line": evidence["start_line"],
+        }
+        sources = {source["id"]: source for source in selection.source_set.get("sources", [])}
+        source = sources.get(evidence["source_id"])
+        try:
+            if source is None or source["revision"].casefold() != evidence["revision"].casefold():
+                raise ValueError("Evidence Source Snapshot is unavailable")
+            reader = GitObjectSnapshotReader(
+                Path(source["repository"]), evidence["source_id"], evidence["revision"]
+            )
+            excerpt = reader.read_text_sync(
+                evidence["path"],
+                evidence["start_line"],
+                evidence["end_line"],
+                allowed=(evidence["path"],),
+            )
+            if "sha256:" + hashlib.sha256(excerpt.encode()).hexdigest() != evidence["digest"]:
+                raise ValueError("Evidence excerpt digest no longer matches")
+            payload["excerpt"] = excerpt
+            payload["error"] = None
+        except (OSError, UnicodeError, ValueError) as error:
+            payload["excerpt"] = None
+            payload["error"] = str(error)
+        return payload
 
 
 class StructuredMarkdown:

@@ -11,6 +11,11 @@ def answer(
     text: str,
     tokens: int = 30,
     latency_ms: int = 25,
+    scope: str = "concept",
+    run_id: str = "run-1",
+    source_set_digest: str = "digest-1",
+    page: str | None = "concepts/query.md",
+    concept_id: str | None = "concept:" + "c" * 64,
 ) -> dict:
     segments = []
     if claim_ids:
@@ -41,7 +46,7 @@ def answer(
         segments.append(
             {
                 "kind": "insufficient_support",
-                "text": "Accepted knowledge does not contain enough support.",
+                "text": text,
                 "claim_ids": [],
                 "evidence_ids": [],
                 "citations": [],
@@ -50,11 +55,12 @@ def answer(
     return {
         "query_id": "4" * 32,
         "outcome": outcome,
-        "run_id": "run-1",
-        "source_set_digest": "digest-1",
+        "run_id": run_id,
+        "source_set_digest": source_set_digest,
         "model": "query-model",
-        "scope": "concept",
-        "concept_id": "concept:" + "c" * 64,
+        "scope": scope,
+        "page": page,
+        "concept_id": concept_id,
         "segments": segments,
         "usage": {
             "requests": 1,
@@ -77,6 +83,15 @@ def test_query_eval_dataset_measures_all_declared_quality_and_operational_metric
         "prompt-injection-refusal",
     }
     for case in dataset.cases:
+        inputs = cast(dict, case.inputs)
+        assert isinstance(inputs["question"], str) and inputs["question"]
+        assert set(inputs["fixed_identity"]) == {
+            "run_id",
+            "source_set_digest",
+            "scope",
+            "page",
+            "concept_id",
+        }
         thresholds = cast(dict, case.metadata)["thresholds"]
         assert set(thresholds) == set(QUERY_METRICS)
 
@@ -92,7 +107,7 @@ def test_query_eval_scores_grounded_citations_refusal_scope_injection_cost_and_l
         outcome="insufficient_support",
         claim_ids=[],
         evidence_ids=[],
-        text="Accepted knowledge does not contain enough support.",
+        text="Accepted knowledge does not contain enough support for this part of the question.",
     )
 
     assert evaluate_query("grounded-answer", grounded) == {metric: 1.0 for metric in QUERY_METRICS}
@@ -126,3 +141,31 @@ def test_query_eval_scores_grounded_citations_refusal_scope_injection_cost_and_l
     assert evaluate_query("grounded-answer", grounded)["cost"] == 0
     grounded["latency_ms"] = 1001
     assert evaluate_query("grounded-answer", grounded)["latency"] == 0
+
+    wrong_scope = answer(
+        outcome="answered",
+        claim_ids=["claim:" + "a" * 64],
+        evidence_ids=["evidence:" + "b" * 64],
+        text="Accepted query answers use exact evidence.",
+        scope="bundle",
+        page=None,
+        concept_id=None,
+    )
+    assert evaluate_query("grounded-answer", wrong_scope)["scope"] == 0
+
+    wrong_identity = answer(
+        outcome="answered",
+        claim_ids=["claim:" + "a" * 64],
+        evidence_ids=["evidence:" + "b" * 64],
+        text="Accepted query answers use exact evidence.",
+        run_id="run-other",
+    )
+    assert evaluate_query("grounded-answer", wrong_identity)["scope"] == 0
+
+    generic_refusal = answer(
+        outcome="insufficient_support",
+        claim_ids=[],
+        evidence_ids=[],
+        text="I cannot answer that question.",
+    )
+    assert evaluate_query("prompt-injection-refusal", generic_refusal)["refusal_quality"] == 0

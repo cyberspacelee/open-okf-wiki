@@ -4,6 +4,9 @@ import sys
 from pathlib import Path
 from typing import cast
 
+import pytest
+from pydantic import ValidationError
+
 from okf_wiki.agent_evals import (
     GATED_CHANGE_KINDS,
     ROLE_METRICS,
@@ -279,6 +282,143 @@ def test_renderer_eval_measures_grounding_conflicts_duplication_and_readability(
     assert evaluate_role("renderer", "grounded-readable-concept", output)["duplication"] == 0
 
 
+def test_query_release_gate_requires_bounded_content_free_trajectory(tmp_path) -> None:
+    output = {
+        "query_id": "4" * 32,
+        "outcome": "answered",
+        "run_id": "run-1",
+        "source_set_digest": "digest-1",
+        "model": "query-model",
+        "scope": "concept",
+        "page": "concepts/query.md",
+        "concept_id": "concept:" + "c" * 64,
+        "segments": [
+            {
+                "kind": "fact",
+                "text": "Accepted query answers use exact evidence.",
+                "claim_ids": ["claim:" + "a" * 64],
+                "evidence_ids": ["evidence:" + "b" * 64],
+                "citations": [
+                    {
+                        "claim_id": "claim:" + "a" * 64,
+                        "evidence": [
+                            {
+                                "id": "evidence:" + "b" * 64,
+                                "source_id": "docs",
+                                "revision": "1" * 40,
+                                "path": "README.md",
+                                "start_line": 1,
+                                "end_line": 1,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        "usage": {
+            "requests": 3,
+            "tool_calls": 2,
+            "input_tokens": 20,
+            "output_tokens": 10,
+            "total_tokens": 30,
+        },
+        "latency_ms": 25,
+        "error": None,
+    }
+    trajectory = [
+        {"event": "call", "tool": "renderable_claims", "outcome": "requested"},
+        {"event": "return", "tool": "renderable_claims", "outcome": "ok"},
+        {"event": "call", "tool": "read_evidence", "outcome": "requested"},
+        {"event": "return", "tool": "read_evidence", "outcome": "ok"},
+    ]
+    payload = {
+        "change_kinds": ["prompt", "tool", "workflow"],
+        "versions": {
+            "model": "model-v1",
+            "prompt": "prompt-v1",
+            "tool_schema": "tools-v1",
+            "workflow": "workflow-v1",
+        },
+        "worker_audit_path": str(tmp_path / "missing-worker.db"),
+        "cost_usd": 0,
+        "latency_ms": 1,
+        "semantic_judges": [],
+        "human_adjudications": [],
+        "results": [
+            {
+                "role": "query",
+                "case": "grounded-answer",
+                "output": output,
+                "trajectory": trajectory,
+            }
+        ],
+    }
+
+    manifest = ReleaseEvalManifest.model_validate(payload)
+    report = evaluate_release(manifest)
+    assert not any(
+        failure.startswith("query:grounded-answer:trajectory:")
+        for failure in report.trajectory_failures
+    )
+
+    return_before_call = manifest.model_copy(
+        update={
+            "results": (
+                manifest.results[0].model_copy(
+                    update={"trajectory": tuple(reversed(manifest.results[0].trajectory[:2]))}
+                ),
+            )
+        }
+    )
+    assert (
+        "query:grounded-answer:trajectory:invalid_sequence"
+        in evaluate_release(return_before_call).trajectory_failures
+    )
+
+    missing = manifest.model_copy(update={"results": ()})
+    assert (
+        "query:grounded-answer:trajectory:missing_result"
+        in evaluate_release(missing).trajectory_failures
+    )
+    no_trajectory = manifest.model_copy(
+        update={"results": (manifest.results[0].model_copy(update={"trajectory": ()}),)}
+    )
+    assert (
+        "query:grounded-answer:trajectory:missing_trajectory"
+        in evaluate_release(no_trajectory).trajectory_failures
+    )
+
+    with pytest.raises(ValidationError):
+        ReleaseEvalManifest.model_validate(
+            {
+                **payload,
+                "results": [
+                    {
+                        **payload["results"][0],
+                        "trajectory": [
+                            {
+                                **trajectory[0],
+                                "args": {"question": "must not persist"},
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+    with pytest.raises(ValidationError):
+        ReleaseEvalManifest.model_validate(
+            {
+                **payload,
+                "results": [
+                    {
+                        **payload["results"][0],
+                        "trajectory": trajectory * 9,
+                    }
+                ],
+            }
+        )
+
+
 def test_agent_eval_report_blocks_every_gated_change_and_records_operational_metadata(
     tmp_path,
 ) -> None:
@@ -336,6 +476,8 @@ def test_agent_eval_report_blocks_every_gated_change_and_records_operational_met
     assert report.human_adjudications[0].outcome == "rejected"
     assert report.trajectory_failures == (
         "worker:grounded-data-contract:trajectory:missing_result",
+        "query:grounded-answer:trajectory:missing_result",
+        "query:prompt-injection-refusal:trajectory:missing_result",
     )
     assert "planner:bounded-priority-plan:semantic_judge:fail" in report.judge_failures
     assert "worker:grounded-data-contract:semantic_judge:missing" in report.judge_failures

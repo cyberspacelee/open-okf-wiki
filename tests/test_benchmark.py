@@ -252,8 +252,8 @@ def test_executable_benchmark_runs_real_producer_and_matches_release_fixture(
     assert report.security.bundle_validation is True
     assert report.agent_eval_passed is True
     assert report.agent_eval.passed is True
-    assert len(report.agent_eval.semantic_judges) == 4
-    assert len(report.agent_eval.human_adjudications) == 4
+    assert len(report.agent_eval.semantic_judges) == 6
+    assert len(report.agent_eval.human_adjudications) == 6
     assert report.role_trajectories["planner"].invocations > 0
     assert report.role_trajectories["planner"].function_tools == ()
     assert report.role_trajectories["worker"].invocations > 0
@@ -262,6 +262,12 @@ def test_executable_benchmark_runs_real_producer_and_matches_release_fixture(
     assert report.role_trajectories["verifier"].function_tools == ()
     assert report.role_trajectories["renderer"].invocations == 1
     assert report.role_trajectories["renderer"].function_tools == ()
+    assert report.role_trajectories["query"].invocations == 2
+    assert report.role_trajectories["query"].function_tools == (
+        "find_concepts",
+        "read_evidence",
+        "renderable_claims",
+    )
     assert report.gateway.live is False
     assert report.gateway.status == "not_required"
     assert report.costs.tokens >= 0

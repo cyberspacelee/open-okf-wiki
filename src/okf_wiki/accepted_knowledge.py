@@ -25,7 +25,7 @@ class EvidenceRecord(TypedDict):
     authority: str
 
 
-class ClaimRecord(TypedDict):
+class RenderableClaimRecord(TypedDict):
     id: str
     subject: str
     predicate: str
@@ -34,6 +34,9 @@ class ClaimRecord(TypedDict):
     conditions: list[str]
     epistemic_status: str
     evidence: list[EvidenceRecord]
+
+
+class ClaimRecord(RenderableClaimRecord):
     conflicts_with: list[str]
     supersedes: list[str]
 
@@ -46,6 +49,12 @@ class ConceptRecord(TypedDict):
     status: str
     defining_claim_ids: list[str]
     supporting_claim_ids: list[str]
+
+
+class ConceptSummary(TypedDict):
+    id: str
+    canonical_name: str
+    status: str
 
 
 class RelationRecord(TypedDict):
@@ -507,33 +516,172 @@ class AcceptedKnowledgeStore:
             "accepted", tuple(sorted(claim_ids.values())), tuple(sorted(concept_ids.values()))
         )
 
-    def get_claim(self, run_id: str, claim_id: str) -> ClaimRecord | None:
+    @staticmethod
+    def _bounded_claim_row(
+        connection: sqlite3.Connection,
+        run_id: str,
+        claim_id: str,
+        field_char_limit: int,
+        statement_char_limit: int,
+    ) -> sqlite3.Row | None:
+        within_bounds = connection.execute(
+            """SELECT length(subject) <= ? AND length(predicate) <= ?
+                      AND length(modality) <= ? AND length(statement) <= ?
+                 FROM accepted_claims WHERE run_id = ? AND id = ?""",
+            (
+                field_char_limit,
+                field_char_limit,
+                field_char_limit,
+                statement_char_limit,
+                run_id,
+                claim_id,
+            ),
+        ).fetchone()
+        if within_bounds is None:
+            return None
+        if not within_bounds[0]:
+            raise ValueError("Claim text exceeds the bounded read limit")
+        return connection.execute(
+            """SELECT id, subject, predicate, statement, modality, epistemic_status
+                 FROM accepted_claims WHERE run_id = ? AND id = ?""",
+            (run_id, claim_id),
+        ).fetchone()
+
+    @staticmethod
+    def _renderable_claim(
+        connection: sqlite3.Connection,
+        run_id: str,
+        claim: sqlite3.Row,
+        evidence_limit: int | None,
+        condition_limit: int | None,
+        condition_char_limit: int | None,
+    ) -> RenderableClaimRecord:
+        evidence_query = """SELECT e.* FROM accepted_evidence e JOIN claim_evidence ce
+               ON ce.run_id = e.run_id AND ce.evidence_id = e.id
+               WHERE ce.run_id = ? AND ce.claim_id = ? ORDER BY e.id""" + (
+            " LIMIT ?" if evidence_limit is not None else ""
+        )
+        evidence_parameters = (
+            (run_id, claim["id"], evidence_limit)
+            if evidence_limit is not None
+            else (run_id, claim["id"])
+        )
+        evidence = [
+            EvidenceRecord(
+                id=row["id"],
+                source_id=row["source_id"],
+                revision=row["revision"],
+                path=row["path"],
+                source_unit=row["source_unit"],
+                start_line=row["start_line"],
+                end_line=row["end_line"],
+                digest=row["digest"],
+                evidence_kind=row["evidence_kind"],
+                authority=row["authority"],
+            )
+            for row in connection.execute(evidence_query, evidence_parameters)
+        ]
+        if condition_limit is None:
+            conditions = cast(list[str], json.loads(claim["conditions_json"]))
+        else:
+            condition_rows = list(
+                connection.execute(
+                    """SELECT CASE WHEN type = 'text' AND length(value) <= ?
+                                        THEN value END AS value,
+                              type != 'text' OR length(value) > ? AS invalid
+                         FROM json_each((
+                           SELECT conditions_json FROM accepted_claims
+                            WHERE run_id = ? AND id = ?
+                         ))
+                        ORDER BY CAST(key AS INTEGER) LIMIT ?""",
+                    (
+                        condition_char_limit,
+                        condition_char_limit,
+                        run_id,
+                        claim["id"],
+                        condition_limit,
+                    ),
+                )
+            )
+            if any(row["invalid"] for row in condition_rows):
+                raise ValueError("Claim condition exceeds the bounded read limit")
+            conditions = [row["value"] for row in condition_rows]
+        return RenderableClaimRecord(
+            id=claim["id"],
+            subject=claim["subject"],
+            predicate=claim["predicate"],
+            statement=claim["statement"],
+            modality=claim["modality"],
+            conditions=conditions,
+            epistemic_status=claim["epistemic_status"],
+            evidence=evidence,
+        )
+
+    def get_renderable_claim(
+        self,
+        run_id: str,
+        claim_id: str,
+        *,
+        evidence_limit: int | None = None,
+        condition_limit: int | None = None,
+        condition_char_limit: int | None = None,
+        field_char_limit: int | None = None,
+        statement_char_limit: int | None = None,
+    ) -> RenderableClaimRecord | None:
+        if evidence_limit is not None and evidence_limit < 1:
+            raise ValueError("evidence_limit must be positive")
+        if condition_limit is not None and condition_limit < 1:
+            raise ValueError("condition_limit must be positive")
+        if condition_char_limit is not None and condition_char_limit < 1:
+            raise ValueError("condition_char_limit must be positive")
+        if (condition_limit is None) != (condition_char_limit is None):
+            raise ValueError("condition limits must be provided together")
+        if (field_char_limit is None) != (statement_char_limit is None):
+            raise ValueError("text limits must be provided together")
+        if field_char_limit is not None and field_char_limit < 1:
+            raise ValueError("field_char_limit must be positive")
+        if statement_char_limit is not None and statement_char_limit < 1:
+            raise ValueError("statement_char_limit must be positive")
+        with self._connect() as connection:
+            claim = (
+                self._bounded_claim_row(
+                    connection,
+                    run_id,
+                    claim_id,
+                    field_char_limit,
+                    statement_char_limit,
+                )
+                if field_char_limit is not None and statement_char_limit is not None
+                else connection.execute(
+                    "SELECT * FROM accepted_claims WHERE run_id = ? AND id = ?",
+                    (run_id, claim_id),
+                ).fetchone()
+            )
+            if claim is None:
+                return None
+            return self._renderable_claim(
+                connection,
+                run_id,
+                claim,
+                evidence_limit,
+                condition_limit,
+                condition_char_limit,
+            )
+
+    def get_claim(
+        self, run_id: str, claim_id: str, *, evidence_limit: int | None = None
+    ) -> ClaimRecord | None:
+        if evidence_limit is not None and evidence_limit < 1:
+            raise ValueError("evidence_limit must be positive")
         with self._connect() as connection:
             claim = connection.execute(
                 "SELECT * FROM accepted_claims WHERE run_id = ? AND id = ?", (run_id, claim_id)
             ).fetchone()
             if claim is None:
                 return None
-            evidence = [
-                EvidenceRecord(
-                    id=row["id"],
-                    source_id=row["source_id"],
-                    revision=row["revision"],
-                    path=row["path"],
-                    source_unit=row["source_unit"],
-                    start_line=row["start_line"],
-                    end_line=row["end_line"],
-                    digest=row["digest"],
-                    evidence_kind=row["evidence_kind"],
-                    authority=row["authority"],
-                )
-                for row in connection.execute(
-                    """SELECT e.* FROM accepted_evidence e JOIN claim_evidence ce
-                       ON ce.run_id = e.run_id AND ce.evidence_id = e.id
-                       WHERE ce.run_id = ? AND ce.claim_id = ? ORDER BY e.id""",
-                    (run_id, claim_id),
-                )
-            ]
+            renderable = self._renderable_claim(
+                connection, run_id, claim, evidence_limit, None, None
+            )
             links = list(
                 connection.execute(
                     """SELECT kind, target_claim_id FROM claim_links
@@ -542,18 +690,36 @@ class AcceptedKnowledgeStore:
                 )
             )
         return ClaimRecord(
-            id=claim["id"],
-            subject=claim["subject"],
-            predicate=claim["predicate"],
-            statement=claim["statement"],
-            modality=claim["modality"],
-            conditions=cast(list[str], json.loads(claim["conditions_json"])),
-            epistemic_status=claim["epistemic_status"],
-            evidence=evidence,
+            **renderable,
             conflicts_with=[
                 row["target_claim_id"] for row in links if row["kind"] == "conflicts_with"
             ],
             supersedes=[row["target_claim_id"] for row in links if row["kind"] == "supersedes"],
+        )
+
+    def get_claim_evidence(
+        self, run_id: str, claim_id: str, evidence_id: str
+    ) -> EvidenceRecord | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT e.* FROM accepted_evidence e JOIN claim_evidence ce
+                     ON ce.run_id = e.run_id AND ce.evidence_id = e.id
+                   WHERE ce.run_id = ? AND ce.claim_id = ? AND ce.evidence_id = ?""",
+                (run_id, claim_id, evidence_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return EvidenceRecord(
+            id=row["id"],
+            source_id=row["source_id"],
+            revision=row["revision"],
+            path=row["path"],
+            source_unit=row["source_unit"],
+            start_line=row["start_line"],
+            end_line=row["end_line"],
+            digest=row["digest"],
+            evidence_kind=row["evidence_kind"],
+            authority=row["authority"],
         )
 
     def clone_for_refresh(
@@ -769,6 +935,28 @@ class AcceptedKnowledgeStore:
             ]
         return [concept for concept_id in ids if (concept := self.get_concept(run_id, concept_id))]
 
+    def find_concept_summaries(
+        self, run_id: str, query: str, limit: int = 20
+    ) -> list[ConceptSummary]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        with self._connect() as connection:
+            rows = list(
+                connection.execute(
+                    """SELECT id, canonical_name, status FROM accepted_concepts
+                       WHERE run_id = ? AND (
+                           instr(lower(canonical_name), lower(?)) > 0
+                           OR instr(lower(aliases_json), lower(?)) > 0
+                       )
+                       ORDER BY canonical_name, id LIMIT ?""",
+                    (run_id, query, query, limit),
+                )
+            )
+        return [
+            ConceptSummary(id=row["id"], canonical_name=row["canonical_name"], status=row["status"])
+            for row in rows
+        ]
+
     def list_concepts(self, run_id: str) -> list[ConceptRecord]:
         with self._connect() as connection:
             ids = [
@@ -825,17 +1013,84 @@ class AcceptedKnowledgeStore:
             for row in rows
         ]
 
-    def renderable_claims(self, run_id: str, concept_id: str) -> list[ClaimRecord]:
-        concept = self.get_concept(run_id, concept_id)
-        if concept is None:
-            raise ValueError(f"Unknown Concept: {concept_id}")
-        claim_ids = [*concept["defining_claim_ids"], *concept["supporting_claim_ids"]]
-        return [
-            claim
-            for claim_id in claim_ids
-            if (claim := self.get_claim(run_id, claim_id))
-            and claim["epistemic_status"] == "supported"
-        ]
+    def renderable_claims(
+        self,
+        run_id: str,
+        concept_id: str,
+        *,
+        claim_limit: int | None = None,
+        evidence_limit: int | None = None,
+        condition_limit: int | None = None,
+        condition_char_limit: int | None = None,
+        field_char_limit: int | None = None,
+        statement_char_limit: int | None = None,
+    ) -> list[RenderableClaimRecord]:
+        if claim_limit is not None and claim_limit < 1:
+            raise ValueError("claim_limit must be positive")
+        if evidence_limit is not None and evidence_limit < 1:
+            raise ValueError("evidence_limit must be positive")
+        if condition_limit is not None and condition_limit < 1:
+            raise ValueError("condition_limit must be positive")
+        if condition_char_limit is not None and condition_char_limit < 1:
+            raise ValueError("condition_char_limit must be positive")
+        if (condition_limit is None) != (condition_char_limit is None):
+            raise ValueError("condition limits must be provided together")
+        if (field_char_limit is None) != (statement_char_limit is None):
+            raise ValueError("text limits must be provided together")
+        if field_char_limit is not None and field_char_limit < 1:
+            raise ValueError("field_char_limit must be positive")
+        if statement_char_limit is not None and statement_char_limit < 1:
+            raise ValueError("statement_char_limit must be positive")
+        with self._connect() as connection:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM accepted_concepts WHERE run_id = ? AND id = ?",
+                    (run_id, concept_id),
+                ).fetchone()
+                is None
+            ):
+                raise ValueError(f"Unknown Concept: {concept_id}")
+            bounded = field_char_limit is not None and statement_char_limit is not None
+            query = f"""SELECT {"c.id" if bounded else "c.*"}
+                   FROM concept_claims cc JOIN accepted_claims c
+                     ON c.run_id = cc.run_id AND c.id = cc.claim_id
+                   WHERE cc.run_id = ? AND cc.concept_id = ?
+                     AND c.epistemic_status = 'supported'
+                   ORDER BY CASE cc.role WHEN 'defining' THEN 0 ELSE 1 END, c.id""" + (
+                " LIMIT ?" if claim_limit is not None else ""
+            )
+            parameters = (
+                (run_id, concept_id, claim_limit)
+                if claim_limit is not None
+                else (run_id, concept_id)
+            )
+            rows = list(connection.execute(query, parameters))
+            claims = (
+                [
+                    self._bounded_claim_row(
+                        connection,
+                        run_id,
+                        row["id"],
+                        field_char_limit,
+                        statement_char_limit,
+                    )
+                    for row in rows
+                ]
+                if bounded
+                else rows
+            )
+            return [
+                self._renderable_claim(
+                    connection,
+                    run_id,
+                    claim,
+                    evidence_limit,
+                    condition_limit,
+                    condition_char_limit,
+                )
+                for claim in claims
+                if claim is not None
+            ]
 
     def reject_run(self, connection: sqlite3.Connection, run_id: str) -> None:
         for table in (

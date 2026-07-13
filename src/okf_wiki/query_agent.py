@@ -20,7 +20,7 @@ from pydantic_ai import (
 from pydantic_ai.models import Model
 from pydantic_ai.usage import RunUsage
 
-from .accepted_knowledge import AcceptedKnowledgeStore, ClaimRecord, ConceptRecord
+from .accepted_knowledge import AcceptedKnowledgeStore, ConceptSummary, RenderableClaimRecord
 from .gateway_common import safe_agent_error
 from .knowledge import KnowledgeReader
 from .security import contains_secret, redact_secrets
@@ -29,7 +29,14 @@ from .state_schema import migrate_state
 
 MAX_QUERY_CHARS = 4_000
 MAX_CONCEPT_RESULTS = 8
+MAX_CONCEPT_NAME_CHARS = 256
 MAX_CLAIMS_PER_CONCEPT = 16
+MAX_PAGE_CLAIMS = 16
+MAX_CONDITIONS_PER_CLAIM = 16
+MAX_CONDITION_CHARS = 1_000
+MAX_EVIDENCE_PER_CLAIM = 16
+MAX_CLAIM_FIELD_CHARS = 1_000
+MAX_CLAIM_STATEMENT_CHARS = 8_000
 MAX_EVIDENCE_CHARS = 12_000
 MAX_ANSWER_CHARS = 16_000
 ClaimId = Annotated[str, Field(pattern=r"^claim:[0-9a-f]{64}$")]
@@ -51,12 +58,19 @@ class KnowledgeQueryContext(QueryModel):
     source_set_digest: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
     bundle: Literal["staged", "published"]
     scope: Literal["concept", "bundle"]
+    page: str | None = Field(default=None, min_length=1, max_length=1_000)
     concept_id: str | None = Field(default=None, pattern=r"^concept:[0-9a-f]{64}$")
+    claim_ids: tuple[ClaimId, ...] = Field(default=(), max_length=MAX_PAGE_CLAIMS)
 
     @model_validator(mode="after")
     def valid_scope(self) -> "KnowledgeQueryContext":
-        if (self.scope == "concept") != (self.concept_id is not None):
-            raise ValueError("Concept scope requires exactly one Concept ID")
+        if self.scope == "bundle":
+            if self.page is not None or self.concept_id is not None or self.claim_ids:
+                raise ValueError("Bundle scope cannot include page identity")
+        elif self.page is None:
+            raise ValueError("Current-page scope requires a page")
+        if len(set(self.claim_ids)) != len(self.claim_ids):
+            raise ValueError("Current-page Claim IDs must be unique")
         return self
 
 
@@ -137,6 +151,7 @@ class QueryAnswer(QueryModel):
     source_set_digest: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
     model: str = Field(min_length=1, max_length=256)
     scope: Literal["concept", "bundle"]
+    page: str | None = Field(default=None, min_length=1, max_length=1_000)
     concept_id: str | None = Field(default=None, pattern=r"^concept:[0-9a-f]{64}$")
     segments: tuple[QueryAnswerSegment, ...] = Field(max_length=8)
     usage: dict[str, int]
@@ -160,8 +175,11 @@ class QueryAnswer(QueryModel):
             raise ValueError("Query usage must contain bounded counters")
         if self.usage["total_tokens"] != (self.usage["input_tokens"] + self.usage["output_tokens"]):
             raise ValueError("Query token usage is inconsistent")
-        if (self.scope == "concept") != (self.concept_id is not None):
-            raise ValueError("Query scope and Concept identity are inconsistent")
+        if self.scope == "bundle":
+            if self.page is not None or self.concept_id is not None:
+                raise ValueError("Bundle answer cannot include page identity")
+        elif self.page is None:
+            raise ValueError("Current-page answer requires page identity")
         facts = sum(item.kind == "fact" for item in self.segments)
         expected_outcome = (
             "error"
@@ -186,7 +204,7 @@ class QueryDeps:
     secrets: tuple[str, ...]
     concept_ids: set[str] = field(default_factory=set)
     claim_ids: set[str] = field(default_factory=set)
-    claims: dict[str, ClaimRecord] = field(default_factory=dict)
+    claims: dict[str, RenderableClaimRecord] = field(default_factory=dict)
     evidence: dict[tuple[str, str], dict] = field(default_factory=dict)
 
 
@@ -204,27 +222,40 @@ def _allowed_concept(deps: QueryDeps, concept_id: str) -> None:
         raise ModelRetry("Find the Concept before reading its Claims")
 
 
-async def find_concepts(ctx: RunContext[QueryDeps], query: str) -> list[ConceptRecord]:
+async def find_concepts(ctx: RunContext[QueryDeps], query: str) -> list[ConceptSummary]:
     """Find accepted Concepts by name or alias within the fixed Production Run."""
     if len(query) > 200:
         raise ModelRetry("Concept search is limited to 200 characters")
     async with asyncio.timeout(ctx.deps.tool_timeout_seconds):
         concepts = await asyncio.to_thread(
-            ctx.deps.store.find_concepts,
+            ctx.deps.store.find_concept_summaries,
             ctx.deps.context.run_id,
             query,
             MAX_CONCEPT_RESULTS,
         )
     if ctx.deps.context.scope == "concept":
+        if ctx.deps.context.concept_id is None:
+            return []
         concepts = [item for item in concepts if item["id"] == ctx.deps.context.concept_id]
+    if any(len(concept["canonical_name"]) > MAX_CONCEPT_NAME_CHARS for concept in concepts):
+        raise ModelRetry("Concept name exceeds the bounded query limit")
     for concept in concepts:
         ctx.deps.concept_ids.add(concept["id"])
-        ctx.deps.claim_ids.update(concept["defining_claim_ids"])
-        ctx.deps.claim_ids.update(concept["supporting_claim_ids"])
     return _public(concepts, ctx.deps.secrets)
 
 
-def _claim_payload(claim: ClaimRecord) -> dict:
+def _claim_payload(claim: RenderableClaimRecord) -> dict:
+    fields = (claim["subject"], claim["predicate"], claim["modality"])
+    if any(len(value) > MAX_CLAIM_FIELD_CHARS for value in fields):
+        raise ModelRetry("Claim metadata exceeds the bounded query limit")
+    if len(claim["statement"]) > MAX_CLAIM_STATEMENT_CHARS:
+        raise ModelRetry("Claim statement exceeds the bounded query limit")
+    if len(claim["conditions"]) > MAX_CONDITIONS_PER_CLAIM or any(
+        len(condition) > MAX_CONDITION_CHARS for condition in claim["conditions"]
+    ):
+        raise ModelRetry("Claim conditions exceed the bounded query limit")
+    if len(claim["evidence"]) > MAX_EVIDENCE_PER_CLAIM:
+        raise ModelRetry("Claim Evidence exceeds the bounded query limit")
     return {
         "id": claim["id"],
         "subject": claim["subject"],
@@ -254,34 +285,55 @@ def _claim_payload(claim: ClaimRecord) -> dict:
 async def renderable_claims(ctx: RunContext[QueryDeps], concept_id: str) -> list[dict]:
     """List supported accepted Claims for one allowed Concept."""
     _allowed_concept(ctx.deps, concept_id)
-    async with asyncio.timeout(ctx.deps.tool_timeout_seconds):
-        claims = await asyncio.to_thread(
-            ctx.deps.store.renderable_claims,
-            ctx.deps.context.run_id,
-            concept_id,
-        )
+    try:
+        async with asyncio.timeout(ctx.deps.tool_timeout_seconds):
+            claims = await asyncio.to_thread(
+                ctx.deps.store.renderable_claims,
+                ctx.deps.context.run_id,
+                concept_id,
+                claim_limit=MAX_CLAIMS_PER_CONCEPT + 1,
+                evidence_limit=MAX_EVIDENCE_PER_CLAIM + 1,
+                condition_limit=MAX_CONDITIONS_PER_CLAIM + 1,
+                condition_char_limit=MAX_CONDITION_CHARS,
+                field_char_limit=MAX_CLAIM_FIELD_CHARS,
+                statement_char_limit=MAX_CLAIM_STATEMENT_CHARS,
+            )
+    except ValueError as error:
+        raise ModelRetry("Claim content exceeds the bounded query limit") from error
     if len(claims) > MAX_CLAIMS_PER_CONCEPT:
         raise ModelRetry("Concept exceeds the bounded Claim limit; narrow the question")
+    if ctx.deps.context.scope == "concept":
+        claims = [claim for claim in claims if claim["id"] in ctx.deps.context.claim_ids]
+    payloads = [_claim_payload(claim) for claim in claims]
     for claim in claims:
         ctx.deps.claim_ids.add(claim["id"])
         ctx.deps.claims[claim["id"]] = claim
-    return _public([_claim_payload(claim) for claim in claims], ctx.deps.secrets)
+    return _public(payloads, ctx.deps.secrets)
 
 
 async def get_claim(ctx: RunContext[QueryDeps], claim_id: str) -> dict:
     """Get one previously discovered accepted Claim."""
     if claim_id not in ctx.deps.claim_ids:
         raise ModelRetry("Claim is outside the bounded query scope")
-    async with asyncio.timeout(ctx.deps.tool_timeout_seconds):
-        claim = await asyncio.to_thread(
-            ctx.deps.store.get_claim,
-            ctx.deps.context.run_id,
-            claim_id,
-        )
+    try:
+        async with asyncio.timeout(ctx.deps.tool_timeout_seconds):
+            claim = await asyncio.to_thread(
+                ctx.deps.store.get_renderable_claim,
+                ctx.deps.context.run_id,
+                claim_id,
+                evidence_limit=MAX_EVIDENCE_PER_CLAIM + 1,
+                condition_limit=MAX_CONDITIONS_PER_CLAIM + 1,
+                condition_char_limit=MAX_CONDITION_CHARS,
+                field_char_limit=MAX_CLAIM_FIELD_CHARS,
+                statement_char_limit=MAX_CLAIM_STATEMENT_CHARS,
+            )
+    except ValueError as error:
+        raise ModelRetry("Claim content exceeds the bounded query limit") from error
     if claim is None or claim["epistemic_status"] != "supported":
         raise ModelRetry("Claim is not supported accepted knowledge")
+    payload = _claim_payload(claim)
     ctx.deps.claims[claim_id] = claim
-    return _public(_claim_payload(claim), ctx.deps.secrets)
+    return _public(payload, ctx.deps.secrets)
 
 
 async def read_evidence(ctx: RunContext[QueryDeps], claim_id: str, evidence_id: str) -> dict:
@@ -293,14 +345,14 @@ async def read_evidence(ctx: RunContext[QueryDeps], claim_id: str, evidence_id: 
     if reference is None:
         raise ModelRetry("Evidence is not attached to the accepted Claim")
     async with asyncio.timeout(ctx.deps.tool_timeout_seconds):
-        resolved = await asyncio.to_thread(
-            ctx.deps.reader.claim,
+        evidence = await asyncio.to_thread(
+            ctx.deps.reader.evidence,
             claim_id,
+            evidence_id,
             ctx.deps.context.bundle,
             ctx.deps.context.run_id,
         )
-    evidence = next((item for item in resolved["evidence"] if item["id"] == evidence_id), None)
-    if evidence is None or evidence["error"] or evidence["excerpt"] is None:
+    if evidence["error"] or evidence["excerpt"] is None:
         raise ModelRetry("Exact Evidence Reference is unavailable")
     if len(evidence["excerpt"]) > MAX_EVIDENCE_CHARS:
         raise ModelRetry("Evidence excerpt exceeds the bounded query limit")
@@ -339,6 +391,12 @@ def _insufficient() -> QueryAnswerSegment:
     )
 
 
+def _claim_text(claim: RenderableClaimRecord) -> str:
+    statement = claim["statement"].strip()
+    conditions = sorted(condition.strip() for condition in claim["conditions"] if condition.strip())
+    return statement + (f" [Conditions: {'; '.join(conditions)}]" if conditions else "")
+
+
 def _segments(draft: QueryDraft, deps: QueryDeps) -> tuple[QueryAnswerSegment, ...]:
     segments = []
     for item in draft.segments:
@@ -360,7 +418,7 @@ def _segments(draft: QueryDraft, deps: QueryDeps) -> tuple[QueryAnswerSegment, .
         ):
             segments.append(_insufficient())
             continue
-        text = " ".join(claim["statement"].strip() for claim in typed_claims)
+        text = " ".join(_claim_text(claim) for claim in typed_claims)
         if not text or len(text) > MAX_ANSWER_CHARS or contains_secret(text, deps.secrets):
             segments.append(_insufficient())
             continue
@@ -445,10 +503,10 @@ class QueryAgent:
     ) -> None:
         self.model = model
         self.database = database
-        self.model_name = model_name
+        self.secrets = secrets
+        self.model_name = redact_secrets(model_name, secrets)
         self.wall_time_seconds = wall_time_seconds
         self.tool_timeout_seconds = tool_timeout_seconds
-        self.secrets = secrets
         self.usage_limits = UsageLimits(
             request_limit=8,
             tool_calls_limit=12,
@@ -478,6 +536,7 @@ class QueryAgent:
             tool_timeout_seconds=self.tool_timeout_seconds,
             secrets=self.secrets,
             concept_ids={context.concept_id} if context.concept_id else set(),
+            claim_ids=set(context.claim_ids),
         )
         agent = Agent[QueryDeps, QueryDraft](
             self.model,
@@ -530,7 +589,9 @@ class QueryAgent:
                         },
                     )
             usage = result.usage
-            response_model = result.response.model_name or self.model_name
+            response_model = redact_secrets(
+                result.response.model_name or self.model_name, self.secrets
+            )
             segments = _segments(result.output, deps)
             answer = QueryAnswer(
                 query_id=query_id,
@@ -539,6 +600,7 @@ class QueryAgent:
                 source_set_digest=context.source_set_digest,
                 model=response_model,
                 scope=context.scope,
+                page=context.page,
                 concept_id=context.concept_id,
                 segments=segments,
                 usage=_usage(usage),
@@ -552,6 +614,7 @@ class QueryAgent:
                 source_set_digest=context.source_set_digest,
                 model=response_model,
                 scope=context.scope,
+                page=context.page,
                 concept_id=context.concept_id,
                 segments=(),
                 usage=_usage(usage),

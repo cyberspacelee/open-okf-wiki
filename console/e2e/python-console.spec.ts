@@ -945,7 +945,13 @@ Accepted knowledge is source grounded.
     .getByLabel("Ask a question")
     .fill("What accepted knowledge is on this page?")
   await queryDialog.getByRole("button", { name: "Ask", exact: true }).click()
-  expect((await conceptQueryResponse).status()).toBe(200)
+  const conceptResponse = await conceptQueryResponse
+  expect(conceptResponse.status()).toBe(200)
+  expect(conceptResponse.request().postDataJSON()).toMatchObject({
+    scope: "concept",
+    page: readerPagePath,
+    concept_id: conceptId,
+  })
   await expect(
     queryDialog.getByText("Source knowledge.", { exact: true })
   ).toBeVisible()
@@ -959,6 +965,9 @@ Accepted knowledge is source grounded.
     queryDialog.getByText(`Source Set ${readerSourceSet.digest}`, {
       exact: true,
     })
+  ).toBeVisible()
+  await expect(
+    queryDialog.getByText(`Page ${readerPagePath}`, { exact: true })
   ).toBeVisible()
 
   await queryDialog.getByRole("button", { name: "Complete bundle" }).click()
@@ -1024,6 +1033,7 @@ Accepted knowledge is source grounded.
     client: element.clientWidth,
     scroll: element.scrollWidth,
   }))
+  expect(queryOverflow.client).toBeGreaterThanOrEqual(389)
   expect(queryOverflow.scroll).toBe(queryOverflow.client)
   await page.screenshot({
     path: "test-results/query-mobile-real.png",

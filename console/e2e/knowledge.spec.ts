@@ -413,11 +413,13 @@ test("clears the old page and Claim while a new snapshot is loading", async ({
   await page.unroute("**/api/v1/knowledge/claims/*")
   await page.route("**/api/v1/knowledge/claims/*", async (route) => {
     await claimPending
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(claimPayload()),
-    }).catch(() => undefined)
+    await route
+      .fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(claimPayload()),
+      })
+      .catch(() => undefined)
   })
 
   await page.goto("/?view=knowledge#token=identity-race")
@@ -455,16 +457,18 @@ test("drops a search response from the previous snapshot", async ({ page }) => {
   await page.route("**/api/v1/knowledge/search?*", async (route) => {
     searchStarted()
     await searchPending
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        ok: true,
-        results: [
-          { path: "guide.md", title: "Old search", excerpt: "stale-result" },
-        ],
-      }),
-    }).catch(() => undefined)
+    await route
+      .fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          results: [
+            { path: "guide.md", title: "Old search", excerpt: "stale-result" },
+          ],
+        }),
+      })
+      .catch(() => undefined)
   })
 
   await page.goto("/?view=knowledge#token=search-race")
@@ -477,7 +481,9 @@ test("drops a search response from the previous snapshot", async ({ page }) => {
   ).toBeVisible()
   releaseSearch()
   await expect(page.getByText("stale-result")).toHaveCount(0)
-  await expect(page.getByRole("region", { name: "Search results" })).toHaveCount(0)
+  await expect(
+    page.getByRole("region", { name: "Search results" })
+  ).toHaveCount(0)
 })
 
 test("rejects page, diff, and Claim responses for another requested identity", async ({

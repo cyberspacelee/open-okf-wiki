@@ -293,7 +293,7 @@ def execute_agent_eval(
     workspace: Path,
     model_version: str,
 ) -> AgentEvalExecution:
-    tools = {role: [] for role in ("planner", "worker", "verifier", "renderer")}
+    tools = {role: [] for role in ("planner", "worker", "verifier", "renderer", "query")}
     planner = _planner_output(tools)
     worker, candidate_id = _worker_output(corpus, materialized, workspace, model_version)
     verifier = _verifier_output(materialized, tools)
@@ -301,13 +301,18 @@ def execute_agent_eval(
     payload = json.loads((CORPUS_ROOT / corpus.version / "agent-eval.json").read_text())
     outputs = {"planner": planner, "worker": worker, "verifier": verifier, "renderer": renderer}
     for result in payload["results"]:
-        result["output"] = outputs[result["role"]]
+        if result["role"] != "query":
+            result["output"] = outputs[result["role"]]
         if result["role"] == "worker":
             result["candidate_id"] = candidate_id
+        if result["role"] == "query":
+            tools["query"].extend(
+                event["tool"] for event in result["trajectory"] if event["event"] == "call"
+            )
     payload["worker_audit_path"] = str(workspace / "agent-eval-worker.db")
     report = evaluate_release(ReleaseEvalManifest.model_validate(payload))
     return AgentEvalExecution(
         report=report,
-        invocations={"planner": 1, "worker": 1, "verifier": 2, "renderer": 1},
+        invocations={"planner": 1, "worker": 1, "verifier": 2, "renderer": 1, "query": 2},
         function_tools={key: tuple(value) for key, value in tools.items()},
     )

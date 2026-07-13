@@ -321,7 +321,8 @@ export function KnowledgePage({ token }: { token: string }) {
             bundle={bundle}
             runId={snapshot.selected.run_id}
             sourceSetDigest={snapshot.selected.source_set_digest}
-            page={page?.concept_id ? page.path : null}
+            page={page?.path ?? null}
+            conceptId={page?.concept_id ?? null}
           />
         </div>
       </header>

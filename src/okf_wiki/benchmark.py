@@ -660,8 +660,9 @@ def _execute_run(
         materialized,
         revisions,
         mutation_id,
-        role_function_tools or {"planner": [], "worker": [], "verifier": [], "renderer": []},
-        role_invocations or {"planner": 0, "worker": 0, "verifier": 0, "renderer": 0},
+        role_function_tools
+        or {"planner": [], "worker": [], "verifier": [], "renderer": [], "query": []},
+        role_invocations or {"planner": 0, "worker": 0, "verifier": 0, "renderer": 0, "query": 0},
     )
     finish_run(run_id)
     database = workspace / ".okf-wiki" / "runs.db"
@@ -1144,8 +1145,14 @@ def run_benchmark(
     observations: list[RunObservation] = []
     expected_source_revisions: list[dict[str, str]] = []
     mutations: list[MutationReport] = []
-    role_function_tools = {"planner": [], "worker": [], "verifier": [], "renderer": []}
-    role_invocations = {"planner": 0, "worker": 0, "verifier": 0, "renderer": 0}
+    role_function_tools = {
+        "planner": [],
+        "worker": [],
+        "verifier": [],
+        "renderer": [],
+        "query": [],
+    }
+    role_invocations = {"planner": 0, "worker": 0, "verifier": 0, "renderer": 0, "query": 0}
     with _working_directory(root):
         publish = root / "published" / "baseline"
         baseline = _execute_run(
@@ -1310,7 +1317,14 @@ def run_benchmark(
         role: RoleTrajectoryReport(
             invocations=role_invocations[role],
             function_tools=tuple(sorted(set(tools))),
-            passed=(set(tools) <= {"read_text"} if role == "worker" else not tools),
+            passed=(
+                set(tools) <= {"read_text"}
+                if role == "worker"
+                else set(tools)
+                <= {"find_concepts", "renderable_claims", "get_claim", "read_evidence"}
+                if role == "query"
+                else not tools
+            ),
         )
         for role, tools in role_function_tools.items()
     }

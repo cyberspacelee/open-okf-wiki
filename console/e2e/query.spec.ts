@@ -20,7 +20,13 @@ test("asks both fixed scopes, shows exact citations, and clears the session on r
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify(answer(String(body.scope))),
+      body: JSON.stringify(
+        answer(
+          String(body.scope),
+          typeof body.page === "string" ? body.page : null,
+          typeof body.concept_id === "string" ? body.concept_id : null
+        )
+      ),
     })
   })
 
@@ -52,6 +58,7 @@ test("asks both fixed scopes, shows exact citations, and clears the session on r
     source_set_digest: digest,
     scope: "concept",
     page: "concepts/query.md",
+    concept_id: conceptId,
   })
 
   await dialog.getByRole("button", { name: "Complete bundle" }).click()
@@ -79,7 +86,7 @@ test("asks both fixed scopes, shows exact citations, and clears the session on r
   await expect(page.getByText("Can a query mutate knowledge?")).toHaveCount(0)
 })
 
-test("defaults non-Concept pages to complete Bundle scope", async ({
+test("defaults ordinary pages to fixed current-page scope", async ({
   page,
 }) => {
   await page.unroute("**/api/v1/knowledge?*")
@@ -92,7 +99,7 @@ test("defaults non-Concept pages to complete Bundle scope", async ({
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify(answer("bundle")),
+      body: JSON.stringify(answer("concept", "index.md", null)),
     })
   })
 
@@ -102,9 +109,6 @@ test("defaults non-Concept pages to complete Bundle scope", async ({
 
   await expect(
     dialog.getByRole("button", { name: "Current page" })
-  ).toBeDisabled()
-  await expect(
-    dialog.getByRole("button", { name: "Complete bundle" })
   ).toHaveAttribute("aria-pressed", "true")
   await dialog.getByLabel("Ask a question").fill("What is accepted?")
   await dialog.getByRole("button", { name: "Ask", exact: true }).click()
@@ -116,7 +120,9 @@ test("defaults non-Concept pages to complete Bundle scope", async ({
     bundle: "staged",
     run_id: runId,
     source_set_digest: digest,
-    scope: "bundle",
+    scope: "concept",
+    page: "index.md",
+    concept_id: null,
   })
 })
 
@@ -213,6 +219,8 @@ test("rejects malformed Query Agent responses at the browser boundary", async ({
         },
       ],
     },
+    { page: "concepts/another-valid-page.md" },
+    { concept_id: `concept:${"d".repeat(64)}` },
     { scope: "bundle", concept_id: null },
   ]
   let response = 0
@@ -237,7 +245,11 @@ test("rejects malformed Query Agent responses at the browser boundary", async ({
   }
 })
 
-function answer(scope: string) {
+function answer(
+  scope: string,
+  page: string | null = "concepts/query.md",
+  responseConceptId: string | null = conceptId
+) {
   return {
     ok: true,
     query_id: "4".repeat(32),
@@ -246,7 +258,8 @@ function answer(scope: string) {
     source_set_digest: digest,
     model: "query-model",
     scope,
-    concept_id: scope === "concept" ? conceptId : null,
+    page: scope === "concept" ? page : null,
+    concept_id: scope === "concept" ? responseConceptId : null,
     segments: [
       {
         kind: "fact",

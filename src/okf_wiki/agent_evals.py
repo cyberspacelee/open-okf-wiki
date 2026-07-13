@@ -9,10 +9,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from pydantic_evals import Dataset
 
 from .knowledge_contracts import WorkerProposal
+from .query_evals import QUERY_METRICS, evaluate_query
 from .scheduler import TaskPlan
 
 
-AgentRole = Literal["planner", "worker", "verifier", "renderer"]
+AgentRole = Literal["planner", "worker", "verifier", "renderer", "query"]
 ChangeKind = Literal[
     "model", "prompt", "tool", "classifier", "workflow", "profile", "policy", "schema"
 ]
@@ -58,6 +59,7 @@ ROLE_METRICS: dict[AgentRole, tuple[str, ...]] = {
         "duplication",
         "readability",
     ),
+    "query": QUERY_METRICS,
 }
 DATASET_VERSION = "v1"
 DATASET_ROOT = Path(__file__).with_name("eval_datasets")
@@ -72,6 +74,24 @@ class AgentEvalVersions(BaseModel):
     workflow: str = Field(min_length=1)
 
 
+class QueryTrajectoryEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    event: Literal["call", "return", "retry"]
+    tool: str = Field(min_length=1, max_length=64)
+    outcome: Literal["requested", "ok", "empty", "rejected", "error"]
+
+    @model_validator(mode="after")
+    def valid_outcome(self):
+        if (self.event == "call") != (self.outcome == "requested"):
+            raise ValueError("Query trajectory call outcomes must be requested")
+        if self.event == "return" and self.outcome not in {"ok", "empty"}:
+            raise ValueError("Query trajectory return outcomes must be ok or empty")
+        if self.event == "retry" and self.outcome not in {"rejected", "error"}:
+            raise ValueError("Query trajectory retry outcomes must be rejected or error")
+        return self
+
+
 class RoleEvalResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -79,6 +99,7 @@ class RoleEvalResult(BaseModel):
     case: str = Field(min_length=1)
     output: dict[str, object]
     candidate_id: str | None = Field(default=None, min_length=1)
+    trajectory: tuple[QueryTrajectoryEvent, ...] = Field(default=(), max_length=32)
 
 
 class SemanticJudgeOutcome(BaseModel):
@@ -403,6 +424,8 @@ def evaluate_role(
         return _verifier_metrics(inputs, expected, output)
     if role == "renderer":
         return _renderer_metrics(inputs, expected, output)
+    if role == "query":
+        return evaluate_query(case_name, dict(output))
     raise ValueError(f"Agent Eval is not implemented for role: {role}")
 
 
@@ -471,6 +494,41 @@ def _worker_trajectory_failures(
     return tuple(prefix + failure for failure in detected)
 
 
+def _query_trajectory_failures(
+    case_name: str,
+    inputs: dict[str, object],
+    result: RoleEvalResult | None,
+) -> tuple[str, ...]:
+    prefix = f"query:{case_name}:trajectory:"
+    if result is None:
+        return (prefix + "missing_result",)
+    if not result.trajectory:
+        return (prefix + "missing_trajectory",)
+    allowed = set(cast(list[str], inputs["allowed_tools"]))
+    calls = [event for event in result.trajectory if event.event == "call"]
+    failures = []
+    if any(event.tool not in allowed for event in result.trajectory):
+        failures.append(prefix + "disallowed_tool")
+    if len(calls) > cast(int, inputs["tool_calls_limit"]):
+        failures.append(prefix + "tool_budget")
+    outstanding = None
+    invalid_sequence = False
+    for event in result.trajectory:
+        if event.event == "call":
+            if outstanding is not None:
+                invalid_sequence = True
+                break
+            outstanding = event.tool
+        elif outstanding != event.tool:
+            invalid_sequence = True
+            break
+        else:
+            outstanding = None
+    if invalid_sequence or outstanding is not None:
+        failures.append(prefix + "invalid_sequence")
+    return tuple(failures)
+
+
 def evaluate_release(manifest: ReleaseEvalManifest) -> AgentEvalReport:
     results = {(result.role, result.case): result for result in manifest.results}
     judges = {(outcome.role, outcome.case): outcome for outcome in manifest.semantic_judges}
@@ -525,6 +583,10 @@ def evaluate_release(manifest: ReleaseEvalManifest) -> AgentEvalReport:
                         case.inputs,
                         result,
                     )
+                )
+            elif role == "query":
+                trajectory_failures.extend(
+                    _query_trajectory_failures(case.name, case.inputs, result)
                 )
     failures.extend(trajectory_failures)
     failures.extend(judge_failures)

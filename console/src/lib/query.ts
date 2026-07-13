@@ -2,14 +2,26 @@ import type { BundleKind } from "@/lib/knowledge"
 
 export type QueryScope = "concept" | "bundle"
 
-export type KnowledgeQueryRequest = {
+type KnowledgeQueryBase = {
   question: string
   bundle: BundleKind
   run_id: string
   source_set_digest: string
-  scope: QueryScope
-  page?: string
 }
+
+export type KnowledgeQueryRequest = KnowledgeQueryBase &
+  (
+    | {
+        scope: "concept"
+        page: string
+        concept_id: string | null
+      }
+    | {
+        scope: "bundle"
+        page?: never
+        concept_id?: never
+      }
+  )
 
 export type EvidenceCitation = {
   id: string
@@ -41,6 +53,7 @@ export type KnowledgeQueryAnswer = {
   source_set_digest: string
   model: string
   scope: QueryScope
+  page: string | null
   concept_id: string | null
   segments: QuerySegment[]
   usage: {
@@ -115,8 +128,14 @@ function isAnswer(
   value: unknown,
   request: KnowledgeQueryRequest
 ): value is KnowledgeQueryAnswer {
+  if (!isRecord(value)) return false
+  const identityMatches =
+    request.scope === "bundle"
+      ? value.page === null && value.concept_id === null
+      : value.page === request.page &&
+        canonicalRelativePath(value.page) &&
+        value.concept_id === request.concept_id
   return (
-    isRecord(value) &&
     value.ok === true &&
     strings(value, [
       "query_id",
@@ -143,12 +162,11 @@ function isAnswer(
     value.run_id === request.run_id &&
     value.source_set_digest === request.source_set_digest &&
     value.scope === request.scope &&
+    (value.page === null || canonicalRelativePath(value.page)) &&
     (value.concept_id === null ||
       (typeof value.concept_id === "string" &&
         CONCEPT_ID.test(value.concept_id))) &&
-    (request.scope === "bundle"
-      ? value.concept_id === null
-      : typeof value.concept_id === "string") &&
+    identityMatches &&
     Array.isArray(value.segments) &&
     value.segments.length <= MAX_SEGMENTS &&
     value.segments.every(isSegment) &&

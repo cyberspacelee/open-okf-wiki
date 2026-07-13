@@ -71,12 +71,14 @@ export function KnowledgeQuery({
   runId,
   sourceSetDigest,
   page,
+  conceptId,
 }: {
   token: string
   bundle: BundleKind
   runId: string
   sourceSetDigest: string
   page: string | null
+  conceptId: string | null
 }) {
   const [open, setOpen] = useState(false)
   const [scope, setScope] = useState<QueryScope>(page ? "concept" : "bundle")
@@ -92,14 +94,14 @@ export function KnowledgeQuery({
     setQuestion("")
     setPending(false)
     setScope(page ? "concept" : "bundle")
-  }, [bundle, page, runId, sourceSetDigest])
+  }, [bundle, conceptId, page, runId, sourceSetDigest])
 
   useEffect(() => () => controller.current?.abort(), [])
 
   async function submit(event: FormEvent) {
     event.preventDefault()
     const text = question.trim()
-    if (!text || pending) return
+    if (!text || pending || (scope === "concept" && !page)) return
     const id = crypto.randomUUID()
     const next = new AbortController()
     controller.current = next
@@ -107,16 +109,17 @@ export function KnowledgeQuery({
     setPending(true)
     setTurns((current) => [...current, { id, question: text }])
     try {
+      const base = {
+        question: text,
+        bundle,
+        run_id: runId,
+        source_set_digest: sourceSetDigest,
+      }
       const answer = await askAcceptedKnowledge(
         token,
-        {
-          question: text,
-          bundle,
-          run_id: runId,
-          source_set_digest: sourceSetDigest,
-          scope,
-          ...(scope === "concept" && page ? { page } : {}),
-        },
+        scope === "concept"
+          ? { ...base, scope, page: page!, concept_id: conceptId }
+          : { ...base, scope },
         next.signal
       )
       if (!next.signal.aborted)
@@ -144,7 +147,7 @@ export function KnowledgeQuery({
         <MessageCircleQuestionIcon data-icon="inline-start" />
         Ask accepted knowledge
       </SheetTrigger>
-      <SheetContent className="w-full gap-0 sm:max-w-2xl">
+      <SheetContent className="gap-0 data-[side=right]:w-full data-[side=right]:sm:max-w-2xl">
         <SheetHeader className="border-b pr-12">
           <SheetTitle>Ask accepted knowledge</SheetTitle>
           <SheetDescription>
@@ -244,7 +247,7 @@ export function KnowledgeQuery({
 
           <form className="border-t p-4" onSubmit={submit}>
             <FieldGroup>
-              <Field>
+              <Field data-disabled={pending || undefined}>
                 <FieldLabel htmlFor="knowledge-question" className="sr-only">
                   Ask a question
                 </FieldLabel>
@@ -373,6 +376,11 @@ function AnswerMetadata({ answer }: { answer: KnowledgeQueryAnswer }) {
       <p>
         Source Set <code className="break-all">{answer.source_set_digest}</code>
       </p>
+      {answer.page && (
+        <p>
+          Page <code className="break-all">{answer.page}</code>
+        </p>
+      )}
       <Marker>
         <MarkerIcon>
           <CloudUploadIcon />
