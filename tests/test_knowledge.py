@@ -57,6 +57,12 @@ def knowledge_workspace(tmp_path: Path) -> tuple[WorkspaceApplication, str]:
     app.initialize("catalog", "Catalog")
     published = workspace / "published"
     releases = workspace / ".published.releases"
+    older_release = releases / "run-older"
+    _bundle(
+        older_release,
+        "Older",
+        "---\ntype: Guide\nid: guide\ntitle: Older guide\n---\n\n# Older guide\n\nOlder text.\n",
+    )
     old_release = releases / "run-old"
     _bundle(
         old_release,
@@ -81,6 +87,8 @@ def knowledge_workspace(tmp_path: Path) -> tuple[WorkspaceApplication, str]:
         "![Pixel](pixel.png)\n\n"
         "![Remote](https://example.invalid/pixel.png)\n\n"
         f"Grounded statement.\n\n<!-- claims: {claim_id} -->\n\n"
+        f"# Citations\n\n* `{claim_id}` — "
+        f"`repo://docs@{revision}/README.md#L1-L1`\n\n"
         "[Published index](index.md)\n\n"
         "<script>window.pwned = true</script>\n\n"
         "[Unsafe](javascript:alert(1))\n",
@@ -107,8 +115,23 @@ def knowledge_workspace(tmp_path: Path) -> tuple[WorkspaceApplication, str]:
             }
         ],
     }
-    old_source_set = {**source_set, "base_run_id": None, "digest": "source-set-old"}
+    older_source_set = {**source_set, "base_run_id": None, "digest": "source-set-older"}
+    old_source_set = {**source_set, "base_run_id": "run-older", "digest": "source-set-old"}
     with sqlite3.connect(app.database_path) as connection:
+        connection.execute(
+            """INSERT INTO runs
+               (id, project_id, repository, revision, publish_dir, staging_dir, state,
+                source_set_json, created_at, updated_at)
+               VALUES (?, 'catalog', ?, ?, ?, ?, 'published', ?, '2025-12-31', '2025-12-31')""",
+            (
+                "run-older",
+                str(source),
+                revision,
+                str(published),
+                str(older_release),
+                json.dumps(older_source_set),
+            ),
+        )
         connection.execute(
             """INSERT INTO runs
                (id, project_id, repository, revision, publish_dir, staging_dir, state,
@@ -189,6 +212,11 @@ def test_knowledge_snapshot_distinguishes_staged_and_published_bundles(
         "state": "review_required",
     }
     assert snapshot["default_page"] == "index.md"
+    assert snapshot["diff_options"] == [
+        {"base": "previous", "target": "published", "target_run_id": "run-old"},
+        {"base": "published", "target": "staged", "target_run_id": "run-new"},
+        {"base": "previous", "target": "staged", "target_run_id": "run-new"},
+    ]
     assert {page["path"] for page in snapshot["pages"]} == {
         "added.md",
         "guide.md",
@@ -207,7 +235,10 @@ def test_knowledge_page_returns_safe_structured_markdown(
 
     assert page["metadata"]["title"] == "Safe reader"
     assert page["source"].startswith("---\ntype: Guide")
-    assert page["outline"] == [{"level": 1, "text": "Safe reader", "id": "safe-reader"}]
+    assert page["outline"] == [
+        {"level": 1, "text": "Safe reader", "id": "safe-reader"},
+        {"level": 1, "text": "Citations", "id": "citations"},
+    ]
     assert {block["type"] for block in page["blocks"]} >= {
         "heading",
         "list",
@@ -222,6 +253,15 @@ def test_knowledge_page_returns_safe_structured_markdown(
     assert diagram["error"] is None
     assert len(diagram["nodes"]) == 3
     assert len(diagram["edges"]) == 2
+    inline_claims = [
+        node
+        for block in page["blocks"]
+        for item in block.get("items", [])
+        for child in item["children"]
+        for node in child.get("children", [])
+        if node["type"] == "claim"
+    ]
+    assert inline_claims == [{"type": "claim", "claim_id": claim_id}]
     assert "Raw HTML was omitted." in page["diagnostics"]
     assert "Unsafe URL was omitted: javascript:alert(1)" in page["diagnostics"]
     assert "Unsafe image URL was omitted: https://example.invalid/pixel.png" in page["diagnostics"]
@@ -266,6 +306,24 @@ def test_knowledge_diff_represents_added_and_removed_pages(
     assert [line["kind"] for line in added["lines"]] == ["added"]
     assert removed["page_change"] == "removed"
     assert [line["kind"] for line in removed["lines"]] == ["removed"]
+
+    previous = app.diff_knowledge("guide.md", "previous", "published", run_id="run-old")
+    assert previous["base"]["run_id"] == "run-older"
+    assert previous["target"]["run_id"] == "run-old"
+
+
+def test_published_run_never_falls_back_to_a_different_public_release(
+    knowledge_workspace: tuple[WorkspaceApplication, str],
+) -> None:
+    app, _ = knowledge_workspace
+    published = app.root / "published"
+    release = app.root / ".published.releases" / "run-old"
+    release.rename(app.root / ".published.releases" / "missing-run-old")
+    published.unlink()
+    published.symlink_to(".published.releases/run-older", target_is_directory=True)
+
+    with pytest.raises(WorkspaceError, match="Published Knowledge Bundle is not available"):
+        app.knowledge_snapshot("published", "run-old")
 
 
 def test_malformed_mermaid_is_a_controlled_reader_error(

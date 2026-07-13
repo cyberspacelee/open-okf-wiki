@@ -26,6 +26,12 @@ const identity = {
   state: "review_required",
 }
 
+const diffOptions = [
+  { base: "previous", target: "published", target_run_id: "run-old" },
+  { base: "published", target: "staged", target_run_id: "run-new" },
+  { base: "previous", target: "staged", target_run_id: "run-new" },
+]
+
 const source = `---
 type: Guide
 title: Safe reader
@@ -115,6 +121,26 @@ const blocks = [
     edges: [{ from: "A", to: "B", label: null }],
   },
   { type: "claim", claim_id: `claim:${"a".repeat(64)}` },
+  {
+    type: "list",
+    ordered: false,
+    start: 1,
+    items: [
+      {
+        checked: null,
+        children: [
+          {
+            type: "paragraph",
+            children: [
+              { type: "claim", claim_id: `claim:${"a".repeat(64)}` },
+              { type: "text", text: " — " },
+              { type: "code", text: "repo://docs@revision/README.md#L1-L1" },
+            ],
+          },
+        ],
+      },
+    ],
+  },
 ]
 
 test.beforeEach(async ({ page, context }) => {
@@ -199,6 +225,9 @@ test("renders and navigates the Bundle without executing generated content", asy
     "x2"
   )
   await expect(page.getByRole("alert")).toContainText("Raw HTML was omitted.")
+  await expect(page.getByRole("alert")).toContainText(
+    "Broken internal link: missing.md"
+  )
   await expect(
     page.locator("script").filter({ hasText: "window.pwned" })
   ).toHaveCount(0)
@@ -227,6 +256,11 @@ test("renders and navigates the Bundle without executing generated content", asy
   )
   await expect(page.getByRole("dialog")).toContainText("README.md#L1-L1")
   await page.getByRole("button", { name: "Close" }).click()
+  await page.getByRole("button", { name: "Claim aaaaaaaa" }).click()
+  await expect(page.getByRole("dialog")).toContainText(
+    "Credentials stay outside the Workspace."
+  )
+  await page.getByRole("button", { name: "Close" }).click()
 
   await page.getByRole("button", { name: "Source", exact: true }).click()
   await expect(page.getByLabel("Generated Markdown source")).toContainText(
@@ -234,15 +268,20 @@ test("renders and navigates the Bundle without executing generated content", asy
   )
   await page.getByRole("button", { name: "Diff", exact: true }).click()
   await expect(
+    page.getByRole("button", { name: "Published → Staged" })
+  ).toHaveAttribute("aria-pressed", "true")
+  await expect(
     page.getByRole("table", { name: "unified page diff" })
   ).toContainText("Old text")
+  await page.getByRole("button", { name: "Previous → Staged" }).click()
+  await expect(page.getByText("Run run-older → Run run-new")).toBeVisible()
   await page.getByRole("button", { name: "Split" }).click()
   await expect(
     page.getByRole("table", { name: "split page diff" })
   ).toBeVisible()
 
-  await page.getByRole("button", { name: "Published" }).click()
-  await expect(page.getByText("Run run-old")).toBeVisible()
+  await page.getByRole("button", { name: "Published", exact: true }).click()
+  await expect(page.getByText("Run run-old", { exact: true })).toBeVisible()
   await expect(
     page.getByRole("heading", { name: "Published guide" })
   ).toBeVisible()
@@ -280,6 +319,56 @@ test("keeps reader controls usable on a mobile viewport", async ({ page }) => {
   })
 })
 
+test("turns malformed and missing reader responses into retryable errors", async ({
+  page,
+}) => {
+  let snapshotAttempts = 0
+  let pageAttempts = 0
+  await page.unroute("**/api/v1/knowledge?*")
+  await page.route("**/api/v1/knowledge*", async (route) => {
+    if (new URL(route.request().url()).pathname !== "/api/v1/knowledge")
+      return route.fallback()
+    if (snapshotAttempts++ > 1) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(snapshotPayload(false)),
+      })
+      return
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, bundles: [] }),
+    })
+  })
+  await page.route("**/api/v1/knowledge/page?*", async (route) => {
+    if (pageAttempts++ > 0) return route.fallback()
+    await route.fulfill({
+      status: 404,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: false,
+        errors: ["Bundle page does not exist: guide.md"],
+      }),
+    })
+  })
+
+  await page.goto("/?view=knowledge#token=retry-reader")
+  await expect(
+    page.getByText("invalid Knowledge navigation response")
+  ).toBeVisible()
+  await page.getByRole("button", { name: "Retry" }).click()
+  await expect(
+    page.getByText("Bundle page does not exist: guide.md")
+  ).toBeVisible()
+  await page.getByRole("button", { name: "Retry" }).click()
+  await expect(
+    page.getByRole("heading", { name: "Safe reader", exact: true }).first()
+  ).toBeVisible()
+  await expect(page.getByLabel("Loading Knowledge page")).toHaveCount(0)
+})
+
 async function mockKnowledge(page: Page) {
   await page.route("**/api/v1/knowledge?*", async (route) => {
     const url = new URL(route.request().url())
@@ -288,35 +377,7 @@ async function mockKnowledge(page: Page) {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        ok: true,
-        bundles: [
-          identity,
-          {
-            kind: "published",
-            run_id: "run-old",
-            source_set_digest: "source-set-old",
-            state: "published",
-          },
-        ],
-        selected: published
-          ? {
-              kind: "published",
-              run_id: "run-old",
-              source_set_digest: "source-set-old",
-              state: "published",
-            }
-          : identity,
-        default_page: "guide.md",
-        pages: [
-          {
-            path: "guide.md",
-            title: published ? "Published guide" : "Safe reader",
-            backlinks: [],
-          },
-          { path: "details.md", title: "Details", backlinks: ["guide.md"] },
-        ],
-      }),
+      body: JSON.stringify(snapshotPayload(published)),
     })
   })
   await page.route("**/api/v1/knowledge/page?*", async (route) => {
@@ -376,7 +437,10 @@ async function mockKnowledge(page: Page) {
               },
             ],
         backlinks: details ? ["guide.md"] : [],
-        diagnostics: published || details ? [] : ["Raw HTML was omitted."],
+        diagnostics:
+          published || details
+            ? []
+            : ["Raw HTML was omitted.", "Broken internal link: missing.md"],
       }),
     })
   })
@@ -396,34 +460,7 @@ async function mockKnowledge(page: Page) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        ok: true,
-        path: "guide.md",
-        page_change: "changed",
-        base: {
-          kind: "published",
-          run_id: "run-old",
-          source_set_digest: "source-set-old",
-          state: "published",
-        },
-        target: identity,
-        lines: [
-          {
-            kind: "changed",
-            left: "Old text",
-            left_number: 1,
-            right: "Safe reader",
-            right_number: 1,
-          },
-          {
-            kind: "added",
-            left: null,
-            left_number: null,
-            right: "Strict CSP",
-            right_number: 2,
-          },
-        ],
-      }),
+      body: JSON.stringify(diffPayload(new URL(route.request().url()))),
     })
   )
   await page.route("**/api/v1/knowledge/claims/*", (route) =>
@@ -459,4 +496,79 @@ async function mockKnowledge(page: Page) {
       }),
     })
   )
+}
+
+function snapshotPayload(published: boolean) {
+  return {
+    ok: true,
+    bundles: [
+      identity,
+      {
+        kind: "published",
+        run_id: "run-old",
+        source_set_digest: "source-set-old",
+        state: "published",
+      },
+    ],
+    selected: published
+      ? {
+          kind: "published",
+          run_id: "run-old",
+          source_set_digest: "source-set-old",
+          state: "published",
+        }
+      : identity,
+    default_page: "guide.md",
+    diff_options: diffOptions,
+    pages: [
+      {
+        path: "guide.md",
+        title: published ? "Published guide" : "Safe reader",
+        backlinks: [],
+      },
+      { path: "details.md", title: "Details", backlinks: ["guide.md"] },
+    ],
+  }
+}
+
+function diffPayload(url: URL) {
+  const base = url.searchParams.get("base")
+  const target = url.searchParams.get("target")
+  return {
+    ok: true,
+    path: "guide.md",
+    page_change: "changed",
+    base: {
+      kind: base,
+      run_id: base === "previous" ? "run-older" : "run-old",
+      source_set_digest:
+        base === "previous" ? "source-set-older" : "source-set-old",
+      state: "published",
+    },
+    target:
+      target === "published"
+        ? {
+            kind: "published",
+            run_id: "run-old",
+            source_set_digest: "source-set-old",
+            state: "published",
+          }
+        : identity,
+    lines: [
+      {
+        kind: "changed",
+        left: "Old text",
+        left_number: 1,
+        right: "Safe reader",
+        right_number: 1,
+      },
+      {
+        kind: "added",
+        left: null,
+        left_number: null,
+        right: "Strict CSP",
+        right_number: 2,
+      },
+    ],
+  }
 }

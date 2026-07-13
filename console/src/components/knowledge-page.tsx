@@ -23,6 +23,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   Empty,
+  EmptyContent,
   EmptyDescription,
   EmptyHeader,
   EmptyMedia,
@@ -60,6 +61,7 @@ import {
   fetchKnowledgeSnapshot,
   searchKnowledge,
   type BundleKind,
+  type DiffOption,
   type InlineNode,
   type KnowledgeClaim,
   type KnowledgeDiff,
@@ -73,6 +75,10 @@ import { cn } from "@/lib/utils"
 type ReaderMode = "rendered" | "source" | "diff"
 type DiffMode = "unified" | "split"
 
+function diffOptionValue(option: DiffOption) {
+  return `${option.base}:${option.target}:${option.target_run_id}`
+}
+
 export function KnowledgePage({ token }: { token: string }) {
   const query = new URLSearchParams(window.location.search)
   const [bundle, setBundle] = useState<BundleKind>(() =>
@@ -83,8 +89,10 @@ export function KnowledgePage({ token }: { token: string }) {
   const [path, setPath] = useState<string | null>(() => query.get("page"))
   const [mode, setMode] = useState<ReaderMode>("rendered")
   const [diffMode, setDiffMode] = useState<DiffMode>("unified")
+  const [comparison, setComparison] = useState("")
   const [diff, setDiff] = useState<KnowledgeDiff | null>(null)
   const [error, setError] = useState<KnowledgeError | null>(null)
+  const [retryKey, setRetryKey] = useState(0)
   const [queryText, setQueryText] = useState("")
   const [results, setResults] = useState<
     Array<{ path: string; title: string; excerpt: string }>
@@ -97,7 +105,21 @@ export function KnowledgePage({ token }: { token: string }) {
     const controller = new AbortController()
     fetchKnowledgeSnapshot(token, bundle, controller.signal).then(
       (next) => {
+        setError(null)
         setSnapshot(next)
+        setComparison((current) => {
+          if (
+            next.diff_options.some(
+              (option) => diffOptionValue(option) === current
+            )
+          )
+            return current
+          const preferred =
+            next.diff_options.find(
+              (option) => option.target === next.selected.kind
+            ) ?? next.diff_options[0]
+          return preferred ? diffOptionValue(preferred) : ""
+        })
         setPath((current) =>
           current && next.pages.some((item) => item.path === current)
             ? current
@@ -109,13 +131,16 @@ export function KnowledgePage({ token }: { token: string }) {
       }
     )
     return () => controller.abort()
-  }, [bundle, token])
+  }, [bundle, retryKey, token])
 
   useEffect(() => {
     if (!path) return
     const controller = new AbortController()
     fetchKnowledgePage(token, bundle, path, controller.signal).then(
-      (next) => setPage(next),
+      (next) => {
+        setError(null)
+        setPage(next)
+      },
       (nextError: KnowledgeError) => {
         if (!controller.signal.aborted) setError(nextError)
       }
@@ -126,19 +151,26 @@ export function KnowledgePage({ token }: { token: string }) {
     parameters.set("page", path)
     window.history.replaceState(null, "", `/?${parameters}`)
     return () => controller.abort()
-  }, [bundle, path, token])
+  }, [bundle, path, retryKey, token])
 
   useEffect(() => {
-    if (mode !== "diff" || !path) return
+    if (mode !== "diff" || !path || !snapshot) return
+    const option = snapshot.diff_options.find(
+      (item) => diffOptionValue(item) === comparison
+    )
+    if (!option) return
     const controller = new AbortController()
-    fetchKnowledgeDiff(token, path, controller.signal).then(
-      setDiff,
+    fetchKnowledgeDiff(token, path, option, controller.signal).then(
+      (next) => {
+        setError(null)
+        setDiff(next)
+      },
       (nextError: KnowledgeError) => {
         if (!controller.signal.aborted) setError(nextError)
       }
     )
     return () => controller.abort()
-  }, [mode, path, token])
+  }, [comparison, mode, path, retryKey, snapshot, token])
 
   useEffect(() => {
     if (!page) return
@@ -187,9 +219,19 @@ export function KnowledgePage({ token }: { token: string }) {
     }
   }
 
+  function retry() {
+    setError(null)
+    setRetryKey((value) => value + 1)
+  }
+
   if (error && !snapshot)
     return (
-      <KnowledgeFailure error={error} bundle={bundle} onBundle={setBundle} />
+      <KnowledgeFailure
+        error={error}
+        bundle={bundle}
+        onBundle={setBundle}
+        onRetry={retry}
+      />
     )
   if (!snapshot) return <KnowledgeLoading />
 
@@ -236,11 +278,14 @@ export function KnowledgePage({ token }: { token: string }) {
         </div>
       </header>
 
-      {error && (
+      {error && page && mode !== "diff" && (
         <Alert variant="destructive">
           <ShieldCheckIcon />
           <AlertTitle>Knowledge reader needs attention</AlertTitle>
           <AlertDescription>{error.message}</AlertDescription>
+          <Button variant="outline" size="sm" onClick={retry}>
+            Retry
+          </Button>
         </Alert>
       )}
 
@@ -331,6 +376,8 @@ export function KnowledgePage({ token }: { token: string }) {
                 </EmptyDescription>
               </EmptyHeader>
             </Empty>
+          ) : !page && error ? (
+            <ReaderFailure error={error} onRetry={retry} />
           ) : !page ? (
             <div
               className="flex flex-col gap-4"
@@ -414,7 +461,20 @@ export function KnowledgePage({ token }: { token: string }) {
                   <code>{page.source}</code>
                 </pre>
               ) : mode === "diff" ? (
-                <DiffReader diff={diff} mode={diffMode} onMode={setDiffMode} />
+                <DiffReader
+                  diff={diff}
+                  error={error}
+                  mode={diffMode}
+                  onMode={setDiffMode}
+                  options={snapshot.diff_options}
+                  comparison={comparison}
+                  onComparison={(value) => {
+                    setDiff(null)
+                    setError(null)
+                    setComparison(value)
+                  }}
+                  onRetry={retry}
+                />
               ) : (
                 <MarkdownReader
                   blocks={page.blocks}
@@ -511,14 +571,24 @@ function Block({
               : "text-lg"
         )}
       >
-        <Inline nodes={block.children} onNavigate={onNavigate} />
+        <Inline
+          nodes={block.children}
+          bundle={bundle}
+          token={token}
+          onNavigate={onNavigate}
+        />
       </Heading>
     )
   }
   if (block.type === "paragraph")
     return (
       <p>
-        <Inline nodes={block.children} onNavigate={onNavigate} />
+        <Inline
+          nodes={block.children}
+          bundle={bundle}
+          token={token}
+          onNavigate={onNavigate}
+        />
       </p>
     )
   if (block.type === "claim")
@@ -581,7 +651,12 @@ function Block({
             <TableRow>
               {block.headers.map((cell, index) => (
                 <TableHead key={index}>
-                  <Inline nodes={cell} onNavigate={onNavigate} />
+                  <Inline
+                    nodes={cell}
+                    bundle={bundle}
+                    token={token}
+                    onNavigate={onNavigate}
+                  />
                 </TableHead>
               ))}
             </TableRow>
@@ -591,7 +666,12 @@ function Block({
               <TableRow key={rowIndex}>
                 {row.map((cell, index) => (
                   <TableCell key={index}>
-                    <Inline nodes={cell} onNavigate={onNavigate} />
+                    <Inline
+                      nodes={cell}
+                      bundle={bundle}
+                      token={token}
+                      onNavigate={onNavigate}
+                    />
                   </TableCell>
                 ))}
               </TableRow>
@@ -641,9 +721,13 @@ function Block({
 
 function Inline({
   nodes,
+  bundle,
+  token,
   onNavigate,
 }: {
   nodes: InlineNode[]
+  bundle: BundleKind
+  token: string
   onNavigate: (path: string, fragment?: string | null) => void
 }) {
   return nodes.map((node, index): ReactNode => {
@@ -653,10 +737,20 @@ function Inline({
       return (
         <code
           key={index}
-          className="rounded bg-muted px-1 py-0.5 font-mono text-sm"
+          className="rounded bg-muted px-1 py-0.5 font-mono text-sm break-all"
         >
           {node.text}
         </code>
+      )
+    if (node.type === "claim")
+      return (
+        <ClaimMarker
+          key={index}
+          claimId={node.claim_id}
+          bundle={bundle}
+          token={token}
+          inline
+        />
       )
     if (node.type === "break") return <br key={index} />
     if (node.type === "math")
@@ -673,19 +767,34 @@ function Inline({
     if (node.type === "strong")
       return (
         <strong key={index}>
-          <Inline nodes={node.children} onNavigate={onNavigate} />
+          <Inline
+            nodes={node.children}
+            bundle={bundle}
+            token={token}
+            onNavigate={onNavigate}
+          />
         </strong>
       )
     if (node.type === "em")
       return (
         <em key={index}>
-          <Inline nodes={node.children} onNavigate={onNavigate} />
+          <Inline
+            nodes={node.children}
+            bundle={bundle}
+            token={token}
+            onNavigate={onNavigate}
+          />
         </em>
       )
     if (node.type === "s")
       return (
         <s key={index}>
-          <Inline nodes={node.children} onNavigate={onNavigate} />
+          <Inline
+            nodes={node.children}
+            bundle={bundle}
+            token={token}
+            onNavigate={onNavigate}
+          />
         </s>
       )
     if (node.external)
@@ -697,7 +806,12 @@ function Inline({
           rel="noreferrer"
           className="font-medium underline underline-offset-4"
         >
-          <Inline nodes={node.children} onNavigate={onNavigate} />
+          <Inline
+            nodes={node.children}
+            bundle={bundle}
+            token={token}
+            onNavigate={onNavigate}
+          />
           <ExternalLinkIcon
             className="ml-1 inline size-3"
             aria-label="External link"
@@ -716,7 +830,12 @@ function Inline({
           }
         }}
       >
-        <Inline nodes={node.children} onNavigate={onNavigate} />
+        <Inline
+          nodes={node.children}
+          bundle={bundle}
+          token={token}
+          onNavigate={onNavigate}
+        />
       </a>
     )
   })
@@ -726,14 +845,17 @@ function ClaimMarker({
   claimId,
   bundle,
   token,
+  inline = false,
 }: {
   claimId: string
   bundle: BundleKind
   token: string
+  inline?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [claim, setClaim] = useState<KnowledgeClaim | null>(null)
   const [error, setError] = useState<KnowledgeError | null>(null)
+  const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
     if (!open || claim) return
@@ -745,18 +867,18 @@ function ClaimMarker({
       }
     )
     return () => controller.abort()
-  }, [bundle, claim, claimId, open, token])
+  }, [attempt, bundle, claim, claimId, open, token])
 
   return (
     <Sheet open={open} onOpenChange={setOpen}>
       <Button
-        variant="ghost"
-        size="sm"
+        variant={inline ? "outline" : "ghost"}
+        size={inline ? "xs" : "sm"}
         onClick={() => setOpen(true)}
-        className="self-start"
+        className={inline ? undefined : "self-start"}
       >
         <ShieldCheckIcon data-icon="inline-start" />
-        View accepted Claim
+        {inline ? `Claim ${claimId.slice(6, 14)}` : "View accepted Claim"}
       </Button>
       <SheetContent className="overflow-y-auto sm:max-w-xl">
         <SheetHeader>
@@ -768,6 +890,17 @@ function ClaimMarker({
             <Alert variant="destructive">
               <AlertTitle>Claim unavailable</AlertTitle>
               <AlertDescription>{error.message}</AlertDescription>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setError(null)
+                  setClaim(null)
+                  setAttempt((value) => value + 1)
+                }}
+              >
+                Retry
+              </Button>
             </Alert>
           ) : !claim ? (
             <Skeleton className="h-40 w-full" />
@@ -922,33 +1055,83 @@ function MathNotation({
 
 function DiffReader({
   diff,
+  error,
   mode,
   onMode,
+  options,
+  comparison,
+  onComparison,
+  onRetry,
 }: {
   diff: KnowledgeDiff | null
+  error: KnowledgeError | null
   mode: DiffMode
   onMode: (mode: DiffMode) => void
+  options: DiffOption[]
+  comparison: string
+  onComparison: (value: string) => void
+  onRetry: () => void
 }) {
+  if (options.length === 0)
+    return (
+      <Empty className="border">
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <FileDiffIcon />
+          </EmptyMedia>
+          <EmptyTitle>No comparable Bundle version</EmptyTitle>
+          <EmptyDescription>
+            Publish or stage another Run to compare this page.
+          </EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    )
+  if (error) return <ReaderFailure error={error} onRetry={onRetry} />
   if (!diff) return <Skeleton className="h-80 w-full" />
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between gap-3">
-        <Badge variant="outline">{diff.page_change}</Badge>
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <ToggleGroup
-          aria-label="Diff layout"
-          value={[mode]}
+          aria-label="Diff versions"
+          value={[comparison]}
           onValueChange={(values) => {
-            const selected = values[0] as DiffMode | undefined
-            if (selected) onMode(selected)
+            if (values[0]) onComparison(values[0])
           }}
           variant="outline"
           size="sm"
           spacing={0}
         >
-          <ToggleGroupItem value="unified">Unified</ToggleGroupItem>
-          <ToggleGroupItem value="split">Split</ToggleGroupItem>
+          {options.map((option) => (
+            <ToggleGroupItem
+              key={diffOptionValue(option)}
+              value={diffOptionValue(option)}
+            >
+              {option.base === "previous" ? "Previous" : "Published"} →{" "}
+              {option.target === "staged" ? "Staged" : "Published"}
+            </ToggleGroupItem>
+          ))}
         </ToggleGroup>
+        <div className="flex items-center gap-2">
+          <Badge variant="outline">{diff.page_change}</Badge>
+          <ToggleGroup
+            aria-label="Diff layout"
+            value={[mode]}
+            onValueChange={(values) => {
+              const selected = values[0] as DiffMode | undefined
+              if (selected) onMode(selected)
+            }}
+            variant="outline"
+            size="sm"
+            spacing={0}
+          >
+            <ToggleGroupItem value="unified">Unified</ToggleGroupItem>
+            <ToggleGroupItem value="split">Split</ToggleGroupItem>
+          </ToggleGroup>
+        </div>
       </div>
+      <p className="text-xs text-muted-foreground">
+        Run {diff.base.run_id} → Run {diff.target.run_id}
+      </p>
       <div
         className="overflow-auto rounded-lg border font-mono text-xs"
         role="table"
@@ -1115,10 +1298,12 @@ function KnowledgeFailure({
   error,
   bundle,
   onBundle,
+  onRetry,
 }: {
   error: KnowledgeError
   bundle: BundleKind
   onBundle: (bundle: BundleKind) => void
+  onRetry: () => void
 }) {
   return (
     <main className="grid min-h-[35rem] place-items-center p-6">
@@ -1134,13 +1319,41 @@ function KnowledgeFailure({
           </EmptyTitle>
           <EmptyDescription>{error.message}</EmptyDescription>
         </EmptyHeader>
-        <Button
-          variant="outline"
-          onClick={() => onBundle(bundle === "staged" ? "published" : "staged")}
-        >
-          Try {bundle === "staged" ? "published" : "staged"}
-        </Button>
+        <EmptyContent className="flex-row justify-center">
+          <Button onClick={onRetry}>Retry</Button>
+          <Button
+            variant="outline"
+            onClick={() =>
+              onBundle(bundle === "staged" ? "published" : "staged")
+            }
+          >
+            Try {bundle === "staged" ? "published" : "staged"}
+          </Button>
+        </EmptyContent>
       </Empty>
     </main>
+  )
+}
+
+function ReaderFailure({
+  error,
+  onRetry,
+}: {
+  error: KnowledgeError
+  onRetry: () => void
+}) {
+  return (
+    <Empty className="border">
+      <EmptyHeader>
+        <EmptyMedia variant="icon">
+          <ShieldCheckIcon />
+        </EmptyMedia>
+        <EmptyTitle>Knowledge content unavailable</EmptyTitle>
+        <EmptyDescription>{error.message}</EmptyDescription>
+      </EmptyHeader>
+      <EmptyContent>
+        <Button onClick={onRetry}>Retry</Button>
+      </EmptyContent>
+    </Empty>
   )
 }

@@ -244,6 +244,7 @@ test("configures, tests, and selects a Gateway Profile through Connections", asy
 
 test("loads the built Console through the real Python launcher", async ({
   page,
+  context,
 }) => {
   test.setTimeout(60_000)
   const externalRequests: string[] = []
@@ -714,6 +715,10 @@ Accepted knowledge is source grounded.
 
 <!-- claims: ${claimId} -->
 
+# Citations
+
+* \`${claimId}\` — \`repo://${readerSource.id}@${readerSource.revision}/README.md#L1-L1\`
+
 <script>window.readerPwned = true</script>
 
 [Unsafe](javascript:alert(1))
@@ -751,11 +756,27 @@ Accepted knowledge is source grounded.
   await expect(page.getByRole("dialog")).toContainText("Evidence excerpts")
   await expect(page.getByRole("dialog").locator("pre")).not.toBeEmpty()
   await page.getByRole("button", { name: "Close" }).click()
+  await page.getByRole("button", { name: "Claim aaaaaaaa" }).click()
+  await expect(page.getByRole("dialog")).toContainText("README.md#L1-L1")
+  await expect(page.getByRole("dialog").locator("pre")).toContainText(
+    evidenceText
+  )
+  await page.getByRole("button", { name: "Close" }).click()
+
+  await context.setOffline(true)
   await page.getByRole("button", { name: "Source", exact: true }).click()
   await expect(page.getByLabel("Generated Markdown source")).toContainText(
     "<script>window.readerPwned"
   )
   await page.getByRole("button", { name: "Rendered" }).click()
+  await expect(page.getByLabel("Mathematical notation: x^2")).toContainText(
+    "x2"
+  )
+  await page
+    .getByRole("navigation", { name: "On this page" })
+    .getByRole("link", { name: "Secure reader fixture" })
+    .click()
+  await expect(page).toHaveURL(/#secure-reader-fixture$/)
   await page.screenshot({
     path: "test-results/knowledge-desktop-real.png",
     fullPage: true,
@@ -771,6 +792,7 @@ Accepted knowledge is source grounded.
     fullPage: true,
   })
 
+  await context.setOffline(false)
   await page.setViewportSize({ width: 1280, height: 720 })
   await page.getByRole("button", { name: "Sources" }).click()
   await expect(preflightCard).toBeVisible()

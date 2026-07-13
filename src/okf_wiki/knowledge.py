@@ -21,6 +21,7 @@ from pygments.lexers.special import TextLexer
 from pygments.token import Token as PygmentsToken
 
 from .accepted_knowledge import AcceptedKnowledgeStore
+from .bundle import published_run_id
 from .worker import GitObjectSnapshotReader
 
 
@@ -79,6 +80,16 @@ class KnowledgeReader:
         destination = Path(row["publish_dir"])
         return destination.parent / f".{destination.name}.releases" / row["id"]
 
+    @staticmethod
+    def _published_root(row: sqlite3.Row) -> Path | None:
+        release = KnowledgeReader._release(row)
+        if release.is_dir():
+            return release
+        destination = Path(row["publish_dir"])
+        if published_run_id(destination) == row["id"] and destination.is_dir():
+            return destination
+        return None
+
     def selection(
         self, kind: Literal["staged", "published", "previous"], run_id: str | None = None
     ) -> BundleSelection:
@@ -91,19 +102,17 @@ class KnowledgeReader:
         elif kind == "published":
             candidates = [by_id[run_id]] if run_id in by_id else ([] if run_id else rows)
             row = next((item for item in candidates if item["state"] == "published"), None)
-            root = self._release(row) if row is not None else None
-            if (
-                row is not None
-                and root is not None
-                and not root.is_dir()
-                and Path(row["publish_dir"]).is_dir()
-            ):
-                root = Path(row["publish_dir"])
+            root = self._published_root(row) if row is not None else None
         else:
-            current = self.selection("staged", run_id)
-            base_run_id = current.source_set.get("base_run_id")
+            if run_id is None:
+                current = self.selection("staged")
+                current_row = by_id[current.run_id]
+            else:
+                current_row = by_id.get(run_id)
+            current_source_set = self._source_set(current_row) if current_row is not None else {}
+            base_run_id = current_source_set.get("base_run_id")
             row = by_id.get(base_run_id) if isinstance(base_run_id, str) else None
-            root = self._release(row) if row is not None else None
+            root = self._published_root(row) if row is not None else None
         if row is None or root is None or not root.is_dir():
             label = kind.title()
             raise ValueError(f"{label} Knowledge Bundle is not available")
@@ -117,6 +126,28 @@ class KnowledgeReader:
             except ValueError:
                 pass
         return bundles
+
+    def diff_options(self) -> list[dict[str, str]]:
+        options = []
+        try:
+            published = self.selection("published")
+            self.selection("previous", published.run_id)
+            options.append(
+                {"base": "previous", "target": "published", "target_run_id": published.run_id}
+            )
+        except ValueError:
+            published = None
+        try:
+            staged = self.selection("staged")
+            if published is not None:
+                options.append(
+                    {"base": "published", "target": "staged", "target_run_id": staged.run_id}
+                )
+            self.selection("previous", staged.run_id)
+            options.append({"base": "previous", "target": "staged", "target_run_id": staged.run_id})
+        except ValueError:
+            pass
+        return options
 
     @staticmethod
     def _canonical_page(path: str) -> str:
@@ -134,7 +165,7 @@ class KnowledgeReader:
         return path
 
     @staticmethod
-    def _target(root: Path, path: str) -> Path:
+    def _resolve_page(root: Path, path: str, *, missing_ok: bool) -> Path | None:
         target = root / KnowledgeReader._canonical_page(path)
         if target.is_symlink():
             raise ValueError("Bundle page symlinks are not allowed")
@@ -142,7 +173,18 @@ class KnowledgeReader:
             target.resolve().relative_to(root)
         except ValueError as error:
             raise ValueError("Page must be a canonical Bundle path ending in .md") from error
+        if not target.exists() and missing_ok:
+            return None
+        if not target.exists():
+            raise ValueError(f"Bundle page does not exist: {path}")
         if not target.is_file():
+            raise ValueError(f"Bundle page is not a file: {path}")
+        return target
+
+    @staticmethod
+    def _target(root: Path, path: str) -> Path:
+        target = KnowledgeReader._resolve_page(root, path, missing_ok=False)
+        if target is None:
             raise ValueError(f"Bundle page does not exist: {path}")
         return target
 
@@ -161,17 +203,9 @@ class KnowledgeReader:
 
     @staticmethod
     def _optional_read(root: Path, path: str) -> str | None:
-        target = root / KnowledgeReader._canonical_page(path)
-        if target.is_symlink():
-            raise ValueError("Bundle page symlinks are not allowed")
-        try:
-            target.resolve().relative_to(root)
-        except ValueError as error:
-            raise ValueError("Page must be a canonical Bundle path ending in .md") from error
-        if not target.exists():
+        target = KnowledgeReader._resolve_page(root, path, missing_ok=True)
+        if target is None:
             return None
-        if not target.is_file():
-            raise ValueError(f"Bundle page is not a file: {path}")
         return KnowledgeReader._read(target)
 
     @staticmethod
@@ -250,6 +284,7 @@ class KnowledgeReader:
         return {
             "bundles": self.available(),
             "default_page": default,
+            "diff_options": self.diff_options(),
             "pages": pages,
             "selected": selected.identity(),
         }
@@ -305,7 +340,9 @@ class KnowledgeReader:
         run_id: str | None,
     ) -> dict:
         target_selection = self.selection(target, run_id)
-        base_selection = self.selection(base, run_id if base == "previous" else None)
+        base_selection = self.selection(
+            base, target_selection.run_id if base == "previous" else None
+        )
         left_text = self._optional_read(base_selection.root, path)
         right_text = self._optional_read(target_selection.root, path)
         if left_text is None and right_text is None:
@@ -555,7 +592,10 @@ class StructuredMarkdown:
             if token.type == "text":
                 stack[-1].append({"type": "text", "text": token.content})
             elif token.type == "code_inline":
-                stack[-1].append({"type": "code", "text": token.content})
+                if re.fullmatch(r"claim:[0-9a-f]{64}", token.content):
+                    stack[-1].append({"type": "claim", "claim_id": token.content})
+                else:
+                    stack[-1].append({"type": "code", "text": token.content})
             elif token.type in {"softbreak", "hardbreak"}:
                 stack[-1].append({"type": "break"})
             elif token.type == "math_inline":

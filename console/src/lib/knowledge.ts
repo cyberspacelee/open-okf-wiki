@@ -9,6 +9,7 @@ export type BundleIdentity = {
 export type InlineNode =
   | { type: "text"; text: string }
   | { type: "code"; text: string }
+  | { type: "claim"; claim_id: string }
   | { type: "break" }
   | { type: "math"; source: string }
   | { type: "strong"; children: InlineNode[] }
@@ -62,7 +63,14 @@ export type KnowledgeSnapshot = {
   bundles: BundleIdentity[]
   selected: BundleIdentity
   default_page: string | null
+  diff_options: DiffOption[]
   pages: Array<{ path: string; title: string; backlinks: string[] }>
+}
+
+export type DiffOption = {
+  base: "published" | "previous"
+  target: BundleKind
+  target_run_id: string
 }
 
 export type KnowledgePage = BundleIdentity & {
@@ -179,10 +187,11 @@ export async function searchKnowledge(
 export async function fetchKnowledgeDiff(
   token: string,
   path: string,
+  option: DiffOption,
   signal?: AbortSignal
 ) {
   const payload = await request(
-    `/api/v1/knowledge/diff?base=published&target=staged&path=${encodeURIComponent(path)}`,
+    `/api/v1/knowledge/diff?base=${option.base}&target=${option.target}&run_id=${encodeURIComponent(option.target_run_id)}&path=${encodeURIComponent(path)}`,
     token,
     signal
   )
@@ -238,6 +247,8 @@ function isSnapshot(value: unknown): value is KnowledgeSnapshot {
     (value.default_page === null || typeof value.default_page === "string") &&
     Array.isArray(value.bundles) &&
     value.bundles.every(isIdentity) &&
+    Array.isArray(value.diff_options) &&
+    value.diff_options.every(isDiffOption) &&
     Array.isArray(value.pages) &&
     value.pages.every(
       (page) =>
@@ -338,6 +349,7 @@ function isInline(value: unknown): value is InlineNode {
   if (!isRecord(value) || typeof value.type !== "string") return false
   if (value.type === "text" || value.type === "code")
     return typeof value.text === "string"
+  if (value.type === "claim") return typeof value.claim_id === "string"
   if (value.type === "break") return true
   if (value.type === "math") return typeof value.source === "string"
   if (["strong", "em", "s"].includes(value.type))
@@ -422,6 +434,15 @@ function isIdentity(value: unknown): value is BundleIdentity {
   return (
     isRecord(value) &&
     strings(value, ["kind", "run_id", "source_set_digest", "state"])
+  )
+}
+
+function isDiffOption(value: unknown): value is DiffOption {
+  return (
+    isRecord(value) &&
+    (value.base === "published" || value.base === "previous") &&
+    (value.target === "staged" || value.target === "published") &&
+    typeof value.target_run_id === "string"
   )
 }
 
