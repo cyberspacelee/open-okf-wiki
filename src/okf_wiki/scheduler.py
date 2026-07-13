@@ -734,7 +734,7 @@ class Scheduler:
                 )
                 return
             decision = await self._verify_candidate(run_id, task, result)
-            if decision.outcome != "accepted":
+            if decision.outcome not in {"accepted", "review_required"}:
                 self.verification.record_decision(run_id, result.candidate_id, decision)
                 await self._reject_task(
                     run_id,

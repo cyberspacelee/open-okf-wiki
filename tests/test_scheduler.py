@@ -20,6 +20,7 @@ from okf_wiki.scheduler import PlannerLimits, PlannerReceipt, Scheduler
 from okf_wiki.run_state import transition_run
 from okf_wiki.verification import (
     REQUIRED_PERSPECTIVES,
+    AcceptanceDecision,
     VerificationFinding,
     VerificationStore,
     VerificationTarget,
@@ -723,18 +724,15 @@ def test_accepted_candidate_cannot_bypass_semantic_verification(tmp_path: Path) 
 
 
 @pytest.mark.parametrize(
-    ("overrides", "risk_text", "expected"),
+    ("overrides", "expected"),
     [
-        ({"coverage": ("fail", "error")}, None, "revision_required"),
-        ({"contradiction": ("disputed", "warning")}, None, "review_required"),
-        ({}, "Security permissions are persisted.", "review_required"),
-        ({"risk": ("fail", "critical")}, None, "rejected"),
+        ({"coverage": ("fail", "error")}, "revision_required"),
+        ({"risk": ("fail", "critical")}, "rejected"),
     ],
 )
-def test_nonaccepted_semantic_decisions_reopen_obligations_without_mutating_knowledge(
+def test_rejected_or_revision_decisions_reopen_obligations_without_mutating_knowledge(
     tmp_path: Path,
     overrides: dict[str, tuple[str, str]],
-    risk_text: str | None,
     expected: str,
 ) -> None:
     database, revision, run_id = make_run(tmp_path, [("obligation-1", "major", "open")])
@@ -744,8 +742,6 @@ def test_nonaccepted_semantic_decisions_reopen_obligations_without_mutating_know
     first = Scheduler(database, planner, worker=None)
     planned = asyncio.run(first.plan(run_id))
     proposal = worker_proposal(revision, planned.task_ids[0], "obligation-1")
-    if risk_text:
-        proposal["claims"][0]["text"] = risk_text
     verifier = StaticVerifier(overrides)
     scheduler = Scheduler(
         database,
@@ -772,13 +768,115 @@ def test_nonaccepted_semantic_decisions_reopen_obligations_without_mutating_know
     assert task.receipt.warnings[0] == expected
     assert AcceptedKnowledgeStore(database).get_coverage_summary(run_id) == {"open": 1}
     assert AcceptedKnowledgeStore(database).find_concepts(run_id, "") == []
-    if "contradiction" in overrides:
-        contradiction = next(
-            finding
-            for finding in VerificationStore(database).get_findings(run_id, candidate_id)
-            if finding.perspective == "contradiction"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "risk_text", "reason"),
+    [
+        (
+            {"contradiction": ("disputed", "warning")},
+            None,
+            "disputed knowledge: contradiction",
+        ),
+        (
+            {},
+            "Security permissions are persisted.",
+            "high-risk knowledge: security, permissions, persistence",
+        ),
+    ],
+)
+def test_review_required_candidate_closes_only_its_major_obligation(
+    tmp_path: Path,
+    overrides: dict[str, tuple[str, str]],
+    risk_text: str | None,
+    reason: str,
+) -> None:
+    database, revision, run_id = make_run(
+        tmp_path,
+        [("obligation-1", "major", "open"), ("obligation-2", "major", "open")],
+    )
+    planner = PlannerAgent(
+        TestModel(call_tools=[], custom_output_args={"tasks": [planned_task("obligation-1")]})
+    )
+    planned = asyncio.run(Scheduler(database, planner, worker=None).plan(run_id))
+    proposal = worker_proposal(revision, planned.task_ids[0], "obligation-1")
+    if risk_text:
+        proposal["claims"][0]["text"] = risk_text
+    verifier = StaticVerifier(overrides)
+    scheduler = Scheduler(
+        database,
+        planner,
+        WorkerAgent(
+            TestModel(call_tools=[], custom_output_args=proposal),
+            audit_path=tmp_path / "worker.db",
+            gateway_id="test",
+            model_name="test",
+            max_concurrency=1,
+        ),
+        verifier=verifier,
+    )
+
+    outcome = asyncio.run(scheduler.run_ready(run_id, planned.task_ids))
+
+    assert outcome.status == "replan"
+    task = scheduler.get_task(run_id, planned.task_ids[0])
+    assert task.state == "accepted"
+    candidate_id = verifier.targets[0].candidate_id
+    assert VerificationStore(database).get_decision(run_id, candidate_id) == AcceptanceDecision(
+        outcome="review_required",
+        reasons=(reason,),
+    )
+    assert AcceptedKnowledgeStore(database).get_coverage_summary(run_id) == {
+        "covered": 1,
+        "open": 1,
+    }
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT state FROM runs WHERE id = ?", (run_id,)).fetchone() == (
+            "exploring",
         )
-        assert contradiction.verdict == "disputed"
+
+
+def test_verifier_exception_requires_revision_and_reopens_obligation(tmp_path: Path) -> None:
+    database, revision, run_id = make_run(tmp_path, [("obligation-1", "major", "open")])
+    planner = PlannerAgent(
+        TestModel(call_tools=[], custom_output_args={"tasks": [planned_task("obligation-1")]})
+    )
+    planned = asyncio.run(Scheduler(database, planner, worker=None).plan(run_id))
+
+    class FailingVerifier(StaticVerifier):
+        async def verify(self, perspective: str, target: VerificationTarget) -> VerificationFinding:
+            if perspective == "risk":
+                raise RuntimeError("verifier unavailable")
+            return await super().verify(perspective, target)
+
+    verifier = FailingVerifier()
+    scheduler = Scheduler(
+        database,
+        planner,
+        WorkerAgent(
+            TestModel(
+                call_tools=[],
+                custom_output_args=worker_proposal(revision, planned.task_ids[0], "obligation-1"),
+            ),
+            audit_path=tmp_path / "worker.db",
+            gateway_id="test",
+            model_name="test",
+            max_concurrency=1,
+        ),
+        verifier=verifier,
+    )
+
+    outcome = asyncio.run(scheduler.run_ready(run_id, planned.task_ids))
+
+    assert outcome.status == "replan"
+    task = scheduler.get_task(run_id, planned.task_ids[0])
+    assert task.state == "rejected"
+    candidate_id = verifier.targets[0].candidate_id
+    decision = VerificationStore(database).get_decision(run_id, candidate_id)
+    assert decision is not None and decision.outcome == "revision_required"
+    assert decision.reasons == ("verifier unavailable",)
+    assert len(VerificationStore(database).get_findings(run_id, candidate_id)) == 4
+    assert AcceptedKnowledgeStore(database).get_coverage_summary(run_id) == {"open": 1}
 
 
 def test_next_fresh_planner_receives_only_compact_persisted_receipts(tmp_path: Path) -> None:

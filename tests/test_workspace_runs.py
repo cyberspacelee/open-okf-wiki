@@ -1,3 +1,4 @@
+import asyncio
 import json
 import sqlite3
 import subprocess
@@ -7,9 +8,12 @@ from pathlib import Path
 import pytest
 
 from okf_wiki import run_worker
+from okf_wiki.accepted_knowledge import AcceptedKnowledgeStore
+from okf_wiki.cli import advance_preparation, advance_rendering
 from okf_wiki.gateway_profiles import GatewayApplication, GatewayProfileRegistry
-from okf_wiki.scheduler import SchedulerOutcome
+from okf_wiki.scheduler import Scheduler, SchedulerOutcome
 from okf_wiki.state_schema import migrate_worker_audit
+from okf_wiki.verification import REQUIRED_PERSPECTIVES, VerificationStore
 from okf_wiki.workspace import WorkspaceApplication
 
 
@@ -342,6 +346,69 @@ def test_run_audit_aggregates_real_records_by_role_and_response_model(
             },
         ],
     }
+
+
+def test_review_required_semantic_candidate_reaches_run_review_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    application, _config_root, _profile = semantic_workspace(tmp_path)
+    monkeypatch.setattr(application, "_launch_run_worker", lambda *_args: None)
+    preflight = application.run_preflight()
+    started = application.start_run(
+        {
+            "configuration_digest": preflight["configuration_digest"],
+            "source_set_digest": preflight["source_set_digest"],
+        }
+    )
+    run_id = started["run_id"]
+    monkeypatch.chdir(application.root)
+    with sqlite3.connect(application.database_path) as connection:
+        connection.row_factory = sqlite3.Row
+        state, _coverage = advance_preparation(connection, run_id)
+    assert state == "exploring"
+    scheduler = Scheduler(
+        application.database_path,
+        run_worker.FixturePlanner(),
+        run_worker.FixtureWorker(application.database_path, run_id),
+        verifier=run_worker.FixtureVerifier(),
+    )
+
+    outcome = asyncio.run(scheduler.advance(run_id))
+
+    assert outcome.status == "complete"
+    with sqlite3.connect(application.database_path) as connection:
+        connection.row_factory = sqlite3.Row
+        candidate_id, candidate_status = connection.execute(
+            "SELECT candidate_id, status FROM verification_candidates WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        assert candidate_status == "review_required"
+        assert (
+            connection.execute("SELECT state FROM runs WHERE id = ?", (run_id,)).fetchone()[0]
+            == "verifying"
+        )
+        advance_rendering(connection, run_id)
+
+    decision = VerificationStore(application.database_path).get_decision(run_id, candidate_id)
+    assert decision is not None and decision.outcome == "review_required"
+    assert len(
+        VerificationStore(application.database_path).get_findings(run_id, candidate_id)
+    ) == len(REQUIRED_PERSPECTIVES)
+    assert AcceptedKnowledgeStore(application.database_path).get_coverage_summary(run_id) == {
+        "covered": 1
+    }
+    status = application.run_status(run_id)
+    assert status["state"] == "review_required"
+    assert [task["state"] for task in status["tasks"]["completed"]] == ["accepted"]
+    with sqlite3.connect(application.database_path) as connection:
+        source_set = json.loads(
+            connection.execute(
+                "SELECT source_set_json FROM runs WHERE id = ?", (run_id,)
+            ).fetchone()[0]
+        )
+    assert source_set["review"]["blocking_findings"] == [
+        f"{candidate_id}:acceptance_policy:high-risk knowledge: security"
+    ]
 
 
 def test_start_run_pins_preflight_inputs_and_worker_reaches_review_without_gateway(
