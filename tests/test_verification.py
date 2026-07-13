@@ -117,14 +117,16 @@ def test_verification_decision_event_is_atomic_and_attributed(tmp_path: Path) ->
         connection.execute("DROP TRIGGER reject_verification_event")
     store.record_decision("run-1", "candidate-1", decision)
     with sqlite3.connect(database) as connection:
-        event = connection.execute(
-            """SELECT previous_state, state, details FROM run_events
-               WHERE json_extract(details, '$.entity_type') = 'verification_candidate'"""
-        ).fetchone()
+        events = list(
+            connection.execute(
+                """SELECT previous_state, state, details FROM run_events
+               WHERE json_extract(details, '$.entity_type') = 'verification_candidate'
+               ORDER BY sequence"""
+            )
+        )
 
-    assert event is not None
-    assert event[:2] == ("staged", "rejected")
-    assert json.loads(event[2])["candidate_id"] == "candidate-1"
+    assert [event[:2] for event in events] == [(None, "staged"), ("staged", "rejected")]
+    assert all(json.loads(event[2])["candidate_id"] == "candidate-1" for event in events)
 
 
 def test_later_accepted_candidate_supersedes_historical_review_finding(tmp_path) -> None:

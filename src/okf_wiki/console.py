@@ -161,6 +161,59 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                         states=comma_values("states"),
                     ),
                 }
+            elif path == "/api/v1/replay" and self.command in {"GET", "HEAD"}:
+                query = self._query(
+                    query_string,
+                    {
+                        "run_id",
+                        "event_limit",
+                        "event_offset",
+                        "event_sequence",
+                        "entity_type",
+                        "entity_id",
+                        "impact_limit",
+                        "impact_offset",
+                        "path_limit",
+                        "path_offset",
+                    },
+                )
+                try:
+                    event_limit = int(query.get("event_limit", "50"))
+                    event_offset = int(query.get("event_offset", "0"))
+                    impact_limit = int(query.get("impact_limit", "100"))
+                    impact_offset = int(query.get("impact_offset", "0"))
+                    path_limit = int(query.get("path_limit", "50"))
+                    path_offset = int(query.get("path_offset", "0"))
+                    event_sequence = (
+                        int(query["event_sequence"]) if "event_sequence" in query else None
+                    )
+                except ValueError as error:
+                    raise ConsoleRequestError(
+                        400, "Replay limits and offsets must be integers"
+                    ) from error
+                entity_type = query.get("entity_type") or None
+                entity_id = query.get("entity_id") or None
+                if (entity_type is None) != (entity_id is None):
+                    raise ConsoleRequestError(400, "Provide both entity_type and entity_id")
+                if event_sequence is not None and entity_id is not None:
+                    raise ConsoleRequestError(
+                        400, "Choose either event_sequence or an entity locator"
+                    )
+                payload = {
+                    "ok": True,
+                    **self.server.application.concept_replay(
+                        run_id=query.get("run_id") or None,
+                        event_limit=event_limit,
+                        event_offset=event_offset,
+                        event_sequence=event_sequence,
+                        entity_type=entity_type,
+                        entity_id=entity_id,
+                        impact_limit=impact_limit,
+                        impact_offset=impact_offset,
+                        path_limit=path_limit,
+                        path_offset=path_offset,
+                    ),
+                }
             elif path == "/api/v1/runs" and self.command == "POST":
                 payload = {"ok": True, **self.server.application.start_run(self._json_body())}
             elif path.startswith("/api/v1/runs/") and self.command == "POST":

@@ -462,6 +462,155 @@ def test_console_concepts_query_uses_workspace_application_and_validates_bounds(
     assert invalid_filter.status_code == 400
 
 
+def test_console_replay_query_uses_workspace_application_and_validates_bounds(
+    tmp_path: Path, assets: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    WorkspaceApplication(tmp_path).initialize("catalog")
+    received = []
+
+    def replay(_self, **query):
+        received.append(query)
+        return {
+            "run_id": "run-1",
+            "run_state": "published",
+            "lineage_run_ids": ["run-1"],
+            "events": [],
+            "located_event_sequence": None,
+            "event_bounds": {
+                "limit": query["event_limit"],
+                "offset": query["event_offset"],
+                "previous_offset": None,
+                "next_offset": None,
+                "total": 0,
+                "truncated": False,
+            },
+            "impact": {
+                "mode": "full",
+                "fallback_reason": None,
+                "summary": {},
+                "nodes": [],
+                "edges": [],
+                "paths": [],
+                "path_bounds": {
+                    "limit": query["path_limit"],
+                    "offset": query["path_offset"],
+                    "previous_offset": None,
+                    "next_offset": None,
+                    "total": 0,
+                    "truncated": False,
+                },
+                "bounds": {
+                    "limit": query["impact_limit"],
+                    "offset": query["impact_offset"],
+                    "previous_offset": None,
+                    "next_offset": None,
+                    "total_nodes": 0,
+                    "total_edges": 0,
+                    "truncated": False,
+                },
+            },
+        }
+
+    monkeypatch.setattr(WorkspaceApplication, "concept_replay", replay)
+    with running_console(tmp_path, assets) as (server, _):
+        base = f"http://127.0.0.1:{server.server_port}"
+        response = httpx.get(
+            base
+            + "/api/v1/replay?run_id=run-1&event_limit=25&event_offset=50"
+            + "&event_sequence=51&impact_limit=75&impact_offset=150"
+            + "&path_limit=25&path_offset=75",
+            headers=authorization(server),
+        )
+        by_entity = httpx.get(
+            base + "/api/v1/replay?run_id=run-1&entity_type=concept&entity_id=concept-1",
+            headers=authorization(server),
+        )
+        invalid = httpx.get(base + "/api/v1/replay?event_limit=many", headers=authorization(server))
+        duplicate = httpx.get(
+            base + "/api/v1/replay?event_limit=10&event_limit=20",
+            headers=authorization(server),
+        )
+        partial_locator = httpx.get(
+            base + "/api/v1/replay?run_id=run-1&entity_id=concept-1",
+            headers=authorization(server),
+        )
+        conflicting_locator = httpx.get(
+            base
+            + "/api/v1/replay?run_id=run-1&event_sequence=1"
+            + "&entity_type=concept&entity_id=concept-1",
+            headers=authorization(server),
+        )
+
+    assert response.status_code == by_entity.status_code == 200
+    assert response.json()["impact"]["bounds"]["limit"] == 75
+    assert received == [
+        {
+            "run_id": "run-1",
+            "event_limit": 25,
+            "event_offset": 50,
+            "event_sequence": 51,
+            "entity_type": None,
+            "entity_id": None,
+            "impact_limit": 75,
+            "impact_offset": 150,
+            "path_limit": 25,
+            "path_offset": 75,
+        },
+        {
+            "run_id": "run-1",
+            "event_limit": 50,
+            "event_offset": 0,
+            "event_sequence": None,
+            "entity_type": "concept",
+            "entity_id": "concept-1",
+            "impact_limit": 100,
+            "impact_offset": 0,
+            "path_limit": 50,
+            "path_offset": 0,
+        },
+    ]
+    assert (
+        invalid.status_code
+        == duplicate.status_code
+        == partial_locator.status_code
+        == conflicting_locator.status_code
+        == 400
+    )
+
+
+def test_console_replay_reports_overlong_lineage_as_a_client_error(
+    tmp_path: Path, assets: Path
+) -> None:
+    application = WorkspaceApplication(tmp_path)
+    application.initialize("catalog")
+    with sqlite3.connect(application.database_path) as connection:
+        connection.executemany(
+            """INSERT INTO runs
+               (id, project_id, repository, revision, publish_dir, staging_dir, state,
+                source_set_json, created_at, updated_at)
+               VALUES (?, 'catalog', '.', ?, '.', '.', 'published', ?, ?, ?)""",
+            [
+                (
+                    f"run-{index}",
+                    f"{index:040x}"[-40:],
+                    json.dumps({"base_run_id": f"run-{index - 1}"}) if index else "{}",
+                    "2026-07-13T00:00:00+00:00",
+                    "2026-07-13T00:00:00+00:00",
+                )
+                for index in range(1_100)
+            ],
+        )
+
+    with running_console(tmp_path, assets) as (server, _):
+        response = httpx.get(
+            f"http://127.0.0.1:{server.server_port}/api/v1/replay?run_id=run-1099",
+            headers=authorization(server),
+        )
+
+    assert response.status_code == 400
+    assert "lineage exceeds" in response.json()["errors"][0]
+
+
 def test_console_overview_reports_source_setup_blockers(tmp_path: Path) -> None:
     app = WorkspaceApplication(tmp_path)
     app.initialize("catalog")

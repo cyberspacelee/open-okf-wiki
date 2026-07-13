@@ -7,6 +7,7 @@ import {
   CircleXIcon,
   ClockIcon,
   GitCompareArrowsIcon,
+  HistoryIcon,
   NetworkIcon,
 } from "lucide-react"
 
@@ -22,6 +23,7 @@ import {
 } from "@/components/ui/card"
 import {
   Empty,
+  EmptyContent,
   EmptyDescription,
   EmptyHeader,
   EmptyMedia,
@@ -67,7 +69,13 @@ type LoadState =
   | { status: "ready"; snapshot: ProvenanceSnapshot }
   | { status: "error"; message: string }
 
-export function ConceptsPage({ token }: { token: string }) {
+export function ConceptsPage({
+  token,
+  onReplay,
+}: {
+  token: string
+  onReplay: (runId?: string) => void
+}) {
   const [load, setLoad] = useState<LoadState>({ status: "loading" })
   const [conceptId, setConceptId] = useState<string>()
   const [limit, setLimit] = useState(100)
@@ -130,6 +138,15 @@ export function ConceptsPage({ token }: { token: string }) {
               inspecting provenance.
             </EmptyDescription>
           </EmptyHeader>
+          <EmptyContent>
+            <Button
+              variant="outline"
+              onClick={() => onReplay(load.snapshot.run_id ?? undefined)}
+            >
+              <HistoryIcon data-icon="inline-start" />
+              Replay history
+            </Button>
+          </EmptyContent>
         </Empty>
       </main>
     )
@@ -163,6 +180,7 @@ export function ConceptsPage({ token }: { token: string }) {
         setOffset(0)
       }}
       onOffsetChange={setOffset}
+      onReplay={() => onReplay(load.snapshot.run_id ?? undefined)}
     />
   )
 }
@@ -179,6 +197,7 @@ function ConceptsReady({
   onStatesChange,
   onShowMore,
   onOffsetChange,
+  onReplay,
 }: {
   snapshot: ProvenanceSnapshot
   conceptId: string
@@ -191,6 +210,7 @@ function ConceptsReady({
   onStatesChange: (value: ProvenanceFilterState[]) => void
   onShowMore: () => void
   onOffsetChange: (value: number) => void
+  onReplay: () => void
 }) {
   const visibleNodes = snapshot.nodes
   const visibleEdges = snapshot.edges
@@ -214,6 +234,10 @@ function ConceptsReady({
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button variant="outline" onClick={onReplay}>
+            <HistoryIcon data-icon="inline-start" />
+            Replay history
+          </Button>
           <Badge variant="outline">Run {snapshot.run_id}</Badge>
           <Badge variant="secondary">
             {titleCase(snapshot.run_state ?? "unknown")}

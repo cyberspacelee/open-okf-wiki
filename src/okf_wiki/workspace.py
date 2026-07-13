@@ -1531,6 +1531,129 @@ class WorkspaceApplication:
         except ValueError as error:
             raise WorkspaceError(str(error)) from error
 
+    def concept_replay(
+        self,
+        *,
+        run_id: str | None = None,
+        event_limit: int = 50,
+        event_offset: int = 0,
+        event_sequence: int | None = None,
+        entity_type: str | None = None,
+        entity_id: str | None = None,
+        impact_limit: int = 100,
+        impact_offset: int = 0,
+        path_limit: int = 50,
+        path_offset: int = 0,
+    ) -> dict:
+        self.open()
+        from .provenance import (
+            MAX_DETAIL_TEXT,
+            MAX_GRAPH_NODES,
+            MAX_REPLAY_EVENTS,
+            MAX_REPLAY_PATHS,
+            REPLAY_ENTITY_TYPES,
+            ConceptProvenanceStore,
+        )
+
+        if not 1 <= event_limit <= MAX_REPLAY_EVENTS:
+            raise WorkspaceError(f"event_limit must be between 1 and {MAX_REPLAY_EVENTS}")
+        if event_offset < 0:
+            raise WorkspaceError("event_offset must be non-negative")
+        if event_sequence is not None and event_sequence < 1:
+            raise WorkspaceError("event_sequence must be positive")
+        if entity_type is not None and entity_type not in REPLAY_ENTITY_TYPES:
+            raise WorkspaceError(f"Unknown replay entity type: {entity_type}")
+        if entity_id is not None and (not entity_id or len(entity_id) > MAX_DETAIL_TEXT):
+            raise WorkspaceError("entity_id must be a non-empty bounded string")
+        if (entity_type is None) != (entity_id is None):
+            raise WorkspaceError("Provide both entity_type and entity_id")
+        if event_sequence is not None and entity_id is not None:
+            raise WorkspaceError("Choose either event_sequence or an entity locator")
+        if not 1 <= impact_limit <= MAX_GRAPH_NODES:
+            raise WorkspaceError(f"impact_limit must be between 1 and {MAX_GRAPH_NODES}")
+        if impact_offset < 0:
+            raise WorkspaceError("impact_offset must be non-negative")
+        if not 1 <= path_limit <= MAX_REPLAY_PATHS:
+            raise WorkspaceError(f"path_limit must be between 1 and {MAX_REPLAY_PATHS}")
+        if path_offset < 0:
+            raise WorkspaceError("path_offset must be non-negative")
+        if run_id is not None:
+            self._validate_run_id(run_id)
+        else:
+            with sqlite3.connect(self.database_path) as connection:
+                row = connection.execute(
+                    "SELECT id FROM runs ORDER BY created_at DESC, id DESC LIMIT 1"
+                ).fetchone()
+            run_id = row[0] if row else None
+        if run_id is None:
+            return {
+                "run_id": None,
+                "run_state": None,
+                "lineage_run_ids": [],
+                "events": [],
+                "located_event_sequence": None,
+                "event_bounds": {
+                    "limit": event_limit,
+                    "offset": event_offset,
+                    "previous_offset": (
+                        max(0, event_offset - event_limit) if event_offset else None
+                    ),
+                    "next_offset": None,
+                    "total": 0,
+                    "truncated": event_offset > 0,
+                },
+                "impact": {
+                    "mode": "full",
+                    "fallback_reason": None,
+                    "summary": {
+                        "changes": {kind: 0 for kind in ("added", "changed", "moved", "removed")},
+                        "affected": {
+                            kind: 0 for kind in ("evidence", "claims", "concepts", "pages")
+                        },
+                        "stable": {kind: 0 for kind in ("evidence", "claims", "concepts", "pages")},
+                    },
+                    "nodes": [],
+                    "edges": [],
+                    "paths": [],
+                    "path_bounds": {
+                        "limit": path_limit,
+                        "offset": path_offset,
+                        "previous_offset": (
+                            max(0, path_offset - path_limit) if path_offset else None
+                        ),
+                        "next_offset": None,
+                        "total": 0,
+                        "truncated": path_offset > 0,
+                    },
+                    "bounds": {
+                        "limit": impact_limit,
+                        "offset": impact_offset,
+                        "previous_offset": (
+                            max(0, impact_offset - impact_limit) if impact_offset else None
+                        ),
+                        "next_offset": None,
+                        "total_nodes": 0,
+                        "total_edges": 0,
+                        "truncated": impact_offset > 0,
+                    },
+                },
+            }
+        try:
+            return ConceptProvenanceStore(self.database_path).replay(
+                run_id,
+                event_limit=event_limit,
+                event_offset=event_offset,
+                event_sequence=event_sequence,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                impact_limit=impact_limit,
+                impact_offset=impact_offset,
+                path_limit=path_limit,
+                path_offset=path_offset,
+            )
+        except ValueError as error:
+            raise WorkspaceError(str(error)) from error
+
     def run_status(self, run_id: str) -> dict:
         self._validate_run_id(run_id)
         self.open()

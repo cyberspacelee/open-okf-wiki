@@ -3,6 +3,212 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 
+_MAX_IMPACT_TEXT = 2_000
+
+
+def _valid_impact_unit_sql(column: str) -> str:
+    required = ("id", "source_id", "revision", "path", "kind")
+    required_sql = " AND ".join(
+        f"json_type({column}, '$.{key}') = 'text' "
+        f"AND length(json_extract({column}, '$.{key}')) BETWEEN 1 AND {_MAX_IMPACT_TEXT}"
+        for key in required
+    )
+    digest = f"json_extract({column}, '$.digest')"
+    return f"""json_type({column}) = 'object' AND {required_sql} AND
+        (json_type({column}, '$.digest') IS NULL
+         OR json_type({column}, '$.digest') = 'null'
+         OR (json_type({column}, '$.digest') = 'text' AND (
+             (length({digest}) = 64 AND {digest} NOT GLOB '*[^0-9a-f]*')
+             OR (length({digest}) = 71 AND substr({digest}, 1, 7) = 'sha256:'
+                 AND substr({digest}, 8) NOT GLOB '*[^0-9a-f]*')))) AND
+        (json_type({column}, '$.label') IS NULL
+         OR json_type({column}, '$.label') = 'null'
+         OR json_type({column}, '$.label') = 'text')"""
+
+
+def _normalized_impact_unit_sql(column: str) -> str:
+    digest = f"json_extract({column}, '$.digest')"
+    return f"""json_object(
+        'id', json_extract({column}, '$.id'),
+        'source_id', json_extract({column}, '$.source_id'),
+        'revision', json_extract({column}, '$.revision'),
+        'path', json_extract({column}, '$.path'),
+        'kind', json_extract({column}, '$.kind'),
+        'digest', CASE WHEN length({digest}) = 64
+                    THEN 'sha256:' || {digest} ELSE {digest} END,
+        'label', CASE WHEN json_type({column}, '$.label') = 'text'
+                   AND length(json_extract({column}, '$.label')) > 0
+                 THEN substr(json_extract({column}, '$.label'), 1, {_MAX_IMPACT_TEXT})
+                 ELSE NULL END
+    )"""
+
+
+def _impact_change_insert_sql(
+    status: str,
+    status_order: int,
+    path: str,
+    before: str,
+    after: str,
+) -> str:
+    active = "COALESCE(raw.after_json, raw.before_json)"
+    graph_unit = "raw.after_json" if status == "added" else "raw.before_json"
+    graph_run = "NEW.id" if status == "added" else "metadata.graph_run_id"
+    paired = (
+        f" AND {_valid_impact_unit_sql('raw.before_json')}"
+        f" AND {_valid_impact_unit_sql('raw.after_json')}"
+        if status in {"changed", "moved"}
+        else ""
+    )
+    return f"""INSERT OR IGNORE INTO run_impact_changes
+        (run_id, status, status_order, position, before_json, after_json,
+         node_id, node_entity_id, node_label, graph_run_id, source_id, source_unit)
+        SELECT NEW.id, '{status}', {status_order}, CAST(raw.position AS INTEGER),
+               CASE WHEN raw.before_json IS NULL THEN NULL
+                 ELSE {_normalized_impact_unit_sql("raw.before_json")} END,
+               CASE WHEN raw.after_json IS NULL THEN NULL
+                 ELSE {_normalized_impact_unit_sql("raw.after_json")} END,
+               'source-unit:{status}:' || json_extract({active}, '$.id'),
+               json_extract({active}, '$.id'),
+               substr(COALESCE(
+                   NULLIF(json_extract({active}, '$.label'), ''),
+                   json_extract({active}, '$.path')
+               ), 1, {_MAX_IMPACT_TEXT}),
+               {graph_run},
+               json_extract({graph_unit}, '$.source_id'),
+               json_extract({graph_unit}, '$.id')
+          FROM (
+              SELECT item.key AS position, {before} AS before_json, {after} AS after_json
+                FROM json_each(
+                    CASE WHEN json_valid(NEW.source_set_json)
+                      THEN NEW.source_set_json ELSE '{{}}' END,
+                    '{path}'
+                ) AS item
+               WHERE item.type = 'object' AND typeof(item.key) = 'integer'
+          ) AS raw
+          JOIN run_impact_metadata metadata ON metadata.run_id = NEW.id
+         WHERE {_valid_impact_unit_sql(active)}{paired};"""
+
+
+def _impact_trigger_sql(name: str, event: str) -> str:
+    guarded = "CASE WHEN json_valid(NEW.source_set_json) THEN NEW.source_set_json ELSE '{}' END"
+    affected = "\n".join(
+        f"""INSERT OR IGNORE INTO run_impact_affected
+            SELECT NEW.id, '{entity_type}', item.value
+              FROM json_each({guarded}, '{path}') AS item
+             WHERE item.type = 'text'
+               AND length(item.value) BETWEEN 1 AND {_MAX_IMPACT_TEXT};"""
+        for entity_type, path in (
+            ("claim", "$.refresh.reverify_claims"),
+            ("concept", "$.refresh.reverify_concepts"),
+            ("page", "$.refresh.rerender_pages"),
+        )
+    )
+    changes = "\n".join(
+        (
+            _impact_change_insert_sql(
+                "changed",
+                0,
+                "$.refresh.diff.changed",
+                "json_extract(item.value, '$.before')",
+                "json_extract(item.value, '$.after')",
+            ),
+            _impact_change_insert_sql(
+                "moved",
+                1,
+                "$.refresh.diff.moved",
+                "json_extract(item.value, '$.before')",
+                "json_extract(item.value, '$.after')",
+            ),
+            _impact_change_insert_sql(
+                "added",
+                2,
+                "$.refresh.diff.added",
+                "NULL",
+                "item.value",
+            ),
+            _impact_change_insert_sql(
+                "removed",
+                3,
+                "$.refresh.diff.removed",
+                "item.value",
+                "NULL",
+            ),
+        )
+    )
+    return f"""CREATE TRIGGER IF NOT EXISTS {name}
+        AFTER {event} ON runs
+        BEGIN
+            DELETE FROM run_impact_changes WHERE run_id = NEW.id;
+            DELETE FROM run_impact_affected WHERE run_id = NEW.id;
+            DELETE FROM run_impact_metadata WHERE run_id = NEW.id;
+            INSERT INTO run_impact_metadata
+                (run_id, mode, fallback_reason, base_run_id, graph_run_id,
+                 changed_count, moved_count, added_count, removed_count)
+                SELECT NEW.id,
+                       CASE json_extract(value, '$.refresh.mode')
+                         WHEN 'incremental' THEN 'incremental'
+                         WHEN 'full' THEN 'full'
+                         ELSE 'full'
+                       END,
+                       CASE
+                         WHEN json_type(value, '$.refresh.fallback_reason') = 'text'
+                              AND length(json_extract(
+                                  value, '$.refresh.fallback_reason'
+                              )) > 0
+                           THEN substr(json_extract(
+                               value, '$.refresh.fallback_reason'
+                           ), 1, {_MAX_IMPACT_TEXT})
+                       END,
+                       CASE
+                         WHEN json_type(value, '$.base_run_id') = 'text'
+                              AND length(json_extract(value, '$.base_run_id'))
+                                  BETWEEN 1 AND {_MAX_IMPACT_TEXT}
+                           THEN json_extract(value, '$.base_run_id')
+                       END,
+                       CASE
+                         WHEN json_type(value, '$.base_run_id') = 'text'
+                              AND EXISTS (
+                                  SELECT 1 FROM runs base
+                                   WHERE base.id = json_extract(value, '$.base_run_id')
+                              )
+                           THEN json_extract(value, '$.base_run_id')
+                         ELSE NEW.id
+                       END,
+                       0, 0, 0, 0
+                  FROM (SELECT {guarded} AS value);
+            {affected}
+            {changes}
+            UPDATE run_impact_metadata
+               SET changed_count = (
+                       SELECT COUNT(*) FROM run_impact_changes
+                        WHERE run_id = NEW.id AND status = 'changed'
+                   ),
+                   moved_count = (
+                       SELECT COUNT(*) FROM run_impact_changes
+                        WHERE run_id = NEW.id AND status = 'moved'
+                   ),
+                   added_count = (
+                       SELECT COUNT(*) FROM run_impact_changes
+                        WHERE run_id = NEW.id AND status = 'added'
+                   ),
+                   removed_count = (
+                       SELECT COUNT(*) FROM run_impact_changes
+                        WHERE run_id = NEW.id AND status = 'removed'
+                   )
+             WHERE run_id = NEW.id;
+            UPDATE run_impact_changes
+               SET graph_run_id = NEW.id
+             WHERE status != 'added'
+               AND run_id IN (
+                   SELECT run_id FROM run_impact_metadata
+                    WHERE base_run_id = NEW.id
+               );
+            UPDATE run_impact_metadata
+               SET graph_run_id = NEW.id
+             WHERE base_run_id = NEW.id;
+        END"""
+
+
 def _migration_1(connection: sqlite3.Connection) -> None:
     connection.execute(
         """CREATE TABLE IF NOT EXISTS runs (
@@ -239,6 +445,58 @@ def _migration_5(connection: sqlite3.Connection) -> None:
 
 def _migration_6(connection: sqlite3.Connection) -> None:
     connection.execute(
+        """CREATE TABLE IF NOT EXISTS run_impact_metadata (
+            run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+            mode TEXT NOT NULL CHECK (mode IN ('incremental', 'full')),
+            fallback_reason TEXT,
+            base_run_id TEXT,
+            graph_run_id TEXT NOT NULL,
+            changed_count INTEGER NOT NULL,
+            moved_count INTEGER NOT NULL,
+            added_count INTEGER NOT NULL,
+            removed_count INTEGER NOT NULL
+        )"""
+    )
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS run_impact_changes (
+            run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+            status TEXT NOT NULL CHECK (status IN ('changed', 'moved', 'added', 'removed')),
+            status_order INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            before_json TEXT,
+            after_json TEXT,
+            node_id TEXT NOT NULL,
+            node_entity_id TEXT NOT NULL,
+            node_label TEXT NOT NULL,
+            graph_run_id TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            source_unit TEXT NOT NULL,
+            PRIMARY KEY (run_id, status, position)
+        )"""
+    )
+    connection.execute(
+        """CREATE INDEX IF NOT EXISTS run_impact_changes_lookup
+           ON run_impact_changes (run_id, graph_run_id, source_id, source_unit)"""
+    )
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS run_impact_affected (
+            run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+            entity_type TEXT NOT NULL CHECK (entity_type IN ('claim', 'concept', 'page')),
+            entity_id TEXT NOT NULL,
+            PRIMARY KEY (run_id, entity_type, entity_id)
+        )"""
+    )
+    connection.execute(_impact_trigger_sql("runs_normalize_impact_after_insert", "INSERT"))
+    connection.execute(
+        _impact_trigger_sql(
+            "runs_normalize_impact_after_source_set_update",
+            "UPDATE OF source_set_json",
+        )
+    )
+
+
+def _migration_7(connection: sqlite3.Connection) -> None:
+    connection.execute(
         """CREATE TABLE IF NOT EXISTS query_audit (
             id TEXT PRIMARY KEY,
             model TEXT NOT NULL,
@@ -258,6 +516,7 @@ MIGRATIONS = (
     _migration_4,
     _migration_5,
     _migration_6,
+    _migration_7,
 )
 CURRENT_STATE_SCHEMA_VERSION = len(MIGRATIONS)
 
