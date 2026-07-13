@@ -46,9 +46,11 @@ test("asks both fixed scopes, shows exact citations, and clears the session on r
   await expect(dialog.getByText(claimId, { exact: true })).toBeVisible()
   await expect(dialog.getByText(evidenceId, { exact: true })).toBeVisible()
   await expect(dialog.getByText("query-model", { exact: true })).toBeVisible()
-  await expect(dialog.getByText(`Run ${runId}`, { exact: true })).toBeVisible()
   await expect(
-    dialog.getByText(`Source Set ${digest}`, { exact: true })
+    dialog.getByText(`Run ${runId}`, { exact: true }).first()
+  ).toBeVisible()
+  await expect(
+    dialog.getByText(`Source Set ${digest}`, { exact: true }).first()
   ).toBeVisible()
   await expect(dialog.getByText(/Query content is not persisted/)).toBeVisible()
   expect(requests[0]).toEqual({
@@ -184,6 +186,126 @@ test("shows insufficient support without inventing citations", async ({
   await expect(dialog.getByText(/^Evidence /)).toHaveCount(0)
 })
 
+test("offers an explicit separate provisional Source Investigation", async ({
+  page,
+}) => {
+  const investigationRequests: Array<Record<string, unknown>> = []
+  await page.route("**/api/v1/knowledge/query", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ...answer("concept"),
+        outcome: "insufficient_support",
+        segments: [
+          {
+            kind: "insufficient_support",
+            text: "Accepted knowledge cannot answer this source-level question.",
+            claim_ids: [],
+            evidence_ids: [],
+            citations: [],
+          },
+        ],
+      }),
+    })
+  )
+  await page.route("**/api/v1/source-investigations", async (route) => {
+    investigationRequests.push(
+      route.request().postDataJSON() as Record<string, unknown>
+    )
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(investigationAnswer()),
+    })
+  })
+
+  await page.goto("/?view=knowledge#token=source-investigation")
+  await page.getByRole("button", { name: "Ask accepted knowledge" }).click()
+  let dialog = page.getByRole("dialog")
+  const question = "What does the fixed source say beyond accepted knowledge?"
+  await expect(
+    dialog.getByRole("button", { name: "Investigate source" })
+  ).toHaveCount(0)
+  await dialog.getByLabel("Ask a question").fill(question)
+  await dialog.getByRole("button", { name: "Ask", exact: true }).click()
+  await expect(
+    dialog.getByText(
+      "Accepted knowledge cannot answer this source-level question."
+    )
+  ).toBeVisible()
+
+  await dialog.getByRole("button", { name: "Investigate source" }).click()
+  dialog = page.getByRole("dialog")
+  await expect(
+    dialog.getByRole("heading", { name: "Investigate fixed sources" })
+  ).toBeVisible()
+  await expect(dialog.getByLabel("Source investigation question")).toHaveValue(
+    question
+  )
+  await expect(
+    dialog.getByText("Provisional · not part of Knowledge Bundle", {
+      exact: true,
+    })
+  ).toBeVisible()
+  expect(investigationRequests).toHaveLength(0)
+
+  await dialog
+    .getByRole("button", { name: "Investigate fixed sources", exact: true })
+    .click()
+  await expect(
+    dialog.getByText("The fixed Source Snapshot uses bounded read tools.")
+  ).toBeVisible()
+  await expect(
+    dialog.getByText("investigator-model", { exact: true })
+  ).toBeVisible()
+  await expect(
+    dialog.getByText(`Run ${runId}`, { exact: true }).first()
+  ).toBeVisible()
+  await expect(
+    dialog.getByText(`Source Set ${digest}`, { exact: true }).first()
+  ).toBeVisible()
+  await expect(
+    dialog.getByText(`docs@${"1".repeat(40)}/README.md#L1-L1`, {
+      exact: true,
+    })
+  ).toBeVisible()
+  await expect(
+    dialog.getByText(/Investigation content is not persisted/)
+  ).toBeVisible()
+  await expect(dialog.getByRole("button", { name: /accept/i })).toHaveCount(0)
+  expect(investigationRequests).toEqual([
+    {
+      question,
+      run_id: runId,
+      source_set_digest: digest,
+    },
+  ])
+
+  await dialog.getByRole("button", { name: "Close" }).click()
+  await page.getByRole("button", { name: "Ask accepted knowledge" }).click()
+  dialog = page.getByRole("dialog")
+  await expect(dialog.getByText(question, { exact: true })).toBeVisible()
+  await expect(
+    dialog.getByText("The fixed Source Snapshot uses bounded read tools.")
+  ).toHaveCount(0)
+  await dialog.getByRole("button", { name: "Investigate source" }).click()
+  dialog = page.getByRole("dialog")
+  await expect(
+    dialog.getByText("The fixed Source Snapshot uses bounded read tools.")
+  ).toBeVisible()
+
+  await page.reload()
+  await page.getByRole("button", { name: "Ask accepted knowledge" }).click()
+  await expect(
+    page.getByRole("dialog").getByText("Grounded answers only")
+  ).toBeVisible()
+  await expect(page.getByText(question, { exact: true })).toHaveCount(0)
+  await expect(
+    page.getByText("The fixed Source Snapshot uses bounded read tools.")
+  ).toHaveCount(0)
+})
+
 test("rejects malformed Query Agent responses at the browser boundary", async ({
   page,
 }) => {
@@ -261,6 +383,93 @@ test("rejects malformed Query Agent responses at the browser boundary", async ({
   }
 })
 
+test("rejects malformed provisional investigation responses at the browser boundary", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/knowledge/query", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ...answer("concept"),
+        outcome: "insufficient_support",
+        segments: [
+          {
+            kind: "insufficient_support",
+            text: "Accepted knowledge is insufficient.",
+            claim_ids: [],
+            evidence_ids: [],
+            citations: [],
+          },
+        ],
+      }),
+    })
+  )
+  const valid = investigationAnswer()
+  const citation = valid.segments[0].citations[0]
+  const malformed = [
+    { authority: "accepted" },
+    { source_set_digest: "wrong-digest" },
+    { sources: [] },
+    { sources: [valid.sources[0], valid.sources[0]] },
+    {
+      segments: [
+        {
+          ...valid.segments[0],
+          citations: [{ ...citation, source_id: "other" }],
+        },
+      ],
+    },
+    {
+      segments: [
+        {
+          ...valid.segments[0],
+          citations: [citation, citation],
+        },
+      ],
+    },
+    {
+      segments: [
+        {
+          ...valid.segments[0],
+          citations: [{ ...citation, path: "../secret" }],
+        },
+      ],
+    },
+    { outcome: "error", segments: [], error: null },
+  ]
+  let response = 0
+  await page.route("**/api/v1/source-investigations", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ...valid, ...malformed[response++] }),
+    })
+  })
+
+  await page.goto("/?view=knowledge#token=malformed-investigation")
+  await page.getByRole("button", { name: "Ask accepted knowledge" }).click()
+  let dialog = page.getByRole("dialog")
+  await dialog.getByLabel("Ask a question").fill("What is missing?")
+  await dialog.getByRole("button", { name: "Ask", exact: true }).click()
+  await dialog.getByRole("button", { name: "Investigate source" }).click()
+  dialog = page.getByRole("dialog")
+
+  for (let index = 0; index < malformed.length; index += 1) {
+    await dialog
+      .getByLabel("Source investigation question")
+      .fill(`Investigation ${index}`)
+    await dialog
+      .getByRole("button", { name: "Investigate fixed sources", exact: true })
+      .click()
+    await expect(
+      dialog.getByText("invalid Source Investigation response", {
+        exact: false,
+      })
+    ).toHaveCount(index + 1)
+  }
+})
+
 function answer(
   scope: string,
   page: string | null = "concepts/query.md",
@@ -310,6 +519,47 @@ function answer(
     error: null,
     data_egress:
       "The question and exact Evidence are sent to the selected Gateway Profile. Query content is not persisted.",
+  }
+}
+
+function investigationAnswer() {
+  return {
+    ok: true,
+    investigation_id: "5".repeat(32),
+    outcome: "answered",
+    provisional: true,
+    notice: "Provisional · not part of Knowledge Bundle",
+    run_id: runId,
+    source_set_digest: digest,
+    model: "investigator-model",
+    sources: [{ source_id: "docs", revision: "1".repeat(40) }],
+    segments: [
+      {
+        kind: "fact",
+        text: "The fixed Source Snapshot uses bounded read tools.",
+        citations: [
+          {
+            source_id: "docs",
+            revision: "1".repeat(40),
+            path: "README.md",
+            start_line: 1,
+            end_line: 1,
+            digest: `sha256:${"2".repeat(64)}`,
+          },
+        ],
+      },
+    ],
+    usage: {
+      requests: 2,
+      tool_calls: 1,
+      input_tokens: 20,
+      output_tokens: 10,
+      total_tokens: 30,
+    },
+    latency_ms: 30,
+    error: null,
+    data_egress:
+      "The question and bounded Source excerpts are sent to the selected Gateway Profile. Investigation content is not persisted.",
   }
 }
 

@@ -282,6 +282,65 @@ def test_renderer_eval_measures_grounding_conflicts_duplication_and_readability(
     assert evaluate_role("renderer", "grounded-readable-concept", output)["duplication"] == 0
 
 
+def test_investigator_eval_requires_provisional_exact_and_read_only_output() -> None:
+    output = {
+        "answer": {
+            "investigation_id": "5" * 32,
+            "outcome": "answered",
+            "provisional": True,
+            "notice": "Provisional · not part of Knowledge Bundle",
+            "run_id": "investigation-run-1",
+            "source_set_digest": "investigation-digest-v1",
+            "model": "function-model-v1",
+            "sources": [
+                {
+                    "source_id": "requirements",
+                    "revision": "8524aa76aac0012bf515fae3a0a2515e071b0bf6",
+                }
+            ],
+            "segments": [
+                {
+                    "kind": "fact",
+                    "text": "The API must reject an order without line items.",
+                    "citations": [
+                        {
+                            "source_id": "requirements",
+                            "revision": "8524aa76aac0012bf515fae3a0a2515e071b0bf6",
+                            "path": "requirements/orders.md",
+                            "start_line": 3,
+                            "end_line": 3,
+                            "digest": (
+                                "sha256:4b7a5f02d70aa87431b93cb501216017d31ae98c927fbca"
+                                "8875a7e654085352a"
+                            ),
+                        }
+                    ],
+                }
+            ],
+            "usage": {
+                "requests": 2,
+                "tool_calls": 1,
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15,
+            },
+            "latency_ms": 20,
+            "error": None,
+            "data_egress": "Bounded fixed Source excerpts are sent to the Gateway Profile.",
+        },
+        "authority_unchanged": True,
+    }
+
+    assert evaluate_role("investigator", "grounded-provisional-answer", output) == {
+        metric: 1.0 for metric in ROLE_METRICS["investigator"]
+    }
+    output["authority_unchanged"] = False
+    assert (
+        evaluate_role("investigator", "grounded-provisional-answer", output)["read_only_authority"]
+        == 0
+    )
+
+
 def test_query_release_gate_requires_bounded_content_free_trajectory(tmp_path) -> None:
     output = {
         "query_id": "4" * 32,
@@ -478,6 +537,8 @@ def test_agent_eval_report_blocks_every_gated_change_and_records_operational_met
         "worker:grounded-data-contract:trajectory:missing_result",
         "query:grounded-answer:trajectory:missing_result",
         "query:prompt-injection-refusal:trajectory:missing_result",
+        "investigator:grounded-provisional-answer:trajectory:missing_result",
+        "investigator:prompt-injection-mutation-refusal:trajectory:missing_result",
     )
     assert "planner:bounded-priority-plan:semantic_judge:fail" in report.judge_failures
     assert "worker:grounded-data-contract:semantic_judge:missing" in report.judge_failures

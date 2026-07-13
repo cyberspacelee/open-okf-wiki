@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react"
 import {
   CloudUploadIcon,
+  FileSearchIcon,
   MessageCircleQuestionIcon,
   SendIcon,
   ShieldCheckIcon,
@@ -49,6 +50,10 @@ import {
 import { Spinner } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import {
+  SourceInvestigationSheet,
+  type InvestigationLaunch,
+} from "@/components/source-investigation"
 import type { BundleKind } from "@/lib/knowledge"
 import {
   askAcceptedKnowledge,
@@ -85,6 +90,9 @@ export function KnowledgeQuery({
   const [question, setQuestion] = useState("")
   const [turns, setTurns] = useState<Turn[]>([])
   const [pending, setPending] = useState(false)
+  const [investigationOpen, setInvestigationOpen] = useState(false)
+  const [investigationLaunch, setInvestigationLaunch] =
+    useState<InvestigationLaunch | null>(null)
   const controller = useRef<AbortController | null>(null)
 
   useEffect(() => {
@@ -94,6 +102,8 @@ export function KnowledgeQuery({
     setQuestion("")
     setPending(false)
     setScope(page ? "concept" : "bundle")
+    setInvestigationOpen(false)
+    setInvestigationLaunch(null)
   }, [bundle, conceptId, page, runId, sourceSetDigest])
 
   useEffect(() => () => controller.current?.abort(), [])
@@ -141,143 +151,172 @@ export function KnowledgeQuery({
     }
   }
 
+  function openInvestigation(sourceQuestion: string) {
+    setOpen(false)
+    setInvestigationLaunch({
+      id: crypto.randomUUID(),
+      question: sourceQuestion,
+    })
+    setInvestigationOpen(true)
+  }
+
   return (
-    <Sheet open={open} onOpenChange={setOpen}>
-      <SheetTrigger render={<Button variant="outline" />}>
-        <MessageCircleQuestionIcon data-icon="inline-start" />
-        Ask accepted knowledge
-      </SheetTrigger>
-      <SheetContent className="gap-0 data-[side=right]:w-full data-[side=right]:sm:max-w-2xl">
-        <SheetHeader className="border-b pr-12">
-          <SheetTitle>Ask accepted knowledge</SheetTitle>
-          <SheetDescription>
-            Answers come only from accepted Claims and exact Evidence
-            References.
-          </SheetDescription>
-        </SheetHeader>
+    <>
+      <Sheet open={open} onOpenChange={setOpen}>
+        <SheetTrigger render={<Button variant="outline" />}>
+          <MessageCircleQuestionIcon data-icon="inline-start" />
+          Ask accepted knowledge
+        </SheetTrigger>
+        <SheetContent className="gap-0 data-[side=right]:w-full data-[side=right]:sm:max-w-2xl">
+          <SheetHeader className="border-b pr-12">
+            <SheetTitle>Ask accepted knowledge</SheetTitle>
+            <SheetDescription>
+              Answers come only from accepted Claims and exact Evidence
+              References.
+            </SheetDescription>
+          </SheetHeader>
 
-        <div className="flex min-h-0 flex-1 flex-col">
-          <div className="flex flex-col gap-3 border-b p-4">
-            <Field>
-              <FieldLabel id="query-scope-label">Answer scope</FieldLabel>
-              <ToggleGroup
-                aria-labelledby="query-scope-label"
-                value={[scope]}
-                onValueChange={(values) => {
-                  const selected = values[0] as QueryScope | undefined
-                  if (selected) setScope(selected)
-                }}
-                variant="outline"
-                size="sm"
-                spacing={0}
-              >
-                <ToggleGroupItem value="concept" disabled={!page}>
-                  Current page
-                </ToggleGroupItem>
-                <ToggleGroupItem value="bundle">
-                  Complete bundle
-                </ToggleGroupItem>
-              </ToggleGroup>
-              <FieldDescription>
-                {scope === "concept" && page
-                  ? page
-                  : "All accepted Concepts in this fixed Knowledge Bundle."}
-              </FieldDescription>
-            </Field>
-            <Alert>
-              <CloudUploadIcon />
-              <AlertTitle>Data egress</AlertTitle>
-              <AlertDescription>
-                Your question and only the accepted Claims and Evidence
-                requested by the Query Agent are sent to the selected Gateway
-                Profile.
-              </AlertDescription>
-            </Alert>
-          </div>
-
-          <MessageScrollerProvider autoScroll>
-            <MessageScroller className="min-h-0 flex-1">
-              <MessageScrollerViewport className="px-4 py-5">
-                <MessageScrollerContent>
-                  {turns.length === 0 ? (
-                    <MessageScrollerItem messageId="empty">
-                      <Empty className="min-h-64">
-                        <EmptyHeader>
-                          <EmptyMedia variant="icon">
-                            <ShieldCheckIcon />
-                          </EmptyMedia>
-                          <EmptyTitle>Grounded answers only</EmptyTitle>
-                          <EmptyDescription>
-                            Unsupported questions return an explicit
-                            insufficient-support result. This session clears
-                            when the page reloads.
-                          </EmptyDescription>
-                        </EmptyHeader>
-                      </Empty>
-                    </MessageScrollerItem>
-                  ) : (
-                    turns.flatMap((turn) => [
-                      <MessageScrollerItem
-                        key={`${turn.id}-question`}
-                        messageId={`${turn.id}-question`}
-                        scrollAnchor
-                      >
-                        <Message align="end">
-                          <MessageContent>
-                            <MessageHeader>You</MessageHeader>
-                            <Bubble align="end">
-                              <BubbleContent>{turn.question}</BubbleContent>
-                            </Bubble>
-                          </MessageContent>
-                        </Message>
-                      </MessageScrollerItem>,
-                      <MessageScrollerItem
-                        key={`${turn.id}-answer`}
-                        messageId={`${turn.id}-answer`}
-                      >
-                        <QueryResponse turn={turn} />
-                      </MessageScrollerItem>,
-                    ])
-                  )}
-                </MessageScrollerContent>
-              </MessageScrollerViewport>
-              <MessageScrollerButton />
-            </MessageScroller>
-          </MessageScrollerProvider>
-
-          <form className="border-t p-4" onSubmit={submit}>
-            <FieldGroup>
-              <Field data-disabled={pending || undefined}>
-                <FieldLabel htmlFor="knowledge-question" className="sr-only">
-                  Ask a question
-                </FieldLabel>
-                <Textarea
-                  id="knowledge-question"
-                  value={question}
-                  onChange={(event) => setQuestion(event.target.value)}
-                  placeholder="Ask about accepted knowledge…"
-                  maxLength={4000}
-                  rows={3}
-                  disabled={pending}
-                />
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="flex flex-col gap-3 border-b p-4">
+              <Field>
+                <FieldLabel id="query-scope-label">Answer scope</FieldLabel>
+                <ToggleGroup
+                  aria-labelledby="query-scope-label"
+                  value={[scope]}
+                  onValueChange={(values) => {
+                    const selected = values[0] as QueryScope | undefined
+                    if (selected) setScope(selected)
+                  }}
+                  variant="outline"
+                  size="sm"
+                  spacing={0}
+                >
+                  <ToggleGroupItem value="concept" disabled={!page}>
+                    Current page
+                  </ToggleGroupItem>
+                  <ToggleGroupItem value="bundle">
+                    Complete bundle
+                  </ToggleGroupItem>
+                </ToggleGroup>
+                <FieldDescription>
+                  {scope === "concept" && page
+                    ? page
+                    : "All accepted Concepts in this fixed Knowledge Bundle."}
+                </FieldDescription>
               </Field>
-              <Button type="submit" disabled={pending || !question.trim()}>
-                {pending ? (
-                  <Spinner data-icon="inline-start" />
-                ) : (
-                  <SendIcon data-icon="inline-start" />
-                )}
-                {pending ? "Asking…" : "Ask"}
-              </Button>
-            </FieldGroup>
-          </form>
-        </div>
-      </SheetContent>
-    </Sheet>
+              <Alert>
+                <CloudUploadIcon />
+                <AlertTitle>Data egress</AlertTitle>
+                <AlertDescription>
+                  Your question and only the accepted Claims and Evidence
+                  requested by the Query Agent are sent to the selected Gateway
+                  Profile.
+                </AlertDescription>
+              </Alert>
+            </div>
+
+            <MessageScrollerProvider autoScroll>
+              <MessageScroller className="min-h-0 flex-1">
+                <MessageScrollerViewport className="px-4 py-5">
+                  <MessageScrollerContent>
+                    {turns.length === 0 ? (
+                      <MessageScrollerItem messageId="empty">
+                        <Empty className="min-h-64">
+                          <EmptyHeader>
+                            <EmptyMedia variant="icon">
+                              <ShieldCheckIcon />
+                            </EmptyMedia>
+                            <EmptyTitle>Grounded answers only</EmptyTitle>
+                            <EmptyDescription>
+                              Unsupported questions return an explicit
+                              insufficient-support result. This session clears
+                              when the page reloads.
+                            </EmptyDescription>
+                          </EmptyHeader>
+                        </Empty>
+                      </MessageScrollerItem>
+                    ) : (
+                      turns.flatMap((turn) => [
+                        <MessageScrollerItem
+                          key={`${turn.id}-question`}
+                          messageId={`${turn.id}-question`}
+                          scrollAnchor
+                        >
+                          <Message align="end">
+                            <MessageContent>
+                              <MessageHeader>You</MessageHeader>
+                              <Bubble align="end">
+                                <BubbleContent>{turn.question}</BubbleContent>
+                              </Bubble>
+                            </MessageContent>
+                          </Message>
+                        </MessageScrollerItem>,
+                        <MessageScrollerItem
+                          key={`${turn.id}-answer`}
+                          messageId={`${turn.id}-answer`}
+                        >
+                          <QueryResponse
+                            turn={turn}
+                            onInvestigate={openInvestigation}
+                          />
+                        </MessageScrollerItem>,
+                      ])
+                    )}
+                  </MessageScrollerContent>
+                </MessageScrollerViewport>
+                <MessageScrollerButton />
+              </MessageScroller>
+            </MessageScrollerProvider>
+
+            <form className="border-t p-4" onSubmit={submit}>
+              <FieldGroup>
+                <Field data-disabled={pending || undefined}>
+                  <FieldLabel htmlFor="knowledge-question" className="sr-only">
+                    Ask a question
+                  </FieldLabel>
+                  <Textarea
+                    id="knowledge-question"
+                    value={question}
+                    onChange={(event) => setQuestion(event.target.value)}
+                    placeholder="Ask about accepted knowledge…"
+                    maxLength={4000}
+                    rows={3}
+                    disabled={pending}
+                  />
+                </Field>
+                <Button type="submit" disabled={pending || !question.trim()}>
+                  {pending ? (
+                    <Spinner data-icon="inline-start" />
+                  ) : (
+                    <SendIcon data-icon="inline-start" />
+                  )}
+                  {pending ? "Asking…" : "Ask"}
+                </Button>
+              </FieldGroup>
+            </form>
+          </div>
+        </SheetContent>
+      </Sheet>
+      <SourceInvestigationSheet
+        token={token}
+        runId={runId}
+        sourceSetDigest={sourceSetDigest}
+        open={investigationOpen}
+        onOpenChange={setInvestigationOpen}
+        launch={investigationLaunch}
+        identityKey={`${bundle}:${runId}:${sourceSetDigest}:${page ?? ""}:${conceptId ?? ""}`}
+      />
+    </>
   )
 }
 
-function QueryResponse({ turn }: { turn: Turn }) {
+function QueryResponse({
+  turn,
+  onInvestigate,
+}: {
+  turn: Turn
+  onInvestigate: (question: string) => void
+}) {
   if (turn.error)
     return (
       <Message align="start">
@@ -325,6 +364,16 @@ function QueryResponse({ turn }: { turn: Turn }) {
           ))}
         </BubbleGroup>
         <AnswerMetadata answer={answer} />
+        {answer.outcome === "insufficient_support" && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onInvestigate(turn.question)}
+          >
+            <FileSearchIcon data-icon="inline-start" />
+            Investigate source
+          </Button>
+        )}
       </MessageContent>
     </Message>
   )

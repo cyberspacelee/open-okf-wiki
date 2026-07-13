@@ -509,6 +509,22 @@ def _migration_7(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migration_8(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS source_investigation_audit (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES runs(id),
+            source_set_digest TEXT NOT NULL,
+            model TEXT NOT NULL,
+            usage_json TEXT NOT NULL,
+            latency_ms INTEGER NOT NULL,
+            outcome TEXT NOT NULL,
+            source_ids_json TEXT NOT NULL,
+            citations_json TEXT NOT NULL
+        )"""
+    )
+
+
 MIGRATIONS = (
     _migration_1,
     _migration_2,
@@ -517,6 +533,7 @@ MIGRATIONS = (
     _migration_5,
     _migration_6,
     _migration_7,
+    _migration_8,
 )
 CURRENT_STATE_SCHEMA_VERSION = len(MIGRATIONS)
 

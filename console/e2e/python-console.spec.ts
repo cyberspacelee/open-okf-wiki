@@ -32,7 +32,15 @@ let rejectModelA = false
 let linkedSource: string
 let managedOrigin: string
 let queryFixture:
-  { conceptId: string; claimId: string; evidenceId: string } | undefined
+  | {
+      conceptId: string
+      claimId: string
+      evidenceId: string
+      sourceId: string
+      sourcePath: string
+      sourceText: string
+    }
+  | undefined
 
 test.beforeAll(async () => {
   workspace = mkdtempSync(resolve(tmpdir(), "okf-wiki-console-"))
@@ -150,7 +158,48 @@ function queryGatewayResponse(payload: {
   const names = (payload?.tools ?? []).flatMap((tool) =>
     tool.function?.name ? [tool.function.name] : []
   )
-  if (!names.includes("renderable_claims") || !queryFixture) return null
+  if (!queryFixture) return null
+  const serialized = JSON.stringify(payload.messages)
+  const investigationTools = ["list_paths", "search_text", "read_text"]
+  if (investigationTools.every((name) => names.includes(name))) {
+    const output = names.find((name) => !investigationTools.includes(name))
+    if (!output) throw new Error("Source Investigation output tool is missing")
+    const returns = (payload.messages ?? []).filter(
+      (message) => message.role === "tool"
+    ).length
+    const name = returns === 0 ? "read_text" : output
+    const args =
+      returns === 0
+        ? {
+            source_id: queryFixture.sourceId,
+            path: queryFixture.sourcePath,
+            start_line: 1,
+            end_line: 1,
+          }
+        : {
+            segments: [
+              {
+                kind: "fact",
+                text: queryFixture.sourceText,
+                citations: [
+                  {
+                    source_id: queryFixture.sourceId,
+                    path: queryFixture.sourcePath,
+                    start_line: 1,
+                    end_line: 1,
+                  },
+                ],
+              },
+            ],
+          }
+    return gatewayToolResponse(
+      payload.model,
+      name,
+      args,
+      `investigation-${returns}`
+    )
+  }
+  if (!names.includes("renderable_claims")) return null
   const output = names.find(
     (name) =>
       ![
@@ -164,12 +213,13 @@ function queryGatewayResponse(payload: {
   const returns = (payload.messages ?? []).filter(
     (message) => message.role === "tool"
   ).length
-  const bundle = JSON.stringify(payload.messages).includes(
-    '\\"scope\\": \\"bundle\\"'
-  )
+  const bundle = serialized.includes('\\"scope\\": \\"bundle\\"')
   let name: string
   let args: object
-  if (bundle && returns === 0) {
+  if (serialized.includes("Which source-only detail remains provisional?")) {
+    name = output
+    args = { segments: [{ kind: "insufficient_support" }] }
+  } else if (bundle && returns === 0) {
     name = "find_concepts"
     args = { query: "Source" }
   } else if ((bundle && returns === 1) || (!bundle && returns === 0)) {
@@ -193,11 +243,20 @@ function queryGatewayResponse(payload: {
       ],
     }
   }
+  return gatewayToolResponse(payload.model, name, args, `query-${returns}`)
+}
+
+function gatewayToolResponse(
+  model: string | undefined,
+  name: string,
+  args: object,
+  id: string
+) {
   return {
-    id: `query-${returns}`,
+    id,
     object: "chat.completion",
     created: 1,
-    model: payload.model,
+    model,
     choices: [
       {
         index: 0,
@@ -207,7 +266,7 @@ function queryGatewayResponse(payload: {
           content: null,
           tool_calls: [
             {
-              id: `query-call-${returns}`,
+              id: `${id}-call`,
               type: "function",
               function: { name, arguments: JSON.stringify(args) },
             },
@@ -251,7 +310,9 @@ test("configures, tests, and selects a Gateway Profile through Connections", asy
   await page.getByLabel("Profile ID").fill("enterprise")
   await page.getByLabel("Gateway ID").fill("corp-openai")
   await page.getByLabel("OpenAI-compatible base URL").fill(gatewayUrl)
-  await page.getByLabel("Optional non-secret headers").fill("X-Tenant=docs")
+  await page
+    .getByLabel("Optional non-secret headers")
+    .fill("X-Tenant=browser-tenant")
   await page.getByLabel("Credential").fill("browser-secret")
   const saveResponse = page.waitForResponse(
     (response) =>
@@ -323,7 +384,9 @@ test("configures, tests, and selects a Gateway Profile through Connections", asy
   await page.getByLabel("Profile ID").fill("enterprise")
   await page.getByLabel("Gateway ID").fill("corp-openai")
   await page.getByLabel("OpenAI-compatible base URL").fill(gatewayUrl)
-  await page.getByLabel("Optional non-secret headers").fill("X-Tenant=docs")
+  await page
+    .getByLabel("Optional non-secret headers")
+    .fill("X-Tenant=browser-tenant")
   await page.getByLabel("Credential").fill("invalid-browser-secret")
   await page.getByRole("button", { name: "Save profile" }).click()
   await expect(page.getByText("Not tested")).toBeVisible()
@@ -900,7 +963,14 @@ test("loads the built Console through the real Python launcher", async ({
     "guides",
     "secure-reader.md"
   )
-  queryFixture = { conceptId, claimId, evidenceId }
+  queryFixture = {
+    conceptId,
+    claimId,
+    evidenceId,
+    sourceId: readerSource.id,
+    sourcePath: "README.md",
+    sourceText: evidenceText,
+  }
   writeFileSync(
     join(
       workspace,
@@ -1004,7 +1074,7 @@ Accepted knowledge is source grounded.
       "run",
       "python",
       "-c",
-      "import sys; from okf_wiki.gateway_profiles import GatewayProfileRegistry; r=GatewayProfileRegistry(sys.argv[1]); r.save({'id':'enterprise','name':'Enterprise Gateway','gateway_id':'corp-openai','base_url':sys.argv[2],'headers':{'X-Tenant':'docs'}},credential='browser-secret'); r.test('enterprise',model='model-a'); r.test('enterprise',model='model-b')",
+      "import sys; from okf_wiki.gateway_profiles import GatewayProfileRegistry; r=GatewayProfileRegistry(sys.argv[1]); r.save({'id':'enterprise','name':'Enterprise Gateway','gateway_id':'corp-openai','base_url':sys.argv[2],'headers':{'X-Tenant':'browser-tenant'}},credential='browser-secret'); r.test('enterprise',model='model-a'); r.test('enterprise',model='model-b')",
       resolve(workspace, "machine"),
       gatewayUrl,
     ],
@@ -1093,6 +1163,159 @@ Accepted knowledge is source grounded.
   expect(JSON.parse(queryAudit).rows).toHaveLength(2)
   expect(queryAudit).not.toContain("What accepted knowledge")
   expect(queryAudit).not.toContain("Source knowledge.")
+
+  const investigationQuestion = "Which source-only detail remains provisional?"
+  let sourceInvestigationPosts = 0
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname === "/api/v1/source-investigations"
+    )
+      sourceInvestigationPosts += 1
+  })
+  const unsupportedQueryResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/api/v1/knowledge/query"
+  )
+  await queryDialog.getByLabel("Ask a question").fill(investigationQuestion)
+  await queryDialog.getByRole("button", { name: "Ask", exact: true }).click()
+  expect((await unsupportedQueryResponse).status()).toBe(200)
+  await expect(
+    queryDialog.getByText(
+      "Accepted knowledge does not contain enough support for this part of the question."
+    )
+  ).toBeVisible()
+  const authorityBeforeInvestigation = authoritativeKnowledgeState(
+    readerRunId,
+    readerPage
+  )
+  await queryDialog.getByRole("button", { name: "Investigate source" }).click()
+  const investigationDialog = page.getByRole("dialog")
+  await expect(
+    investigationDialog.getByRole("heading", {
+      name: "Investigate fixed sources",
+    })
+  ).toBeVisible()
+  await expect(
+    investigationDialog.getByLabel("Source investigation question")
+  ).toHaveValue(investigationQuestion)
+  expect(sourceInvestigationPosts).toBe(0)
+
+  const sourceInvestigationResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/api/v1/source-investigations"
+  )
+  await investigationDialog
+    .getByRole("button", { name: "Investigate fixed sources", exact: true })
+    .click()
+  const investigationResponse = await sourceInvestigationResponse
+  expect(investigationResponse.status()).toBe(200)
+  expect(investigationResponse.request().postDataJSON()).toEqual({
+    question: investigationQuestion,
+    run_id: readerRunId,
+    source_set_digest: readerSourceSet.digest,
+  })
+  await expect(
+    investigationDialog.getByText(evidenceText, { exact: true })
+  ).toBeVisible()
+  await expect(
+    investigationDialog.getByText(
+      `${readerSource.id}@${readerSource.revision}/README.md#L1-L1`,
+      { exact: true }
+    )
+  ).toBeVisible()
+  await expect(
+    investigationDialog.getByText(evidenceDigest, { exact: true })
+  ).toBeVisible()
+  await expect(
+    investigationDialog
+      .getByText("Provisional · not part of Knowledge Bundle", {
+        exact: true,
+      })
+      .first()
+  ).toBeVisible()
+  await expect(
+    investigationDialog.getByText(`Run ${readerRunId}`, { exact: true }).first()
+  ).toBeVisible()
+  await expect(
+    investigationDialog
+      .getByText(`Source Set ${readerSourceSet.digest}`, { exact: true })
+      .first()
+  ).toBeVisible()
+  await expect(
+    investigationDialog.getByText("model-a", { exact: true })
+  ).toBeVisible()
+  await expect(
+    investigationDialog.getByText(
+      `Source ${readerSource.id}@${readerSource.revision}`,
+      { exact: true }
+    )
+  ).toBeVisible()
+  await expect(
+    investigationDialog.getByText(/Investigation content is not persisted/)
+  ).toBeVisible()
+  await expect(
+    investigationDialog.getByRole("button", { name: /accept/i })
+  ).toHaveCount(0)
+  expect(sourceInvestigationPosts).toBe(1)
+  expect(authoritativeKnowledgeState(readerRunId, readerPage)).toBe(
+    authorityBeforeInvestigation
+  )
+
+  const investigationAudit = execFileSync(
+    "uv",
+    [
+      "run",
+      "python",
+      "-c",
+      "import json,sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(json.dumps({'columns':[row[1] for row in c.execute('pragma table_info(source_investigation_audit)')],'rows':c.execute('select * from source_investigation_audit order by rowid').fetchall()}))",
+      join(workspace, ".okf-wiki", "runs.db"),
+    ],
+    { cwd: repoRoot, encoding: "utf-8" }
+  )
+  const parsedInvestigationAudit = JSON.parse(investigationAudit)
+  expect(parsedInvestigationAudit.columns).toEqual([
+    "id",
+    "run_id",
+    "source_set_digest",
+    "model",
+    "usage_json",
+    "latency_ms",
+    "outcome",
+    "source_ids_json",
+    "citations_json",
+  ])
+  expect(parsedInvestigationAudit.rows).toHaveLength(1)
+  expect(parsedInvestigationAudit.rows[0].slice(1, 4)).toEqual([
+    readerRunId,
+    readerSourceSet.digest,
+    "model-a",
+  ])
+  expect(parsedInvestigationAudit.rows[0][6]).toBe("answered")
+  expect(JSON.parse(parsedInvestigationAudit.rows[0][7])).toEqual(
+    readerSourceSet.sources.map((source: { id: string }) => source.id).sort()
+  )
+  expect(JSON.parse(parsedInvestigationAudit.rows[0][8])).toEqual([
+    {
+      source_id: readerSource.id,
+      revision: readerSource.revision,
+      path: "README.md",
+      start_line: 1,
+      end_line: 1,
+      digest: evidenceDigest,
+    },
+  ])
+  expect(investigationAudit).not.toContain(investigationQuestion)
+  expect(investigationAudit).not.toContain(evidenceText)
+  await page.screenshot({
+    path: "test-results/source-investigation-desktop-real.png",
+    fullPage: true,
+  })
+  await investigationDialog.getByRole("button", { name: "Close" }).click()
+  await page.getByRole("button", { name: "Ask accepted knowledge" }).click()
+  await expect(page.getByRole("dialog")).toBeVisible()
 
   await page.screenshot({
     path: "test-results/query-desktop-real.png",
@@ -1345,7 +1568,20 @@ function authoritativeKnowledgeState(runId: string, pagePath: string) {
       "run",
       "python",
       "-c",
-      "import hashlib,json,pathlib,sqlite3,sys; c=sqlite3.connect(sys.argv[1]); run=sys.argv[2]; tables=('coverage_obligations','accepted_evidence','accepted_claims','claim_evidence','accepted_concepts','concept_claims','page_plans','verification_candidates','verification_findings'); payload={'run':c.execute('select state,source_set_json,coverage_json,error from runs where id=?',(run,)).fetchone(),'tables':{table:c.execute(f'select * from {table} where run_id=? order by rowid',(run,)).fetchall() for table in tables},'page':hashlib.sha256(pathlib.Path(sys.argv[3]).read_bytes()).hexdigest()}; print(json.dumps(payload,sort_keys=True))",
+      `import hashlib,json,os,pathlib,sqlite3,sys
+database,run_id,page_path=sys.argv[1:]
+c=sqlite3.connect(database)
+excluded={"schema_migrations","query_audit","source_investigation_audit"}
+tables=[row[0] for row in c.execute("select name from sqlite_master where type='table' order by name") if not row[0].startswith("sqlite_") and row[0] not in excluded]
+row=c.execute("select state,source_set_json,coverage_json,error,staging_dir,publish_dir from runs where id=?",(run_id,)).fetchone()
+assert row
+def tree(root):
+    root=pathlib.Path(root)
+    return {path.relative_to(root).as_posix():({"symlink":os.readlink(path)} if path.is_symlink() else {"sha256":hashlib.sha256(path.read_bytes()).hexdigest()}) for path in sorted(root.rglob("*")) if path.is_file() or path.is_symlink()}
+staging=pathlib.Path(row[4])
+published=pathlib.Path(row[5])
+payload={"run":row[:4],"tables":{table:c.execute(f'select * from "{table}" order by rowid').fetchall() for table in tables},"page":hashlib.sha256(pathlib.Path(page_path).read_bytes()).hexdigest(),"staged":{"target":str(staging.resolve()),"tree":tree(staging)},"published":{"link":os.readlink(published) if published.is_symlink() else None,"target":str(published.resolve()),"tree":tree(published.resolve())}}
+print(json.dumps(payload,sort_keys=True))`,
       join(workspace, ".okf-wiki", "runs.db"),
       runId,
       pagePath,

@@ -33,6 +33,8 @@ from .knowledge_contracts import (
 from .planner import PlannerAgent
 from .query_agent import KnowledgeQueryContext, QueryAgent
 from .scheduler import PlannerSummary, RemainingBudgets, SourceSummary
+from .security import git_read, git_read_bytes
+from .source_investigation import InvestigationSource, SourceInvestigator
 from .state_schema import migrate_state
 from .verification import VerificationSource, VerificationTarget
 from .verifier import VerifierAgent
@@ -45,6 +47,12 @@ QUERY_CLAIM_ID = "claim:" + "a" * 64
 QUERY_EVIDENCE_ID = "evidence:" + "b" * 64
 QUERY_CONCEPT_ID = "concept:" + "c" * 64
 QUERY_STATEMENT = "Accepted query answers use exact evidence."
+INVESTIGATION_RUN_ID = "investigation-run-1"
+INVESTIGATION_SOURCE_SET_DIGEST = "investigation-digest-v1"
+INVESTIGATION_REFUSAL = (
+    "The fixed Source Snapshots do not provide enough safely retrieved support for this part "
+    "of the question."
+)
 
 
 @dataclass(frozen=True)
@@ -430,7 +438,7 @@ def _build_query_eval_fixture(workspace: Path) -> Path:
     return database
 
 
-def _query_trajectory(messages) -> list[dict[str, str]]:
+def _read_only_trajectory(messages) -> list[dict[str, str]]:
     trajectory = []
     for message in messages:
         for part in message.parts:
@@ -557,8 +565,137 @@ def _query_output(
             ).ask(context, question)
         )
     except Exception:
-        return {}, _query_trajectory(messages)
-    return answer.model_dump(mode="json"), _query_trajectory(messages)
+        return {}, _read_only_trajectory(messages)
+    return answer.model_dump(mode="json"), _read_only_trajectory(messages)
+
+
+def _file_snapshot(root: Path) -> dict[str, str]:
+    return {
+        path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def _investigator_authority_snapshot(
+    repository: Path, database: Path, bundle: Path
+) -> dict[str, object]:
+    revision = git_read(repository, "rev-parse", "HEAD").strip()
+    return {
+        "git_head": revision,
+        "git_status": git_read(repository, "status", "--porcelain"),
+        "git_tree": hashlib.sha256(
+            git_read_bytes(repository, "ls-tree", "-r", "--full-tree", "-z", revision)
+        ).hexdigest(),
+        "source_files": {
+            path.relative_to(repository).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(repository.rglob("*"))
+            if path.is_file() and ".git" not in path.relative_to(repository).parts
+        },
+        "database": hashlib.sha256(database.read_bytes()).hexdigest(),
+        "bundle": _file_snapshot(bundle),
+    }
+
+
+def _investigator_output(
+    materialized: MaterializedCorpus,
+    authority_database: Path,
+    model_version: str,
+    case_name: str,
+) -> tuple[dict[str, object], list[dict[str, str]]]:
+    case = next(case for case in load_role_dataset("investigator").cases if case.name == case_name)
+    inputs = case.inputs
+    question = cast(str, inputs["question"])
+    source_input = cast(list[dict[str, object]], inputs["sources"])[0]
+    source_id = cast(str, source_input["source_id"])
+    revision = cast(str, source_input["revision"])
+    repository = materialized.repositories[source_id]
+    if materialized.base_revisions[source_id] != revision:
+        raise ValueError("Investigator Eval source revision does not match the corpus")
+    source = InvestigationSource.open(source_id, repository, revision)
+    bundle = authority_database.parent / ".published.releases" / QUERY_RUN_ID
+    before = _investigator_authority_snapshot(repository, authority_database, bundle)
+    messages = []
+
+    def function(current, info: AgentInfo) -> ModelResponse:
+        messages[:] = current
+        returns = [
+            part
+            for message in current
+            for part in message.parts
+            if isinstance(part, ToolReturnPart)
+        ]
+        if not returns:
+            line = 3 if case_name == "grounded-provisional-answer" else 1
+            part = ToolCallPart(
+                "read_text",
+                {
+                    "source_id": source_id,
+                    "path": "requirements/orders.md",
+                    "start_line": line,
+                    "end_line": line,
+                },
+                f"investigator-read-{line}",
+            )
+        elif case_name == "grounded-provisional-answer":
+            part = ToolCallPart(
+                info.output_tools[0].name,
+                {
+                    "segments": [
+                        {
+                            "kind": "fact",
+                            "text": "The API must reject an order without line items.",
+                            "citations": [
+                                {
+                                    "source_id": source_id,
+                                    "path": "requirements/orders.md",
+                                    "start_line": 3,
+                                    "end_line": 3,
+                                }
+                            ],
+                        }
+                    ]
+                },
+                "investigator-answer",
+            )
+        else:
+            part = ToolCallPart(
+                info.output_tools[0].name,
+                {
+                    "segments": [
+                        {
+                            "kind": "insufficient_support",
+                            "text": INVESTIGATION_REFUSAL,
+                        }
+                    ]
+                },
+                "investigator-refuse",
+            )
+        return ModelResponse(
+            [part],
+            usage=RequestUsage(input_tokens=10, output_tokens=5),
+        )
+
+    try:
+        answer = asyncio.run(
+            SourceInvestigator(
+                FunctionModel(function),
+                model_name=model_version,
+            ).investigate(
+                run_id=INVESTIGATION_RUN_ID,
+                source_set_digest=INVESTIGATION_SOURCE_SET_DIGEST,
+                sources=(source,),
+                question=question,
+            )
+        )
+        answer_payload: dict[str, object] = answer.model_dump(mode="json")
+    except Exception:
+        answer_payload = {}
+    after = _investigator_authority_snapshot(repository, authority_database, bundle)
+    return {
+        "answer": answer_payload,
+        "authority_unchanged": before == after,
+    }, _read_only_trajectory(messages)
 
 
 def execute_agent_eval(
@@ -567,7 +704,9 @@ def execute_agent_eval(
     workspace: Path,
     model_version: str,
 ) -> AgentEvalExecution:
-    tools = {role: [] for role in ("planner", "worker", "verifier", "renderer", "query")}
+    tools = {
+        role: [] for role in ("planner", "worker", "verifier", "renderer", "query", "investigator")
+    }
     planner = _planner_output(tools)
     worker, candidate_id = _worker_output(corpus, materialized, workspace, model_version)
     verifier = _verifier_output(materialized, tools)
@@ -577,12 +716,24 @@ def execute_agent_eval(
         case: _query_output(query_database, model_version, case)
         for case in ("grounded-answer", "prompt-injection-refusal")
     }
+    investigations = {
+        case: _investigator_output(materialized, query_database, model_version, case)
+        for case in (
+            "grounded-provisional-answer",
+            "prompt-injection-mutation-refusal",
+        )
+    }
     payload = json.loads((CORPUS_ROOT / corpus.version / "agent-eval.json").read_text())
     outputs = {"planner": planner, "worker": worker, "verifier": verifier, "renderer": renderer}
     for result in payload["results"]:
         if result["role"] == "query":
             result["output"], result["trajectory"] = queries[result["case"]]
             tools["query"].extend(
+                event["tool"] for event in result["trajectory"] if event["event"] == "call"
+            )
+        elif result["role"] == "investigator":
+            result["output"], result["trajectory"] = investigations[result["case"]]
+            tools["investigator"].extend(
                 event["tool"] for event in result["trajectory"] if event["event"] == "call"
             )
         else:
@@ -599,6 +750,7 @@ def execute_agent_eval(
             "verifier": 2,
             "renderer": 1,
             "query": len(queries),
+            "investigator": len(investigations),
         },
         function_tools={key: tuple(value) for key, value in tools.items()},
     )

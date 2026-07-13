@@ -364,6 +364,11 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     **self.server.application.query_knowledge(self._json_body()),
                 }
+            elif path == "/api/v1/source-investigations" and self.command == "POST":
+                payload = {
+                    "ok": True,
+                    **self.server.application.investigate_source(self._json_body()),
+                }
             elif path == "/api/v1/knowledge/diff" and self.command in {"GET", "HEAD"}:
                 query = self._query(
                     query_string,

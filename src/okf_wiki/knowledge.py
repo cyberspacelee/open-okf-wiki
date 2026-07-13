@@ -23,7 +23,7 @@ from pygments.token import Token as PygmentsToken
 
 from .accepted_knowledge import AcceptedKnowledgeStore
 from .bundle import published_run_id
-from .worker import GitObjectSnapshotReader
+from .source_snapshot import GitObjectSnapshotReader
 
 
 MAX_BUNDLE_PAGE_BYTES = 1_000_000

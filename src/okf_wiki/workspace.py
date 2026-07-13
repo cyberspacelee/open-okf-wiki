@@ -1196,6 +1196,163 @@ class WorkspaceApplication:
             raise WorkspaceError(str(error)) from error
         return answer.model_dump(mode="json")
 
+    def investigate_source(self, payload: object) -> dict:
+        required = {"question", "run_id", "source_set_digest"}
+        if not isinstance(payload, dict) or set(payload) != required:
+            raise WorkspaceError(
+                "Source Investigation requires question, Run, and Source Set digest"
+            )
+        values = cast(dict[str, object], payload)
+        if any(not isinstance(values[key], str) for key in required):
+            raise WorkspaceError("Source Investigation fields must be strings")
+        question = cast(str, values["question"])
+        run_id = cast(str, values["run_id"])
+        source_set_digest = cast(str, values["source_set_digest"])
+        if not question.strip():
+            raise WorkspaceError("Source Investigation must not be blank")
+        if len(question) > 4_000:
+            raise WorkspaceError("Source Investigation exceeds 4000 characters")
+        self._validate_run_id(run_id)
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}", source_set_digest) is None:
+            raise WorkspaceError("Invalid Source Investigation identity")
+        snapshot = self.open()
+        with sqlite3.connect(self.database_path) as connection:
+            connection.row_factory = sqlite3.Row
+            row = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        if row is None:
+            raise WorkspaceError(f"Unknown Production Run: {run_id}")
+        source_set = self._source_set_for_row(row)
+        if source_set.get("digest") != source_set_digest:
+            raise WorkspaceError("Source Investigation Source Set changed; refresh before asking")
+        source_records = source_set.get("sources")
+        if not isinstance(source_records, list) or not 1 <= len(source_records) <= 32:
+            raise WorkspaceError("Production Run has no bounded fixed Source Snapshot set")
+
+        import asyncio
+
+        from .gateway_common import GatewayError
+        from .gateway_profiles import GatewayApplication
+        from .source_investigation import (
+            InvestigationSource,
+            InvestigationSourceIdentity,
+            SourceInvestigationAnswer,
+            SourceInvestigator,
+            record_source_investigation_audit,
+        )
+        from .worker import GatewaySettings, build_gateway_model
+
+        try:
+            sources = tuple(
+                InvestigationSource.open(identity.source_id, Path(repository), identity.revision)
+                for source in source_records
+                if isinstance(source, dict)
+                and all(
+                    isinstance(source.get(key), str) for key in ("id", "repository", "revision")
+                )
+                for identity, repository in (
+                    (
+                        InvestigationSourceIdentity(
+                            source_id=cast(str, source["id"]),
+                            revision=cast(str, source["revision"]),
+                        ),
+                        cast(str, source["repository"]),
+                    ),
+                )
+            )
+        except (OSError, UnicodeError, ValueError) as error:
+            raise WorkspaceError(f"Cannot open fixed Source Snapshot: {error}") from error
+        if len(sources) != len(source_records) or len(
+            {source.source_id for source in sources}
+        ) != len(sources):
+            raise WorkspaceError("Production Run Source Snapshot metadata is invalid")
+
+        gateways = GatewayApplication(self.config_root)
+        assigned_model = snapshot.models.role_overrides.get(
+            "query", snapshot.models.default_model or "unconfigured"
+        )
+        investigation_secrets = [str(gateways.registry.root)]
+        if snapshot.models.gateway_profile:
+            try:
+                redaction_profile = gateways.registry.get(snapshot.models.gateway_profile)
+                investigation_secrets.extend(redaction_profile.headers.values())
+                investigation_secrets.append(gateways.registry.credential(redaction_profile.id))
+            except GatewayError:
+                pass
+        from .security import contains_secret
+
+        source_identity = json.dumps(
+            {
+                "run_id": run_id,
+                "source_set_digest": source_set_digest,
+                "sources": [
+                    {"source_id": source.source_id, "revision": source.revision}
+                    for source in sources
+                ],
+            },
+            sort_keys=True,
+        )
+        if contains_secret(source_identity, tuple(investigation_secrets)):
+            raise WorkspaceError(
+                "Fixed Source Snapshot identity conflicts with protected credential metadata"
+            )
+        try:
+            resolved = gateways.resolve_models(snapshot.models)
+            profile, credential = gateways.execution_connection(resolved)
+            assigned_model = resolved["assignments"]["query"]
+            secrets = (
+                credential,
+                *profile.headers.values(),
+                str(gateways.registry.root),
+            )
+            limit = resolved["runtime_limits"].get("per_agent_call_total_tokens", 8_000)
+            answer = asyncio.run(
+                SourceInvestigator(
+                    build_gateway_model(
+                        GatewaySettings(
+                            base_url=profile.base_url,
+                            api_key=credential,
+                            model=assigned_model,
+                            default_headers=profile.headers,
+                        )
+                    ),
+                    model_name=assigned_model,
+                    total_tokens_limit=limit,
+                    secrets=secrets,
+                ).investigate(
+                    run_id=run_id,
+                    source_set_digest=source_set_digest,
+                    sources=sources,
+                    question=question,
+                )
+            )
+        except GatewayError as error:
+            safe_secrets = tuple(investigation_secrets)
+            answer = SourceInvestigationAnswer(
+                investigation_id=uuid.uuid4().hex,
+                outcome="error",
+                run_id=run_id,
+                source_set_digest=source_set_digest,
+                model=self._redact(assigned_model, safe_secrets),
+                sources=[
+                    {"source_id": source.source_id, "revision": source.revision}
+                    for source in sources
+                ],
+                segments=(),
+                usage={
+                    "requests": 0,
+                    "tool_calls": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                },
+                latency_ms=0,
+                error=self._redact(str(error), safe_secrets),
+            )
+        except ValueError as error:
+            raise WorkspaceError(str(error)) from error
+        record_source_investigation_audit(self.database_path, answer)
+        return answer.model_dump(mode="json")
+
     def sources(self) -> dict:
         with self._locked():
             self._recover_update_locked()

@@ -8,12 +8,13 @@ from typing import Annotated, Literal, cast
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from pydantic_evals import Dataset
 
+from .investigation_evals import INVESTIGATION_METRICS, evaluate_investigation
 from .knowledge_contracts import WorkerProposal
 from .query_evals import QUERY_METRICS, evaluate_query
 from .scheduler import TaskPlan
 
 
-AgentRole = Literal["planner", "worker", "verifier", "renderer", "query"]
+AgentRole = Literal["planner", "worker", "verifier", "renderer", "query", "investigator"]
 ChangeKind = Literal[
     "model", "prompt", "tool", "classifier", "workflow", "profile", "policy", "schema"
 ]
@@ -60,6 +61,7 @@ ROLE_METRICS: dict[AgentRole, tuple[str, ...]] = {
         "readability",
     ),
     "query": QUERY_METRICS,
+    "investigator": INVESTIGATION_METRICS,
 }
 DATASET_VERSION = "v1"
 DATASET_ROOT = Path(__file__).with_name("eval_datasets")
@@ -74,7 +76,7 @@ class AgentEvalVersions(BaseModel):
     workflow: str = Field(min_length=1)
 
 
-class QueryTrajectoryEvent(BaseModel):
+class AgentTrajectoryEvent(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     event: Literal["call", "return", "retry"]
@@ -84,11 +86,11 @@ class QueryTrajectoryEvent(BaseModel):
     @model_validator(mode="after")
     def valid_outcome(self):
         if (self.event == "call") != (self.outcome == "requested"):
-            raise ValueError("Query trajectory call outcomes must be requested")
+            raise ValueError("Agent trajectory call outcomes must be requested")
         if self.event == "return" and self.outcome not in {"ok", "empty"}:
-            raise ValueError("Query trajectory return outcomes must be ok or empty")
+            raise ValueError("Agent trajectory return outcomes must be ok or empty")
         if self.event == "retry" and self.outcome not in {"rejected", "error"}:
-            raise ValueError("Query trajectory retry outcomes must be rejected or error")
+            raise ValueError("Agent trajectory retry outcomes must be rejected or error")
         return self
 
 
@@ -99,7 +101,7 @@ class RoleEvalResult(BaseModel):
     case: str = Field(min_length=1)
     output: dict[str, object]
     candidate_id: str | None = Field(default=None, min_length=1)
-    trajectory: tuple[QueryTrajectoryEvent, ...] = Field(default=(), max_length=32)
+    trajectory: tuple[AgentTrajectoryEvent, ...] = Field(default=(), max_length=32)
 
 
 class SemanticJudgeOutcome(BaseModel):
@@ -426,6 +428,8 @@ def evaluate_role(
         return _renderer_metrics(inputs, expected, output)
     if role == "query":
         return evaluate_query(case_name, dict(output))
+    if role == "investigator":
+        return evaluate_investigation(case_name, dict(output))
     raise ValueError(f"Agent Eval is not implemented for role: {role}")
 
 
@@ -494,12 +498,13 @@ def _worker_trajectory_failures(
     return tuple(prefix + failure for failure in detected)
 
 
-def _query_trajectory_failures(
+def _read_only_trajectory_failures(
+    role: Literal["query", "investigator"],
     case_name: str,
     inputs: dict[str, object],
     result: RoleEvalResult | None,
 ) -> tuple[str, ...]:
-    prefix = f"query:{case_name}:trajectory:"
+    prefix = f"{role}:{case_name}:trajectory:"
     if result is None:
         return (prefix + "missing_result",)
     if not result.trajectory:
@@ -586,7 +591,11 @@ def evaluate_release(manifest: ReleaseEvalManifest) -> AgentEvalReport:
                 )
             elif role == "query":
                 trajectory_failures.extend(
-                    _query_trajectory_failures(case.name, case.inputs, result)
+                    _read_only_trajectory_failures("query", case.name, case.inputs, result)
+                )
+            elif role == "investigator":
+                trajectory_failures.extend(
+                    _read_only_trajectory_failures("investigator", case.name, case.inputs, result)
                 )
     failures.extend(trajectory_failures)
     failures.extend(judge_failures)

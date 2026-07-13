@@ -22,7 +22,7 @@ from .verification import (
     VerificationPerspective,
     VerificationTarget,
 )
-from .worker import GitObjectSnapshotReader
+from .source_snapshot import GitObjectSnapshotReader
 
 
 PERSPECTIVE_INSTRUCTIONS = {

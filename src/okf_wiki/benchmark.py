@@ -661,8 +661,23 @@ def _execute_run(
         revisions,
         mutation_id,
         role_function_tools
-        or {"planner": [], "worker": [], "verifier": [], "renderer": [], "query": []},
-        role_invocations or {"planner": 0, "worker": 0, "verifier": 0, "renderer": 0, "query": 0},
+        or {
+            "planner": [],
+            "worker": [],
+            "verifier": [],
+            "renderer": [],
+            "query": [],
+            "investigator": [],
+        },
+        role_invocations
+        or {
+            "planner": 0,
+            "worker": 0,
+            "verifier": 0,
+            "renderer": 0,
+            "query": 0,
+            "investigator": 0,
+        },
     )
     finish_run(run_id)
     database = workspace / ".okf-wiki" / "runs.db"
@@ -1151,8 +1166,16 @@ def run_benchmark(
         "verifier": [],
         "renderer": [],
         "query": [],
+        "investigator": [],
     }
-    role_invocations = {"planner": 0, "worker": 0, "verifier": 0, "renderer": 0, "query": 0}
+    role_invocations = {
+        "planner": 0,
+        "worker": 0,
+        "verifier": 0,
+        "renderer": 0,
+        "query": 0,
+        "investigator": 0,
+    }
     with _working_directory(root):
         publish = root / "published" / "baseline"
         baseline = _execute_run(
@@ -1300,6 +1323,12 @@ def run_benchmark(
         major_claim_similarity=_minimum_similarity(claim_sets),
         canonical_concept_similarity=_minimum_similarity(concept_sets),
     )
+    agent_execution = execute_agent_eval(corpus, materialized, root, MODEL_VERSION)
+    agent_eval = agent_execution.report
+    audit_totals = aggregate_worker_audits(root / "worker-audit.db", root / "agent-eval-worker.db")
+    for role in role_invocations:
+        role_invocations[role] += agent_execution.invocations[role]
+        role_function_tools[role].extend(agent_execution.function_tools[role])
     clean_after = {
         source_id: (
             git_write(repository, "status", "--porcelain"),
@@ -1307,12 +1336,6 @@ def run_benchmark(
         )
         for source_id, repository in materialized.repositories.items()
     }
-    agent_execution = execute_agent_eval(corpus, materialized, root, MODEL_VERSION)
-    agent_eval = agent_execution.report
-    audit_totals = aggregate_worker_audits(root / "worker-audit.db", root / "agent-eval-worker.db")
-    for role in role_invocations:
-        role_invocations[role] += agent_execution.invocations[role]
-        role_function_tools[role].extend(agent_execution.function_tools[role])
     role_trajectories = {
         role: RoleTrajectoryReport(
             invocations=role_invocations[role],
@@ -1323,6 +1346,8 @@ def run_benchmark(
                 else set(tools)
                 <= {"find_concepts", "renderable_claims", "get_claim", "read_evidence"}
                 if role == "query"
+                else set(tools) <= {"list_paths", "search_text", "read_text"}
+                if role == "investigator"
                 else not tools
             ),
         )
