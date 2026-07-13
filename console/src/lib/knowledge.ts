@@ -161,7 +161,8 @@ export async function fetchKnowledgePage(
   if (
     !isPage(payload) ||
     payload.kind !== bundle ||
-    payload.run_id !== runId
+    payload.run_id !== runId ||
+    payload.path !== path
   )
     throw invalid("Knowledge page")
   return payload
@@ -211,7 +212,8 @@ export async function fetchKnowledgeDiff(
     payload.base.kind !== option.base ||
     payload.base.run_id !== option.base_run_id ||
     payload.target.kind !== option.target ||
-    payload.target.run_id !== option.target_run_id
+    payload.target.run_id !== option.target_run_id ||
+    payload.path !== path
   )
     throw invalid("Knowledge diff")
   return payload
@@ -229,7 +231,8 @@ export async function fetchKnowledgeClaim(
     token,
     signal
   )
-  if (!isClaim(payload)) throw invalid("Accepted Claim")
+  if (!isClaim(payload) || payload.id !== claimId)
+    throw invalid("Accepted Claim")
   return payload
 }
 

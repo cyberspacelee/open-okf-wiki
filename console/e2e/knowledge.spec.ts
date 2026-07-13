@@ -337,13 +337,13 @@ test("keeps reader controls usable on a mobile viewport", async ({ page }) => {
 test("turns malformed and missing reader responses into retryable errors", async ({
   page,
 }) => {
-  let snapshotAttempts = 0
+  let validSnapshot = false
   let pageAttempts = 0
   await page.unroute("**/api/v1/knowledge?*")
   await page.route("**/api/v1/knowledge*", async (route) => {
     if (new URL(route.request().url()).pathname !== "/api/v1/knowledge")
       return route.fallback()
-    if (snapshotAttempts++ > 1) {
+    if (validSnapshot) {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -373,6 +373,7 @@ test("turns malformed and missing reader responses into retryable errors", async
   await expect(
     page.getByText("invalid Knowledge navigation response")
   ).toBeVisible()
+  validSnapshot = true
   await page.getByRole("button", { name: "Retry" }).click()
   await expect(
     page.getByText("Bundle page does not exist: guide.md")
@@ -475,6 +476,65 @@ test("drops a search response from the previous snapshot", async ({ page }) => {
   releaseSearch()
   await expect(page.getByText("stale-result")).toHaveCount(0)
   await expect(page.getByRole("region", { name: "Search results" })).toHaveCount(0)
+})
+
+test("rejects page, diff, and Claim responses for another requested identity", async ({
+  page,
+}) => {
+  let firstPage = true
+  await page.route("**/api/v1/knowledge/page?*", async (route) => {
+    if (!firstPage) return route.fallback()
+    firstPage = false
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        ...identity,
+        path: "other.md",
+        title: "Other page",
+        source,
+        metadata: {},
+        blocks,
+        outline: [],
+        backlinks: [],
+        diagnostics: [],
+      }),
+    })
+  })
+  await page.route("**/api/v1/knowledge/diff?*", (route) => {
+    const payload = diffPayload(new URL(route.request().url()))
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ...payload, path: "other.md" }),
+    })
+  })
+  await page.route("**/api/v1/knowledge/claims/*", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ...claimPayload(),
+        id: `claim:${"f".repeat(64)}`,
+      }),
+    })
+  )
+
+  await page.goto("/?view=knowledge#token=response-identity")
+  await expect(page.getByText("invalid Knowledge page response")).toBeVisible()
+  await page.getByRole("button", { name: "Retry" }).click()
+  await expect(
+    page.getByRole("heading", { name: "Safe reader", exact: true }).first()
+  ).toBeVisible()
+
+  await page.getByRole("button", { name: "Diff", exact: true }).click()
+  await expect(page.getByText("invalid Knowledge diff response")).toBeVisible()
+  await page.getByRole("button", { name: "Rendered" }).click()
+  await page.getByRole("button", { name: "View accepted Claim" }).click()
+  await expect(page.getByRole("dialog")).toContainText(
+    "invalid Accepted Claim response"
+  )
 })
 
 async function mockKnowledge(page: Page) {
