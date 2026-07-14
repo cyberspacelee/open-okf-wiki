@@ -1337,19 +1337,30 @@ test("completes the real multi-source release journey accessibly", async ({
   await page.keyboard.press("Enter")
   const publishDialog = page.getByRole("alertdialog")
   await expect(publishDialog).toHaveAccessibleName("Approve & publish?")
-  await expect(publishDialog.locator(":focus")).toHaveCount(1)
+  const cancelPublication = publishDialog.getByRole("button", {
+    name: "Cancel",
+  })
+  const confirmPublication = publishDialog.getByRole("button", {
+    name: "Confirm publication",
+  })
+  await expect(cancelPublication).toBeFocused()
+  await page.keyboard.press("Tab")
+  await expect(confirmPublication).toBeFocused()
+  await page.keyboard.press("Tab")
+  await expect(cancelPublication).toBeFocused()
+  await page.keyboard.press("Shift+Tab")
+  await expect(confirmPublication).toBeFocused()
   await page.keyboard.press("Escape")
   await expect(approveTrigger).toBeFocused()
   await page.keyboard.press("Enter")
+  await expect(cancelPublication).toBeFocused()
   const approvalResponse = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
       new URL(response.url()).pathname.endsWith("/decision")
   )
-  const confirmPublication = publishDialog.getByRole("button", {
-    name: "Confirm publication",
-  })
-  await confirmPublication.focus()
+  await page.keyboard.press("Tab")
+  await expect(confirmPublication).toBeFocused()
   await page.keyboard.press("Enter")
   expect((await approvalResponse).status()).toBe(200)
   await expect(page.getByRole("alert")).toContainText("published atomically")
