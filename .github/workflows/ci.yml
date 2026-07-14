@@ -34,11 +34,11 @@ jobs:
         working-directory: console
       - run: git diff --exit-code -- console/bun.lock src/okf_wiki/console_assets
       - run: uv run --locked pytest -m "not package_release"
+      - run: bunx playwright install --with-deps chromium
+        working-directory: console
       - run: uv run --locked pytest -m package_release tests/test_package_release.py
         env:
           OKF_WIKI_RELEASE_DIST: ${{ github.workspace }}/dist
-      - run: bunx playwright install --with-deps chromium
-        working-directory: console
       - run: CI=1 bun run test:e2e -- --workers=1
         working-directory: console
       - run: >-

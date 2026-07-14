@@ -25,12 +25,17 @@ def run(
     *,
     cwd: Path,
     env: dict[str, str] | None = None,
+    check: bool = True,
+    input_text: str | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [str(item) for item in command],
         cwd=cwd,
         env=env,
-        check=True,
+        input=input_text,
+        timeout=timeout,
+        check=check,
         capture_output=True,
         text=True,
     )
@@ -71,7 +76,9 @@ def test_fresh_sdist_wheel_runs_console_without_a_javascript_runtime(
 ) -> None:
     uv = shutil.which("uv")
     git = shutil.which("git")
-    assert uv and git
+    node = shutil.which("node")
+    assert uv and git and node
+    assert (ROOT / "console/node_modules/playwright").is_dir()
     dist = Path(os.environ.get("OKF_WIKI_RELEASE_DIST", tmp_path / "dist"))
     dist.mkdir(parents=True, exist_ok=True)
 
@@ -271,7 +278,8 @@ def test_fresh_sdist_wheel_runs_console_without_a_javascript_runtime(
         selector.register(process.stdout, selectors.EVENT_READ)
         assert selector.select(10), "Packaged Console did not print its session URL"
         launch = json.loads(process.stdout.readline())
-        session = urlsplit(launch["session_url"])
+        session_url = launch["session_url"]
+        session = urlsplit(session_url)
         origin = f"{session.scheme}://{session.netloc}"
         token = parse_qs(session.fragment)["token"][0]
 
@@ -295,7 +303,59 @@ def test_fresh_sdist_wheel_runs_console_without_a_javascript_runtime(
         reader, _ = get(origin + "/api/v1/knowledge?bundle=published", token)
         payload = json.loads(reader)
         assert payload["selected"]["kind"] == "published"
-        assert any(page["path"] == "overview.md" for page in payload["pages"])
+        overview = next(page for page in payload["pages"] if page["path"] == "overview.md")
+
+        browser = run(
+            [
+                node,
+                "--input-type=module",
+                "--eval",
+                """
+import { readFileSync } from "node:fs"
+import { chromium } from "playwright"
+
+const { overviewTitle, sessionUrl } = JSON.parse(readFileSync(0, "utf8"))
+const origin = new URL(sessionUrl).origin
+const browser = await chromium.launch()
+try {
+  const page = await browser.newPage()
+  page.setDefaultTimeout(5_000)
+  const externalRequests = []
+  const pageErrors = []
+  page.on("request", (request) => {
+    const url = new URL(request.url())
+    if ((url.protocol === "http:" || url.protocol === "https:") && url.origin !== origin)
+      externalRequests.push(request.url())
+  })
+  page.on("pageerror", (error) => pageErrors.push(error.message))
+
+  const shell = await page.goto(sessionUrl, { waitUntil: "domcontentloaded" })
+  if (!shell?.ok()) throw new Error(`Packaged Console shell returned ${shell?.status()}`)
+  await page.getByRole("button", { name: "Knowledge", exact: true }).click()
+  await page.getByText("No staged Knowledge Bundle", { exact: true }).waitFor()
+  await page.getByRole("button", { name: "Try published" }).click()
+  await page.getByRole("heading", { level: 1, name: "Knowledge" }).waitFor()
+  const navigation = page.getByRole("navigation", { name: "Knowledge pages" })
+  await navigation.getByRole("button", { name: overviewTitle, exact: true }).click()
+  await page.getByRole("heading", { name: overviewTitle, exact: true }).first().waitFor()
+
+  if (externalRequests.length)
+    throw new Error(`Packaged Reader requested external URLs: ${externalRequests.join(", ")}`)
+  if (pageErrors.length)
+    throw new Error(`Packaged Reader raised page errors: ${pageErrors.join(", ")}`)
+  process.stdout.write(JSON.stringify({ externalRequests, pageErrors }))
+} finally {
+  await browser.close()
+}
+""",
+            ],
+            cwd=ROOT / "console",
+            check=False,
+            input_text=json.dumps({"overviewTitle": overview["title"], "sessionUrl": session_url}),
+            timeout=30,
+        )
+        assert browser.returncode == 0, browser.stderr
+        assert json.loads(browser.stdout) == {"externalRequests": [], "pageErrors": []}
     finally:
         process.terminate()
         try:
