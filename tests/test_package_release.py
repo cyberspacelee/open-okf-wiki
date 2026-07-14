@@ -305,7 +305,7 @@ def test_fresh_sdist_wheel_runs_console_without_a_javascript_runtime(
         assert payload["selected"]["kind"] == "published"
         overview = next(page for page in payload["pages"] if page["path"] == "overview.md")
 
-        browser = run(
+        browser_result = run(
             [
                 node,
                 "--input-type=module",
@@ -354,8 +354,11 @@ try {
             input_text=json.dumps({"overviewTitle": overview["title"], "sessionUrl": session_url}),
             timeout=30,
         )
-        assert browser.returncode == 0, browser.stderr
-        assert json.loads(browser.stdout) == {"externalRequests": [], "pageErrors": []}
+        assert browser_result.returncode == 0, browser_result.stderr
+        assert json.loads(browser_result.stdout) == {
+            "externalRequests": [],
+            "pageErrors": [],
+        }
     finally:
         process.terminate()
         try:
