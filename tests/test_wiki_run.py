@@ -1,4 +1,6 @@
 import asyncio
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -6,6 +8,7 @@ from pydantic_ai import ModelRequest, ModelResponse, ToolCallPart
 from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
+from okf_wiki.cli import parser
 from okf_wiki.wiki_run import (
     Complete,
     ModelProviderConfig,
@@ -18,18 +21,36 @@ from okf_wiki.wiki_run import (
 )
 
 
-def test_wiki_run_produces_typed_markdown_without_mutating_inputs(tmp_path: Path) -> None:
+def make_repository(path: Path, source_text: str) -> str:
+    path.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
+    (path / "README.md").write_text(source_text, encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-qm", "source"], cwd=path, check=True)
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def test_wiki_run_freezes_source_and_skill_before_model_work(tmp_path: Path) -> None:
     source = tmp_path / "source"
     skill = tmp_path / "skill"
     staging = tmp_path / "staging"
-    source.mkdir()
     skill.mkdir()
     source_text = "# Example repository\n\nThe source marker is SOURCE-FIRST.\n"
     skill_text = "# Producer Skill\n\nUse the skill marker SKILL-FIRST.\n"
-    (source / "README.md").write_text(source_text, encoding="utf-8")
+    source_revision = make_repository(source, source_text)
     (skill / "SKILL.md").write_text(skill_text, encoding="utf-8")
+    originals_changed = False
 
     def model(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
+        nonlocal originals_changed
         if any(
             isinstance(part, ToolReturnPart) and part.tool_name == "run_code"
             for message in messages
@@ -45,6 +66,9 @@ def test_wiki_run_produces_typed_markdown_without_mutating_inputs(tmp_path: Path
                     )
                 ]
             )
+        (source / "README.md").write_text("changed after snapshot\n", encoding="utf-8")
+        (skill / "SKILL.md").write_text("changed after snapshot\n", encoding="utf-8")
+        originals_changed = True
         return ModelResponse(
             parts=[
                 ToolCallPart(
@@ -74,7 +98,7 @@ Path('/wiki/index.md').write_text('# Example Wiki\\n\\n' + skill + '\\n' + sourc
     result = asyncio.run(
         WikiRunApplication().run(
             WikiRunRequest(
-                repository=RepositorySnapshot(path=source, revision="source-rev"),
+                repository=RepositorySnapshot(path=source, revision=source_revision),
                 skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
                 model=ModelProviderConfig(model=FunctionModel(model)),
                 limits=WikiRunLimits(
@@ -96,8 +120,9 @@ Path('/wiki/index.md').write_text('# Example Wiki\\n\\n' + skill + '\\n' + sourc
     assert (staging / "index.md").read_text(encoding="utf-8") == (
         "# Example Wiki\n\n" + skill_text + "\n" + source_text
     )
-    assert (source / "README.md").read_text(encoding="utf-8") == source_text
-    assert (skill / "SKILL.md").read_text(encoding="utf-8") == skill_text
+    assert originals_changed
+    assert (source / "README.md").read_text(encoding="utf-8") == "changed after snapshot\n"
+    assert (skill / "SKILL.md").read_text(encoding="utf-8") == "changed after snapshot\n"
 
 
 def test_wiki_run_rejects_nested_staging_without_creating_it(tmp_path: Path) -> None:
@@ -125,3 +150,151 @@ def test_wiki_run_rejects_nested_staging_without_creating_it(tmp_path: Path) -> 
         )
 
     assert not staging.exists()
+
+
+@pytest.mark.parametrize("dirty", [False, True], ids=["non-git", "dirty"])
+def test_wiki_run_rejects_invalid_checkout_before_model_work(
+    tmp_path: Path, *, dirty: bool
+) -> None:
+    source = tmp_path / "source"
+    skill = tmp_path / "skill"
+    staging = tmp_path / "staging"
+    if dirty:
+        revision = make_repository(source, "committed\n")
+        (source / "README.md").write_text("dirty\n", encoding="utf-8")
+    else:
+        source.mkdir()
+        revision = "0" * 40
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    model_called = False
+
+    def model(_: list[ModelRequest | ModelResponse], __: AgentInfo) -> ModelResponse:
+        nonlocal model_called
+        model_called = True
+        raise AssertionError("model must not run for an invalid checkout")
+
+    with pytest.raises(ValueError):
+        asyncio.run(
+            WikiRunApplication().run(
+                WikiRunRequest(
+                    repository=RepositorySnapshot(path=source, revision=revision),
+                    skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                    model=ModelProviderConfig(model=FunctionModel(model)),
+                    limits=WikiRunLimits(),
+                    staging=staging,
+                )
+            )
+        )
+
+    assert not model_called
+
+
+def test_wiki_run_rejects_executable_git_filter_without_running_it(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    skill = tmp_path / "skill"
+    revision = make_repository(source, "committed\n")
+    (source / ".gitattributes").write_text("README.md filter=evil\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitattributes"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-qm", "select filter"], cwd=source, check=True)
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    marker = tmp_path / "filter-ran"
+    filter_program = tmp_path / "filter.sh"
+    filter_program.write_text(f"#!/bin/sh\ntouch '{marker}'\ncat\n", encoding="utf-8")
+    filter_program.chmod(0o755)
+    subprocess.run(
+        ["git", "config", "filter.evil.clean", str(filter_program)], cwd=source, check=True
+    )
+    readme = source / "README.md"
+    stat = readme.stat()
+    os.utime(readme, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+
+    def model(_: list[ModelRequest | ModelResponse], __: AgentInfo) -> ModelResponse:
+        raise AssertionError("model must not run for unsafe Git configuration")
+
+    with pytest.raises(ValueError, match="executable Git filters"):
+        asyncio.run(
+            WikiRunApplication().run(
+                WikiRunRequest(
+                    repository=RepositorySnapshot(path=source, revision=revision),
+                    skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                    model=ModelProviderConfig(model=FunctionModel(model)),
+                    limits=WikiRunLimits(),
+                    staging=tmp_path / "staging",
+                )
+            )
+        )
+
+    assert not marker.exists()
+
+
+def test_wiki_run_wall_clock_deadline_terminates_model_work(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    skill = tmp_path / "skill"
+    revision = make_repository(source, "committed\n")
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    model_started = False
+
+    async def slow_model(_: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
+        nonlocal model_started
+        model_started = True
+        await asyncio.sleep(0.2)
+        complete = next(tool for tool in info.output_tools if tool.name.endswith("Complete"))
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    complete.name,
+                    {"status": "complete", "manifest": {"pages": ["index.md"]}},
+                )
+            ]
+        )
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(
+            WikiRunApplication().run(
+                WikiRunRequest(
+                    repository=RepositorySnapshot(path=source, revision=revision),
+                    skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                    model=ModelProviderConfig(model=FunctionModel(slow_model)),
+                    limits=WikiRunLimits(
+                        request_timeout_seconds=5,
+                        wall_clock_timeout_seconds=0.01,
+                    ),
+                    staging=tmp_path / "staging",
+                )
+            )
+        )
+
+    assert model_started
+
+
+def test_wiki_run_cli_exposes_wall_clock_deadline() -> None:
+    arguments = parser().parse_args(
+        [
+            "wiki-run",
+            "source",
+            "--source-revision",
+            "0" * 40,
+            "--skill",
+            "skill",
+            "--skill-revision",
+            "skill-rev",
+            "--staging",
+            "staging",
+            "--model",
+            "test",
+            "--wall-clock-timeout-seconds",
+            "7",
+        ]
+    )
+
+    assert arguments.wall_clock_timeout_seconds == 7

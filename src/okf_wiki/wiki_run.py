@@ -1,3 +1,8 @@
+import asyncio
+import os
+import re
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -6,6 +11,8 @@ from pydantic_ai import Agent, ModelSettings, UsageLimits
 from pydantic_ai.models import Model
 from pydantic_ai_harness import CodeMode
 from pydantic_monty import MountDir
+
+from .security import git_read, git_read_bytes
 
 
 class RepositorySnapshot(BaseModel):
@@ -40,6 +47,7 @@ class WikiRunLimits(BaseModel):
     retries: int = Field(default=2, ge=0)
     request_timeout_seconds: float = Field(default=120, gt=0)
     tool_timeout_seconds: float = Field(default=30, gt=0)
+    wall_clock_timeout_seconds: float = Field(default=600, gt=0)
 
     def usage_limits(self) -> UsageLimits:
         return UsageLimits(
@@ -99,30 +107,84 @@ the intended Markdown page paths, or NeedsInput only for genuinely blocking ques
 
 class WikiRunApplication:
     async def run(self, request: WikiRunRequest) -> WikiRunResult:
-        source, skill, staging = _prepare_mounts(request)
-        settings = ModelSettings(**request.model.settings)
-        settings["timeout"] = request.limits.request_timeout_seconds
-        agent = Agent[None, WikiRunResult](
-            request.model.model,
-            name="repository_wiki_producer",
-            output_type=[Complete, NeedsInput],
-            instructions=_RUN_INSTRUCTIONS,
-            model_settings=settings,
-            retries={"tools": request.limits.retries, "output": request.limits.retries},
-            tool_timeout=request.limits.tool_timeout_seconds,
-            capabilities=[
-                CodeMode(
-                    max_retries=request.limits.retries,
-                    mount=[
-                        MountDir("/source", str(source), mode="read-only"),
-                        MountDir("/skill", str(skill), mode="read-only"),
-                        MountDir("/wiki", str(staging), mode="read-write"),
-                    ],
+        checkout, skill_input, staging = _prepare_mounts(request)
+        with tempfile.TemporaryDirectory(prefix="okf-wiki-run-") as temporary:
+            source = Path(temporary) / "source"
+            skill = Path(temporary) / "skill"
+            _materialize_repository_snapshot(checkout, request.repository.revision, source)
+            shutil.copytree(skill_input, skill)
+            settings = ModelSettings(**request.model.settings)
+            settings["timeout"] = request.limits.request_timeout_seconds
+            agent = Agent[None, WikiRunResult](
+                request.model.model,
+                name="repository_wiki_producer",
+                output_type=[Complete, NeedsInput],
+                instructions=_RUN_INSTRUCTIONS,
+                model_settings=settings,
+                retries={"tools": request.limits.retries, "output": request.limits.retries},
+                tool_timeout=request.limits.tool_timeout_seconds,
+                capabilities=[
+                    CodeMode(
+                        max_retries=request.limits.retries,
+                        mount=[
+                            MountDir("/source", str(source), mode="read-only"),
+                            MountDir("/skill", str(skill), mode="read-only"),
+                            MountDir("/wiki", str(staging), mode="read-write"),
+                        ],
+                    )
+                ],
+            )
+            async with asyncio.timeout(request.limits.wall_clock_timeout_seconds):
+                result = await agent.run(
+                    "Begin this Wiki Run.", usage_limits=request.limits.usage_limits()
                 )
-            ],
-        )
-        result = await agent.run("Begin this Wiki Run.", usage_limits=request.limits.usage_limits())
-        return result.output
+            return result.output
+
+
+_FULL_COMMIT_RE = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
+
+
+def _materialize_repository_snapshot(checkout: Path, revision: str, target: Path) -> None:
+    if _FULL_COMMIT_RE.fullmatch(revision) is None:
+        raise ValueError("Repository Snapshot revision must be a complete Git commit ID")
+    if git_read(checkout, "rev-parse", "--is-inside-work-tree").strip() != "true":
+        raise ValueError("Repository Snapshot must be a Git working tree")
+    top = Path(git_read(checkout, "rev-parse", "--show-toplevel").strip()).resolve()
+    if top != checkout:
+        raise ValueError("Repository Snapshot path must be the Git working-tree root")
+    resolved = git_read(checkout, "rev-parse", "--verify", f"{revision}^{{commit}}").strip()
+    if resolved.casefold() != revision.casefold():
+        raise ValueError("Repository Snapshot revision must resolve to the exact commit")
+    config_keys = git_read_bytes(
+        checkout, "config", "--includes", "--name-only", "--null", "--list"
+    ).split(b"\0")
+    if any(
+        key.lower().startswith(b"filter.")
+        and key.lower().rsplit(b".", 1)[-1] in {b"clean", b"smudge", b"process"}
+        for key in config_keys
+    ):
+        raise ValueError("Repository Snapshot checkout must not configure executable Git filters")
+    if git_read(checkout, "status", "--porcelain=v1", "--untracked-files=all").strip():
+        raise ValueError("Repository Snapshot checkout must be clean")
+
+    target.mkdir()
+    for record in git_read_bytes(checkout, "ls-tree", "-r", "--full-tree", "-z", resolved).split(
+        b"\0"
+    ):
+        if not record:
+            continue
+        metadata, raw_path = record.split(b"\t", 1)
+        _mode, object_type, object_id = metadata.split(b" ", 2)
+        if object_type != b"blob":
+            raise ValueError("Repository Snapshot contains an unsupported non-file tree entry")
+        parts = raw_path.split(b"/")
+        if any(part in {b"", b".", b".."} for part in parts):
+            raise ValueError("Repository Snapshot contains an unsafe path")
+        destination = target.joinpath(*(os.fsdecode(part) for part in parts))
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        # Repository symlink blobs stay inert, so materialization cannot escape the snapshot.
+        # ponytail: one safe subprocess per blob; use `cat-file --batch` if profiling demands it.
+        destination.write_bytes(git_read_bytes(checkout, "cat-file", "blob", object_id.decode()))
 
 
 def _prepare_mounts(request: WikiRunRequest) -> tuple[Path, Path, Path]:

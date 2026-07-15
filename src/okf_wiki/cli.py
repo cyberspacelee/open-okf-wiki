@@ -1241,6 +1241,7 @@ def parser() -> argparse.ArgumentParser:
     wiki_run_command.add_argument("--retries", type=int)
     wiki_run_command.add_argument("--request-timeout-seconds", type=float)
     wiki_run_command.add_argument("--tool-timeout-seconds", type=float)
+    wiki_run_command.add_argument("--wall-clock-timeout-seconds", type=float)
     build_command = subcommands.add_parser("build")
     build_command.add_argument("project_config")
     status_command = subcommands.add_parser("status")
