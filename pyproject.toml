@@ -10,7 +10,6 @@ dependencies = [
     "pydantic-ai==2.10.0",
     "pydantic-ai-harness[codemode]==0.7.0",
     "pydantic-evals==2.10.0",
-    "pygments==2.20.0",
     "pyyaml==6.0.3",
 ]
 
@@ -23,7 +22,6 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-  "httpx==0.28.1",
   "pytest==9.1.1",
   "ruff==0.15.21",
   "ty==0.0.58",
@@ -32,7 +30,6 @@ dev = [
 [tool.pytest.ini_options]
 addopts = "-q"
 markers = [
-  "gateway_live: requires an explicitly configured enterprise gateway",
   "package_release: builds and runs fresh distribution artifacts",
 ]
 testpaths = ["tests"]

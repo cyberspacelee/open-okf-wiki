@@ -2857,7 +2857,21 @@ def test_wiki_run_cli_exposes_wall_clock_deadline() -> None:
     assert arguments.wiki_file_bytes_limit == 15
     assert arguments.wiki_total_bytes_limit == 16
     assert arguments.wiki_write_bytes_limit == 17
-    assert arguments.publication == "published"
+    assert arguments.publication == Path("published")
+    assert WikiRunLimits.model_fields.keys() <= vars(arguments).keys()
+
+
+def test_cli_exposes_only_the_greenfield_product_commands() -> None:
+    command = parser()
+    subcommands = next(action for action in command._actions if action.dest == "command")
+
+    assert subcommands.choices is not None
+    assert tuple(subcommands.choices) == (
+        "wiki-run",
+        "wiki-eval",
+        "skill-fork",
+        "skill-inspect",
+    )
 
 
 def test_wiki_run_cli_routes_refresh_through_the_same_application_seam(

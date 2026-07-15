@@ -761,13 +761,11 @@ dependencies = [
     { name = "pydantic-ai" },
     { name = "pydantic-ai-harness", extra = ["codemode"] },
     { name = "pydantic-evals" },
-    { name = "pygments" },
     { name = "pyyaml" },
 ]
 
 [package.dev-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "pytest" },
     { name = "ruff" },
     { name = "ty" },
@@ -781,13 +779,11 @@ requires-dist = [
     { name = "pydantic-ai", specifier = "==2.10.0" },
     { name = "pydantic-ai-harness", extras = ["codemode"], specifier = "==0.7.0" },
     { name = "pydantic-evals", specifier = "==2.10.0" },
-    { name = "pygments", specifier = "==2.20.0" },
     { name = "pyyaml", specifier = "==6.0.3" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "httpx", specifier = "==0.28.1" },
     { name = "pytest", specifier = "==9.1.1" },
     { name = "ruff", specifier = "==0.15.21" },
     { name = "ty", specifier = "==0.0.58" },
