@@ -35,11 +35,53 @@ class RepositorySnapshot(BaseModel):
     revision: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
-class ProducerSkillRevision(BaseModel):
+SkillDigest = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+_DEFAULT_PRODUCER_SKILL = Path(__file__).with_name("producer_skill")
+_DEFAULT_PRODUCER_SKILL_DIGEST = "c82f6feaed63fbdd92c027744db255c8ac59873a99ec4d98ecccaaaab4c711b0"
+
+
+class ProducerSkillVersion(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     path: Path
-    revision: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    digest: SkillDigest
+
+    @classmethod
+    def default(cls) -> "ProducerSkillVersion":
+        version = cls(path=_DEFAULT_PRODUCER_SKILL, digest=_DEFAULT_PRODUCER_SKILL_DIGEST)
+        return cls(path=_selected_producer_skill(version), digest=version.digest)
+
+    @classmethod
+    def from_directory(cls, path: Path) -> "ProducerSkillVersion":
+        resolved, digest = _validate_producer_skill(path)
+        return cls(path=resolved, digest=digest)
+
+
+class ProducerSkillFork(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    path: Path
+
+    @classmethod
+    def create(cls, version: ProducerSkillVersion, destination: Path) -> "ProducerSkillFork":
+        source = _selected_producer_skill(version)
+        target = destination.absolute()
+        if os.path.lexists(target):
+            raise ValueError("Skill Fork destination must not already exist")
+        if _overlaps(source, target.resolve(strict=False)):
+            raise ValueError("Skill Version and Skill Fork must not overlap")
+        try:
+            shutil.copytree(source, target)
+            fork = cls(path=target.resolve(strict=True))
+            if fork.version().digest != version.digest:
+                raise ValueError("Skill Fork does not match its selected Skill Version")
+            return fork
+        except Exception:
+            shutil.rmtree(target, ignore_errors=True)
+            raise
+
+    def version(self) -> ProducerSkillVersion:
+        return ProducerSkillVersion.from_directory(self.path)
 
 
 class ModelProviderConfig(BaseModel):
@@ -103,7 +145,7 @@ class WikiRunRequest(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
     repository: RepositorySnapshot
-    skill: ProducerSkillRevision
+    skill: ProducerSkillVersion
     model: ModelProviderConfig
     limits: WikiRunLimits
     staging: Path
@@ -127,6 +169,12 @@ class WikiRunApplication:
             skill = Path(temporary) / "skill"
             _materialize_repository_snapshot(checkout, request.repository.revision, source)
             shutil.copytree(skill_input, skill)
+            _, skill_digest = _validate_producer_skill(skill)
+            if skill_digest != request.skill.digest:
+                raise ValueError(
+                    "Selected Skill Version changed while it was being frozen: "
+                    f"expected {request.skill.digest}, found {skill_digest}"
+                )
             settings = ModelSettings(**request.model.settings)
             settings["timeout"] = request.limits.request_timeout_seconds
             agent = Agent[None, WikiRunResult](
@@ -169,11 +217,11 @@ class WikiRunApplication:
                     raise RuntimeError("Final model response did not identify its model")
                 _publish_wiki(
                     source,
-                    skill,
                     staging,
                     publication,
                     result.output.manifest,
                     source_revision=request.repository.revision,
+                    skill_digest=skill_digest,
                     model_name=model_name,
                 )
             return result.output
@@ -227,9 +275,7 @@ def _materialize_repository_snapshot(checkout: Path, revision: str, target: Path
 
 def _prepare_mounts(request: WikiRunRequest) -> tuple[Path, Path, Path, Path]:
     source = _existing_directory(request.repository.path, "Repository Snapshot")
-    skill = _existing_directory(request.skill.path, "Producer Skill")
-    if not (skill / "SKILL.md").is_file():
-        raise ValueError("Producer Skill must contain SKILL.md")
+    skill = _selected_producer_skill(request.skill)
 
     staging = request.staging.resolve(strict=False)
     if any(
@@ -501,14 +547,136 @@ def _content_digest(hashes: dict[str, str]) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+_REQUIRED_PRODUCER_SKILL_PATHS = {
+    "SKILL.md",
+    "references/generate.md",
+    "references/refresh.md",
+    "references/review.md",
+    "templates/architecture.md",
+    "templates/concept.md",
+    "templates/flow.md",
+    "templates/module.md",
+    "templates/overview.md",
+}
+_SKILL_DIRECTORIES = {"references", "templates"}
+
+
+def _validate_producer_skill(path: Path) -> tuple[Path, str]:
+    root = _existing_directory(path, "Producer Skill")
+    errors: list[str] = []
+    contents: dict[str, bytes] = {}
+    folded_paths: dict[str, str] = {}
+    stack = [(root, PurePosixPath())]
+    while stack:
+        directory, prefix = stack.pop()
+        try:
+            entries = list(os.scandir(directory))
+        except OSError as error:
+            errors.append(f"unreadable directory {prefix.as_posix() or '.'}: {error}")
+            continue
+        for entry in entries:
+            relative = prefix / entry.name
+            relative_path = relative.as_posix()
+            previous = folded_paths.setdefault(relative_path.casefold(), relative_path)
+            if previous != relative_path:
+                errors.append(f"ambiguous paths {previous!r} and {relative_path!r}")
+            if entry.is_symlink():
+                errors.append(f"symlink is not allowed: {relative_path}")
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                if len(relative.parts) != 1 or relative_path not in _SKILL_DIRECTORIES:
+                    errors.append(f"unexpected directory: {relative_path}")
+                else:
+                    stack.append((Path(entry.path), relative))
+                continue
+            if not entry.is_file(follow_symlinks=False):
+                errors.append(f"unsupported artifact: {relative_path}")
+                continue
+            if relative_path != "SKILL.md" and (
+                len(relative.parts) != 2
+                or relative.parts[0] not in _SKILL_DIRECTORIES
+                or relative.suffix != ".md"
+            ):
+                errors.append(f"unexpected file: {relative_path}")
+            file_path = Path(entry.path)
+            try:
+                mode = file_path.stat().st_mode
+            except OSError as error:
+                errors.append(f"unreadable file {relative_path}: {error}")
+                continue
+            if mode & 0o444 == 0:
+                errors.append(f"unreadable file: {relative_path}")
+                continue
+            try:
+                data = file_path.read_bytes()
+            except OSError as error:
+                errors.append(f"unreadable file {relative_path}: {error}")
+                continue
+            contents[relative_path] = data
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError:
+                errors.append(f"file is not UTF-8: {relative_path}")
+                continue
+            if not text.strip():
+                errors.append(f"file is empty: {relative_path}")
+
+    for missing in sorted(_REQUIRED_PRODUCER_SKILL_PATHS - contents.keys()):
+        errors.append(f"missing required file: {missing}")
+    if skill_bytes := contents.get("SKILL.md"):
+        errors.extend(_validate_skill_frontmatter(skill_bytes))
+    if errors:
+        raise ValueError("Invalid Producer Skill bundle:\n- " + "\n- ".join(errors))
+    return root, _content_digest(_tree_hashes(root))
+
+
+def _validate_skill_frontmatter(data: bytes) -> list[str]:
+    text = data.decode("utf-8")
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].rstrip("\r\n") != "---":
+        return ["SKILL.md must start with YAML frontmatter"]
+    closing = next(
+        (index for index, line in enumerate(lines[1:], 1) if line.rstrip("\r\n") == "---"),
+        None,
+    )
+    if closing is None:
+        return ["SKILL.md YAML frontmatter is not closed"]
+    try:
+        metadata = yaml.load("".join(lines[1:closing]), Loader=_UniqueKeySafeLoader)
+    except yaml.YAMLError as error:
+        return [f"SKILL.md has invalid YAML frontmatter: {error}"]
+    errors: list[str] = []
+    if not isinstance(metadata, dict) or set(metadata) != {"name", "description"}:
+        errors.append("SKILL.md frontmatter must contain only name and description")
+    else:
+        name = metadata["name"]
+        if not isinstance(name, str) or re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name) is None:
+            errors.append("SKILL.md name must use lowercase hyphen-case")
+        description = metadata["description"]
+        if not isinstance(description, str) or not description.strip():
+            errors.append("SKILL.md description must be a non-empty string")
+    if not "".join(lines[closing + 1 :]).strip():
+        errors.append("SKILL.md instructions must not be empty")
+    return errors
+
+
+def _selected_producer_skill(version: ProducerSkillVersion) -> Path:
+    path, digest = _validate_producer_skill(version.path)
+    if digest != version.digest:
+        raise ValueError(
+            f"Selected Skill Version content changed: expected {version.digest}, found {digest}"
+        )
+    return path
+
+
 def _publish_wiki(
     source: Path,
-    skill: Path,
     staging: Path,
     destination: Path,
     manifest: WikiManifest,
     *,
     source_revision: str,
+    skill_digest: str,
     model_name: str,
 ) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -528,7 +696,7 @@ def _publish_wiki(
         page_hashes = _hashes(temporary_release, manifest.pages)
         metadata = {
             "source_revision": source_revision,
-            "skill_digest": _content_digest(_tree_hashes(skill)),
+            "skill_digest": skill_digest,
             "model": model_name,
             "generated_at": datetime.now(UTC).isoformat(),
             "pages": [{"path": path, "sha256": digest} for path, digest in page_hashes.items()],

@@ -5,24 +5,39 @@ import shutil
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic_ai import ModelRequest, ModelResponse, ToolCallPart, UnexpectedModelBehavior
 from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from okf_wiki.cli import parser
+from okf_wiki.cli import main, parser
 from okf_wiki.wiki_run import (
     Complete,
     ModelProviderConfig,
     NeedsInput,
-    ProducerSkillRevision,
+    ProducerSkillFork,
+    ProducerSkillVersion,
     RepositorySnapshot,
     WikiManifest,
     WikiRunApplication,
     WikiRunLimits,
     WikiRunRequest,
 )
+
+
+REQUIRED_PRODUCER_SKILL_PATHS = {
+    "SKILL.md",
+    "references/generate.md",
+    "references/refresh.md",
+    "references/review.md",
+    "templates/architecture.md",
+    "templates/concept.md",
+    "templates/flow.md",
+    "templates/module.md",
+    "templates/overview.md",
+}
 
 
 def make_repository(path: Path, source_text: str) -> str:
@@ -50,14 +65,200 @@ def make_published_wiki(path: Path) -> Path:
     return release
 
 
+def make_producer_skill(path: Path) -> ProducerSkillVersion:
+    return ProducerSkillFork.create(ProducerSkillVersion.default(), path).version()
+
+
+def test_default_producer_skill_is_a_complete_content_addressed_version() -> None:
+    version = ProducerSkillVersion.default()
+
+    assert {
+        path.relative_to(version.path).as_posix()
+        for path in version.path.rglob("*")
+        if path.is_file()
+    } == REQUIRED_PRODUCER_SKILL_PATHS
+    assert version.digest == "c82f6feaed63fbdd92c027744db255c8ac59873a99ec4d98ecccaaaab4c711b0"
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("missing", "missing required file: references/generate.md"),
+        ("unreadable", "unreadable file: references/generate.md"),
+        ("malformed", "SKILL.md has invalid YAML frontmatter"),
+        ("ambiguous", "ambiguous paths"),
+    ],
+)
+def test_wiki_run_rejects_an_invalid_skill_before_model_work(
+    tmp_path: Path, case: str, message: str
+) -> None:
+    source = tmp_path / "source"
+    source_revision = make_repository(source, "source\n")
+    fork = ProducerSkillFork.create(ProducerSkillVersion.default(), tmp_path / "skill")
+    version = fork.version()
+    if case == "missing":
+        (fork.path / "references/generate.md").unlink()
+    elif case == "unreadable":
+        (fork.path / "references/generate.md").chmod(0)
+    elif case == "malformed":
+        (fork.path / "SKILL.md").write_text("---\nname: [\n---\nBroken\n", encoding="utf-8")
+    else:
+        (fork.path / "references/GENERATE.md").write_text("# Ambiguous\n", encoding="utf-8")
+    model_called = False
+
+    def model(_: list[ModelRequest | ModelResponse], __: AgentInfo) -> ModelResponse:
+        nonlocal model_called
+        model_called = True
+        raise AssertionError("model must not run for an invalid Producer Skill")
+
+    with pytest.raises(ValueError, match=message):
+        asyncio.run(
+            WikiRunApplication().run(
+                WikiRunRequest(
+                    repository=RepositorySnapshot(path=source, revision=source_revision),
+                    skill=version,
+                    model=ModelProviderConfig(model=FunctionModel(model)),
+                    limits=WikiRunLimits(),
+                    staging=tmp_path / "staging",
+                    publication=tmp_path / "published",
+                )
+            )
+        )
+
+    assert not model_called
+
+
+def test_wiki_run_rejects_a_changed_selected_skill_version_before_model_work(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source_revision = make_repository(source, "source\n")
+    fork = ProducerSkillFork.create(ProducerSkillVersion.default(), tmp_path / "skill")
+    selected = fork.version()
+    template = fork.path / "templates/overview.md"
+    template.write_text(template.read_text(encoding="utf-8") + "\nAudience: operators\n")
+    model_called = False
+
+    def model(_: list[ModelRequest | ModelResponse], __: AgentInfo) -> ModelResponse:
+        nonlocal model_called
+        model_called = True
+        raise AssertionError("model must not run with a changed Skill Version")
+
+    with pytest.raises(ValueError, match="Selected Skill Version content changed"):
+        asyncio.run(
+            WikiRunApplication().run(
+                WikiRunRequest(
+                    repository=RepositorySnapshot(path=source, revision=source_revision),
+                    skill=selected,
+                    model=ModelProviderConfig(model=FunctionModel(model)),
+                    limits=WikiRunLimits(),
+                    staging=tmp_path / "staging",
+                    publication=tmp_path / "published",
+                )
+            )
+        )
+
+    assert not model_called
+
+
+def test_skill_fork_is_an_owned_copy_that_product_versions_cannot_overwrite(
+    tmp_path: Path,
+) -> None:
+    default = ProducerSkillVersion.default()
+    default_template = (default.path / "templates/overview.md").read_text(encoding="utf-8")
+    fork = ProducerSkillFork.create(default, tmp_path / "my-skill")
+    fork_template = fork.path / "templates/overview.md"
+    customized = default_template + "\nAudience: maintainers\n"
+    fork_template.write_text(customized, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="destination must not already exist"):
+        ProducerSkillFork.create(default, fork.path)
+
+    assert fork_template.read_text(encoding="utf-8") == customized
+    assert (default.path / "templates/overview.md").read_text(encoding="utf-8") == default_template
+    assert fork.version().digest != default.digest
+
+
+def test_skill_fork_template_changes_wiki_output_through_the_same_run_seam(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source_revision = make_repository(source, "source\n")
+    fork = ProducerSkillFork.create(ProducerSkillVersion.default(), tmp_path / "skill")
+    template = fork.path / "templates/overview.md"
+
+    def model(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
+        if any(
+            isinstance(part, ToolReturnPart) and part.tool_name == "run_code"
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+        ):
+            complete = next(tool for tool in info.output_tools if tool.name.endswith("Complete"))
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        complete.name,
+                        {"status": "complete", "manifest": {"pages": ["index.md"]}},
+                    )
+                ]
+            )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "run_code",
+                    {
+                        "code": """from pathlib import Path
+template = Path('/skill/templates/overview.md').read_text()
+marker = [line[len('Customization: '):] for line in template.splitlines() if line.startswith('Customization: ')][0]
+Path('/wiki/index.md').write_text(f'---\\ntitle: Wiki\\n---\\n# Wiki\\n\\n{marker}\\n\\n[Source](repo:README.md#L1-L1)\\n')
+"""
+                    },
+                )
+            ]
+        )
+
+    application = WikiRunApplication()
+
+    def run(version: ProducerSkillVersion, name: str) -> str:
+        asyncio.run(
+            application.run(
+                WikiRunRequest(
+                    repository=RepositorySnapshot(path=source, revision=source_revision),
+                    skill=version,
+                    model=ModelProviderConfig(model=FunctionModel(model)),
+                    limits=WikiRunLimits(
+                        request_limit=3,
+                        tool_calls_limit=2,
+                        retries=0,
+                        request_timeout_seconds=5,
+                        tool_timeout_seconds=5,
+                    ),
+                    staging=tmp_path / f"{name}-staging",
+                    publication=tmp_path / f"{name}-published",
+                )
+            )
+        )
+        return (tmp_path / f"{name}-published/index.md").read_text(encoding="utf-8")
+
+    original = template.read_text(encoding="utf-8")
+    template.write_text(original + "\nCustomization: platform team\n", encoding="utf-8")
+    first = run(fork.version(), "first")
+    template.write_text(original + "\nCustomization: library users\n", encoding="utf-8")
+    second = run(fork.version(), "second")
+
+    assert "platform team" in first
+    assert "library users" in second
+    assert first != second
+
+
 def test_complete_wiki_run_validates_and_atomically_publishes_pages(tmp_path: Path) -> None:
     source = tmp_path / "source"
     skill = tmp_path / "skill"
     staging = tmp_path / "staging"
     published = tmp_path / "published"
     source_revision = make_repository(source, "# Example\n\nSource fact.\n")
-    skill.mkdir()
-    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    skill_version = make_producer_skill(skill)
     old_release = make_published_wiki(published)
 
     def model(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
@@ -113,7 +314,7 @@ title: Architecture
         WikiRunApplication().run(
             WikiRunRequest(
                 repository=RepositorySnapshot(path=source, revision=source_revision),
-                skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                skill=skill_version,
                 model=ModelProviderConfig(model=FunctionModel(model)),
                 limits=WikiRunLimits(
                     request_limit=3,
@@ -149,7 +350,7 @@ title: Architecture
                 "sha256": "4873cca881fd27de06dd9358471107e5c510898bf1c9a6239b6a3b47451461ac",
             },
         ],
-        "skill_digest": "e162ae46ef20a93f248df5e46ee590a2d6c6dbdc6bd69cc9d0c06ef2417b0769",
+        "skill_digest": skill_version.digest,
         "source_revision": source_revision,
     }
     assert datetime.fromisoformat(metadata["generated_at"]).tzinfo == UTC
@@ -170,8 +371,7 @@ def test_complete_wiki_run_resolves_canonical_encoded_source_paths(tmp_path: Pat
         capture_output=True,
         text=True,
     ).stdout.strip()
-    skill.mkdir()
-    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    skill_version = make_producer_skill(skill)
 
     def model(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
         if any(
@@ -206,7 +406,7 @@ def test_complete_wiki_run_resolves_canonical_encoded_source_paths(tmp_path: Pat
         WikiRunApplication().run(
             WikiRunRequest(
                 repository=RepositorySnapshot(path=source, revision=source_revision),
-                skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                skill=skill_version,
                 model=ModelProviderConfig(model=FunctionModel(model)),
                 limits=WikiRunLimits(
                     request_limit=3,
@@ -230,8 +430,7 @@ def test_complete_validation_retry_lets_the_same_agent_fix_staging(tmp_path: Pat
     staging = tmp_path / "staging"
     published = tmp_path / "published"
     source_revision = make_repository(source, "source\n")
-    skill.mkdir()
-    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    skill_version = make_producer_skill(skill)
     turn = 0
 
     def model(_: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
@@ -269,7 +468,7 @@ def test_complete_validation_retry_lets_the_same_agent_fix_staging(tmp_path: Pat
         WikiRunApplication().run(
             WikiRunRequest(
                 repository=RepositorySnapshot(path=source, revision=source_revision),
-                skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                skill=skill_version,
                 model=ModelProviderConfig(model=FunctionModel(model)),
                 limits=WikiRunLimits(
                     request_limit=5,
@@ -293,8 +492,7 @@ def test_needs_input_leaves_the_published_wiki_unchanged(tmp_path: Path) -> None
     skill = tmp_path / "skill"
     published = tmp_path / "published"
     source_revision = make_repository(source, "source\n")
-    skill.mkdir()
-    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    skill_version = make_producer_skill(skill)
     old_release = make_published_wiki(published)
 
     def model(_: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
@@ -312,7 +510,7 @@ def test_needs_input_leaves_the_published_wiki_unchanged(tmp_path: Path) -> None
         WikiRunApplication().run(
             WikiRunRequest(
                 repository=RepositorySnapshot(path=source, revision=source_revision),
-                skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                skill=skill_version,
                 model=ModelProviderConfig(model=FunctionModel(model)),
                 limits=WikiRunLimits(request_limit=2, request_timeout_seconds=5),
                 staging=tmp_path / "staging",
@@ -334,8 +532,7 @@ def test_exhausted_validation_retry_leaves_the_published_wiki_unchanged(
     skill = tmp_path / "skill"
     published = tmp_path / "published"
     source_revision = make_repository(source, "source\n")
-    skill.mkdir()
-    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    skill_version = make_producer_skill(skill)
     old_release = make_published_wiki(published)
 
     def model(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
@@ -371,7 +568,7 @@ def test_exhausted_validation_retry_leaves_the_published_wiki_unchanged(
             WikiRunApplication().run(
                 WikiRunRequest(
                     repository=RepositorySnapshot(path=source, revision=source_revision),
-                    skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                    skill=skill_version,
                     model=ModelProviderConfig(model=FunctionModel(model)),
                     limits=WikiRunLimits(
                         request_limit=3,
@@ -398,8 +595,7 @@ def test_publication_failure_leaves_the_published_wiki_unchanged(
     skill = tmp_path / "skill"
     published = tmp_path / "published"
     source_revision = make_repository(source, "source\n")
-    skill.mkdir()
-    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    skill_version = make_producer_skill(skill)
     old_release = make_published_wiki(published)
 
     def model(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
@@ -461,7 +657,7 @@ def test_publication_failure_leaves_the_published_wiki_unchanged(
             WikiRunApplication().run(
                 WikiRunRequest(
                     repository=RepositorySnapshot(path=source, revision=source_revision),
-                    skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                    skill=skill_version,
                     model=ModelProviderConfig(model=FunctionModel(model)),
                     limits=WikiRunLimits(
                         request_limit=3,
@@ -489,8 +685,7 @@ def test_publication_copy_revalidates_a_page_swapped_for_a_symlink(
     staging = tmp_path / "staging"
     published = tmp_path / "published"
     source_revision = make_repository(source, "source\n")
-    skill.mkdir()
-    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    skill_version = make_producer_skill(skill)
     old_release = make_published_wiki(published)
     outside = tmp_path / "outside.md"
     page = "---\ntitle: New Wiki\n---\n# New Wiki\n\n[Source](repo:README.md#L1-L1)\n"
@@ -529,13 +724,14 @@ def test_publication_copy_revalidates_a_page_swapped_for_a_symlink(
     def swap_then_copy(
         source_path: os.PathLike[str] | str,
         destination_path: os.PathLike[str] | str,
-        symlinks: bool = False,
+        *args: Any,
+        **kwargs: Any,
     ) -> Path:
         if Path(source_path) == staging:
             staged_page = staging / "index.md"
             staged_page.unlink()
             staged_page.symlink_to(outside)
-        return Path(real_copytree(source_path, destination_path, symlinks=symlinks))
+        return Path(real_copytree(source_path, destination_path, *args, **kwargs))
 
     monkeypatch.setattr(shutil, "copytree", swap_then_copy)
 
@@ -544,7 +740,7 @@ def test_publication_copy_revalidates_a_page_swapped_for_a_symlink(
             WikiRunApplication().run(
                 WikiRunRequest(
                     repository=RepositorySnapshot(path=source, revision=source_revision),
-                    skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                    skill=skill_version,
                     model=ModelProviderConfig(model=FunctionModel(model)),
                     limits=WikiRunLimits(
                         request_limit=3,
@@ -613,8 +809,7 @@ def test_invalid_staging_manifest_and_artifacts_never_publish(tmp_path: Path, ca
             capture_output=True,
             text=True,
         ).stdout.strip()
-    skill.mkdir()
-    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    skill_version = make_producer_skill(skill)
     old_release = make_published_wiki(published)
     outside = tmp_path / "outside.md"
     outside.write_text("outside\n", encoding="utf-8")
@@ -714,7 +909,7 @@ def test_invalid_staging_manifest_and_artifacts_never_publish(tmp_path: Path, ca
             WikiRunApplication().run(
                 WikiRunRequest(
                     repository=RepositorySnapshot(path=source, revision=source_revision),
-                    skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                    skill=skill_version,
                     model=ModelProviderConfig(model=FunctionModel(model)),
                     limits=WikiRunLimits(
                         request_limit=3,
@@ -737,11 +932,20 @@ def test_wiki_run_freezes_source_and_skill_before_model_work(tmp_path: Path) -> 
     source = tmp_path / "source"
     skill = tmp_path / "skill"
     staging = tmp_path / "staging"
-    skill.mkdir()
     source_text = "# Example repository\n\nThe source marker is SOURCE-FIRST.\n"
-    skill_text = "# Producer Skill\n\nUse the skill marker SKILL-FIRST.\n"
+    fork = ProducerSkillFork.create(ProducerSkillVersion.default(), skill)
+    skill_text = """---
+name: repository-wiki-producer
+description: Produce a source-grounded Wiki.
+---
+
+# Producer Skill
+
+Use the skill marker SKILL-FIRST.
+"""
     source_revision = make_repository(source, source_text)
     (skill / "SKILL.md").write_text(skill_text, encoding="utf-8")
+    skill_version = fork.version()
     originals_changed = False
 
     def model(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
@@ -794,7 +998,7 @@ Path('/wiki/index.md').write_text('---\\ntitle: Example Wiki\\n---\\n# Example W
         WikiRunApplication().run(
             WikiRunRequest(
                 repository=RepositorySnapshot(path=source, revision=source_revision),
-                skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                skill=skill_version,
                 model=ModelProviderConfig(model=FunctionModel(model)),
                 limits=WikiRunLimits(
                     request_limit=3,
@@ -824,9 +1028,7 @@ Path('/wiki/index.md').write_text('---\\ntitle: Example Wiki\\n---\\n# Example W
     assert (source / "README.md").read_text(encoding="utf-8") == "changed after snapshot\n"
     assert (skill / "SKILL.md").read_text(encoding="utf-8") == "changed after snapshot\n"
     metadata = json.loads((tmp_path / "published" / ".okf-wiki.json").read_text(encoding="utf-8"))
-    assert metadata["skill_digest"] == (
-        "c361865c20afff251deab01c2021fdda3a09d438f153c84fc50db2004d4d59fd"
-    )
+    assert metadata["skill_digest"] == skill_version.digest
 
 
 def test_wiki_run_rejects_nested_staging_without_creating_it(tmp_path: Path) -> None:
@@ -834,8 +1036,7 @@ def test_wiki_run_rejects_nested_staging_without_creating_it(tmp_path: Path) -> 
     skill = tmp_path / "skill"
     staging = source / "staging"
     source.mkdir()
-    skill.mkdir()
-    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    skill_version = make_producer_skill(skill)
 
     def model(_: list[ModelRequest | ModelResponse], __: AgentInfo) -> ModelResponse:
         raise AssertionError("model must not run for invalid mounts")
@@ -845,7 +1046,7 @@ def test_wiki_run_rejects_nested_staging_without_creating_it(tmp_path: Path) -> 
             WikiRunApplication().run(
                 WikiRunRequest(
                     repository=RepositorySnapshot(path=source, revision="source-rev"),
-                    skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                    skill=skill_version,
                     model=ModelProviderConfig(model=FunctionModel(model)),
                     limits=WikiRunLimits(),
                     staging=staging,
@@ -861,8 +1062,7 @@ def test_wiki_run_rejects_a_publication_parent_symlink_into_source(tmp_path: Pat
     source = tmp_path / "source"
     skill = tmp_path / "skill"
     source_revision = make_repository(source, "source\n")
-    skill.mkdir()
-    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    skill_version = make_producer_skill(skill)
     publication_parent = tmp_path / "publication-parent"
     publication_parent.symlink_to(source, target_is_directory=True)
     model_called = False
@@ -877,7 +1077,7 @@ def test_wiki_run_rejects_a_publication_parent_symlink_into_source(tmp_path: Pat
             WikiRunApplication().run(
                 WikiRunRequest(
                     repository=RepositorySnapshot(path=source, revision=source_revision),
-                    skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                    skill=skill_version,
                     model=ModelProviderConfig(model=FunctionModel(model)),
                     limits=WikiRunLimits(),
                     staging=tmp_path / "staging",
@@ -904,8 +1104,7 @@ def test_wiki_run_rejects_invalid_checkout_before_model_work(
     else:
         source.mkdir()
         revision = "0" * 40
-    skill.mkdir()
-    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    skill_version = make_producer_skill(skill)
     model_called = False
 
     def model(_: list[ModelRequest | ModelResponse], __: AgentInfo) -> ModelResponse:
@@ -918,7 +1117,7 @@ def test_wiki_run_rejects_invalid_checkout_before_model_work(
             WikiRunApplication().run(
                 WikiRunRequest(
                     repository=RepositorySnapshot(path=source, revision=revision),
-                    skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                    skill=skill_version,
                     model=ModelProviderConfig(model=FunctionModel(model)),
                     limits=WikiRunLimits(),
                     staging=staging,
@@ -954,8 +1153,7 @@ def test_wiki_run_rejects_executable_git_filter_without_running_it(tmp_path: Pat
     readme = source / "README.md"
     stat = readme.stat()
     os.utime(readme, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
-    skill.mkdir()
-    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    skill_version = make_producer_skill(skill)
 
     def model(_: list[ModelRequest | ModelResponse], __: AgentInfo) -> ModelResponse:
         raise AssertionError("model must not run for unsafe Git configuration")
@@ -965,7 +1163,7 @@ def test_wiki_run_rejects_executable_git_filter_without_running_it(tmp_path: Pat
             WikiRunApplication().run(
                 WikiRunRequest(
                     repository=RepositorySnapshot(path=source, revision=revision),
-                    skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                    skill=skill_version,
                     model=ModelProviderConfig(model=FunctionModel(model)),
                     limits=WikiRunLimits(),
                     staging=tmp_path / "staging",
@@ -982,8 +1180,7 @@ def test_wiki_run_wall_clock_deadline_terminates_model_work(tmp_path: Path) -> N
     skill = tmp_path / "skill"
     published = tmp_path / "published"
     revision = make_repository(source, "committed\n")
-    skill.mkdir()
-    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    skill_version = make_producer_skill(skill)
     old_release = make_published_wiki(published)
     model_started = False
 
@@ -1006,7 +1203,7 @@ def test_wiki_run_wall_clock_deadline_terminates_model_work(tmp_path: Path) -> N
             WikiRunApplication().run(
                 WikiRunRequest(
                     repository=RepositorySnapshot(path=source, revision=revision),
-                    skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                    skill=skill_version,
                     model=ModelProviderConfig(model=FunctionModel(slow_model)),
                     limits=WikiRunLimits(
                         request_timeout_seconds=5,
@@ -1027,8 +1224,7 @@ def test_model_failure_leaves_the_published_wiki_unchanged(tmp_path: Path) -> No
     skill = tmp_path / "skill"
     published = tmp_path / "published"
     revision = make_repository(source, "committed\n")
-    skill.mkdir()
-    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    skill_version = make_producer_skill(skill)
     old_release = make_published_wiki(published)
 
     def failed_model(_: list[ModelRequest | ModelResponse], __: AgentInfo) -> ModelResponse:
@@ -1039,7 +1235,7 @@ def test_model_failure_leaves_the_published_wiki_unchanged(tmp_path: Path) -> No
             WikiRunApplication().run(
                 WikiRunRequest(
                     repository=RepositorySnapshot(path=source, revision=revision),
-                    skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                    skill=skill_version,
                     model=ModelProviderConfig(model=FunctionModel(failed_model)),
                     limits=WikiRunLimits(request_timeout_seconds=5),
                     staging=tmp_path / "staging",
@@ -1060,8 +1256,8 @@ def test_wiki_run_cli_exposes_wall_clock_deadline() -> None:
             "0" * 40,
             "--skill",
             "skill",
-            "--skill-revision",
-            "skill-rev",
+            "--skill-digest",
+            "0" * 64,
             "--staging",
             "staging",
             "--publication",
@@ -1075,3 +1271,24 @@ def test_wiki_run_cli_exposes_wall_clock_deadline() -> None:
 
     assert arguments.wall_clock_timeout_seconds == 7
     assert arguments.publication == "published"
+
+
+def test_skill_fork_cli_creates_an_owned_copy_of_the_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    destination = tmp_path / "my-skill"
+    monkeypatch.setattr("sys.argv", ["okf-wiki", "skill-fork", str(destination)])
+
+    assert main() == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "ok": True,
+        "skill_fork": {
+            "digest": ProducerSkillVersion.default().digest,
+            "path": str(destination),
+        },
+    }
+    assert (
+        ProducerSkillVersion.from_directory(destination).digest == payload["skill_fork"]["digest"]
+    )

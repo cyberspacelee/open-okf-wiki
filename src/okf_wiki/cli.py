@@ -1229,8 +1229,8 @@ def parser() -> argparse.ArgumentParser:
     wiki_run_command = subcommands.add_parser("wiki-run")
     wiki_run_command.add_argument("source")
     wiki_run_command.add_argument("--source-revision", required=True)
-    wiki_run_command.add_argument("--skill", required=True)
-    wiki_run_command.add_argument("--skill-revision", required=True)
+    wiki_run_command.add_argument("--skill")
+    wiki_run_command.add_argument("--skill-digest")
     wiki_run_command.add_argument("--staging", required=True)
     wiki_run_command.add_argument("--publication", required=True)
     wiki_run_command.add_argument("--model", required=True)
@@ -1243,6 +1243,10 @@ def parser() -> argparse.ArgumentParser:
     wiki_run_command.add_argument("--request-timeout-seconds", type=float)
     wiki_run_command.add_argument("--tool-timeout-seconds", type=float)
     wiki_run_command.add_argument("--wall-clock-timeout-seconds", type=float)
+    skill_fork_command = subcommands.add_parser("skill-fork")
+    skill_fork_command.add_argument("destination")
+    skill_fork_command.add_argument("--skill")
+    skill_fork_command.add_argument("--skill-digest")
     build_command = subcommands.add_parser("build")
     build_command.add_argument("project_config")
     status_command = subcommands.add_parser("status")
@@ -1392,15 +1396,49 @@ def parser() -> argparse.ArgumentParser:
     return command
 
 
+def _producer_skill_version(arguments: argparse.Namespace):
+    from .wiki_run import ProducerSkillVersion
+
+    if arguments.skill is None:
+        if arguments.skill_digest is not None:
+            raise ValueError("--skill-digest requires --skill")
+        return ProducerSkillVersion.default()
+    if arguments.skill_digest is None:
+        raise ValueError("--skill requires --skill-digest")
+    return ProducerSkillVersion(path=arguments.skill, digest=arguments.skill_digest)
+
+
 def main() -> int:
     from .workspace import WorkspaceApplication, WorkspaceError, WorkspaceReviewStaleError
 
     arguments = parser().parse_args()
     try:
+        if arguments.command == "skill-fork":
+            from .wiki_run import ProducerSkillFork
+
+            try:
+                fork = ProducerSkillFork.create(
+                    _producer_skill_version(arguments), Path(arguments.destination)
+                )
+                fork_version = fork.version()
+            except Exception as error:
+                emit(
+                    {
+                        "error": {"message": str(error), "type": type(error).__name__},
+                        "ok": False,
+                    }
+                )
+                return 1
+            emit(
+                {
+                    "ok": True,
+                    "skill_fork": {"digest": fork_version.digest, "path": str(fork.path)},
+                }
+            )
+            return 0
         if arguments.command == "wiki-run":
             from .wiki_run import (
                 ModelProviderConfig,
-                ProducerSkillRevision,
                 RepositorySnapshot,
                 WikiRunApplication,
                 WikiRunLimits,
@@ -1413,6 +1451,7 @@ def main() -> int:
                 if getattr(arguments, name) is not None
             }
             try:
+                skill = _producer_skill_version(arguments)
                 result = asyncio.run(
                     WikiRunApplication().run(
                         WikiRunRequest(
@@ -1420,10 +1459,7 @@ def main() -> int:
                                 path=arguments.source,
                                 revision=arguments.source_revision,
                             ),
-                            skill=ProducerSkillRevision(
-                                path=arguments.skill,
-                                revision=arguments.skill_revision,
-                            ),
+                            skill=skill,
                             model=ModelProviderConfig(model=arguments.model),
                             limits=WikiRunLimits(**limit_values),
                             staging=arguments.staging,

@@ -118,7 +118,20 @@ def test_fresh_sdist_wheel_runs_console_without_a_javascript_runtime(
 
     sdist_assets = distribution_assets(sdist_names, "/src/okf_wiki/console_assets/")
     wheel_assets = distribution_assets(wheel_names, "okf_wiki/console_assets/")
+    producer_skill = {
+        "SKILL.md",
+        "references/generate.md",
+        "references/refresh.md",
+        "references/review.md",
+        "templates/architecture.md",
+        "templates/concept.md",
+        "templates/flow.md",
+        "templates/module.md",
+        "templates/overview.md",
+    }
     assert wheel_assets == sdist_assets
+    assert distribution_assets(sdist_names, "/src/okf_wiki/producer_skill/") == producer_skill
+    assert distribution_assets(wheel_names, "okf_wiki/producer_skill/") == producer_skill
     assert "index.html" in wheel_assets
     assert any(
         name.startswith("assets/knowledge-page-") and name.endswith(".js") for name in wheel_assets
@@ -174,6 +187,14 @@ def test_fresh_sdist_wheel_runs_console_without_a_javascript_runtime(
         ).stdout.strip()
     ).resolve()
     assert not location.is_relative_to(ROOT)
+
+    skill_fork = runtime / "producer-skill"
+    forked = cli(executable, ["skill-fork", skill_fork], cwd=runtime, env=environment)
+    assert forked["ok"] is True
+    assert re.fullmatch(r"[0-9a-f]{64}", forked["skill_fork"]["digest"])
+    assert {
+        path.relative_to(skill_fork).as_posix() for path in skill_fork.rglob("*") if path.is_file()
+    } == producer_skill
 
     source = runtime / "source"
     source.mkdir()
