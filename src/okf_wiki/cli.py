@@ -1278,6 +1278,12 @@ def parser() -> argparse.ArgumentParser:
     wiki_run_command.add_argument("--wiki-file-bytes-limit", type=int)
     wiki_run_command.add_argument("--wiki-total-bytes-limit", type=int)
     wiki_run_command.add_argument("--wiki-write-bytes-limit", type=int)
+    wiki_eval_command = subcommands.add_parser("wiki-eval")
+    wiki_eval_command.add_argument("output", type=Path)
+    wiki_eval_command.add_argument("--model")
+    wiki_eval_command.add_argument("--repeats", type=int, default=2)
+    wiki_eval_command.add_argument("--skill", type=Path)
+    wiki_eval_command.add_argument("--skill-digest")
     skill_fork_command = subcommands.add_parser("skill-fork")
     skill_fork_command.add_argument("destination")
     skill_fork_command.add_argument("--skill")
@@ -1543,6 +1549,41 @@ def main() -> int:
                 )
                 return 1
             emit({"ok": True, "result": result.model_dump(mode="json")})
+            return 0
+        if arguments.command == "wiki-eval":
+            from .wiki_evaluation import evaluate_wiki_producer
+
+            try:
+                report = asyncio.run(
+                    evaluate_wiki_producer(
+                        arguments.output,
+                        model=arguments.model,
+                        repeats=arguments.repeats,
+                        skill=_producer_skill_version(arguments),
+                    )
+                )
+            except Exception as error:
+                emit(
+                    {
+                        "error": {
+                            "message": _safe_cli_error(error),
+                            "type": type(error).__name__,
+                        },
+                        "ok": False,
+                    }
+                )
+                return 1
+            emit(
+                {
+                    "decision": report.decision,
+                    "ok": True,
+                    "provisional": report.provisional,
+                    "reports": {
+                        "json": str(arguments.output / "wiki-evaluation.json"),
+                        "markdown": str(arguments.output / "wiki-evaluation.md"),
+                    },
+                }
+            )
             return 0
         if arguments.command == "build":
             return build(arguments.project_config)
