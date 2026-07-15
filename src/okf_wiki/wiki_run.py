@@ -37,7 +37,7 @@ class RepositorySnapshot(BaseModel):
 
 SkillDigest = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 _DEFAULT_PRODUCER_SKILL = Path(__file__).with_name("producer_skill")
-_DEFAULT_PRODUCER_SKILL_DIGEST = "c82f6feaed63fbdd92c027744db255c8ac59873a99ec4d98ecccaaaab4c711b0"
+_DEFAULT_PRODUCER_SKILL_DIGEST = "289e49715a622a6f0a6f3130cb3e13bcf9cb1b670916d166d70fb54594343ea0"
 
 
 class ProducerSkillVersion(BaseModel):
@@ -66,12 +66,14 @@ class ProducerSkillFork(BaseModel):
     def create(cls, version: ProducerSkillVersion, destination: Path) -> "ProducerSkillFork":
         source = _selected_producer_skill(version)
         target = destination.absolute()
-        if os.path.lexists(target):
-            raise ValueError("Skill Fork destination must not already exist")
         if _overlaps(source, target.resolve(strict=False)):
             raise ValueError("Skill Version and Skill Fork must not overlap")
         try:
-            shutil.copytree(source, target)
+            target.mkdir(parents=True, exist_ok=False)
+        except FileExistsError as error:
+            raise ValueError("Skill Fork destination must not already exist") from error
+        try:
+            shutil.copytree(source, target, dirs_exist_ok=True)
             fork = cls(path=target.resolve(strict=True))
             if fork.version().digest != version.digest:
                 raise ValueError("Skill Fork does not match its selected Skill Version")

@@ -77,7 +77,7 @@ def test_default_producer_skill_is_a_complete_content_addressed_version() -> Non
         for path in version.path.rglob("*")
         if path.is_file()
     } == REQUIRED_PRODUCER_SKILL_PATHS
-    assert version.digest == "c82f6feaed63fbdd92c027744db255c8ac59873a99ec4d98ecccaaaab4c711b0"
+    assert version.digest == "289e49715a622a6f0a6f3130cb3e13bcf9cb1b670916d166d70fb54594343ea0"
 
 
 @pytest.mark.parametrize(
@@ -179,13 +179,36 @@ def test_skill_fork_is_an_owned_copy_that_product_versions_cannot_overwrite(
     assert fork.version().digest != default.digest
 
 
-def test_skill_fork_template_changes_wiki_output_through_the_same_run_seam(
-    tmp_path: Path,
+def test_skill_fork_does_not_remove_a_competing_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "skill"
+    marker = destination / "owned-by-competitor"
+    mkdir = os.mkdir
+
+    def race(path: str | os.PathLike[str], mode: int = 0o777) -> None:
+        if Path(path) == destination:
+            mkdir(path, mode)
+            marker.write_text("keep\n", encoding="utf-8")
+            raise FileExistsError(path)
+        mkdir(path, mode)
+
+    monkeypatch.setattr(os, "mkdir", race)
+
+    with pytest.raises(ValueError, match="destination must not already exist"):
+        ProducerSkillFork.create(ProducerSkillVersion.default(), destination)
+
+    assert marker.read_text(encoding="utf-8") == "keep\n"
+
+
+@pytest.mark.parametrize("customization_path", ["references/generate.md", "templates/overview.md"])
+def test_skill_fork_customization_changes_wiki_output_through_the_same_run_seam(
+    tmp_path: Path, customization_path: str
 ) -> None:
     source = tmp_path / "source"
     source_revision = make_repository(source, "source\n")
     fork = ProducerSkillFork.create(ProducerSkillVersion.default(), tmp_path / "skill")
-    template = fork.path / "templates/overview.md"
+    customizable = fork.path / customization_path
 
     def model(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
         if any(
@@ -208,11 +231,11 @@ def test_skill_fork_template_changes_wiki_output_through_the_same_run_seam(
                 ToolCallPart(
                     "run_code",
                     {
-                        "code": """from pathlib import Path
-template = Path('/skill/templates/overview.md').read_text()
-marker = [line[len('Customization: '):] for line in template.splitlines() if line.startswith('Customization: ')][0]
-Path('/wiki/index.md').write_text(f'---\\ntitle: Wiki\\n---\\n# Wiki\\n\\n{marker}\\n\\n[Source](repo:README.md#L1-L1)\\n')
-"""
+                        "code": f"""from pathlib import Path
+customization = Path('/skill/{customization_path}').read_text()
+marker = [line[len('Customization: '):] for line in customization.splitlines() if line.startswith('Customization: ')][0]
+Path('/wiki/index.md').write_text(f'---\\ntitle: Wiki\\n---\\n# Wiki\\n\\n{{marker}}\\n\\n[Source](repo:README.md#L1-L1)\\n')
+""",
                     },
                 )
             ]
@@ -241,10 +264,10 @@ Path('/wiki/index.md').write_text(f'---\\ntitle: Wiki\\n---\\n# Wiki\\n\\n{marke
         )
         return (tmp_path / f"{name}-published/index.md").read_text(encoding="utf-8")
 
-    original = template.read_text(encoding="utf-8")
-    template.write_text(original + "\nCustomization: platform team\n", encoding="utf-8")
+    original = customizable.read_text(encoding="utf-8")
+    customizable.write_text(original + "\nCustomization: platform team\n", encoding="utf-8")
     first = run(fork.version(), "first")
-    template.write_text(original + "\nCustomization: library users\n", encoding="utf-8")
+    customizable.write_text(original + "\nCustomization: library users\n", encoding="utf-8")
     second = run(fork.version(), "second")
 
     assert "platform team" in first
@@ -1292,3 +1315,21 @@ def test_skill_fork_cli_creates_an_owned_copy_of_the_default(
     assert (
         ProducerSkillVersion.from_directory(destination).digest == payload["skill_fork"]["digest"]
     )
+
+
+def test_skill_inspect_cli_reports_the_current_resolved_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    fork = ProducerSkillFork.create(ProducerSkillVersion.default(), Path("my-skill"))
+    guidance = fork.path / "references/generate.md"
+    guidance.write_text(guidance.read_text(encoding="utf-8") + "\nAudience: operators\n")
+    expected = fork.version()
+    monkeypatch.setattr("sys.argv", ["okf-wiki", "skill-inspect", "my-skill"])
+
+    assert main() == 0
+
+    assert json.loads(capsys.readouterr().out) == {
+        "ok": True,
+        "skill_version": {"digest": expected.digest, "path": str(expected.path)},
+    }

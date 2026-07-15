@@ -1247,6 +1247,8 @@ def parser() -> argparse.ArgumentParser:
     skill_fork_command.add_argument("destination")
     skill_fork_command.add_argument("--skill")
     skill_fork_command.add_argument("--skill-digest")
+    skill_inspect_command = subcommands.add_parser("skill-inspect")
+    skill_inspect_command.add_argument("path")
     build_command = subcommands.add_parser("build")
     build_command.add_argument("project_config")
     status_command = subcommands.add_parser("status")
@@ -1413,6 +1415,26 @@ def main() -> int:
 
     arguments = parser().parse_args()
     try:
+        if arguments.command == "skill-inspect":
+            from .wiki_run import ProducerSkillVersion
+
+            try:
+                version = ProducerSkillVersion.from_directory(Path(arguments.path))
+            except Exception as error:
+                emit(
+                    {
+                        "error": {"message": str(error), "type": type(error).__name__},
+                        "ok": False,
+                    }
+                )
+                return 1
+            emit(
+                {
+                    "ok": True,
+                    "skill_version": {"digest": version.digest, "path": str(version.path)},
+                }
+            )
+            return 0
         if arguments.command == "skill-fork":
             from .wiki_run import ProducerSkillFork
 

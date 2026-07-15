@@ -195,6 +195,17 @@ def test_fresh_sdist_wheel_runs_console_without_a_javascript_runtime(
     assert {
         path.relative_to(skill_fork).as_posix() for path in skill_fork.rglob("*") if path.is_file()
     } == producer_skill
+    for relative, customization in (
+        ("references/generate.md", "\nAudience: package operators\n"),
+        ("templates/overview.md", "\nLead with deployment constraints.\n"),
+    ):
+        artifact = skill_fork / relative
+        artifact.write_text(artifact.read_text(encoding="utf-8") + customization, encoding="utf-8")
+    inspected = cli(executable, ["skill-inspect", skill_fork], cwd=runtime, env=environment)
+    assert inspected["ok"] is True
+    assert inspected["skill_version"]["path"] == str(skill_fork.resolve())
+    assert re.fullmatch(r"[0-9a-f]{64}", inspected["skill_version"]["digest"])
+    assert inspected["skill_version"]["digest"] != forked["skill_fork"]["digest"]
 
     source = runtime / "source"
     source.mkdir()
