@@ -11,8 +11,18 @@ MAX_ANALYZABLE_FILE_BYTES = 1_000_000
 MAX_TOOL_RESULT_CHARS = 100_000
 MAX_SEARCH_MATCHES = 200
 REDACTION = "[REDACTED CREDENTIAL]"
+PROVIDER_DIAGNOSTICS_WITHHELD = "provider diagnostics withheld"
 GIT_EXECUTABLE = shutil.which("git", path=os.defpath) or "git"
 SecretValueT = TypeVar("SecretValueT")
+_SECRET_ENV_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH", "COOKIE")
+_SECRET_TEXT_MARKERS = (
+    "authorization:",
+    "api_key=",
+    "api-key=",
+    "bearer ",
+    "password=",
+    "secret=",
+)
 
 
 def git_read_bytes(repository: Path, *arguments: str) -> bytes:
@@ -104,6 +114,29 @@ def redact_secrets(value: str, secrets: tuple[str, ...]) -> str:
     for secret in sorted(set(filter(None, secrets)), key=len, reverse=True):
         value = value.replace(secret, REDACTION)
     return value
+
+
+def environment_secrets(extra: tuple[str, ...] = ()) -> tuple[str, ...]:
+    return tuple(
+        set(extra)
+        | {
+            value
+            for name, value in os.environ.items()
+            if value and any(marker in name.upper() for marker in _SECRET_ENV_MARKERS)
+        }
+    )
+
+
+def safe_error_message(error: Exception, *, secrets: tuple[str, ...] = ()) -> str:
+    raw = str(error)
+    message = redact_secrets(raw, environment_secrets(secrets))
+    if (
+        message != raw
+        or any(marker in message.casefold() for marker in _SECRET_TEXT_MARKERS)
+        or not isinstance(error, (OSError, ValueError))
+    ):
+        return PROVIDER_DIAGNOSTICS_WITHHELD
+    return message
 
 
 def contains_secret(value: str, secrets: tuple[str, ...]) -> bool:

@@ -48,7 +48,15 @@ from .review import (
 )
 from .run_events import append_run_event
 from .run_state import RunTransitionError, transition_run
-from .security import MAX_ANALYZABLE_FILE_BYTES, git_read, git_read_bytes, redact_secrets
+from .security import (
+    MAX_ANALYZABLE_FILE_BYTES,
+    PROVIDER_DIAGNOSTICS_WITHHELD,
+    environment_secrets,
+    git_read,
+    git_read_bytes,
+    redact_secrets,
+    safe_error_message,
+)
 from .source_identity import source_unit_id, stable_span_id
 from .state_schema import migrate_state
 
@@ -96,31 +104,15 @@ def emit(payload: dict) -> None:
     print(json.dumps(payload, sort_keys=True))
 
 
-_SECRET_ENV_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH", "COOKIE")
-
-
-def _cli_secret_values(extra: tuple[str, ...] = ()) -> tuple[str, ...]:
-    values = [value for value in extra if value]
-    for name, value in os.environ.items():
-        if value and any(marker in name.upper() for marker in _SECRET_ENV_MARKERS):
-            values.append(value)
-    return tuple(set(values))
-
-
 def _safe_cli_error(error: Exception, *, secrets: tuple[str, ...] = ()) -> str:
     if type(error).__name__ == "WikiRunResourceLimitError":
-        return redact_secrets(str(error), _cli_secret_values(secrets))
-    message = redact_secrets(str(error), _cli_secret_values(secrets))
-    if message != str(error):
-        return f"{type(error).__name__}: provider diagnostics withheld"
-    if any(
-        marker in message.casefold()
-        for marker in ("authorization:", "api_key=", "api-key=", "bearer ", "password=", "secret=")
-    ):
-        return f"{type(error).__name__}: provider diagnostics withheld"
-    if not isinstance(error, (OSError, ValueError)):
-        return f"{type(error).__name__}: provider diagnostics withheld"
-    return message
+        return redact_secrets(str(error), environment_secrets(secrets))
+    message = safe_error_message(error, secrets=secrets)
+    return (
+        f"{type(error).__name__}: {message}"
+        if message == PROVIDER_DIAGNOSTICS_WITHHELD
+        else message
+    )
 
 
 def state_dir() -> Path:
@@ -1284,6 +1276,8 @@ def parser() -> argparse.ArgumentParser:
     wiki_eval_command.add_argument("--repeats", type=int, default=2)
     wiki_eval_command.add_argument("--skill", type=Path)
     wiki_eval_command.add_argument("--skill-digest")
+    wiki_eval_command.add_argument("--manifest", type=Path)
+    wiki_eval_command.add_argument("--review", type=Path)
     skill_fork_command = subcommands.add_parser("skill-fork")
     skill_fork_command.add_argument("destination")
     skill_fork_command.add_argument("--skill")
@@ -1560,6 +1554,8 @@ def main() -> int:
                         model=arguments.model,
                         repeats=arguments.repeats,
                         skill=_producer_skill_version(arguments),
+                        manifest=arguments.manifest,
+                        review=arguments.review,
                     )
                 )
             except Exception as error:
@@ -1577,7 +1573,6 @@ def main() -> int:
                 {
                     "decision": report.decision,
                     "ok": True,
-                    "provisional": report.provisional,
                     "reports": {
                         "json": str(arguments.output / "wiki-evaluation.json"),
                         "markdown": str(arguments.output / "wiki-evaluation.md"),

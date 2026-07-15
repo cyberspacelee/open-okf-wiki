@@ -4,10 +4,12 @@ version = "0.1.0"
 description = "Build auditable OKF knowledge bundles from fixed source revisions."
 requires-python = ">=3.14,<3.15"
 dependencies = [
+    "genai-prices==0.0.71",
     "markdown-it-py==4.2.0",
     "mdit-py-plugins==0.6.1",
     "pydantic-ai==2.10.0",
     "pydantic-ai-harness[codemode]==0.7.0",
+    "pydantic-evals==2.10.0",
     "pygments==2.20.0",
     "pyyaml==6.0.3",
 ]

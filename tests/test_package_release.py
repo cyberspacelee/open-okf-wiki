@@ -132,6 +132,14 @@ def test_fresh_sdist_wheel_runs_console_without_a_javascript_runtime(
     assert wheel_assets == sdist_assets
     assert distribution_assets(sdist_names, "/src/okf_wiki/producer_skill/") == producer_skill
     assert distribution_assets(wheel_names, "okf_wiki/producer_skill/") == producer_skill
+    assert {
+        "okf_wiki/wiki_evaluation_corpus.json",
+        "okf_wiki/wiki_evaluation_repositories.json",
+    } <= wheel_names
+    assert all(
+        any(name.endswith(asset) for name in sdist_names)
+        for asset in ("wiki_evaluation_corpus.json", "wiki_evaluation_repositories.json")
+    )
     assert "index.html" in wheel_assets
     assert any(
         name.startswith("assets/knowledge-page-") and name.endswith(".js") for name in wheel_assets

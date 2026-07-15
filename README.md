@@ -164,6 +164,45 @@ uv run --locked okf-wiki workspace migrate ./legacy/project.toml --root ./catalo
 
 ## 评估与基准
 
+`wiki-eval` 默认只运行无凭据、确定性的 CI fixture，并始终返回 `pending_review`：
+
+```bash
+uv run --locked okf-wiki wiki-eval .scratch/wiki-eval-fixture
+```
+
+真实模型评估必须显式选择 repository manifest。仓库提供的 manifest 只用于源码 checkout：
+它通过相对路径引用被 Git 忽略的 `refs/openwiki`、`refs/iwe` 和 `refs/open-knowledge`，因此运行前须确认
+这三个 checkout 存在、干净且仍位于 manifest 固定的 commit；它不是安装包的默认 corpus。
+
+```bash
+uv run --locked okf-wiki wiki-eval .scratch/wiki-eval-live \
+  --model openai:gpt-5-mini \
+  --manifest src/okf_wiki/wiki_evaluation_repositories.json
+```
+
+未审核的 live 报告也只返回 `pending_review`。按报告中的 case/run 为每次成功输出填写 review JSON，
+再用新的输出目录和 `--review` 重跑；每条 review 必须包含 factual grounding、citation quality、
+unsupported statement count、useful coverage、page organization 和 reader usefulness。只有完整 live review
+才能产生 `retain_single_agent` 或 `open_capability_ticket` 决策。
+
+```json
+{
+  "schema_version": "wiki-evaluation-review-v1",
+  "reviews": [
+    {
+      "case": "openwiki",
+      "repeat": 1,
+      "factual_grounding": 1.0,
+      "citation_quality": 1.0,
+      "unsupported_statement_count": 0,
+      "useful_coverage": 0.9,
+      "page_organization": 0.9,
+      "reader_usefulness": 0.9
+    }
+  ]
+}
+```
+
 运行 Agent 角色与轨迹评估：
 
 ```bash
