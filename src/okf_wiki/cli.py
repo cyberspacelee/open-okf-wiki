@@ -1228,6 +1228,7 @@ def parser() -> argparse.ArgumentParser:
     subcommands = command.add_subparsers(dest="command", required=True)
     wiki_run_command = subcommands.add_parser("wiki-run")
     wiki_run_command.add_argument("source")
+    wiki_run_command.add_argument("--refresh", action="store_true")
     wiki_run_command.add_argument("--source-revision", required=True)
     wiki_run_command.add_argument("--skill")
     wiki_run_command.add_argument("--skill-digest")
@@ -1477,6 +1478,7 @@ def main() -> int:
                 result = asyncio.run(
                     WikiRunApplication().run(
                         WikiRunRequest(
+                            operation="refresh" if arguments.refresh else "generate",
                             repository=RepositorySnapshot(
                                 path=arguments.source,
                                 revision=arguments.source_revision,

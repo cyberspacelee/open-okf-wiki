@@ -126,11 +126,23 @@ class WikiManifest(BaseModel):
     pages: list[PagePath] = Field(min_length=1)
 
 
+class WikiChangeSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    added: list[PagePath] = Field(default_factory=list)
+    changed: list[PagePath] = Field(default_factory=list)
+    removed: list[PagePath] = Field(default_factory=list)
+    unchanged: list[PagePath] = Field(default_factory=list)
+    content_changed: bool = False
+    publication_changed: bool = False
+
+
 class Complete(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     status: Literal["complete"] = "complete"
     manifest: WikiManifest
+    summary: WikiChangeSummary = Field(default_factory=WikiChangeSummary)
 
 
 class NeedsInput(BaseModel):
@@ -146,6 +158,7 @@ type WikiRunResult = Complete | NeedsInput
 class WikiRunRequest(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
+    operation: Literal["generate", "refresh"] = "generate"
     repository: RepositorySnapshot
     skill: ProducerSkillVersion
     model: ModelProviderConfig
@@ -166,6 +179,13 @@ the intended Markdown page paths, or NeedsInput only for genuinely blocking ques
 class WikiRunApplication:
     async def run(self, request: WikiRunRequest) -> WikiRunResult:
         checkout, skill_input, staging, publication = _prepare_mounts(request)
+        old_hashes: dict[str, str] = {}
+        old_source_revision: str | None = None
+        old_skill_digest: str | None = None
+        if request.operation == "refresh":
+            old_hashes, old_source_revision, old_skill_digest = _stage_published_wiki(
+                publication, staging
+            )
         with tempfile.TemporaryDirectory(prefix="okf-wiki-run-") as temporary:
             source = Path(temporary) / "source"
             skill = Path(temporary) / "skill"
@@ -202,6 +222,10 @@ class WikiRunApplication:
             @agent.output_validator
             def validate_output(output: WikiRunResult) -> WikiRunResult:
                 if isinstance(output, Complete):
+                    if output.summary != WikiChangeSummary():
+                        raise ModelRetry(
+                            "Complete.summary is host-owned and must be omitted or empty"
+                        )
                     errors = _validate_wiki(source, staging, output.manifest)
                     if errors:
                         raise ModelRetry(
@@ -211,21 +235,35 @@ class WikiRunApplication:
 
             async with asyncio.timeout(request.limits.wall_clock_timeout_seconds):
                 result = await agent.run(
-                    "Begin this Wiki Run.", usage_limits=request.limits.usage_limits()
+                    f"Begin this {request.operation} Wiki Run.",
+                    usage_limits=request.limits.usage_limits(),
                 )
             if isinstance(result.output, Complete):
-                model_name = result.response.model_name
-                if not model_name:
-                    raise RuntimeError("Final model response did not identify its model")
-                _publish_wiki(
-                    source,
-                    staging,
-                    publication,
-                    result.output.manifest,
-                    source_revision=request.repository.revision,
-                    skill_digest=skill_digest,
-                    model_name=model_name,
+                new_hashes = _hashes(staging, result.output.manifest.pages)
+                summary = _summarize_changes(
+                    old_hashes,
+                    new_hashes,
+                    provenance_changed=(
+                        request.operation == "generate"
+                        or old_source_revision != request.repository.revision
+                        or old_skill_digest != skill_digest
+                    ),
                 )
+                output = result.output.model_copy(update={"summary": summary})
+                if summary.publication_changed:
+                    model_name = result.response.model_name
+                    if not model_name:
+                        raise RuntimeError("Final model response did not identify its model")
+                    _publish_wiki(
+                        source,
+                        staging,
+                        publication,
+                        output.manifest,
+                        source_revision=request.repository.revision,
+                        skill_digest=skill_digest,
+                        model_name=model_name,
+                    )
+                return output
             return result.output
 
 
@@ -547,6 +585,109 @@ def _tree_hashes(root: Path) -> dict[str, str]:
 def _content_digest(hashes: dict[str, str]) -> str:
     canonical = json.dumps(hashes, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(canonical).hexdigest()
+
+
+class _PublishedPage(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    path: PagePath
+    sha256: SkillDigest
+
+
+class _PublicationMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source_revision: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    skill_digest: SkillDigest
+    model: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    generated_at: datetime
+    pages: list[_PublishedPage] = Field(min_length=1)
+    content_digest: SkillDigest
+
+
+def _stage_published_wiki(publication: Path, staging: Path) -> tuple[dict[str, str], str, str]:
+    releases = publication.parent / f".{publication.name}.releases"
+    if not publication.is_symlink() or releases.is_symlink() or not releases.is_dir():
+        raise ValueError("Refresh requires an existing producer-managed Published Wiki")
+    try:
+        release_root = releases.resolve(strict=True)
+        release = publication.resolve(strict=True)
+    except OSError as error:
+        raise ValueError("Refresh Published Wiki pointer is not readable") from error
+    if not release.is_dir() or release.parent != release_root:
+        raise ValueError("Refresh Published Wiki pointer escapes its producer release directory")
+
+    metadata_path = release / PUBLICATION_METADATA_NAME
+    if metadata_path.is_symlink() or not metadata_path.is_file():
+        raise ValueError("Refresh Published Wiki metadata is missing or not a regular file")
+    try:
+        metadata = _PublicationMetadata.model_validate_json(metadata_path.read_bytes())
+    except Exception as error:
+        raise ValueError("Refresh Published Wiki metadata is invalid") from error
+
+    page_hashes: dict[str, str] = {}
+    for page in metadata.pages:
+        if not _is_canonical_page_path(page.path):
+            raise ValueError(f"Refresh Published Wiki page path is not canonical: {page.path!r}")
+        if page.path in page_hashes:
+            raise ValueError(f"Refresh Published Wiki metadata has duplicate page: {page.path}")
+        page_hashes[page.path] = page.sha256
+    if _content_digest(page_hashes) != metadata.content_digest:
+        raise ValueError("Refresh Published Wiki content digest does not match its page manifest")
+
+    actual_files: set[str] = set()
+    stack = [(release, PurePosixPath())]
+    while stack:
+        directory, prefix = stack.pop()
+        for entry in os.scandir(directory):
+            relative = prefix / entry.name
+            relative_path = relative.as_posix()
+            if entry.is_symlink():
+                raise ValueError(f"Refresh Published Wiki contains a symlink: {relative_path}")
+            if entry.is_dir(follow_symlinks=False):
+                stack.append((Path(entry.path), relative))
+            elif entry.is_file(follow_symlinks=False):
+                actual_files.add(relative_path)
+            else:
+                raise ValueError(
+                    f"Refresh Published Wiki contains an unsupported artifact: {relative_path}"
+                )
+    expected_files = set(page_hashes) | {PUBLICATION_METADATA_NAME}
+    if actual_files != expected_files:
+        raise ValueError("Refresh Published Wiki files do not match its page manifest")
+    if _hashes(release, list(page_hashes)) != page_hashes:
+        raise ValueError("Refresh Published Wiki page hashes do not match its metadata")
+
+    for page in page_hashes:
+        source = release.joinpath(*PurePosixPath(page).parts)
+        destination = staging.joinpath(*PurePosixPath(page).parts)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        if destination.is_symlink() or not destination.is_file():
+            raise ValueError(f"Refresh Published Wiki page is not a regular file: {page}")
+    if _hashes(staging, list(page_hashes)) != page_hashes:
+        raise ValueError("Refresh Staging Wiki copy does not match the current publication")
+    return page_hashes, metadata.source_revision, metadata.skill_digest
+
+
+def _summarize_changes(
+    old: dict[str, str], new: dict[str, str], *, provenance_changed: bool
+) -> WikiChangeSummary:
+    old_paths, new_paths = set(old), set(new)
+    shared = old_paths & new_paths
+    added = sorted(new_paths - old_paths)
+    changed = sorted(path for path in shared if old[path] != new[path])
+    removed = sorted(old_paths - new_paths)
+    unchanged = sorted(path for path in shared if old[path] == new[path])
+    content_changed = bool(added or changed or removed)
+    return WikiChangeSummary(
+        added=added,
+        changed=changed,
+        removed=removed,
+        unchanged=unchanged,
+        content_changed=content_changed,
+        publication_changed=content_changed or provenance_changed,
+    )
 
 
 _REQUIRED_PRODUCER_SKILL_PATHS = {
