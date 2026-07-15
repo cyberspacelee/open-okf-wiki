@@ -706,6 +706,60 @@ def test_content_identical_refresh_is_a_true_publication_noop(tmp_path: Path) ->
     assert publication_state(published) == before
 
 
+def test_refresh_with_different_revision_casing_is_a_true_publication_noop(
+    tmp_path: Path,
+) -> None:
+    source, source_revision, fork, published = generated_test_wiki(tmp_path)
+    before = publication_state(published)
+
+    result = run_test_wiki(
+        source,
+        source_revision.upper(),
+        fork.version(),
+        tmp_path / "refresh-staging",
+        published,
+        writing_model(write_pages_code({"index.md": SIMPLE_WIKI_PAGE}), ["index.md"]),
+        operation="refresh",
+    )
+
+    assert result == Complete(
+        manifest=WikiManifest(pages=["index.md"]),
+        summary=WikiChangeSummary(
+            unchanged=["index.md"],
+            content_changed=False,
+            publication_changed=False,
+        ),
+    )
+    assert publication_state(published) == before
+
+
+def test_refresh_can_overwrite_a_read_only_published_page(tmp_path: Path) -> None:
+    source, source_revision, fork, published = generated_test_wiki(tmp_path)
+    published_page = published.resolve() / "index.md"
+    published_page.chmod(0o444)
+    updated_page = SIMPLE_WIKI_PAGE.replace("# Wiki", "# Updated Wiki")
+
+    result = run_test_wiki(
+        source,
+        source_revision,
+        fork.version(),
+        tmp_path / "refresh-staging",
+        published,
+        writing_model(write_pages_code({"index.md": updated_page}), ["index.md"]),
+        operation="refresh",
+    )
+
+    assert result == Complete(
+        manifest=WikiManifest(pages=["index.md"]),
+        summary=WikiChangeSummary(
+            changed=["index.md"],
+            content_changed=True,
+            publication_changed=True,
+        ),
+    )
+    assert (published / "index.md").read_text(encoding="utf-8") == updated_page
+
+
 @pytest.mark.parametrize("changed", ["source", "skill"])
 def test_content_identical_refresh_publishes_changed_provenance(
     tmp_path: Path, changed: str

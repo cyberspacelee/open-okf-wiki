@@ -32,7 +32,7 @@ class RepositorySnapshot(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     path: Path
-    revision: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    revision: Annotated[str, StringConstraints(strip_whitespace=True, to_lower=True, min_length=1)]
 
 
 SkillDigest = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
@@ -662,7 +662,7 @@ def _stage_published_wiki(publication: Path, staging: Path) -> tuple[dict[str, s
         source = release.joinpath(*PurePosixPath(page).parts)
         destination = staging.joinpath(*PurePosixPath(page).parts)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
+        shutil.copyfile(source, destination)
         if destination.is_symlink() or not destination.is_file():
             raise ValueError(f"Refresh Published Wiki page is not a regular file: {page}")
     if _hashes(staging, list(page_hashes)) != page_hashes:
@@ -837,16 +837,19 @@ def _publish_wiki(
         if errors:
             raise ValueError("Copied Wiki validation failed: " + "; ".join(errors))
         page_hashes = _hashes(temporary_release, manifest.pages)
-        metadata = {
-            "source_revision": source_revision,
-            "skill_digest": skill_digest,
-            "model": model_name,
-            "generated_at": datetime.now(UTC).isoformat(),
-            "pages": [{"path": path, "sha256": digest} for path, digest in page_hashes.items()],
-            "content_digest": _content_digest(page_hashes),
-        }
+        metadata = _PublicationMetadata(
+            source_revision=source_revision,
+            skill_digest=skill_digest,
+            model=model_name,
+            generated_at=datetime.now(UTC),
+            pages=[
+                _PublishedPage(path=path, sha256=digest) for path, digest in page_hashes.items()
+            ],
+            content_digest=_content_digest(page_hashes),
+        )
         (temporary_release / PUBLICATION_METADATA_NAME).write_text(
-            json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            json.dumps(metadata.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
         )
         os.replace(temporary_release, final_release)
         os.symlink(
