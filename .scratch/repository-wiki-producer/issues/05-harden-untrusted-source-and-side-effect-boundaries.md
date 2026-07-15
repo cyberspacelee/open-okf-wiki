@@ -6,13 +6,13 @@
 
 **Status:** ready-for-agent
 
-- [ ] Source and Producer Skill mounts remain read-only for the complete Wiki Run; only the Staging Wiki is writable.
-- [ ] Absolute paths, parent traversal, normalization tricks, symlink escapes, and publication-root escapes fail closed.
-- [ ] Repository builds, tests, package managers, scripts, plugins, arbitrary host shell, and package installation are unavailable.
-- [ ] Repository analysis receives no external network tool beyond the configured model connection.
-- [ ] Repository-provided AGENTS, CLAUDE, Skill, prompt-like, and plugin files cannot change system policy or gain capabilities.
-- [ ] Model credentials and secret headers never enter source, Producer Skill content, prompts supplied by the product, traces, staging files, terminal output, or publication metadata.
-- [ ] Invalid citations to binary, missing, oversized, escaped, or out-of-range source content fail validation.
-- [ ] Usage and sandbox resource ceilings stop unbounded repository traversal or output generation with explicit errors.
-- [ ] Adversarial tests exercise source writes, Skill writes, path traversal, symlink races supported by the platform, shell and network attempts, repository-instruction injection, and secret exposure.
-- [ ] Security checks run through the Wiki Run seam where possible; focused lower-level tests are limited to trust-boundary cases that cannot be localized safely end to end.
+- [x] Source and Producer Skill mounts remain read-only for the complete Wiki Run; only the Staging Wiki is writable.
+- [x] Absolute paths, parent traversal, normalization tricks, symlink escapes, and publication-root escapes fail closed.
+- [x] Repository builds, tests, package managers, scripts, plugins, arbitrary host shell, and package installation are unavailable.
+- [x] Repository analysis receives no external network tool beyond the configured model connection.
+- [x] Repository-provided AGENTS, CLAUDE, Skill, prompt-like, and plugin files cannot change system policy or gain capabilities.
+- [x] Model credentials and secret headers never enter source, Producer Skill content, prompts supplied by the product, traces, staging files, terminal output, or publication metadata.
+- [x] Invalid citations to binary, missing, oversized, escaped, or out-of-range source content fail validation.
+- [x] Usage and sandbox resource ceilings stop unbounded repository traversal or output generation with explicit errors.
+- [x] Adversarial tests exercise source writes, Skill writes, path traversal, symlink races supported by the platform, shell and network attempts, repository-instruction injection, and secret exposure.
+- [x] Security checks run through the Wiki Run seam where possible; focused lower-level tests are limited to trust-boundary cases that cannot be localized safely end to end.
