@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -154,6 +155,75 @@ title: Architecture
     assert datetime.fromisoformat(metadata["generated_at"]).tzinfo == UTC
 
 
+def test_complete_wiki_run_resolves_canonical_encoded_source_paths(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    skill = tmp_path / "skill"
+    staging = tmp_path / "staging"
+    source_revision = make_repository(source, "source\n")
+    (source / "文档.md").write_text("来源\n", encoding="utf-8")
+    subprocess.run(["git", "add", "文档.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-qm", "unicode source"], cwd=source, check=True)
+    source_revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+
+    def model(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
+        if any(
+            isinstance(part, ToolReturnPart) and part.tool_name == "run_code"
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+        ):
+            complete = next(tool for tool in info.output_tools if tool.name.endswith("Complete"))
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        complete.name,
+                        {"status": "complete", "manifest": {"pages": ["index.md"]}},
+                    )
+                ]
+            )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "run_code",
+                    {
+                        "code": "from pathlib import Path\n"
+                        "Path('/wiki/index.md').write_text('---\\ntitle: Wiki\\n---\\n"
+                        "# Wiki\\n\\n[Source](repo:%E6%96%87%E6%A1%A3.md#L1-L1)\\n')"
+                    },
+                )
+            ]
+        )
+
+    result = asyncio.run(
+        WikiRunApplication().run(
+            WikiRunRequest(
+                repository=RepositorySnapshot(path=source, revision=source_revision),
+                skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                model=ModelProviderConfig(model=FunctionModel(model)),
+                limits=WikiRunLimits(
+                    request_limit=3,
+                    tool_calls_limit=2,
+                    retries=0,
+                    request_timeout_seconds=5,
+                    tool_timeout_seconds=5,
+                ),
+                staging=staging,
+                publication=tmp_path / "published",
+            )
+        )
+    )
+
+    assert result == Complete(manifest=WikiManifest(pages=["index.md"]))
+
+
 def test_complete_validation_retry_lets_the_same_agent_fix_staging(tmp_path: Path) -> None:
     source = tmp_path / "source"
     skill = tmp_path / "skill"
@@ -179,7 +249,8 @@ def test_complete_validation_retry_lets_the_same_agent_fix_staging(tmp_path: Pat
             )
         body = (
             "---\ntitle: Fixed Wiki\n---\n# Fixed Wiki\n\n"
-            "[Top](#fixed-wiki) [Web](https://example.com) [Mail](mailto:docs@example.com)\n"
+            "[Top](#fixed-wiki) [Web](https://example.com) [Mail](mailto:docs@example.com)\n\n"
+            "[Source](repo:README.md#L1-L1)\n"
             if current == 2
             else "---\ntitle: ''\n---\n# Broken Wiki\n\n[Missing](missing.md)\n"
         )
@@ -353,7 +424,8 @@ def test_publication_failure_leaves_the_published_wiki_unchanged(
                     "run_code",
                     {
                         "code": "from pathlib import Path\n"
-                        "Path('/wiki/index.md').write_text('---\\ntitle: New Wiki\\n---\\n# New Wiki\\n')"
+                        "Path('/wiki/index.md').write_text('---\\ntitle: New Wiki\\n---\\n"
+                        "# New Wiki\\n\\n[Source](repo:README.md#L1-L1)\\n')"
                     },
                 )
             ]
@@ -409,6 +481,89 @@ def test_publication_failure_leaves_the_published_wiki_unchanged(
     assert list(old_release.parent.iterdir()) == [old_release]
 
 
+def test_publication_copy_revalidates_a_page_swapped_for_a_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    skill = tmp_path / "skill"
+    staging = tmp_path / "staging"
+    published = tmp_path / "published"
+    source_revision = make_repository(source, "source\n")
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    old_release = make_published_wiki(published)
+    outside = tmp_path / "outside.md"
+    page = "---\ntitle: New Wiki\n---\n# New Wiki\n\n[Source](repo:README.md#L1-L1)\n"
+    outside.write_text(page, encoding="utf-8")
+
+    def model(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
+        if any(
+            isinstance(part, ToolReturnPart) and part.tool_name == "run_code"
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+        ):
+            complete = next(tool for tool in info.output_tools if tool.name.endswith("Complete"))
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        complete.name,
+                        {"status": "complete", "manifest": {"pages": ["index.md"]}},
+                    )
+                ]
+            )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "run_code",
+                    {
+                        "code": f"from pathlib import Path\n"
+                        f"Path('/wiki/index.md').write_text({page!r})"
+                    },
+                )
+            ]
+        )
+
+    real_copytree = shutil.copytree
+
+    def swap_then_copy(
+        source_path: os.PathLike[str] | str,
+        destination_path: os.PathLike[str] | str,
+        symlinks: bool = False,
+    ) -> Path:
+        if Path(source_path) == staging:
+            staged_page = staging / "index.md"
+            staged_page.unlink()
+            staged_page.symlink_to(outside)
+        return Path(real_copytree(source_path, destination_path, symlinks=symlinks))
+
+    monkeypatch.setattr(shutil, "copytree", swap_then_copy)
+
+    with pytest.raises(ValueError, match="Copied Wiki validation failed.*Symlink"):
+        asyncio.run(
+            WikiRunApplication().run(
+                WikiRunRequest(
+                    repository=RepositorySnapshot(path=source, revision=source_revision),
+                    skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                    model=ModelProviderConfig(model=FunctionModel(model)),
+                    limits=WikiRunLimits(
+                        request_limit=3,
+                        tool_calls_limit=2,
+                        retries=0,
+                        request_timeout_seconds=5,
+                        tool_timeout_seconds=5,
+                    ),
+                    staging=staging,
+                    publication=published,
+                )
+            )
+        )
+
+    assert published.resolve() == old_release
+    assert (published / "index.md").read_text(encoding="utf-8") == "old publication\n"
+    assert list(old_release.parent.iterdir()) == [old_release]
+
+
 @pytest.mark.parametrize(
     "case",
     [
@@ -424,13 +579,18 @@ def test_publication_failure_leaves_the_published_wiki_unchanged(
         "missing_index",
         "frontmatter",
         "frontmatter_yaml",
+        "duplicate_frontmatter",
         "internal_link",
         "fragment",
+        "no_citation",
         "citation_syntax",
         "citation_path",
         "citation_range",
         "citation_reversed",
         "citation_traversal",
+        "citation_encoded_separator",
+        "citation_query",
+        "raw_html",
     ],
 )
 def test_invalid_staging_manifest_and_artifacts_never_publish(tmp_path: Path, case: str) -> None:
@@ -439,12 +599,27 @@ def test_invalid_staging_manifest_and_artifacts_never_publish(tmp_path: Path, ca
     staging = tmp_path / "staging"
     published = tmp_path / "published"
     source_revision = make_repository(source, "source\n")
+    if case == "citation_encoded_separator":
+        (source / "README%2Fcopy.md").write_text("encoded separator\n", encoding="utf-8")
+    elif case == "citation_query":
+        (source / "README.md?draft").write_text("query-shaped path\n", encoding="utf-8")
+    if case in {"citation_encoded_separator", "citation_query"}:
+        subprocess.run(["git", "add", "."], cwd=source, check=True)
+        subprocess.run(["git", "commit", "-qm", "adversarial source path"], cwd=source, check=True)
+        source_revision = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=source,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
     skill.mkdir()
     (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
     old_release = make_published_wiki(published)
     outside = tmp_path / "outside.md"
     outside.write_text("outside\n", encoding="utf-8")
-    valid_page = "---\ntitle: Valid Wiki\n---\n# Valid Wiki\n"
+    uncited_page = "---\ntitle: Valid Wiki\n---\n# Valid Wiki\n"
+    valid_page = uncited_page + "\n[Source](repo:README.md#L1-L1)\n"
     code = f"from pathlib import Path\nPath('/wiki/index.md').write_text({valid_page!r})"
     pages = ["index.md"]
     if case == "missing":
@@ -471,6 +646,11 @@ def test_invalid_staging_manifest_and_artifacts_never_publish(tmp_path: Path, ca
     elif case == "frontmatter_yaml":
         invalid = "---\ntitle: [\n---\n# Invalid YAML\n"
         code = f"from pathlib import Path\nPath('/wiki/index.md').write_text({invalid!r})"
+    elif case == "duplicate_frontmatter":
+        invalid = (
+            "---\ntitle: First\ntitle: Second\n---\n# Duplicate\n\n[Source](repo:README.md#L1-L1)\n"
+        )
+        code = f"from pathlib import Path\nPath('/wiki/index.md').write_text({invalid!r})"
     elif case == "internal_link":
         invalid = valid_page + "\n[Missing](missing.md)\n"
         code = f"from pathlib import Path\nPath('/wiki/index.md').write_text({invalid!r})"
@@ -482,20 +662,31 @@ def test_invalid_staging_manifest_and_artifacts_never_publish(tmp_path: Path, ca
             f"Path('/wiki/other.md').write_text({valid_page!r})"
         )
         pages.append("other.md")
+    elif case == "no_citation":
+        code = f"from pathlib import Path\nPath('/wiki/index.md').write_text({uncited_page!r})"
     elif case == "citation_syntax":
-        invalid = valid_page + "\n[Source](repo:README.md#L0-L1)\n"
+        invalid = uncited_page + "\n[Source](repo:README.md#L0-L1)\n"
         code = f"from pathlib import Path\nPath('/wiki/index.md').write_text({invalid!r})"
     elif case == "citation_path":
-        invalid = valid_page + "\n[Source](repo:missing.py#L1-L1)\n"
+        invalid = uncited_page + "\n[Source](repo:missing.py#L1-L1)\n"
         code = f"from pathlib import Path\nPath('/wiki/index.md').write_text({invalid!r})"
     elif case == "citation_range":
-        invalid = valid_page + "\n[Source](repo:README.md#L2-L2)\n"
+        invalid = uncited_page + "\n[Source](repo:README.md#L2-L2)\n"
         code = f"from pathlib import Path\nPath('/wiki/index.md').write_text({invalid!r})"
     elif case == "citation_reversed":
-        invalid = valid_page + "\n[Source](repo:README.md#L2-L1)\n"
+        invalid = uncited_page + "\n[Source](repo:README.md#L2-L1)\n"
         code = f"from pathlib import Path\nPath('/wiki/index.md').write_text({invalid!r})"
     elif case == "citation_traversal":
-        invalid = valid_page + "\n[Source](repo:../README.md#L1-L1)\n"
+        invalid = uncited_page + "\n[Source](repo:../README.md#L1-L1)\n"
+        code = f"from pathlib import Path\nPath('/wiki/index.md').write_text({invalid!r})"
+    elif case == "citation_encoded_separator":
+        invalid = uncited_page + "\n[Source](repo:README%2Fcopy.md#L1-L1)\n"
+        code = f"from pathlib import Path\nPath('/wiki/index.md').write_text({invalid!r})"
+    elif case == "citation_query":
+        invalid = uncited_page + "\n[Source](repo:README.md?draft#L1-L1)\n"
+        code = f"from pathlib import Path\nPath('/wiki/index.md').write_text({invalid!r})"
+    elif case == "raw_html":
+        invalid = valid_page + '\n<a href="missing.md">Missing</a>\n'
         code = f"from pathlib import Path\nPath('/wiki/index.md').write_text({invalid!r})"
 
     def model(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
@@ -592,7 +783,7 @@ try:
 except Exception:
     skill_write_blocked = True
 assert source_write_blocked and skill_write_blocked
-Path('/wiki/index.md').write_text('---\\ntitle: Example Wiki\\n---\\n# Example Wiki\\n\\n' + skill + '\\n' + source)
+Path('/wiki/index.md').write_text('---\\ntitle: Example Wiki\\n---\\n# Example Wiki\\n\\n' + skill + '\\n' + source + '\\n[Source](repo:README.md#L1-L3)\\n')
 """
                     },
                 )
@@ -623,7 +814,11 @@ Path('/wiki/index.md').write_text('---\\ntitle: Example Wiki\\n---\\n# Example W
 
     assert result == Complete(manifest=WikiManifest(pages=["index.md"]))
     assert (staging / "index.md").read_text(encoding="utf-8") == (
-        "---\ntitle: Example Wiki\n---\n# Example Wiki\n\n" + skill_text + "\n" + source_text
+        "---\ntitle: Example Wiki\n---\n# Example Wiki\n\n"
+        + skill_text
+        + "\n"
+        + source_text
+        + "\n[Source](repo:README.md#L1-L3)\n"
     )
     assert originals_changed
     assert (source / "README.md").read_text(encoding="utf-8") == "changed after snapshot\n"
@@ -660,6 +855,40 @@ def test_wiki_run_rejects_nested_staging_without_creating_it(tmp_path: Path) -> 
         )
 
     assert not staging.exists()
+
+
+def test_wiki_run_rejects_a_publication_parent_symlink_into_source(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    skill = tmp_path / "skill"
+    source_revision = make_repository(source, "source\n")
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    publication_parent = tmp_path / "publication-parent"
+    publication_parent.symlink_to(source, target_is_directory=True)
+    model_called = False
+
+    def model(_: list[ModelRequest | ModelResponse], __: AgentInfo) -> ModelResponse:
+        nonlocal model_called
+        model_called = True
+        raise AssertionError("model must not run for overlapping publication")
+
+    with pytest.raises(ValueError, match="must not overlap"):
+        asyncio.run(
+            WikiRunApplication().run(
+                WikiRunRequest(
+                    repository=RepositorySnapshot(path=source, revision=source_revision),
+                    skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                    model=ModelProviderConfig(model=FunctionModel(model)),
+                    limits=WikiRunLimits(),
+                    staging=tmp_path / "staging",
+                    publication=publication_parent / "published",
+                )
+            )
+        )
+
+    assert not model_called
+    assert not (source / "published").exists()
+    assert not (source / ".published.releases").exists()
 
 
 @pytest.mark.parametrize("dirty", [False, True], ids=["non-git", "dirty"])

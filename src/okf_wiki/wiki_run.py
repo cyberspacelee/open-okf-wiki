@@ -7,10 +7,11 @@ import re
 import shutil
 import tempfile
 import uuid
+from collections.abc import Hashable
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote, unquote_to_bytes, urlsplit
 
 import yaml
 from markdown_it import MarkdownIt
@@ -20,8 +21,11 @@ from pydantic_ai import Agent, ModelRetry, ModelSettings, UsageLimits
 from pydantic_ai.models import Model
 from pydantic_ai_harness import CodeMode
 from pydantic_monty import MountDir
+from yaml.constructor import ConstructorError
+from yaml.nodes import MappingNode
+from yaml.resolver import BaseResolver
 
-from .security import git_read, git_read_bytes
+from .security import canonical_source_path, git_read, git_read_bytes
 
 
 class RepositorySnapshot(BaseModel):
@@ -239,7 +243,10 @@ def _prepare_mounts(request: WikiRunRequest) -> tuple[Path, Path, Path, Path]:
         raise ValueError("Repository Snapshot, Producer Skill, and Staging Wiki must not overlap")
     if any(staging.iterdir()):
         raise ValueError("Staging Wiki must be empty")
-    publication = request.publication.absolute()
+    publication_input = request.publication.absolute()
+    if publication_input.name in {"", ".", ".."}:
+        raise ValueError("Published Wiki path must name a directory")
+    publication = publication_input.parent.resolve(strict=False) / publication_input.name
     if (
         _overlaps(source, publication)
         or _overlaps(skill, publication)
@@ -266,6 +273,38 @@ _CITATION_RE = re.compile(r"repo:(?P<path>[^#]+)#L(?P<start>[1-9]\d*)-L(?P<end>[
 _TEMPORARY_NAMES = {".DS_Store"}
 _TEMPORARY_SUFFIXES = (".swp", ".swo", ".temp", ".tmp", "~")
 PUBLICATION_METADATA_NAME = ".okf-wiki.json"
+
+
+class _UniqueKeySafeLoader(yaml.SafeLoader):
+    pass
+
+
+def _construct_unique_mapping(
+    loader: _UniqueKeySafeLoader, node: MappingNode, deep: bool = False
+) -> dict[object, object]:
+    loader.flatten_mapping(node)
+    mapping: dict[object, object] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if not isinstance(key, Hashable):
+            raise ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "found unhashable key",
+                key_node.start_mark,
+            )
+        if key in mapping:
+            raise ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key ({key!r})",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueKeySafeLoader.add_constructor(BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping)
 
 
 def _validate_wiki(source: Path, root: Path, manifest: WikiManifest) -> list[str]:
@@ -319,6 +358,12 @@ def _validate_wiki(source: Path, root: Path, manifest: WikiManifest) -> list[str
         if page == "index.md" and not body.strip():
             errors.append("index.md must have non-empty entry content")
         tokens = _MARKDOWN.parse(body)
+        if any(
+            token.type == "html_block"
+            or any(child.type == "html_inline" for child in (token.children or []))
+            for token in tokens
+        ):
+            errors.append(f"{page}: raw HTML is not allowed")
         headings[page] = {
             identifier
             for token in tokens
@@ -333,11 +378,14 @@ def _validate_wiki(source: Path, root: Path, manifest: WikiManifest) -> list[str
             if isinstance((target := child.attrGet("href")), str)
         )
 
+    pages_with_valid_citations: set[str] = set()
     for page, target in links:
         if target.startswith("repo:"):
             citation_error = _validate_citation(source, target)
             if citation_error:
                 errors.append(f"{page}: {citation_error}")
+            else:
+                pages_with_valid_citations.add(page)
             continue
         parsed = urlsplit(target)
         if parsed.scheme:
@@ -363,6 +411,8 @@ def _validate_wiki(source: Path, root: Path, manifest: WikiManifest) -> list[str
             continue
         if parsed.fragment and unquote(parsed.fragment) not in headings.get(resolved, set()):
             errors.append(f"{page}: internal Wiki link fragment does not exist: {target}")
+    for page in sorted(actual_pages - pages_with_valid_citations):
+        errors.append(f"{page}: at least one valid Source Citation is required")
     return errors
 
 
@@ -377,7 +427,7 @@ def _read_frontmatter(text: str, page: str) -> tuple[str, list[str]]:
     if closing is None:
         return text, [f"{page}: YAML frontmatter is not closed"]
     try:
-        metadata = yaml.safe_load("".join(lines[1:closing]))
+        metadata = yaml.load("".join(lines[1:closing]), Loader=_UniqueKeySafeLoader)
     except yaml.YAMLError as error:
         return "".join(lines[closing + 1 :]), [f"{page}: invalid YAML frontmatter: {error}"]
     errors = []
@@ -392,10 +442,12 @@ def _validate_citation(source: Path, target: str) -> str | None:
     match = _CITATION_RE.fullmatch(target)
     if match is None:
         return f"malformed Source Citation: {target}"
-    path = match.group("path")
-    if not _is_canonical_relative_path(path):
+    try:
+        path = canonical_source_path(match.group("path"))
+    except ValueError:
         return f"Source Citation path is not repository-relative POSIX: {target}"
-    cited = source.joinpath(*PurePosixPath(path).parts)
+    decoded_path = os.fsdecode(unquote_to_bytes(path))
+    cited = source.joinpath(*PurePosixPath(decoded_path).parts)
     if not cited.is_file():
         return f"Source Citation path does not exist: {target}"
     content = cited.read_bytes()
@@ -469,7 +521,7 @@ def _publish_wiki(
     final_release = releases / release_id
     temporary_link = destination.parent / f".{destination.name}.{release_id}.tmp"
     try:
-        shutil.copytree(staging, temporary_release)
+        shutil.copytree(staging, temporary_release, symlinks=True)
         errors = _validate_wiki(source, temporary_release, manifest)
         if errors:
             raise ValueError("Copied Wiki validation failed: " + "; ".join(errors))
