@@ -18,7 +18,14 @@ import yaml
 from markdown_it import MarkdownIt
 from mdit_py_plugins.anchors import anchors_plugin
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
-from pydantic_ai import Agent, ModelRetry, ModelSettings, UnexpectedModelBehavior, UsageLimits
+from pydantic_ai import (
+    Agent,
+    ModelRetry,
+    ModelSettings,
+    UnexpectedModelBehavior,
+    UsageLimitExceeded,
+    UsageLimits,
+)
 from pydantic_ai.models import Model
 from pydantic_ai_harness import CodeMode
 from pydantic_monty import MountDir
@@ -229,6 +236,8 @@ def _resource_limit_from_exception(error: BaseException) -> str | None:
     for current in _exception_chain(error):
         if isinstance(current, WikiRunResourceLimitError):
             return str(current)
+        if isinstance(current, UsageLimitExceeded):
+            return "Agent usage quota was exceeded"
         text = str(current).casefold()
         if "disk write limit" in text or "write quota" in text:
             return "Staging Wiki write quota was exceeded"
@@ -519,21 +528,31 @@ def _check_directory_path(path: Path, label: str) -> None:
 
 
 def _create_directory_path(path: Path, label: str) -> None:
-    current = Path(path.anchor)
-    for part in path.parts[1:]:
-        current /= part
-        try:
-            os.mkdir(current)
-        except FileExistsError:
-            pass
-        except OSError as error:
-            raise ValueError(f"{label} directory could not be created") from error
-        try:
-            info = os.lstat(current)
-        except OSError as error:
-            raise ValueError(f"{label} path is not accessible") from error
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-            raise ValueError(f"{label} path must not contain symlinks or non-directories")
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path.anchor, flags)
+    except OSError as error:
+        raise ValueError(f"{label} path is not accessible") from error
+    try:
+        for part in path.parts[1:]:
+            try:
+                child = os.open(part, flags, dir_fd=descriptor)
+            except FileNotFoundError:
+                try:
+                    os.mkdir(part, dir_fd=descriptor)
+                    child = os.open(part, flags, dir_fd=descriptor)
+                except OSError as error:
+                    raise ValueError(f"{label} directory could not be created") from error
+            except OSError as error:
+                raise ValueError(
+                    f"{label} path must not contain symlinks or non-directories"
+                ) from error
+            os.close(descriptor)
+            descriptor = child
+        if not _same_directory(path, descriptor):
+            raise ValueError(f"{label} path changed during creation")
+    finally:
+        os.close(descriptor)
 
 
 def _overlaps(left: Path, right: Path) -> bool:
@@ -1175,15 +1194,27 @@ def _publish_wiki(
     model_name: str,
     limits: WikiRunLimits,
 ) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if os.path.lexists(destination) and not destination.is_symlink():
+    _check_directory_path(destination.parent, "Published Wiki parent")
+    _create_directory_path(destination.parent, "Published Wiki parent")
+    parent_fd = os.open(
+        destination.parent,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
+    stable_parent = _fd_directory_path(parent_fd)
+    stable_destination = stable_parent / destination.name
+    if os.path.lexists(stable_destination) and not stable_destination.is_symlink():
+        os.close(parent_fd)
         raise ValueError("Published Wiki path must be absent or a producer-managed symlink")
     releases = destination.parent / f".{destination.name}.releases"
-    release_root_fd = _open_release_root(releases)
+    try:
+        release_root_fd = _open_release_root(stable_parent / releases.name)
+    except Exception:
+        os.close(parent_fd)
+        raise
     stable_releases = _fd_directory_path(release_root_fd)
     release_id = uuid.uuid4().hex
     final_release = stable_releases / release_id
-    temporary_link = destination.parent / f".{destination.name}.{release_id}.tmp"
+    temporary_link = stable_parent / f".{destination.name}.{release_id}.tmp"
     final_release_owned = False
     temporary_link_owned = False
     try:
@@ -1211,7 +1242,9 @@ def _publish_wiki(
             json.dumps(metadata.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        if not _same_directory(releases, release_root_fd):
+        if not _same_directory(destination.parent, parent_fd) or not _same_directory(
+            releases, release_root_fd
+        ):
             raise ValueError("Published Wiki release directory changed during publication")
         release_target = os.path.realpath(final_release)
         os.symlink(
@@ -1220,9 +1253,9 @@ def _publish_wiki(
             target_is_directory=True,
         )
         temporary_link_owned = True
-        if os.path.lexists(destination) and not destination.is_symlink():
+        if os.path.lexists(stable_destination) and not stable_destination.is_symlink():
             raise ValueError("Published Wiki path must be absent or a producer-managed symlink")
-        os.replace(temporary_link, destination)
+        os.replace(temporary_link, stable_destination)
         temporary_link_owned = False
     except Exception:
         if final_release_owned:
@@ -1232,3 +1265,4 @@ def _publish_wiki(
         if temporary_link_owned:
             temporary_link.unlink(missing_ok=True)
         os.close(release_root_fd)
+        os.close(parent_fd)

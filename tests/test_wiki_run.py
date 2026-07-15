@@ -1076,7 +1076,7 @@ def test_refresh_publication_failure_leaves_the_publication_exactly_unchanged(
         def fail_replacement(
             source_path: os.PathLike[str], destination_path: os.PathLike[str]
         ) -> None:
-            if Path(destination_path) == published:
+            if Path(destination_path).name == published.name:
                 raise OSError("refresh replacement failure")
             replace(source_path, destination_path)
 
@@ -1422,7 +1422,7 @@ def test_publication_failure_leaves_the_published_wiki_unchanged(
         real_replace = os.replace
 
         def fail_replacement(source_path: os.PathLike[str], target_path: os.PathLike[str]) -> None:
-            if Path(target_path) == published:
+            if Path(target_path).name == published.name:
                 raise OSError("replacement failure")
             real_replace(source_path, target_path)
 
@@ -1506,6 +1506,11 @@ def test_publication_release_root_symlink_race_fails_closed(
     real_mkdir = os.mkdir
     swapped = False
 
+    class FixedUUID:
+        hex = "fixed-release-race"
+
+    monkeypatch.setattr("okf_wiki.wiki_run.uuid.uuid4", lambda: FixedUUID())
+
     def swap_release_root(
         path: os.PathLike[str] | str,
         mode: int = 0o777,
@@ -1513,7 +1518,7 @@ def test_publication_release_root_symlink_race_fails_closed(
         dir_fd: int | None = None,
     ) -> None:
         nonlocal swapped
-        if dir_fd is not None and not swapped:
+        if path == FixedUUID.hex and dir_fd is not None and not swapped:
             releases.rename(moved_releases)
             releases.symlink_to(outside, target_is_directory=True)
             swapped = True
@@ -1534,6 +1539,55 @@ def test_publication_release_root_symlink_race_fails_closed(
     assert swapped
     assert list(outside.iterdir()) == []
     assert list(moved_releases.iterdir()) == [moved_releases / "old"]
+
+
+def test_publication_parent_symlink_race_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    parent = tmp_path / "publication-parent"
+    parent.mkdir()
+    moved_parent = tmp_path / "owned-publication-parent"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real_mkdir = os.mkdir
+    swapped = False
+
+    class FixedUUID:
+        hex = "fixed-parent-race"
+
+    monkeypatch.setattr("okf_wiki.wiki_run.uuid.uuid4", lambda: FixedUUID())
+
+    def swap_publication_parent(
+        path: os.PathLike[str] | str,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> None:
+        nonlocal swapped
+        if path == FixedUUID.hex and dir_fd is not None and not swapped:
+            parent.rename(moved_parent)
+            parent.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        real_mkdir(path, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "mkdir", swap_publication_parent)
+
+    with pytest.raises(ValueError, match="release directory changed"):
+        publish_test_pages(
+            source,
+            revision,
+            skill,
+            tmp_path / "staging",
+            parent / "published",
+            {"index.md": SIMPLE_WIKI_PAGE},
+        )
+
+    assert swapped
+    assert list(outside.iterdir()) == []
+    assert list((moved_parent / ".published.releases").iterdir()) == []
 
 
 def test_publication_copy_revalidates_a_page_swapped_for_a_symlink(
@@ -2252,6 +2306,54 @@ def test_wiki_run_rejects_symlinked_staging_before_model_work(
     assert list(outside.iterdir()) == []
 
 
+def test_wiki_run_rejects_staging_parent_symlink_race_before_model_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    parent = tmp_path / "staging-parent"
+    parent.mkdir()
+    moved_parent = tmp_path / "owned-staging-parent"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real_mkdir = os.mkdir
+    swapped = False
+
+    def swap_staging_parent(
+        path: os.PathLike[str] | str,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> None:
+        nonlocal swapped
+        if path == "nested" and dir_fd is not None and not swapped:
+            parent.rename(moved_parent)
+            parent.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        real_mkdir(path, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "mkdir", swap_staging_parent)
+
+    with pytest.raises(ValueError, match="Staging Wiki path changed during creation"):
+        run_test_wiki(
+            source,
+            revision,
+            skill,
+            parent / "nested",
+            tmp_path / "published",
+            FunctionModel(
+                lambda *_: (_ for _ in ()).throw(
+                    AssertionError("model must not run after a staging path race")
+                )
+            ),
+        )
+
+    assert swapped
+    assert list(outside.iterdir()) == []
+    assert (moved_parent / "nested").is_dir()
+
+
 def test_wiki_run_rejects_a_publication_parent_symlink_into_source(tmp_path: Path) -> None:
     source = tmp_path / "source"
     skill = tmp_path / "skill"
@@ -2578,6 +2680,36 @@ def test_wiki_mount_write_quota_stops_output_and_preserves_the_publication(
     assert (published / "index.md").read_text(encoding="utf-8") == "old publication\n"
 
 
+def test_agent_usage_limit_is_an_explicit_resource_failure(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+
+    with pytest.raises(WikiRunResourceLimitError, match="Agent usage quota"):
+        asyncio.run(
+            WikiRunApplication().run(
+                WikiRunRequest(
+                    repository=RepositorySnapshot(path=source, revision=revision),
+                    skill=skill,
+                    model=ModelProviderConfig(
+                        model=writing_model(
+                            write_pages_code({"index.md": SIMPLE_WIKI_PAGE}), ["index.md"]
+                        )
+                    ),
+                    limits=WikiRunLimits(
+                        request_limit=1,
+                        tool_calls_limit=2,
+                        retries=0,
+                        request_timeout_seconds=5,
+                        tool_timeout_seconds=5,
+                    ),
+                    staging=tmp_path / "staging",
+                    publication=tmp_path / "published",
+                )
+            )
+        )
+
+
 def test_wiki_entry_ceiling_counts_directories_and_preserves_the_publication(
     tmp_path: Path,
 ) -> None:
@@ -2805,6 +2937,40 @@ def test_wiki_run_cli_withholds_secret_bearing_provider_diagnostics(
         "error": {
             "message": "RuntimeError: provider diagnostics withheld",
             "type": "RuntimeError",
+        },
+        "ok": False,
+    }
+
+
+def test_wiki_run_cli_preserves_explicit_resource_limit_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async def fail(_: WikiRunApplication, __: WikiRunRequest) -> NeedsInput:
+        raise WikiRunResourceLimitError("Agent usage quota was exceeded")
+
+    monkeypatch.setattr(WikiRunApplication, "run", fail)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "okf-wiki",
+            "wiki-run",
+            str(tmp_path / "source"),
+            "--source-revision",
+            "0" * 40,
+            "--staging",
+            str(tmp_path / "staging"),
+            "--publication",
+            str(tmp_path / "published"),
+            "--model",
+            "test",
+        ],
+    )
+
+    assert main() == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "error": {
+            "message": "Agent usage quota was exceeded",
+            "type": "WikiRunResourceLimitError",
         },
         "ok": False,
     }
