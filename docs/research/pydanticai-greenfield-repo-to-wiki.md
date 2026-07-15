@@ -2,11 +2,11 @@
 
 > 研究日期：2026-07-15
 >
-> 目标：忽略当前仓库实现，从零判断哪些能力直接交给 PydanticAI / Pydantic AI Harness，哪些语义放进产品自带的 Wiki Producer Skill。
+> 目标：忽略当前仓库实现，从零判断哪些能力直接交给 PydanticAI / Pydantic AI Harness，哪些语义放进产品自带的 Producer Skill。
 >
 > 证据范围：Pydantic 官方文章、`ai.pydantic.dev` 对应的官方文档，以及 Pydantic 官方仓库源码/API。
 
-> 本文是 greenfield 结论，取代 [`pydantic-agents-building-agents.md`](./pydantic-agents-building-agents.md) 中以“保留现有确定性控制平面”为前提的架构建议；旧文的 API 边界调查仍可参考。
+> 本文是 greenfield 结论，取代此前以“保留现有确定性控制平面”为前提的架构建议。
 
 Live docs 入口包括 [Agent](https://ai.pydantic.dev/agent/)、[Output](https://ai.pydantic.dev/output/)、[Toolsets](https://ai.pydantic.dev/toolsets/)、[Message history](https://ai.pydantic.dev/message-history/)、[Multi-agent applications](https://ai.pydantic.dev/multi-agent-applications/)、[Durable execution](https://pydantic.dev/docs/ai/integrations/durable_execution/overview/) 和 [Graphs](https://ai.pydantic.dev/graph/)；下文对行为边界的引用固定到对应 release tag，避免 rolling docs 漂移。
 
@@ -24,21 +24,21 @@ Live docs 入口包括 [Agent](https://ai.pydantic.dev/agent/)、[Output](https:
 
 ## 证据基线与稳定性
 
-- PydanticAI API 基线为最新官方 GitHub release [`v2.10.0`](https://github.com/pydantic/pydantic-ai/releases/tag/v2.10.0)，该 non-prerelease 于 2026-07-15 01:57 UTC 发布，tag 内包元数据标记 `Production/Stable`（[`pyproject.toml`](https://github.com/pydantic/pydantic-ai/blob/v2.10.0/pyproject.toml#L13-L48)）。截至本次核查，官方包的 [PyPI JSON](https://pypi.org/pypi/pydantic-ai/json) 仍报告 latest `2.9.1` 且没有 `2.10.0` files，属于 GitHub release 与 registry 发布的短暂渠道时差；实现时应重新确认可安装版本并锁定，不应假设 tag 已同步到 PyPI。V2 minor release 原则上不故意破坏兼容，但 message/event variant 和可选字段等不在保证内（[version policy](https://github.com/pydantic/pydantic-ai/blob/v2.10.0/docs/version-policy.md)）。
-- Pydantic AI Harness 基线为最新发布 tag [`v0.7.0`](https://github.com/pydantic/pydantic-ai-harness/tree/v0.7.0)。它是官方 capability library，但仍是 `0.x` / Alpha；minor release 可以 breaking（[官方定位](https://github.com/pydantic/pydantic-ai-harness/blob/v0.7.0/README.md#L8-L16)，[Alpha classifier](https://github.com/pydantic/pydantic-ai-harness/blob/v0.7.0/pyproject.toml#L17-L32)，[version policy](https://github.com/pydantic/pydantic-ai-harness/blob/v0.7.0/README.md#L326-L335)）。实现时应 pin 精确版本，不要复制其内部实现。
+- 本项目已按评估基线精确锁定 PydanticAI [`v2.10.0`](https://github.com/pydantic/pydantic-ai/releases/tag/v2.10.0)；tag 内包元数据标记 `Production/Stable`（[`pyproject.toml`](https://github.com/pydantic/pydantic-ai/blob/v2.10.0/pyproject.toml#L13-L48)）。V2 minor release 原则上不故意破坏兼容，但 message/event variant 和可选字段等不在保证内（[version policy](https://github.com/pydantic/pydantic-ai/blob/v2.10.0/docs/version-policy.md)）。
+- 本项目也精确锁定 Pydantic AI Harness [`v0.7.0`](https://github.com/pydantic/pydantic-ai-harness/tree/v0.7.0)。它是官方 capability library，但仍是 `0.x` / Alpha；minor release 可以 breaking（[官方定位](https://github.com/pydantic/pydantic-ai-harness/blob/v0.7.0/README.md#L8-L16)，[Alpha classifier](https://github.com/pydantic/pydantic-ai-harness/blob/v0.7.0/pyproject.toml#L17-L32)，[version policy](https://github.com/pydantic/pydantic-ai-harness/blob/v0.7.0/README.md#L326-L335)），因此升级需要重新跑契约与端到端评估，而不是复制其内部实现。
 - 官方文章 [When agents build agents](https://pydantic.dev/articles/when-agents-build-agents) 把相关能力统称为 experimental。文章示例仍从 `experimental.*` import，但 `v0.7.0` 中这些位置已经是发出 `DeprecationWarning` 的兼容 shim，应使用 `pydantic_ai_harness.dynamic_workflow`、`.subagents`、`.step_persistence` 和 `.runtime_authoring`（例如 [`DynamicWorkflow` shim](https://github.com/pydantic/pydantic-ai-harness/blob/v0.7.0/pydantic_ai_harness/experimental/dynamic_workflow/__init__.py#L1-L15)）。“experimental”仍准确描述稳定性，不再是推荐 import path。
 
 ## 两个 refs 的真实实现边界
 
 ### Open Knowledge：workflow 是指南，不是 engine
 
-Open Knowledge 的 `workflow` MCP tool 明确声明自己“返回 instructional text，不返回 data”，`kind: "wiki"` 分支只解析项目目录并返回 `buildWikiBody(...)` 的文本，没有执行 survey、排程或页面生成（[`workflow.ts`](../../refs/open-knowledge/packages/server/src/mcp/tools/workflow.ts#L1-L18)、[`workflow.ts`](../../refs/open-knowledge/packages/server/src/mcp/tools/workflow.ts#L124-L133)）。真正的 generate / refresh 决策、阶段、STOP gate、拆页、写页和 link audit 都在给宿主 coding agent 阅读的指南中（[`wiki-body.ts`](../../refs/open-knowledge/packages/server/src/mcp/tools/wiki-body.ts#L58-L142)）。
+Open Knowledge 的 `workflow` MCP tool 明确声明自己“返回 instructional text，不返回 data”，`kind: "wiki"` 分支只解析项目目录并返回 `buildWikiBody(...)` 的文本，没有执行 survey、排程或页面生成（[`workflow.ts`](https://github.com/inkeep/open-knowledge/blob/96563d1ea9b51b5854c5651a7091d8f96512f4cd/packages/server/src/mcp/tools/workflow.ts#L1-L18)、[`workflow.ts`](https://github.com/inkeep/open-knowledge/blob/96563d1ea9b51b5854c5651a7091d8f96512f4cd/packages/server/src/mcp/tools/workflow.ts#L124-L133)）。真正的 generate / refresh 决策、阶段、STOP gate、拆页、写页和 link audit 都在给宿主 coding agent 阅读的指南中（[`wiki-body.ts`](https://github.com/inkeep/open-knowledge/blob/96563d1ea9b51b5854c5651a7091d8f96512f4cd/packages/server/src/mcp/tools/wiki-body.ts#L58-L142)）。
 
-它的 Codebase Wiki Skill 持有 Wiki 形状、audience/depth、来源引用、freshness、日志纪律和模板使用规则（[`SKILL.md`](../../refs/open-knowledge/packages/server/assets/skills/packs/codebase-wiki/SKILL.md#L17-L84)）；模板本身只是 frontmatter 与标题骨架（[`starter.ts`](../../refs/open-knowledge/packages/server/src/seed/starter.ts#L519-L704)）。源码注释直接说明该 recipe 只组合已发布工具，“no new engine code”（[`wiki-body.ts`](../../refs/open-knowledge/packages/server/src/mcp/tools/wiki-body.ts#L15-L17)）。
+它的 Codebase Wiki Skill 持有 Wiki 形状、audience/depth、来源引用、freshness、日志纪律和模板使用规则（[`SKILL.md`](https://github.com/inkeep/open-knowledge/blob/96563d1ea9b51b5854c5651a7091d8f96512f4cd/packages/server/assets/skills/packs/codebase-wiki/SKILL.md#L17-L84)）；模板本身只是 frontmatter 与标题骨架（[`starter.ts`](https://github.com/inkeep/open-knowledge/blob/96563d1ea9b51b5854c5651a7091d8f96512f4cd/packages/server/src/seed/starter.ts#L519-L704)）。源码注释直接说明该 recipe 只组合已发布工具，“no new engine code”（[`wiki-body.ts`](https://github.com/inkeep/open-knowledge/blob/96563d1ea9b51b5854c5651a7091d8f96512f4cd/packages/server/src/mcp/tools/wiki-body.ts#L15-L17)）。
 
 ### OpenWiki：宿主只启动一次 DeepAgent loop
 
-OpenWiki 的生成入口准备 provider、Git 上下文和输出快照后，只构造一次 `createDeepAgent(...)`，再调用一次 `agent.streamEvents(...)`；文件探索、搜索、subagent、拆页、写入顺序和停止均发生在 DeepAgents 自己的 loop 中（[`index.ts`](../../refs/openwiki/src/agent/index.ts#L149-L231)）。生成规则集中在 system prompt，包括只读 subagent、临时计划、页面质量、增量更新和完成自检（[`prompt.ts`](../../refs/openwiki/src/agent/prompt.ts#L78-L94)、[`prompt.ts`](../../refs/openwiki/src/agent/prompt.ts#L185-L221)）。模型直接写 Markdown，宿主 backend 只强制 init/update 的写路径位于 `/openwiki`（[`docs-only-backend.ts`](../../refs/openwiki/src/agent/docs-only-backend.ts#L25-L70)）。
+OpenWiki 的生成入口准备 provider、Git 上下文和输出快照后，只构造一次 `createDeepAgent(...)`，再调用一次 `agent.streamEvents(...)`；文件探索、搜索、subagent、拆页、写入顺序和停止均发生在 DeepAgents 自己的 loop 中（[`index.ts`](https://github.com/langchain-ai/openwiki/blob/ddd1f609b23d83b96a800ea0f4d47e7d28a78c7d/src/agent/index.ts#L149-L231)）。生成规则集中在 system prompt，包括只读 subagent、临时计划、页面质量、增量更新和完成自检（[`prompt.ts`](https://github.com/langchain-ai/openwiki/blob/ddd1f609b23d83b96a800ea0f4d47e7d28a78c7d/src/agent/prompt.ts#L78-L94)、[`prompt.ts`](https://github.com/langchain-ai/openwiki/blob/ddd1f609b23d83b96a800ea0f4d47e7d28a78c7d/src/agent/prompt.ts#L185-L221)）。模型直接写 Markdown，宿主 backend 只强制 init/update 的写路径位于 `/openwiki`（[`docs-only-backend.ts`](https://github.com/langchain-ai/openwiki/blob/ddd1f609b23d83b96a800ea0f4d47e7d28a78c7d/src/agent/docs-only-backend.ts#L25-L70)）。
 
 OpenWiki 没有 page renderer、Claim database 或独立 workflow engine。它的不足也正好指出 greenfield 应补的最小代码：生成时使用 staging、把 shell/filesystem 边界做成真实权限，并在成功游标前执行最终 validator；不需要因此增加一套 Scheduler。
 
@@ -159,7 +159,7 @@ PydanticAI 已有：
 - 工具参数、structured output validation 和显式 `ModelRetry` 的自纠正；tool 与 output 有独立 retry budget（[reflection/retries](https://github.com/pydantic/pydantic-ai/blob/v2.10.0/docs/agent.md#L1084-L1102)）。
 - `max_concurrency` / `ConcurrencyLimit(max_running, max_queued)` 为 concurrent runs 提供 backpressure（[concurrency](https://github.com/pydantic/pydantic-ai/blob/v2.10.0/docs/agent.md#L799-L831)）。
 
-因此 Python 只需配置这些现成参数。不要实现 token counter、retry state machine 或 worker semaphore。平台级总 wall-clock deadline 仍由调用环境负责；它不是新的业务 workflow engine。
+因此 Python 只需配置这些现成参数，并在 `Agent.run()` 外施加一次总 wall-clock deadline。不要实现 token counter、retry state machine 或 worker semaphore；这个 host-enforced deadline 是运行边界，不是新的业务 workflow engine。
 
 ### Multi-agent 与 delegation
 
@@ -211,7 +211,7 @@ Producer Skill 的可编辑版本和模板只是受信任的 Markdown/data，不
 
 ```mermaid
 flowchart LR
-    R[Target repo] -->|snapshot| S[/source · read-only/]
+    R[Repository Snapshot] --> S[/source · read-only/]
     K[Producer Skill + templates] -->|freeze exact content| P[/skill · read-only/]
     S --> A[One PydanticAI Agent.run]
     P --> A
@@ -301,7 +301,7 @@ result = await build_agent(model, source_dir, skill_dir, staging_wiki).run(
 )
 ```
 
-这里没有 page scheduler。Agent 何时 inventory、何时深入模块、生成哪些页面、是否重写、如何 review，全部由 Skill 和运行时发现决定。Python 只建立三块边界并确认“模型声称写出的文件确实存在且仍位于 staging 根内”；这是 trust-boundary validation，不是 workflow。
+这里没有 page scheduler。Agent 何时 inventory、何时深入模块、生成哪些页面、是否重写、如何 review，全部由 Skill 和运行时发现决定。Python 建立只读/可写边界，核对 manifest、frontmatter、内部链接、Source Citations、路径与配额，并在校验后原子发布；这些是 trust-boundary validation 和 publication，不是 semantic workflow。
 
 ## 最小演进梯子
 
@@ -310,7 +310,7 @@ result = await build_agent(model, source_dir, skill_dir, staging_wiki).run(
 3. **若偶发 specialist 有收益，加 `SubAgents`。** Agent definitions 可放在产品 Skill 的受信任目录并显式加载；不要扫描 target repo。
 4. **若大量独立分区和多轮 critic coordination 成为主要成本，再试 `DynamicWorkflow`。** 必须设置 `max_agent_calls` 和 `sub_agent_usage_limits`，并接受当前 `task: str` / non-durable 边界。
 5. **若任务确需 crash-resume、外部事件或人工长等待，接官方 durable execution。** 不用 StepPersistence 冒充 durable workflow。
-6. **永不为 repo→wiki 启用 RuntimeAuthoring。** Skill 更新走正常版本发布/Workspace fork，不让生产 model import 自己写的 Python。
+6. **永不为 repo→wiki 启用 RuntimeAuthoring。** Skill 更新走正常版本发布/Skill Fork，不让生产 model import 自己写的 Python。
 
 ## 明确不做
 

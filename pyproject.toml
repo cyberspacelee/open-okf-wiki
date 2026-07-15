@@ -1,7 +1,7 @@
 [project]
 name = "okf-wiki"
 version = "0.1.0"
-description = "Build auditable OKF knowledge bundles from fixed source revisions."
+description = "Generate source-grounded Markdown Wikis from one pinned Repository Snapshot."
 requires-python = ">=3.14,<3.15"
 dependencies = [
     "genai-prices==0.0.71",
@@ -10,6 +10,7 @@ dependencies = [
     "pydantic-ai==2.10.0",
     "pydantic-ai-harness[codemode]==0.7.0",
     "pydantic-evals==2.10.0",
+    "pydantic-monty==0.0.18",
     "pyyaml==6.0.3",
 ]
 

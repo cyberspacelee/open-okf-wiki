@@ -1,1 +1,1 @@
-"""OKF Knowledge Bundle Producer."""
+"""Repository Snapshot to source-grounded Wiki producer."""
