@@ -1,18 +1,22 @@
 import asyncio
 import json
 import os
-import shutil
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
 import pytest
-from pydantic_ai import ModelRequest, ModelResponse, ToolCallPart, UnexpectedModelBehavior
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from pydantic_ai import Agent, ModelRequest, ModelResponse, ToolCallPart, UnexpectedModelBehavior
 from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.models.instrumented import InstrumentationSettings
 
 from okf_wiki.cli import main, parser
+from okf_wiki.security import MAX_ANALYZABLE_FILE_BYTES
 from okf_wiki.wiki_run import (
     Complete,
     ModelProviderConfig,
@@ -881,6 +885,75 @@ def test_refresh_rejects_a_tampered_producer_publication_before_model_work(
     assert sorted(path.name for path in release.parent.iterdir()) == releases
 
 
+def test_refresh_enforces_wiki_copy_ceilings_before_model_work(tmp_path: Path) -> None:
+    source, revision, fork, published = generated_test_wiki(tmp_path)
+    model_called = False
+
+    def model(_: list[ModelRequest | ModelResponse], __: AgentInfo) -> ModelResponse:
+        nonlocal model_called
+        model_called = True
+        raise AssertionError("model must not run for an oversized Published Wiki")
+
+    with pytest.raises(ValueError, match="Published Wiki page exceeds.*limit"):
+        asyncio.run(
+            WikiRunApplication().run(
+                WikiRunRequest(
+                    operation="refresh",
+                    repository=RepositorySnapshot(path=source, revision=revision),
+                    skill=fork.version(),
+                    model=ModelProviderConfig(model=FunctionModel(model)),
+                    limits=WikiRunLimits(wiki_file_bytes_limit=10),
+                    staging=tmp_path / "refresh-staging",
+                    publication=published,
+                )
+            )
+        )
+
+    assert not model_called
+
+
+@pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="platform has no no-follow open")
+def test_refresh_rejects_a_page_swapped_for_a_symlink_during_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, revision, fork, published = generated_test_wiki(tmp_path)
+    page = published.resolve() / "index.md"
+    outside = tmp_path / "outside.md"
+    outside.write_text(SIMPLE_WIKI_PAGE, encoding="utf-8")
+    real_open = os.open
+    swapped = False
+
+    def swap_before_open(
+        path: os.PathLike[str] | str, flags: int, *args: Any, **kwargs: Any
+    ) -> int:
+        nonlocal swapped
+        if Path(path) == page and not swapped:
+            page.unlink()
+            page.symlink_to(outside)
+            swapped = True
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", swap_before_open)
+
+    with pytest.raises(ValueError, match="not a readable regular file"):
+        run_test_wiki(
+            source,
+            revision,
+            fork.version(),
+            tmp_path / "refresh-staging",
+            published,
+            FunctionModel(
+                lambda *_: (_ for _ in ()).throw(
+                    AssertionError("model must not run after a publication page race")
+                )
+            ),
+            operation="refresh",
+        )
+
+    assert swapped
+    assert not (tmp_path / "refresh-staging/index.md").exists()
+
+
 def test_refresh_rejects_a_model_supplied_change_summary(tmp_path: Path) -> None:
     old_page = "---\ntitle: Old\n---\n# Old\n\n[Source](repo:README.md#L1-L1)\n"
     new_page = "---\ntitle: New\n---\n# New\n\n[Source](repo:README.md#L1-L1)\n"
@@ -1093,6 +1166,32 @@ def test_complete_wiki_run_resolves_canonical_encoded_source_paths(tmp_path: Pat
             added=["index.md"], content_changed=True, publication_changed=True
         ),
     )
+
+
+def test_oversized_source_citation_is_rejected_before_content_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "x" * (MAX_ANALYZABLE_FILE_BYTES + 1))
+    skill = make_producer_skill(tmp_path / "skill")
+    real_read_bytes = Path.read_bytes
+
+    def reject_materialized_source_read(path: Path) -> bytes:
+        if path.name == "README.md" and path.parent.name == "source" and path.parent != source:
+            raise AssertionError("oversized citation source must not be read")
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", reject_materialized_source_read)
+
+    with pytest.raises(UnexpectedModelBehavior):
+        run_test_wiki(
+            source,
+            revision,
+            skill,
+            tmp_path / "staging",
+            tmp_path / "published",
+            writing_model(write_pages_code({"index.md": SIMPLE_WIKI_PAGE}), ["index.md"]),
+        )
 
 
 def test_complete_validation_retry_lets_the_same_agent_fix_staging(tmp_path: Path) -> None:
@@ -1353,6 +1452,44 @@ def test_publication_failure_leaves_the_published_wiki_unchanged(
     assert list(old_release.parent.iterdir()) == [old_release]
 
 
+@pytest.mark.parametrize("collision", ["final_release", "temporary_link"])
+def test_publication_collision_never_removes_a_competing_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, collision: str
+) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    published = tmp_path / "published"
+    old_release = make_published_wiki(published)
+    releases = old_release.parent
+
+    class FixedUUID:
+        hex = "fixed"
+
+    monkeypatch.setattr("okf_wiki.wiki_run.uuid.uuid4", lambda: FixedUUID())
+    if collision == "final_release":
+        competing = releases / "fixed"
+        competing.mkdir()
+        sentinel = competing / "sentinel"
+    else:
+        competing = tmp_path / ".published.fixed.tmp"
+        sentinel = competing
+    sentinel.write_text("competitor\n", encoding="utf-8")
+
+    with pytest.raises(OSError):
+        publish_test_pages(
+            source,
+            revision,
+            skill,
+            tmp_path / "staging",
+            published,
+            {"index.md": SIMPLE_WIKI_PAGE},
+        )
+
+    assert sentinel.read_text(encoding="utf-8") == "competitor\n"
+    assert published.resolve() == old_release
+
+
 def test_publication_copy_revalidates_a_page_swapped_for_a_symlink(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1395,23 +1532,20 @@ def test_publication_copy_revalidates_a_page_swapped_for_a_symlink(
             ]
         )
 
-    real_copytree = shutil.copytree
+    real_open = os.open
+    swapped = False
 
-    def swap_then_copy(
-        source_path: os.PathLike[str] | str,
-        destination_path: os.PathLike[str] | str,
-        *args: Any,
-        **kwargs: Any,
-    ) -> Path:
-        if Path(source_path) == staging:
-            staged_page = staging / "index.md"
-            staged_page.unlink()
-            staged_page.symlink_to(outside)
-        return Path(real_copytree(source_path, destination_path, *args, **kwargs))
+    def swap_then_open(path: os.PathLike[str] | str, flags: int, *args: Any, **kwargs: Any) -> int:
+        nonlocal swapped
+        if Path(path) == staging / "index.md" and not swapped:
+            (staging / "index.md").unlink()
+            (staging / "index.md").symlink_to(outside)
+            swapped = True
+        return real_open(path, flags, *args, **kwargs)
 
-    monkeypatch.setattr(shutil, "copytree", swap_then_copy)
+    monkeypatch.setattr(os, "open", swap_then_open)
 
-    with pytest.raises(ValueError, match="Copied Wiki validation failed.*Symlink"):
+    with pytest.raises(ValueError, match="not a readable regular file"):
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
@@ -1434,6 +1568,7 @@ def test_publication_copy_revalidates_a_page_swapped_for_a_symlink(
     assert published.resolve() == old_release
     assert (published / "index.md").read_text(encoding="utf-8") == "old publication\n"
     assert list(old_release.parent.iterdir()) == [old_release]
+    assert swapped
 
 
 @pytest.mark.parametrize(
@@ -1457,6 +1592,7 @@ def test_publication_copy_revalidates_a_page_swapped_for_a_symlink(
         "no_citation",
         "citation_syntax",
         "citation_path",
+        "citation_binary",
         "citation_range",
         "citation_reversed",
         "citation_traversal",
@@ -1471,11 +1607,13 @@ def test_invalid_staging_manifest_and_artifacts_never_publish(tmp_path: Path, ca
     staging = tmp_path / "staging"
     published = tmp_path / "published"
     source_revision = make_repository(source, "source\n")
-    if case == "citation_encoded_separator":
+    if case == "citation_binary":
+        (source / "README.md").write_bytes(b"binary\0source")
+    elif case == "citation_encoded_separator":
         (source / "README%2Fcopy.md").write_text("encoded separator\n", encoding="utf-8")
     elif case == "citation_query":
         (source / "README.md?draft").write_text("query-shaped path\n", encoding="utf-8")
-    if case in {"citation_encoded_separator", "citation_query"}:
+    if case in {"citation_binary", "citation_encoded_separator", "citation_query"}:
         subprocess.run(["git", "add", "."], cwd=source, check=True)
         subprocess.run(["git", "commit", "-qm", "adversarial source path"], cwd=source, check=True)
         source_revision = subprocess.run(
@@ -1712,6 +1850,269 @@ Path('/wiki/index.md').write_text('---\\ntitle: Example Wiki\\n---\\n# Example W
     assert metadata["skill_digest"] == skill_version.digest
 
 
+def test_codemode_exposes_only_the_three_mounts_and_no_host_capabilities(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    plugin_marker = tmp_path / "plugin-ran"
+    (source / "plugin.py").write_text(
+        f"from pathlib import Path\nPath({str(plugin_marker)!r}).write_text('ran')\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "plugin.py"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-qm", "adversarial plugin"], cwd=source, check=True)
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    skill = make_producer_skill(tmp_path / "skill")
+    host_marker = tmp_path / "host-write"
+    code = f"""from pathlib import Path
+blocked = []
+for path in [
+    Path('/source/README.md'),
+    Path('/skill/SKILL.md'),
+    Path({str(host_marker)!r}),
+    Path('/wiki/../../host-write'),
+    Path('//tmp/host-write'),
+]:
+    try:
+        path.write_text('escaped')
+    except Exception:
+        blocked.append(str(path))
+assert len(blocked) == 5
+symlink_blocked = False
+try:
+    Path('/wiki/link').symlink_to('/source/README.md')
+except Exception:
+    symlink_blocked = True
+assert symlink_blocked
+import os
+os_blocked = []
+try:
+    os.system('echo escaped')
+except Exception:
+    os_blocked.append('system')
+try:
+    os.getenv('OKF_WIKI_SENTINEL')
+except Exception:
+    os_blocked.append('environment')
+assert len(os_blocked) == 2
+unavailable = []
+execution_blocked = False
+try:
+    exec('repository_code_executed = True')
+except Exception:
+    execution_blocked = True
+assert execution_blocked
+try:
+    import subprocess
+except Exception:
+    unavailable.append('subprocess')
+try:
+    import socket
+except Exception:
+    unavailable.append('socket')
+try:
+    import urllib.request
+except Exception:
+    unavailable.append('urllib')
+try:
+    import httpx
+except Exception:
+    unavailable.append('httpx')
+try:
+    import pip
+except Exception:
+    unavailable.append('pip')
+try:
+    import plugin
+except Exception:
+    unavailable.append('plugin')
+assert len(unavailable) == 6
+Path('/wiki/index.md').write_text({SIMPLE_WIKI_PAGE!r})
+"""
+
+    def model(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
+        if any(
+            isinstance(part, ToolReturnPart) and part.tool_name == "run_code"
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+        ):
+            complete = next(tool for tool in info.output_tools if tool.name.endswith("Complete"))
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        complete.name,
+                        {"status": "complete", "manifest": {"pages": ["index.md"]}},
+                    )
+                ]
+            )
+        assert [tool.name for tool in info.function_tools] == ["run_code"]
+        return ModelResponse(parts=[ToolCallPart("run_code", {"code": code})])
+
+    result = run_test_wiki(
+        source,
+        revision,
+        skill,
+        tmp_path / "staging",
+        tmp_path / "published",
+        FunctionModel(model),
+    )
+
+    assert isinstance(result, Complete)
+    assert not host_marker.exists()
+    assert not plugin_marker.exists()
+
+
+def test_repository_instructions_are_only_readable_source_data(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    sentinel = "UNTRUSTED_SOURCE_POLICY_OVERRIDE"
+    files = {
+        "AGENTS.md": sentinel,
+        "CLAUDE.md": sentinel,
+        "SKILL.md": sentinel,
+        ".codex-plugin/plugin.json": '{"instructions": "' + sentinel + '"}',
+        "prompt.txt": sentinel,
+    }
+    for relative, content in files.items():
+        path = source / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-qm", "untrusted instructions"], cwd=source, check=True)
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    skill = make_producer_skill(tmp_path / "skill")
+    code = (
+        "from pathlib import Path\n"
+        f"paths = {list(files)!r}\n"
+        f"assert all({sentinel!r} in Path('/source', path).read_text() for path in paths)\n"
+        f"Path('/wiki/index.md').write_text({SIMPLE_WIKI_PAGE!r})\n"
+    )
+
+    def model(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
+        code_ran = any(
+            isinstance(part, ToolReturnPart) and part.tool_name == "run_code"
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+        )
+        if code_ran:
+            complete = next(tool for tool in info.output_tools if tool.name.endswith("Complete"))
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        complete.name,
+                        {"status": "complete", "manifest": {"pages": ["index.md"]}},
+                    )
+                ]
+            )
+        supplied = repr(messages) + repr(info.function_tools) + repr(info.instructions)
+        assert sentinel not in supplied
+        assert [tool.name for tool in info.function_tools] == ["run_code"]
+        return ModelResponse(parts=[ToolCallPart("run_code", {"code": code})])
+
+    result = run_test_wiki(
+        source,
+        revision,
+        skill,
+        tmp_path / "staging",
+        tmp_path / "published",
+        FunctionModel(model),
+    )
+
+    assert isinstance(result, Complete)
+    assert sentinel not in (tmp_path / "published/index.md").read_text(encoding="utf-8")
+
+
+def test_credentials_never_enter_the_agent_sandbox_artifacts_or_traces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    secrets = ("credential-sentinel-value", "header-sentinel-value")
+    monkeypatch.setenv("OPENAI_API_KEY", secrets[0])
+    monkeypatch.setenv("HTTP_AUTHORIZATION", secrets[1])
+    initial_request = ""
+    code = f"""from pathlib import Path
+import os
+environment = []
+for name in ['OPENAI_API_KEY', 'HTTP_AUTHORIZATION']:
+    try:
+        environment.append(os.getenv(name))
+    except Exception:
+        environment.append(None)
+assert environment == [None, None]
+Path('/wiki/index.md').write_text({SIMPLE_WIKI_PAGE!r})
+"""
+
+    def model(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
+        nonlocal initial_request
+        if any(
+            isinstance(part, ToolReturnPart) and part.tool_name == "run_code"
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+        ):
+            complete = next(tool for tool in info.output_tools if tool.name.endswith("Complete"))
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        complete.name,
+                        {"status": "complete", "manifest": {"pages": ["index.md"]}},
+                    )
+                ]
+            )
+        initial_request = (
+            repr(messages)
+            + repr(info.function_tools)
+            + repr(info.output_tools)
+            + repr(info.instructions)
+        )
+        assert not any(secret in initial_request for secret in secrets)
+        return ModelResponse(parts=[ToolCallPart("run_code", {"code": code})])
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    Agent.instrument_all(InstrumentationSettings(tracer_provider=provider, include_content=True))
+    try:
+        result = run_test_wiki(
+            source,
+            revision,
+            skill,
+            tmp_path / "staging",
+            tmp_path / "published",
+            FunctionModel(model),
+        )
+    finally:
+        Agent.instrument_all(False)
+        provider.force_flush()
+
+    observable = (initial_request + repr(result)).encode()
+    for root in (source, skill.path, tmp_path / "staging", tmp_path / "published"):
+        observable += b"".join(
+            path.read_bytes()
+            for path in root.rglob("*")
+            if path.is_file() and not path.is_symlink()
+        )
+    assert not any(secret.encode() in observable for secret in secrets)
+    assert exporter.get_finished_spans() == ()
+
+
 def test_wiki_run_rejects_nested_staging_without_creating_it(tmp_path: Path) -> None:
     source = tmp_path / "source"
     skill = tmp_path / "skill"
@@ -1772,6 +2173,38 @@ def test_wiki_run_rejects_a_publication_parent_symlink_into_source(tmp_path: Pat
     assert not (source / ".published.releases").exists()
 
 
+def test_wiki_run_rejects_a_symlinked_release_root_before_model_work(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (tmp_path / ".published.releases").symlink_to(outside, target_is_directory=True)
+    model_called = False
+
+    def model(_: list[ModelRequest | ModelResponse], __: AgentInfo) -> ModelResponse:
+        nonlocal model_called
+        model_called = True
+        raise AssertionError("model must not run for an unsafe release root")
+
+    with pytest.raises(ValueError, match="release directory"):
+        asyncio.run(
+            WikiRunApplication().run(
+                WikiRunRequest(
+                    repository=RepositorySnapshot(path=source, revision=revision),
+                    skill=skill,
+                    model=ModelProviderConfig(model=FunctionModel(model)),
+                    limits=WikiRunLimits(),
+                    staging=tmp_path / "staging",
+                    publication=tmp_path / "published",
+                )
+            )
+        )
+
+    assert not model_called
+    assert list(outside.iterdir()) == []
+
+
 @pytest.mark.parametrize("dirty", [False, True], ids=["non-git", "dirty"])
 def test_wiki_run_rejects_invalid_checkout_before_model_work(
     tmp_path: Path, *, dirty: bool
@@ -1808,6 +2241,101 @@ def test_wiki_run_rejects_invalid_checkout_before_model_work(
         )
 
     assert not model_called
+
+
+def test_wiki_run_rejects_an_oversized_source_blob_before_reading_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "too large\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    real_git_read_bytes = __import__(
+        "okf_wiki.wiki_run", fromlist=["git_read_bytes"]
+    ).git_read_bytes
+
+    def reject_blob_read(repository: Path, *arguments: str) -> bytes:
+        if arguments[:2] == ("cat-file", "blob"):
+            raise AssertionError("oversized source blob must not be read")
+        return real_git_read_bytes(repository, *arguments)
+
+    monkeypatch.setattr("okf_wiki.wiki_run.git_read_bytes", reject_blob_read)
+
+    with pytest.raises(ValueError, match="source file exceeds.*limit"):
+        asyncio.run(
+            WikiRunApplication().run(
+                WikiRunRequest(
+                    repository=RepositorySnapshot(path=source, revision=revision),
+                    skill=skill,
+                    model=ModelProviderConfig(
+                        model=FunctionModel(
+                            lambda *_: (_ for _ in ()).throw(
+                                AssertionError("model must not run for an oversized snapshot")
+                            )
+                        )
+                    ),
+                    limits=WikiRunLimits(source_file_bytes_limit=5),
+                    staging=tmp_path / "staging",
+                    publication=tmp_path / "published",
+                )
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("limits", "message", "add_file"),
+    [
+        ({"source_files_limit": 1}, "file count", True),
+        ({"source_total_bytes_limit": 5}, "total byte", False),
+    ],
+)
+def test_wiki_run_rejects_source_count_and_total_ceilings_before_blob_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    limits: dict[str, int],
+    message: str,
+    add_file: bool,
+) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "too large\n")
+    if add_file:
+        (source / "extra.txt").write_text("extra\n", encoding="utf-8")
+        subprocess.run(["git", "add", "extra.txt"], cwd=source, check=True)
+        subprocess.run(["git", "commit", "-qm", "extra"], cwd=source, check=True)
+        revision = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=source,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    skill = make_producer_skill(tmp_path / "skill")
+    real_git_read_bytes = __import__(
+        "okf_wiki.wiki_run", fromlist=["git_read_bytes"]
+    ).git_read_bytes
+
+    def reject_blob_read(repository: Path, *arguments: str) -> bytes:
+        if arguments[:2] == ("cat-file", "blob"):
+            raise AssertionError("snapshot ceiling must be checked before blob reads")
+        return real_git_read_bytes(repository, *arguments)
+
+    def model(_: list[ModelRequest | ModelResponse], __: AgentInfo) -> ModelResponse:
+        raise AssertionError("model must not run for an oversized snapshot")
+
+    monkeypatch.setattr("okf_wiki.wiki_run.git_read_bytes", reject_blob_read)
+
+    with pytest.raises(ValueError, match=message):
+        asyncio.run(
+            WikiRunApplication().run(
+                WikiRunRequest(
+                    repository=RepositorySnapshot(path=source, revision=revision),
+                    skill=skill,
+                    model=ModelProviderConfig(model=FunctionModel(model)),
+                    limits=WikiRunLimits(**limits),
+                    staging=tmp_path / "staging",
+                    publication=tmp_path / "published",
+                )
+            )
+        )
 
 
 def test_wiki_run_rejects_executable_git_filter_without_running_it(tmp_path: Path) -> None:
@@ -1900,6 +2428,119 @@ def test_wiki_run_wall_clock_deadline_terminates_model_work(tmp_path: Path) -> N
     assert published.resolve() == old_release
 
 
+def test_wiki_mount_write_quota_stops_output_and_preserves_the_publication(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    published = tmp_path / "published"
+    old_release = make_published_wiki(published)
+
+    with pytest.raises(UnexpectedModelBehavior):
+        asyncio.run(
+            WikiRunApplication().run(
+                WikiRunRequest(
+                    repository=RepositorySnapshot(path=source, revision=revision),
+                    skill=skill,
+                    model=ModelProviderConfig(
+                        model=writing_model(
+                            write_pages_code({"index.md": SIMPLE_WIKI_PAGE}), ["index.md"]
+                        )
+                    ),
+                    limits=WikiRunLimits(
+                        request_limit=3,
+                        tool_calls_limit=2,
+                        retries=0,
+                        request_timeout_seconds=5,
+                        tool_timeout_seconds=5,
+                        wiki_write_bytes_limit=10,
+                    ),
+                    staging=tmp_path / "staging",
+                    publication=published,
+                )
+            )
+        )
+
+    assert published.resolve() == old_release
+    assert (published / "index.md").read_text(encoding="utf-8") == "old publication\n"
+
+
+def test_wiki_entry_ceiling_counts_directories_and_preserves_the_publication(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    published = tmp_path / "published"
+    old_release = make_published_wiki(published)
+    code = write_pages_code({"index.md": SIMPLE_WIKI_PAGE}) + "\nPath('/wiki/empty').mkdir()"
+
+    with pytest.raises(UnexpectedModelBehavior):
+        asyncio.run(
+            WikiRunApplication().run(
+                WikiRunRequest(
+                    repository=RepositorySnapshot(path=source, revision=revision),
+                    skill=skill,
+                    model=ModelProviderConfig(model=writing_model(code, ["index.md"])),
+                    limits=WikiRunLimits(
+                        request_limit=3,
+                        tool_calls_limit=2,
+                        retries=0,
+                        request_timeout_seconds=5,
+                        tool_timeout_seconds=5,
+                        wiki_entries_limit=1,
+                    ),
+                    staging=tmp_path / "staging",
+                    publication=published,
+                )
+            )
+        )
+
+    assert published.resolve() == old_release
+
+
+@pytest.mark.parametrize(
+    ("limit_name", "limit"),
+    [("wiki_file_bytes_limit", 10), ("wiki_total_bytes_limit", 10)],
+)
+def test_wiki_byte_ceilings_preserve_the_publication(
+    tmp_path: Path, limit_name: str, limit: int
+) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    published = tmp_path / "published"
+    old_release = make_published_wiki(published)
+
+    with pytest.raises(UnexpectedModelBehavior):
+        asyncio.run(
+            WikiRunApplication().run(
+                WikiRunRequest(
+                    repository=RepositorySnapshot(path=source, revision=revision),
+                    skill=skill,
+                    model=ModelProviderConfig(
+                        model=writing_model(
+                            write_pages_code({"index.md": SIMPLE_WIKI_PAGE}), ["index.md"]
+                        )
+                    ),
+                    limits=WikiRunLimits(
+                        request_limit=3,
+                        tool_calls_limit=2,
+                        retries=0,
+                        request_timeout_seconds=5,
+                        tool_timeout_seconds=5,
+                        **{limit_name: limit},
+                    ),
+                    staging=tmp_path / "staging",
+                    publication=published,
+                )
+            )
+        )
+
+    assert published.resolve() == old_release
+
+
 def test_model_failure_leaves_the_published_wiki_unchanged(tmp_path: Path) -> None:
     source = tmp_path / "source"
     skill = tmp_path / "skill"
@@ -1947,10 +2588,31 @@ def test_wiki_run_cli_exposes_wall_clock_deadline() -> None:
             "test",
             "--wall-clock-timeout-seconds",
             "7",
+            "--source-files-limit",
+            "11",
+            "--source-file-bytes-limit",
+            "12",
+            "--source-total-bytes-limit",
+            "13",
+            "--wiki-entries-limit",
+            "14",
+            "--wiki-file-bytes-limit",
+            "15",
+            "--wiki-total-bytes-limit",
+            "16",
+            "--wiki-write-bytes-limit",
+            "17",
         ]
     )
 
     assert arguments.wall_clock_timeout_seconds == 7
+    assert arguments.source_files_limit == 11
+    assert arguments.source_file_bytes_limit == 12
+    assert arguments.source_total_bytes_limit == 13
+    assert arguments.wiki_entries_limit == 14
+    assert arguments.wiki_file_bytes_limit == 15
+    assert arguments.wiki_total_bytes_limit == 16
+    assert arguments.wiki_write_bytes_limit == 17
     assert arguments.publication == "published"
 
 

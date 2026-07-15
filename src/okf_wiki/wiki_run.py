@@ -5,6 +5,7 @@ import os
 import posixpath
 import re
 import shutil
+import stat
 import tempfile
 import uuid
 from collections.abc import Hashable
@@ -25,7 +26,7 @@ from yaml.constructor import ConstructorError
 from yaml.nodes import MappingNode
 from yaml.resolver import BaseResolver
 
-from .security import canonical_source_path, git_read, git_read_bytes
+from .security import MAX_ANALYZABLE_FILE_BYTES, canonical_source_path, git_read, git_read_bytes
 
 
 class RepositorySnapshot(BaseModel):
@@ -105,6 +106,13 @@ class WikiRunLimits(BaseModel):
     request_timeout_seconds: float = Field(default=120, gt=0)
     tool_timeout_seconds: float = Field(default=30, gt=0)
     wall_clock_timeout_seconds: float = Field(default=600, gt=0)
+    source_files_limit: int = Field(default=50_000, gt=0)
+    source_file_bytes_limit: int = Field(default=25_000_000, gt=0)
+    source_total_bytes_limit: int = Field(default=500_000_000, gt=0)
+    wiki_entries_limit: int = Field(default=2_000, gt=0)
+    wiki_file_bytes_limit: int = Field(default=1_000_000, gt=0)
+    wiki_total_bytes_limit: int = Field(default=50_000_000, gt=0)
+    wiki_write_bytes_limit: int = Field(default=200_000_000, gt=0)
 
     def usage_limits(self) -> UsageLimits:
         return UsageLimits(
@@ -184,13 +192,15 @@ class WikiRunApplication:
         old_skill_digest: str | None = None
         if request.operation == "refresh":
             old_hashes, old_source_revision, old_skill_digest = _stage_published_wiki(
-                publication, staging
+                publication, staging, request.limits
             )
         with tempfile.TemporaryDirectory(prefix="okf-wiki-run-") as temporary:
             source = Path(temporary) / "source"
             skill = Path(temporary) / "skill"
-            _materialize_repository_snapshot(checkout, request.repository.revision, source)
-            shutil.copytree(skill_input, skill)
+            _materialize_repository_snapshot(
+                checkout, request.repository.revision, source, request.limits
+            )
+            shutil.copytree(skill_input, skill, symlinks=True)
             _, skill_digest = _validate_producer_skill(skill)
             if skill_digest != request.skill.digest:
                 raise ValueError(
@@ -210,14 +220,21 @@ class WikiRunApplication:
                 capabilities=[
                     CodeMode(
                         max_retries=request.limits.retries,
+                        os_access=None,
                         mount=[
                             MountDir("/source", str(source), mode="read-only"),
                             MountDir("/skill", str(skill), mode="read-only"),
-                            MountDir("/wiki", str(staging), mode="read-write"),
+                            MountDir(
+                                "/wiki",
+                                str(staging),
+                                mode="read-write",
+                                write_bytes_limit=request.limits.wiki_write_bytes_limit,
+                            ),
                         ],
                     )
                 ],
             )
+            agent.instrument = False
 
             @agent.output_validator
             def validate_output(output: WikiRunResult) -> WikiRunResult:
@@ -226,7 +243,7 @@ class WikiRunApplication:
                         raise ModelRetry(
                             "Complete.summary is host-owned and must be omitted or empty"
                         )
-                    errors = _validate_wiki(source, staging, output.manifest)
+                    errors = _validate_wiki(source, staging, output.manifest, request.limits)
                     if errors:
                         raise ModelRetry(
                             "Staged Wiki validation failed:\n- " + "\n- ".join(errors[:20])
@@ -262,6 +279,7 @@ class WikiRunApplication:
                         source_revision=request.repository.revision,
                         skill_digest=skill_digest,
                         model_name=model_name,
+                        limits=request.limits,
                     )
                 return output
             return result.output
@@ -270,7 +288,9 @@ class WikiRunApplication:
 _FULL_COMMIT_RE = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
 
 
-def _materialize_repository_snapshot(checkout: Path, revision: str, target: Path) -> None:
+def _materialize_repository_snapshot(
+    checkout: Path, revision: str, target: Path, limits: WikiRunLimits
+) -> None:
     if _FULL_COMMIT_RE.fullmatch(revision) is None:
         raise ValueError("Repository Snapshot revision must be a complete Git commit ID")
     if git_read(checkout, "rev-parse", "--is-inside-work-tree").strip() != "true":
@@ -293,16 +313,30 @@ def _materialize_repository_snapshot(checkout: Path, revision: str, target: Path
     if git_read(checkout, "status", "--porcelain=v1", "--untracked-files=all").strip():
         raise ValueError("Repository Snapshot checkout must be clean")
 
-    target.mkdir()
-    for record in git_read_bytes(checkout, "ls-tree", "-r", "--full-tree", "-z", resolved).split(
+    records = git_read_bytes(checkout, "ls-tree", "-r", "-l", "--full-tree", "-z", resolved).split(
         b"\0"
-    ):
+    )
+    blobs: list[tuple[bytes, bytes]] = []
+    total_bytes = 0
+    for record in records:
         if not record:
             continue
         metadata, raw_path = record.split(b"\t", 1)
-        _mode, object_type, object_id = metadata.split(b" ", 2)
+        _mode, object_type, object_id, raw_size = metadata.split()
         if object_type != b"blob":
             raise ValueError("Repository Snapshot contains an unsupported non-file tree entry")
+        size = int(raw_size)
+        if size > limits.source_file_bytes_limit:
+            raise ValueError("Repository Snapshot source file exceeds the configured byte limit")
+        total_bytes += size
+        if total_bytes > limits.source_total_bytes_limit:
+            raise ValueError("Repository Snapshot exceeds the configured total byte limit")
+        blobs.append((object_id, raw_path))
+        if len(blobs) > limits.source_files_limit:
+            raise ValueError("Repository Snapshot exceeds the configured file count limit")
+
+    target.mkdir()
+    for object_id, raw_path in blobs:
         parts = raw_path.split(b"/")
         if any(part in {b"", b".", b".."} for part in parts):
             raise ValueError("Repository Snapshot contains an unsafe path")
@@ -341,6 +375,7 @@ def _prepare_mounts(request: WikiRunRequest) -> tuple[Path, Path, Path, Path]:
         raise ValueError(
             "Repository Snapshot, Producer Skill, Staging Wiki, and Published Wiki must not overlap"
         )
+    _validate_release_root(publication.parent / f".{publication.name}.releases")
     return source, skill, staging, publication
 
 
@@ -352,6 +387,11 @@ def _existing_directory(path: Path, label: str) -> Path:
 
 def _overlaps(left: Path, right: Path) -> bool:
     return left == right or left.is_relative_to(right) or right.is_relative_to(left)
+
+
+def _validate_release_root(path: Path) -> None:
+    if os.path.lexists(path) and (path.is_symlink() or not path.is_dir()):
+        raise ValueError("Published Wiki release directory must be a regular directory")
 
 
 _MARKDOWN = MarkdownIt("commonmark").use(anchors_plugin, min_level=1, max_level=6)
@@ -393,13 +433,21 @@ def _construct_unique_mapping(
 _UniqueKeySafeLoader.add_constructor(BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping)
 
 
-def _validate_wiki(source: Path, root: Path, manifest: WikiManifest) -> list[str]:
+def _validate_wiki(
+    source: Path, root: Path, manifest: WikiManifest, limits: WikiRunLimits
+) -> list[str]:
     errors: list[str] = []
     actual_pages: set[str] = set()
+    unreadable_pages: set[str] = set()
+    entries = 0
+    total_bytes = 0
     stack = [(root, PurePosixPath())]
     while stack:
         directory, prefix = stack.pop()
         for entry in os.scandir(directory):
+            entries += 1
+            if entries > limits.wiki_entries_limit:
+                return ["Staging Wiki exceeds the configured entry count limit"]
             relative = prefix / entry.name
             relative_path = relative.as_posix()
             if _is_temporary(entry.name):
@@ -410,12 +458,26 @@ def _validate_wiki(source: Path, root: Path, manifest: WikiManifest) -> list[str
                 stack.append((Path(entry.path), relative))
             elif not entry.is_file(follow_symlinks=False):
                 errors.append(f"Unsupported output artifact: {relative_path}")
-            elif relative.suffix != ".md":
-                errors.append(f"Only Markdown pages are allowed: {relative_path}")
             else:
-                actual_pages.add(relative_path)
+                try:
+                    size = entry.stat(follow_symlinks=False).st_size
+                except OSError as error:
+                    errors.append(f"Unreadable output artifact {relative_path}: {error}")
+                    continue
+                if size > limits.wiki_file_bytes_limit:
+                    errors.append(f"Wiki file exceeds the configured byte limit: {relative_path}")
+                    unreadable_pages.add(relative_path)
+                total_bytes += size
+                if total_bytes > limits.wiki_total_bytes_limit:
+                    return ["Staging Wiki exceeds the configured total byte limit"]
+                if relative.suffix != ".md":
+                    errors.append(f"Only Markdown pages are allowed: {relative_path}")
+                else:
+                    actual_pages.add(relative_path)
 
     declared_pages: set[str] = set()
+    if len(manifest.pages) > limits.wiki_entries_limit:
+        errors.append("Wiki Manifest exceeds the configured entry count limit")
     for page in manifest.pages:
         if not _is_canonical_page_path(page):
             errors.append(f"Wiki Manifest path is not canonical Markdown: {page!r}")
@@ -434,6 +496,8 @@ def _validate_wiki(source: Path, root: Path, manifest: WikiManifest) -> list[str
     headings: dict[str, set[str]] = {}
     links: list[tuple[str, str]] = []
     for page in sorted(actual_pages):
+        if page in unreadable_pages:
+            continue
         try:
             text = (root / page).read_text(encoding="utf-8")
         except UnicodeDecodeError:
@@ -534,8 +598,14 @@ def _validate_citation(source: Path, target: str) -> str | None:
         return f"Source Citation path is not repository-relative POSIX: {target}"
     decoded_path = os.fsdecode(unquote_to_bytes(path))
     cited = source.joinpath(*PurePosixPath(decoded_path).parts)
-    if not cited.is_file():
+    try:
+        cited_stat = cited.stat(follow_symlinks=False)
+    except OSError:
         return f"Source Citation path does not exist: {target}"
+    if not stat.S_ISREG(cited_stat.st_mode):
+        return f"Source Citation path is not a regular file: {target}"
+    if cited_stat.st_size > MAX_ANALYZABLE_FILE_BYTES:
+        return f"Source Citation path exceeds the static-analysis size limit: {target}"
     content = cited.read_bytes()
     if b"\0" in content:
         return f"Source Citation path is binary: {target}"
@@ -605,7 +675,9 @@ class _PublicationMetadata(BaseModel):
     content_digest: SkillDigest
 
 
-def _stage_published_wiki(publication: Path, staging: Path) -> tuple[dict[str, str], str, str]:
+def _stage_published_wiki(
+    publication: Path, staging: Path, limits: WikiRunLimits
+) -> tuple[dict[str, str], str, str]:
     releases = publication.parent / f".{publication.name}.releases"
     if not publication.is_symlink() or releases.is_symlink() or not releases.is_dir():
         raise ValueError("Refresh requires an existing producer-managed Published Wiki")
@@ -632,22 +704,44 @@ def _stage_published_wiki(publication: Path, staging: Path) -> tuple[dict[str, s
         if page.path in page_hashes:
             raise ValueError(f"Refresh Published Wiki metadata has duplicate page: {page.path}")
         page_hashes[page.path] = page.sha256
+    if len(page_hashes) > limits.wiki_entries_limit:
+        raise ValueError("Refresh Published Wiki exceeds the configured entry count limit")
     if _content_digest(page_hashes) != metadata.content_digest:
         raise ValueError("Refresh Published Wiki content digest does not match its page manifest")
 
     actual_files: set[str] = set()
+    entries = 0
+    total_bytes = 0
     stack = [(release, PurePosixPath())]
     while stack:
         directory, prefix = stack.pop()
         for entry in os.scandir(directory):
             relative = prefix / entry.name
             relative_path = relative.as_posix()
+            if relative_path != PUBLICATION_METADATA_NAME:
+                entries += 1
+                if entries > limits.wiki_entries_limit:
+                    raise ValueError(
+                        "Refresh Published Wiki exceeds the configured entry count limit"
+                    )
             if entry.is_symlink():
                 raise ValueError(f"Refresh Published Wiki contains a symlink: {relative_path}")
             if entry.is_dir(follow_symlinks=False):
                 stack.append((Path(entry.path), relative))
             elif entry.is_file(follow_symlinks=False):
                 actual_files.add(relative_path)
+                if relative_path in page_hashes:
+                    size = entry.stat(follow_symlinks=False).st_size
+                    if size > limits.wiki_file_bytes_limit:
+                        raise ValueError(
+                            f"Refresh Published Wiki page exceeds the configured byte limit: "
+                            f"{relative_path}"
+                        )
+                    total_bytes += size
+                    if total_bytes > limits.wiki_total_bytes_limit:
+                        raise ValueError(
+                            "Refresh Published Wiki exceeds the configured total byte limit"
+                        )
             else:
                 raise ValueError(
                     f"Refresh Published Wiki contains an unsupported artifact: {relative_path}"
@@ -655,19 +749,88 @@ def _stage_published_wiki(publication: Path, staging: Path) -> tuple[dict[str, s
     expected_files = set(page_hashes) | {PUBLICATION_METADATA_NAME}
     if actual_files != expected_files:
         raise ValueError("Refresh Published Wiki files do not match its page manifest")
-    if _hashes(release, list(page_hashes)) != page_hashes:
-        raise ValueError("Refresh Published Wiki page hashes do not match its metadata")
 
     for page in page_hashes:
         source = release.joinpath(*PurePosixPath(page).parts)
         destination = staging.joinpath(*PurePosixPath(page).parts)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, destination)
-        if destination.is_symlink() or not destination.is_file():
-            raise ValueError(f"Refresh Published Wiki page is not a regular file: {page}")
+        _copy_regular_file_no_follow(
+            source,
+            destination,
+            max_bytes=limits.wiki_file_bytes_limit,
+            label=f"Refresh Published Wiki page {page}",
+        )
     if _hashes(staging, list(page_hashes)) != page_hashes:
-        raise ValueError("Refresh Staging Wiki copy does not match the current publication")
+        raise ValueError("Refresh Published Wiki page hashes do not match its metadata after copy")
     return page_hashes, metadata.source_revision, metadata.skill_digest
+
+
+def _copy_regular_file_no_follow(
+    source: Path, destination: Path, *, max_bytes: int, label: str
+) -> int:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        source_fd = os.open(source, flags)
+    except OSError as error:
+        raise ValueError(f"{label} is not a readable regular file") from error
+    destination_fd: int | None = None
+    try:
+        opened = os.fstat(source_fd)
+        current = os.lstat(source)
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (
+            current.st_dev,
+            current.st_ino,
+        ):
+            raise ValueError(f"{label} is not a readable regular file")
+        if opened.st_size > max_bytes:
+            raise ValueError(f"{label} exceeds the configured byte limit")
+        destination_fd = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o644,
+        )
+        copied = 0
+        while chunk := os.read(source_fd, min(1024 * 1024, max_bytes - copied + 1)):
+            copied += len(chunk)
+            if copied > max_bytes:
+                raise ValueError(f"{label} exceeds the configured byte limit")
+            view = memoryview(chunk)
+            while view:
+                view = view[os.write(destination_fd, view) :]
+    except Exception:
+        if destination_fd is not None:
+            os.close(destination_fd)
+            destination_fd = None
+            destination.unlink(missing_ok=True)
+        raise
+    finally:
+        os.close(source_fd)
+        if destination_fd is not None:
+            os.close(destination_fd)
+    return copied
+
+
+def _copy_wiki_pages(
+    source: Path,
+    destination: Path,
+    manifest: WikiManifest,
+    limits: WikiRunLimits,
+) -> None:
+    total_bytes = 0
+    for page in manifest.pages:
+        relative = PurePosixPath(page)
+        target = destination.joinpath(*relative.parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        copied = _copy_regular_file_no_follow(
+            source.joinpath(*relative.parts),
+            target,
+            max_bytes=min(
+                limits.wiki_file_bytes_limit,
+                limits.wiki_total_bytes_limit - total_bytes,
+            ),
+            label=f"Staging Wiki page {page}",
+        )
+        total_bytes += copied
 
 
 def _summarize_changes(
@@ -821,22 +984,27 @@ def _publish_wiki(
     source_revision: str,
     skill_digest: str,
     model_name: str,
+    limits: WikiRunLimits,
 ) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     if os.path.lexists(destination) and not destination.is_symlink():
         raise ValueError("Published Wiki path must be absent or a producer-managed symlink")
     releases = destination.parent / f".{destination.name}.releases"
     releases.mkdir(exist_ok=True)
+    _validate_release_root(releases)
     release_id = uuid.uuid4().hex
-    temporary_release = releases / f".{release_id}.tmp"
     final_release = releases / release_id
     temporary_link = destination.parent / f".{destination.name}.{release_id}.tmp"
+    final_release_owned = False
+    temporary_link_owned = False
     try:
-        shutil.copytree(staging, temporary_release, symlinks=True)
-        errors = _validate_wiki(source, temporary_release, manifest)
+        final_release.mkdir()
+        final_release_owned = True
+        _copy_wiki_pages(staging, final_release, manifest, limits)
+        errors = _validate_wiki(source, final_release, manifest, limits)
         if errors:
             raise ValueError("Copied Wiki validation failed: " + "; ".join(errors))
-        page_hashes = _hashes(temporary_release, manifest.pages)
+        page_hashes = _hashes(final_release, manifest.pages)
         metadata = _PublicationMetadata(
             source_revision=source_revision,
             skill_digest=skill_digest,
@@ -847,20 +1015,24 @@ def _publish_wiki(
             ],
             content_digest=_content_digest(page_hashes),
         )
-        (temporary_release / PUBLICATION_METADATA_NAME).write_text(
+        (final_release / PUBLICATION_METADATA_NAME).write_text(
             json.dumps(metadata.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        os.replace(temporary_release, final_release)
         os.symlink(
             os.path.relpath(final_release, destination.parent),
             temporary_link,
             target_is_directory=True,
         )
+        temporary_link_owned = True
+        if os.path.lexists(destination) and not destination.is_symlink():
+            raise ValueError("Published Wiki path must be absent or a producer-managed symlink")
         os.replace(temporary_link, destination)
+        temporary_link_owned = False
     except Exception:
-        shutil.rmtree(final_release, ignore_errors=True)
+        if final_release_owned:
+            shutil.rmtree(final_release, ignore_errors=True)
         raise
     finally:
-        shutil.rmtree(temporary_release, ignore_errors=True)
-        temporary_link.unlink(missing_ok=True)
+        if temporary_link_owned:
+            temporary_link.unlink(missing_ok=True)
