@@ -1,6 +1,6 @@
 # Workspace Console
 
-Status: Draft from design grilling
+Status: Historical draft; the Workspace Console is outside the current repository-to-wiki architecture
 
 ## Product principle
 

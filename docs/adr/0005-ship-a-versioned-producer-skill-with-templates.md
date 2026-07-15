@@ -1,0 +1,3 @@
+# Ship a versioned Producer Skill with templates
+
+The product ships a trusted Producer Skill bundle containing `SKILL.md`, focused references for generate, refresh, and review, and editable Wiki Templates. The Skill owns investigation method, semantic branching, page choice, splitting, merging, linking, citations, style, diagrams, self-review, and completion criteria; each Wiki Run freezes its exact content digest, and customization creates an explicit Skill Version or Skill Fork rather than silently patching product prompts. Target-repository Skills remain source data and are never auto-loaded.

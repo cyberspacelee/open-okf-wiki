@@ -1,0 +1,3 @@
+# Use page-level grounding before claim accounting
+
+The first product requires Source Citations in generated pages and an Agent review pass, while Python checks that cited repository paths and line ranges resolve inside the pinned Repository Snapshot. It does not maintain a Claim ledger, Coverage Obligation inventory, Knowledge Impact Graph, or proof of exhaustive coverage, because those structures create a second knowledge system before they have demonstrated better repository-to-wiki results. Claim-level provenance is added only when a concrete product contract requires machine-auditable claims or coverage that page citations and end-to-end evaluation cannot provide.

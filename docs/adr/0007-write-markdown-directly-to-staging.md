@@ -1,0 +1,3 @@
+# Write Markdown directly to staging
+
+The Agent writes final Markdown pages directly into the Staging Wiki, using Wiki Templates as adaptable guidance rather than a typed page-block intermediate representation. Python validates only mechanically decidable invariants such as contained paths, required frontmatter, internal links, Source Citation syntax, and Wiki Manifest consistency, then atomically publishes the complete tree; an incomplete or failed run never changes the Published Wiki. An Accepted Knowledge Model and deterministic Renderer are deferred until a proven product requirement needs them.

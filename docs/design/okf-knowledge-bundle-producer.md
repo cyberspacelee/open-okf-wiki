@@ -1,6 +1,6 @@
 # OKF Knowledge Bundle Producer — Overall Design
 
-Status: Accepted design
+Status: Historical design, superseded by the repository-to-wiki ADR set on 2026-07-15
 
 Decision date: 2026-07-11
 
@@ -669,27 +669,15 @@ The MVP deliberately skips every item listed under Non-goals until a benchmark, 
 - [Pi, Rust, and PydanticAI comparison](../research/pi-rust-pydanticai-comparison.md)
 - [Development tooling guidance](../research/development-tooling-guidance.md)
 
-## Architectural decisions
+## Superseding decisions
 
-- [ADR-0001: Separate deterministic control from semantic execution](../adr/0001-separate-control-and-semantic-planes.md)
-- [ADR-0002: Use stateless planning and bounded workers](../adr/0002-use-stateless-planning-and-bounded-workers.md)
-- [ADR-0003: Use state machines with a transactional event log](../adr/0003-use-state-machines-with-a-transactional-event-log.md)
-- [ADR-0004: Publish only after major coverage closes](../adr/0004-publish-only-after-major-coverage-closes.md)
-- [ADR-0005: Classify source before agent attention](../adr/0005-classify-source-before-agent-attention.md)
-- [ADR-0006: Render bundles from an accepted knowledge model](../adr/0006-render-bundles-from-an-accepted-knowledge-model.md)
-- [ADR-0007: Combine deterministic and semantic verification](../adr/0007-combine-deterministic-and-semantic-verification.md)
-- [ADR-0008: Refresh by impact and reverification](../adr/0008-refresh-by-impact-and-reverification.md)
-- [ADR-0009: Analyze source without executing it](../adr/0009-analyze-source-without-executing-it.md)
-- [ADR-0010: Start with isolated single-run workers](../adr/0010-start-with-isolated-single-run-workers.md)
-- [ADR-0011: Make web enrichment explicit and non-authoritative by default](../adr/0011-make-web-enrichment-explicit-and-non-authoritative-by-default.md)
-- [ADR-0012: Fix the producer profile taxonomy](../adr/0012-fix-the-producer-profile-taxonomy.md)
-- [ADR-0013: Default to reviewed publication](../adr/0013-default-to-reviewed-publication.md)
-- [ADR-0014: Gate releases on a versioned benchmark](../adr/0014-gate-releases-on-a-versioned-benchmark.md)
-- [ADR-0015: Build one bundle from a versioned source set](../adr/0015-build-one-bundle-from-a-versioned-source-set.md)
-- [ADR-0016: Make agent evaluation a release gate](../adr/0016-make-agent-evaluation-a-release-gate.md)
-- [ADR-0017: Keep one producer project per workspace](../adr/0017-keep-one-producer-project-per-workspace.md)
-- [ADR-0018: Manage Git checkouts without owning credentials](../adr/0018-manage-git-checkouts-without-owning-credentials.md)
-- [ADR-0019: Separate shared workspace definition from local settings](../adr/0019-separate-shared-workspace-definition-from-local-settings.md)
-- [ADR-0020: Serve a local workspace console from the Python control plane](../adr/0020-serve-a-local-workspace-console-from-the-python-control-plane.md)
-- [ADR-0021: Use reusable local gateway profiles](../adr/0021-use-reusable-local-gateway-profiles.md)
-- [ADR-0022: Separate knowledge queries from source investigations](../adr/0022-separate-knowledge-queries-from-source-investigations.md)
+This historical design is retained only for context. The current repository-to-wiki architecture is defined by:
+
+- [ADR-0001: Scope the product to repository wikis](../adr/0001-scope-the-product-to-repository-wikis.md)
+- [ADR-0002: Treat the repository as untrusted data](../adr/0002-treat-the-repository-as-untrusted-data.md)
+- [ADR-0003: Let one PydanticAI Agent own the semantic loop](../adr/0003-let-one-pydanticai-agent-own-the-semantic-loop.md)
+- [ADR-0004: Use CodeMode for dynamic repository work](../adr/0004-use-codemode-for-dynamic-repository-work.md)
+- [ADR-0005: Ship a versioned Producer Skill with templates](../adr/0005-ship-a-versioned-producer-skill-with-templates.md)
+- [ADR-0006: Keep Python as a thin harness](../adr/0006-keep-python-as-a-thin-harness.md)
+- [ADR-0007: Write Markdown directly to staging](../adr/0007-write-markdown-directly-to-staging.md)
+- [ADR-0008: Use page-level grounding before claim accounting](../adr/0008-use-page-level-grounding-before-claim-accounting.md)
