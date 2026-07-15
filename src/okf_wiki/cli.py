@@ -48,7 +48,7 @@ from .review import (
 )
 from .run_events import append_run_event
 from .run_state import RunTransitionError, transition_run
-from .security import MAX_ANALYZABLE_FILE_BYTES, git_read, git_read_bytes
+from .security import MAX_ANALYZABLE_FILE_BYTES, git_read, git_read_bytes, redact_secrets
 from .source_identity import source_unit_id, stable_span_id
 from .state_schema import migrate_state
 
@@ -94,6 +94,33 @@ def now() -> str:
 
 def emit(payload: dict) -> None:
     print(json.dumps(payload, sort_keys=True))
+
+
+_SECRET_ENV_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH", "COOKIE")
+
+
+def _cli_secret_values(extra: tuple[str, ...] = ()) -> tuple[str, ...]:
+    values = [value for value in extra if value]
+    for name, value in os.environ.items():
+        if value and any(marker in name.upper() for marker in _SECRET_ENV_MARKERS):
+            values.append(value)
+    return tuple(set(values))
+
+
+def _safe_cli_error(error: Exception, *, secrets: tuple[str, ...] = ()) -> str:
+    if type(error).__name__ == "WikiRunResourceLimitError":
+        return redact_secrets(str(error), _cli_secret_values(secrets))
+    message = redact_secrets(str(error), _cli_secret_values(secrets))
+    if message != str(error):
+        return f"{type(error).__name__}: provider diagnostics withheld"
+    if any(
+        marker in message.casefold()
+        for marker in ("authorization:", "api_key=", "api-key=", "bearer ", "password=", "secret=")
+    ):
+        return f"{type(error).__name__}: provider diagnostics withheld"
+    if not isinstance(error, (OSError, ValueError)):
+        return f"{type(error).__name__}: provider diagnostics withheld"
+    return message
 
 
 def state_dir() -> Path:
@@ -1431,7 +1458,10 @@ def main() -> int:
             except Exception as error:
                 emit(
                     {
-                        "error": {"message": str(error), "type": type(error).__name__},
+                        "error": {
+                            "message": _safe_cli_error(error),
+                            "type": type(error).__name__,
+                        },
                         "ok": False,
                     }
                 )
@@ -1454,7 +1484,10 @@ def main() -> int:
             except Exception as error:
                 emit(
                     {
-                        "error": {"message": str(error), "type": type(error).__name__},
+                        "error": {
+                            "message": _safe_cli_error(error),
+                            "type": type(error).__name__,
+                        },
                         "ok": False,
                     }
                 )
@@ -1501,7 +1534,10 @@ def main() -> int:
             except Exception as error:
                 emit(
                     {
-                        "error": {"message": str(error), "type": type(error).__name__},
+                        "error": {
+                            "message": _safe_cli_error(error),
+                            "type": type(error).__name__,
+                        },
                         "ok": False,
                     }
                 )

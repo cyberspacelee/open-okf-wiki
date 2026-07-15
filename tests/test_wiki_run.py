@@ -28,6 +28,7 @@ from okf_wiki.wiki_run import (
     WikiChangeSummary,
     WikiRunApplication,
     WikiRunLimits,
+    WikiRunResourceLimitError,
     WikiRunRequest,
 )
 
@@ -1183,7 +1184,7 @@ def test_oversized_source_citation_is_rejected_before_content_read(
 
     monkeypatch.setattr(Path, "read_bytes", reject_materialized_source_read)
 
-    with pytest.raises(UnexpectedModelBehavior):
+    with pytest.raises(WikiRunResourceLimitError, match="quota"):
         run_test_wiki(
             source,
             revision,
@@ -1488,6 +1489,51 @@ def test_publication_collision_never_removes_a_competing_path(
 
     assert sentinel.read_text(encoding="utf-8") == "competitor\n"
     assert published.resolve() == old_release
+
+
+def test_publication_release_root_symlink_race_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    published = tmp_path / "published"
+    old_release = make_published_wiki(published)
+    releases = old_release.parent
+    moved_releases = tmp_path / "owned-releases"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real_mkdir = os.mkdir
+    swapped = False
+
+    def swap_release_root(
+        path: os.PathLike[str] | str,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> None:
+        nonlocal swapped
+        if dir_fd is not None and not swapped:
+            releases.rename(moved_releases)
+            releases.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        real_mkdir(path, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "mkdir", swap_release_root)
+
+    with pytest.raises(ValueError, match="release directory changed"):
+        publish_test_pages(
+            source,
+            revision,
+            skill,
+            tmp_path / "staging",
+            published,
+            {"index.md": SIMPLE_WIKI_PAGE},
+        )
+
+    assert swapped
+    assert list(outside.iterdir()) == []
+    assert list(moved_releases.iterdir()) == [moved_releases / "old"]
 
 
 def test_publication_copy_revalidates_a_page_swapped_for_a_symlink(
@@ -2113,6 +2159,35 @@ Path('/wiki/index.md').write_text({SIMPLE_WIKI_PAGE!r})
     assert exporter.get_finished_spans() == ()
 
 
+def test_model_setting_secrets_are_withheld_from_application_errors(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    secret = "private-extra-header-value"
+
+    def fail(_: list[ModelRequest | ModelResponse], __: AgentInfo) -> ModelResponse:
+        raise RuntimeError(f"provider rejected header {secret}")
+
+    with pytest.raises(RuntimeError, match="diagnostics withheld") as caught:
+        asyncio.run(
+            WikiRunApplication().run(
+                WikiRunRequest(
+                    repository=RepositorySnapshot(path=source, revision=revision),
+                    skill=skill,
+                    model=ModelProviderConfig(
+                        model=FunctionModel(fail),
+                        settings={"extra_headers": {"X-Tenant": secret}},
+                    ),
+                    limits=TEST_WIKI_LIMITS,
+                    staging=tmp_path / "staging",
+                    publication=tmp_path / "published",
+                )
+            )
+        )
+
+    assert secret not in str(caught.value)
+
+
 def test_wiki_run_rejects_nested_staging_without_creating_it(tmp_path: Path) -> None:
     source = tmp_path / "source"
     skill = tmp_path / "skill"
@@ -2138,6 +2213,43 @@ def test_wiki_run_rejects_nested_staging_without_creating_it(tmp_path: Path) -> 
         )
 
     assert not staging.exists()
+
+
+@pytest.mark.parametrize("symlink_parent", [False, True])
+def test_wiki_run_rejects_symlinked_staging_before_model_work(
+    tmp_path: Path, symlink_parent: bool
+) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    if symlink_parent:
+        parent = tmp_path / "staging-parent"
+        parent.symlink_to(outside, target_is_directory=True)
+        staging = parent / "nested"
+    else:
+        staging = tmp_path / "staging"
+        staging.symlink_to(outside, target_is_directory=True)
+    model_called = False
+
+    def model(_: list[ModelRequest | ModelResponse], __: AgentInfo) -> ModelResponse:
+        nonlocal model_called
+        model_called = True
+        raise AssertionError("model must not run for a symlinked staging path")
+
+    with pytest.raises(ValueError, match="Staging Wiki path must not contain symlinks"):
+        run_test_wiki(
+            source,
+            revision,
+            skill,
+            staging,
+            tmp_path / "published",
+            FunctionModel(model),
+        )
+
+    assert not model_called
+    assert list(outside.iterdir()) == []
 
 
 def test_wiki_run_rejects_a_publication_parent_symlink_into_source(tmp_path: Path) -> None:
@@ -2437,7 +2549,7 @@ def test_wiki_mount_write_quota_stops_output_and_preserves_the_publication(
     published = tmp_path / "published"
     old_release = make_published_wiki(published)
 
-    with pytest.raises(UnexpectedModelBehavior):
+    with pytest.raises(WikiRunResourceLimitError, match="quota"):
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
@@ -2476,7 +2588,7 @@ def test_wiki_entry_ceiling_counts_directories_and_preserves_the_publication(
     old_release = make_published_wiki(published)
     code = write_pages_code({"index.md": SIMPLE_WIKI_PAGE}) + "\nPath('/wiki/empty').mkdir()"
 
-    with pytest.raises(UnexpectedModelBehavior):
+    with pytest.raises(WikiRunResourceLimitError, match="quota"):
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
@@ -2513,7 +2625,7 @@ def test_wiki_byte_ceilings_preserve_the_publication(
     published = tmp_path / "published"
     old_release = make_published_wiki(published)
 
-    with pytest.raises(UnexpectedModelBehavior):
+    with pytest.raises(WikiRunResourceLimitError, match="quota"):
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
@@ -2655,6 +2767,46 @@ def test_wiki_run_cli_routes_refresh_through_the_same_application_seam(
             "status": "needs_input",
             "questions": ["Which audience?"],
         },
+    }
+
+
+def test_wiki_run_cli_withholds_secret_bearing_provider_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    secret = "wiki-run-provider-secret"
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
+
+    async def fail(_: WikiRunApplication, __: WikiRunRequest) -> NeedsInput:
+        raise RuntimeError(f"provider Authorization: Bearer {secret}")
+
+    monkeypatch.setattr(WikiRunApplication, "run", fail)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "okf-wiki",
+            "wiki-run",
+            str(tmp_path / "source"),
+            "--source-revision",
+            "0" * 40,
+            "--staging",
+            str(tmp_path / "staging"),
+            "--publication",
+            str(tmp_path / "published"),
+            "--model",
+            "test",
+        ],
+    )
+
+    assert main() == 1
+
+    output = capsys.readouterr().out
+    assert secret not in output
+    assert json.loads(output) == {
+        "error": {
+            "message": "RuntimeError: provider diagnostics withheld",
+            "type": "RuntimeError",
+        },
+        "ok": False,
     }
 
 
