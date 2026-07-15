@@ -1226,6 +1226,21 @@ def execute_semantic_run(
 def parser() -> argparse.ArgumentParser:
     command = argparse.ArgumentParser(prog="okf-wiki")
     subcommands = command.add_subparsers(dest="command", required=True)
+    wiki_run_command = subcommands.add_parser("wiki-run")
+    wiki_run_command.add_argument("source")
+    wiki_run_command.add_argument("--source-revision", required=True)
+    wiki_run_command.add_argument("--skill", required=True)
+    wiki_run_command.add_argument("--skill-revision", required=True)
+    wiki_run_command.add_argument("--staging", required=True)
+    wiki_run_command.add_argument("--model", required=True)
+    wiki_run_command.add_argument("--request-limit", type=int)
+    wiki_run_command.add_argument("--tool-calls-limit", type=int)
+    wiki_run_command.add_argument("--input-tokens-limit", type=int)
+    wiki_run_command.add_argument("--output-tokens-limit", type=int)
+    wiki_run_command.add_argument("--total-tokens-limit", type=int)
+    wiki_run_command.add_argument("--retries", type=int)
+    wiki_run_command.add_argument("--request-timeout-seconds", type=float)
+    wiki_run_command.add_argument("--tool-timeout-seconds", type=float)
     build_command = subcommands.add_parser("build")
     build_command.add_argument("project_config")
     status_command = subcommands.add_parser("status")
@@ -1380,6 +1395,49 @@ def main() -> int:
 
     arguments = parser().parse_args()
     try:
+        if arguments.command == "wiki-run":
+            from .wiki_run import (
+                ModelProviderConfig,
+                ProducerSkillRevision,
+                RepositorySnapshot,
+                WikiRunApplication,
+                WikiRunLimits,
+                WikiRunRequest,
+            )
+
+            limit_values = {
+                name: getattr(arguments, name)
+                for name in WikiRunLimits.model_fields
+                if getattr(arguments, name) is not None
+            }
+            try:
+                result = asyncio.run(
+                    WikiRunApplication().run(
+                        WikiRunRequest(
+                            repository=RepositorySnapshot(
+                                path=arguments.source,
+                                revision=arguments.source_revision,
+                            ),
+                            skill=ProducerSkillRevision(
+                                path=arguments.skill,
+                                revision=arguments.skill_revision,
+                            ),
+                            model=ModelProviderConfig(model=arguments.model),
+                            limits=WikiRunLimits(**limit_values),
+                            staging=arguments.staging,
+                        )
+                    )
+                )
+            except Exception as error:
+                emit(
+                    {
+                        "error": {"message": str(error), "type": type(error).__name__},
+                        "ok": False,
+                    }
+                )
+                return 1
+            emit({"ok": True, "result": result.model_dump(mode="json")})
+            return 0
         if arguments.command == "build":
             return build(arguments.project_config)
         if arguments.command == "status":
