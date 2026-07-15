@@ -1,10 +1,12 @@
 import asyncio
+import json
 import os
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from pydantic_ai import ModelRequest, ModelResponse, ToolCallPart
+from pydantic_ai import ModelRequest, ModelResponse, ToolCallPart, UnexpectedModelBehavior
 from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
@@ -12,6 +14,7 @@ from okf_wiki.cli import parser
 from okf_wiki.wiki_run import (
     Complete,
     ModelProviderConfig,
+    NeedsInput,
     ProducerSkillRevision,
     RepositorySnapshot,
     WikiManifest,
@@ -36,6 +39,507 @@ def make_repository(path: Path, source_text: str) -> str:
         capture_output=True,
         text=True,
     ).stdout.strip()
+
+
+def make_published_wiki(path: Path) -> Path:
+    release = path.parent / f".{path.name}.releases" / "old"
+    release.mkdir(parents=True)
+    (release / "index.md").write_text("old publication\n", encoding="utf-8")
+    path.symlink_to(os.path.relpath(release, path.parent), target_is_directory=True)
+    return release
+
+
+def test_complete_wiki_run_validates_and_atomically_publishes_pages(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    skill = tmp_path / "skill"
+    staging = tmp_path / "staging"
+    published = tmp_path / "published"
+    source_revision = make_repository(source, "# Example\n\nSource fact.\n")
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    old_release = make_published_wiki(published)
+
+    def model(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
+        if any(
+            isinstance(part, ToolReturnPart) and part.tool_name == "run_code"
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+        ):
+            complete = next(tool for tool in info.output_tools if tool.name.endswith("Complete"))
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        complete.name,
+                        {
+                            "status": "complete",
+                            "manifest": {"pages": ["index.md", "architecture.md"]},
+                        },
+                    )
+                ]
+            )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "run_code",
+                    {
+                        "code": """from pathlib import Path
+Path('/wiki/index.md').write_text('''---
+title: Example Wiki
+---
+# Example Wiki
+
+[Architecture](architecture.md#architecture)
+
+[Source](repo:README.md#L1-L3)
+''')
+Path('/wiki/architecture.md').write_text('''---
+title: Architecture
+---
+# Architecture
+
+[Home](index.md#example-wiki)
+
+[Source](repo:README.md#L3-L3)
+''')
+"""
+                    },
+                )
+            ]
+        )
+
+    result = asyncio.run(
+        WikiRunApplication().run(
+            WikiRunRequest(
+                repository=RepositorySnapshot(path=source, revision=source_revision),
+                skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                model=ModelProviderConfig(model=FunctionModel(model)),
+                limits=WikiRunLimits(
+                    request_limit=3,
+                    tool_calls_limit=2,
+                    retries=1,
+                    request_timeout_seconds=5,
+                    tool_timeout_seconds=5,
+                ),
+                staging=staging,
+                publication=published,
+            )
+        )
+    )
+
+    assert result == Complete(manifest=WikiManifest(pages=["index.md", "architecture.md"]))
+    assert published.is_symlink()
+    assert published.resolve() != old_release
+    assert (old_release / "index.md").read_text(encoding="utf-8") == "old publication\n"
+    assert (published / "index.md").is_file()
+    assert (published / "architecture.md").is_file()
+    metadata = json.loads((published / ".okf-wiki.json").read_text(encoding="utf-8"))
+    assert metadata == {
+        "content_digest": "14c2fd1d8457426f3cc295b29a454cda8dbc89530ea7a9a86a1ba5cad8850c31",
+        "generated_at": metadata["generated_at"],
+        "model": "function:model:",
+        "pages": [
+            {
+                "path": "architecture.md",
+                "sha256": "57fa785fb701f4d2f0a7dfe27b9402d9060989ab637c7b3cde51026fd54e640e",
+            },
+            {
+                "path": "index.md",
+                "sha256": "4873cca881fd27de06dd9358471107e5c510898bf1c9a6239b6a3b47451461ac",
+            },
+        ],
+        "skill_digest": "e162ae46ef20a93f248df5e46ee590a2d6c6dbdc6bd69cc9d0c06ef2417b0769",
+        "source_revision": source_revision,
+    }
+    assert datetime.fromisoformat(metadata["generated_at"]).tzinfo == UTC
+
+
+def test_complete_validation_retry_lets_the_same_agent_fix_staging(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    skill = tmp_path / "skill"
+    staging = tmp_path / "staging"
+    published = tmp_path / "published"
+    source_revision = make_repository(source, "source\n")
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    turn = 0
+
+    def model(_: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
+        nonlocal turn
+        current, turn = turn, turn + 1
+        if current in {1, 3}:
+            complete = next(tool for tool in info.output_tools if tool.name.endswith("Complete"))
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        complete.name,
+                        {"status": "complete", "manifest": {"pages": ["index.md"]}},
+                    )
+                ]
+            )
+        body = (
+            "---\ntitle: Fixed Wiki\n---\n# Fixed Wiki\n\n"
+            "[Top](#fixed-wiki) [Web](https://example.com) [Mail](mailto:docs@example.com)\n"
+            if current == 2
+            else "---\ntitle: ''\n---\n# Broken Wiki\n\n[Missing](missing.md)\n"
+        )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "run_code",
+                    {
+                        "code": f"from pathlib import Path\nPath('/wiki/index.md').write_text({body!r})"
+                    },
+                )
+            ]
+        )
+
+    result = asyncio.run(
+        WikiRunApplication().run(
+            WikiRunRequest(
+                repository=RepositorySnapshot(path=source, revision=source_revision),
+                skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                model=ModelProviderConfig(model=FunctionModel(model)),
+                limits=WikiRunLimits(
+                    request_limit=5,
+                    tool_calls_limit=3,
+                    retries=1,
+                    request_timeout_seconds=5,
+                    tool_timeout_seconds=5,
+                ),
+                staging=staging,
+                publication=published,
+            )
+        )
+    )
+
+    assert result == Complete(manifest=WikiManifest(pages=["index.md"]))
+    assert "# Fixed Wiki" in (published / "index.md").read_text(encoding="utf-8")
+
+
+def test_needs_input_leaves_the_published_wiki_unchanged(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    skill = tmp_path / "skill"
+    published = tmp_path / "published"
+    source_revision = make_repository(source, "source\n")
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    old_release = make_published_wiki(published)
+
+    def model(_: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
+        needs_input = next(tool for tool in info.output_tools if tool.name.endswith("NeedsInput"))
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    needs_input.name,
+                    {"status": "needs_input", "questions": ["Which audience is required?"]},
+                )
+            ]
+        )
+
+    result = asyncio.run(
+        WikiRunApplication().run(
+            WikiRunRequest(
+                repository=RepositorySnapshot(path=source, revision=source_revision),
+                skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                model=ModelProviderConfig(model=FunctionModel(model)),
+                limits=WikiRunLimits(request_limit=2, request_timeout_seconds=5),
+                staging=tmp_path / "staging",
+                publication=published,
+            )
+        )
+    )
+
+    assert result == NeedsInput(questions=["Which audience is required?"])
+    assert published.resolve() == old_release
+    assert (published / "index.md").read_text(encoding="utf-8") == "old publication\n"
+    assert list(old_release.parent.iterdir()) == [old_release]
+
+
+def test_exhausted_validation_retry_leaves_the_published_wiki_unchanged(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    skill = tmp_path / "skill"
+    published = tmp_path / "published"
+    source_revision = make_repository(source, "source\n")
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    old_release = make_published_wiki(published)
+
+    def model(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
+        if any(
+            isinstance(part, ToolReturnPart) and part.tool_name == "run_code"
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+        ):
+            complete = next(tool for tool in info.output_tools if tool.name.endswith("Complete"))
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        complete.name,
+                        {"status": "complete", "manifest": {"pages": ["index.md"]}},
+                    )
+                ]
+            )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "run_code",
+                    {
+                        "code": "from pathlib import Path\n"
+                        "Path('/wiki/index.md').write_text('# no frontmatter\\n')"
+                    },
+                )
+            ]
+        )
+
+    with pytest.raises(UnexpectedModelBehavior, match="maximum output retries"):
+        asyncio.run(
+            WikiRunApplication().run(
+                WikiRunRequest(
+                    repository=RepositorySnapshot(path=source, revision=source_revision),
+                    skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                    model=ModelProviderConfig(model=FunctionModel(model)),
+                    limits=WikiRunLimits(
+                        request_limit=3,
+                        retries=0,
+                        request_timeout_seconds=5,
+                        tool_timeout_seconds=5,
+                    ),
+                    staging=tmp_path / "staging",
+                    publication=published,
+                )
+            )
+        )
+
+    assert published.resolve() == old_release
+    assert (published / "index.md").read_text(encoding="utf-8") == "old publication\n"
+    assert list(old_release.parent.iterdir()) == [old_release]
+
+
+@pytest.mark.parametrize("fault", ["metadata", "replacement"])
+def test_publication_failure_leaves_the_published_wiki_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    source = tmp_path / "source"
+    skill = tmp_path / "skill"
+    published = tmp_path / "published"
+    source_revision = make_repository(source, "source\n")
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    old_release = make_published_wiki(published)
+
+    def model(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
+        if any(
+            isinstance(part, ToolReturnPart) and part.tool_name == "run_code"
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+        ):
+            complete = next(tool for tool in info.output_tools if tool.name.endswith("Complete"))
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        complete.name,
+                        {"status": "complete", "manifest": {"pages": ["index.md"]}},
+                    )
+                ]
+            )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "run_code",
+                    {
+                        "code": "from pathlib import Path\n"
+                        "Path('/wiki/index.md').write_text('---\\ntitle: New Wiki\\n---\\n# New Wiki\\n')"
+                    },
+                )
+            ]
+        )
+
+    if fault == "metadata":
+        real_write_text = Path.write_text
+
+        def fail_metadata(
+            path: Path,
+            data: str,
+            encoding: str | None = None,
+            errors: str | None = None,
+            newline: str | None = None,
+        ) -> int:
+            if path.name == ".okf-wiki.json":
+                raise OSError("metadata failure")
+            return real_write_text(path, data, encoding=encoding, errors=errors, newline=newline)
+
+        monkeypatch.setattr(Path, "write_text", fail_metadata)
+    else:
+        real_replace = os.replace
+
+        def fail_replacement(source_path: os.PathLike[str], target_path: os.PathLike[str]) -> None:
+            if Path(target_path) == published:
+                raise OSError("replacement failure")
+            real_replace(source_path, target_path)
+
+        monkeypatch.setattr(os, "replace", fail_replacement)
+
+    with pytest.raises(OSError, match=f"{fault} failure"):
+        asyncio.run(
+            WikiRunApplication().run(
+                WikiRunRequest(
+                    repository=RepositorySnapshot(path=source, revision=source_revision),
+                    skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                    model=ModelProviderConfig(model=FunctionModel(model)),
+                    limits=WikiRunLimits(
+                        request_limit=3,
+                        tool_calls_limit=2,
+                        retries=1,
+                        request_timeout_seconds=5,
+                        tool_timeout_seconds=5,
+                    ),
+                    staging=tmp_path / "staging",
+                    publication=published,
+                )
+            )
+        )
+
+    assert published.resolve() == old_release
+    assert (published / "index.md").read_text(encoding="utf-8") == "old publication\n"
+    assert list(old_release.parent.iterdir()) == [old_release]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing",
+        "undeclared",
+        "duplicate",
+        "noncanonical",
+        "whitespace",
+        "escaped",
+        "symlink",
+        "non_markdown",
+        "temporary",
+        "missing_index",
+        "frontmatter",
+        "frontmatter_yaml",
+        "internal_link",
+        "fragment",
+        "citation_syntax",
+        "citation_path",
+        "citation_range",
+        "citation_reversed",
+        "citation_traversal",
+    ],
+)
+def test_invalid_staging_manifest_and_artifacts_never_publish(tmp_path: Path, case: str) -> None:
+    source = tmp_path / "source"
+    skill = tmp_path / "skill"
+    staging = tmp_path / "staging"
+    published = tmp_path / "published"
+    source_revision = make_repository(source, "source\n")
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    old_release = make_published_wiki(published)
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside\n", encoding="utf-8")
+    valid_page = "---\ntitle: Valid Wiki\n---\n# Valid Wiki\n"
+    code = f"from pathlib import Path\nPath('/wiki/index.md').write_text({valid_page!r})"
+    pages = ["index.md"]
+    if case == "missing":
+        pages.append("missing.md")
+    elif case == "undeclared":
+        code += f"\nPath('/wiki/extra.md').write_text({valid_page!r})"
+    elif case == "duplicate":
+        pages.append("index.md")
+    elif case == "noncanonical":
+        pages = ["./index.md"]
+    elif case == "whitespace":
+        pages = [" index.md"]
+    elif case == "escaped":
+        pages = ["../index.md"]
+    elif case == "non_markdown":
+        code += "\nPath('/wiki/notes.txt').write_text('notes')"
+    elif case == "temporary":
+        code += "\nPath('/wiki/draft.tmp').write_text('draft')"
+    elif case == "missing_index":
+        code = f"from pathlib import Path\nPath('/wiki/other.md').write_text({valid_page!r})"
+        pages = ["other.md"]
+    elif case == "frontmatter":
+        code = "from pathlib import Path\nPath('/wiki/index.md').write_text('# Missing\\n')"
+    elif case == "frontmatter_yaml":
+        invalid = "---\ntitle: [\n---\n# Invalid YAML\n"
+        code = f"from pathlib import Path\nPath('/wiki/index.md').write_text({invalid!r})"
+    elif case == "internal_link":
+        invalid = valid_page + "\n[Missing](missing.md)\n"
+        code = f"from pathlib import Path\nPath('/wiki/index.md').write_text({invalid!r})"
+    elif case == "fragment":
+        index = valid_page + "\n[Other](other.md#missing)\n"
+        code = (
+            "from pathlib import Path\n"
+            f"Path('/wiki/index.md').write_text({index!r})\n"
+            f"Path('/wiki/other.md').write_text({valid_page!r})"
+        )
+        pages.append("other.md")
+    elif case == "citation_syntax":
+        invalid = valid_page + "\n[Source](repo:README.md#L0-L1)\n"
+        code = f"from pathlib import Path\nPath('/wiki/index.md').write_text({invalid!r})"
+    elif case == "citation_path":
+        invalid = valid_page + "\n[Source](repo:missing.py#L1-L1)\n"
+        code = f"from pathlib import Path\nPath('/wiki/index.md').write_text({invalid!r})"
+    elif case == "citation_range":
+        invalid = valid_page + "\n[Source](repo:README.md#L2-L2)\n"
+        code = f"from pathlib import Path\nPath('/wiki/index.md').write_text({invalid!r})"
+    elif case == "citation_reversed":
+        invalid = valid_page + "\n[Source](repo:README.md#L2-L1)\n"
+        code = f"from pathlib import Path\nPath('/wiki/index.md').write_text({invalid!r})"
+    elif case == "citation_traversal":
+        invalid = valid_page + "\n[Source](repo:../README.md#L1-L1)\n"
+        code = f"from pathlib import Path\nPath('/wiki/index.md').write_text({invalid!r})"
+
+    def model(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
+        if any(
+            isinstance(part, ToolReturnPart) and part.tool_name == "run_code"
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+        ):
+            if case == "symlink":
+                (staging / "linked.md").symlink_to(outside)
+            complete = next(tool for tool in info.output_tools if tool.name.endswith("Complete"))
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        complete.name,
+                        {"status": "complete", "manifest": {"pages": pages}},
+                    )
+                ]
+            )
+        return ModelResponse(parts=[ToolCallPart("run_code", {"code": code})])
+
+    with pytest.raises(UnexpectedModelBehavior, match="maximum output retries"):
+        asyncio.run(
+            WikiRunApplication().run(
+                WikiRunRequest(
+                    repository=RepositorySnapshot(path=source, revision=source_revision),
+                    skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                    model=ModelProviderConfig(model=FunctionModel(model)),
+                    limits=WikiRunLimits(
+                        request_limit=3,
+                        tool_calls_limit=2,
+                        retries=0,
+                        request_timeout_seconds=5,
+                        tool_timeout_seconds=5,
+                    ),
+                    staging=staging,
+                    publication=published,
+                )
+            )
+        )
+
+    assert published.resolve() == old_release
+    assert list(old_release.parent.iterdir()) == [old_release]
 
 
 def test_wiki_run_freezes_source_and_skill_before_model_work(tmp_path: Path) -> None:
@@ -88,7 +592,7 @@ try:
 except Exception:
     skill_write_blocked = True
 assert source_write_blocked and skill_write_blocked
-Path('/wiki/index.md').write_text('# Example Wiki\\n\\n' + skill + '\\n' + source)
+Path('/wiki/index.md').write_text('---\\ntitle: Example Wiki\\n---\\n# Example Wiki\\n\\n' + skill + '\\n' + source)
 """
                     },
                 )
@@ -112,17 +616,22 @@ Path('/wiki/index.md').write_text('# Example Wiki\\n\\n' + skill + '\\n' + sourc
                     tool_timeout_seconds=5,
                 ),
                 staging=staging,
+                publication=tmp_path / "published",
             )
         )
     )
 
     assert result == Complete(manifest=WikiManifest(pages=["index.md"]))
     assert (staging / "index.md").read_text(encoding="utf-8") == (
-        "# Example Wiki\n\n" + skill_text + "\n" + source_text
+        "---\ntitle: Example Wiki\n---\n# Example Wiki\n\n" + skill_text + "\n" + source_text
     )
     assert originals_changed
     assert (source / "README.md").read_text(encoding="utf-8") == "changed after snapshot\n"
     assert (skill / "SKILL.md").read_text(encoding="utf-8") == "changed after snapshot\n"
+    metadata = json.loads((tmp_path / "published" / ".okf-wiki.json").read_text(encoding="utf-8"))
+    assert metadata["skill_digest"] == (
+        "c361865c20afff251deab01c2021fdda3a09d438f153c84fc50db2004d4d59fd"
+    )
 
 
 def test_wiki_run_rejects_nested_staging_without_creating_it(tmp_path: Path) -> None:
@@ -145,6 +654,7 @@ def test_wiki_run_rejects_nested_staging_without_creating_it(tmp_path: Path) -> 
                     model=ModelProviderConfig(model=FunctionModel(model)),
                     limits=WikiRunLimits(),
                     staging=staging,
+                    publication=tmp_path / "published",
                 )
             )
         )
@@ -183,6 +693,7 @@ def test_wiki_run_rejects_invalid_checkout_before_model_work(
                     model=ModelProviderConfig(model=FunctionModel(model)),
                     limits=WikiRunLimits(),
                     staging=staging,
+                    publication=tmp_path / "published",
                 )
             )
         )
@@ -229,6 +740,7 @@ def test_wiki_run_rejects_executable_git_filter_without_running_it(tmp_path: Pat
                     model=ModelProviderConfig(model=FunctionModel(model)),
                     limits=WikiRunLimits(),
                     staging=tmp_path / "staging",
+                    publication=tmp_path / "published",
                 )
             )
         )
@@ -239,9 +751,11 @@ def test_wiki_run_rejects_executable_git_filter_without_running_it(tmp_path: Pat
 def test_wiki_run_wall_clock_deadline_terminates_model_work(tmp_path: Path) -> None:
     source = tmp_path / "source"
     skill = tmp_path / "skill"
+    published = tmp_path / "published"
     revision = make_repository(source, "committed\n")
     skill.mkdir()
     (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    old_release = make_published_wiki(published)
     model_started = False
 
     async def slow_model(_: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
@@ -270,11 +784,42 @@ def test_wiki_run_wall_clock_deadline_terminates_model_work(tmp_path: Path) -> N
                         wall_clock_timeout_seconds=0.01,
                     ),
                     staging=tmp_path / "staging",
+                    publication=published,
                 )
             )
         )
 
     assert model_started
+    assert published.resolve() == old_release
+
+
+def test_model_failure_leaves_the_published_wiki_unchanged(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    skill = tmp_path / "skill"
+    published = tmp_path / "published"
+    revision = make_repository(source, "committed\n")
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("# Producer Skill\n", encoding="utf-8")
+    old_release = make_published_wiki(published)
+
+    def failed_model(_: list[ModelRequest | ModelResponse], __: AgentInfo) -> ModelResponse:
+        raise RuntimeError("model failure")
+
+    with pytest.raises(RuntimeError, match="model failure"):
+        asyncio.run(
+            WikiRunApplication().run(
+                WikiRunRequest(
+                    repository=RepositorySnapshot(path=source, revision=revision),
+                    skill=ProducerSkillRevision(path=skill, revision="skill-rev"),
+                    model=ModelProviderConfig(model=FunctionModel(failed_model)),
+                    limits=WikiRunLimits(request_timeout_seconds=5),
+                    staging=tmp_path / "staging",
+                    publication=published,
+                )
+            )
+        )
+
+    assert published.resolve() == old_release
 
 
 def test_wiki_run_cli_exposes_wall_clock_deadline() -> None:
@@ -290,6 +835,8 @@ def test_wiki_run_cli_exposes_wall_clock_deadline() -> None:
             "skill-rev",
             "--staging",
             "staging",
+            "--publication",
+            "published",
             "--model",
             "test",
             "--wall-clock-timeout-seconds",
@@ -298,3 +845,4 @@ def test_wiki_run_cli_exposes_wall_clock_deadline() -> None:
     )
 
     assert arguments.wall_clock_timeout_seconds == 7
+    assert arguments.publication == "published"

@@ -1232,6 +1232,7 @@ def parser() -> argparse.ArgumentParser:
     wiki_run_command.add_argument("--skill", required=True)
     wiki_run_command.add_argument("--skill-revision", required=True)
     wiki_run_command.add_argument("--staging", required=True)
+    wiki_run_command.add_argument("--publication", required=True)
     wiki_run_command.add_argument("--model", required=True)
     wiki_run_command.add_argument("--request-limit", type=int)
     wiki_run_command.add_argument("--tool-calls-limit", type=int)
@@ -1426,6 +1427,7 @@ def main() -> int:
                             model=ModelProviderConfig(model=arguments.model),
                             limits=WikiRunLimits(**limit_values),
                             staging=arguments.staging,
+                            publication=arguments.publication,
                         )
                     )
                 )
