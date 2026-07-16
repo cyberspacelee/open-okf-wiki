@@ -26,6 +26,9 @@ The installed command exposes four operations:
 - `skill-fork` creates an editable copy of a Skill Version.
 - `skill-inspect` validates a Skill directory and reports its content digest.
 
+This release is CLI-only: it has no web frontend or Console process, so no separate Node/Bun
+setup, frontend configuration, or second local server is required.
+
 The current publication implementation targets Linux because stable directory handles use
 `/proc/self/fd`.
 
