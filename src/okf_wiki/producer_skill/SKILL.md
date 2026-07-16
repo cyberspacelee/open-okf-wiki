@@ -26,7 +26,9 @@ gate.
    When the scope is large or spans independent domains, use the Run Plan to decide whether a
    self-contained Domain task will reduce context pressure. A Domain may use the listed Leaf
    Researchers for one further bounded layer; every branch must publish a validated receipt before
-   Root or its parent reduces the result.
+   Root or its parent reduces the result. Keep the Run Plan's objective, completion gates, intended
+   pages, evidence gaps, branch states, receipt references, unresolved questions, and next actions
+   concise and current.
    **Completion gate:** every intended page has a clear reader purpose and enough inspected evidence
    to write, and further inspection would not materially improve the intended Wiki.
 3. **Write the Wiki.** Select only relevant files from
@@ -36,13 +38,17 @@ gate.
    source-consistent diagrams. **Completion gate:** every intended page exists, answers its reader
    question, links to related pages where useful, and is grounded by nearby verified Source
    Citations.
-4. **Review and finish.** Read `/skill/references/review.md`, check every final page against it, and
-   repair each issue, returning to earlier steps when page scope or evidence changes. Reopen load-bearing
-   source spans as needed rather than treating a child summary as proof. A partial, failed, or
-   cancelled critical branch must be retried only within the Host budget or surfaced as a blocking
-   question; it cannot silently satisfy completion. Then return the exact Markdown page manifest.
-   **Completion gate:** every review check passes, every critical planned scope is complete or
-   explicitly unresolved, and the manifest exactly matches the final page tree.
+4. **Review and finish.** Prefer the Host-registered `reviewer` subagent for an independent
+   read-only review of staged pages against `/skill/references/review.md`; otherwise read that
+   reference yourself. The Reviewer publishes a defects receipt only and cannot write `/wiki` or
+   delegate further. Repair each issue yourself, returning to earlier steps when page scope or
+   evidence changes. Reopen load-bearing source spans as needed rather than treating a child
+   summary as proof. A partial, failed, or cancelled critical branch may be retried only within
+   the Host budget; if direct fallback research cannot complete it, fail the Wiki Run and preserve
+   the previous Published Wiki. Internal child or budget failure is not Needs Input. Then return
+   the exact Markdown page manifest. **Completion gate:** every review check passes, every critical
+   planned scope is complete, every non-critical cancellation is explicit in the Run Plan, and the
+   manifest exactly matches the final page tree.
 
 ## Core output contract
 

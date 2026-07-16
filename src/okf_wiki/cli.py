@@ -74,6 +74,13 @@ def parser() -> argparse.ArgumentParser:
     wiki_run.add_argument("--adaptive-leaf-request-limit", type=int)
     wiki_run.add_argument("--adaptive-domain-total-tokens-limit", type=int)
     wiki_run.add_argument("--adaptive-leaf-total-tokens-limit", type=int)
+    wiki_run.add_argument(
+        "--adaptive-enable-reviewer",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    wiki_run.add_argument("--adaptive-reviewer-request-limit", type=int)
+    wiki_run.add_argument("--adaptive-reviewer-total-tokens-limit", type=int)
     wiki_run.add_argument("--adaptive-dynamic-workflow", action="store_true", default=None)
 
     wiki_eval = subcommands.add_parser("wiki-eval")

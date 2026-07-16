@@ -104,7 +104,7 @@ class RepositorySnapshot(BaseModel):
 
 SkillDigest = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 _DEFAULT_PRODUCER_SKILL = Path(__file__).with_name("producer_skill")
-_DEFAULT_PRODUCER_SKILL_DIGEST = "ab002298d09f367f4830dbd13f53d12bb72a2f3a8d037645e60df97fdbc83756"
+_DEFAULT_PRODUCER_SKILL_DIGEST = "77880859f9ee6be22e4a8112c9afae757ef2a55df499c5b68762d9b5cbea7c52"
 
 
 class ProducerSkillVersion(BaseModel):
@@ -195,6 +195,9 @@ class WikiRunLimits(BaseModel):
     adaptive_leaf_request_limit: int = Field(default=3, gt=0)
     adaptive_domain_total_tokens_limit: int = Field(default=25_000, gt=0)
     adaptive_leaf_total_tokens_limit: int = Field(default=18_000, gt=0)
+    adaptive_enable_reviewer: bool = True
+    adaptive_reviewer_request_limit: int = Field(default=5, gt=0)
+    adaptive_reviewer_total_tokens_limit: int = Field(default=30_000, gt=0)
     adaptive_dynamic_workflow: bool = False
 
     def usage_limits(self) -> UsageLimits:
@@ -551,6 +554,8 @@ _EVENT_SAFE_KEYS = {
     "count",
     "depth",
     "duration_seconds",
+    "dynamic_workflow",
+    "reviewer",
     "fanout",
     "retries",
     "kind",
@@ -1804,7 +1809,9 @@ def _summarize_changes(
 
 _REQUIRED_PRODUCER_SKILL_PATHS = {
     "SKILL.md",
+    "references/domain-research.md",
     "references/generate.md",
+    "references/leaf-research.md",
     "references/refresh.md",
     "references/review.md",
     "templates/architecture.md",

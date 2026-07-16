@@ -45,7 +45,9 @@ from okf_wiki.wiki_run import (
 
 REQUIRED_PRODUCER_SKILL_PATHS = {
     "SKILL.md",
+    "references/domain-research.md",
     "references/generate.md",
+    "references/leaf-research.md",
     "references/refresh.md",
     "references/review.md",
     "templates/architecture.md",
@@ -532,7 +534,7 @@ def test_default_producer_skill_is_a_complete_content_addressed_version() -> Non
         for path in version.path.rglob("*")
         if path.is_file()
     } == REQUIRED_PRODUCER_SKILL_PATHS
-    assert version.digest == "ab002298d09f367f4830dbd13f53d12bb72a2f3a8d037645e60df97fdbc83756"
+    assert version.digest == "77880859f9ee6be22e4a8112c9afae757ef2a55df499c5b68762d9b5cbea7c52"
 
 
 @pytest.mark.parametrize(

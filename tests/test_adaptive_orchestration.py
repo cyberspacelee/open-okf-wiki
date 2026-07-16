@@ -73,6 +73,41 @@ def _repository(tmp_path: Path) -> tuple[Path, str]:
     return source, revision
 
 
+def _run_adaptive(
+    tmp_path: Path,
+    source: Path,
+    revision: str,
+    model,
+    **limit_overrides,
+) -> tuple[Complete, list[WikiRunEvent]]:
+    # Leave headroom for Domain retry/recovery after child + Reviewer reservations.
+    limit_values = {
+        "request_limit": 60,
+        "tool_calls_limit": 100,
+        "total_tokens_limit": 400_000,
+        "adaptive_source_files_threshold": 1,
+        "retries": 2,
+        "request_timeout_seconds": 5,
+        "tool_timeout_seconds": 5,
+        **limit_overrides,
+    }
+    events: list[WikiRunEvent] = []
+    result = asyncio.run(
+        WikiRunApplication(observer=events.append).run(
+            WikiRunRequest(
+                repositories=(RepositorySnapshot(path=source, revision=revision),),
+                skill=ProducerSkillVersion.default(),
+                model=ModelProviderConfig(model=FunctionModel(model)),
+                limits=WikiRunLimits(**limit_values),
+                staging=tmp_path / "staging",
+                publication=tmp_path / "published",
+            )
+        )
+    )
+    assert isinstance(result, Complete)
+    return result, events
+
+
 def test_small_scope_does_not_trigger_adaptive_fanout() -> None:
     limits = WikiRunLimits(adaptive_source_files_threshold=10, adaptive_source_bytes_threshold=100)
     assert not should_enable_adaptive(
@@ -102,13 +137,17 @@ def test_root_capabilities_use_explicit_roster_and_single_writer_mount(tmp_path:
     try:
         assert orchestration.policy.enabled
         assert orchestration.policy.root_fanout == 2
+        assert orchestration.policy.enable_reviewer
         capabilities = agent.root_capability.capabilities
         subagents = next(
             capability for capability in capabilities if isinstance(capability, SubAgents)
         )
         assert subagents.agent_folders is None
         assert subagents.inherit_tools is False
-        assert len(subagents.agents) == 2
+        # Two domains plus one optional Reviewer.
+        assert len(subagents.agents) == 3
+        names = {entry.name for entry in subagents.agents}
+        assert names == {"domain_1", "domain_2", "reviewer"}
         assert any(isinstance(capability, Planning) for capability in capabilities)
         assert any(isinstance(capability, TieredCompaction) for capability in capabilities)
         assert any(isinstance(capability, OverflowingToolOutput) for capability in capabilities)
@@ -117,8 +156,10 @@ def test_root_capabilities_use_explicit_roster_and_single_writer_mount(tmp_path:
             capability for capability in capabilities if isinstance(capability, CodeMode)
         )
         assert {mount.virtual_path for mount in root_code.mount} == {"/source", "/skill", "/wiki"}
+        wiki_mount = next(mount for mount in root_code.mount if mount.virtual_path == "/wiki")
+        assert wiki_mount.mode == "read-write"
 
-        domain = subagents.agents[0].agent.wrapped
+        domain = next(entry.agent.wrapped for entry in subagents.agents if entry.name == "domain_1")
         domain_capabilities = domain.root_capability.capabilities
         assert any(isinstance(capability, Planning) for capability in domain_capabilities)
         assert any(isinstance(capability, TieredCompaction) for capability in domain_capabilities)
@@ -127,6 +168,39 @@ def test_root_capabilities_use_explicit_roster_and_single_writer_mount(tmp_path:
         )
         assert {mount.virtual_path for mount in domain_code.mount} == {"/source", "/skill"}
         assert not any(mount.virtual_path == "/wiki" for mount in domain_code.mount)
+
+        reviewer = next(
+            entry.agent.wrapped for entry in subagents.agents if entry.name == "reviewer"
+        )
+        reviewer_capabilities = reviewer.root_capability.capabilities
+        assert any(isinstance(capability, Planning) for capability in reviewer_capabilities)
+        assert not any(isinstance(capability, SubAgents) for capability in reviewer_capabilities)
+        reviewer_code = next(
+            capability for capability in reviewer_capabilities if isinstance(capability, CodeMode)
+        )
+        mount_modes = {mount.virtual_path: mount.mode for mount in reviewer_code.mount}
+        assert mount_modes == {
+            "/source": "read-only",
+            "/skill": "read-only",
+            "/wiki": "read-only",
+        }
+    finally:
+        workspace.cleanup()
+
+
+def test_reviewer_can_be_disabled_from_the_roster(tmp_path: Path) -> None:
+    agent, orchestration, workspace = _builder(
+        tmp_path, WikiRunLimits(adaptive_enable_reviewer=False)
+    )
+    try:
+        assert orchestration.policy.enabled
+        assert not orchestration.policy.enable_reviewer
+        subagents = next(
+            capability
+            for capability in agent.root_capability.capabilities
+            if isinstance(capability, SubAgents)
+        )
+        assert {entry.name for entry in subagents.agents} == {"domain_1", "domain_2"}
     finally:
         workspace.cleanup()
 
@@ -178,8 +252,11 @@ def test_adaptive_policy_rejects_unbounded_topology() -> None:
 
 
 def test_envelope_reservation_only_counts_enabled_topology_layers(tmp_path: Path) -> None:
+    # Two domains @ 6/25k plus one Reviewer @ 5/30k when max_depth=1 (no leaves).
     domain_only = AdaptivePolicy(enabled=True, max_depth=1)
-    assert domain_only.child_count_reservation() == (12, 50_000)
+    assert domain_only.child_count_reservation() == (17, 80_000)
+    research_only = AdaptivePolicy(enabled=True, max_depth=1, enable_reviewer=False)
+    assert research_only.child_count_reservation() == (12, 50_000)
     assert AdaptivePolicy(enabled=False, max_depth=0).child_count_reservation() == (0, 0)
 
     agent, orchestration, workspace = _builder(tmp_path, WikiRunLimits(adaptive_max_depth=0))
@@ -223,8 +300,8 @@ def test_expanded_domain_roster_requires_a_larger_whole_tree_envelope(tmp_path: 
         expanded_root,
         WikiRunLimits(
             adaptive_root_fanout=4,
-            request_limit=70,
-            total_tokens_limit=500_000,
+            request_limit=80,
+            total_tokens_limit=550_000,
         ),
     )
     try:
@@ -234,7 +311,15 @@ def test_expanded_domain_roster_requires_a_larger_whole_tree_envelope(tmp_path: 
             for capability in agent.root_capability.capabilities
             if isinstance(capability, SubAgents)
         )
-        assert len(subagents.agents) == 4
+        # Four domains plus the optional Reviewer.
+        assert len(subagents.agents) == 5
+        assert {entry.name for entry in subagents.agents} == {
+            "domain_1",
+            "domain_2",
+            "domain_3",
+            "domain_4",
+            "reviewer",
+        }
     finally:
         workspace.cleanup()
 
@@ -299,9 +384,9 @@ def test_adaptive_run_delegates_and_reduces_a_bounded_receipt(tmp_path: Path) ->
                 skill=ProducerSkillVersion.default(),
                 model=ModelProviderConfig(model=FunctionModel(model)),
                 limits=WikiRunLimits(
-                    request_limit=50,
-                    tool_calls_limit=40,
-                    total_tokens_limit=350_000,
+                    request_limit=60,
+                    tool_calls_limit=80,
+                    total_tokens_limit=400_000,
                     adaptive_source_files_threshold=1,
                     retries=2,
                     request_timeout_seconds=5,
@@ -412,9 +497,9 @@ def test_recursive_root_domain_leaf_reduces_child_receipts(tmp_path: Path) -> No
                 skill=ProducerSkillVersion.default(),
                 model=ModelProviderConfig(model=FunctionModel(model)),
                 limits=WikiRunLimits(
-                    request_limit=50,
-                    tool_calls_limit=80,
-                    total_tokens_limit=350_000,
+                    request_limit=60,
+                    tool_calls_limit=100,
+                    total_tokens_limit=400_000,
                     adaptive_source_files_threshold=1,
                     retries=2,
                     request_timeout_seconds=5,
@@ -516,9 +601,9 @@ def test_failed_domain_attempt_can_retry_once_and_clear_the_unresolved_state(
                 skill=ProducerSkillVersion.default(),
                 model=ModelProviderConfig(model=FunctionModel(model)),
                 limits=WikiRunLimits(
-                    request_limit=50,
-                    tool_calls_limit=80,
-                    total_tokens_limit=350_000,
+                    request_limit=60,
+                    tool_calls_limit=100,
+                    total_tokens_limit=400_000,
                     adaptive_source_files_threshold=1,
                     retries=2,
                     request_timeout_seconds=5,
@@ -542,6 +627,101 @@ def test_failed_domain_attempt_can_retry_once_and_clear_the_unresolved_state(
     assert domain_receipts == ["failed", "complete"]
     summary = next(event for event in events if event.type == "adaptive_summary")
     assert summary.payload["critical_failures"] == 0
+
+
+def test_reviewer_loads_skill_reference_and_publishes_a_defects_receipt(
+    tmp_path: Path,
+) -> None:
+    source, revision = _repository(tmp_path)
+
+    def model(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
+        instructions = info.instructions or ""
+        run_code_returns = [
+            part
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+            if isinstance(part, ToolReturnPart) and part.tool_name == "run_code"
+        ]
+        if "You are a Wiki Reviewer." in instructions:
+            assignment = re.search(
+                r"run_id=([0-9a-f]{32}), task_id=([^,]+), node_id=([^,]+), parent_id=([^,]+)",
+                instructions,
+            )
+            assert assignment is not None
+            run_id, task_id, node_id, parent_id = assignment.groups()
+            assert task_id == "reviewer" and node_id == "reviewer" and parent_id == "root"
+            if not run_code_returns:
+                # Load the product review skill, then inspect staged wiki before publishing.
+                code = (
+                    "from pathlib import Path\n"
+                    "skill = Path('/skill/references/review.md').read_text()\n"
+                    "wiki = Path('/wiki/index.md').read_text()\n"
+                    "assert 'Review' in skill or 'review' in skill.lower()\n"
+                    "assert 'Wiki' in wiki\n"
+                    "handoff = publish_receipt("
+                    f"run_id='{run_id}', node_id='{node_id}', parent_id='{parent_id}', "
+                    "attempt=1, status='complete', scope='review:wiki', "
+                    "summary='reviewed staged pages against skill', "
+                    "findings=['no critical defects'])\nprint(handoff)"
+                )
+                return ModelResponse(parts=[ToolCallPart("run_code", {"code": code})])
+            content = run_code_returns[-1].content
+            if isinstance(content, dict):
+                content = content.get("output", "")
+            # Surface sandbox failures rather than masking them as handoff validation noise.
+            text = str(content)
+            assert "Traceback" not in text and "Error" not in text, text
+            return ModelResponse(parts=[TextPart(text.strip())])
+
+        if "You are a Domain Researcher." in instructions:
+            assignment = re.search(
+                r"run_id=([0-9a-f]{32}), task_id=([^,]+), node_id=([^,]+), parent_id=([^,]+)",
+                instructions,
+            )
+            assert assignment is not None
+            run_id, task_id, node_id, parent_id = assignment.groups()
+            if not run_code_returns:
+                code = (
+                    "handoff = publish_receipt("
+                    f"run_id='{run_id}', node_id='{node_id}', parent_id='{parent_id}', "
+                    f"attempt=1, status='complete', scope='domain:{task_id}', "
+                    "summary='domain ready for review')\nprint(handoff)"
+                )
+                return ModelResponse(parts=[ToolCallPart("run_code", {"code": code})])
+            content = run_code_returns[-1].content
+            if isinstance(content, dict):
+                content = content.get("output", "")
+            return ModelResponse(parts=[TextPart(str(content).strip())])
+
+        if not run_code_returns:
+            code = (
+                "result = await delegate_task(agent_name='domain_1', "
+                "task='Inspect the README and publish a bounded receipt.')\n"
+                "from pathlib import Path\n"
+                "Path('/wiki/index.md').write_text("
+                "'---\\ntitle: Wiki\\n---\\n# Wiki\\n\\n[Source](repo:README.md#L1-L1)\\n')\n"
+                "review = await delegate_task(agent_name='reviewer', "
+                "task='Review staged pages against /skill/references/review.md.')\n"
+                "print(result)\nprint(review)"
+            )
+            return ModelResponse(parts=[ToolCallPart("run_code", {"code": code})])
+        complete = next(tool for tool in info.output_tools if tool.name.endswith("Complete"))
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    complete.name, {"status": "complete", "manifest": {"pages": ["index.md"]}}
+                )
+            ]
+        )
+
+    result, events = _run_adaptive(tmp_path, source, revision, model)
+    assert isinstance(result, Complete)
+    assert (tmp_path / "published" / "index.md").is_file()
+    assert any(event.type == "child_started" and event.node_id == "reviewer" for event in events)
+    assert any(
+        event.type == "receipt_published" and event.node_id == "reviewer" for event in events
+    )
 
 
 def test_optional_dynamic_workflow_runs_one_typed_leaf_coordination_layer(
@@ -640,9 +820,9 @@ def test_optional_dynamic_workflow_runs_one_typed_leaf_coordination_layer(
                 skill=ProducerSkillVersion.default(),
                 model=ModelProviderConfig(model=FunctionModel(model)),
                 limits=WikiRunLimits(
-                    request_limit=50,
-                    tool_calls_limit=80,
-                    total_tokens_limit=350_000,
+                    request_limit=60,
+                    tool_calls_limit=100,
+                    total_tokens_limit=400_000,
                     adaptive_source_files_threshold=1,
                     adaptive_dynamic_workflow=True,
                     retries=2,
