@@ -384,4 +384,40 @@ uv run --locked ty check src tests
 git diff --check
 ```
 
+### Git hooks (prek)
+
+This repo uses [prek](https://prek.j178.dev/) (fast pre-commit-compatible hook runner) with
+[`.pre-commit-config.yaml`](.pre-commit-config.yaml):
+
+| Stage | Hooks |
+|---|---|
+| **pre-commit** | trailing whitespace / YAML-TOML sanity, **ruff check --fix**, **ruff format**, **ty check** |
+| **pre-push** | **pytest** with `-m "not package_release"` |
+| **CI / manual** | full suite including `package_release` |
+
+**Why tests are not on pre-commit:** unit tests already take seconds to tens of seconds and grow with
+the suite; putting them on every commit slows small docs/config commits without catching more than
+ruff/ty for pure style mistakes. **pre-push** still blocks a broken unit suite before remote share.
+`package_release` builds wheels and is intentionally **not** a local hook (CI only).
+
+One-time setup after clone:
+
+```bash
+uv sync --locked
+uv run --locked prek install -t pre-commit -t pre-push
+# optional: warm hook envs
+uv run --locked prek prepare-hooks
+```
+
+Useful commands:
+
+```bash
+uv run --locked prek run -a              # all pre-commit hooks on the whole tree
+uv run --locked prek run ty-check -a
+uv run --locked prek run pytest-unit -a  # same as pre-push tests, without pushing
+uv run --locked prek uninstall           # remove hooks
+```
+
+Skip once when needed: `PREK_ALLOW_NO_CONFIG=0 git commit --no-verify` (use sparingly).
+
 The normal pytest run includes the tracked product-documentation local-link gate.

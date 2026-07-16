@@ -61,7 +61,10 @@ def test_exponential_backoff_is_bounded_and_jittered() -> None:
         def uniform(self, a: float, b: float) -> float:
             return b
 
-    delays = [exponential_backoff_seconds(n, rng=Fixed()) for n in range(1, 8)]  # type: ignore[arg-type]
+        def random(self) -> float:
+            return 1.0
+
+    delays = [exponential_backoff_seconds(n, rng=Fixed()) for n in range(1, 8)]
     assert delays[0] >= 1.0
     assert all(delay <= 30.0 for delay in delays)
     assert delays[-1] == 30.0

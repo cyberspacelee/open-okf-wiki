@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import random
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Protocol
 
 import httpx
-from httpx import AsyncHTTPTransport, HTTPStatusError, Response
+from httpx import AsyncBaseTransport, HTTPStatusError, Response
 from pydantic_ai.models import Model
 from pydantic_ai.retries import AsyncTenacityTransport, RetryConfig, wait_retry_after
 from tenacity import (
@@ -107,10 +107,14 @@ def parse_retry_after(value: str | None, *, now: float | None = None) -> float |
         return None
 
 
-def exponential_backoff_seconds(attempt: int, *, rng: random.Random | None = None) -> float:
+class _UniformRng(Protocol):
+    def uniform(self, a: float, b: float) -> float: ...
+
+
+def exponential_backoff_seconds(attempt: int, *, rng: _UniformRng | None = None) -> float:
     """attempt is 1-based completed attempt count before the next retry."""
     base = min(MAX_BACKOFF_SECONDS, MIN_BACKOFF_SECONDS * (2 ** max(0, attempt - 1)))
-    generator = rng or random.Random()
+    generator: _UniformRng = rng or random.Random()
     jitter = generator.uniform(0.0, max(0.05, base * 0.1))
     return min(MAX_BACKOFF_SECONDS, base + jitter)
 
@@ -129,9 +133,9 @@ def build_provider_transport(
     state: ProviderRetryState,
     emit: Callable[..., None] | None = None,
     wall_clock_deadline: float | None = None,
-    sleep: Callable[[float], Any] | None = None,
+    sleep: Callable[[int | float], None | Awaitable[None]] | None = None,
     rng: random.Random | None = None,
-    wrapped: AsyncHTTPTransport | None = None,
+    wrapped: AsyncBaseTransport | None = None,
 ) -> AsyncTenacityTransport:
     """Build an AsyncTenacityTransport with product retry policy."""
 
@@ -188,18 +192,19 @@ def build_provider_transport(
                 return min(parsed, MAX_RETRY_AFTER_SECONDS)
         return exponential_backoff_seconds(retry_state.attempt_number, rng=generator)
 
-    config = RetryConfig(
-        retry=retry_if_exception(retry_predicate),
-        wait=wait_retry_after(
+    config: RetryConfig = {
+        "retry": retry_if_exception(retry_predicate),
+        "wait": wait_retry_after(
             fallback_strategy=wait_strategy,
             max_wait=MAX_RETRY_AFTER_SECONDS,
         ),
-        stop=stop_after_attempt(MAX_TRANSPORT_ATTEMPTS),
-        reraise=True,
-        before_sleep=before_sleep,
-        after=after_attempt,
-        sleep=sleep,
-    )
+        "stop": stop_after_attempt(MAX_TRANSPORT_ATTEMPTS),
+        "reraise": True,
+        "before_sleep": before_sleep,
+        "after": after_attempt,
+    }
+    if sleep is not None:
+        config["sleep"] = sleep
     return AsyncTenacityTransport(
         config,
         wrapped=wrapped,

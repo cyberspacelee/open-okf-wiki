@@ -1,0 +1,55 @@
+# Managed by prek (https://prek.j178.dev/) — drop-in compatible with pre-commit.
+# Install hooks: uv run --locked prek install -t pre-commit -t pre-push
+# Run all:       uv run --locked prek run -a
+#
+# Tests: not on pre-commit (too slow / blocks small commits). Unit tests run on
+# pre-push only; package_release stays CI-only.
+
+fail_fast: false
+default_language_version:
+  python: python3.14
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        # Producer Skill content is digest-addressed; do not rewrite it.
+        exclude: ^(refs/|src/okf_wiki/producer_skill/)
+      - id: end-of-file-fixer
+        exclude: ^(refs/|src/okf_wiki/producer_skill/)
+      - id: check-merge-conflict
+      - id: check-yaml
+        exclude: ^refs/
+      - id: check-toml
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.21
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+        exclude: ^refs/
+      - id: ruff-format
+        exclude: ^refs/
+
+  # ty is not distributed as a dedicated pre-commit mirror with stable rev
+  # matching our lockfile; use the project venv via local + uv.
+  - repo: local
+    hooks:
+      - id: ty-check
+        name: ty check
+        entry: uv run --locked ty check src tests --exit-zero-on-warning
+        language: system
+        pass_filenames: false
+        types: [python]
+        stages: [pre-commit, manual]
+
+      - id: pytest-unit
+        name: pytest (not package_release)
+        entry: uv run --locked pytest -m "not package_release"
+        language: system
+        pass_filenames: false
+        types: [python]
+        stages: [pre-push, manual]

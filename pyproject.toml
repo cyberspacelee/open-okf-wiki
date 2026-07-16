@@ -27,6 +27,7 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+  "prek>=0.4.9",
   "pytest==9.1.1",
   "ruff==0.15.21",
   "ty==0.0.58",
@@ -43,3 +44,7 @@ testpaths = ["tests"]
 target-version = "py314"
 line-length = 100
 extend-exclude = ["refs"]
+
+[tool.ty.terminal]
+# Redundant-cast and similar stay visible as warnings without failing the hook.
+error-on-warning = false

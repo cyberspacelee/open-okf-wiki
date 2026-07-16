@@ -7,7 +7,7 @@ import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TextIO
+from typing import Protocol
 
 from rich.console import Console
 from rich.text import Text
@@ -94,7 +94,11 @@ class TuiState:
         return rendered
 
 
-def require_tty(stream: TextIO = sys.stdin) -> None:
+class _SupportsIsatty(Protocol):
+    def isatty(self) -> bool: ...
+
+
+def require_tty(stream: _SupportsIsatty = sys.stdin) -> None:
     if not hasattr(stream, "isatty") or not stream.isatty():
         raise RuntimeError(
             "okf-wiki tui requires an interactive TTY; use `okf-wiki wiki-run` for JSON automation"

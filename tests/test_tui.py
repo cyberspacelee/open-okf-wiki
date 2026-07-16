@@ -88,4 +88,4 @@ def test_non_tty_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
             return False
 
     with pytest.raises(RuntimeError, match="interactive TTY"):
-        require_tty(Fake())  # type: ignore[arg-type]
+        require_tty(Fake())
