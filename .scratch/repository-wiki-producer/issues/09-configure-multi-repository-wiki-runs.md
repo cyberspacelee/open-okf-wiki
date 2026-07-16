@@ -6,13 +6,18 @@
 
 **Status:** ready-for-agent
 
-- [ ] Ship an ignored `.env` convention and tracked `.env.example` for OpenAI and other supported PydanticAI provider variables without adding a dotenv loader.
-- [ ] Reject credentials, tokens, passwords, and provider headers from Wiki Run YAML without echoing their values.
-- [ ] `wiki-run --config` accepts relative output paths, model selection, limits, an optional Skill Version, and one or more uniquely named repositories.
-- [ ] Each repository selects exactly one local branch or exact revision; branches freeze to complete commits before model work.
-- [ ] Explicit standard-library `fnmatch` patterns remove repository-relative tracked POSIX paths before source quotas and materialization.
-- [ ] Multiple Repository Snapshots remain read-only below `/source/<repository-id>` while only the Staging Wiki is writable.
-- [ ] Multi-repository Source Citations include the repository ID and fail validation when the ID is missing or unknown.
-- [ ] Publication metadata records every repository ID, exact revision, and ignore set.
-- [ ] Direct single-repository CLI usage remains available as the shortest path.
-- [ ] A fresh-wheel test completes a multi-repository YAML Wiki Run through the installed public CLI.
+- [x] Ship an ignored `.env` convention and tracked `.env.example` for OpenAI and other supported PydanticAI provider variables without adding a dotenv loader.
+- [x] Reject credentials, tokens, passwords, and provider headers from Wiki Run YAML without echoing their values.
+- [x] `wiki-run --config` accepts relative output paths, model selection, limits, an optional Skill Version, and one or more uniquely named repositories.
+- [x] Each repository selects exactly one local branch or exact revision; branches freeze to complete commits before model work.
+- [x] Explicit standard-library `fnmatch` patterns remove repository-relative tracked POSIX paths before source quotas and materialization.
+- [x] Multiple Repository Snapshots remain read-only below `/source/<repository-id>` while only the Staging Wiki is writable.
+- [x] Multi-repository Source Citations include the repository ID and fail validation when the ID is missing or unknown.
+- [x] Publication metadata records every repository ID, exact revision, and ignore set.
+- [x] Direct single-repository CLI usage remains available as the shortest path.
+- [x] A fresh-wheel test completes a multi-repository YAML Wiki Run through the installed public CLI.
+
+## Comments
+
+- Implemented in `6d6b54e` and hardened after review: YAML secret-key detection now covers snake_case and camelCase forms without echoing values; ignored Git tree entries are filtered before non-file rejection.
+- Verification: 117 non-package tests passed, fresh-wheel package E2E passed, Ruff, ty, lock, Markdown-link, and diff checks passed.

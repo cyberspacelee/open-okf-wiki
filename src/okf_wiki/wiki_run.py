@@ -8,7 +8,7 @@ import shutil
 import stat
 import tempfile
 import uuid
-from collections.abc import Hashable, Iterator, Mapping
+from collections.abc import Hashable, Iterable, Iterator, Mapping
 from datetime import UTC, datetime
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
@@ -19,11 +19,12 @@ import yaml
 from markdown_it import MarkdownIt
 from mdit_py_plugins.anchors import anchors_plugin
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
     StringConstraints,
-    field_validator,
+    ValidationError,
     model_validator,
 )
 from pydantic_ai import (
@@ -54,9 +55,6 @@ RepositoryId = Annotated[
     str,
     StringConstraints(strip_whitespace=True, pattern=r"^[a-z][a-z0-9-]{0,62}$"),
 ]
-IgnorePattern = Annotated[
-    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)
-]
 
 
 def _validate_ignore_pattern(pattern: str) -> str:
@@ -70,6 +68,19 @@ def _validate_ignore_pattern(pattern: str) -> str:
     return pattern
 
 
+IgnorePattern = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=500),
+    AfterValidator(_validate_ignore_pattern),
+]
+
+
+def _validate_unique_repository_ids(ids: Iterable[str], message: str) -> None:
+    values = tuple(ids)
+    if len(values) != len(set(values)):
+        raise ValueError(message)
+
+
 class RepositorySnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -77,11 +88,6 @@ class RepositorySnapshot(BaseModel):
     path: Path
     revision: Annotated[str, StringConstraints(strip_whitespace=True, to_lower=True, min_length=1)]
     ignore: tuple[IgnorePattern, ...] = ()
-
-    @field_validator("ignore")
-    @classmethod
-    def validate_ignore(cls, patterns: tuple[str, ...]) -> tuple[str, ...]:
-        return tuple(_validate_ignore_pattern(pattern) for pattern in patterns)
 
 
 SkillDigest = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
@@ -191,11 +197,6 @@ class _ConfiguredRepository(BaseModel):
     ) = None
     ignore: tuple[IgnorePattern, ...] = ()
 
-    @field_validator("ignore")
-    @classmethod
-    def validate_ignore(cls, patterns: tuple[str, ...]) -> tuple[str, ...]:
-        return tuple(_validate_ignore_pattern(pattern) for pattern in patterns)
-
     @model_validator(mode="after")
     def validate_ref(self) -> "_ConfiguredRepository":
         if (self.branch is None) == (self.revision is None):
@@ -224,9 +225,10 @@ class _WikiRunFileConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_repository_ids(self) -> "_WikiRunFileConfig":
-        ids = [repository.id for repository in self.repositories]
-        if len(ids) != len(set(ids)):
-            raise ValueError("repository IDs must be unique")
+        _validate_unique_repository_ids(
+            (repository.id for repository in self.repositories),
+            "repository IDs must be unique",
+        )
         return self
 
 
@@ -286,9 +288,10 @@ class WikiRunRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_repository_ids(self) -> "WikiRunRequest":
-        ids = [repository.id for repository in self.repositories]
-        if len(ids) != len(set(ids)):
-            raise ValueError("Repository Snapshot IDs must be unique")
+        _validate_unique_repository_ids(
+            (repository.id for repository in self.repositories),
+            "Repository Snapshot IDs must be unique",
+        )
         return self
 
     @classmethod
@@ -573,11 +576,11 @@ def _materialize_repository_snapshot(
             continue
         metadata, raw_path = record.split(b"\t", 1)
         _mode, object_type, object_id, raw_size = metadata.split()
-        if object_type != b"blob":
-            raise ValueError("Repository Snapshot contains an unsupported non-file tree entry")
         relative = os.fsdecode(raw_path)
         if any(fnmatchcase(relative, pattern) for pattern in ignore):
             continue
+        if object_type != b"blob":
+            raise ValueError("Repository Snapshot contains an unsupported non-file tree entry")
         size = int(raw_size)
         if size > limits.source_file_bytes_limit:
             raise ValueError("Repository Snapshot source file exceeds the configured byte limit")
@@ -780,24 +783,25 @@ def _construct_unique_mapping(
 _UniqueKeySafeLoader.add_constructor(BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping)
 
 
-_CONFIG_SECRET_KEYS = {
-    "api_key",
+_CONFIG_SECRET_MARKERS = (
     "authorization",
+    "apikey",
     "credential",
     "credentials",
+    "header",
     "headers",
+    "key",
     "password",
     "secret",
     "token",
-}
-_CONFIG_SECRET_SUFFIXES = tuple(f"_{key}" for key in _CONFIG_SECRET_KEYS)
+)
 
 
 def _reject_yaml_secrets(value: object) -> None:
     if isinstance(value, Mapping):
         for key, item in value.items():
-            normalized = str(key).casefold().replace("-", "_")
-            if normalized in _CONFIG_SECRET_KEYS or normalized.endswith(_CONFIG_SECRET_SUFFIXES):
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
+            if any(normalized.endswith(marker) for marker in _CONFIG_SECRET_MARKERS):
                 raise ValueError(
                     "Secrets and provider headers are not allowed in Wiki Run YAML; "
                     "use process environment variables or a secret manager"
@@ -834,7 +838,10 @@ def _wiki_run_request_from_yaml(path: Path) -> WikiRunRequest:
     except (OSError, UnicodeError, yaml.YAMLError) as error:
         raise ValueError("Wiki Run YAML is not readable valid UTF-8 YAML") from error
     _reject_yaml_secrets(raw)
-    config = _WikiRunFileConfig.model_validate(raw)
+    try:
+        config = _WikiRunFileConfig.model_validate(raw)
+    except ValidationError as error:
+        raise ValueError("Wiki Run YAML configuration is invalid") from error
     root = config_path.parent
     repositories = []
     for configured in config.repositories:
@@ -1122,11 +1129,6 @@ class _PublishedRepository(BaseModel):
         ),
     ]
     ignore: tuple[IgnorePattern, ...] = ()
-
-    @field_validator("ignore")
-    @classmethod
-    def validate_ignore(cls, patterns: tuple[str, ...]) -> tuple[str, ...]:
-        return tuple(_validate_ignore_pattern(pattern) for pattern in patterns)
 
 
 def _published_repositories(

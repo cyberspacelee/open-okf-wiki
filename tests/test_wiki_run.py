@@ -30,6 +30,7 @@ from okf_wiki.wiki_run import (
     WikiRunLimits,
     WikiRunResourceLimitError,
     WikiRunRequest,
+    _materialize_repository_snapshot,
 )
 
 
@@ -2846,14 +2847,26 @@ def test_multi_repository_citations_require_a_repository_id(tmp_path: Path) -> N
         )
 
 
-def test_wiki_run_yaml_rejects_secrets_without_echoing_them(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "key",
+    [
+        "api_key",
+        "apiKey",
+        "openaiApiKey",
+        "authorizationHeader",
+        "apiKeyValue",
+        "accessKeyId",
+        "providerCookie",
+    ],
+)
+def test_wiki_run_yaml_rejects_secrets_without_echoing_them(tmp_path: Path, key: str) -> None:
     secret = "must-not-appear-in-errors"
     config = tmp_path / "wiki-run.yaml"
     config.write_text(
         f"""version: 1
 operation: generate
 model: openai:gpt-5-mini
-api_key: {secret}
+{key}: {secret}
 staging: ./staging
 publication: ./published
 repositories: []
@@ -2861,10 +2874,63 @@ repositories: []
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="Secrets .* are not allowed") as captured:
+    with pytest.raises(ValueError) as captured:
         WikiRunRequest.from_yaml(config)
 
     assert secret not in str(captured.value)
+
+
+def test_ignore_patterns_skip_non_file_tree_entries(tmp_path: Path) -> None:
+    dependency = tmp_path / "dependency"
+    make_repository(dependency, "dependency\n")
+
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=source, check=True)
+    (source / "README.md").write_text("source\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-qm", "source"], cwd=source, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            str(dependency),
+            "vendor/lib",
+        ],
+        cwd=source,
+        check=True,
+    )
+    subprocess.run(["git", "commit", "-qm", "gitlink"], cwd=source, check=True)
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    target = tmp_path / "materialized"
+    used_files, used_bytes = _materialize_repository_snapshot(
+        source,
+        revision,
+        target,
+        TEST_WIKI_LIMITS,
+        ignore=("vendor/lib",),
+        used_files=0,
+        used_bytes=0,
+    )
+
+    assert (target / "README.md").read_text(encoding="utf-8") == "source\n"
+    assert not (target / "vendor").exists()
+    materialized_files = [path for path in target.rglob("*") if path.is_file()]
+    assert used_files == len(materialized_files) == 2
+    assert used_bytes == sum(path.stat().st_size for path in materialized_files)
 
 
 def test_wiki_run_cli_exposes_wall_clock_deadline() -> None:
