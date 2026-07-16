@@ -216,6 +216,7 @@ class AnalysisWorkspace:
         try:
             (self.root / "receipts").mkdir(mode=0o700)
             (self.root / "artifacts").mkdir(mode=0o700)
+            (self.root / "overflow").mkdir(mode=0o700)
         except Exception:
             if self._temporary is not None:
                 self._temporary.cleanup()
@@ -400,6 +401,34 @@ class AnalysisWorkspace:
             data=data,
             complete=next_offset == len(raw),
         )
+
+    def publish_overflow(self, key: str, data: bytes) -> str:
+        """Store one opaque Harness spill within the Workspace quota."""
+        self._assert_open()
+        if not isinstance(key, str) or not key:
+            raise ValueError("overflow key must be a non-empty string")
+        if not isinstance(data, bytes):
+            raise TypeError("overflow data must be bytes")
+        stem = hashlib.sha256(key.encode("utf-8", errors="replace")).hexdigest()[:16]
+        final = self.root / "overflow" / f"{stem}-{uuid.uuid4().hex}.bin"
+        with self._publish_lock:
+            self._check_quota(1, len(data))
+            _write_atomic(final, data, self._workspace_limit, "Analysis overflow")
+        return final.relative_to(self.root).as_posix()
+
+    def read_overflow(self, handle: str) -> bytes:
+        """Read an opaque Harness spill without exposing directory discovery."""
+        self._assert_open()
+        canonical = _canonical_relative_path(handle)
+        pure = PurePosixPath(canonical)
+        if len(pure.parts) != 2 or pure.parts[0] != "overflow":
+            raise ValueError("overflow handle is invalid")
+        path = self._contained_path(canonical)
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("Analysis overflow is missing or not a regular file")
+        if path.stat().st_size > self._workspace_limit:
+            raise ValueError("Analysis overflow exceeds the Workspace byte limit")
+        return path.read_bytes()
 
     def _assert_open(self) -> None:
         if self._closed:

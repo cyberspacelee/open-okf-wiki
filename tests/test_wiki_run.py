@@ -532,7 +532,7 @@ def test_default_producer_skill_is_a_complete_content_addressed_version() -> Non
         for path in version.path.rglob("*")
         if path.is_file()
     } == REQUIRED_PRODUCER_SKILL_PATHS
-    assert version.digest == "a05bc9093609198e3c57ce74906bc884d33fc57723d7123a891dc9adcd98cdce"
+    assert version.digest == "ab002298d09f367f4830dbd13f53d12bb72a2f3a8d037645e60df97fdbc83756"
 
 
 @pytest.mark.parametrize(

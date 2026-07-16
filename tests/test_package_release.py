@@ -17,6 +17,7 @@ PACKAGE_FILES = {
     "__init__.py",
     "__main__.py",
     "analysis_workspace.py",
+    "adaptive_orchestration.py",
     "cli.py",
     "producer_skill/SKILL.md",
     "producer_skill/references/generate.md",

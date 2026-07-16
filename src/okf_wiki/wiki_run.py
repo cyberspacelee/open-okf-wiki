@@ -28,7 +28,6 @@ from pydantic import (
     model_validator,
 )
 from pydantic_ai import (
-    Agent,
     ModelRetry,
     ModelSettings,
     RunUsage,
@@ -37,8 +36,6 @@ from pydantic_ai import (
     UsageLimits,
 )
 from pydantic_ai.models import Model
-from pydantic_ai_harness import CodeMode
-from pydantic_monty import MountDir
 from yaml.constructor import ConstructorError
 from yaml.nodes import MappingNode
 from yaml.resolver import BaseResolver
@@ -58,6 +55,11 @@ from .analysis_workspace import (
     HandoffRef as HandoffRef,
     ReceiptArtifact as ReceiptArtifact,
     ReceiptEvidence as ReceiptEvidence,
+)
+from .adaptive_orchestration import (
+    AdaptiveOrchestrator,
+    build_root_agent,
+    should_enable_adaptive,
 )
 
 
@@ -102,7 +104,7 @@ class RepositorySnapshot(BaseModel):
 
 SkillDigest = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 _DEFAULT_PRODUCER_SKILL = Path(__file__).with_name("producer_skill")
-_DEFAULT_PRODUCER_SKILL_DIGEST = "a05bc9093609198e3c57ce74906bc884d33fc57723d7123a891dc9adcd98cdce"
+_DEFAULT_PRODUCER_SKILL_DIGEST = "ab002298d09f367f4830dbd13f53d12bb72a2f3a8d037645e60df97fdbc83756"
 
 
 class ProducerSkillVersion(BaseModel):
@@ -181,6 +183,19 @@ class WikiRunLimits(BaseModel):
     analysis_artifact_bytes_limit: int = Field(default=2 * 1024 * 1024, gt=0)
     analysis_workspace_bytes_limit: int = Field(default=32 * 1024 * 1024, gt=0)
     analysis_workspace_entries_limit: int = Field(default=256, gt=0)
+    context_target_tokens: int = Field(default=100_000, gt=0)
+    adaptive_source_files_threshold: int = Field(default=128, gt=0)
+    adaptive_source_bytes_threshold: int = Field(default=1_000_000, gt=0)
+    adaptive_max_depth: int = Field(default=2, ge=0, le=2)
+    adaptive_root_fanout: int = Field(default=2, ge=0, le=4)
+    adaptive_domain_fanout: int = Field(default=2, ge=0, le=2)
+    adaptive_child_concurrency: int = Field(default=4, gt=0, le=4)
+    adaptive_child_timeout_seconds: float = Field(default=120, gt=0)
+    adaptive_domain_request_limit: int = Field(default=6, gt=0)
+    adaptive_leaf_request_limit: int = Field(default=3, gt=0)
+    adaptive_domain_total_tokens_limit: int = Field(default=25_000, gt=0)
+    adaptive_leaf_total_tokens_limit: int = Field(default=18_000, gt=0)
+    adaptive_dynamic_workflow: bool = False
 
     def usage_limits(self) -> UsageLimits:
         return UsageLimits(
@@ -507,10 +522,10 @@ def _record_model(model: Model | str, settings: Mapping[str, object]) -> dict[st
     }
 
 
-def _record_usage(usage: object) -> dict[str, object]:
+def _record_usage(usage: object, extra: Mapping[str, object] | None = None) -> dict[str, object]:
     input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
     output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
-    return {
+    result = {
         "requests": int(getattr(usage, "requests", 0) or 0),
         "tool_calls": int(getattr(usage, "tool_calls", 0) or 0),
         "input_tokens": input_tokens,
@@ -519,6 +534,14 @@ def _record_usage(usage: object) -> dict[str, object]:
         "output_tokens": output_tokens,
         "total_tokens": input_tokens + output_tokens,
     }
+    if extra:
+        for key in ("requests", "tool_calls", "input_tokens", "output_tokens"):
+            extra_value = extra.get(key, 0)
+            increment = extra_value if isinstance(extra_value, (int, float)) else 0
+            base_value = cast(int | float, result[key])
+            result[key] = int(base_value) + int(increment)
+        result["total_tokens"] = int(result["input_tokens"]) + int(result["output_tokens"])
+    return result
 
 
 _EVENT_ENUM_RE = re.compile(r"^[a-z0-9][a-z0-9_.:-]{0,63}$")
@@ -529,12 +552,23 @@ _EVENT_SAFE_KEYS = {
     "depth",
     "duration_seconds",
     "fanout",
+    "retries",
     "kind",
     "node_kind",
     "reason_code",
     "status",
     "total",
     "wait_seconds",
+    "active",
+    "max_active",
+    "concurrency",
+    "critical_failures",
+    "receipt_bytes",
+    "requests",
+    "tool_calls",
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
 }
 
 
@@ -602,6 +636,7 @@ def _write_run_record(
     publication_status: dict[str, object],
     failure_category: str | None,
     skill_path: Path | None = None,
+    adaptive_usage: Mapping[str, object] | None = None,
 ) -> None:
     secrets = _model_secret_values(request.model.settings)
     repositories: list[dict[str, object]] = []
@@ -630,7 +665,7 @@ def _write_run_record(
         started_at=started_at,
         completed_at=completed_at,
         duration_seconds=max(0.0, (completed_at - started_at).total_seconds()),
-        usage=_record_usage(usage),
+        usage=_record_usage(usage, adaptive_usage),
         retry_counters=dict(retry_counters),
         publication=publication_status,
         failure_category=failure_category,
@@ -662,7 +697,12 @@ class WikiRunApplication:
             "publication_status": {"status": "not_published", "changed": False},
         }
 
-        def emit(event_type: str, payload: Mapping[str, object] | None = None) -> None:
+        def emit(
+            event_type: str,
+            payload: Mapping[str, object] | None = None,
+            *,
+            node_id: str = "root",
+        ) -> None:
             nonlocal sequence
             sequence += 1
             safe_payload = _event_payload(payload or {})
@@ -671,6 +711,7 @@ class WikiRunApplication:
                 sequence=sequence,
                 timestamp=datetime.now(UTC),
                 type=event_type,
+                node_id=node_id,
                 payload=safe_payload,
             )
             if len(event.model_dump_json().encode()) > 8_192:
@@ -680,6 +721,22 @@ class WikiRunApplication:
                     self._observer(event)
                 except Exception:
                     pass
+
+        def capture_adaptive_usage() -> None:
+            orchestration = lifecycle.get("adaptive")
+            if not isinstance(orchestration, AdaptiveOrchestrator):
+                return
+            lifecycle["adaptive_usage"] = dict(orchestration.metrics.usage)
+            if orchestration.policy.enabled:
+                cast(dict[str, int], lifecycle["retry_counters"])["child"] = (
+                    orchestration.metrics.retries
+                )
+            if orchestration.policy.enabled and not lifecycle.get("adaptive_summary_emitted"):
+                emit(
+                    "adaptive_summary",
+                    {**orchestration.event_payload(), **orchestration.metrics.usage},
+                )
+                lifecycle["adaptive_summary_emitted"] = True
 
         emit("run_created")
         workspace: AnalysisWorkspace | None = None
@@ -691,7 +748,8 @@ class WikiRunApplication:
             )
             workspace.register_node("root", "root")
             lifecycle["analysis_workspace"] = workspace
-            result = await self._run_impl(request, emit=emit, lifecycle=lifecycle)
+            result = await self._run_impl(request, run_id=run_id, emit=emit, lifecycle=lifecycle)
+            capture_adaptive_usage()
             status: Literal["complete", "needs_input"] = (
                 "complete" if isinstance(result, Complete) else "needs_input"
             )
@@ -710,6 +768,7 @@ class WikiRunApplication:
                 emit("run_record_failed", {"reason_code": "write_failed"})
             return result
         except asyncio.CancelledError:
+            capture_adaptive_usage()
             emit("run_cancelled")
             if not self._finalize_record(
                 request,
@@ -722,6 +781,7 @@ class WikiRunApplication:
                 emit("run_record_failed", {"reason_code": "write_failed"})
             raise
         except Exception as error:
+            capture_adaptive_usage()
             emit("run_failed")
             if not self._finalize_record(
                 request,
@@ -750,6 +810,13 @@ class WikiRunApplication:
         publication = lifecycle.get("publication")
         if not isinstance(publication, Path):
             return False
+        adaptive_usage = lifecycle.get("adaptive_usage")
+        if adaptive_usage is None:
+            orchestration = lifecycle.get("adaptive")
+            metrics = getattr(orchestration, "metrics", None)
+            usage = getattr(metrics, "usage", None)
+            if isinstance(usage, Mapping):
+                adaptive_usage = dict(usage)
         try:
             _write_run_record(
                 request,
@@ -763,6 +830,7 @@ class WikiRunApplication:
                 publication_status=cast(dict[str, object], lifecycle["publication_status"]),
                 failure_category=failure_category,
                 skill_path=cast(Path | None, lifecycle.get("skill_path")),
+                adaptive_usage=cast(Mapping[str, object] | None, adaptive_usage),
             )
             return True
         except Exception:
@@ -773,6 +841,7 @@ class WikiRunApplication:
         self,
         request: WikiRunRequest,
         *,
+        run_id: str,
         emit: Callable[..., None],
         lifecycle: dict[str, object],
     ) -> WikiRunResult:
@@ -827,39 +896,36 @@ class WikiRunApplication:
             emit("skill_frozen")
             settings = ModelSettings(**request.model.settings)
             settings["timeout"] = request.limits.request_timeout_seconds
-            agent = Agent[None, WikiRunResult](
-                request.model.model,
-                name="repository_wiki_producer",
+            adaptive = should_enable_adaptive(
+                repository_count=len(request.repositories),
+                source_files=used_files,
+                source_bytes=used_bytes,
+                limits=request.limits,
+            )
+            agent, orchestration = build_root_agent(
+                model=request.model.model,
+                settings=settings,
                 output_type=[Complete, NeedsInput],
                 instructions=_RUN_INSTRUCTIONS,
-                model_settings=settings,
-                retries={"tools": request.limits.retries, "output": request.limits.retries},
-                tool_timeout=request.limits.tool_timeout_seconds,
-                capabilities=[
-                    CodeMode(
-                        max_retries=request.limits.retries,
-                        os_access=None,
-                        mount=[
-                            MountDir("/source", str(source_mount), mode="read-only"),
-                            MountDir("/skill", str(skill), mode="read-only"),
-                            MountDir(
-                                "/wiki",
-                                str(staging),
-                                mode="read-write",
-                                write_bytes_limit=request.limits.wiki_write_bytes_limit,
-                            ),
-                        ],
-                    )
-                ],
+                source_mount=source_mount,
+                skill_mount=skill,
+                staging=staging,
+                workspace=cast(AnalysisWorkspace, workspace),
+                run_id=run_id,
+                limits=request.limits,
+                adaptive=adaptive,
+                write_limit=request.limits.wiki_write_bytes_limit,
+                emit=emit,
             )
-            agent.instrument = False
             run_usage = RunUsage()
             lifecycle["usage"] = run_usage
+            lifecycle["adaptive"] = orchestration
 
             @agent.output_validator
             def validate_output(output: WikiRunResult) -> WikiRunResult:
                 if isinstance(output, Complete):
                     emit("validation_started")
+                    orchestration.validate_root_completion()
                     if output.summary != WikiChangeSummary():
                         cast(dict[str, int], lifecycle["retry_counters"])["output"] += 1
                         raise ModelRetry(
@@ -880,7 +946,8 @@ class WikiRunApplication:
                 try:
                     result = await agent.run(
                         f"Begin this {request.operation} Wiki Run.",
-                        usage_limits=request.limits.usage_limits(),
+                        deps=orchestration.root_deps,
+                        usage_limits=orchestration.root_usage_limits,
                         usage=run_usage,
                     )
                 except WikiRunResourceLimitError:
