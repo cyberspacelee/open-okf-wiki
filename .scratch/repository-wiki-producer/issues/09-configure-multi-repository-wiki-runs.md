@@ -6,7 +6,7 @@
 
 **Status:** ready-for-agent
 
-- [x] Ship an ignored `.env` convention and tracked `.env.example` for OpenAI and other supported PydanticAI provider variables without adding a dotenv loader.
+- [x] Ship an ignored `.env` convention and tracked `.env.example`; local CLI runs load it without overriding externally supplied environment variables.
 - [x] Reject credentials, tokens, passwords, and provider headers from Wiki Run YAML without echoing their values.
 - [x] `wiki-run --config` accepts relative output paths, model selection, limits, an optional Skill Version, and one or more uniquely named repositories.
 - [x] Each repository selects exactly one local branch or exact revision; branches freeze to complete commits before model work.
@@ -20,4 +20,5 @@
 ## Comments
 
 - Implemented in `6d6b54e` and hardened after review: YAML secret-key detection now covers snake_case and camelCase forms without echoing values; ignored Git tree entries are filtered before non-file rejection.
-- Verification: 117 non-package tests passed, fresh-wheel package E2E passed, Ruff, ty, lock, Markdown-link, and diff checks passed.
+- Verification: 118 non-package tests passed, fresh-wheel package E2E passed, Ruff, ty, lock, Markdown-link, and diff checks passed.
+- Follow-up: local `.env` loading now prefers the Wiki Run YAML directory, falls back to the current directory, and preserves process/secret-manager precedence.

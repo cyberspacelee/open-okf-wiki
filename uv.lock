@@ -762,6 +762,7 @@ dependencies = [
     { name = "pydantic-ai-harness", extra = ["codemode"] },
     { name = "pydantic-evals" },
     { name = "pydantic-monty" },
+    { name = "python-dotenv" },
     { name = "pyyaml" },
 ]
 
@@ -781,6 +782,7 @@ requires-dist = [
     { name = "pydantic-ai-harness", extras = ["codemode"], specifier = "==0.7.0" },
     { name = "pydantic-evals", specifier = "==2.10.0" },
     { name = "pydantic-monty", specifier = "==0.0.18" },
+    { name = "python-dotenv", specifier = "==1.2.2" },
     { name = "pyyaml", specifier = "==6.0.3" },
 ]
 

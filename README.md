@@ -34,24 +34,22 @@ The current publication implementation targets Linux because stable directory ha
 
 ## Provider environment
 
-Copy [.env.example](.env.example) to an untracked `.env`, uncomment only the provider you use, and
-load it into the process environment before running the CLI:
+Copy [.env.example](.env.example) to an untracked `.env` and uncomment only the provider you use:
 
 ```bash
 cp .env.example .env
-# Edit .env, then load this trusted local file.
-set -a
-. ./.env
-set +a
+# Edit .env, then run the CLI normally.
 ```
 
 OpenAI uses `OPENAI_API_KEY`; optional OpenAI-compatible endpoint and project selection use
 `OPENAI_BASE_URL`, `OPENAI_ORG_ID`, and `OPENAI_PROJECT_ID`. The example also lists Anthropic,
-Google, Azure OpenAI, and OpenRouter variables supported by the installed PydanticAI providers. The
-CLI deliberately does not parse `.env` itself: deployments should inject environment variables
-through their shell or secret manager. OpenAI likewise recommends keeping API keys out of code and
-public repositories and exposing them through environment variables or a secret manager in its
-[production guidance](https://developers.openai.com/api/docs/guides/production-best-practices#api-keys).
+Google, Azure OpenAI, and OpenRouter variables supported by the installed PydanticAI providers. For
+`wiki-run --config`, the CLI loads `.env` beside the YAML file when present; otherwise it loads
+`.env` from the current directory. Existing process environment variables always win, and
+`PYTHON_DOTENV_DISABLED=1` disables local loading. Deployments should still inject environment
+variables through their runtime or secret manager. OpenAI likewise recommends keeping API keys out
+of code and public repositories and exposing them through environment variables or a secret manager
+in its [production guidance](https://developers.openai.com/api/docs/guides/production-best-practices#api-keys).
 
 Provider credentials, tokens, and headers are rejected from Wiki Run YAML and are never copied into
 prompts, traces, staging, or publication metadata.

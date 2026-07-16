@@ -3036,6 +3036,55 @@ def test_wiki_run_cli_routes_refresh_through_the_same_application_seam(
     }
 
 
+def test_wiki_run_cli_loads_config_dotenv_without_overriding_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    source = project / "source"
+    revision = make_repository(source, "source\n")
+    config = project / "wiki-run.yaml"
+    config.write_text(
+        f"""version: 1
+model: test
+staging: ./staging
+publication: ./published
+repositories:
+  - id: source
+    path: ./source
+    revision: {revision}
+""",
+        encoding="utf-8",
+    )
+    (project / ".env").write_text(
+        "OPENAI_API_KEY=from-config\nOPENAI_BASE_URL=https://config.example/v1\n",
+        encoding="utf-8",
+    )
+    caller = tmp_path / "caller"
+    caller.mkdir()
+    (caller / ".env").write_text("OPENAI_BASE_URL=https://caller.example/v1\n", encoding="utf-8")
+    monkeypatch.chdir(caller)
+    monkeypatch.setenv("OPENAI_API_KEY", "from-process")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    captured: dict[str, str | None] = {}
+
+    async def run(_: WikiRunApplication, __: WikiRunRequest) -> NeedsInput:
+        captured.update(
+            api_key=os.getenv("OPENAI_API_KEY"),
+            base_url=os.getenv("OPENAI_BASE_URL"),
+        )
+        return NeedsInput(questions=["Done?"])
+
+    monkeypatch.setattr(WikiRunApplication, "run", run)
+    monkeypatch.setattr("sys.argv", ["okf-wiki", "wiki-run", "--config", str(config)])
+
+    assert main() == 0
+    assert captured == {
+        "api_key": "from-process",
+        "base_url": "https://config.example/v1",
+    }
+
+
 def test_wiki_run_cli_withholds_secret_bearing_provider_diagnostics(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

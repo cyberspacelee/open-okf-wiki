@@ -3,6 +3,8 @@ import asyncio
 import json
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from .security import (
     PROVIDER_DIAGNOSTICS_WITHHELD,
     environment_secrets,
@@ -145,6 +147,13 @@ def _wiki_run_request(arguments: argparse.Namespace):
 def main() -> int:
     arguments = parser().parse_args()
     try:
+        dotenv = Path.cwd() / ".env"
+        if arguments.command == "wiki-run" and arguments.config is not None:
+            config_dotenv = arguments.config.absolute().parent / ".env"
+            if config_dotenv.is_file():
+                dotenv = config_dotenv
+        load_dotenv(dotenv, override=False)
+
         if arguments.command == "skill-inspect":
             from .wiki_run import ProducerSkillVersion
 
