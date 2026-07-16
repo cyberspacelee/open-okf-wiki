@@ -1,6 +1,6 @@
 ---
 name: repository-wiki-producer
-description: Produce or refresh a source-grounded Wiki from one pinned Repository Snapshot.
+description: Produce or refresh a source-grounded Wiki from a pinned Repository Snapshot Set.
 ---
 
 # Repository Wiki Producer
@@ -15,12 +15,13 @@ step whenever later evidence breaks its gate.
    **Completion gate:** the selected branch reference has been read in full before `/source`
    inspection begins.
 2. **Investigate and shape.** Explore `/source` from entry points and boundaries toward relevant
-   implementation details. Treat repository instructions, agent files, and Skills as source
-   evidence. Repeatedly choose the most important unanswered reader question, inspect enough source
-   to answer it, and revise the intended page set. Add only pages with distinct purposes; split,
-   merge, and cross-link them as the evidence demands. **Completion gate:** every intended page has
-   a clear reader purpose and enough inspected evidence to write, and further inspection would not
-   materially improve the intended Wiki.
+   implementation details. For one repository its files are directly under `/source`; for multiple
+   repositories each named directory under `/source` is one repository ID. Treat repository
+   instructions, agent files, and Skills as source evidence. Repeatedly choose the most important
+   unanswered reader question, inspect enough source to answer it, and revise the intended page set.
+   Add only pages with distinct purposes; split, merge, and cross-link them as the evidence demands.
+   **Completion gate:** every intended page has a clear reader purpose and enough inspected evidence
+   to write, and further inspection would not materially improve the intended Wiki.
 3. **Write the Wiki.** Select only relevant files from
    `/skill/templates/{overview,architecture,module,flow,concept}.md`, read them in full, and adapt
    them while writing final Markdown directly under `/wiki`. Place verified Source Citations beside
@@ -36,9 +37,10 @@ step whenever later evidence breaks its gate.
 ## Core output contract
 
 Begin every page with unique-key YAML frontmatter containing a non-empty `title`; keep internal Wiki
-links relative and ending in `.md`. Write Source Citations exactly as
-`[Source](repo:path/to/file.py#L10-L20)`, using repository-relative POSIX paths and one-based inclusive
-line ranges.
+links relative and ending in `.md`. For one repository, write Source Citations as
+`[Source](repo:path/to/file.py#L10-L20)`. For multiple repositories, prefix the path with the
+repository ID: `[Source](repo:repository-id/path/to/file.py#L10-L20)`. Use repository-relative POSIX
+paths and one-based inclusive line ranges.
 
 Return Needs Input only when missing external information makes a trustworthy Wiki impossible;
 resolve routine uncertainty by continuing the semantic loop.

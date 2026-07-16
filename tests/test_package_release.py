@@ -54,6 +54,20 @@ def run(
     )
 
 
+def make_repository(path: Path, branch: str, files: dict[str, str], git: str) -> str:
+    path.mkdir()
+    run([git, "init", "-q", "-b", branch], cwd=path)
+    run([git, "config", "user.name", "Package Fixture"], cwd=path)
+    run([git, "config", "user.email", "package@example.com"], cwd=path)
+    for relative, content in files.items():
+        destination = path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(content, encoding="utf-8")
+    run([git, "add", "."], cwd=path)
+    run([git, "commit", "-qm", "fixture"], cwd=path)
+    return run([git, "rev-parse", "HEAD"], cwd=path).stdout.strip()
+
+
 @pytest.mark.package_release
 def test_fresh_wheel_completes_a_wiki_run_through_the_installed_cli(tmp_path: Path) -> None:
     uv = shutil.which("uv")
@@ -90,7 +104,7 @@ def test_fresh_wheel_completes_a_wiki_run_through_the_installed_cli(tmp_path: Pa
     assert wheel_package == PACKAGE_FILES
     assert not any("/console/" in name for name in source_names)
     assert (
-        "Summary: Generate source-grounded Markdown Wikis from one pinned Repository Snapshot."
+        "Summary: Generate source-grounded Markdown Wikis from a pinned Repository Snapshot Set."
         in wheel_metadata
     )
     assert "Requires-Dist: pydantic-monty==0.0.18" in wheel_metadata
@@ -107,15 +121,49 @@ def test_fresh_wheel_completes_a_wiki_run_through_the_installed_cli(tmp_path: Pa
     help_result = run([executable, "--help"], cwd=tmp_path)
     assert "{wiki-run,wiki-eval,skill-fork,skill-inspect}" in help_result.stdout
 
-    source = tmp_path / "source"
-    source.mkdir()
-    (source / "README.md").write_text("# Package fixture\n", encoding="utf-8")
-    run([git, "init", "-q"], cwd=source)
-    run([git, "config", "user.name", "Package Fixture"], cwd=source)
-    run([git, "config", "user.email", "package@example.com"], cwd=source)
-    run([git, "add", "README.md"], cwd=source)
-    run([git, "commit", "-qm", "fixture"], cwd=source)
-    revision = run([git, "rev-parse", "HEAD"], cwd=source).stdout.strip()
+    application = tmp_path / "application"
+    application_revision = make_repository(
+        application,
+        "main",
+        {"README.md": "# Application\n", "ignored.txt": "do not expose\n"},
+        git,
+    )
+    documentation = tmp_path / "documentation"
+    documentation_revision = make_repository(
+        documentation,
+        "stable",
+        {"README.md": "# Documentation\n", "drafts/private.md": "ignore this draft\n"},
+        git,
+    )
+    config = tmp_path / "wiki-run.yaml"
+    config.write_text(
+        """version: 1
+operation: generate
+model: openai-chat:package-fixture
+staging: ./staging
+publication: ./published
+limits:
+  request_limit: 3
+  tool_calls_limit: 2
+  retries: 0
+  request_timeout_seconds: 5
+  tool_timeout_seconds: 5
+  wall_clock_timeout_seconds: 30
+  source_files_limit: 2
+repositories:
+  - id: app
+    path: ./application
+    branch: main
+    ignore:
+      - ignored.txt
+  - id: docs
+    path: ./documentation
+    branch: stable
+    ignore:
+      - drafts/**
+""",
+        encoding="utf-8",
+    )
 
     requests: list[dict[str, object]] = []
     request_paths: list[str] = []
@@ -131,8 +179,11 @@ def test_fresh_wheel_completes_a_wiki_run_through_the_installed_cli(tmp_path: Pa
                 arguments = {
                     "code": """from pathlib import Path
 Path('/skill/SKILL.md').read_text()
-Path('/source/README.md').read_text()
-Path('/wiki/index.md').write_text('---\\ntitle: Package Wiki\\n---\\n# Package Wiki\\n\\n[Source](repo:README.md#L1-L1)\\n')
+Path('/source/app/README.md').read_text()
+Path('/source/docs/README.md').read_text()
+assert not Path('/source/app/ignored.txt').exists()
+assert not Path('/source/docs/drafts/private.md').exists()
+Path('/wiki/index.md').write_text('---\\ntitle: Package Wiki\\n---\\n# Package Wiki\\n\\n[Application](repo:app/README.md#L1-L1) [Documentation](repo:docs/README.md#L1-L1)\\n')
 """
                 }
             else:
@@ -197,27 +248,8 @@ Path('/wiki/index.md').write_text('---\\ntitle: Package Wiki\\n---\\n# Package W
             [
                 executable,
                 "wiki-run",
-                source,
-                "--source-revision",
-                revision,
-                "--staging",
-                tmp_path / "staging",
-                "--publication",
-                publication,
-                "--model",
-                "openai-chat:package-fixture",
-                "--request-limit",
-                "3",
-                "--tool-calls-limit",
-                "2",
-                "--retries",
-                "0",
-                "--request-timeout-seconds",
-                "5",
-                "--tool-timeout-seconds",
-                "5",
-                "--wall-clock-timeout-seconds",
-                "30",
+                "--config",
+                config,
             ],
             cwd=tmp_path,
             check=False,
@@ -253,5 +285,12 @@ Path('/wiki/index.md').write_text('---\\ntitle: Package Wiki\\n---\\n# Package W
         .startswith("---\ntitle: Package Wiki\n---")
     )
     metadata = json.loads((publication / ".okf-wiki.json").read_text(encoding="utf-8"))
-    assert metadata["source_revision"] == revision
+    assert metadata["repositories"] == [
+        {"id": "app", "ignore": ["ignored.txt"], "revision": application_revision},
+        {
+            "id": "docs",
+            "ignore": ["drafts/**"],
+            "revision": documentation_revision,
+        },
+    ]
     assert metadata["model"] == "package-fixture"

@@ -207,8 +207,8 @@ def test_real_manifest_resolves_relative_repository_and_uses_public_wiki_run(
     assert report.mode == "live"
     assert report.manifest == str(manifest.resolve())
     assert len(calls) == 2
-    assert all(request.repository.path == repository.resolve() for request in calls)
-    assert all(request.repository.revision == revision for request in calls)
+    assert all(request.repositories[0].path == repository.resolve() for request in calls)
+    assert all(request.repositories[0].revision == revision for request in calls)
     assert report.cases[0].repository == str(repository.resolve())
 
 

@@ -233,7 +233,9 @@ async def evaluate_wiki_producer(
         try:
             result = await WikiRunApplication().run(
                 WikiRunRequest(
-                    repository=RepositorySnapshot(path=case.repository, revision=case.revision),
+                    repositories=(
+                        RepositorySnapshot(path=case.repository, revision=case.revision),
+                    ),
                     skill=selected_skill,
                     model=ModelProviderConfig(model=observed),
                     limits=selected_limits,
@@ -254,7 +256,8 @@ async def evaluate_wiki_producer(
             publication = run_root / "wiki"
             metadata = json.loads((publication / PUBLICATION_METADATA_NAME).read_bytes())
             if (
-                metadata["source_revision"] != case.revision
+                metadata["repositories"]
+                != [{"id": "source", "ignore": [], "revision": case.revision}]
                 or metadata["skill_digest"] != selected_skill.digest
             ):
                 raise ValueError("Published Wiki provenance does not match evaluation inputs")

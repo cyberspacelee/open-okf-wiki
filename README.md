@@ -1,10 +1,10 @@
 # OKF Wiki
 
-OKF Wiki turns one pinned Git Repository Snapshot into a source-grounded Markdown Wiki. A single
-PydanticAI Agent follows an exact Skill Version, writes pages into an isolated Staging
-Wiki, and returns either a typed Complete result or bounded Needs Input questions. Python keeps the
-source and Skill read-only, validates the finished Markdown mechanically, and publishes the whole
-Wiki atomically.
+OKF Wiki turns a pinned Repository Snapshot Set into a source-grounded Markdown Wiki. A single
+PydanticAI Agent follows an exact Skill Version, writes pages into an isolated Staging Wiki, and
+returns either a typed Complete result or bounded Needs Input questions. Python keeps every source
+and the Skill read-only, validates the finished Markdown mechanically, and publishes the whole Wiki
+atomically.
 
 The product vocabulary is defined in [CONTEXT.md](CONTEXT.md), and the execution boundaries are
 recorded in the [architecture decisions](docs/adr/).
@@ -32,10 +32,56 @@ setup, frontend configuration, or second local server is required.
 The current publication implementation targets Linux because stable directory handles use
 `/proc/self/fd`.
 
+## Provider environment
+
+Copy [.env.example](.env.example) to an untracked `.env`, uncomment only the provider you use, and
+load it into the process environment before running the CLI:
+
+```bash
+cp .env.example .env
+# Edit .env, then load this trusted local file.
+set -a
+. ./.env
+set +a
+```
+
+OpenAI uses `OPENAI_API_KEY`; optional OpenAI-compatible endpoint and project selection use
+`OPENAI_BASE_URL`, `OPENAI_ORG_ID`, and `OPENAI_PROJECT_ID`. The example also lists Anthropic,
+Google, Azure OpenAI, and OpenRouter variables supported by the installed PydanticAI providers. The
+CLI deliberately does not parse `.env` itself: deployments should inject environment variables
+through their shell or secret manager. OpenAI likewise recommends keeping API keys out of code and
+public repositories and exposing them through environment variables or a secret manager in its
+[production guidance](https://developers.openai.com/api/docs/guides/production-best-practices#api-keys).
+
+Provider credentials, tokens, and headers are rejected from Wiki Run YAML and are never copied into
+prompts, traces, staging, or publication metadata.
+
+## YAML run configuration
+
+Use [examples/wiki-run.yaml](examples/wiki-run.yaml) when one Wiki combines multiple repositories or
+when run settings should be versioned:
+
+```bash
+cp examples/wiki-run.yaml ./wiki-run.yaml
+# Edit repository paths, refs, outputs, and model.
+uv run --locked okf-wiki wiki-run --config ./wiki-run.yaml
+```
+
+YAML contains only non-secret settings: operation, model string, output paths, optional limits, and
+one or more named repositories. Paths are relative to the YAML file. Each repository selects exactly
+one local `branch` or exact `revision`; a branch is resolved once to a complete commit before model
+work, and that commit is recorded in `.okf-wiki.json`. Repository IDs must be unique lowercase
+hyphen-case names.
+
+`ignore` entries are standard-library `fnmatch` patterns applied to repository-relative POSIX
+tracked paths before source quotas and materialization. The first version reads existing clean local
+checkouts; it does not clone, fetch, pull, or implement Gitignore semantics.
+
 ## Generate a Wiki
 
-The source must be a clean Git working tree, and `--source-revision` must be its complete commit ID.
-The Staging Wiki must be empty and must not overlap the source, Producer Skill, or publication path.
+For a single repository, direct CLI arguments remain the shortest path. The source must be a clean
+Git working tree, and `--source-revision` must be its complete commit ID. The Staging Wiki must be
+empty and must not overlap the source, Producer Skill, or publication path.
 
 ```bash
 SOURCE=/absolute/path/to/repository
@@ -83,7 +129,7 @@ incomplete run does not update the Published Wiki.
 
 Refresh uses the same application seam. It copies the current Published Wiki into a new empty
 Staging Wiki, then asks the Agent to reconsider the complete Wiki against the newer Repository
-Snapshot:
+Snapshot Set:
 
 ```bash
 NEW_REVISION=$(git -C "$SOURCE" rev-parse HEAD)
@@ -98,9 +144,10 @@ OPENAI_API_KEY=... uv run --locked okf-wiki wiki-run "$SOURCE" \
 
 Refresh requires a producer-managed publication created by a successful Generate. The summary
 reports added, changed, removed, and unchanged pages. A content no-op remains a successful Complete
-result with `content_changed: false`; `publication_changed` remains true when the source revision or
-Skill digest changed, so provenance can still produce a new release. Publication is unchanged only
-when both page content and recorded provenance are unchanged.
+result with `content_changed: false`; `publication_changed` remains true when any repository
+revision, ignore set, or Skill digest changed, so provenance can still produce a new release.
+Publication is unchanged only when both page content and recorded provenance are unchanged. In YAML
+mode, set `operation: refresh` and use a fresh empty staging path.
 
 ## Producer Skills and Wiki Templates
 
@@ -145,14 +192,20 @@ repository-relative POSIX path and a one-based inclusive line range:
 [Source](repo:src/example.py#L10-L20)
 ```
 
+When a Wiki Run has multiple repositories, prefix every citation path with its repository ID:
+
+```markdown
+[Source](repo:application/src/example.py#L10-L20)
+```
+
 Before publication, Python checks mechanically decidable invariants:
 
 - only canonical UTF-8 Markdown pages are present, including a non-empty `index.md`;
 - the returned Wiki Manifest exactly matches the staged page tree;
 - YAML frontmatter is valid and raw HTML is absent;
 - relative internal links and heading fragments resolve inside the Wiki;
-- every page has at least one Source Citation whose path and line range resolve in the pinned
-  Repository Snapshot;
+- every page has at least one Source Citation whose repository ID, path, and line range resolve in
+  the pinned Repository Snapshot Set;
 - paths, symlinks, temporary artifacts, entry counts, and configured byte limits stay contained.
 
 Citation validation proves that referenced source spans exist. It does not prove semantic
@@ -161,21 +214,21 @@ responsible for improving reader usefulness and factual grounding.
 
 After validation, the publisher writes an immutable release containing the Markdown pages and
 `.okf-wiki.json`, then atomically moves the publication pointer to that complete release. Metadata
-records the source revision, Skill digest, model identity, page hashes, generation time, and whole
-Wiki content digest. Readers observe either the previous complete Wiki or the new complete Wiki.
+records every repository ID, exact revision and ignore set, plus the Skill digest, model identity,
+page hashes, generation time, and whole Wiki content digest. Readers observe either the previous
+complete Wiki or the new complete Wiki.
 
 ## Security and limits
 
-The Repository Snapshot is materialized from the exact clean commit and treated as untrusted data.
+Every Repository Snapshot is materialized from an exact clean commit and treated as untrusted data.
 Repository-provided instructions, Skills, plugins, and prompt-like files are available only as
-source evidence; they do not alter product policy. The source and Producer Skill mounts are
-read-only, only the Staging Wiki is writable, and repository builds, tests, package managers,
-scripts, plugins, arbitrary host shell execution, and repository-triggered network tools are not
-available.
+source evidence; they do not alter product policy. Source and Producer Skill mounts are read-only,
+only the Staging Wiki is writable, and repository builds, tests, package managers, scripts, plugins,
+arbitrary host shell execution, and repository-triggered network tools are not available.
 
 Model content is sent only through the provider selected by the PydanticAI model string. Configure
 that provider's credentials through its supported process environment; credentials are not copied
-into the Repository Snapshot, Producer Skill, Staging Wiki, or publication metadata.
+into the Repository Snapshot Set, Producer Skill, Staging Wiki, or publication metadata.
 
 `wiki-run` exposes request, token, tool-call, retry, request-timeout, tool-timeout, wall-clock,
 source-size, Wiki-size, and staging-write limits. Exhausted limits are explicit failures and leave

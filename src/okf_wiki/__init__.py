@@ -1,1 +1,1 @@
-"""Repository Snapshot to source-grounded Wiki producer."""
+"""Repository Snapshot Set to source-grounded Wiki producer."""

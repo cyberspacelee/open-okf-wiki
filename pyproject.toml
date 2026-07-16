@@ -1,7 +1,7 @@
 [project]
 name = "okf-wiki"
 version = "0.1.0"
-description = "Generate source-grounded Markdown Wikis from one pinned Repository Snapshot."
+description = "Generate source-grounded Markdown Wikis from a pinned Repository Snapshot Set."
 requires-python = ">=3.14,<3.15"
 dependencies = [
     "genai-prices==0.0.71",

@@ -1,0 +1,28 @@
+version: 1
+operation: generate
+model: openai:gpt-5-mini
+staging: ../.scratch/wiki-staging
+publication: ../wiki
+
+# Paths are resolved relative to this YAML file. Each repository must select exactly one branch or
+# exact revision. Branches are frozen to exact commits before model work starts.
+repositories:
+  - id: application
+    path: ../path/to/application
+    branch: main
+    ignore:
+      - "generated/*"
+      - "dist/*"
+      - "*.min.js"
+
+  - id: documentation
+    path: ../path/to/documentation
+    revision: 0123456789abcdef0123456789abcdef01234567
+    ignore:
+      - "drafts/**"
+
+limits:
+  request_limit: 50
+  tool_calls_limit: 200
+  total_tokens_limit: 350000
+  wall_clock_timeout_seconds: 600

@@ -211,7 +211,7 @@ Producer Skill 的可编辑版本和模板只是受信任的 Markdown/data，不
 
 ```mermaid
 flowchart LR
-    R[Repository Snapshot] --> S[/source · read-only/]
+    R[Repository Snapshot Set] --> S[/source · read-only/]
     K[Producer Skill + templates] -->|freeze exact content| P[/skill · read-only/]
     S --> A[One PydanticAI Agent.run]
     P --> A

@@ -31,14 +31,15 @@ def parser() -> argparse.ArgumentParser:
     subcommands = command.add_subparsers(dest="command", required=True)
 
     wiki_run = subcommands.add_parser("wiki-run")
-    wiki_run.add_argument("source", type=Path)
+    wiki_run.add_argument("source", nargs="?", type=Path)
+    wiki_run.add_argument("--config", type=Path)
     wiki_run.add_argument("--refresh", action="store_true")
-    wiki_run.add_argument("--source-revision", required=True)
+    wiki_run.add_argument("--source-revision")
     wiki_run.add_argument("--skill", type=Path)
     wiki_run.add_argument("--skill-digest")
-    wiki_run.add_argument("--staging", type=Path, required=True)
-    wiki_run.add_argument("--publication", type=Path, required=True)
-    wiki_run.add_argument("--model", required=True)
+    wiki_run.add_argument("--staging", type=Path)
+    wiki_run.add_argument("--publication", type=Path)
+    wiki_run.add_argument("--model")
     wiki_run.add_argument("--request-limit", type=int)
     wiki_run.add_argument("--tool-calls-limit", type=int)
     wiki_run.add_argument("--input-tokens-limit", type=int)
@@ -87,6 +88,60 @@ def _producer_skill_version(arguments: argparse.Namespace):
     return ProducerSkillVersion(path=arguments.skill, digest=arguments.skill_digest)
 
 
+def _wiki_run_request(arguments: argparse.Namespace):
+    from .wiki_run import (
+        ModelProviderConfig,
+        RepositorySnapshot,
+        WikiRunLimits,
+        WikiRunRequest,
+    )
+
+    if arguments.config is not None:
+        direct_values = (
+            arguments.source,
+            arguments.source_revision,
+            arguments.skill,
+            arguments.skill_digest,
+            arguments.staging,
+            arguments.publication,
+            arguments.model,
+            *(getattr(arguments, name) for name in WikiRunLimits.model_fields),
+        )
+        if arguments.refresh or any(value is not None for value in direct_values):
+            raise ValueError("--config cannot be combined with direct Wiki Run arguments")
+        return WikiRunRequest.from_yaml(arguments.config)
+
+    required = {
+        "source": arguments.source,
+        "--source-revision": arguments.source_revision,
+        "--staging": arguments.staging,
+        "--publication": arguments.publication,
+        "--model": arguments.model,
+    }
+    missing = [name for name, value in required.items() if value is None]
+    if missing:
+        raise ValueError("direct Wiki Run requires " + ", ".join(missing))
+    limit_values = {
+        name: getattr(arguments, name)
+        for name in WikiRunLimits.model_fields
+        if getattr(arguments, name) is not None
+    }
+    return WikiRunRequest(
+        operation="refresh" if arguments.refresh else "generate",
+        repositories=(
+            RepositorySnapshot(
+                path=arguments.source,
+                revision=arguments.source_revision,
+            ),
+        ),
+        skill=_producer_skill_version(arguments),
+        model=ModelProviderConfig(model=arguments.model),
+        limits=WikiRunLimits(**limit_values),
+        staging=arguments.staging,
+        publication=arguments.publication,
+    )
+
+
 def main() -> int:
     arguments = parser().parse_args()
     try:
@@ -118,35 +173,9 @@ def main() -> int:
             return 0
 
         if arguments.command == "wiki-run":
-            from .wiki_run import (
-                ModelProviderConfig,
-                RepositorySnapshot,
-                WikiRunApplication,
-                WikiRunLimits,
-                WikiRunRequest,
-            )
+            from .wiki_run import WikiRunApplication
 
-            limit_values = {
-                name: getattr(arguments, name)
-                for name in WikiRunLimits.model_fields
-                if getattr(arguments, name) is not None
-            }
-            result = asyncio.run(
-                WikiRunApplication().run(
-                    WikiRunRequest(
-                        operation="refresh" if arguments.refresh else "generate",
-                        repository=RepositorySnapshot(
-                            path=arguments.source,
-                            revision=arguments.source_revision,
-                        ),
-                        skill=_producer_skill_version(arguments),
-                        model=ModelProviderConfig(model=arguments.model),
-                        limits=WikiRunLimits(**limit_values),
-                        staging=arguments.staging,
-                        publication=arguments.publication,
-                    )
-                )
-            )
+            result = asyncio.run(WikiRunApplication().run(_wiki_run_request(arguments)))
             emit({"ok": True, "result": result.model_dump(mode="json")})
             return 0
 

@@ -128,7 +128,7 @@ def run_test_wiki(
         WikiRunApplication().run(
             WikiRunRequest(
                 operation=operation,
-                repository=RepositorySnapshot(path=source, revision=revision),
+                repositories=(RepositorySnapshot(path=source, revision=revision),),
                 skill=skill,
                 model=ModelProviderConfig(model=model),
                 limits=TEST_WIKI_LIMITS,
@@ -198,7 +198,7 @@ def test_default_producer_skill_is_a_complete_content_addressed_version() -> Non
         for path in version.path.rglob("*")
         if path.is_file()
     } == REQUIRED_PRODUCER_SKILL_PATHS
-    assert version.digest == "289e49715a622a6f0a6f3130cb3e13bcf9cb1b670916d166d70fb54594343ea0"
+    assert version.digest == "a05bc9093609198e3c57ce74906bc884d33fc57723d7123a891dc9adcd98cdce"
 
 
 @pytest.mark.parametrize(
@@ -236,7 +236,7 @@ def test_wiki_run_rejects_an_invalid_skill_before_model_work(
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
-                    repository=RepositorySnapshot(path=source, revision=source_revision),
+                    repositories=(RepositorySnapshot(path=source, revision=source_revision),),
                     skill=version,
                     model=ModelProviderConfig(model=FunctionModel(model)),
                     limits=WikiRunLimits(),
@@ -269,7 +269,7 @@ def test_wiki_run_rejects_a_changed_selected_skill_version_before_model_work(
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
-                    repository=RepositorySnapshot(path=source, revision=source_revision),
+                    repositories=(RepositorySnapshot(path=source, revision=source_revision),),
                     skill=selected,
                     model=ModelProviderConfig(model=FunctionModel(model)),
                     limits=WikiRunLimits(),
@@ -368,7 +368,7 @@ Path('/wiki/index.md').write_text(f'---\\ntitle: Wiki\\n---\\n# Wiki\\n\\n{{mark
         asyncio.run(
             application.run(
                 WikiRunRequest(
-                    repository=RepositorySnapshot(path=source, revision=source_revision),
+                    repositories=(RepositorySnapshot(path=source, revision=source_revision),),
                     skill=version,
                     model=ModelProviderConfig(model=FunctionModel(model)),
                     limits=WikiRunLimits(
@@ -457,7 +457,7 @@ title: Architecture
     result = asyncio.run(
         WikiRunApplication().run(
             WikiRunRequest(
-                repository=RepositorySnapshot(path=source, revision=source_revision),
+                repositories=(RepositorySnapshot(path=source, revision=source_revision),),
                 skill=skill_version,
                 model=ModelProviderConfig(model=FunctionModel(model)),
                 limits=WikiRunLimits(
@@ -501,8 +501,10 @@ title: Architecture
                 "sha256": "4873cca881fd27de06dd9358471107e5c510898bf1c9a6239b6a3b47451461ac",
             },
         ],
+        "repositories": [
+            {"id": "source", "ignore": [], "revision": source_revision},
+        ],
         "skill_digest": skill_version.digest,
-        "source_revision": source_revision,
     }
     assert datetime.fromisoformat(metadata["generated_at"]).tzinfo == UTC
 
@@ -680,7 +682,7 @@ assert 'Customization: audience-first' in guidance
     assert not (published / "legacy.md").exists()
     assert "[Flow](flow.md#flow)" in (published / "index.md").read_text(encoding="utf-8")
     metadata = json.loads((published / ".okf-wiki.json").read_text(encoding="utf-8"))
-    assert metadata["source_revision"] == source_revision
+    assert metadata["repositories"] == [{"id": "source", "ignore": [], "revision": source_revision}]
     assert metadata["skill_digest"] == refreshed_skill.digest
 
 
@@ -812,7 +814,7 @@ def test_content_identical_refresh_publishes_changed_provenance(
     )
     assert published.resolve() != old_release
     metadata = json.loads((published / ".okf-wiki.json").read_text(encoding="utf-8"))
-    assert metadata["source_revision"] == source_revision
+    assert metadata["repositories"] == [{"id": "source", "ignore": [], "revision": source_revision}]
     assert metadata["skill_digest"] == skill_version.digest
 
 
@@ -900,7 +902,7 @@ def test_refresh_enforces_wiki_copy_ceilings_before_model_work(tmp_path: Path) -
             WikiRunApplication().run(
                 WikiRunRequest(
                     operation="refresh",
-                    repository=RepositorySnapshot(path=source, revision=revision),
+                    repositories=(RepositorySnapshot(path=source, revision=revision),),
                     skill=fork.version(),
                     model=ModelProviderConfig(model=FunctionModel(model)),
                     limits=WikiRunLimits(wiki_file_bytes_limit=10),
@@ -1145,7 +1147,7 @@ def test_complete_wiki_run_resolves_canonical_encoded_source_paths(tmp_path: Pat
     result = asyncio.run(
         WikiRunApplication().run(
             WikiRunRequest(
-                repository=RepositorySnapshot(path=source, revision=source_revision),
+                repositories=(RepositorySnapshot(path=source, revision=source_revision),),
                 skill=skill_version,
                 model=ModelProviderConfig(model=FunctionModel(model)),
                 limits=WikiRunLimits(
@@ -1238,7 +1240,7 @@ def test_complete_validation_retry_lets_the_same_agent_fix_staging(tmp_path: Pat
     result = asyncio.run(
         WikiRunApplication().run(
             WikiRunRequest(
-                repository=RepositorySnapshot(path=source, revision=source_revision),
+                repositories=(RepositorySnapshot(path=source, revision=source_revision),),
                 skill=skill_version,
                 model=ModelProviderConfig(model=FunctionModel(model)),
                 limits=WikiRunLimits(
@@ -1285,7 +1287,7 @@ def test_needs_input_leaves_the_published_wiki_unchanged(tmp_path: Path) -> None
     result = asyncio.run(
         WikiRunApplication().run(
             WikiRunRequest(
-                repository=RepositorySnapshot(path=source, revision=source_revision),
+                repositories=(RepositorySnapshot(path=source, revision=source_revision),),
                 skill=skill_version,
                 model=ModelProviderConfig(model=FunctionModel(model)),
                 limits=WikiRunLimits(request_limit=2, request_timeout_seconds=5),
@@ -1343,7 +1345,7 @@ def test_exhausted_validation_retry_leaves_the_published_wiki_unchanged(
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
-                    repository=RepositorySnapshot(path=source, revision=source_revision),
+                    repositories=(RepositorySnapshot(path=source, revision=source_revision),),
                     skill=skill_version,
                     model=ModelProviderConfig(model=FunctionModel(model)),
                     limits=WikiRunLimits(
@@ -1432,7 +1434,7 @@ def test_publication_failure_leaves_the_published_wiki_unchanged(
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
-                    repository=RepositorySnapshot(path=source, revision=source_revision),
+                    repositories=(RepositorySnapshot(path=source, revision=source_revision),),
                     skill=skill_version,
                     model=ModelProviderConfig(model=FunctionModel(model)),
                     limits=WikiRunLimits(
@@ -1649,7 +1651,7 @@ def test_publication_copy_revalidates_a_page_swapped_for_a_symlink(
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
-                    repository=RepositorySnapshot(path=source, revision=source_revision),
+                    repositories=(RepositorySnapshot(path=source, revision=source_revision),),
                     skill=skill_version,
                     model=ModelProviderConfig(model=FunctionModel(model)),
                     limits=WikiRunLimits(
@@ -1822,7 +1824,7 @@ def test_invalid_staging_manifest_and_artifacts_never_publish(tmp_path: Path, ca
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
-                    repository=RepositorySnapshot(path=source, revision=source_revision),
+                    repositories=(RepositorySnapshot(path=source, revision=source_revision),),
                     skill=skill_version,
                     model=ModelProviderConfig(model=FunctionModel(model)),
                     limits=WikiRunLimits(
@@ -1911,7 +1913,7 @@ Path('/wiki/index.md').write_text('---\\ntitle: Example Wiki\\n---\\n# Example W
     result = asyncio.run(
         WikiRunApplication().run(
             WikiRunRequest(
-                repository=RepositorySnapshot(path=source, revision=source_revision),
+                repositories=(RepositorySnapshot(path=source, revision=source_revision),),
                 skill=skill_version,
                 model=ModelProviderConfig(model=FunctionModel(model)),
                 limits=WikiRunLimits(
@@ -2226,7 +2228,7 @@ def test_model_setting_secrets_are_withheld_from_application_errors(tmp_path: Pa
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
-                    repository=RepositorySnapshot(path=source, revision=revision),
+                    repositories=(RepositorySnapshot(path=source, revision=revision),),
                     skill=skill,
                     model=ModelProviderConfig(
                         model=FunctionModel(fail),
@@ -2256,7 +2258,7 @@ def test_wiki_run_rejects_nested_staging_without_creating_it(tmp_path: Path) -> 
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
-                    repository=RepositorySnapshot(path=source, revision="source-rev"),
+                    repositories=(RepositorySnapshot(path=source, revision="source-rev"),),
                     skill=skill_version,
                     model=ModelProviderConfig(model=FunctionModel(model)),
                     limits=WikiRunLimits(),
@@ -2372,7 +2374,7 @@ def test_wiki_run_rejects_a_publication_parent_symlink_into_source(tmp_path: Pat
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
-                    repository=RepositorySnapshot(path=source, revision=source_revision),
+                    repositories=(RepositorySnapshot(path=source, revision=source_revision),),
                     skill=skill_version,
                     model=ModelProviderConfig(model=FunctionModel(model)),
                     limits=WikiRunLimits(),
@@ -2405,7 +2407,7 @@ def test_wiki_run_rejects_a_symlinked_release_root_before_model_work(tmp_path: P
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
-                    repository=RepositorySnapshot(path=source, revision=revision),
+                    repositories=(RepositorySnapshot(path=source, revision=revision),),
                     skill=skill,
                     model=ModelProviderConfig(model=FunctionModel(model)),
                     limits=WikiRunLimits(),
@@ -2444,7 +2446,7 @@ def test_wiki_run_rejects_invalid_checkout_before_model_work(
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
-                    repository=RepositorySnapshot(path=source, revision=revision),
+                    repositories=(RepositorySnapshot(path=source, revision=revision),),
                     skill=skill_version,
                     model=ModelProviderConfig(model=FunctionModel(model)),
                     limits=WikiRunLimits(),
@@ -2478,7 +2480,7 @@ def test_wiki_run_rejects_an_oversized_source_blob_before_reading_it(
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
-                    repository=RepositorySnapshot(path=source, revision=revision),
+                    repositories=(RepositorySnapshot(path=source, revision=revision),),
                     skill=skill,
                     model=ModelProviderConfig(
                         model=FunctionModel(
@@ -2541,7 +2543,7 @@ def test_wiki_run_rejects_source_count_and_total_ceilings_before_blob_reads(
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
-                    repository=RepositorySnapshot(path=source, revision=revision),
+                    repositories=(RepositorySnapshot(path=source, revision=revision),),
                     skill=skill,
                     model=ModelProviderConfig(model=FunctionModel(model)),
                     limits=WikiRunLimits(**limits),
@@ -2585,7 +2587,7 @@ def test_wiki_run_rejects_executable_git_filter_without_running_it(tmp_path: Pat
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
-                    repository=RepositorySnapshot(path=source, revision=revision),
+                    repositories=(RepositorySnapshot(path=source, revision=revision),),
                     skill=skill_version,
                     model=ModelProviderConfig(model=FunctionModel(model)),
                     limits=WikiRunLimits(),
@@ -2625,7 +2627,7 @@ def test_wiki_run_wall_clock_deadline_terminates_model_work(tmp_path: Path) -> N
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
-                    repository=RepositorySnapshot(path=source, revision=revision),
+                    repositories=(RepositorySnapshot(path=source, revision=revision),),
                     skill=skill_version,
                     model=ModelProviderConfig(model=FunctionModel(slow_model)),
                     limits=WikiRunLimits(
@@ -2655,7 +2657,7 @@ def test_wiki_mount_write_quota_stops_output_and_preserves_the_publication(
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
-                    repository=RepositorySnapshot(path=source, revision=revision),
+                    repositories=(RepositorySnapshot(path=source, revision=revision),),
                     skill=skill,
                     model=ModelProviderConfig(
                         model=writing_model(
@@ -2689,7 +2691,7 @@ def test_agent_usage_limit_is_an_explicit_resource_failure(tmp_path: Path) -> No
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
-                    repository=RepositorySnapshot(path=source, revision=revision),
+                    repositories=(RepositorySnapshot(path=source, revision=revision),),
                     skill=skill,
                     model=ModelProviderConfig(
                         model=writing_model(
@@ -2724,7 +2726,7 @@ def test_wiki_entry_ceiling_counts_directories_and_preserves_the_publication(
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
-                    repository=RepositorySnapshot(path=source, revision=revision),
+                    repositories=(RepositorySnapshot(path=source, revision=revision),),
                     skill=skill,
                     model=ModelProviderConfig(model=writing_model(code, ["index.md"])),
                     limits=WikiRunLimits(
@@ -2761,7 +2763,7 @@ def test_wiki_byte_ceilings_preserve_the_publication(
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
-                    repository=RepositorySnapshot(path=source, revision=revision),
+                    repositories=(RepositorySnapshot(path=source, revision=revision),),
                     skill=skill,
                     model=ModelProviderConfig(
                         model=writing_model(
@@ -2800,7 +2802,7 @@ def test_model_failure_leaves_the_published_wiki_unchanged(tmp_path: Path) -> No
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
-                    repository=RepositorySnapshot(path=source, revision=revision),
+                    repositories=(RepositorySnapshot(path=source, revision=revision),),
                     skill=skill_version,
                     model=ModelProviderConfig(model=FunctionModel(failed_model)),
                     limits=WikiRunLimits(request_timeout_seconds=5),
@@ -2811,6 +2813,58 @@ def test_model_failure_leaves_the_published_wiki_unchanged(tmp_path: Path) -> No
         )
 
     assert published.resolve() == old_release
+
+
+def test_multi_repository_citations_require_a_repository_id(tmp_path: Path) -> None:
+    application = tmp_path / "application"
+    application_revision = make_repository(application, "application\n")
+    documentation = tmp_path / "documentation"
+    documentation_revision = make_repository(documentation, "documentation\n")
+    page = "---\ntitle: Wiki\n---\n# Wiki\n\n[Source](repo:README.md#L1-L1)\n"
+
+    with pytest.raises(UnexpectedModelBehavior, match="maximum output retries"):
+        asyncio.run(
+            WikiRunApplication().run(
+                WikiRunRequest(
+                    repositories=(
+                        RepositorySnapshot(
+                            id="app", path=application, revision=application_revision
+                        ),
+                        RepositorySnapshot(
+                            id="docs", path=documentation, revision=documentation_revision
+                        ),
+                    ),
+                    skill=ProducerSkillVersion.default(),
+                    model=ModelProviderConfig(
+                        model=writing_model(write_pages_code({"index.md": page}), ["index.md"])
+                    ),
+                    limits=TEST_WIKI_LIMITS,
+                    staging=tmp_path / "staging",
+                    publication=tmp_path / "published",
+                )
+            )
+        )
+
+
+def test_wiki_run_yaml_rejects_secrets_without_echoing_them(tmp_path: Path) -> None:
+    secret = "must-not-appear-in-errors"
+    config = tmp_path / "wiki-run.yaml"
+    config.write_text(
+        f"""version: 1
+operation: generate
+model: openai:gpt-5-mini
+api_key: {secret}
+staging: ./staging
+publication: ./published
+repositories: []
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Secrets .* are not allowed") as captured:
+        WikiRunRequest.from_yaml(config)
+
+    assert secret not in str(captured.value)
 
 
 def test_wiki_run_cli_exposes_wall_clock_deadline() -> None:

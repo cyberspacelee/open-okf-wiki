@@ -1,19 +1,23 @@
 # Repository Wiki Producer
 
-This context defines the language for deriving a source-grounded Markdown wiki from a fixed source repository.
+This context defines the language for deriving a source-grounded Markdown wiki from one or more fixed source repositories.
 
 ## Language
 
 **Wiki**:
-A set of source-grounded Markdown pages that explains one Repository Snapshot for human readers.
+A set of source-grounded Markdown pages that explains one Repository Snapshot Set for human readers.
 _Avoid_: Knowledge Bundle, knowledge graph, model transcript
 
 **Repository Snapshot**:
-An immutable, read-only view of the target repository at the exact revision used by one Wiki Run.
-_Avoid_: Live checkout, Source Set, Workspace
+An immutable, read-only view of one named target repository at the exact revision used by one Wiki Run.
+_Avoid_: Live checkout, mutable branch
+
+**Repository Snapshot Set**:
+The non-empty collection of named Repository Snapshots used together by one Wiki Run.
+_Avoid_: Workspace, implicit repository list
 
 **Producer Skill**:
-The trusted, product-provided method and template bundle that guides how a Repository Snapshot becomes a Wiki.
+The trusted, product-provided method and template bundle that guides how a Repository Snapshot Set becomes a Wiki.
 _Avoid_: Target-repository Skill, Python workflow, prompt fragment
 
 **Skill Version**:
@@ -33,7 +37,7 @@ The model-directed sequence of repository exploration, page design, writing, rev
 _Avoid_: Python state machine, fixed role pipeline
 
 **Wiki Run**:
-One attempt to derive and publish a Wiki from a Repository Snapshot using one exact Skill Version or Skill Fork revision.
+One attempt to derive and publish a Wiki from a Repository Snapshot Set using one exact Skill Version or Skill Fork revision.
 _Avoid_: Agent turn, chat session, Production Run
 
 **Staging Wiki**:
@@ -49,9 +53,9 @@ The bounded terminal summary of pages produced by a Wiki Run.
 _Avoid_: Page contents, workflow state, knowledge graph
 
 **Source Citation**:
-A resolvable reference from a Wiki page to a path and line range inside the pinned Repository Snapshot.
+A resolvable reference from a Wiki page to a repository ID, path, and line range inside the pinned Repository Snapshot Set.
 _Avoid_: Unsupported filename mention, Claim record
 
 **Refresh**:
-A Wiki Run that updates an existing Published Wiki for a newer Repository Snapshot while following the selected Producer Skill.
+A Wiki Run that updates an existing Published Wiki for a newer Repository Snapshot Set while following the selected Producer Skill.
 _Avoid_: Knowledge-graph invalidation, patch-only rendering

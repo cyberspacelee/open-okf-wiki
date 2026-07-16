@@ -2,11 +2,12 @@
 
 Start from the empty Staging Wiki.
 
-1. Find the repository's stated purpose, executable or library entry points, public interfaces,
-   major directories, configuration, and tests that reveal intended behavior.
+1. Find each repository's stated purpose, executable or library entry points, public interfaces,
+   major directories, configuration, and tests that reveal intended behavior; identify how the
+   repositories relate before deciding the Wiki shape.
 2. Follow high-signal dependencies and call paths until the important boundaries, modules, flows,
    and domain concepts are understood. Branch according to what the repository contains rather than
-   classifying it into a fixed repository type.
+   classifying the Repository Snapshot Set into a fixed project type.
 3. Draft the smallest useful page set. Ensure `index.md` explains the purpose, audience, main
    capabilities, and where to continue. Add other pages only when they answer a distinct reader
    question.
