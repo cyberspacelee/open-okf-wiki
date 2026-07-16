@@ -13,3 +13,7 @@
 - [x] Host-owned `publish_receipt` and `read_receipt` operations support versioned immutable JSON receipts, bounded artifacts, evidence revision/path/line/hash validation, quotas, opaque identities, and atomic publication.
 - [x] `complete`, `partial`, `failed`, and `cancelled` receipt statuses and short Handoff Refs are enforced; directory scans, file existence, lockfiles, and JSONL events cannot declare completion.
 - [x] Deterministic tests cover event redaction/order, run-record contents, receipt schema/quota/hash/path validation, atomic writes, cleanup, and unchanged existing Wiki Run behavior.
+
+## Comments
+
+- 2026-07-16: Complete. Events, Wiki Run Records, and Analysis Workspace receipts are live under `WikiRunApplication`.

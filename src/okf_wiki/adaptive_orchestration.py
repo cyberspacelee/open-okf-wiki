@@ -76,6 +76,7 @@ class AdaptivePolicy:
     child_concurrency: int = 4
     context_target_tokens: int = 100_000
     child_timeout_seconds: float = 120.0
+    leaf_timeout_seconds: float = 90.0
     domain_request_limit: int = 6
     leaf_request_limit: int = 3
     domain_total_tokens_limit: int = 25_000
@@ -99,6 +100,8 @@ class AdaptivePolicy:
             raise ValueError("adaptive context target must be positive")
         if not math.isfinite(self.child_timeout_seconds) or self.child_timeout_seconds <= 0:
             raise ValueError("adaptive child timeout must be positive")
+        if not math.isfinite(self.leaf_timeout_seconds) or self.leaf_timeout_seconds <= 0:
+            raise ValueError("adaptive leaf timeout must be positive")
         if self.domain_request_limit < 1 or self.leaf_request_limit < 1:
             raise ValueError("adaptive child request limits must be positive")
         if self.domain_total_tokens_limit < 1 or self.leaf_total_tokens_limit < 1:
@@ -115,6 +118,7 @@ class AdaptivePolicy:
         def value(name: str, default: Any) -> Any:
             return getattr(limits, name, default)
 
+        domain_timeout = float(value("adaptive_child_timeout_seconds", 120.0))
         return cls(
             enabled=enabled,
             max_depth=int(value("adaptive_max_depth", 2)),
@@ -122,7 +126,8 @@ class AdaptivePolicy:
             domain_fanout=int(value("adaptive_domain_fanout", 2)),
             child_concurrency=int(value("adaptive_child_concurrency", 4)),
             context_target_tokens=int(value("context_target_tokens", 100_000)),
-            child_timeout_seconds=float(value("adaptive_child_timeout_seconds", 120.0)),
+            child_timeout_seconds=domain_timeout,
+            leaf_timeout_seconds=float(value("adaptive_leaf_timeout_seconds", 90.0)),
             domain_request_limit=int(value("adaptive_domain_request_limit", 6)),
             leaf_request_limit=int(value("adaptive_leaf_request_limit", 3)),
             domain_total_tokens_limit=int(value("adaptive_domain_total_tokens_limit", 25_000)),
@@ -945,7 +950,7 @@ def _make_leaf(
         bounded,
         name=f"leaf_{index}",
         usage_limits=_child_limits(policy, "leaf"),
-        timeout_seconds=policy.child_timeout_seconds,
+        timeout_seconds=policy.leaf_timeout_seconds,
         max_calls=2,
         on_failure=(
             "Leaf research did not produce a complete receipt. Retry this branch once; if it "

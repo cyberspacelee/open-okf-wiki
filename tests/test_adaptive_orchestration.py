@@ -4,6 +4,7 @@ import json
 import re
 import subprocess
 
+import pytest
 from pydantic_ai import ModelSettings
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai_harness import CodeMode
@@ -840,4 +841,220 @@ def test_optional_dynamic_workflow_runs_one_typed_leaf_coordination_layer(
     )
     assert any(
         event.type == "child_started" and event.node_id == "domain-1-leaf-2" for event in events
+    )
+
+
+def test_leaf_timeout_is_shorter_than_domain_timeout(tmp_path: Path) -> None:
+    agent, orchestration, workspace = _builder(tmp_path, WikiRunLimits())
+    try:
+        assert orchestration.policy.child_timeout_seconds == 120.0
+        assert orchestration.policy.leaf_timeout_seconds == 90.0
+        subagents = next(
+            capability
+            for capability in agent.root_capability.capabilities
+            if isinstance(capability, SubAgents)
+        )
+        domain = next(entry for entry in subagents.agents if entry.name == "domain_1")
+        assert domain.timeout_seconds == 120.0
+        domain_agent = domain.agent.wrapped
+        domain_sub = next(
+            capability
+            for capability in domain_agent.root_capability.capabilities
+            if isinstance(capability, SubAgents)
+        )
+        leaf = domain_sub.agents[0]
+        assert leaf.timeout_seconds == 90.0
+    finally:
+        workspace.cleanup()
+
+
+def test_unresolved_critical_branch_preserves_previous_published_wiki(tmp_path: Path) -> None:
+    source, revision = _repository(tmp_path)
+    publication = tmp_path / "published"
+
+    def publish_model(messages, info: AgentInfo) -> ModelResponse:
+        run_code_returns = [
+            part
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+            if isinstance(part, ToolReturnPart) and part.tool_name == "run_code"
+        ]
+        if not run_code_returns:
+            code = (
+                "from pathlib import Path\n"
+                "Path('/wiki/index.md').write_text("
+                "'---\\ntitle: Prior\\n---\\n# Prior\\n\\n[Source](repo:README.md#L1-L1)\\n')\n"
+            )
+            return ModelResponse(parts=[ToolCallPart("run_code", {"code": code})])
+        complete = next(tool for tool in info.output_tools if tool.name.endswith("Complete"))
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    complete.name, {"status": "complete", "manifest": {"pages": ["index.md"]}}
+                )
+            ]
+        )
+
+    first = asyncio.run(
+        WikiRunApplication().run(
+            WikiRunRequest(
+                repositories=(RepositorySnapshot(path=source, revision=revision),),
+                skill=ProducerSkillVersion.default(),
+                model=ModelProviderConfig(model=FunctionModel(publish_model)),
+                limits=WikiRunLimits(
+                    request_limit=5,
+                    tool_calls_limit=10,
+                    retries=0,
+                    request_timeout_seconds=5,
+                    tool_timeout_seconds=5,
+                    adaptive_source_files_threshold=10_000,
+                ),
+                staging=tmp_path / "staging-prior",
+                publication=publication,
+            )
+        )
+    )
+    assert isinstance(first, Complete)
+    prior = (publication / "index.md").read_text(encoding="utf-8")
+    assert "Prior" in prior
+
+    def failing_adaptive(messages, info: AgentInfo) -> ModelResponse:
+        instructions = info.instructions or ""
+        run_code_returns = [
+            part
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+            if isinstance(part, ToolReturnPart) and part.tool_name == "run_code"
+        ]
+        if "You are a Domain Researcher." in instructions:
+            return ModelResponse(parts=[TextPart("not a receipt")])
+        if not run_code_returns:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "run_code",
+                        {
+                            "code": (
+                                "result = await delegate_task("
+                                "agent_name='domain_1', task='fail deliberately')\n"
+                                "from pathlib import Path\n"
+                                "Path('/wiki/index.md').write_text("
+                                "'---\\ntitle: Bad\\n---\\n# Bad\\n\\n"
+                                "[Source](repo:README.md#L1-L1)\\n')\n"
+                                "print(result)"
+                            )
+                        },
+                    )
+                ]
+            )
+        complete = next(tool for tool in info.output_tools if tool.name.endswith("Complete"))
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    complete.name, {"status": "complete", "manifest": {"pages": ["index.md"]}}
+                )
+            ]
+        )
+
+    with pytest.raises(Exception):
+        asyncio.run(
+            WikiRunApplication().run(
+                WikiRunRequest(
+                    repositories=(RepositorySnapshot(path=source, revision=revision),),
+                    skill=ProducerSkillVersion.default(),
+                    model=ModelProviderConfig(model=FunctionModel(failing_adaptive)),
+                    limits=WikiRunLimits(
+                        request_limit=60,
+                        tool_calls_limit=100,
+                        total_tokens_limit=400_000,
+                        adaptive_source_files_threshold=1,
+                        adaptive_enable_reviewer=False,
+                        retries=2,
+                        request_timeout_seconds=5,
+                        tool_timeout_seconds=5,
+                    ),
+                    staging=tmp_path / "staging-bad",
+                    publication=publication,
+                )
+            )
+        )
+    assert (publication / "index.md").read_text(encoding="utf-8") == prior
+
+
+def test_parent_direct_fallback_receipt_clears_failed_child(tmp_path: Path) -> None:
+    source, revision = _repository(tmp_path)
+    captured: dict[str, str] = {}
+
+    def fallback_model(messages, info: AgentInfo) -> ModelResponse:
+        instructions = info.instructions or ""
+        run_code_returns = [
+            part
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+            if isinstance(part, ToolReturnPart) and part.tool_name == "run_code"
+        ]
+        if "You are a Domain Researcher." in instructions:
+            return ModelResponse(parts=[TextPart("not a receipt")])
+        if not run_code_returns:
+            code = (
+                "first = await delegate_task(agent_name='domain_1', task='fail-1')\n"
+                "second = await delegate_task(agent_name='domain_1', task='fail-2')\n"
+                "print(first)\nprint(second)\n"
+            )
+            return ModelResponse(parts=[ToolCallPart("run_code", {"code": code})])
+        if len(run_code_returns) == 1:
+            code = (
+                f"handoff = publish_fallback_receipt("
+                f"run_id='{captured['run_id']}', task_id='domain-1', node_id='domain-1', "
+                f"parent_id='root', attempt=3, scope='domain:domain-1', "
+                f"summary='root fallback after retries')\n"
+                "from pathlib import Path\n"
+                "Path('/wiki/index.md').write_text("
+                "'---\\ntitle: Wiki\\n---\\n# Wiki\\n\\n[Source](repo:README.md#L1-L1)\\n')\n"
+                "print(handoff)"
+            )
+            return ModelResponse(parts=[ToolCallPart("run_code", {"code": code})])
+        complete = next(tool for tool in info.output_tools if tool.name.endswith("Complete"))
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    complete.name, {"status": "complete", "manifest": {"pages": ["index.md"]}}
+                )
+            ]
+        )
+
+    events: list[WikiRunEvent] = []
+
+    def capture(event: WikiRunEvent) -> None:
+        events.append(event)
+        if event.type == "run_created":
+            captured["run_id"] = event.run_id
+
+    result = asyncio.run(
+        WikiRunApplication(observer=capture).run(
+            WikiRunRequest(
+                repositories=(RepositorySnapshot(path=source, revision=revision),),
+                skill=ProducerSkillVersion.default(),
+                model=ModelProviderConfig(model=FunctionModel(fallback_model)),
+                limits=WikiRunLimits(
+                    request_limit=60,
+                    tool_calls_limit=100,
+                    total_tokens_limit=400_000,
+                    adaptive_source_files_threshold=1,
+                    adaptive_enable_reviewer=False,
+                    retries=2,
+                    request_timeout_seconds=5,
+                    tool_timeout_seconds=5,
+                ),
+                staging=tmp_path / "staging",
+                publication=tmp_path / "published",
+            )
+        )
+    )
+    assert isinstance(result, Complete)
+    assert any(
+        event.type == "receipt_published" and event.payload.get("fallback") for event in events
     )

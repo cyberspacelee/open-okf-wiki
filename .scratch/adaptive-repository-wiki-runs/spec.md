@@ -1,6 +1,6 @@
 # Adaptive Repository Wiki Runs
 
-Status: ready-for-agent
+Status: implemented
 
 Extends: Repository Wiki Producer
 

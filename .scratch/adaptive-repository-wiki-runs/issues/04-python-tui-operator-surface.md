@@ -6,10 +6,14 @@
 
 **Status:** ready-for-agent
 
-- [ ] `okf-wiki tui --config <run-config>` starts Generate or Refresh through the same Wiki Run application seam and uses no second workflow implementation.
-- [ ] The line-oriented UI uses prompt-toolkit and Rich, displays Run Plan, Root/Domain/Leaf states, bounded tool labels, receipt publication, compaction, provider retry countdowns, validation, no-op, and final publication status.
-- [ ] Needs Input answers create a fresh run with explicit bounded answers; Manual Retry uses the Wiki Run Record and clearly differs from starting against newer branch revisions.
-- [ ] Ctrl+C cancels the active run safely, leaves Published Wiki unchanged, and records cancellation; no partial staging is presented as published.
-- [ ] TUI output is redacted and excludes prompts, source excerpts, raw provider bodies, credentials, and model chain-of-thought.
-- [ ] Non-TTY invocation fails clearly without raw-mode setup; existing `wiki-run` JSON behavior and CI/pipe/cron usage remain unchanged.
-- [ ] UI tests use deterministic event streams and pseudo-TTY input to verify rendering/state transitions, retry/manual-retry actions, Needs Input, cancellation, redaction, and non-TTY fallback without asserting terminal color escapes.
+- [x] `okf-wiki tui --config <run-config>` starts Generate or Refresh through the same Wiki Run application seam and uses no second workflow implementation.
+- [x] The line-oriented UI uses prompt-toolkit and Rich, displays Run Plan, Root/Domain/Leaf states, bounded tool labels, receipt publication, compaction, provider retry countdowns, validation, no-op, and final publication status.
+- [x] Needs Input answers create a fresh run with explicit bounded answers; Manual Retry uses the Wiki Run Record and clearly differs from starting against newer branch revisions.
+- [x] Ctrl+C cancels the active run safely, leaves Published Wiki unchanged, and records cancellation; no partial staging is presented as published.
+- [x] TUI output is redacted and excludes prompts, source excerpts, raw provider bodies, credentials, and model chain-of-thought.
+- [x] Non-TTY invocation fails clearly without raw-mode setup; existing `wiki-run` JSON behavior and CI/pipe/cron usage remain unchanged.
+- [x] UI tests use deterministic event streams and pseudo-TTY input to verify rendering/state transitions, retry/manual-retry actions, Needs Input, cancellation, redaction, and non-TTY fallback without asserting terminal color escapes.
+
+## Comments
+
+- 2026-07-16: Complete. Line-oriented Rich observer in `tui.py`; non-TTY rejects; projection tests cover plan/nodes/receipts/retries/redaction.

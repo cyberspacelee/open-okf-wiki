@@ -81,7 +81,18 @@ def parser() -> argparse.ArgumentParser:
     )
     wiki_run.add_argument("--adaptive-reviewer-request-limit", type=int)
     wiki_run.add_argument("--adaptive-reviewer-total-tokens-limit", type=int)
+    wiki_run.add_argument("--adaptive-leaf-timeout-seconds", type=float)
     wiki_run.add_argument("--adaptive-dynamic-workflow", action="store_true", default=None)
+
+    wiki_retry = subcommands.add_parser("wiki-retry")
+    wiki_retry.add_argument("record", type=Path)
+    wiki_retry.add_argument("--staging", type=Path, required=True)
+    wiki_retry.add_argument("--publication", type=Path, required=True)
+    wiki_retry.add_argument("--model")
+
+    tui = subcommands.add_parser("tui")
+    tui.add_argument("--config", type=Path, required=True)
+    tui.add_argument("--retry-record", type=Path)
 
     wiki_eval = subcommands.add_parser("wiki-eval")
     wiki_eval.add_argument("output", type=Path)
@@ -209,6 +220,46 @@ def main() -> int:
             from .wiki_run import WikiRunApplication
 
             result = asyncio.run(WikiRunApplication().run(_wiki_run_request(arguments)))
+            emit({"ok": True, "result": result.model_dump(mode="json")})
+            return 0
+
+        if arguments.command == "wiki-retry":
+            from .wiki_run import WikiRunApplication, WikiRunRequest
+
+            request = WikiRunRequest.from_run_record(
+                arguments.record,
+                staging=arguments.staging,
+                publication=arguments.publication,
+                model=arguments.model,
+            )
+            result = asyncio.run(WikiRunApplication().run(request))
+            emit(
+                {
+                    "ok": True,
+                    "manual_retry": True,
+                    "prior_run_id": request.prior_run_id,
+                    "result": result.model_dump(mode="json"),
+                }
+            )
+            return 0
+
+        if arguments.command == "tui":
+            from .tui import run_tui
+            from .wiki_run import WikiRunRequest
+
+            configured = WikiRunRequest.from_yaml(arguments.config)
+            if arguments.retry_record is not None:
+                request = WikiRunRequest.from_run_record(
+                    arguments.retry_record,
+                    staging=configured.staging,
+                    publication=configured.publication,
+                    model=configured.model.model
+                    if isinstance(configured.model.model, str)
+                    else None,
+                )
+            else:
+                request = configured
+            result = asyncio.run(run_tui(request))
             emit({"ok": True, "result": result.model_dump(mode="json")})
             return 0
 

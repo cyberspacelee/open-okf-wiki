@@ -954,7 +954,13 @@ def test_complete_wiki_run_writes_a_bounded_secret_free_terminal_record(
     assert record["limits"] == TEST_WIKI_LIMITS.model_dump(mode="json")
     assert record["explicit_answers"] == {}
     assert record["usage"]["requests"] == 2
-    assert record["retry_counters"] == {"provider": 0, "tool": 0, "output": 0}
+    assert record["retry_counters"] == {
+        "provider": 0,
+        "provider_attempts": 0,
+        "provider_possible_duplicates": 0,
+        "tool": 0,
+        "output": 0,
+    }
     assert record["publication"] == {"status": "published", "changed": True}
     assert record["failure_category"] is None
     assert datetime.fromisoformat(record["started_at"]).tzinfo == UTC
@@ -3633,6 +3639,8 @@ def test_cli_exposes_only_the_greenfield_product_commands() -> None:
     assert subcommands.choices is not None
     assert tuple(subcommands.choices) == (
         "wiki-run",
+        "wiki-retry",
+        "tui",
         "wiki-eval",
         "skill-fork",
         "skill-inspect",

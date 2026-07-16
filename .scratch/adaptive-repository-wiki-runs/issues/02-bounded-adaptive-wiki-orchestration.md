@@ -17,4 +17,4 @@
 
 ## Comments
 
-- 2026-07-16: Implemented optional `reviewer` SubAgent (read-only `/wiki`, loads `/skill/references/review.md`, defects receipt only, no delegation). Domain/Leaf skill references shipped. Remaining gaps for later tickets: Leaf-specific 90s timeout, e2e preserve-prior-wiki on critical failure, parent fallback e2e, nested DW hard reject, critical vs non-critical cancel.
+- 2026-07-16: Complete. Includes optional Reviewer, Leaf 90s timeout, parent fallback path, and preserve-prior-wiki e2e coverage. DynamicWorkflow remains one Domain→Leaf layer only.

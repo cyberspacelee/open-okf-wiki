@@ -7,6 +7,7 @@ import re
 import shutil
 import stat
 import tempfile
+import time
 import uuid
 from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping
 from datetime import UTC, datetime
@@ -60,6 +61,11 @@ from .adaptive_orchestration import (
     AdaptiveOrchestrator,
     build_root_agent,
     should_enable_adaptive,
+)
+from .provider_retry import (
+    ProviderRetryState,
+    merge_retry_counters,
+    prepare_model_with_provider_retry,
 )
 
 
@@ -198,6 +204,7 @@ class WikiRunLimits(BaseModel):
     adaptive_enable_reviewer: bool = True
     adaptive_reviewer_request_limit: int = Field(default=5, gt=0)
     adaptive_reviewer_total_tokens_limit: int = Field(default=30_000, gt=0)
+    adaptive_leaf_timeout_seconds: float = Field(default=90, gt=0)
     adaptive_dynamic_workflow: bool = False
 
     def usage_limits(self) -> UsageLimits:
@@ -351,6 +358,8 @@ class WikiRunRequest(BaseModel):
     staging: Path
     publication: Path
     retain_analysis_workspace: bool = False
+    explicit_answers: dict[str, str] = Field(default_factory=dict)
+    prior_run_id: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{32}$")] | None = None
 
     @model_validator(mode="after")
     def validate_repository_ids(self) -> "WikiRunRequest":
@@ -363,6 +372,27 @@ class WikiRunRequest(BaseModel):
     @classmethod
     def from_yaml(cls, path: Path) -> "WikiRunRequest":
         return _wiki_run_request_from_yaml(path)
+
+    @classmethod
+    def from_run_record(
+        cls,
+        record: WikiRunRecord | Path | Mapping[str, object],
+        *,
+        staging: Path,
+        publication: Path,
+        model: Model | str | None = None,
+        explicit_answers: Mapping[str, str] | None = None,
+        retain_analysis_workspace: bool = False,
+    ) -> "WikiRunRequest":
+        """Build a Manual Retry Run from an immutable failed/cancelled run record."""
+        return _manual_retry_request(
+            record,
+            staging=staging,
+            publication=publication,
+            model=model,
+            explicit_answers=explicit_answers,
+            retain_analysis_workspace=retain_analysis_workspace,
+        )
 
 
 _RUN_INSTRUCTIONS = """Run the trusted Producer Skill to produce the Wiki.
@@ -574,6 +604,13 @@ _EVENT_SAFE_KEYS = {
     "input_tokens",
     "output_tokens",
     "total_tokens",
+    "provider_attempts",
+    "provider_possible_duplicates",
+    "fallback",
+    "context_tokens",
+    "warning_tokens",
+    "before_tokens",
+    "target_tokens",
 }
 
 
@@ -593,6 +630,92 @@ def _event_payload(payload: Mapping[str, object]) -> dict[str, object]:
 
 def _record_directory(publication: Path) -> Path:
     return publication.parent / f".{publication.name}.runs"
+
+
+def load_run_record(path: Path) -> WikiRunRecord:
+    """Load a secret-free Wiki Run Record from disk."""
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Wiki Run Record must be a JSON object")
+    return WikiRunRecord.model_validate(payload)
+
+
+def _manual_retry_request(
+    record: WikiRunRecord | Path | Mapping[str, object],
+    *,
+    staging: Path,
+    publication: Path,
+    model: Model | str | None = None,
+    explicit_answers: Mapping[str, str] | None = None,
+    retain_analysis_workspace: bool = False,
+) -> WikiRunRequest:
+    """Create a fresh Manual Retry Run request from a terminal run record."""
+    if isinstance(record, Path):
+        loaded = load_run_record(record)
+    elif isinstance(record, WikiRunRecord):
+        loaded = record
+    else:
+        loaded = WikiRunRecord.model_validate(record)
+    if loaded.status not in {"failed", "cancelled"}:
+        raise ValueError("Manual Retry Run requires a failed or cancelled Wiki Run Record")
+    if not loaded.model.get("replayable", False) and model is None:
+        raise ValueError(
+            "Manual Retry Run requires an explicit model because the recorded model is "
+            "not replayable across processes"
+        )
+    repositories: list[RepositorySnapshot] = []
+    for item in loaded.repositories:
+        repo_id = str(item.get("id") or "repo")
+        path = Path(str(item["path"]))
+        revision = str(item["revision"])
+        ignore = tuple(str(pattern) for pattern in cast(list[object], item.get("ignore") or ()))
+        if not path.exists():
+            raise ValueError(f"Frozen repository path is no longer available: {path}")
+        # Fail closed if the exact revision cannot be resolved.
+        try:
+            resolved = git_read(path, "rev-parse", "--verify", f"{revision}^{{commit}}").strip()
+        except Exception as error:
+            raise ValueError(
+                f"Frozen repository revision is no longer available: {revision}"
+            ) from error
+        if resolved.casefold() != revision.casefold():
+            raise ValueError(f"Frozen repository revision is no longer available: {revision}")
+        repositories.append(
+            RepositorySnapshot(id=repo_id, path=path, revision=revision, ignore=ignore)
+        )
+    skill_path = Path(str(loaded.skill["path"]))
+    skill_digest = str(loaded.skill["digest"])
+    if not skill_path.exists():
+        raise ValueError(f"Frozen Skill path is no longer available: {skill_path}")
+    skill = ProducerSkillVersion.from_directory(skill_path)
+    if skill.digest != skill_digest:
+        raise ValueError(
+            "Frozen Skill digest no longer matches the recorded Skill: "
+            f"expected {skill_digest}, found {skill.digest}"
+        )
+    limits = WikiRunLimits.model_validate(loaded.limits)
+    if model is None:
+        model_identity = str(loaded.model["identity"])
+        settings = cast(dict[str, object], loaded.model.get("settings") or {})
+        model_config = ModelProviderConfig(model=model_identity, settings=ModelSettings(**settings))
+    else:
+        settings = cast(dict[str, object], loaded.model.get("settings") or {})
+        model_config = ModelProviderConfig(model=model, settings=ModelSettings(**settings))
+    answers = dict(loaded.explicit_answers)
+    if explicit_answers is not None:
+        answers.update({str(key): str(value) for key, value in explicit_answers.items()})
+    return WikiRunRequest(
+        operation=loaded.operation,
+        repositories=tuple(repositories),
+        skill=skill,
+        model=model_config,
+        limits=limits,
+        staging=staging,
+        publication=publication,
+        retain_analysis_workspace=retain_analysis_workspace,
+        explicit_answers=answers,
+        prior_run_id=loaded.run_id,
+    )
 
 
 def _record_publication_path(value: Path) -> Path | None:
@@ -659,6 +782,10 @@ def _write_run_record(
             item["path_truncated"] = True
         repositories.append(item)
     skill = redact_secrets(str(skill_path or request.skill.path.resolve()), secrets)
+    answers = {
+        redact_secrets(str(key), secrets)[:128]: redact_secrets(str(value), secrets)[:500]
+        for key, value in list(request.explicit_answers.items())[:32]
+    }
     record = WikiRunRecord(
         run_id=run_id,
         status=status,
@@ -667,6 +794,7 @@ def _write_run_record(
         skill={"path": skill[:1_024], "digest": request.skill.digest},
         model=_record_model(request.model.model, request.model.settings),
         limits=request.limits.model_dump(mode="json"),
+        explicit_answers=answers,
         started_at=started_at,
         completed_at=completed_at,
         duration_seconds=max(0.0, (completed_at - started_at).total_seconds()),
@@ -700,6 +828,7 @@ class WikiRunApplication:
             "usage": None,
             "retry_counters": {"provider": 0, "tool": 0, "output": 0},
             "publication_status": {"status": "not_published", "changed": False},
+            "provider_retry": ProviderRetryState(),
         }
 
         def emit(
@@ -774,6 +903,10 @@ class WikiRunApplication:
             return result
         except asyncio.CancelledError:
             capture_adaptive_usage()
+            lifecycle["retry_counters"] = merge_retry_counters(
+                cast(Mapping[str, int], lifecycle["retry_counters"]),
+                cast(ProviderRetryState, lifecycle["provider_retry"]),
+            )
             emit("run_cancelled")
             if not self._finalize_record(
                 request,
@@ -787,6 +920,15 @@ class WikiRunApplication:
             raise
         except Exception as error:
             capture_adaptive_usage()
+            lifecycle["retry_counters"] = merge_retry_counters(
+                cast(Mapping[str, int], lifecycle["retry_counters"]),
+                cast(ProviderRetryState, lifecycle["provider_retry"]),
+            )
+            if cast(ProviderRetryState, lifecycle["provider_retry"]).retries:
+                emit(
+                    "provider_retry_exhausted",
+                    cast(ProviderRetryState, lifecycle["provider_retry"]).as_counters(),
+                )
             emit("run_failed")
             if not self._finalize_record(
                 request,
@@ -907,8 +1049,16 @@ class WikiRunApplication:
                 source_bytes=used_bytes,
                 limits=request.limits,
             )
+            provider_state = cast(ProviderRetryState, lifecycle["provider_retry"])
+            wall_deadline = time.monotonic() + request.limits.wall_clock_timeout_seconds
+            resolved_model = prepare_model_with_provider_retry(
+                request.model.model,
+                state=provider_state,
+                emit=emit,
+                wall_clock_deadline=wall_deadline,
+            )
             agent, orchestration = build_root_agent(
-                model=request.model.model,
+                model=resolved_model,
                 settings=settings,
                 output_type=[Complete, NeedsInput],
                 instructions=_RUN_INSTRUCTIONS,
@@ -964,6 +1114,10 @@ class WikiRunApplication:
                         raise RuntimeError(safe_error) from None
                     raise
             lifecycle["usage"] = result.usage
+            lifecycle["retry_counters"] = merge_retry_counters(
+                cast(Mapping[str, int], lifecycle["retry_counters"]),
+                cast(ProviderRetryState, lifecycle["provider_retry"]),
+            )
             if isinstance(result.output, Complete):
                 new_hashes = _hashes(staging, result.output.manifest.pages)
                 summary = _summarize_changes(

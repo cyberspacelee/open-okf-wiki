@@ -7,12 +7,15 @@ dependencies = [
     "genai-prices==0.0.71",
     "markdown-it-py==4.2.0",
     "mdit-py-plugins==0.6.1",
+    "prompt-toolkit>=3.0.0",
     "pydantic-ai==2.10.0",
     "pydantic-ai-harness[codemode]==0.7.0",
     "pydantic-evals==2.10.0",
     "pydantic-monty==0.0.18",
     "python-dotenv==1.2.2",
     "pyyaml==6.0.3",
+    "rich>=13.0.0",
+    "tenacity>=8.0.0",
 ]
 
 [project.scripts]
