@@ -16,6 +16,7 @@ ROOT = Path(__file__).parents[1]
 PACKAGE_FILES = {
     "__init__.py",
     "__main__.py",
+    "analysis_workspace.py",
     "cli.py",
     "producer_skill/SKILL.md",
     "producer_skill/references/generate.md",

@@ -1,7 +1,10 @@
 import asyncio
+import hashlib
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -18,6 +21,8 @@ from pydantic_ai.models.instrumented import InstrumentationSettings
 from okf_wiki.cli import main, parser
 from okf_wiki.security import MAX_ANALYZABLE_FILE_BYTES
 from okf_wiki.wiki_run import (
+    AnalysisReceipt,
+    AnalysisWorkspace,
     Complete,
     ModelProviderConfig,
     NeedsInput,
@@ -28,8 +33,12 @@ from okf_wiki.wiki_run import (
     WikiChangeSummary,
     WikiRunApplication,
     WikiRunLimits,
+    WikiRunEvent,
     WikiRunResourceLimitError,
     WikiRunRequest,
+    ReceiptArtifact,
+    ReceiptEvidence,
+    HandoffRef,
     _materialize_repository_snapshot,
 )
 
@@ -189,6 +198,330 @@ def publication_state(publication: Path) -> tuple[str, Path, list[str], dict[str
         sorted(path.name for path in release.parent.iterdir()),
         files,
     )
+
+
+def run_records(publication: Path) -> list[dict[str, Any]]:
+    directory = publication.parent / f".{publication.name}.runs"
+    return [json.loads(path.read_bytes()) for path in sorted(directory.glob("*.json"))]
+
+
+def analysis_workspace_paths(run_id: str) -> set[Path]:
+    return set(Path(tempfile.gettempdir()).glob(f"okf-analysis-{run_id[:8]}-*"))
+
+
+def test_analysis_workspace_publishes_and_reads_an_immutable_receipt_and_artifact(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "first\nsecond\nthird\n")
+    cited = b"second\n"
+    artifact = b"# Findings\n"
+    receipt = AnalysisReceipt(
+        run_id="run-1",
+        node_id="node-1",
+        attempt=1,
+        status="complete",
+        scope="README evidence",
+        source_revision=revision,
+        summary="One bounded finding",
+        findings=["The second line is present."],
+        evidence=[
+            ReceiptEvidence(
+                repository_id="source",
+                source_revision=revision,
+                path="README.md",
+                line_start=2,
+                line_end=2,
+                claim="The second line is present.",
+                sha256=hashlib.sha256(cited).hexdigest(),
+            )
+        ],
+        artifacts=[
+            ReceiptArtifact(
+                path="findings.md",
+                media_type="text/markdown",
+                bytes=len(artifact),
+                sha256=hashlib.sha256(artifact).hexdigest(),
+            )
+        ],
+    )
+
+    workspace_root = tmp_path / "analysis"
+    with AnalysisWorkspace(
+        "run-1",
+        root=workspace_root,
+        repositories={"source": (revision, source)},
+    ) as workspace:
+        workspace.register_node("node-1", "node-1")
+        handoff = workspace.publish_receipt(receipt, artifacts={"findings.md": artifact})
+        loaded = workspace.read_receipt(handoff)
+        assert isinstance(handoff, HandoffRef)
+        assert handoff.schema == "okf.analysis.handoff/v1"
+        assert handoff.status == "complete"
+        assert handoff.receipt.startswith("receipts/node-1/")
+        assert loaded.schema == "okf.analysis.receipt/v1"
+        assert loaded.run_id == "run-1"
+        assert loaded.evidence == receipt.evidence
+        assert loaded.artifacts[0].path.startswith("artifacts/node-1/")
+        assert workspace.read_receipt(handoff) == loaded
+        first_slice = workspace.read_artifact(handoff, loaded.artifacts[0].path, limit=5)
+        assert first_slice.data == artifact.decode()[:5]
+        assert first_slice.complete is False
+        second_slice = workspace.read_artifact(
+            handoff,
+            loaded.artifacts[0].path,
+            offset=first_slice.next_offset,
+        )
+        assert first_slice.data + second_slice.data == artifact.decode()
+        assert second_slice.complete is True
+
+    assert not workspace_root.exists()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "revision",
+        "hash",
+        "line_range",
+        "symlink",
+    ],
+)
+def test_analysis_workspace_rejects_untrusted_evidence(change: str, tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "first\nsecond\n")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside\n", encoding="utf-8")
+    if change == "symlink":
+        (source / "escape.md").symlink_to(outside)
+    path = "escape.md" if change == "symlink" else "README.md"
+    cited = b"second\n"
+    evidence = ReceiptEvidence(
+        repository_id="source",
+        source_revision=("0" * 40 if change == "revision" else revision),
+        path=path,
+        line_start=2,
+        line_end=(3 if change == "line_range" else 2),
+        claim="claim",
+        sha256=("0" * 64 if change == "hash" else hashlib.sha256(cited).hexdigest()),
+    )
+    receipt = AnalysisReceipt(
+        run_id="run-1",
+        node_id="node-1",
+        attempt=1,
+        status="complete",
+        scope="scope",
+        source_revision=revision,
+        evidence=[evidence],
+    )
+    with AnalysisWorkspace(
+        "run-1",
+        root=tmp_path / "analysis",
+        repositories={"source": (revision, source)},
+    ) as workspace:
+        workspace.register_node("node-1", "node-1")
+        with pytest.raises(ValueError, match="evidence"):
+            workspace.publish_receipt(receipt)
+        assert not list((workspace.root / "receipts").rglob("*.json"))
+
+
+@pytest.mark.parametrize(
+    "path", ["../README.md", "/tmp/README.md", "a\\b.md", " README.md ", "README.md\x00"]
+)
+def test_analysis_receipt_rejects_noncanonical_paths(path: str) -> None:
+    with pytest.raises(ValueError, match="canonical relative"):
+        ReceiptEvidence(
+            source_revision="0" * 40,
+            path=path,
+            line_start=1,
+            line_end=1,
+            claim="claim",
+            sha256="0" * 64,
+        )
+
+
+def test_analysis_workspace_binds_host_assigned_task_identity(tmp_path: Path) -> None:
+    workspace = AnalysisWorkspace("run-1", root=tmp_path / "analysis")
+    workspace.register_node("task-a", "node-a")
+    with pytest.raises(ValueError, match="identity"):
+        workspace.publish_receipt(
+            _minimal_receipt(node_id="node-b"),
+            task_id="task-a",
+        )
+    handoff = workspace.publish_receipt(
+        _minimal_receipt(node_id="node-a"),
+        task_id="task-a",
+    )
+    with pytest.raises(ValueError, match="attempt"):
+        workspace.publish_receipt(
+            _minimal_receipt(node_id="node-a", attempt=3),
+            task_id="task-a",
+        )
+    with pytest.raises(ValueError, match="does not match"):
+        workspace.read_receipt(
+            HandoffRef(
+                task_id="task-b",
+                node_id="node-a",
+                attempt=1,
+                status="complete",
+                summary="",
+                receipt=handoff.receipt,
+            )
+        )
+    workspace.cleanup()
+
+
+def test_analysis_workspace_accepts_only_markdown_artifacts() -> None:
+    with pytest.raises(ValueError, match="Markdown"):
+        ReceiptArtifact(
+            path="payload.bin",
+            media_type="text/markdown",
+            bytes=1,
+            sha256=hashlib.sha256(b"x").hexdigest(),
+        )
+
+
+def test_analysis_workspace_artifact_slices_preserve_utf8_boundaries(tmp_path: Path) -> None:
+    artifact = "éclair".encode("utf-8")
+    receipt = _minimal_receipt().model_copy(
+        update={
+            "artifacts": [
+                ReceiptArtifact(
+                    path="findings.md",
+                    media_type="text/markdown",
+                    bytes=len(artifact),
+                    sha256=hashlib.sha256(artifact).hexdigest(),
+                )
+            ]
+        }
+    )
+    with AnalysisWorkspace("run-1", root=tmp_path / "analysis") as workspace:
+        workspace.register_node("node-1", "node-1")
+        handoff = workspace.publish_receipt(receipt, artifacts={"findings.md": artifact})
+        loaded = workspace.read_receipt(handoff)
+        first = workspace.read_artifact(handoff, loaded.artifacts[0].path, limit=1)
+        assert first.data == "é"
+        assert first.next_offset == len("é".encode())
+
+
+def _minimal_receipt(
+    run_id: str = "run-1", node_id: str = "node-1", attempt: int = 1
+) -> AnalysisReceipt:
+    return AnalysisReceipt(
+        run_id=run_id,
+        node_id=node_id,
+        attempt=attempt,
+        status="complete",
+        scope="scope",
+        summary="bounded summary",
+    )
+
+
+def test_analysis_workspace_enforces_receipt_artifact_and_workspace_quotas(
+    tmp_path: Path,
+) -> None:
+    # Keep construction explicit so the quota is tested at publication, not schema parsing.
+    oversized = AnalysisReceipt(
+        run_id="run-1",
+        node_id="node-1",
+        attempt=1,
+        status="complete",
+        scope="scope",
+        summary="x" * 500,
+    )
+    with AnalysisWorkspace(
+        "run-1",
+        root=tmp_path / "receipt-limit",
+        limits=WikiRunLimits(analysis_receipt_bytes_limit=200),
+    ) as workspace:
+        workspace.register_node("node-1", "node-1")
+        with pytest.raises(ValueError, match="Receipt"):
+            workspace.publish_receipt(oversized)
+
+    artifact = b"artifact"
+    with AnalysisWorkspace(
+        "run-1",
+        root=tmp_path / "artifact-limit",
+        limits=WikiRunLimits(analysis_artifact_bytes_limit=3),
+    ) as workspace:
+        workspace.register_node("node-1", "node-1")
+        receipt = _minimal_receipt()
+        receipt = receipt.model_copy(
+            update={
+                "artifacts": [
+                    ReceiptArtifact(
+                        path="a.md",
+                        media_type="text/markdown",
+                        bytes=len(artifact),
+                        sha256=hashlib.sha256(artifact).hexdigest(),
+                    )
+                ]
+            }
+        )
+        with pytest.raises(ValueError, match="artifact"):
+            workspace.publish_receipt(receipt, artifacts={"a.md": artifact})
+
+    with AnalysisWorkspace(
+        "run-1",
+        root=tmp_path / "entry-limit",
+        limits=WikiRunLimits(analysis_workspace_entries_limit=1),
+    ) as workspace:
+        workspace.register_node("node-1", "node-1")
+        workspace.register_node("node-2", "node-2")
+        workspace.publish_receipt(_minimal_receipt())
+        with pytest.raises(ValueError, match="entry quota"):
+            workspace.publish_receipt(_minimal_receipt(node_id="node-2"))
+
+
+def test_analysis_workspace_publication_is_atomic_and_attempts_are_immutable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = AnalysisWorkspace("run-1", root=tmp_path / "analysis")
+    workspace.register_node("node-1", "node-1")
+    receipt = _minimal_receipt()
+
+    def fail_replace(_: str | os.PathLike[str], __: str | os.PathLike[str]) -> None:
+        raise OSError("injected replacement failure")
+
+    monkeypatch.setattr("okf_wiki.analysis_workspace.os.replace", fail_replace)
+    with pytest.raises(OSError, match="replacement"):
+        workspace.publish_receipt(receipt)
+    assert not list(workspace.root.rglob("*.json"))
+    assert not list(workspace.root.rglob("*.tmp"))
+
+    monkeypatch.undo()
+    handoff = workspace.publish_receipt(receipt)
+    with pytest.raises(ValueError, match="already been published"):
+        workspace.publish_receipt(receipt)
+    with pytest.raises(ValueError, match="does not match"):
+        workspace.read_receipt(
+            HandoffRef(
+                task_id="node-1",
+                node_id="node-1",
+                attempt=1,
+                status="partial",
+                summary="",
+                receipt=handoff.receipt,
+            )
+        )
+    workspace.cleanup()
+
+
+def test_analysis_workspace_can_be_retained_only_explicitly(tmp_path: Path) -> None:
+    root = tmp_path / "retained"
+    workspace = AnalysisWorkspace("run-1", root=root, retain=True)
+    workspace.register_node("node-1", "node-1")
+    workspace.publish_receipt(_minimal_receipt())
+    workspace.cleanup()
+    assert root.exists()
+    shutil.rmtree(root)
+
+    generated = AnalysisWorkspace("run-2", retain=True)
+    generated.register_node("node-1", "node-1")
+    generated_root = generated.root
+    generated.cleanup()
+    assert generated_root.exists()
+    shutil.rmtree(generated_root)
 
 
 def test_default_producer_skill_is_a_complete_content_addressed_version() -> None:
@@ -508,6 +841,316 @@ title: Architecture
         "skill_digest": skill_version.digest,
     }
     assert datetime.fromisoformat(metadata["generated_at"]).tzinfo == UTC
+
+
+def test_complete_wiki_run_emits_ordered_bounded_public_events(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    events: list[WikiRunEvent] = []
+
+    result = asyncio.run(
+        WikiRunApplication(observer=events.append).run(
+            WikiRunRequest(
+                repositories=(RepositorySnapshot(path=source, revision=revision),),
+                skill=skill,
+                model=ModelProviderConfig(
+                    model=writing_model(
+                        write_pages_code({"index.md": SIMPLE_WIKI_PAGE}), ["index.md"]
+                    )
+                ),
+                limits=TEST_WIKI_LIMITS,
+                staging=tmp_path / "staging",
+                publication=tmp_path / "published",
+            )
+        )
+    )
+
+    assert isinstance(result, Complete)
+    assert [event.type for event in events] == [
+        "run_created",
+        "snapshots_frozen",
+        "skill_frozen",
+        "validation_started",
+        "validation_succeeded",
+        "publication_started",
+        "publication_succeeded",
+        "run_succeeded",
+    ]
+    assert len({event.run_id for event in events}) == 1
+    assert [event.sequence for event in events] == list(range(1, len(events) + 1))
+    assert {event.node_id for event in events} == {"root"}
+    assert all(len(event.model_dump_json().encode()) <= 8_192 for event in events)
+    assert analysis_workspace_paths(events[0].run_id) == set()
+
+
+def test_complete_wiki_run_writes_a_bounded_secret_free_terminal_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    publication = tmp_path / "published"
+    secret = "private-run-record-header"
+    monkeypatch.setenv("OKF_RECORD_TOKEN", secret)
+    events: list[WikiRunEvent] = []
+
+    result = asyncio.run(
+        WikiRunApplication(observer=events.append).run(
+            WikiRunRequest(
+                repositories=(
+                    RepositorySnapshot(
+                        id="repo",
+                        path=source,
+                        revision=revision,
+                        ignore=("generated/**",),
+                    ),
+                ),
+                skill=skill,
+                model=ModelProviderConfig(
+                    model=writing_model(
+                        write_pages_code({"index.md": SIMPLE_WIKI_PAGE}), ["index.md"]
+                    ),
+                    settings={
+                        "temperature": 0.25,
+                        "stop_sequences": [secret],
+                        "extra_headers": {"Authorization": f"Bearer {secret}"},
+                    },
+                ),
+                limits=TEST_WIKI_LIMITS,
+                staging=tmp_path / "staging",
+                publication=publication,
+            )
+        )
+    )
+
+    [record] = run_records(publication)
+    encoded = json.dumps(record, sort_keys=True).encode()
+    assert isinstance(result, Complete)
+    assert record["schema_version"] == 1
+    assert record["run_id"] == events[0].run_id
+    assert record["status"] == "complete"
+    assert record["operation"] == "generate"
+    assert record["repositories"] == [
+        {
+            "id": "repo",
+            "path": str(source.resolve()),
+            "revision": revision,
+            "ignore": ["generated/**"],
+        }
+    ]
+    assert record["skill"] == {"path": str(skill.path), "digest": skill.digest}
+    assert record["model"] == {
+        "identity": "function:model:",
+        "replayable": False,
+        "settings": {
+            "temperature": 0.25,
+            "stop_sequences": ["[REDACTED CREDENTIAL]"],
+            "extra_headers": "[redacted]",
+        },
+    }
+    assert record["limits"] == TEST_WIKI_LIMITS.model_dump(mode="json")
+    assert record["explicit_answers"] == {}
+    assert record["usage"]["requests"] == 2
+    assert record["retry_counters"] == {"provider": 0, "tool": 0, "output": 0}
+    assert record["publication"] == {"status": "published", "changed": True}
+    assert record["failure_category"] is None
+    assert datetime.fromisoformat(record["started_at"]).tzinfo == UTC
+    assert datetime.fromisoformat(record["completed_at"]).tzinfo == UTC
+    assert record["duration_seconds"] >= 0
+    assert len(encoded) <= 128 * 1024
+    assert secret.encode() not in encoded
+
+
+def test_record_write_failure_is_observable_without_changing_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    publication = tmp_path / "published"
+    events: list[WikiRunEvent] = []
+
+    def fail_record(*_: object, **__: object) -> None:
+        raise OSError("record storage unavailable")
+
+    monkeypatch.setattr("okf_wiki.wiki_run._write_run_record", fail_record)
+    result = asyncio.run(
+        WikiRunApplication(observer=events.append).run(
+            WikiRunRequest(
+                repositories=(RepositorySnapshot(path=source, revision=revision),),
+                skill=skill,
+                model=ModelProviderConfig(
+                    model=writing_model(
+                        write_pages_code({"index.md": SIMPLE_WIKI_PAGE}), ["index.md"]
+                    )
+                ),
+                limits=TEST_WIKI_LIMITS,
+                staging=tmp_path / "staging",
+                publication=publication,
+            )
+        )
+    )
+
+    assert isinstance(result, Complete)
+    assert (publication / "index.md").is_file()
+    assert events[-1].type == "run_record_failed"
+
+
+def test_early_wiki_run_failure_still_writes_a_terminal_record(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    events: list[WikiRunEvent] = []
+
+    with pytest.raises(ValueError, match="overlap"):
+        asyncio.run(
+            WikiRunApplication(observer=events.append).run(
+                WikiRunRequest(
+                    repositories=(RepositorySnapshot(path=source, revision=revision),),
+                    skill=skill,
+                    model=ModelProviderConfig(model="test:model"),
+                    limits=TEST_WIKI_LIMITS,
+                    staging=tmp_path / "staging",
+                    publication=source,
+                )
+            )
+        )
+
+    records = run_records(source)
+    assert len(records) == 1
+    assert records[0]["status"] == "failed"
+    assert events[-1].type == "run_failed"
+
+
+def test_needs_input_emits_a_terminal_event_and_record(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    publication = tmp_path / "published"
+    events: list[WikiRunEvent] = []
+
+    def model(_: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
+        needs_input = next(tool for tool in info.output_tools if tool.name.endswith("NeedsInput"))
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    needs_input.name,
+                    {"status": "needs_input", "questions": ["Which audience?"]},
+                )
+            ]
+        )
+
+    result = asyncio.run(
+        WikiRunApplication(observer=events.append).run(
+            WikiRunRequest(
+                repositories=(RepositorySnapshot(path=source, revision=revision),),
+                skill=skill,
+                model=ModelProviderConfig(model=FunctionModel(model)),
+                limits=TEST_WIKI_LIMITS,
+                staging=tmp_path / "staging",
+                publication=publication,
+            )
+        )
+    )
+
+    [record] = run_records(publication)
+    assert result == NeedsInput(questions=["Which audience?"])
+    assert [event.type for event in events] == [
+        "run_created",
+        "snapshots_frozen",
+        "skill_frozen",
+        "needs_input",
+    ]
+    assert record["status"] == "needs_input"
+    assert record["publication"] == {"status": "not_published", "changed": False}
+
+
+def test_failed_wiki_run_emits_a_terminal_event_and_secret_free_record(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    publication = tmp_path / "published"
+    secret = "record-failure-secret"
+    events: list[WikiRunEvent] = []
+
+    def observe(event: WikiRunEvent) -> None:
+        events.append(event)
+        raise RuntimeError("observer failure")
+
+    def fail(_: list[ModelRequest | ModelResponse], __: AgentInfo) -> ModelResponse:
+        raise RuntimeError(f"provider failed with {secret}")
+
+    with pytest.raises(RuntimeError, match="diagnostics withheld"):
+        asyncio.run(
+            WikiRunApplication(observer=observe).run(
+                WikiRunRequest(
+                    repositories=(RepositorySnapshot(path=source, revision=revision),),
+                    skill=skill,
+                    model=ModelProviderConfig(
+                        model=FunctionModel(fail),
+                        settings={"extra_headers": {"Authorization": secret}},
+                    ),
+                    limits=TEST_WIKI_LIMITS,
+                    staging=tmp_path / "staging",
+                    publication=publication,
+                )
+            )
+        )
+
+    [record] = run_records(publication)
+    assert record["status"] == "failed"
+    assert record["failure_category"] == "RuntimeError"
+    assert secret.encode() not in json.dumps(record).encode()
+    assert analysis_workspace_paths(events[0].run_id) == set()
+
+
+def test_cancelled_wiki_run_emits_a_terminal_event_and_record(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    publication = tmp_path / "published"
+    events: list[WikiRunEvent] = []
+    started = asyncio.Event()
+
+    async def slow(_: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
+        started.set()
+        await asyncio.Event().wait()
+        complete = next(tool for tool in info.output_tools if tool.name.endswith("Complete"))
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    complete.name,
+                    {"status": "complete", "manifest": {"pages": ["index.md"]}},
+                )
+            ]
+        )
+
+    async def scenario() -> None:
+        task = asyncio.create_task(
+            WikiRunApplication(observer=events.append).run(
+                WikiRunRequest(
+                    repositories=(RepositorySnapshot(path=source, revision=revision),),
+                    skill=skill,
+                    model=ModelProviderConfig(model=FunctionModel(slow)),
+                    limits=TEST_WIKI_LIMITS,
+                    staging=tmp_path / "staging",
+                    publication=publication,
+                )
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    [record] = run_records(publication)
+    assert record["status"] == "cancelled"
+    assert events[-1].type == "run_cancelled"
+    assert analysis_workspace_paths(events[0].run_id) == set()
 
 
 def test_refresh_replaces_the_complete_wiki_and_reports_mechanical_changes(

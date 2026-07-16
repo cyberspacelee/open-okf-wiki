@@ -8,11 +8,11 @@ import shutil
 import stat
 import tempfile
 import uuid
-from collections.abc import Hashable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping
 from datetime import UTC, datetime
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 from urllib.parse import unquote, unquote_to_bytes, urlsplit
 
 import yaml
@@ -31,6 +31,7 @@ from pydantic_ai import (
     Agent,
     ModelRetry,
     ModelSettings,
+    RunUsage,
     UnexpectedModelBehavior,
     UsageLimitExceeded,
     UsageLimits,
@@ -45,9 +46,18 @@ from yaml.resolver import BaseResolver
 from .security import (
     MAX_ANALYZABLE_FILE_BYTES,
     canonical_source_path,
+    environment_secrets,
     git_read,
     git_read_bytes,
     redact_secrets,
+)
+from .analysis_workspace import (
+    AnalysisReceipt as AnalysisReceipt,
+    AnalysisWorkspace as AnalysisWorkspace,
+    ArtifactSlice as ArtifactSlice,
+    HandoffRef as HandoffRef,
+    ReceiptArtifact as ReceiptArtifact,
+    ReceiptEvidence as ReceiptEvidence,
 )
 
 
@@ -167,6 +177,10 @@ class WikiRunLimits(BaseModel):
     wiki_file_bytes_limit: int = Field(default=1_000_000, gt=0)
     wiki_total_bytes_limit: int = Field(default=50_000_000, gt=0)
     wiki_write_bytes_limit: int = Field(default=200_000_000, gt=0)
+    analysis_receipt_bytes_limit: int = Field(default=128 * 1024, gt=0)
+    analysis_artifact_bytes_limit: int = Field(default=2 * 1024 * 1024, gt=0)
+    analysis_workspace_bytes_limit: int = Field(default=32 * 1024 * 1024, gt=0)
+    analysis_workspace_entries_limit: int = Field(default=256, gt=0)
 
     def usage_limits(self) -> UsageLimits:
         return UsageLimits(
@@ -222,6 +236,7 @@ class _WikiRunFileConfig(BaseModel):
     repositories: tuple[_ConfiguredRepository, ...] = Field(min_length=1, max_length=64)
     skill: _ConfiguredSkill | None = None
     limits: WikiRunLimits = Field(default_factory=WikiRunLimits)
+    retain_analysis_workspace: bool = False
 
     @model_validator(mode="after")
     def validate_repository_ids(self) -> "_WikiRunFileConfig":
@@ -271,6 +286,38 @@ class NeedsInput(BaseModel):
 type WikiRunResult = Complete | NeedsInput
 
 
+class WikiRunEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    run_id: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{32}$")]
+    sequence: int = Field(gt=0)
+    timestamp: datetime
+    type: Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,63}$")]
+    node_id: Annotated[str, StringConstraints(min_length=1, max_length=64)] = "root"
+    payload: dict[str, object] = Field(default_factory=dict, max_length=32)
+
+
+class WikiRunRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    run_id: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{32}$")]
+    status: Literal["complete", "needs_input", "failed", "cancelled"]
+    operation: Literal["generate", "refresh"]
+    repositories: list[dict[str, object]] = Field(min_length=1, max_length=64)
+    skill: dict[str, str]
+    model: dict[str, object]
+    limits: dict[str, object]
+    explicit_answers: dict[str, str] = Field(default_factory=dict)
+    started_at: datetime
+    completed_at: datetime
+    duration_seconds: float = Field(ge=0)
+    usage: dict[str, object] = Field(default_factory=dict)
+    retry_counters: dict[str, int] = Field(default_factory=dict)
+    publication: dict[str, object] = Field(default_factory=dict)
+    failure_category: str | None = None
+
+
 class WikiRunResourceLimitError(UnexpectedModelBehavior, ValueError):
     """A bounded Wiki Run stopped before it could produce a terminal result."""
 
@@ -285,6 +332,7 @@ class WikiRunRequest(BaseModel):
     limits: WikiRunLimits
     staging: Path
     publication: Path
+    retain_analysis_workspace: bool = False
 
     @model_validator(mode="after")
     def validate_repository_ids(self) -> "WikiRunRequest":
@@ -392,6 +440,7 @@ def _model_secret_values(settings: Mapping[str, object]) -> tuple[str, ...]:
             values.add(value)
 
     collect(settings, sensitive=False)
+    values.update(environment_secrets())
     return tuple(values)
 
 
@@ -404,9 +453,332 @@ def _safe_model_error(error: Exception, settings: Mapping[str, object]) -> str |
     return None
 
 
+_RUN_RECORD_MAX_BYTES = 128 * 1024
+
+
+def _record_settings(settings: Mapping[str, object]) -> dict[str, object]:
+    secrets = _model_secret_values(settings)
+
+    def sanitize(value: object, *, sensitive: bool = False, depth: int = 0) -> object:
+        if sensitive:
+            return "[redacted]"
+        if depth >= 4:
+            return "[truncated]"
+        if isinstance(value, Mapping):
+            result: dict[str, object] = {}
+            for key, item in list(value.items())[:64]:
+                normalized = str(key).casefold().replace("-", "_")
+                child_sensitive = normalized in {"extra_body", "extra_headers"} or any(
+                    marker in normalized for marker in _SECRET_SETTING_MARKERS
+                )
+                result[str(key)[:100]] = sanitize(item, sensitive=child_sensitive, depth=depth + 1)
+            return result
+        if isinstance(value, (list, tuple)):
+            return [sanitize(item, depth=depth + 1) for item in list(value)[:64]]
+        if isinstance(value, str):
+            return redact_secrets(value, secrets)[:2_000]
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        return f"<{type(value).__name__}>"
+
+    value = sanitize(settings)
+    result = cast(dict[str, object], value) if isinstance(value, dict) else {}
+    encoded = json.dumps(result, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if len(encoded) > 16 * 1024:
+        return {"truncated": True}
+    return result
+
+
+def _record_model(model: Model | str, settings: Mapping[str, object]) -> dict[str, object]:
+    secrets = _model_secret_values(settings)
+    if isinstance(model, str):
+        identity = model
+        replayable = True
+    else:
+        try:
+            identity = getattr(model, "model_name", None) or model.__class__.__name__
+        except Exception:
+            identity = model.__class__.__name__
+        replayable = False
+    return {
+        "identity": redact_secrets(str(identity), secrets)[:200],
+        "replayable": replayable,
+        "settings": _record_settings(settings),
+    }
+
+
+def _record_usage(usage: object) -> dict[str, object]:
+    input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+    output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+    return {
+        "requests": int(getattr(usage, "requests", 0) or 0),
+        "tool_calls": int(getattr(usage, "tool_calls", 0) or 0),
+        "input_tokens": input_tokens,
+        "cache_write_tokens": int(getattr(usage, "cache_write_tokens", 0) or 0),
+        "cache_read_tokens": int(getattr(usage, "cache_read_tokens", 0) or 0),
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+    }
+
+
+_EVENT_ENUM_RE = re.compile(r"^[a-z0-9][a-z0-9_.:-]{0,63}$")
+_EVENT_SAFE_KEYS = {
+    "attempt",
+    "changed",
+    "count",
+    "depth",
+    "duration_seconds",
+    "fanout",
+    "kind",
+    "node_kind",
+    "reason_code",
+    "status",
+    "total",
+    "wait_seconds",
+}
+
+
+def _event_payload(payload: Mapping[str, object]) -> dict[str, object]:
+    """Keep public diagnostics to bounded counters and enum-like labels."""
+    result: dict[str, object] = {}
+    for raw_key, value in list(payload.items())[:32]:
+        key = str(raw_key)[:64]
+        if key not in _EVENT_SAFE_KEYS:
+            continue
+        if isinstance(value, bool) or isinstance(value, (int, float)):
+            result[key] = value
+        elif isinstance(value, str) and _EVENT_ENUM_RE.fullmatch(value):
+            result[key] = value
+    return result
+
+
+def _record_directory(publication: Path) -> Path:
+    return publication.parent / f".{publication.name}.runs"
+
+
+def _record_publication_path(value: Path) -> Path | None:
+    try:
+        candidate = value.absolute()
+        if not candidate.name:
+            return None
+        return candidate.parent.resolve(strict=False) / candidate.name
+    except OSError, RuntimeError, ValueError:
+        return None
+
+
+def _write_json_atomically(path: Path, data: bytes, *, max_bytes: int, label: str) -> None:
+    if len(data) > max_bytes:
+        raise ValueError(f"{label} exceeds the configured byte limit")
+    _check_directory_path(path.parent, f"{label} parent")
+    _create_directory_path(path.parent, f"{label} parent")
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(temporary, flags, 0o600)
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(descriptor, view) :]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        if os.path.lexists(path):
+            raise ValueError(f"{label} already exists")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _write_run_record(
+    request: WikiRunRequest,
+    *,
+    run_id: str,
+    publication: Path,
+    status: Literal["complete", "needs_input", "failed", "cancelled"],
+    started_at: datetime,
+    completed_at: datetime,
+    usage: object,
+    retry_counters: Mapping[str, int],
+    publication_status: dict[str, object],
+    failure_category: str | None,
+    skill_path: Path | None = None,
+) -> None:
+    secrets = _model_secret_values(request.model.settings)
+    repositories: list[dict[str, object]] = []
+    for repository in request.repositories:
+        path = redact_secrets(str(repository.path.resolve()), secrets)
+        item: dict[str, object] = {
+            "id": repository.id,
+            "path": path[:1_024],
+            "revision": repository.revision,
+            "ignore": [
+                redact_secrets(pattern, secrets)[:500] for pattern in repository.ignore[:32]
+            ],
+        }
+        if len(path) > 1_024:
+            item["path_truncated"] = True
+        repositories.append(item)
+    skill = redact_secrets(str(skill_path or request.skill.path.resolve()), secrets)
+    record = WikiRunRecord(
+        run_id=run_id,
+        status=status,
+        operation=request.operation,
+        repositories=repositories,
+        skill={"path": skill[:1_024], "digest": request.skill.digest},
+        model=_record_model(request.model.model, request.model.settings),
+        limits=request.limits.model_dump(mode="json"),
+        started_at=started_at,
+        completed_at=completed_at,
+        duration_seconds=max(0.0, (completed_at - started_at).total_seconds()),
+        usage=_record_usage(usage),
+        retry_counters=dict(retry_counters),
+        publication=publication_status,
+        failure_category=failure_category,
+    )
+    encoded = json.dumps(
+        record.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    _write_json_atomically(
+        _record_directory(publication) / f"{run_id}.json",
+        encoded,
+        max_bytes=_RUN_RECORD_MAX_BYTES,
+        label="Wiki Run Record",
+    )
+
+
 class WikiRunApplication:
+    def __init__(self, observer: Callable[[WikiRunEvent], object] | None = None) -> None:
+        self._observer = observer
+
     async def run(self, request: WikiRunRequest) -> WikiRunResult:
+        run_id = os.urandom(16).hex()
+        sequence = 0
+        started_at = datetime.now(UTC)
+        lifecycle: dict[str, object] = {
+            "publication": _record_publication_path(request.publication),
+            "skill_path": request.skill.path.absolute(),
+            "usage": None,
+            "retry_counters": {"provider": 0, "tool": 0, "output": 0},
+            "publication_status": {"status": "not_published", "changed": False},
+        }
+
+        def emit(event_type: str, payload: Mapping[str, object] | None = None) -> None:
+            nonlocal sequence
+            sequence += 1
+            safe_payload = _event_payload(payload or {})
+            event = WikiRunEvent(
+                run_id=run_id,
+                sequence=sequence,
+                timestamp=datetime.now(UTC),
+                type=event_type,
+                payload=safe_payload,
+            )
+            if len(event.model_dump_json().encode()) > 8_192:
+                event = event.model_copy(update={"payload": {"truncated": True}})
+            if self._observer is not None:
+                try:
+                    self._observer(event)
+                except Exception:
+                    pass
+
+        emit("run_created")
+        workspace: AnalysisWorkspace | None = None
+        try:
+            workspace = AnalysisWorkspace(
+                run_id,
+                limits=request.limits,
+                retain=request.retain_analysis_workspace,
+            )
+            workspace.register_node("root", "root")
+            lifecycle["analysis_workspace"] = workspace
+            result = await self._run_impl(request, emit=emit, lifecycle=lifecycle)
+            status: Literal["complete", "needs_input"] = (
+                "complete" if isinstance(result, Complete) else "needs_input"
+            )
+            if status == "complete":
+                emit("run_succeeded")
+            else:
+                emit("needs_input")
+            if not self._finalize_record(
+                request,
+                run_id=run_id,
+                started_at=started_at,
+                lifecycle=lifecycle,
+                status=status,
+                failure_category=None,
+            ):
+                emit("run_record_failed", {"reason_code": "write_failed"})
+            return result
+        except asyncio.CancelledError:
+            emit("run_cancelled")
+            if not self._finalize_record(
+                request,
+                run_id=run_id,
+                started_at=started_at,
+                lifecycle=lifecycle,
+                status="cancelled",
+                failure_category="CancelledError",
+            ):
+                emit("run_record_failed", {"reason_code": "write_failed"})
+            raise
+        except Exception as error:
+            emit("run_failed")
+            if not self._finalize_record(
+                request,
+                run_id=run_id,
+                started_at=started_at,
+                lifecycle=lifecycle,
+                status="failed",
+                failure_category=type(error).__name__,
+            ):
+                emit("run_record_failed", {"reason_code": "write_failed"})
+            raise
+        finally:
+            if workspace is not None:
+                workspace.cleanup()
+
+    def _finalize_record(
+        self,
+        request: WikiRunRequest,
+        *,
+        run_id: str,
+        started_at: datetime,
+        lifecycle: Mapping[str, object],
+        status: Literal["complete", "needs_input", "failed", "cancelled"],
+        failure_category: str | None,
+    ) -> bool:
+        publication = lifecycle.get("publication")
+        if not isinstance(publication, Path):
+            return False
+        try:
+            _write_run_record(
+                request,
+                run_id=run_id,
+                publication=publication,
+                status=status,
+                started_at=started_at,
+                completed_at=datetime.now(UTC),
+                usage=lifecycle.get("usage"),
+                retry_counters=cast(Mapping[str, int], lifecycle.get("retry_counters", {})),
+                publication_status=cast(dict[str, object], lifecycle["publication_status"]),
+                failure_category=failure_category,
+                skill_path=cast(Path | None, lifecycle.get("skill_path")),
+            )
+            return True
+        except Exception:
+            # A diagnostic record must not change a completed result or publication.
+            return False
+
+    async def _run_impl(
+        self,
+        request: WikiRunRequest,
+        *,
+        emit: Callable[..., None],
+        lifecycle: dict[str, object],
+    ) -> WikiRunResult:
         checkouts, skill_input, staging, publication = _prepare_mounts(request)
+        lifecycle["publication"] = publication
+        lifecycle["skill_path"] = skill_input
         old_hashes: dict[str, str] = {}
         old_repositories: tuple[_PublishedRepository, ...] | None = None
         old_skill_digest: str | None = None
@@ -436,6 +808,15 @@ class WikiRunApplication:
                     used_bytes=used_bytes,
                 )
                 sources[repository.id] = target
+            workspace = lifecycle.get("analysis_workspace")
+            if isinstance(workspace, AnalysisWorkspace):
+                workspace.configure_sources(
+                    {
+                        repository.id: (repository.revision, sources[repository.id])
+                        for repository in request.repositories
+                    }
+                )
+            emit("snapshots_frozen")
             shutil.copytree(skill_input, skill, symlinks=True)
             _, skill_digest = _validate_producer_skill(skill)
             if skill_digest != request.skill.digest:
@@ -443,6 +824,7 @@ class WikiRunApplication:
                     "Selected Skill Version changed while it was being frozen: "
                     f"expected {request.skill.digest}, found {skill_digest}"
                 )
+            emit("skill_frozen")
             settings = ModelSettings(**request.model.settings)
             settings["timeout"] = request.limits.request_timeout_seconds
             agent = Agent[None, WikiRunResult](
@@ -471,11 +853,15 @@ class WikiRunApplication:
                 ],
             )
             agent.instrument = False
+            run_usage = RunUsage()
+            lifecycle["usage"] = run_usage
 
             @agent.output_validator
             def validate_output(output: WikiRunResult) -> WikiRunResult:
                 if isinstance(output, Complete):
+                    emit("validation_started")
                     if output.summary != WikiChangeSummary():
+                        cast(dict[str, int], lifecycle["retry_counters"])["output"] += 1
                         raise ModelRetry(
                             "Complete.summary is host-owned and must be omitted or empty"
                         )
@@ -483,9 +869,11 @@ class WikiRunApplication:
                     if errors:
                         if limit_error := _resource_limit_message(errors):
                             raise WikiRunResourceLimitError(limit_error)
+                        cast(dict[str, int], lifecycle["retry_counters"])["output"] += 1
                         raise ModelRetry(
                             "Staged Wiki validation failed:\n- " + "\n- ".join(errors[:20])
                         )
+                    emit("validation_succeeded")
                 return output
 
             async with asyncio.timeout(request.limits.wall_clock_timeout_seconds):
@@ -493,6 +881,7 @@ class WikiRunApplication:
                     result = await agent.run(
                         f"Begin this {request.operation} Wiki Run.",
                         usage_limits=request.limits.usage_limits(),
+                        usage=run_usage,
                     )
                 except WikiRunResourceLimitError:
                     raise
@@ -502,6 +891,7 @@ class WikiRunApplication:
                     if safe_error := _safe_model_error(error, request.model.settings):
                         raise RuntimeError(safe_error) from None
                     raise
+            lifecycle["usage"] = result.usage
             if isinstance(result.output, Complete):
                 new_hashes = _hashes(staging, result.output.manifest.pages)
                 summary = _summarize_changes(
@@ -515,6 +905,7 @@ class WikiRunApplication:
                 )
                 output = result.output.model_copy(update={"summary": summary})
                 if summary.publication_changed:
+                    emit("publication_started")
                     model_name = result.response.model_name
                     if not model_name:
                         raise RuntimeError("Final model response did not identify its model")
@@ -528,6 +919,16 @@ class WikiRunApplication:
                         model_name=model_name,
                         limits=request.limits,
                     )
+                    emit("publication_succeeded")
+                    lifecycle["publication_status"] = {
+                        "status": "published",
+                        "changed": True,
+                    }
+                else:
+                    lifecycle["publication_status"] = {
+                        "status": "unchanged",
+                        "changed": False,
+                    }
                 return output
             return result.output
 
@@ -874,6 +1275,7 @@ def _wiki_run_request_from_yaml(path: Path) -> WikiRunRequest:
         limits=config.limits,
         staging=_configured_path(root, config.staging),
         publication=_configured_path(root, config.publication),
+        retain_analysis_workspace=config.retain_analysis_workspace,
     )
 
 

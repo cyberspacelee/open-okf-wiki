@@ -58,6 +58,10 @@ def parser() -> argparse.ArgumentParser:
     wiki_run.add_argument("--wiki-file-bytes-limit", type=int)
     wiki_run.add_argument("--wiki-total-bytes-limit", type=int)
     wiki_run.add_argument("--wiki-write-bytes-limit", type=int)
+    wiki_run.add_argument("--analysis-receipt-bytes-limit", type=int)
+    wiki_run.add_argument("--analysis-artifact-bytes-limit", type=int)
+    wiki_run.add_argument("--analysis-workspace-bytes-limit", type=int)
+    wiki_run.add_argument("--analysis-workspace-entries-limit", type=int)
 
     wiki_eval = subcommands.add_parser("wiki-eval")
     wiki_eval.add_argument("output", type=Path)
