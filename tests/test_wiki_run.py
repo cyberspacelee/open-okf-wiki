@@ -24,6 +24,7 @@ from okf_wiki.wiki_run import (
     AnalysisReceipt,
     AnalysisWorkspace,
     Complete,
+    DEFAULT_SOURCE_IGNORES,
     ModelProviderConfig,
     NeedsInput,
     ProducerSkillFork,
@@ -40,6 +41,7 @@ from okf_wiki.wiki_run import (
     ReceiptEvidence,
     HandoffRef,
     _materialize_repository_snapshot,
+    resolve_effective_source_ignores,
 )
 
 
@@ -118,6 +120,26 @@ TEST_WIKI_LIMITS = WikiRunLimits(
     tool_timeout_seconds=5,
 )
 SIMPLE_WIKI_PAGE = "---\ntitle: Wiki\n---\n# Wiki\n\n[Source](repo:README.md#L1-L1)\n"
+
+
+def expected_published_repository(
+    revision: str,
+    *,
+    ignore: tuple[str, ...] = (),
+    apply_default_source_ignores: bool = True,
+) -> dict[str, object]:
+    return {
+        "id": "source",
+        "revision": revision,
+        "ignore": list(ignore),
+        "apply_default_source_ignores": apply_default_source_ignores,
+        "effective_ignore": list(
+            resolve_effective_source_ignores(
+                apply_default_source_ignores=apply_default_source_ignores,
+                user_ignore=ignore,
+            )
+        ),
+    }
 
 
 def write_pages_code(pages: dict[str, str]) -> str:
@@ -534,7 +556,7 @@ def test_default_producer_skill_is_a_complete_content_addressed_version() -> Non
         for path in version.path.rglob("*")
         if path.is_file()
     } == REQUIRED_PRODUCER_SKILL_PATHS
-    assert version.digest == "77880859f9ee6be22e4a8112c9afae757ef2a55df499c5b68762d9b5cbea7c52"
+    assert version.digest == "0d9529254f551c55ac82ca06cd29df0b37eb266c83dbb9058201ab0cbc2ebd07"
 
 
 @pytest.mark.parametrize(
@@ -838,7 +860,7 @@ title: Architecture
             },
         ],
         "repositories": [
-            {"id": "source", "ignore": [], "revision": source_revision},
+            expected_published_repository(source_revision),
         ],
         "skill_digest": skill_version.digest,
     }
@@ -938,7 +960,14 @@ def test_complete_wiki_run_writes_a_bounded_secret_free_terminal_record(
             "id": "repo",
             "path": str(source.resolve()),
             "revision": revision,
+            "apply_default_source_ignores": True,
             "ignore": ["generated/**"],
+            "effective_ignore": list(
+                resolve_effective_source_ignores(
+                    apply_default_source_ignores=True,
+                    user_ignore=("generated/**",),
+                )
+            ),
         }
     ]
     assert record["skill"] == {"path": str(skill.path), "digest": skill.digest}
@@ -1334,7 +1363,7 @@ assert 'Customization: audience-first' in guidance
     assert not (published / "legacy.md").exists()
     assert "[Flow](flow.md#flow)" in (published / "index.md").read_text(encoding="utf-8")
     metadata = json.loads((published / ".okf-wiki.json").read_text(encoding="utf-8"))
-    assert metadata["repositories"] == [{"id": "source", "ignore": [], "revision": source_revision}]
+    assert metadata["repositories"] == [expected_published_repository(source_revision)]
     assert metadata["skill_digest"] == refreshed_skill.digest
 
 
@@ -1466,7 +1495,7 @@ def test_content_identical_refresh_publishes_changed_provenance(
     )
     assert published.resolve() != old_release
     metadata = json.loads((published / ".okf-wiki.json").read_text(encoding="utf-8"))
-    assert metadata["repositories"] == [{"id": "source", "ignore": [], "revision": source_revision}]
+    assert metadata["repositories"] == [expected_published_repository(source_revision)]
     assert metadata["skill_digest"] == skill_version.digest
 
 
@@ -3531,6 +3560,200 @@ repositories: []
     assert secret not in str(captured.value)
 
 
+def test_resolve_effective_source_ignores_unions_defaults_with_user_ignore() -> None:
+    assert resolve_effective_source_ignores(
+        apply_default_source_ignores=True,
+        user_ignore=("generated/**",),
+    ) == DEFAULT_SOURCE_IGNORES + ("generated/**",)
+    assert resolve_effective_source_ignores(
+        apply_default_source_ignores=False,
+        user_ignore=("generated/**",),
+    ) == ("generated/**",)
+    frozen = ("custom/**",)
+    assert (
+        resolve_effective_source_ignores(
+            apply_default_source_ignores=True,
+            user_ignore=("generated/**",),
+            frozen_effective_ignore=frozen,
+        )
+        == frozen
+    )
+
+
+def test_default_source_ignores_exclude_noise_but_keep_tests(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=source, check=True)
+    (source / "README.md").write_text("source\n", encoding="utf-8")
+    (source / "node_modules").mkdir()
+    (source / "node_modules" / "pkg.js").write_text("noise\n", encoding="utf-8")
+    (source / "dist").mkdir()
+    (source / "dist" / "out.js").write_text("built\n", encoding="utf-8")
+    (source / "tests").mkdir()
+    (source / "tests" / "test_app.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "add", "."], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-qm", "tree"], cwd=source, check=True)
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    with_defaults = tmp_path / "with_defaults"
+    _materialize_repository_snapshot(
+        source,
+        revision,
+        with_defaults,
+        TEST_WIKI_LIMITS,
+        ignore=resolve_effective_source_ignores(
+            apply_default_source_ignores=True,
+            user_ignore=(),
+        ),
+        used_files=0,
+        used_bytes=0,
+    )
+    assert (with_defaults / "README.md").is_file()
+    assert (with_defaults / "tests" / "test_app.py").is_file()
+    assert not (with_defaults / "node_modules").exists()
+    assert not (with_defaults / "dist").exists()
+
+    without_defaults = tmp_path / "without_defaults"
+    _materialize_repository_snapshot(
+        source,
+        revision,
+        without_defaults,
+        TEST_WIKI_LIMITS,
+        ignore=resolve_effective_source_ignores(
+            apply_default_source_ignores=False,
+            user_ignore=(),
+        ),
+        used_files=0,
+        used_bytes=0,
+    )
+    assert (without_defaults / "node_modules" / "pkg.js").is_file()
+    assert (without_defaults / "dist" / "out.js").is_file()
+
+
+def test_yaml_apply_default_source_ignores_false(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    config = tmp_path / "wiki-run.yaml"
+    config.write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "operation: generate",
+                "model: openai:gpt-5-mini",
+                "staging: ./staging",
+                "publication: ./wiki",
+                "repositories:",
+                "  - id: application",
+                f"    path: {source}",
+                f"    revision: {revision}",
+                "    apply_default_source_ignores: false",
+                "    ignore:",
+                '      - "generated/**"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    request = WikiRunRequest.from_yaml(config)
+    assert request.repositories[0].apply_default_source_ignores is False
+    assert request.repositories[0].effective_source_ignores() == ("generated/**",)
+
+
+def test_manual_retry_requires_frozen_effective_ignore(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    record = {
+        "schema_version": 1,
+        "run_id": "a" * 32,
+        "status": "failed",
+        "operation": "generate",
+        "repositories": [
+            {
+                "id": "source",
+                "path": str(source.resolve()),
+                "revision": revision,
+                "ignore": [],
+            }
+        ],
+        "skill": {"path": str(skill.path), "digest": skill.digest},
+        "model": {"identity": "test", "replayable": True, "settings": {}},
+        "limits": TEST_WIKI_LIMITS.model_dump(mode="json"),
+        "explicit_answers": {},
+        "started_at": "2026-07-16T00:00:00+00:00",
+        "completed_at": "2026-07-16T00:00:01+00:00",
+        "duration_seconds": 1.0,
+        "usage": {},
+        "retry_counters": {},
+        "publication": {"status": "unchanged"},
+        "failure_category": "RuntimeError",
+    }
+    path = tmp_path / "record.json"
+    path.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(ValueError, match="frozen effective_ignore"):
+        WikiRunRequest.from_run_record(
+            path,
+            staging=tmp_path / "staging",
+            publication=tmp_path / "published",
+            model="test",
+        )
+
+
+def test_manual_retry_reuses_frozen_effective_ignore(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    frozen = ("frozen-only/**",)
+    record = {
+        "schema_version": 1,
+        "run_id": "b" * 32,
+        "status": "failed",
+        "operation": "generate",
+        "repositories": [
+            {
+                "id": "source",
+                "path": str(source.resolve()),
+                "revision": revision,
+                "apply_default_source_ignores": True,
+                "ignore": ["user/**"],
+                "effective_ignore": list(frozen),
+            }
+        ],
+        "skill": {"path": str(skill.path), "digest": skill.digest},
+        "model": {"identity": "test", "replayable": True, "settings": {}},
+        "limits": TEST_WIKI_LIMITS.model_dump(mode="json"),
+        "explicit_answers": {},
+        "started_at": "2026-07-16T00:00:00+00:00",
+        "completed_at": "2026-07-16T00:00:01+00:00",
+        "duration_seconds": 1.0,
+        "usage": {},
+        "retry_counters": {},
+        "publication": {"status": "unchanged"},
+        "failure_category": "RuntimeError",
+    }
+    path = tmp_path / "record.json"
+    path.write_text(json.dumps(record), encoding="utf-8")
+    request = WikiRunRequest.from_run_record(
+        path,
+        staging=tmp_path / "staging",
+        publication=tmp_path / "published",
+        model="test",
+    )
+    assert request.repositories[0].effective_source_ignores() == frozen
+    assert request.repositories[0].ignore == ("user/**",)
+
+
 def test_ignore_patterns_skip_non_file_tree_entries(tmp_path: Path) -> None:
     dependency = tmp_path / "dependency"
     make_repository(dependency, "dependency\n")
@@ -3644,6 +3867,7 @@ def test_cli_exposes_only_the_greenfield_product_commands() -> None:
         "wiki-eval",
         "skill-fork",
         "skill-inspect",
+        "viz",
     )
 
 
@@ -3849,3 +4073,78 @@ def test_skill_inspect_cli_reports_the_current_resolved_version(
         "ok": True,
         "skill_version": {"digest": expected.digest, "path": str(expected.path)},
     }
+
+
+def test_source_inventory_is_written_and_does_not_gate_citations(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    result = asyncio.run(
+        WikiRunApplication().run(
+            WikiRunRequest(
+                repositories=(RepositorySnapshot(path=source, revision=revision),),
+                skill=skill,
+                model=ModelProviderConfig(
+                    model=writing_model(
+                        write_pages_code({"index.md": SIMPLE_WIKI_PAGE}), ["index.md"]
+                    )
+                ),
+                limits=TEST_WIKI_LIMITS,
+                staging=tmp_path / "staging",
+                publication=tmp_path / "published",
+            )
+        )
+    )
+    assert isinstance(result, Complete)
+    # Citation to README still published successfully (inventory is not a gate).
+    assert (tmp_path / "published" / "index.md").is_file()
+
+
+def test_write_visualization_after_publish_is_optional_and_non_destructive(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    publication = tmp_path / "published"
+    application = WikiRunApplication()
+    result = asyncio.run(
+        application.run(
+            WikiRunRequest(
+                repositories=(RepositorySnapshot(path=source, revision=revision),),
+                skill=skill,
+                model=ModelProviderConfig(
+                    model=writing_model(
+                        write_pages_code({"index.md": SIMPLE_WIKI_PAGE}), ["index.md"]
+                    )
+                ),
+                limits=TEST_WIKI_LIMITS,
+                staging=tmp_path / "staging",
+                publication=publication,
+                write_visualization=True,
+            )
+        )
+    )
+    assert isinstance(result, Complete)
+    assert application.last_visualization is not None
+    index = Path(str(application.last_visualization["index"]))
+    assert index.is_file()
+    assert (publication / "index.md").read_text(encoding="utf-8") == SIMPLE_WIKI_PAGE
+    # Visualization failure must not unpublish: corrupt path is not used when default succeeds.
+    assert application.last_visualization_error is None
+
+
+def test_write_source_inventory_lists_materialized_files(tmp_path: Path) -> None:
+    from okf_wiki.wiki_run import _write_source_inventory
+
+    mount = tmp_path / "source"
+    mount.mkdir()
+    (mount / "README.md").write_text("x\n", encoding="utf-8")
+    (mount / "pkg").mkdir()
+    (mount / "pkg" / "mod.py").write_text("y\n", encoding="utf-8")
+    path = _write_source_inventory(mount, {"source": mount})
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["accelerator_only"] is True
+    assert payload["repositories"][0]["file_count"] == 2
+    assert "README.md" in payload["repositories"][0]["files"]
+    assert "pkg/mod.py" in payload["repositories"][0]["files"]

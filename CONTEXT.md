@@ -16,25 +16,29 @@ _Avoid_: Live checkout, mutable branch
 The non-empty collection of named Repository Snapshots used together by one Wiki Run.
 _Avoid_: Workspace, implicit repository list
 
+**Host Instructions**:
+The short, non-forkable run shell the product injects for every Wiki Run: mount and trust boundaries, activation of the selected Producer Skill, and Host-enforced role limits.
+_Avoid_: system prompt monolith, Producer Skill body, conversation-level one-off prompt, Skill Fork override
+
 **Producer Skill**:
-The trusted, product-provided method and template bundle that guides how a Repository Snapshot Set becomes a Wiki.
-_Avoid_: Target-repository Skill, Python workflow, prompt fragment
+The trusted, versioned method-and-template bundle that teaches how a Repository Snapshot Set becomes a Wiki—investigation, page design, writing, review, and completion criteria—without owning Snapshot membership, budgets, or publication enforcement.
+_Avoid_: Target-repository Skill, Host Instructions, system prompt blob, ignore catalog, Python workflow
 
 **Skill Version**:
 An immutable release of the Producer Skill identified by its exact content digest.
-_Avoid_: Latest Skill, implicit override
+_Avoid_: Latest Skill, implicit override, re-resolved prompt text
 
 **Skill Fork**:
 An explicitly created editable copy of a Skill Version whose changes are owned and versioned separately from product releases.
-_Avoid_: Hidden prompt override, automatically upgraded Skill
+_Avoid_: Hidden prompt override, automatically upgraded Skill, Host Instructions edit
 
 **Wiki Template**:
 An adaptable page scaffold in the Producer Skill that guides structure, questions, style, and diagrams without fixing the final page set.
 _Avoid_: Renderer schema, mandatory page taxonomy, typed content block
 
 **Semantic Workflow**:
-The model-directed sequence of repository exploration, page design, writing, review, and completion decisions for one Wiki Run.
-_Avoid_: Python state machine, fixed role pipeline
+The model-directed sequence of repository exploration, page design, writing, review, and completion decisions for one Wiki Run, directed by the Producer Skill within Host limits.
+_Avoid_: Python state machine, fixed role pipeline, Host Instructions dump
 
 **Run Plan**:
 The current objective, completion gates, evidence gaps, and delegated-scope status that keep one Wiki Run oriented across long investigation and compaction.
@@ -87,3 +91,15 @@ _Avoid_: model transcript、临时聊天记录、最终页面
 **Analysis Workspace**:
 Wiki Run 内保存 Analysis Receipt 和可选中间 artifact 的隔离临时空间；它只服务于本次 Semantic Workflow，不是 Published Wiki，也不是消息队列。
 _Avoid_: /wiki、共享控制总线、永久知识库
+
+**Default Source Ignores**:
+Product-defined repository-relative path patterns that omit common non-evidence tracked paths from every Repository Snapshot unless that repository disables them for the Wiki Run.
+_Avoid_: gitignore import, Skill-owned ignore catalog, silent host filter
+
+**Effective Source Ignores**:
+The frozen set of repository-relative path patterns actually applied when materializing one Repository Snapshot for one Wiki Run; the union of Default Source Ignores when enabled and that repository's configured ignore patterns.
+_Avoid_: live working-tree filter, re-resolved product defaults at retry, model-chosen excludes
+
+**Wiki Visualization**:
+A read-only, deterministically derived presentation of one Published Wiki for human browsing of pages and their cross-link graph; optional beside publication, not the Wiki itself and not the Wiki Run operator surface.
+_Avoid_: knowledge graph, product web app, Staging Wiki, model transcript, run dashboard

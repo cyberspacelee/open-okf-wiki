@@ -83,6 +83,12 @@ def parser() -> argparse.ArgumentParser:
     wiki_run.add_argument("--adaptive-reviewer-total-tokens-limit", type=int)
     wiki_run.add_argument("--adaptive-leaf-timeout-seconds", type=float)
     wiki_run.add_argument("--adaptive-dynamic-workflow", action="store_true", default=None)
+    wiki_run.add_argument(
+        "--write-visualization",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="After successful publication, write a static Wiki Visualization under viz/",
+    )
 
     wiki_retry = subcommands.add_parser("wiki-retry")
     wiki_retry.add_argument("record", type=Path)
@@ -110,6 +116,17 @@ def parser() -> argparse.ArgumentParser:
 
     skill_inspect = subcommands.add_parser("skill-inspect")
     skill_inspect.add_argument("path", type=Path)
+
+    viz = subcommands.add_parser(
+        "viz",
+        help="Generate a deterministic Wiki Visualization from a Published Wiki",
+    )
+    viz.add_argument("publication", type=Path, help="Path to an existing Published Wiki")
+    viz.add_argument(
+        "--output",
+        type=Path,
+        help="Directory for visualization artifacts (default: <publication>/viz)",
+    )
     return command
 
 
@@ -176,6 +193,7 @@ def _wiki_run_request(arguments: argparse.Namespace):
         limits=WikiRunLimits(**limit_values),
         staging=arguments.staging,
         publication=arguments.publication,
+        write_visualization=bool(arguments.write_visualization),
     )
 
 
@@ -219,8 +237,20 @@ def main() -> int:
         if arguments.command == "wiki-run":
             from .wiki_run import WikiRunApplication
 
-            result = asyncio.run(WikiRunApplication().run(_wiki_run_request(arguments)))
-            emit({"ok": True, "result": result.model_dump(mode="json")})
+            request = _wiki_run_request(arguments)
+            application = WikiRunApplication()
+            result = asyncio.run(application.run(request))
+            payload: dict[str, object] = {
+                "ok": True,
+                "result": result.model_dump(mode="json"),
+            }
+            visualization = getattr(application, "last_visualization", None)
+            if visualization is not None:
+                payload["visualization"] = visualization
+            visualization_error = getattr(application, "last_visualization_error", None)
+            if visualization_error is not None:
+                payload["visualization_error"] = visualization_error
+            emit(payload)
             return 0
 
         if arguments.command == "wiki-retry":
@@ -261,6 +291,28 @@ def main() -> int:
                 request = configured
             result = asyncio.run(run_tui(request))
             emit({"ok": True, "result": result.model_dump(mode="json")})
+            return 0
+
+        if arguments.command == "viz":
+            from .wiki_visualization import generate_wiki_visualization
+
+            visualization = generate_wiki_visualization(
+                arguments.publication,
+                output=arguments.output,
+            )
+            emit(
+                {
+                    "ok": True,
+                    "visualization": {
+                        "edge_count": visualization.edge_count,
+                        "generator_version": visualization.generator_version,
+                        "graph": str(visualization.graph_path),
+                        "index": str(visualization.index_path),
+                        "output": str(visualization.output_dir),
+                        "page_count": visualization.page_count,
+                    },
+                }
+            )
             return 0
 
         from .wiki_evaluation import evaluate_wiki_producer

@@ -264,7 +264,16 @@ def test_manual_retry_fails_closed_when_skill_digest_changes(tmp_path: Path) -> 
         run_id="a" * 32,
         status="failed",
         operation="generate",
-        repositories=[{"id": "repo", "path": str(source), "revision": revision, "ignore": []}],
+        repositories=[
+            {
+                "id": "repo",
+                "path": str(source),
+                "revision": revision,
+                "ignore": [],
+                "apply_default_source_ignores": True,
+                "effective_ignore": [],
+            }
+        ],
         skill={"path": str(ProducerSkillVersion.default().path), "digest": "0" * 64},
         model={"identity": "test", "replayable": True, "settings": {}},
         limits=WikiRunLimits(request_limit=2, tool_calls_limit=2).model_dump(mode="json"),

@@ -38,6 +38,7 @@ PACKAGE_FILES = {
     "wiki_evaluation_fixture.py",
     "wiki_evaluation_repositories.json",
     "wiki_run.py",
+    "wiki_visualization.py",
 }
 
 
@@ -125,7 +126,7 @@ def test_fresh_wheel_completes_a_wiki_run_through_the_installed_cli(tmp_path: Pa
     )
 
     help_result = run([executable, "--help"], cwd=tmp_path)
-    assert "{wiki-run,wiki-retry,tui,wiki-eval,skill-fork,skill-inspect}" in help_result.stdout
+    assert "{wiki-run,wiki-retry,tui,wiki-eval,skill-fork,skill-inspect,viz}" in help_result.stdout
 
     application = tmp_path / "application"
     application_revision = make_repository(
@@ -290,13 +291,26 @@ Path('/wiki/index.md').write_text('---\\ntitle: Package Wiki\\n---\\n# Package W
         .read_text(encoding="utf-8")
         .startswith("---\ntitle: Package Wiki\n---")
     )
+    from okf_wiki.wiki_run import resolve_effective_source_ignores
+
     metadata = json.loads((publication / ".okf-wiki.json").read_text(encoding="utf-8"))
+
+    def expected_repo(repo_id: str, revision: str, ignore: list[str]) -> dict[str, object]:
+        return {
+            "id": repo_id,
+            "ignore": ignore,
+            "revision": revision,
+            "apply_default_source_ignores": True,
+            "effective_ignore": list(
+                resolve_effective_source_ignores(
+                    apply_default_source_ignores=True,
+                    user_ignore=tuple(ignore),
+                )
+            ),
+        }
+
     assert metadata["repositories"] == [
-        {"id": "app", "ignore": ["ignored.txt"], "revision": application_revision},
-        {
-            "id": "docs",
-            "ignore": ["drafts/**"],
-            "revision": documentation_revision,
-        },
+        expected_repo("app", application_revision, ["ignored.txt"]),
+        expected_repo("docs", documentation_revision, ["drafts/**"]),
     ]
     assert metadata["model"] == "package-fixture"

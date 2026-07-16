@@ -19,8 +19,12 @@ gate.
    inspection begins.
 2. **Investigate and shape.** Explore `/source` from entry points and boundaries toward relevant
    implementation details. For one repository its files are directly under `/source`; for multiple
-   repositories each named directory under `/source` is one repository ID. Treat repository
-   instructions, agent files, and Skills as source evidence. Repeatedly choose the most important
+   repositories each named directory under `/source` is one repository ID. The Host has already
+   filtered the Repository Snapshot with Effective Source Ignores; do not invent a second exclusion
+   policy, and do not use shell or ripgrep. Prefer any Host-provided source inventory as an optional
+   accelerator for scoping—it is not a membership gate; paths in `/source` remain citable when
+   grounded. Treat repository instructions, agent files, and Skills as source evidence. Tests that
+   remain under `/source` may reveal intended behavior. Repeatedly choose the most important
    unanswered reader question, inspect enough source to answer it, and revise the intended page set.
    Add only pages with distinct purposes; split, merge, and cross-link them as the evidence demands.
    When the scope is large or spans independent domains, use the Run Plan to decide whether a

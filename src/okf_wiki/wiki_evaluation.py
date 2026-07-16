@@ -255,9 +255,24 @@ async def evaluate_wiki_producer(
                 )
             publication = run_root / "wiki"
             metadata = json.loads((publication / PUBLICATION_METADATA_NAME).read_bytes())
+            from .wiki_run import resolve_effective_source_ignores
+
+            expected_repositories = [
+                {
+                    "id": "source",
+                    "ignore": [],
+                    "revision": case.revision,
+                    "apply_default_source_ignores": True,
+                    "effective_ignore": list(
+                        resolve_effective_source_ignores(
+                            apply_default_source_ignores=True,
+                            user_ignore=(),
+                        )
+                    ),
+                }
+            ]
             if (
-                metadata["repositories"]
-                != [{"id": "source", "ignore": [], "revision": case.revision}]
+                metadata["repositories"] != expected_repositories
                 or metadata["skill_digest"] != selected_skill.digest
             ):
                 raise ValueError("Published Wiki provenance does not match evaluation inputs")

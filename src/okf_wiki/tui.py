@@ -70,6 +70,11 @@ class TuiState:
             )
         elif event.type == "provider_retry_exhausted":
             line = "provider retry exhausted"
+        elif event.type == "visualization_written":
+            index = payload.get("index") or payload.get("output") or ""
+            line = f"visualization written {index}"
+        elif event.type == "visualization_failed":
+            line = f"visualization failed reason={payload.get('reason_code')}"
         elif event.type in {
             "validation_started",
             "validation_succeeded",
