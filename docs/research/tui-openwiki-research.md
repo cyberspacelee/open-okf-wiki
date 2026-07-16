@@ -10,9 +10,9 @@
 
 ## 参考实现是什么
 
-OpenWiki 的包直接依赖 `deepagents`、`ink`、`react` 和 `marked`（[package.json](../../refs/openwiki/package.json#L43-L58)）。其入口导入 Ink 的 `render`、`useInput` 和 `useApp`（[cli.tsx](../../refs/openwiki/src/cli.tsx#L1-L4)），TTY 下渲染交互 App，非 TTY 或 `--print` 时走非交互路径（[commands.ts](../../refs/openwiki/src/commands.ts#L542-L557)、[cli.tsx](../../refs/openwiki/src/cli.tsx#L3450-L3464)）。
+OpenWiki 的包直接依赖 `deepagents`、`ink`、`react` 和 `marked`（`refs/openwiki/package.json:L43-L58`）。其入口导入 Ink 的 `render`、`useInput` 和 `useApp`（`refs/openwiki/src/cli.tsx:L1-L4`），TTY 下渲染交互 App，非 TTY 或 `--print` 时走非交互路径（`refs/openwiki/src/commands.ts:L542-L557`、`refs/openwiki/src/cli.tsx:L3450-L3464`）。
 
-Agent 层把 LangGraph/DeepAgents 的事件流转成 UI 事件：调用 `streamEvents`，解析文本和工具开始/结束事件，再交给 UI 的 `onEvent` 回调（[agent/index.ts](../../refs/openwiki/src/agent/index.ts#L203-L232)、[cli.tsx](../../refs/openwiki/src/cli.tsx#L1148-L1204)）。输入组件处理上下键、回车、取消、模型/provider 选择和多轮 follow-up（[cli.tsx](../../refs/openwiki/src/cli.tsx#L1566-L1620)）。
+Agent 层把 LangGraph/DeepAgents 的事件流转成 UI 事件：调用 `streamEvents`，解析文本和工具开始/结束事件，再交给 UI 的 `onEvent` 回调（`refs/openwiki/src/agent/index.ts:L203-L232`、`refs/openwiki/src/cli.tsx:L1148-L1204`）。输入组件处理上下键、回车、取消、模型/provider 选择和多轮 follow-up（`refs/openwiki/src/cli.tsx:L1566-L1620`）。
 
 DeepAgents 本身定位是 agent harness/runtime；其官方 README 将终端 coding agent 作为独立产品入口，并没有把 OpenWiki 的 Ink App 作为 DeepAgents 核心 UI（[DeepAgents README](https://github.com/langchain-ai/deepagents/blob/main/README.md#L47-L75)）。
 
