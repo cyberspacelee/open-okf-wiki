@@ -32,6 +32,39 @@ def parser() -> argparse.ArgumentParser:
     command = argparse.ArgumentParser(prog="okf-wiki")
     subcommands = command.add_subparsers(dest="command", required=True)
 
+    init = subcommands.add_parser(
+        "init",
+        help="Write a starter wiki-run.yaml for editing and later wiki-run --config",
+    )
+    init.add_argument(
+        "--config",
+        type=Path,
+        default=Path("wiki-run.yaml"),
+        help="Path for the Wiki Run YAML (default: ./wiki-run.yaml)",
+    )
+    init.add_argument(
+        "--source",
+        type=Path,
+        help="Optional local repository to prefill as the first Snapshot entry",
+    )
+    init.add_argument(
+        "--source-id",
+        default="application",
+        help="Repository ID for --source (default: application)",
+    )
+    init.add_argument("--branch", help="Branch name for --source (default: current branch or main)")
+    init.add_argument("--revision", help="Exact commit for --source instead of a branch")
+    init.add_argument(
+        "--model",
+        default="openai:gpt-5-mini",
+        help="Model string written into the YAML (default: openai:gpt-5-mini)",
+    )
+    init.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace an existing configuration file",
+    )
+
     wiki_run = subcommands.add_parser("wiki-run")
     wiki_run.add_argument("source", nargs="?", type=Path)
     wiki_run.add_argument("--config", type=Path)
@@ -206,6 +239,34 @@ def main() -> int:
             if config_dotenv.is_file():
                 dotenv = config_dotenv
         load_dotenv(dotenv, override=False)
+
+        if arguments.command == "init":
+            from .init_config import write_wiki_run_config
+
+            written = write_wiki_run_config(
+                arguments.config,
+                source=arguments.source,
+                source_id=arguments.source_id,
+                branch=arguments.branch,
+                revision=arguments.revision,
+                model=arguments.model,
+                force=arguments.force,
+            )
+            emit(
+                {
+                    "ok": True,
+                    "init": {
+                        "config": str(written),
+                        "next": [
+                            "Edit repository paths, refs, staging, publication, and model in the YAML.",
+                            "Copy .env.example to .env (or beside the YAML) and set provider credentials.",
+                            f"Run: okf-wiki wiki-run --config {written}",
+                            "Optional: okf-wiki tui --config <yaml> or okf-wiki viz <publication>",
+                        ],
+                    },
+                }
+            )
+            return 0
 
         if arguments.command == "skill-inspect":
             from .wiki_run import ProducerSkillVersion

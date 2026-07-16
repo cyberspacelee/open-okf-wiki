@@ -3861,6 +3861,7 @@ def test_cli_exposes_only_the_greenfield_product_commands() -> None:
 
     assert subcommands.choices is not None
     assert tuple(subcommands.choices) == (
+        "init",
         "wiki-run",
         "wiki-retry",
         "tui",
@@ -3869,6 +3870,52 @@ def test_cli_exposes_only_the_greenfield_product_commands() -> None:
         "skill-inspect",
         "viz",
     )
+
+
+def test_init_writes_wiki_run_yaml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source = tmp_path / "repo"
+    make_repository(source, "source\n")
+    config = tmp_path / "wiki-run.yaml"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "okf-wiki",
+            "init",
+            "--config",
+            str(config),
+            "--source",
+            str(source),
+            "--source-id",
+            "app",
+            "--model",
+            "openai:gpt-5-mini",
+        ],
+    )
+    assert main() == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert Path(payload["init"]["config"]) == config
+    text = config.read_text(encoding="utf-8")
+    assert "version: 1" in text
+    assert "id: app" in text
+    assert "apply_default_source_ignores: true" in text
+    assert "write_visualization: false" in text
+    request = WikiRunRequest.from_yaml(config)
+    assert request.repositories[0].id == "app"
+    assert request.repositories[0].path == source.resolve()
+    assert request.write_visualization is False
+
+
+def test_init_refuses_to_overwrite_without_force(tmp_path: Path) -> None:
+    from okf_wiki.init_config import write_wiki_run_config
+
+    config = tmp_path / "wiki-run.yaml"
+    write_wiki_run_config(config)
+    with pytest.raises(ValueError, match="already exists"):
+        write_wiki_run_config(config)
 
 
 def test_wiki_run_cli_routes_refresh_through_the_same_application_seam(

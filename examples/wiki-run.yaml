@@ -1,23 +1,30 @@
 version: 1
 operation: generate
 model: openai:gpt-5-mini
+# Paths are relative to this YAML file.
 staging: ../.scratch/wiki-staging
 publication: ../wiki
+# After successful publication, write static HTML + link graph under publication/viz/.
+write_visualization: false
 
 # Paths are resolved relative to this YAML file. Each repository must select exactly one branch or
 # exact revision. Branches are frozen to exact commits before model work starts.
+# Provider credentials stay in process environment or .env — never in this file.
 repositories:
   - id: application
     path: ../path/to/application
     branch: main
+    # Host Default Source Ignores (node_modules, dist, venv, …) apply when true.
+    apply_default_source_ignores: true
+    # Optional extra repository-relative fnmatch patterns (additive).
     ignore:
       - "generated/*"
-      - "dist/*"
       - "*.min.js"
 
   - id: documentation
     path: ../path/to/documentation
     revision: 0123456789abcdef0123456789abcdef01234567
+    apply_default_source_ignores: true
     ignore:
       - "drafts/**"
 

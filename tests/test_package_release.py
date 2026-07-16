@@ -19,6 +19,7 @@ PACKAGE_FILES = {
     "analysis_workspace.py",
     "adaptive_orchestration.py",
     "cli.py",
+    "init_config.py",
     "provider_retry.py",
     "tui.py",
     "producer_skill/SKILL.md",
@@ -126,7 +127,10 @@ def test_fresh_wheel_completes_a_wiki_run_through_the_installed_cli(tmp_path: Pa
     )
 
     help_result = run([executable, "--help"], cwd=tmp_path)
-    assert "{wiki-run,wiki-retry,tui,wiki-eval,skill-fork,skill-inspect,viz}" in help_result.stdout
+    assert (
+        "{init,wiki-run,wiki-retry,tui,wiki-eval,skill-fork,skill-inspect,viz}"
+        in help_result.stdout
+    )
 
     application = tmp_path / "application"
     application_revision = make_repository(
