@@ -36,9 +36,17 @@ _Avoid_: Renderer schema, mandatory page taxonomy, typed content block
 The model-directed sequence of repository exploration, page design, writing, review, and completion decisions for one Wiki Run.
 _Avoid_: Python state machine, fixed role pipeline
 
+**Run Plan**:
+The current objective, completion gates, evidence gaps, and delegated-scope status that keep one Wiki Run oriented across long investigation and compaction.
+_Avoid_: Todo transcript, message history, durable checkpoint
+
 **Wiki Run**:
 One attempt to derive and publish a Wiki from a Repository Snapshot Set using one exact Skill Version or Skill Fork revision.
 _Avoid_: Agent turn, chat session, Production Run
+
+**Wiki Run Record**:
+An immutable, secret-free terminal record of one Wiki Run's frozen inputs, outcome, usage, and publication status, used for audit and to create a Manual Retry Run.
+_Avoid_: Message history, Analysis Receipt, durable checkpoint
 
 **Staging Wiki**:
 The isolated candidate Wiki written during a Wiki Run and not visible as the published result until validation succeeds.
@@ -59,3 +67,23 @@ _Avoid_: Unsupported filename mention, Claim record
 **Refresh**:
 A Wiki Run that updates an existing Published Wiki for a newer Repository Snapshot Set while following the selected Producer Skill.
 _Avoid_: Knowledge-graph invalidation, patch-only rendering
+
+**Manual Retry Run**:
+A newly created Wiki Run started by a human from an earlier Wiki Run Record after automatic retries are exhausted; it reuses the earlier run's frozen inputs by default but has its own run identity and does not resume the earlier conversation or partial receipts.
+_Avoid_: Resume, checkpoint recovery, automatic retry
+
+**递归委派树**:
+一个 Wiki Run 内按 Root、Domain 和 Leaf 分层的有界 Agent 委派结构；每个 child 使用独立上下文调查受限 source scope，并向 parent 返回可复核的 Source Citation evidence。
+_Avoid_: 无限递归、把所有源码塞进 Root、Python 固定角色流水线
+
+**Leaf 协调工作流**:
+Semantic Workflow 内一个可选的单层 fan-out、chain 或 reduce 阶段；它协调同构的 Leaf 研究任务，不负责全局页面决策，也不是递归委派树本身。
+_Avoid_: Semantic Workflow、全局调度器、durable workflow
+
+**Analysis Receipt**:
+一个研究分支对其受限 source scope 的有界证据记录；包含 findings、Source Citation、未解决问题和子分支指针，供 parent 复核和归约，不是最终 Wiki 页面。
+_Avoid_: model transcript、临时聊天记录、最终页面
+
+**Analysis Workspace**:
+Wiki Run 内保存 Analysis Receipt 和可选中间 artifact 的隔离临时空间；它只服务于本次 Semantic Workflow，不是 Published Wiki，也不是消息队列。
+_Avoid_: /wiki、共享控制总线、永久知识库

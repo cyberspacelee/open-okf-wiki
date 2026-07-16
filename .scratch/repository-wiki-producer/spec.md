@@ -4,6 +4,8 @@ Status: ready-for-agent
 
 Supersedes: OKF Knowledge Bundle Producer and Workspace Console specifications
 
+Amended by: Adaptive Repository Wiki Runs for Planning, bounded recursive SubAgents, single-layer DynamicWorkflow, Analysis Receipts, provider transport retry, Manual Retry Runs, and TUI behavior
+
 ## Problem Statement
 
 The current product hard-codes repository analysis as a large Python workflow with schedulers, role-specific Agents, state machines, Coverage Obligations, an Accepted Knowledge Model, verification stages, and a deterministic Renderer. Changing how a Wiki is investigated, organized, written, or reviewed therefore requires changing Python orchestration and its persisted domain model.
