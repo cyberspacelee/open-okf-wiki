@@ -123,12 +123,18 @@ def environment_secrets(extra: tuple[str, ...] = ()) -> tuple[str, ...]:
 
 
 def safe_error_message(error: Exception, *, secrets: tuple[str, ...] = ()) -> str:
+    """Return a secret-safe operator message, or withhold provider diagnostics.
+
+    Host configuration / filesystem / validation errors are surfaced after redaction.
+    Provider transport and other opaque failures remain withheld when they look
+    secret-bearing or are not operator-safe exception types.
+    """
+    from .errors import is_operator_safe_exception
+
     raw = str(error)
     message = redact_secrets(raw, environment_secrets(secrets))
-    if (
-        message != raw
-        or any(marker in message.casefold() for marker in _SECRET_TEXT_MARKERS)
-        or not isinstance(error, (OSError, ValueError))
-    ):
+    if message != raw or any(marker in message.casefold() for marker in _SECRET_TEXT_MARKERS):
+        return PROVIDER_DIAGNOSTICS_WITHHELD
+    if not is_operator_safe_exception(error):
         return PROVIDER_DIAGNOSTICS_WITHHELD
     return message

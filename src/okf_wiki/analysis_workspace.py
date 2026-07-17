@@ -23,6 +23,7 @@ from pydantic import (
     model_validator,
 )
 
+from .errors import operator_error
 from .security import MAX_ANALYZABLE_FILE_BYTES
 
 
@@ -357,7 +358,7 @@ class AnalysisWorkspace:
         try:
             receipt = AnalysisReceipt.model_validate_json(data)
         except Exception as error:
-            raise ValueError("Analysis Receipt is invalid") from error
+            raise operator_error("Analysis Receipt is invalid", error) from error
         if receipt.run_id != self.run_id:
             raise ValueError("Analysis Receipt belongs to another run")
         if isinstance(handoff, HandoffRef) and (
@@ -449,7 +450,7 @@ class AnalysisWorkspace:
             if not resolved.is_relative_to(self.root.resolve()):
                 raise ValueError("Analysis Workspace path escapes its root")
         except OSError as error:
-            raise ValueError("Analysis Workspace path is not accessible") from error
+            raise operator_error("Analysis Workspace path is not accessible", error) from error
         return path
 
     def _validate_evidence(self, receipt: AnalysisReceipt) -> None:
@@ -471,7 +472,7 @@ class AnalysisWorkspace:
             try:
                 resolved = candidate.resolve(strict=True)
             except OSError as error:
-                raise ValueError("evidence path does not exist") from error
+                raise operator_error(f"evidence path does not exist: {item.path}", error) from error
             if not resolved.is_relative_to(source_root) or not candidate.is_file():
                 raise ValueError("evidence path is not a regular file in the snapshot")
             if candidate.stat().st_size > MAX_ANALYZABLE_FILE_BYTES:
@@ -482,7 +483,9 @@ class AnalysisWorkspace:
             try:
                 lines = raw.decode("utf-8").splitlines(keepends=True)
             except UnicodeDecodeError as error:
-                raise ValueError("evidence path is not UTF-8 text") from error
+                raise operator_error(
+                    f"evidence path is not UTF-8 text: {item.path}", error
+                ) from error
             if item.line_end > len(lines):
                 raise ValueError("evidence line range does not resolve")
             cited = "".join(lines[item.line_start - 1 : item.line_end]).encode("utf-8")
@@ -501,7 +504,9 @@ class AnalysisWorkspace:
             try:
                 child = AnalysisReceipt.model_validate_json(path.read_bytes())
             except Exception as error:
-                raise ValueError("receipt child reference is invalid") from error
+                raise operator_error(
+                    f"receipt child reference is invalid: {relative}", error
+                ) from error
             if child.run_id != self.run_id or child.parent_id != receipt.node_id:
                 raise ValueError("receipt child reference does not belong to this parent")
 
@@ -514,7 +519,7 @@ class AnalysisWorkspace:
                 if current.is_symlink():
                     raise ValueError("evidence path must not traverse a symlink")
             except OSError as error:
-                raise ValueError("evidence path is not accessible") from error
+                raise operator_error("evidence path is not accessible", error) from error
 
     def _materialize_artifacts(
         self,
@@ -536,7 +541,9 @@ class AnalysisWorkspace:
             try:
                 raw.decode("utf-8")
             except UnicodeDecodeError as error:
-                raise ValueError("Analysis artifact is not UTF-8 Markdown") from error
+                raise operator_error(
+                    f"Analysis artifact is not UTF-8 Markdown: {item.path}", error
+                ) from error
             digest = hashlib.sha256(raw).hexdigest()
             if digest != item.sha256:
                 raise ValueError("artifact hash does not match its descriptor")

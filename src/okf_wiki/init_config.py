@@ -10,6 +10,7 @@ from .security import git_read
 def write_wiki_run_config(
     config_path: Path,
     *,
+    directory: Path | None = None,
     source: Path | None = None,
     source_id: str = "application",
     branch: str | None = None,
@@ -20,24 +21,26 @@ def write_wiki_run_config(
     """Create a versioned Wiki Run YAML for the operator to edit and run.
 
     Paths inside the YAML are relative to the configuration file's directory.
+
+    ``directory`` (optional) is the project root to initialize. When set, it is
+    created if missing, and a relative ``config_path`` is resolved under that
+    root (default ``wiki-run.yaml`` → ``<directory>/wiki-run.yaml``).
     """
     if branch is not None and revision is not None:
         raise ValueError("init accepts at most one of --branch or --revision")
-    target = config_path.expanduser()
-    if not target.is_absolute():
-        target = (Path.cwd() / target).resolve()
-    else:
-        target = target.resolve()
-    if target.exists() and not force:
-        raise ValueError(f"configuration already exists (use --force to replace): {target}")
+
+    root = _resolve_init_directory(directory)
+    target = _resolve_config_target(config_path, root=root)
+
     if target.exists() and target.is_dir():
         raise ValueError(f"configuration path is a directory: {target}")
+    if target.exists() and not force:
+        raise ValueError(f"configuration already exists (use --force to replace): {target}")
 
-    root = target.parent
-    root.mkdir(parents=True, exist_ok=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
 
     repo_block = _repository_block(
-        root=root,
+        root=target.parent,
         source=source,
         source_id=source_id,
         branch=branch,
@@ -45,6 +48,13 @@ def write_wiki_run_config(
     )
     body = f"""version: 1
 operation: generate
+# Model identity: provider:name (OpenAI-compatible gateways use openai:<served-model-name>).
+# Or object form:
+# model:
+#   identity: openai:gpt-5-mini
+#   max_tokens: 8192          # per-completion output cap (also OKF_WIKI_MAX_TOKENS)
+#   temperature: 0.2
+#   timeout: 120
 model: {model}
 # Paths are relative to this YAML file.
 staging: .okf-wiki/staging
@@ -52,17 +62,44 @@ publication: .okf-wiki/wiki
 # After a successful publication, write static HTML + link graph under publication/viz/.
 write_visualization: false
 
-# Non-secret settings only. Provider credentials stay in process environment or .env.
+# Non-secret settings only. API keys and base URLs stay in process environment or .env
+# (OPENAI_API_KEY, OPENAI_BASE_URL for OpenAI-compatible endpoints).
 repositories:
 {repo_block}
-# limits:
+# limits:  # omitted keys still take env defaults (OKF_WIKI_*) then product defaults
+#   context_target_tokens: 100000   # compaction target / operational context budget
+#   input_tokens_limit: 250000
+#   output_tokens_limit: 100000
+#   total_tokens_limit: 350000
+#   request_timeout_seconds: 120
 #   request_limit: 50
 #   tool_calls_limit: 200
-#   total_tokens_limit: 350000
 #   wall_clock_timeout_seconds: 600
 """
     target.write_text(body, encoding="utf-8")
     return target
+
+
+def _resolve_init_directory(directory: Path | None) -> Path:
+    if directory is None:
+        return Path.cwd().resolve()
+    root = directory.expanduser()
+    if not root.is_absolute():
+        root = (Path.cwd() / root).resolve()
+    else:
+        root = root.resolve()
+    if root.exists() and not root.is_dir():
+        raise ValueError(f"init directory exists and is not a directory: {root}")
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _resolve_config_target(config_path: Path, *, root: Path) -> Path:
+    target = config_path.expanduser()
+    if target.is_absolute():
+        return target.resolve()
+    # Relative --config is always under the init directory (cwd when directory omitted).
+    return (root / target).resolve()
 
 
 def _repository_block(

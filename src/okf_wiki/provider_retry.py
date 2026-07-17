@@ -212,6 +212,23 @@ def build_provider_transport(
     )
 
 
+def _openai_provider(http_client: httpx.AsyncClient):
+    """Build an OpenAIProvider that honors OpenAI-compatible env credentials."""
+    from pydantic_ai.providers.openai import OpenAIProvider
+
+    from .provider_env import openai_api_key, openai_base_url
+
+    # Pass base_url/api_key explicitly so OpenAI-compatible gateways (vLLM, LiteLLM,
+    # OpenRouter-compatible proxies, local servers) resolve the same way as stock OpenAI.
+    # When base_url is set and api_key is missing, OpenAIProvider inserts a placeholder
+    # key so local servers that ignore auth still work.
+    return OpenAIProvider(
+        base_url=openai_base_url(),
+        api_key=openai_api_key(),
+        http_client=http_client,
+    )
+
+
 def prepare_model_with_provider_retry(
     model: Model | str,
     *,
@@ -223,6 +240,10 @@ def prepare_model_with_provider_retry(
 
     In-process custom Model objects (FunctionModel fixtures, caller-owned clients) are
     returned unchanged and remain non-replayable for Manual Retry Runs.
+
+    ``openai:`` / ``openai-chat:`` / ``openai-responses:`` models use ``OPENAI_API_KEY``
+    and optional ``OPENAI_BASE_URL`` (OpenAI-compatible Chat Completions base, ending in
+    ``/v1`` when required by the gateway).
     """
     if not isinstance(model, str):
         return model
@@ -239,16 +260,12 @@ def prepare_model_with_provider_retry(
     try:
         if provider_name in {"openai", "openai-chat"}:
             from pydantic_ai.models.openai import OpenAIChatModel
-            from pydantic_ai.providers.openai import OpenAIProvider
 
-            return OpenAIChatModel(model_name, provider=OpenAIProvider(http_client=http_client))
+            return OpenAIChatModel(model_name, provider=_openai_provider(http_client))
         if provider_name in {"openai-responses"}:
             from pydantic_ai.models.openai import OpenAIResponsesModel
-            from pydantic_ai.providers.openai import OpenAIProvider
 
-            return OpenAIResponsesModel(
-                model_name, provider=OpenAIProvider(http_client=http_client)
-            )
+            return OpenAIResponsesModel(model_name, provider=_openai_provider(http_client))
     except Exception:
         # Fall back to the original identity; credentials/env may still resolve later.
         return model

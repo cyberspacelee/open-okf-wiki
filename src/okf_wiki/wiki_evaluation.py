@@ -14,7 +14,7 @@ from urllib.parse import unquote, urlsplit
 import genai_prices
 from markdown_it import MarkdownIt
 from mdit_py_plugins.front_matter import front_matter_plugin
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic_ai import ModelResponse, ModelSettings, ToolCallPart
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models import KnownModelName, Model, ModelRequestParameters
@@ -22,6 +22,7 @@ from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_evals import Case, Dataset
 from pydantic_evals.reporting import ReportCase
 
+from .errors import operator_error
 from .security import git_read_bytes, safe_error_message
 from .wiki_evaluation_fixture import fixture_cases, fixture_model
 from .wiki_run import (
@@ -359,7 +360,10 @@ async def evaluate_wiki_producer(
 def _cases(root: Path, manifest: Path | None) -> tuple[list[_Case], Path | None]:
     if manifest is not None:
         path = manifest.resolve(strict=True)
-        selected = _Manifest.model_validate_json(path.read_bytes())
+        try:
+            selected = _Manifest.model_validate_json(path.read_bytes())
+        except (OSError, UnicodeError, ValidationError, ValueError) as error:
+            raise operator_error(f"Wiki evaluation manifest is invalid: {path}", error) from error
         ids = [case.id for case in selected.cases]
         if len(ids) != len(set(ids)):
             raise ValueError("Wiki evaluation repository case IDs must be unique")
@@ -390,17 +394,27 @@ def _reviews(
     if path is None:
         return {}, None
     resolved = path.resolve(strict=True)
-    entries = _ReviewFile.model_validate_json(resolved.read_bytes()).reviews
+    try:
+        entries = _ReviewFile.model_validate_json(resolved.read_bytes()).reviews
+    except (OSError, UnicodeError, ValidationError, ValueError) as error:
+        raise operator_error(
+            f"Wiki evaluation reviews file is invalid: {resolved}", error
+        ) from error
     keys = [(entry.case, entry.repeat) for entry in entries]
     allowed = {(case.id, repeat) for case in cases for repeat in range(1, repeats + 1)}
     if len(keys) != len(set(keys)) or not set(keys) <= allowed:
         raise ValueError(
             "Wiki evaluation reviews must be unique and match selected case/repeat entries"
         )
-    return {
-        key: _SemanticReview.model_validate(entry.model_dump(exclude={"case", "repeat"}))
-        for key, entry in zip(keys, entries)
-    }, resolved
+    try:
+        return {
+            key: _SemanticReview.model_validate(entry.model_dump(exclude={"case", "repeat"}))
+            for key, entry in zip(keys, entries)
+        }, resolved
+    except ValidationError as error:
+        raise operator_error(
+            f"Wiki evaluation review entries are invalid: {resolved}", error
+        ) from error
 
 
 def _run(

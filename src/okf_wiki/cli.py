@@ -34,13 +34,26 @@ def parser() -> argparse.ArgumentParser:
 
     init = subcommands.add_parser(
         "init",
-        help="Write a starter wiki-run.yaml for editing and later wiki-run --config",
+        help="Initialize a Wiki Run project directory (writes wiki-run.yaml)",
+    )
+    init.add_argument(
+        "directory",
+        nargs="?",
+        type=Path,
+        default=None,
+        help=(
+            "Directory to initialize (default: current directory). Created if missing. "
+            "wiki-run.yaml and .okf-wiki paths are relative to this directory."
+        ),
     )
     init.add_argument(
         "--config",
         type=Path,
         default=Path("wiki-run.yaml"),
-        help="Path for the Wiki Run YAML (default: ./wiki-run.yaml)",
+        help=(
+            "Wiki Run YAML path (optional; default: wiki-run.yaml under the init directory, "
+            "or ./wiki-run.yaml when directory is omitted)"
+        ),
     )
     init.add_argument(
         "--source",
@@ -56,8 +69,10 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--revision", help="Exact commit for --source instead of a branch")
     init.add_argument(
         "--model",
-        default="openai:gpt-5-mini",
-        help="Model string written into the YAML (default: openai:gpt-5-mini)",
+        default=None,
+        help=(
+            "Model identity written into the YAML (default: OKF_WIKI_MODEL or openai:gpt-5-mini)"
+        ),
     )
     init.add_argument(
         "--force",
@@ -67,21 +82,58 @@ def parser() -> argparse.ArgumentParser:
 
     wiki_run = subcommands.add_parser("wiki-run")
     wiki_run.add_argument("source", nargs="?", type=Path)
-    wiki_run.add_argument("--config", type=Path)
+    wiki_run.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help=(
+            "Wiki Run YAML path. When omitted and no direct source args are given, "
+            "defaults to ./wiki-run.yaml if that file exists."
+        ),
+    )
     wiki_run.add_argument("--refresh", action="store_true")
     wiki_run.add_argument("--source-revision")
     wiki_run.add_argument("--skill", type=Path)
     wiki_run.add_argument("--skill-digest")
     wiki_run.add_argument("--staging", type=Path)
     wiki_run.add_argument("--publication", type=Path)
-    wiki_run.add_argument("--model")
+    wiki_run.add_argument(
+        "--model",
+        help="Model identity (provider:name). Default: OKF_WIKI_MODEL or openai:gpt-5-mini",
+    )
+    wiki_run.add_argument(
+        "--max-tokens",
+        type=int,
+        help="Per-completion max output tokens (ModelSettings.max_tokens); env OKF_WIKI_MAX_TOKENS",
+    )
+    wiki_run.add_argument(
+        "--temperature",
+        type=float,
+        help="Sampling temperature; env OKF_WIKI_TEMPERATURE",
+    )
     wiki_run.add_argument("--request-limit", type=int)
     wiki_run.add_argument("--tool-calls-limit", type=int)
-    wiki_run.add_argument("--input-tokens-limit", type=int)
-    wiki_run.add_argument("--output-tokens-limit", type=int)
-    wiki_run.add_argument("--total-tokens-limit", type=int)
+    wiki_run.add_argument(
+        "--input-tokens-limit",
+        type=int,
+        help="Run-level cumulative input token budget; env OKF_WIKI_INPUT_TOKENS_LIMIT",
+    )
+    wiki_run.add_argument(
+        "--output-tokens-limit",
+        type=int,
+        help="Run-level cumulative output token budget; env OKF_WIKI_OUTPUT_TOKENS_LIMIT",
+    )
+    wiki_run.add_argument(
+        "--total-tokens-limit",
+        type=int,
+        help="Run-level cumulative total token budget; env OKF_WIKI_TOTAL_TOKENS_LIMIT",
+    )
     wiki_run.add_argument("--retries", type=int)
-    wiki_run.add_argument("--request-timeout-seconds", type=float)
+    wiki_run.add_argument(
+        "--request-timeout-seconds",
+        type=float,
+        help="Provider request timeout; env OKF_WIKI_REQUEST_TIMEOUT_SECONDS",
+    )
     wiki_run.add_argument("--tool-timeout-seconds", type=float)
     wiki_run.add_argument("--wall-clock-timeout-seconds", type=float)
     wiki_run.add_argument("--source-files-limit", type=int)
@@ -95,7 +147,11 @@ def parser() -> argparse.ArgumentParser:
     wiki_run.add_argument("--analysis-artifact-bytes-limit", type=int)
     wiki_run.add_argument("--analysis-workspace-bytes-limit", type=int)
     wiki_run.add_argument("--analysis-workspace-entries-limit", type=int)
-    wiki_run.add_argument("--context-target-tokens", type=int)
+    wiki_run.add_argument(
+        "--context-target-tokens",
+        type=int,
+        help="Compaction/context target tokens; env OKF_WIKI_CONTEXT_TARGET_TOKENS",
+    )
     wiki_run.add_argument("--adaptive-source-files-threshold", type=int)
     wiki_run.add_argument("--adaptive-source-bytes-threshold", type=int)
     wiki_run.add_argument("--adaptive-max-depth", type=int)
@@ -130,7 +186,12 @@ def parser() -> argparse.ArgumentParser:
     wiki_retry.add_argument("--model")
 
     tui = subcommands.add_parser("tui")
-    tui.add_argument("--config", type=Path, required=True)
+    tui.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Wiki Run YAML path (default: ./wiki-run.yaml when present)",
+    )
     tui.add_argument("--retry-record", type=Path)
 
     wiki_eval = subcommands.add_parser("wiki-eval")
@@ -175,7 +236,32 @@ def _producer_skill_version(arguments: argparse.Namespace):
     return ProducerSkillVersion(path=arguments.skill, digest=arguments.skill_digest)
 
 
+def _default_wiki_run_config_path() -> Path:
+    """Prefer ./wiki-run.yaml when operators omit --config."""
+    return Path("wiki-run.yaml")
+
+
+def _resolve_config_path(
+    configured: Path | None,
+    *,
+    allow_default: bool,
+    command: str,
+) -> Path | None:
+    if configured is not None:
+        return configured
+    if not allow_default:
+        return None
+    default = _default_wiki_run_config_path()
+    if default.is_file():
+        return default
+    raise ValueError(
+        f"{command} requires --config PATH, or a {default.as_posix()} file in the current "
+        "directory (create one with: okf-wiki init)"
+    )
+
+
 def _wiki_run_request(arguments: argparse.Namespace):
+    from .provider_env import resolve_model_identity, resolve_model_settings
     from .wiki_run import (
         ModelProviderConfig,
         RepositorySnapshot,
@@ -183,7 +269,20 @@ def _wiki_run_request(arguments: argparse.Namespace):
         WikiRunRequest,
     )
 
-    if arguments.config is not None:
+    # Direct mode: positional source or explicit staging/publication/revision flags.
+    direct_mode_markers = (
+        arguments.source,
+        arguments.source_revision,
+        arguments.staging,
+        arguments.publication,
+    )
+    using_direct = any(value is not None for value in direct_mode_markers)
+
+    config_path = arguments.config
+    if config_path is None and not using_direct:
+        config_path = _resolve_config_path(None, allow_default=True, command="wiki-run")
+
+    if config_path is not None:
         direct_values = (
             arguments.source,
             arguments.source_revision,
@@ -192,22 +291,27 @@ def _wiki_run_request(arguments: argparse.Namespace):
             arguments.staging,
             arguments.publication,
             arguments.model,
+            getattr(arguments, "max_tokens", None),
+            getattr(arguments, "temperature", None),
             *(getattr(arguments, name) for name in WikiRunLimits.model_fields),
         )
         if arguments.refresh or any(value is not None for value in direct_values):
             raise ValueError("--config cannot be combined with direct Wiki Run arguments")
-        return WikiRunRequest.from_yaml(arguments.config)
+        return WikiRunRequest.from_yaml(config_path)
 
     required = {
         "source": arguments.source,
         "--source-revision": arguments.source_revision,
         "--staging": arguments.staging,
         "--publication": arguments.publication,
-        "--model": arguments.model,
     }
     missing = [name for name, value in required.items() if value is None]
     if missing:
-        raise ValueError("direct Wiki Run requires " + ", ".join(missing))
+        raise ValueError(
+            "direct Wiki Run requires "
+            + ", ".join(missing)
+            + " (or omit them and use --config / ./wiki-run.yaml)"
+        )
     limit_values = {
         name: getattr(arguments, name)
         for name in WikiRunLimits.model_fields
@@ -222,8 +326,14 @@ def _wiki_run_request(arguments: argparse.Namespace):
             ),
         ),
         skill=_producer_skill_version(arguments),
-        model=ModelProviderConfig(model=arguments.model),
-        limits=WikiRunLimits(**limit_values),
+        model=ModelProviderConfig(
+            model=resolve_model_identity(arguments.model),
+            settings=resolve_model_settings(
+                max_tokens=getattr(arguments, "max_tokens", None),
+                temperature=getattr(arguments, "temperature", None),
+            ),
+        ),
+        limits=WikiRunLimits.build(limit_values),
         staging=arguments.staging,
         publication=arguments.publication,
         write_visualization=bool(arguments.write_visualization),
@@ -242,26 +352,36 @@ def main() -> int:
 
         if arguments.command == "init":
             from .init_config import write_wiki_run_config
+            from .provider_env import resolve_model_identity
 
             written = write_wiki_run_config(
                 arguments.config,
+                directory=arguments.directory,
                 source=arguments.source,
                 source_id=arguments.source_id,
                 branch=arguments.branch,
                 revision=arguments.revision,
-                model=arguments.model,
+                model=resolve_model_identity(arguments.model),
                 force=arguments.force,
+            )
+            project_root = written.parent
+            run_hint = (
+                f"cd {project_root} && okf-wiki wiki-run"
+                if arguments.directory is not None
+                else f"okf-wiki wiki-run --config {written}"
             )
             emit(
                 {
                     "ok": True,
                     "init": {
                         "config": str(written),
+                        "directory": str(project_root),
                         "next": [
                             "Edit repository paths, refs, staging, publication, and model in the YAML.",
-                            "Copy .env.example to .env (or beside the YAML) and set provider credentials.",
-                            f"Run: okf-wiki wiki-run --config {written}",
-                            "Optional: okf-wiki tui --config <yaml> or okf-wiki viz <publication>",
+                            "Copy .env.example to .env beside the YAML; set OPENAI_API_KEY and "
+                            "optional OPENAI_BASE_URL for OpenAI-compatible gateways.",
+                            f"Run: {run_hint}",
+                            "Optional: okf-wiki tui (from the project directory) or okf-wiki viz <publication>",
                         ],
                     },
                 }
@@ -338,7 +458,9 @@ def main() -> int:
             from .tui import run_tui
             from .wiki_run import WikiRunRequest
 
-            configured = WikiRunRequest.from_yaml(arguments.config)
+            config_path = _resolve_config_path(arguments.config, allow_default=True, command="tui")
+            assert config_path is not None
+            configured = WikiRunRequest.from_yaml(config_path)
             if arguments.retry_record is not None:
                 request = WikiRunRequest.from_run_record(
                     arguments.retry_record,

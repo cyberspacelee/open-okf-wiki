@@ -18,7 +18,7 @@ from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.instrumented import InstrumentationSettings
 
-from okf_wiki.cli import main, parser
+from okf_wiki.cli import _wiki_run_request, main, parser
 from okf_wiki.security import MAX_ANALYZABLE_FILE_BYTES
 from okf_wiki.wiki_run import (
     AnalysisReceipt,
@@ -3560,6 +3560,82 @@ repositories: []
     assert secret not in str(captured.value)
 
 
+def test_wiki_run_yaml_validation_errors_include_field_paths(tmp_path: Path) -> None:
+    config = tmp_path / "wiki-run.yaml"
+    config.write_text(
+        """version: 1
+model: openai:gpt-5-mini
+staging: ./staging
+publication: ./published
+repositories:
+  - id: app
+    path: ./source
+    branch: main
+limits:
+  not_a_limit: 1
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as captured:
+        WikiRunRequest.from_yaml(config)
+
+    message = str(captured.value)
+    assert message.startswith("Wiki Run YAML configuration is invalid:")
+    assert "not_a_limit" in message
+    assert "input_value" not in message
+
+
+def test_wiki_run_yaml_limit_value_errors_include_field_paths(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=source, check=True)
+    (source / "README.md").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-qm", "x"], cwd=source, check=True)
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=source, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    config = tmp_path / "wiki-run.yaml"
+    config.write_text(
+        f"""version: 1
+model: openai:gpt-5-mini
+staging: ./staging
+publication: ./published
+repositories:
+  - id: app
+    path: ./source
+    revision: {revision}
+limits:
+  request_limit: 0
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as captured:
+        WikiRunRequest.from_yaml(config)
+
+    message = str(captured.value)
+    assert message.startswith("Wiki Run YAML configuration is invalid:")
+    assert "request_limit" in message
+    assert "input_value" not in message
+
+
+def test_wiki_run_yaml_parse_errors_include_detail(tmp_path: Path) -> None:
+    config = tmp_path / "wiki-run.yaml"
+    config.write_text("version: 1\nmodel: [\n", encoding="utf-8")
+
+    with pytest.raises(ValueError) as captured:
+        WikiRunRequest.from_yaml(config)
+
+    message = str(captured.value)
+    assert message.startswith("Wiki Run YAML is not readable valid UTF-8 YAML:")
+    assert len(message) > len("Wiki Run YAML is not readable valid UTF-8 YAML:")
+
+
 def test_resolve_effective_source_ignores_unions_defaults_with_user_ignore() -> None:
     assert resolve_effective_source_ignores(
         apply_default_source_ignores=True,
@@ -3807,6 +3883,48 @@ def test_ignore_patterns_skip_non_file_tree_entries(tmp_path: Path) -> None:
     assert used_bytes == sum(path.stat().st_size for path in materialized_files)
 
 
+def test_wiki_run_defaults_to_local_wiki_run_yaml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    config = tmp_path / "wiki-run.yaml"
+    config.write_text(
+        f"""version: 1
+model: test
+staging: ./staging
+publication: ./published
+repositories:
+  - id: source
+    path: ./source
+    revision: {revision}
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    arguments = parser().parse_args(["wiki-run"])
+    request = _wiki_run_request(arguments)
+    assert request.repositories[0].path == source.resolve()
+    assert request.staging == (tmp_path / "staging").resolve()
+
+
+def test_wiki_run_without_config_or_direct_args_explains_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    arguments = parser().parse_args(["wiki-run"])
+    with pytest.raises(ValueError, match="wiki-run.yaml"):
+        _wiki_run_request(arguments)
+
+
+def test_require_supported_runtime_rejects_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    from okf_wiki import wiki_run as wiki_run_module
+
+    monkeypatch.setattr(wiki_run_module.sys, "platform", "win32")
+    with pytest.raises(ValueError, match="requires Linux"):
+        wiki_run_module._require_supported_runtime()
+
+
 def test_wiki_run_cli_exposes_wall_clock_deadline() -> None:
     arguments = parser().parse_args(
         [
@@ -3916,6 +4034,50 @@ def test_init_refuses_to_overwrite_without_force(tmp_path: Path) -> None:
     write_wiki_run_config(config)
     with pytest.raises(ValueError, match="already exists"):
         write_wiki_run_config(config)
+
+
+def test_init_into_directory_creates_project_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source = tmp_path / "repo"
+    make_repository(source, "source\n")
+    project = tmp_path / "projects" / "wiki-app"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "okf-wiki",
+            "init",
+            str(project),
+            "--source",
+            str(source),
+            "--source-id",
+            "app",
+        ],
+    )
+    assert main() == 0
+    payload = json.loads(capsys.readouterr().out)
+    config = project / "wiki-run.yaml"
+    assert payload["ok"] is True
+    assert Path(payload["init"]["config"]) == config
+    assert Path(payload["init"]["directory"]) == project.resolve()
+    assert config.is_file()
+    assert project.is_dir()
+    text = config.read_text(encoding="utf-8")
+    assert "staging: .okf-wiki/staging" in text
+    request = WikiRunRequest.from_yaml(config)
+    assert request.repositories[0].path == source.resolve()
+    assert request.staging == (project / ".okf-wiki" / "staging").resolve()
+    assert request.publication == (project / ".okf-wiki" / "wiki").resolve()
+
+
+def test_init_directory_with_relative_config_name(tmp_path: Path) -> None:
+    from okf_wiki.init_config import write_wiki_run_config
+
+    project = tmp_path / "nested" / "proj"
+    written = write_wiki_run_config(Path("run.yaml"), directory=project)
+    assert written == project / "run.yaml"
+    assert written.is_file()
 
 
 def test_wiki_run_cli_routes_refresh_through_the_same_application_seam(

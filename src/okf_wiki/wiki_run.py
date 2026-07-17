@@ -6,6 +6,7 @@ import posixpath
 import re
 import shutil
 import stat
+import sys
 import tempfile
 import time
 import uuid
@@ -22,6 +23,7 @@ from mdit_py_plugins.anchors import anchors_plugin
 from pydantic import (
     AfterValidator,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     StringConstraints,
@@ -61,6 +63,13 @@ from .adaptive_orchestration import (
     AdaptiveOrchestrator,
     build_root_agent,
     should_enable_adaptive,
+)
+from .errors import operator_error
+from .provider_env import (
+    env_limit_overrides,
+    merge_limit_overrides,
+    resolve_model_identity,
+    resolve_model_settings,
 )
 from .provider_retry import (
     ProviderRetryState,
@@ -260,6 +269,11 @@ class WikiRunLimits(BaseModel):
     adaptive_leaf_timeout_seconds: float = Field(default=90, gt=0)
     adaptive_dynamic_workflow: bool = False
 
+    @classmethod
+    def build(cls, overrides: Mapping[str, object] | None = None) -> "WikiRunLimits":
+        """Construct limits with precedence: field defaults < env < explicit overrides."""
+        return cls(**merge_limit_overrides(env_limit_overrides(), overrides))
+
     def usage_limits(self) -> UsageLimits:
         return UsageLimits(
             request_limit=self.request_limit,
@@ -304,17 +318,38 @@ class _ConfiguredSkill(BaseModel):
     digest: SkillDigest
 
 
+def _coerce_configured_model(value: object) -> object:
+    if isinstance(value, str):
+        return {"identity": value}
+    return value
+
+
+class _ConfiguredModel(BaseModel):
+    """Non-secret model selection. Credentials stay in environment / ``.env``."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    identity: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)] | None = None
+    max_tokens: int | None = Field(default=None, gt=0)
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    top_p: float | None = Field(default=None, gt=0, le=1)
+    timeout: float | None = Field(default=None, gt=0)
+
+
 class _WikiRunFileConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     version: Literal[1]
     operation: Literal["generate", "refresh"] = "generate"
-    model: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    model: Annotated[_ConfiguredModel, BeforeValidator(_coerce_configured_model)] = Field(
+        default_factory=_ConfiguredModel
+    )
     staging: Path
     publication: Path
     repositories: tuple[_ConfiguredRepository, ...] = Field(min_length=1, max_length=64)
     skill: _ConfiguredSkill | None = None
-    limits: WikiRunLimits = Field(default_factory=WikiRunLimits)
+    # Raw mapping so omitted keys can still pick up env defaults via WikiRunLimits.build.
+    limits: dict[str, object] | None = None
     retain_analysis_workspace: bool = False
     write_visualization: bool = False
 
@@ -324,6 +359,11 @@ class _WikiRunFileConfig(BaseModel):
             (repository.id for repository in self.repositories),
             "repository IDs must be unique",
         )
+        if self.limits is not None:
+            unknown = set(self.limits) - set(WikiRunLimits.model_fields)
+            if unknown:
+                names = ", ".join(sorted(unknown))
+                raise ValueError(f"Unknown limits fields: {names}")
         return self
 
 
@@ -693,10 +733,16 @@ def _record_directory(publication: Path) -> Path:
 
 def load_run_record(path: Path) -> WikiRunRecord:
     """Load a secret-free Wiki Run Record from disk."""
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise operator_error("Wiki Run Record is not readable JSON", error) from error
     if not isinstance(payload, dict):
         raise ValueError("Wiki Run Record must be a JSON object")
-    return WikiRunRecord.model_validate(payload)
+    try:
+        return WikiRunRecord.model_validate(payload)
+    except ValidationError as error:
+        raise operator_error("Wiki Run Record is invalid", error) from error
 
 
 def _manual_retry_request(
@@ -714,7 +760,10 @@ def _manual_retry_request(
     elif isinstance(record, WikiRunRecord):
         loaded = record
     else:
-        loaded = WikiRunRecord.model_validate(record)
+        try:
+            loaded = WikiRunRecord.model_validate(record)
+        except ValidationError as error:
+            raise operator_error("Wiki Run Record is invalid", error) from error
     if loaded.status not in {"failed", "cancelled"}:
         raise ValueError("Manual Retry Run requires a failed or cancelled Wiki Run Record")
     if not loaded.model.get("replayable", False) and model is None:
@@ -743,8 +792,9 @@ def _manual_retry_request(
         try:
             resolved = git_read(path, "rev-parse", "--verify", f"{revision}^{{commit}}").strip()
         except Exception as error:
-            raise ValueError(
-                f"Frozen repository revision is no longer available: {revision}"
+            raise operator_error(
+                f"Frozen repository revision is no longer available ({revision})",
+                error,
             ) from error
         if resolved.casefold() != revision.casefold():
             raise ValueError(f"Frozen repository revision is no longer available: {revision}")
@@ -762,20 +812,34 @@ def _manual_retry_request(
     skill_digest = str(loaded.skill["digest"])
     if not skill_path.exists():
         raise ValueError(f"Frozen Skill path is no longer available: {skill_path}")
-    skill = ProducerSkillVersion.from_directory(skill_path)
+    try:
+        skill = ProducerSkillVersion.from_directory(skill_path)
+    except Exception as error:
+        raise operator_error(
+            f"Frozen Skill path is invalid: {skill_path}",
+            error,
+        ) from error
     if skill.digest != skill_digest:
         raise ValueError(
             "Frozen Skill digest no longer matches the recorded Skill: "
             f"expected {skill_digest}, found {skill.digest}"
         )
-    limits = WikiRunLimits.model_validate(loaded.limits)
-    if model is None:
-        model_identity = str(loaded.model["identity"])
-        settings = cast(dict[str, object], loaded.model.get("settings") or {})
-        model_config = ModelProviderConfig(model=model_identity, settings=ModelSettings(**settings))
-    else:
-        settings = cast(dict[str, object], loaded.model.get("settings") or {})
-        model_config = ModelProviderConfig(model=model, settings=ModelSettings(**settings))
+    try:
+        limits = WikiRunLimits.model_validate(loaded.limits)
+    except ValidationError as error:
+        raise operator_error("Manual Retry Run limits are invalid", error) from error
+    try:
+        if model is None:
+            model_identity = str(loaded.model["identity"])
+            settings = cast(dict[str, object], loaded.model.get("settings") or {})
+            model_config = ModelProviderConfig(
+                model=model_identity, settings=ModelSettings(**settings)
+            )
+        else:
+            settings = cast(dict[str, object], loaded.model.get("settings") or {})
+            model_config = ModelProviderConfig(model=model, settings=ModelSettings(**settings))
+    except Exception as error:
+        raise operator_error("Manual Retry Run model settings are invalid", error) from error
     answers = dict(loaded.explicit_answers)
     if explicit_answers is not None:
         answers.update({str(key): str(value) for key, value in explicit_answers.items()})
@@ -1389,7 +1453,35 @@ def _materialize_repository_snapshot(
     return used_files, used_bytes
 
 
+def _require_supported_runtime() -> None:
+    """Fail closed on hosts that cannot implement safe staging/publication.
+
+    Staging and publication walk paths with Unix ``dir_fd`` + ``O_NOFOLLOW`` and
+    resolve stable directory handles via ``/proc/self/fd``. That stack is Linux-only
+    in this release (see README). Windows fails earlier inside ``os.open(..., dir_fd=)``
+    with a generic "path is not accessible" otherwise.
+    """
+    if sys.platform.startswith("win"):
+        raise ValueError(
+            "okf-wiki Wiki Run requires Linux in this release (not Windows). "
+            "Staging/publication use Unix directory file descriptors (dir_fd, O_NOFOLLOW) "
+            "and /proc/self/fd for atomic publish. Run under WSL2 or a Linux host."
+        )
+    if not hasattr(os, "O_DIRECTORY") or os.O_DIRECTORY == 0:
+        raise ValueError(
+            "okf-wiki Wiki Run requires a host with os.O_DIRECTORY support (Linux). "
+            f"Current platform: {sys.platform!r}."
+        )
+    proc_fd = Path("/proc/self/fd")
+    if not proc_fd.is_dir():
+        raise ValueError(
+            "okf-wiki Wiki Run requires /proc/self/fd for atomic publication "
+            f"(missing on this host; platform={sys.platform!r}). Use Linux."
+        )
+
+
 def _prepare_mounts(request: WikiRunRequest) -> tuple[tuple[Path, ...], Path, Path, Path]:
+    _require_supported_runtime()
     sources = tuple(
         _existing_directory(repository.path, f"Repository Snapshot {repository.id}")
         for repository in request.repositories
@@ -1446,7 +1538,7 @@ def _check_directory_path(path: Path, label: str) -> None:
         except FileNotFoundError:
             continue
         except OSError as error:
-            raise ValueError(f"{label} path is not accessible") from error
+            raise operator_error(f"{label} path is not accessible", error) from error
         if stat.S_ISLNK(info.st_mode):
             raise ValueError(f"{label} path must not contain symlinks")
         if not stat.S_ISDIR(info.st_mode):
@@ -1458,7 +1550,7 @@ def _create_directory_path(path: Path, label: str) -> None:
     try:
         descriptor = os.open(path.anchor, flags)
     except OSError as error:
-        raise ValueError(f"{label} path is not accessible") from error
+        raise operator_error(f"{label} path is not accessible", error) from error
     try:
         for part in path.parts[1:]:
             try:
@@ -1468,10 +1560,12 @@ def _create_directory_path(path: Path, label: str) -> None:
                     os.mkdir(part, dir_fd=descriptor)
                     child = os.open(part, flags, dir_fd=descriptor)
                 except OSError as error:
-                    raise ValueError(f"{label} directory could not be created") from error
+                    raise operator_error(
+                        f"{label} directory could not be created", error
+                    ) from error
             except OSError as error:
-                raise ValueError(
-                    f"{label} path must not contain symlinks or non-directories"
+                raise operator_error(
+                    f"{label} path must not contain symlinks or non-directories", error
                 ) from error
             os.close(descriptor)
             descriptor = child
@@ -1497,7 +1591,9 @@ def _open_release_root(path: Path) -> int:
     except FileExistsError:
         pass
     except OSError as error:
-        raise ValueError("Published Wiki release directory could not be created") from error
+        raise operator_error(
+            "Published Wiki release directory could not be created", error
+        ) from error
     try:
         descriptor = os.open(
             path,
@@ -1607,7 +1703,7 @@ def _resolve_branch(checkout: Path, branch: str) -> str:
     try:
         validated = git_read(checkout, "check-ref-format", "--branch", branch).strip()
     except ValueError as error:
-        raise ValueError(f"Repository branch is invalid: {branch!r}") from error
+        raise operator_error(f"Repository branch is invalid: {branch!r}", error) from error
     if validated != branch:
         raise ValueError(f"Repository branch is not canonical: {branch!r}")
     try:
@@ -1615,7 +1711,9 @@ def _resolve_branch(checkout: Path, branch: str) -> str:
             checkout, "rev-parse", "--verify", f"refs/heads/{branch}^{{commit}}"
         ).strip()
     except ValueError as error:
-        raise ValueError(f"Repository branch does not resolve locally: {branch!r}") from error
+        raise operator_error(
+            f"Repository branch does not resolve locally: {branch!r}", error
+        ) from error
 
 
 def _wiki_run_request_from_yaml(path: Path) -> WikiRunRequest:
@@ -1623,12 +1721,12 @@ def _wiki_run_request_from_yaml(path: Path) -> WikiRunRequest:
     try:
         raw = yaml.load(config_path.read_text(encoding="utf-8"), Loader=_UniqueKeySafeLoader)
     except (OSError, UnicodeError, yaml.YAMLError) as error:
-        raise ValueError("Wiki Run YAML is not readable valid UTF-8 YAML") from error
+        raise operator_error("Wiki Run YAML is not readable valid UTF-8 YAML", error) from error
     _reject_yaml_secrets(raw)
     try:
         config = _WikiRunFileConfig.model_validate(raw)
     except ValidationError as error:
-        raise ValueError("Wiki Run YAML configuration is invalid") from error
+        raise operator_error("Wiki Run YAML configuration is invalid", error) from error
     root = config_path.parent
     repositories = []
     for configured in config.repositories:
@@ -1654,12 +1752,23 @@ def _wiki_run_request_from_yaml(path: Path) -> WikiRunRequest:
             digest=config.skill.digest,
         )
     )
+    try:
+        model_identity = resolve_model_identity(config.model.identity)
+        model_settings = resolve_model_settings(
+            max_tokens=config.model.max_tokens,
+            temperature=config.model.temperature,
+            top_p=config.model.top_p,
+            timeout=config.model.timeout,
+        )
+        limits = WikiRunLimits.build(config.limits)
+    except (ValidationError, ValueError) as error:
+        raise operator_error("Wiki Run YAML configuration is invalid", error) from error
     return WikiRunRequest(
         operation=config.operation,
         repositories=tuple(repositories),
         skill=skill,
-        model=ModelProviderConfig(model=config.model),
-        limits=config.limits,
+        model=ModelProviderConfig(model=model_identity, settings=model_settings),
+        limits=limits,
         staging=_configured_path(root, config.staging),
         publication=_configured_path(root, config.publication),
         retain_analysis_workspace=config.retain_analysis_workspace,
@@ -1962,7 +2071,7 @@ def _stage_published_wiki(
         release_root = releases.resolve(strict=True)
         release = publication.resolve(strict=True)
     except OSError as error:
-        raise ValueError("Refresh Published Wiki pointer is not readable") from error
+        raise operator_error("Refresh Published Wiki pointer is not readable", error) from error
     if not release.is_dir() or release.parent != release_root:
         raise ValueError("Refresh Published Wiki pointer escapes its producer release directory")
 
@@ -1972,7 +2081,7 @@ def _stage_published_wiki(
     try:
         metadata = _PublicationMetadata.model_validate_json(metadata_path.read_bytes())
     except Exception as error:
-        raise ValueError("Refresh Published Wiki metadata is invalid") from error
+        raise operator_error("Refresh Published Wiki metadata is invalid", error) from error
 
     page_hashes: dict[str, str] = {}
     for page in metadata.pages:

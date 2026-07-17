@@ -79,7 +79,7 @@ def _resolve_publication_root(publication: Path) -> Path:
     try:
         root = publication.resolve(strict=True)
     except OSError as error:
-        raise ValueError(f"Published Wiki path is not readable: {publication}") from error
+        raise ValueError(f"Published Wiki path is not readable: {publication}: {error}") from error
     if not root.is_dir():
         raise ValueError("Published Wiki path must name a directory")
     return root

@@ -9,21 +9,30 @@ atomically.
 The product vocabulary is defined in [CONTEXT.md](CONTEXT.md), and the execution boundaries are
 recorded in the [architecture decisions](docs/adr/).
 
-## Install
+## Requirements
 
-Development and source installs require Python 3.14, Git, and
-[uv](https://docs.astral.sh/uv/):
+| Need | Detail |
+|---|---|
+| **Python** | 3.14 |
+| **Git** | Local clean checkouts (no clone/fetch by the product) |
+| **uv** | [docs.astral.sh/uv](https://docs.astral.sh/uv/) for install and `uv run` |
+| **Host OS for Wiki Run** | **Linux only** in this release |
+
+Staging and publication use Unix directory file descriptors (`dir_fd`, `O_NOFOLLOW`) and
+`/proc/self/fd` for atomic publish. **Windows is not supported for `wiki-run` / `tui` / publish** —
+use [WSL2](https://learn.microsoft.com/windows/wsl/) or a Linux host. `okf-wiki init` and editing
+YAML / `.env` still work on any platform where Python runs.
+
+## Install
 
 ```bash
 uv sync --locked
 uv run --locked okf-wiki --help
 ```
 
-The installed command exposes these operations:
-
 | Command | Purpose |
 |---|---|
-| `init` | Write a starter `wiki-run.yaml` to edit and run later |
+| `init` | Initialize a project directory and write `wiki-run.yaml` |
 | `wiki-run` | Generate or refresh a Wiki |
 | `wiki-retry` | Manual Retry Run from a failed or cancelled Wiki Run Record |
 | `tui` | Line-oriented interactive run operator (TTY) |
@@ -32,130 +41,204 @@ The installed command exposes these operations:
 | `skill-fork` | Editable copy of a Skill Version |
 | `skill-inspect` | Validate a Skill directory and report its content digest |
 
-This release is CLI-only: it has no product web app or Console process. Optional Wiki Visualization
-is static HTML under `viz/` (open with a browser or `file://`); it is not a run dashboard.
-
-The current publication implementation targets Linux because stable directory handles use
-`/proc/self/fd`.
+This release is CLI-only: no product web app. Optional Wiki Visualization is static HTML under
+`viz/` (browser or `file://`); it is not a run dashboard.
 
 ## Quick start
 
 ```bash
-# 1) Provider credentials (untracked)
+# 1) Credentials (untracked). Prefer next to the YAML or in the project directory.
 cp .env.example .env
-# Edit .env — e.g. OPENAI_API_KEY=...
+# Edit .env — at least OPENAI_API_KEY=...
+# For OpenAI-compatible gateways also set OPENAI_BASE_URL=https://…/v1
 
-# 2) Starter YAML for this working directory + one local repository
+# 2a) Initialize in the current directory
 uv run --locked okf-wiki init \
   --source /absolute/path/to/repository \
   --source-id application
 
-# 3) Edit wiki-run.yaml: model, staging/publication paths, extra ignore patterns, multi-repo
-# 4) Generate
-uv run --locked okf-wiki wiki-run --config ./wiki-run.yaml
+# 2b) Or initialize a dedicated project directory (created if missing)
+uv run --locked okf-wiki init ./my-wiki-project \
+  --source /absolute/path/to/repository \
+  --source-id application
+cd ./my-wiki-project   # if you used 2b
 
-# 5) Optional: browse the Published Wiki as static HTML + link graph
+# 3) Edit wiki-run.yaml (model, repos, ignores) and .env
+
+# 4) Generate — defaults to ./wiki-run.yaml when --config is omitted
+uv run --locked okf-wiki wiki-run
+
+# 5) Optional: static HTML + link graph of the Published Wiki
 uv run --locked okf-wiki viz ./.okf-wiki/wiki
 ```
 
-`init` never runs the model. It only writes configuration. Re-run with `--force` to replace an
-existing file.
+`init` never calls the model. `wiki-run` and `tui` load `./wiki-run.yaml` by default when you omit
+`--config` and do not pass direct source flags. Re-init with `--force` to replace an existing YAML.
 
 ## Provider environment
 
-Copy [.env.example](.env.example) to an untracked `.env` and uncomment only the provider you use:
+Copy [.env.example](.env.example) to an untracked `.env`:
 
 ```bash
 cp .env.example .env
-# Edit .env, then run the CLI normally.
 ```
 
-OpenAI uses `OPENAI_API_KEY`; optional OpenAI-compatible endpoint and project selection use
-`OPENAI_BASE_URL`, `OPENAI_ORG_ID`, and `OPENAI_PROJECT_ID`. The example also lists Anthropic,
-Google, Azure OpenAI, and OpenRouter variables supported by the installed PydanticAI providers. For
-`wiki-run --config`, the CLI loads `.env` beside the YAML file when present; otherwise it loads
-`.env` from the current directory. Existing process environment variables always win, and
-`PYTHON_DOTENV_DISABLED=1` disables local loading. Deployments should still inject environment
-variables through their runtime or secret manager. OpenAI likewise recommends keeping API keys out
-of code and public repositories and exposing them through environment variables or a secret manager
-in its [production guidance](https://developers.openai.com/api/docs/guides/production-best-practices#api-keys).
+For `wiki-run` / `tui`, the CLI loads `.env` **beside the YAML** when present; otherwise from the
+current directory. Process environment always wins. `PYTHON_DOTENV_DISABLED=1` skips local `.env`.
 
-Provider credentials, tokens, and headers are rejected from Wiki Run YAML and are never copied into
-prompts, traces, staging, or publication metadata.
+### OpenAI and OpenAI-compatible APIs
 
-## Initialize and configure a Wiki Run
+| Variable | Purpose |
+|---|---|
+| `OPENAI_API_KEY` | API key (most gateways; some local servers may omit it) |
+| `OPENAI_BASE_URL` | Chat Completions base URL (usually ends with `/v1`) |
+| `OPENAI_ORG_ID` / `OPENAI_PROJECT_ID` | Optional OpenAI org/project |
 
-### `okf-wiki init`
+Model identity stays `openai:<served-model-name>` even on third-party gateways:
 
 ```bash
-# Default: ./wiki-run.yaml with placeholder repository paths
+# Stock OpenAI
+OPENAI_API_KEY=sk-...
+
+# Compatible gateway (vLLM, LiteLLM, OpenRouter-style proxy, DeepSeek, local server, …)
+OPENAI_API_KEY=...
+OPENAI_BASE_URL=https://openrouter.ai/api/v1
+# YAML / CLI: model: openai:your-served-model-id
+```
+
+### Product defaults (non-secret)
+
+YAML and CLI override these when set:
+
+| Variable | Purpose |
+|---|---|
+| `OKF_WIKI_MODEL` | Default model identity (`provider:name`) |
+| `OKF_WIKI_MAX_TOKENS` | Per-completion max output tokens |
+| `OKF_WIKI_TEMPERATURE` | Sampling temperature |
+| `OKF_WIKI_CONTEXT_TARGET_TOKENS` | Compaction / operational context target |
+| `OKF_WIKI_INPUT_TOKENS_LIMIT` | Run-level cumulative input budget |
+| `OKF_WIKI_OUTPUT_TOKENS_LIMIT` | Run-level cumulative output budget |
+| `OKF_WIKI_TOTAL_TOKENS_LIMIT` | Run-level cumulative total budget |
+| `OKF_WIKI_REQUEST_TIMEOUT_SECONDS` | Provider request timeout |
+
+`.env.example` also lists Anthropic, Google, Azure OpenAI, and OpenRouter variables for other
+Pydantic AI provider prefixes.
+
+**Secrets never go in Wiki Run YAML.** Keys, tokens, and headers there are rejected. Credentials are
+not copied into prompts, run records, staging, or publication metadata.
+
+Invalid YAML or limits now report **field-level messages** (not a bare “configuration is invalid”).
+Provider transport failures that look secret-bearing remain withheld.
+
+## Initialize a project (`okf-wiki init`)
+
+```bash
+# Current directory → ./wiki-run.yaml
 uv run --locked okf-wiki init
 
-# Prefill one local repository (path relative to the YAML when possible)
-uv run --locked okf-wiki init \
-  --config ./wiki-run.yaml \
+# Target directory (created if missing) → <dir>/wiki-run.yaml
+uv run --locked okf-wiki init ./my-wiki-project
+
+# Prefill repository + model
+uv run --locked okf-wiki init ./my-wiki-project \
   --source /absolute/path/to/repository \
   --source-id application \
   --model openai:gpt-5-mini
 
-# Pin a branch or exact revision for the prefilled source
+# Pin branch or exact revision for the prefilled source
 uv run --locked okf-wiki init --source ./repo --branch main
 uv run --locked okf-wiki init --source ./repo --revision "$(git -C ./repo rev-parse HEAD)"
 
-# Replace an existing file
-uv run --locked okf-wiki init --force
+# Custom YAML name under the init directory
+uv run --locked okf-wiki init ./my-wiki-project --config run.yaml
+
+# Replace existing YAML
+uv run --locked okf-wiki init ./my-wiki-project --force
 ```
 
-Success prints JSON with the written path and short next steps. After init:
+| Argument | Meaning |
+|---|---|
+| `directory` (positional, optional) | Project root to initialize; default: current directory |
+| `--config` | YAML path; relative paths are under the init directory (default: `wiki-run.yaml`) |
+| `--source` / `--source-id` / `--branch` / `--revision` | Prefill first repository entry |
+| `--model` | Model string written into YAML (else `OKF_WIKI_MODEL` or `openai:gpt-5-mini`) |
+| `--force` | Overwrite existing config |
+
+Success JSON includes `config`, `directory`, and short `next` steps. After init:
 
 1. Edit `repositories` (paths, `branch` or `revision`, optional `ignore`).
-2. Confirm `staging` and `publication` paths (defaults under `.okf-wiki/`).
+2. Confirm `staging` / `publication` (defaults under `.okf-wiki/` beside the YAML).
 3. Set `model` and optional `limits` / `write_visualization`.
-4. Put provider credentials in `.env` or the process environment.
-5. Run `okf-wiki wiki-run --config ./wiki-run.yaml` (or `okf-wiki tui --config ./wiki-run.yaml`).
+4. Put credentials in `.env` beside the YAML.
+5. From the project directory: `okf-wiki wiki-run` or `okf-wiki tui`.
 
 ### YAML contents
 
-You can also start from [examples/wiki-run.yaml](examples/wiki-run.yaml). YAML contains only
-non-secret settings: operation, model string, output paths, optional limits, and one or more named
-repositories. Paths are relative to the YAML file. Each repository selects exactly one local
-`branch` or exact `revision`; a branch is resolved once to a complete commit before model work, and
-that commit is recorded in `.okf-wiki.json`. Repository IDs must be unique lowercase hyphen-case
-names.
+Start from [examples/wiki-run.yaml](examples/wiki-run.yaml) if useful. YAML holds **non-secret**
+settings only. Paths are relative to the YAML file.
 
 ```yaml
+version: 1
+operation: generate   # or refresh
+
+# String form:
+model: openai:gpt-5-mini
+# Object form (optional sampling / output caps):
+# model:
+#   identity: openai:qwen2.5-72b-instruct
+#   max_tokens: 8192
+#   temperature: 0.2
+#   timeout: 120
+
+staging: .okf-wiki/staging
+publication: .okf-wiki/wiki
+write_visualization: false
+
 repositories:
   - id: application
     path: ../path/to/application
     branch: main
     apply_default_source_ignores: true   # default when omitted
-    ignore: []                           # additive extra fnmatch patterns
+    ignore: []                           # additive fnmatch patterns
+
+# Omitted limit keys still take OKF_WIKI_* env defaults, then product defaults
+limits:
+  context_target_tokens: 100000
+  input_tokens_limit: 250000
+  output_tokens_limit: 100000
+  total_tokens_limit: 350000
+  request_timeout_seconds: 120
 ```
 
-**Default Source Ignores** are Host-owned noise patterns (`node_modules`, `dist`, `.venv`, caches,
-and similar). They apply when `apply_default_source_ignores` is true (the default). User `ignore`
-entries are always additive; writing a custom ignore never turns defaults off. Set
-`apply_default_source_ignores: false` when you need full control and list every exclusion yourself.
-There is no gitignore import and no `!` re-include syntax. Tests are kept in the Snapshot by
-default. The expanded **Effective Source Ignores** are frozen into the Wiki Run Record and
-publication metadata so Manual Retry reproduces the same membership.
+Each repository selects exactly one local `branch` or exact `revision`. Branches freeze to a full
+commit before model work. Repository IDs are unique lowercase hyphen-case names.
 
-The first version reads existing clean local checkouts; it does not clone, fetch, or pull.
+**Default Source Ignores** (`node_modules`, `dist`, `.venv`, caches, …) apply when
+`apply_default_source_ignores` is true. User `ignore` entries are additive only. Set
+`apply_default_source_ignores: false` for full manual control. No gitignore import and no `!`
+re-includes. Tests stay in the Snapshot by default. **Effective Source Ignores** are frozen into
+the Wiki Run Record and publication metadata for Manual Retry.
+
+The product reads existing clean local checkouts; it does not clone, fetch, or pull.
 
 ## Generate a Wiki
 
-### With YAML (recommended after `init`)
+### YAML mode (recommended)
 
 ```bash
+# From the project directory (./wiki-run.yaml):
+uv run --locked okf-wiki wiki-run
+
+# Explicit path:
 uv run --locked okf-wiki wiki-run --config ./wiki-run.yaml
 ```
 
-Optional flags include `--write-visualization` / `--no-write-visualization` when not set in YAML.
+Optional: `--write-visualization` / `--no-write-visualization` when not set in YAML.
 
 ### Direct CLI (single repository)
 
-The source must be a clean Git working tree, and `--source-revision` must be its complete commit ID.
-The Staging Wiki must be empty and must not overlap the source, Producer Skill, or publication path.
+Requires source, `--source-revision`, `--staging`, and `--publication` (no default YAML). Source
+must be a clean Git tree; staging must be empty and not overlap source, Skill, or publication.
 
 ```bash
 SOURCE=/absolute/path/to/repository
@@ -168,46 +251,21 @@ OPENAI_API_KEY=... uv run --locked okf-wiki wiki-run "$SOURCE" \
   --model openai:gpt-5-mini
 ```
 
-With the bundled Producer Skill, no Skill flags are needed. Success is one JSON object with a
-Complete result, the Wiki Manifest, and a mechanical change summary:
-
-```json
-{
-  "ok": true,
-  "result": {
-    "status": "complete",
-    "manifest": {"pages": ["index.md"]},
-    "summary": {
-      "added": ["index.md"],
-      "changed": [],
-      "removed": [],
-      "unchanged": [],
-      "content_changed": true,
-      "publication_changed": true
-    }
-  }
-}
-```
-
-When trustworthy generation genuinely needs external information, the same command returns a
-successful structured Needs Input result instead of publishing:
-
-```json
-{"ok": true, "result": {"status": "needs_input", "questions": ["Which audience?"]}}
-```
-
-Operational failures return `ok: false`, an exception type, and a secret-safe message. A failed or
-incomplete run does not update the Published Wiki.
+Success is one JSON object (`Complete` + manifest + change summary). Needs Input returns
+`status: needs_input` without publishing. Operational failures return `ok: false` with a type and
+secret-safe message; the previous Published Wiki is left unchanged.
 
 ## Refresh a Published Wiki
 
-Refresh uses the same application seam. It copies the current Published Wiki into a new empty
-Staging Wiki, then asks the Agent to reconsider the complete Wiki against the newer Repository
-Snapshot Set:
+Same application seam: copy the current publication into a new empty staging tree, then re-run the
+semantic loop against newer snapshots.
 
 ```bash
-NEW_REVISION=$(git -C "$SOURCE" rev-parse HEAD)
+# YAML: operation: refresh and a fresh empty staging path, then:
+uv run --locked okf-wiki wiki-run --config ./wiki-run.yaml
 
+# Direct:
+NEW_REVISION=$(git -C "$SOURCE" rev-parse HEAD)
 OPENAI_API_KEY=... uv run --locked okf-wiki wiki-run "$SOURCE" \
   --refresh \
   --source-revision "$NEW_REVISION" \
@@ -216,40 +274,37 @@ OPENAI_API_KEY=... uv run --locked okf-wiki wiki-run "$SOURCE" \
   --model openai:gpt-5-mini
 ```
 
-Refresh requires a producer-managed publication created by a successful Generate. The summary
-reports added, changed, removed, and unchanged pages. A content no-op remains a successful Complete
-result with `content_changed: false`; `publication_changed` remains true when any repository
-revision, Effective Source Ignores, or Skill digest changed, so provenance can still produce a new
-release. Publication is unchanged only when both page content and recorded provenance are unchanged.
-In YAML mode, set `operation: refresh` and use a fresh empty staging path.
+Refresh needs a producer-managed publication from a successful Generate. Summaries report page
+adds/changes/removes; provenance can still publish when content is unchanged but revision/ignores
+or Skill digest changed.
 
 ## Interactive TUI
 
-For a line-oriented run operator on a TTY (plan/branch status, receipts, retries—not a web UI):
+Line-oriented operator status (plan/branches/receipts)—not a web UI:
 
 ```bash
+uv run --locked okf-wiki tui                 # ./wiki-run.yaml by default
 uv run --locked okf-wiki tui --config ./wiki-run.yaml
 ```
 
-Non-TTY use is rejected; automation should keep using `wiki-run` JSON.
+Non-TTY is rejected; automation should use `wiki-run` JSON.
 
 ## Wiki Visualization
 
-Generate a deterministic static HTML view (page browser + link graph) from an existing Published
-Wiki. This does not call the model and does not modify wiki Markdown pages.
+Deterministic static HTML (page browser + link graph) from a Published Wiki. No model call; does not
+modify Markdown pages.
 
 ```bash
 uv run --locked okf-wiki viz /absolute/path/to/published-wiki
-# artifacts default to <publication>/viz/index.html and graph.json
+# default artifacts: <publication>/viz/index.html and graph.json
 ```
 
-Or set `write_visualization: true` in YAML / pass `--write-visualization` on `wiki-run`. Failure to
-write visualization never unpublishes a successful Wiki.
+Or `write_visualization: true` / `--write-visualization` on `wiki-run`. Visualization failure never
+unpublishes a successful Wiki.
 
 ## Manual Retry
 
-After automatic provider retries are exhausted, create a new run from a secret-free Wiki Run Record
-(frozen revisions, Effective Source Ignores, Skill digest, limits):
+After automatic provider retries are exhausted, start a new run from a secret-free Wiki Run Record:
 
 ```bash
 uv run --locked okf-wiki wiki-retry /path/to/run-record.json \
@@ -259,27 +314,14 @@ uv run --locked okf-wiki wiki-retry /path/to/run-record.json \
 
 ## Producer Skills and Wiki Templates
 
-Every Wiki Run freezes one exact Producer Skill digest. The bundled Skill contains the semantic
-workflow, focused Generate, Refresh, and review guidance, plus adaptable overview, architecture,
-module, flow, and concept Wiki Templates. Templates guide useful page shapes; they do not impose a
-fixed taxonomy or page count. Host policy (Default Source Ignores, mounts, budgets) is not part of
-the Skill.
-
-Create an editable Skill Fork:
+Every run freezes one Producer Skill digest. The bundled Skill holds the semantic workflow,
+Generate / Refresh / review guidance, and adaptable overview, architecture, module, flow, and
+concept templates. Host policy (ignores, mounts, budgets) is not part of the Skill.
 
 ```bash
 uv run --locked okf-wiki skill-fork ./my-producer-skill
-```
-
-After editing its Markdown guidance or Templates, validate it and capture the new digest:
-
-```bash
 uv run --locked okf-wiki skill-inspect ./my-producer-skill
-```
 
-Select that exact revision for a run:
-
-```bash
 uv run --locked okf-wiki wiki-run "$SOURCE" \
   --source-revision "$REVISION" \
   --skill ./my-producer-skill \
@@ -289,87 +331,50 @@ uv run --locked okf-wiki wiki-run "$SOURCE" \
   --model openai:gpt-5-mini
 ```
 
-A selected Skill directory whose contents no longer match its digest is rejected before model
-execution.
+A selected Skill directory whose contents no longer match its digest is rejected before model work.
 
 ## Source Citations, validation, and publication
 
-Each page must begin with YAML frontmatter containing a non-empty `title`. Source Citations use a
-repository-relative POSIX path and a one-based inclusive line range:
+Pages need YAML frontmatter with a non-empty `title`. Citations:
 
 ```markdown
 [Source](repo:src/example.py#L10-L20)
-```
-
-When a Wiki Run has multiple repositories, prefix every citation path with its repository ID:
-
-```markdown
+# multi-repo:
 [Source](repo:application/src/example.py#L10-L20)
 ```
 
-Before publication, Python checks mechanically decidable invariants:
+Before publish, the Host checks mechanical invariants (manifest match, links, citations, limits,
+no symlinks/temp files, etc.). Citation checks prove spans exist—not semantic entailment.
 
-- only canonical UTF-8 Markdown pages are present, including a non-empty `index.md`;
-- the returned Wiki Manifest exactly matches the staged page tree;
-- YAML frontmatter is valid and raw HTML is absent;
-- relative internal links and heading fragments resolve inside the Wiki;
-- every page has at least one Source Citation whose repository ID, path, and line range resolve in
-  the pinned Repository Snapshot Set;
-- paths, symlinks, temporary artifacts, entry counts, and configured byte limits stay contained.
-
-Citation validation proves that referenced source spans exist. It does not prove semantic
-entailment or exhaustive repository coverage; the Producer Skill's review pass and evaluation are
-responsible for improving reader usefulness and factual grounding.
-
-After validation, the publisher writes an immutable release containing the Markdown pages and
-`.okf-wiki.json`, then atomically moves the publication pointer to that complete release. Metadata
-records every repository ID, exact revision, Effective Source Ignores, Skill digest, model identity,
-page hashes, generation time, and whole Wiki content digest. Readers observe either the previous
-complete Wiki or the new complete Wiki. A reserved top-level `viz/` directory holds optional
-visualization artifacts and is not treated as wiki pages.
+Publication writes an immutable release plus `.okf-wiki.json`, then atomically moves the publication
+pointer. Metadata records repository IDs, revisions, Effective Source Ignores, Skill digest, model,
+page hashes, and content digest. Reserved top-level `viz/` is not part of the semantic page set.
 
 ## Security and limits
 
-Every Repository Snapshot is materialized from an exact clean commit and treated as untrusted data.
-Repository-provided instructions, Skills, plugins, and prompt-like files are available only as
-source evidence; they do not alter product policy. Source and Producer Skill mounts are read-only,
-only the Staging Wiki is writable, and repository builds, tests, package managers, scripts, plugins,
-arbitrary host shell execution, and repository-triggered network tools are not available.
+Snapshots are exact clean commits treated as untrusted data. Repository agent files and Skills are
+evidence only—they do not change product policy. Source and Skill mounts are read-only; only Staging
+is writable. No repository builds, package managers, host shell, or repo-triggered network tools.
 
-Model content is sent only through the provider selected by the PydanticAI model string. Configure
-that provider's credentials through its supported process environment; credentials are not copied
-into the Repository Snapshot Set, Producer Skill, Staging Wiki, or publication metadata.
-
-`wiki-run` exposes request, token, tool-call, retry, request-timeout, tool-timeout, wall-clock,
-source-size, Wiki-size, and staging-write limits. Exhausted limits are explicit failures and leave
-the previous publication unchanged.
+Limits cover requests, tokens, tools, retries, timeouts, wall-clock, source size, Wiki size, and
+staging writes. Exhausted limits fail closed and leave the previous publication unchanged.
 
 ## Deterministic and live evaluation
 
-The default evaluation uses committed deterministic fixtures and requires no live model:
-
 ```bash
+# Fixtures only (no live model):
 uv run --locked okf-wiki wiki-eval /absolute/path/to/new-evaluation-output
-```
 
-Live evaluation requires an explicit model and repository manifest whose cases point to clean local
-repositories and exact revisions. The repository includes an
-[example manifest](src/okf_wiki/wiki_evaluation_repositories.json):
-
-```bash
+# Live (explicit model + local clean repos in a manifest):
 OPENAI_API_KEY=... uv run --locked okf-wiki wiki-eval \
   /absolute/path/to/new-live-evaluation-output \
   --model openai:gpt-5-mini \
   --manifest /absolute/path/to/repositories.json
 ```
 
-Automated evaluation measures mechanical and lexical signals, cost, latency, and material
-stability. Completed live Wikis still require the semantic review records accepted by `--review`
-before the report can recommend retaining the current design or opening a capability ticket. The
-evaluation command does not turn those signals into a claim of semantic proof.
+Example live manifest: [wiki_evaluation_repositories.json](src/okf_wiki/wiki_evaluation_repositories.json).
 
-The retained greenfield API investigation is available in
-[docs/research/pydanticai-greenfield-repo-to-wiki.md](docs/research/pydanticai-greenfield-repo-to-wiki.md).
+Design notes: [docs/research/pydanticai-greenfield-repo-to-wiki.md](docs/research/pydanticai-greenfield-repo-to-wiki.md).
 
 ## Development checks
 
@@ -386,38 +391,21 @@ git diff --check
 
 ### Git hooks (prek)
 
-This repo uses [prek](https://prek.j178.dev/) (fast pre-commit-compatible hook runner) with
-[`.pre-commit-config.yaml`](.pre-commit-config.yaml):
+[prek](https://prek.j178.dev/) via [`.pre-commit-config.yaml`](.pre-commit-config.yaml):
 
 | Stage | Hooks |
 |---|---|
-| **pre-commit** | trailing whitespace / YAML-TOML sanity, **ruff check --fix**, **ruff format**, **ty check** |
-| **pre-push** | **pytest** with `-m "not package_release"` |
+| **pre-commit** | whitespace / YAML-TOML, **ruff check --fix**, **ruff format**, **ty check** |
+| **pre-push** | **pytest** `-m "not package_release"` |
 | **CI / manual** | full suite including `package_release` |
-
-**Why tests are not on pre-commit:** unit tests already take seconds to tens of seconds and grow with
-the suite; putting them on every commit slows small docs/config commits without catching more than
-ruff/ty for pure style mistakes. **pre-push** still blocks a broken unit suite before remote share.
-`package_release` builds wheels and is intentionally **not** a local hook (CI only).
-
-One-time setup after clone:
 
 ```bash
 uv sync --locked
 uv run --locked prek install -t pre-commit -t pre-push
-# optional: warm hook envs
-uv run --locked prek prepare-hooks
+uv run --locked prek prepare-hooks   # optional warm
+uv run --locked prek run -a
 ```
 
-Useful commands:
-
-```bash
-uv run --locked prek run -a              # all pre-commit hooks on the whole tree
-uv run --locked prek run ty-check -a
-uv run --locked prek run pytest-unit -a  # same as pre-push tests, without pushing
-uv run --locked prek uninstall           # remove hooks
-```
-
-Skip once when needed: `PREK_ALLOW_NO_CONFIG=0 git commit --no-verify` (use sparingly).
+Skip once only when needed: `git commit --no-verify` (use sparingly).
 
 The normal pytest run includes the tracked product-documentation local-link gate.
