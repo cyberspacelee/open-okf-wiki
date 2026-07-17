@@ -28,11 +28,16 @@ gate.
    unanswered reader question, inspect enough source to answer it, and revise the intended page set.
    Add only pages with distinct purposes; split, merge, and cross-link them as the evidence demands.
    When the scope is large or spans independent domains, use the Run Plan to decide whether a
-   self-contained Domain task will reduce context pressure. A Domain may use the listed Leaf
-   Researchers for one further bounded layer; every branch must publish a validated receipt before
-   Root or its parent reduces the result. Keep the Run Plan's objective, completion gates, intended
-   pages, evidence gaps, branch states, receipt references, unresolved questions, and next actions
-   concise and current.
+   self-contained Domain task will reduce context pressure. Prefer the fewest Domains that still
+   isolate independent evidence; do not open empty roster slots. When two or more Domains are
+   needed and independent, fan them out in one CodeMode step with `asyncio.gather` over
+   `delegate_task` rather than awaiting them serially. Each `delegate_task` must be fully
+   self-contained (scope, questions, and completion gate)—children never see this conversation.
+   A Domain may use the listed Leaf Researchers for one further bounded layer; every branch must
+   publish a validated receipt before Root or its parent reduces the result. Do not call
+   `reviewer` until staged Wiki pages exist. Keep the Run Plan's objective, completion gates,
+   intended pages, evidence gaps, branch states, receipt references, unresolved questions, and
+   next actions concise and current.
    **Completion gate:** every intended page has a clear reader purpose and enough inspected evidence
    to write, and further inspection would not materially improve the intended Wiki.
 3. **Write the Wiki.** Select only relevant files from

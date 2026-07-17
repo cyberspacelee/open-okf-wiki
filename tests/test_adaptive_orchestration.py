@@ -856,6 +856,8 @@ def test_leaf_timeout_is_shorter_than_domain_timeout(tmp_path: Path) -> None:
         )
         domain = next(entry for entry in subagents.agents if entry.name == "domain_1")
         assert domain.timeout_seconds == 120.0
+        assert domain.max_calls == 2
+        assert subagents.tool_retries == 1
         domain_agent = domain.agent.wrapped
         domain_sub = next(
             capability
@@ -864,6 +866,34 @@ def test_leaf_timeout_is_shorter_than_domain_timeout(tmp_path: Path) -> None:
         )
         leaf = domain_sub.agents[0]
         assert leaf.timeout_seconds == 90.0
+        assert domain_sub.tool_retries == 1
+        # concurrency 4, domain_fanout 2 → at most 2 concurrent Domains so Leaf slots remain.
+        assert orchestration.event_payload()["max_active"] == 0
+        assert orchestration.event_payload()["queue_seconds_total"] == 0.0
+    finally:
+        workspace.cleanup()
+
+
+def test_domain_concurrency_reserves_leaf_fanout_slots(tmp_path: Path) -> None:
+    agent, orchestration, workspace = _builder(
+        tmp_path,
+        WikiRunLimits(adaptive_child_concurrency=4, adaptive_domain_fanout=2),
+    )
+    try:
+        # Host must not allow 3 Domains to occupy 3 of 4 global slots when each Domain
+        # may still fan out 2 Leaves (only one Leaf slot would remain).
+        domain_sem = orchestration.root_deps.semaphore
+        assert orchestration.policy.child_concurrency == 4
+        assert orchestration.policy.domain_fanout == 2
+        # Probe the private domain gate via the first domain wrapper.
+        subagents = next(
+            capability
+            for capability in agent.root_capability.capabilities
+            if isinstance(capability, SubAgents)
+        )
+        domain_wrapper = next(entry.agent for entry in subagents.agents if entry.name == "domain_1")
+        assert domain_wrapper._parent_semaphore._value == 2  # type: ignore[attr-defined]
+        assert domain_sem._value == 4
     finally:
         workspace.cleanup()
 

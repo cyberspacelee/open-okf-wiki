@@ -50,7 +50,11 @@ class TuiState:
         }:
             status = str(payload.get("status") or event.type.removeprefix("child_"))
             self.nodes[node] = status
-            line = f"node {node}: {status}"
+            queue = payload.get("queue_seconds")
+            if event.type == "child_started" and isinstance(queue, (int, float)) and queue >= 0.05:
+                line = f"node {node}: {status} queue={float(queue):.2f}s"
+            else:
+                line = f"node {node}: {status}"
         elif event.type == "plan_updated":
             total = payload.get("total")
             self.last_plan_total = int(total) if isinstance(total, (int, float)) else None

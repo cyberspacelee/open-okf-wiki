@@ -159,6 +159,9 @@ class _AdaptiveMetrics:
     child_runs: int = 0
     retries: int = 0
     direct_fallbacks: int = 0
+    # Host-side queue time waiting on concurrency gates (not model latency).
+    queue_seconds_total: float = 0.0
+    max_queue_seconds: float = 0.0
     node_states: dict[str, NodeState] = field(default_factory=dict)
     node_parents: dict[str, str | None] = field(default_factory=dict)
     next_attempts: dict[str, int] = field(default_factory=dict)
@@ -173,6 +176,12 @@ class _AdaptiveMetrics:
             "total_tokens": 0,
         }
     )
+
+    def record_queue_wait(self, seconds: float) -> None:
+        wait = max(0.0, seconds)
+        self.queue_seconds_total += wait
+        if wait > self.max_queue_seconds:
+            self.max_queue_seconds = wait
 
     def register_node(self, node_id: str, parent_id: str | None = None) -> None:
         self.node_states.setdefault(node_id, "pending")
@@ -598,11 +607,15 @@ class _BoundedAgent(WrapperAgent[AdaptiveDeps, str]):
             {"depth": self._depth, "node_kind": self._role},
             node_id=self._node_id,
         )
+        loop = asyncio.get_running_loop()
+        queue_started = loop.time()
         async with AsyncExitStack() as stack:
             await stack.enter_async_context(self._attempt_lock)
             if self._parent_semaphore is not None:
                 await stack.enter_async_context(self._parent_semaphore)
             await stack.enter_async_context(self._semaphore)
+            queue_seconds = max(0.0, loop.time() - queue_started)
+            self._metrics.record_queue_wait(queue_seconds)
             try:
                 attempt = self._metrics.begin_attempt(
                     self._node_id,
@@ -612,7 +625,12 @@ class _BoundedAgent(WrapperAgent[AdaptiveDeps, str]):
             except ModelRetry:
                 self._emit(
                     "child_rejected",
-                    {"depth": self._depth, "node_kind": self._role, "reason_code": "retry_reserve"},
+                    {
+                        "depth": self._depth,
+                        "node_kind": self._role,
+                        "reason_code": "retry_reserve",
+                        "queue_seconds": queue_seconds,
+                    },
                     node_id=self._node_id,
                 )
                 raise
@@ -632,13 +650,14 @@ class _BoundedAgent(WrapperAgent[AdaptiveDeps, str]):
                 self._metrics.max_active_children, self._metrics.active_children
             )
             self._metrics.child_runs += 1
-            started_at = asyncio.get_running_loop().time()
+            started_at = loop.time()
             self._emit(
                 "child_started",
                 {
                     "depth": self._depth,
                     "node_kind": self._role,
                     "active": self._metrics.active_children,
+                    "queue_seconds": queue_seconds,
                 },
                 node_id=self._node_id,
             )
@@ -951,10 +970,10 @@ def _make_leaf(
         name=f"leaf_{index}",
         usage_limits=_child_limits(policy, "leaf"),
         timeout_seconds=policy.leaf_timeout_seconds,
+        # One intentional Host retry; tool_retries covers transient ModelRetry only.
         max_calls=2,
         on_failure=(
-            "Leaf research did not produce a complete receipt. Retry this branch once; if it "
-            "remains incomplete, keep it unresolved and continue with a bounded fallback."
+            "Leaf incomplete. Retry once within budget, else leave unresolved and continue."
         ),
         contain_errors=True,
     )
@@ -1018,7 +1037,8 @@ def _make_domain(
             agent_folders=None,
             inherit_tools=False,
             forward_usage=False,
-            tool_retries=2,
+            # max_calls=2 owns the intentional second attempt; keep tool retries thin.
+            tool_retries=1,
             contain_errors=True,
         )
     domain_capabilities: list[Any] = [
@@ -1036,7 +1056,10 @@ def _make_domain(
         return (
             "You are a Domain Researcher. Read /skill/references/domain-research.md in full before "
             "reading /source, then follow it. /source and /skill are read-only; /wiki is unavailable. "
-            "A DynamicWorkflow cannot be nested. Call publish_receipt with named fields matching "
+            "A DynamicWorkflow cannot be nested. When two independent Leaf scopes are needed, fan "
+            "them out in one CodeMode script with asyncio.gather over delegate_task (or the "
+            "optional DynamicWorkflow); do not serialize independent Leaf work. Every "
+            "delegate_task must be self-contained. Call publish_receipt with named fields matching "
             "this Host assignment, not a nested receipt object. "
             f"Host assignment: run_id={run_id}, task_id={task_id}, node_id={task_id}, "
             f"parent_id=root, attempt={deps.attempt}."
@@ -1090,8 +1113,7 @@ def _make_domain(
         timeout_seconds=policy.child_timeout_seconds,
         max_calls=2,
         on_failure=(
-            "Domain research did not produce a complete receipt. Retry this branch once; if it "
-            "remains incomplete, keep it unresolved and continue with a bounded fallback."
+            "Domain incomplete. Retry once within budget, else leave unresolved and fallback."
         ),
         contain_errors=True,
     )
@@ -1182,11 +1204,10 @@ def _make_reviewer(
         name="reviewer",
         usage_limits=_child_limits(policy, "reviewer"),
         timeout_seconds=policy.child_timeout_seconds,
-        # One Reviewer roster slot; max_calls=2 allows the single automatic child retry.
+        # One Reviewer roster slot; max_calls=2 allows the single intentional retry.
         max_calls=2,
         on_failure=(
-            "Wiki review did not produce a complete defects receipt. Retry once within the Host "
-            "budget; if it remains incomplete, keep review unresolved and do not claim Complete."
+            "Review incomplete. Retry once within budget; do not claim Complete if still unresolved."
         ),
         contain_errors=True,
     )
@@ -1217,6 +1238,8 @@ class AdaptiveOrchestrator:
             "fallbacks": self.metrics.direct_fallbacks,
             "active": self.metrics.active_children,
             "max_active": self.metrics.max_active_children,
+            "queue_seconds_total": round(self.metrics.queue_seconds_total, 3),
+            "max_queue_seconds": round(self.metrics.max_queue_seconds, 3),
             "critical_failures": self.metrics.unresolved_failures(),
         }
 
@@ -1253,9 +1276,12 @@ def build_root_agent(
     policy = AdaptivePolicy.from_limits(limits, enabled=adaptive)
     metrics = _AdaptiveMetrics()
     semaphore = asyncio.Semaphore(policy.child_concurrency)
-    domain_capacity = (
-        policy.child_concurrency - 1 if policy.max_depth >= 2 else policy.child_concurrency
-    )
+    # When leaves exist, reserve fan-out slots so concurrent Domains do not leave only
+    # one global slot for all Leaf work (Domain holds a slot for its whole run).
+    if policy.max_depth >= 2:
+        domain_capacity = max(1, policy.child_concurrency - policy.domain_fanout)
+    else:
+        domain_capacity = policy.child_concurrency
     domain_semaphore = asyncio.Semaphore(max(1, domain_capacity))
     root_deps = AdaptiveDeps(
         run_id=run_id,
@@ -1377,7 +1403,8 @@ def build_root_agent(
                 agent_folders=None,
                 inherit_tools=False,
                 forward_usage=False,
-                tool_retries=2,
+                # max_calls=2 owns the intentional second attempt; keep tool retries thin.
+                tool_retries=1,
                 contain_errors=True,
             )
         )
