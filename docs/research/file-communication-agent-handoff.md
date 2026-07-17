@@ -1,7 +1,7 @@
 # Agent / Workflow 文件通信方案
 
-> 研究日期：2026-07-16  
-> 问题：在本项目引入有界递归 `SubAgents` 和单层 `DynamicWorkflow` 后，是否应以文件作为 Agent/Workflow 间的通信协议？  
+> 研究日期：2026-07-16
+> 问题：在本项目引入有界递归 `SubAgents` 和单层 `DynamicWorkflow` 后，是否应以文件作为 Agent/Workflow 间的通信协议？
 > 结论范围：当前代码、Pydantic AI Harness `0.7.0`、三个 `refs/` 项目，以及 Google ADK、Argo Workflows、DeepAgents 和 Python 标准库的一手文档。
 
 ## 结论先行

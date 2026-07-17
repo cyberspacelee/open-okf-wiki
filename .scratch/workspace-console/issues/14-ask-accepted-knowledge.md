@@ -18,4 +18,3 @@
 - [ ] Budgets, timeouts, gateway failures, and missing credentials produce controlled, actionable results.
 - [ ] Query Agent Evaluation measures citation completeness, refusal quality, scope, prompt-injection resistance, cost, and latency.
 - [ ] Browser and deterministic tests cover both scopes, citations, insufficient support, redaction, ephemeral behavior, reload, and no authoritative mutation.
-

@@ -18,4 +18,3 @@
 - [ ] Rejection leaves the published Bundle unchanged, records the decision, and returns the Run to its defined actionable state.
 - [ ] The Console offers no direct edit path for derived Markdown, Claims, Concepts, or Findings.
 - [ ] End-to-end tests cover complete review, evidence navigation, stale digest, final-check failure, approval, rejection, rollback, and CLI/HTTP parity.
-

@@ -16,4 +16,3 @@
 - [ ] Optional per-Agent-Role model overrides are available as advanced settings while one default model remains the normal path.
 - [ ] Production Run snapshots record profile identity, actual model assignments, capabilities, and non-secret resolved settings but no credentials.
 - [ ] Tests cover secure-store success, restricted fallback, unavailable credentials, invalid endpoints, timeouts, headers, capability failures, redaction, reuse across Workspaces, and resolved Run snapshots.
-

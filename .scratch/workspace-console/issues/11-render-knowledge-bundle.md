@@ -18,4 +18,3 @@
 - [ ] Oversized, malformed, non-UTF-8, broken-link, and missing-page cases fail safely with actionable presentation.
 - [ ] Reader controls are keyboard accessible, preserve focus, and expose equivalent information to assistive technology.
 - [ ] Security fixtures and browser tests cover Markdown fidelity, navigation, citations, backlinks, search, diff, sanitization, CSP, and offline rendering.
-

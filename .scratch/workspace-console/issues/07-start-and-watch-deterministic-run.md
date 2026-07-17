@@ -16,4 +16,3 @@
 - [ ] Refreshing or reopening the browser reconstructs the same Run view from persisted state.
 - [ ] CLI and HTTP creation/status paths produce equivalent authoritative state and state-transition errors.
 - [ ] Browser and end-to-end tests cover creation, progress, reload, completion, failure, event ordering, exact Source inputs, and no-gateway operation.
-

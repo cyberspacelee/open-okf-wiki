@@ -16,4 +16,3 @@
 - [ ] Machine-readable inspection reports project identity, resolved settings, configured Sources, publication target, and redacted model settings without exposing credentials.
 - [ ] Existing Production Run, review, recovery, benchmark, and security behavior remains green.
 - [ ] End-to-end tests exercise initialization, reopen, configuration layering, migration, invalid input, and rollback through the Workspace application seam.
-

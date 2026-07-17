@@ -18,4 +18,3 @@
 - [ ] Audit records approved non-content metadata and citations without silently persisting investigation prose.
 - [ ] Evaluations cover scope, citations, provisional labeling, prompt injection, refusal, budgets, cost, and attempts to mutate authority.
 - [ ] End-to-end tests prove that a successful investigation leaves the authoritative digest, review snapshot, and published Bundle unchanged.
-

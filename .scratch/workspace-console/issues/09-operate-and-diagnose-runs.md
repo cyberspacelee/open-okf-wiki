@@ -16,4 +16,3 @@
 - [ ] Cancellation or recovery during rendering, checking, review, or publication preserves the existing atomic publication guarantees.
 - [ ] CLI and Console operations return equivalent outcomes and illegal-transition errors.
 - [ ] Fault-injection and browser tests cover intervention before and after state, event, task, staging, review, and publication checkpoints.
-

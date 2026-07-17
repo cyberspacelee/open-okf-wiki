@@ -16,4 +16,3 @@
 - [ ] Production Run creation records exact Source Snapshot revisions, and later branch movement or Pull cannot alter an existing Run.
 - [ ] Dirty and untracked working-tree content never enters the authoritative Source Set.
 - [ ] End-to-end Git fixtures cover clean Pull, each dirty state, follow-branch advancement, pinned stability, failure recovery, exact revision resolution, and immutable Run inputs.
-

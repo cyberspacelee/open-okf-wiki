@@ -225,4 +225,3 @@ Ordinary Knowledge Queries use only the fixed Accepted Knowledge Model and retur
 - This spec intentionally preserves CLI and CI as complete interfaces; the GUI improves human workflows rather than replacing automation.
 
 ## Comments
-

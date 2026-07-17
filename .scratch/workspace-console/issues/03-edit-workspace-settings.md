@@ -16,4 +16,3 @@
 - [ ] The page can reload and reproduce the same resolved settings without losing unknown-but-forward-compatible data allowed by the schema.
 - [ ] Equivalent CLI and HTTP updates produce the same normalized configuration and errors.
 - [ ] End-to-end tests cover valid edits, invalid edits, shared/local separation, stale updates, migration guidance, persistence, and keyboard-only form use.
-

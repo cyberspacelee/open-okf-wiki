@@ -16,4 +16,3 @@
 - [ ] A restrictive Content Security Policy is applied, and the shell loads without CDN scripts, analytics, remote fonts, or other external UI assets.
 - [ ] Empty, loading, invalid-Workspace, and server-error states use accessible shadcn feedback primitives.
 - [ ] Browser and security tests prove local launch, Overview rendering, offline shell loading, token rejection, origin rejection, CSP, and CLI/HTTP parity.
-

@@ -16,4 +16,3 @@
 - [ ] The graph never invents an edge, causal order, or rationale that is absent from authoritative state and events.
 - [ ] Large Concepts remain navigable through filtering, progressive disclosure, and bounded rendering.
 - [ ] Tests prove transactional event recording, candidate attribution, restart reconstruction, graph correctness, state distinctions, bounded rendering, and absence of model-message dependence.
-

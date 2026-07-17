@@ -16,4 +16,3 @@
 - [ ] Successful semantic execution reaches Review Required only after Major closure and required verification.
 - [ ] A model or role-routing change is visible in the Run snapshot and remains subject to the existing release and Agent Evaluation policy.
 - [ ] Tests use deterministic and fake gateway fixtures for all normal/error paths, with explicitly configured live gateway tests remaining optional and isolated.
-

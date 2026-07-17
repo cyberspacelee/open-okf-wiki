@@ -16,4 +16,3 @@
 - [ ] Removing a managed Source from configuration leaves its checkout intact until a separate explicit delete action is confirmed.
 - [ ] Managed checkout deletion refuses ambiguous, escaped, symlinked, or externally owned paths.
 - [ ] Tests cover successful and failed clone, linked checkout registration, credential delegation, duplicate IDs, invalid repositories, status inspection, safe removal, destructive confirmation, and traversal attempts.
-

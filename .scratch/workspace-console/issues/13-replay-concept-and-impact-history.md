@@ -16,4 +16,3 @@
 - [ ] Keyboard controls, focus, labels, and status announcements make replay fully operable without a pointer.
 - [ ] Rendering remains bounded for large event histories and does not block ordinary Run or Knowledge navigation.
 - [ ] Tests assert observable sequence, controls, impact relationships, reduced-motion equivalence, accessibility, and performance bounds without asserting individual animation frames.
-

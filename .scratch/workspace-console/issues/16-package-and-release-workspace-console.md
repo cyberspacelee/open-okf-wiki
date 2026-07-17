@@ -18,4 +18,3 @@
 - [ ] Query Agent and Source Investigation evaluation results are included in the release report and can block release.
 - [ ] User-facing help explains Workspace configuration scope, Git ownership, Gateway credential handling, authority boundaries, provisional investigation, and how to use the CLI without the Console.
 - [ ] The packaged feature either passes all required gates or reports the first blocking metric without publishing an incomplete release.
-
