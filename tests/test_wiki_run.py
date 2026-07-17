@@ -3,10 +3,12 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Literal
 
 import pytest
@@ -3938,6 +3940,132 @@ def test_require_supported_runtime_accepts_non_linux_hosts(
 
     monkeypatch.setattr(wiki_run_module.sys, "platform", "win32")
     wiki_run_module._require_supported_runtime()  # does not raise for Windows alone
+
+
+def test_require_supported_runtime_rejects_missing_portable_primitives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from okf_wiki import wiki_run as wiki_run_module
+
+    monkeypatch.delattr(wiki_run_module.os, "rename", raising=False)
+    with pytest.raises(ValueError, match="portable Host filesystem|rename"):
+        wiki_run_module._require_supported_runtime()
+
+
+def test_disallowed_path_component_detects_reparse_attribute() -> None:
+    """Host reparse points (e.g. Windows junctions) are rejected like symlinks."""
+    from okf_wiki import wiki_run as wiki_run_module
+
+    plain = SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_file_attributes=0)
+    reparse = SimpleNamespace(
+        st_mode=stat.S_IFDIR | 0o755,
+        st_file_attributes=wiki_run_module._FILE_ATTRIBUTE_REPARSE_POINT,
+    )
+    symlink = SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_file_attributes=0)
+    assert wiki_run_module._is_disallowed_path_component(plain) is False
+    assert wiki_run_module._is_disallowed_path_component(reparse) is True
+    assert wiki_run_module._is_disallowed_path_component(symlink) is True
+
+
+def test_prepare_rejects_host_reparse_point_on_controlled_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Application seam: reparse-looking path components fail before model work."""
+    from okf_wiki import wiki_run as wiki_run_module
+
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    host = tmp_path / "host"
+    host.mkdir()
+    real_lstat = os.lstat
+
+    host_key = os.path.normpath(os.fspath(host))
+
+    def lstat_with_reparse(
+        path: os.PathLike[str] | str, *, dir_fd: int | None = None
+    ) -> os.stat_result | SimpleNamespace:
+        info = real_lstat(path, dir_fd=dir_fd)
+        # Avoid Path.resolve() here — it re-enters os.lstat under the monkeypatch.
+        if os.path.normpath(os.fspath(path)) == host_key:
+            return SimpleNamespace(
+                st_mode=info.st_mode,
+                st_ino=info.st_ino,
+                st_dev=info.st_dev,
+                st_file_attributes=wiki_run_module._FILE_ATTRIBUTE_REPARSE_POINT,
+            )
+        return info
+
+    monkeypatch.setattr(wiki_run_module.os, "lstat", lstat_with_reparse)
+    model_called = False
+
+    def model(_: list[ModelRequest | ModelResponse], __: AgentInfo) -> ModelResponse:
+        nonlocal model_called
+        model_called = True
+        raise AssertionError("model must not run when Host path has a reparse point")
+
+    with pytest.raises(ValueError, match="reparse|symlink"):
+        run_test_wiki(
+            source,
+            revision,
+            skill,
+            host / "staging",
+            host / "published",
+            FunctionModel(model),
+        )
+
+    assert not model_called
+
+
+def test_prepare_rejects_cross_volume_publication_and_releases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same-volume check fails closed when releases root is on a different st_dev."""
+    from okf_wiki import wiki_run as wiki_run_module
+
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    published = tmp_path / "published"
+    releases = tmp_path / ".published.releases"
+    releases.mkdir()
+    real_lstat = os.lstat
+
+    releases_key = os.path.normpath(os.fspath(releases))
+
+    def volume_skew_lstat(
+        path: os.PathLike[str] | str, *, dir_fd: int | None = None
+    ) -> os.stat_result | SimpleNamespace:
+        info = real_lstat(path, dir_fd=dir_fd)
+        # Avoid Path.resolve() — it re-enters os.lstat under the monkeypatch.
+        if os.path.normpath(os.fspath(path)) == releases_key:
+            return SimpleNamespace(
+                st_mode=info.st_mode,
+                st_ino=info.st_ino,
+                st_dev=info.st_dev + 99_001,
+                st_file_attributes=getattr(info, "st_file_attributes", 0) or 0,
+            )
+        return info
+
+    monkeypatch.setattr(wiki_run_module.os, "lstat", volume_skew_lstat)
+    model_called = False
+
+    def model(_: list[ModelRequest | ModelResponse], __: AgentInfo) -> ModelResponse:
+        nonlocal model_called
+        model_called = True
+        raise AssertionError("model must not run for cross-volume publication layout")
+
+    with pytest.raises(ValueError, match="same volume"):
+        run_test_wiki(
+            source,
+            revision,
+            skill,
+            tmp_path / "staging",
+            published,
+            FunctionModel(model),
+        )
+
+    assert not model_called
 
 
 def test_prepare_rejects_legacy_symlink_published_wiki_before_model_work(

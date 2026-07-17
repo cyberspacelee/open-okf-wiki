@@ -32,3 +32,22 @@ jobs:
             dist/*.whl
             dist/*.tar.gz
           if-no-files-found: error
+
+  # Portable Host FS smoke (ADR 0017): real-directory publish + prepare gates on Windows.
+  windows-host-fs-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.28"
+          enable-cache: true
+      - run: uv python install
+      - run: uv sync --locked
+      - name: Host filesystem smoke tests
+        run: >
+          uv run --locked pytest -q
+          tests/test_wiki_run.py
+          -k "require_supported or legacy_symlink or concurrent_wiki or publication_swap or
+          complete_wiki_run_validates or prepare_rejects_cross_volume or
+          prepare_rejects_host_reparse or disallowed_path_component or content_identical_refresh"

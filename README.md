@@ -16,7 +16,7 @@ recorded in the [architecture decisions](docs/adr/).
 | **Python** | 3.14 |
 | **Git** | Local clean checkouts (no clone/fetch by the product) |
 | **uv** | [docs.astral.sh/uv](https://docs.astral.sh/uv/) for install and `uv run` |
-| **Host OS for Wiki Run** | Portable hosts with absolute non-overlapping roots, exclusive create, and same-volume directory rename ([ADR 0017](docs/adr/0017-portable-host-filesystem-and-directory-rename-publication.md)). Linux is CI-proven; Windows is in product scope but **not yet covered by in-repo Windows CI smoke**—report gaps if you hit Host FS issues there. |
+| **Host OS for Wiki Run** | Portable hosts with absolute non-overlapping roots, exclusive create, and same-volume directory rename ([ADR 0017](docs/adr/0017-portable-host-filesystem-and-directory-rename-publication.md)). **Linux** runs the full CI suite; **Windows** runs a Host-FS smoke job (`windows-host-fs-smoke` in `.github/workflows/ci.yml`) covering prepare gates and directory-rename publish. |
 
 Wiki Run staging and publication use a **portable Host filesystem policy**: configured roots
 must be absolute and non-overlapping; Host-controlled path components must not be symbolic

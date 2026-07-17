@@ -1489,22 +1489,46 @@ def _require_supported_runtime() -> None:
     """Portable capability check for Host staging/publication (ADR 0017).
 
     Wiki Run no longer requires Linux-only ``dir_fd`` / ``/proc/self/fd``. Hosts must
-    support absolute paths, exclusive file create, and same-volume directory rename
-    (``os.replace`` / ``os.rename``). Stricter openat backends are optional, not baseline.
+    support absolute paths, exclusive file create (``O_CREAT|O_EXCL``), and same-volume
+    directory rename (``os.rename`` / ``os.replace``). Stricter openat backends are
+    optional, not baseline.
     """
-    if not hasattr(os, "replace"):
+    missing: list[str] = []
+    for name in ("rename", "replace", "mkdir", "fsync"):
+        if not hasattr(os, name):
+            missing.append(name)
+    if not hasattr(os, "O_CREAT") or not hasattr(os, "O_EXCL"):
+        missing.append("O_CREAT|O_EXCL")
+    if missing:
         raise ValueError(
-            "okf-wiki Wiki Run requires os.replace for atomic single-file and directory "
-            f"publication handoff (missing on platform={sys.platform!r})."
+            "okf-wiki Wiki Run requires portable Host filesystem primitives for atomic "
+            f"publication ({', '.join(missing)} missing on platform={sys.platform!r})."
         )
 
 
-def _is_disallowed_path_component(info: os.stat_result) -> bool:
+def _is_disallowed_path_component(info: os.stat_result | object) -> bool:
     """True for symlinks and detectable host reparse points (e.g. Windows junctions)."""
-    if stat.S_ISLNK(info.st_mode):
+    mode = getattr(info, "st_mode", 0)
+    if stat.S_ISLNK(mode):
         return True
     attrs = getattr(info, "st_file_attributes", 0) or 0
     return bool(attrs & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _legacy_symlink_publication_error(path: Path, *, for_refresh: bool = False) -> ValueError:
+    """Operator-facing rejection of the retired symlink Published Wiki layout."""
+    if for_refresh:
+        return ValueError(
+            "Refresh requires an existing Host-owned real-directory Published Wiki; "
+            f"found a symbolic link or host reparse point at {path}. Delete or clear the "
+            "legacy symlink layout and run a full Generate again (automatic migration is "
+            "not supported)."
+        )
+    return ValueError(
+        "Published Wiki path is a symbolic link or host reparse point (legacy producer "
+        "layout). okf-wiki no longer migrates symlink publications automatically. "
+        f"Delete or clear {path} and run a full Generate again."
+    )
 
 
 def _prepare_mounts(request: WikiRunRequest) -> tuple[tuple[Path, ...], Path, Path, Path]:
@@ -1550,11 +1574,7 @@ def _prepare_mounts(request: WikiRunRequest) -> tuple[tuple[Path, ...], Path, Pa
     if publication.is_symlink() or (
         os.path.lexists(publication) and _path_is_symlink_or_reparse(publication)
     ):
-        raise ValueError(
-            "Published Wiki path is a symbolic link (legacy producer layout). "
-            "okf-wiki no longer migrates symlink publications automatically. "
-            f"Delete or clear {publication} and run a full Generate again."
-        )
+        raise _legacy_symlink_publication_error(publication)
     if os.path.lexists(publication) and not publication.is_dir():
         raise ValueError(
             "Published Wiki path must be absent or a regular directory "
@@ -1618,7 +1638,9 @@ def _create_directory_path(path: Path, label: str) -> None:
     except OSError as error:
         raise operator_error(f"{label} path is not accessible", error) from error
     if _is_disallowed_path_component(anchor_info) or not stat.S_ISDIR(anchor_info.st_mode):
-        raise ValueError(f"{label} path must not contain symlinks or non-directories")
+        raise ValueError(
+            f"{label} path must not contain symlinks, host reparse points, or non-directories"
+        )
     for part in path.parts[1:]:
         current = current / part
         try:
@@ -1634,16 +1656,23 @@ def _create_directory_path(path: Path, label: str) -> None:
                 info = os.lstat(current)
             except OSError as error:
                 raise operator_error(
-                    f"{label} path must not contain symlinks or non-directories", error
+                    f"{label} path must not contain symlinks, host reparse points, "
+                    "or non-directories",
+                    error,
                 ) from error
         except OSError as error:
             raise operator_error(
-                f"{label} path must not contain symlinks or non-directories", error
+                f"{label} path must not contain symlinks, host reparse points, or non-directories",
+                error,
             ) from error
         if _is_disallowed_path_component(info):
-            raise ValueError(f"{label} path must not contain symlinks or non-directories")
+            raise ValueError(
+                f"{label} path must not contain symlinks, host reparse points, or non-directories"
+            )
         if not stat.S_ISDIR(info.st_mode):
-            raise ValueError(f"{label} path must not contain symlinks or non-directories")
+            raise ValueError(
+                f"{label} path must not contain symlinks, host reparse points, or non-directories"
+            )
     try:
         _check_directory_path(path, label)
         final = os.lstat(path)
@@ -1730,10 +1759,13 @@ def _publication_lock_path(publication: Path) -> Path:
 
 
 def _acquire_publication_lock(publication: Path) -> Path:
-    """Exclusive Host publication lock (O_EXCL lock file). Released on process exit path.
+    """Exclusive Host lock for one Wiki Run against a Published Wiki path (O_EXCL file).
 
-    If a previous process crashed, operators may remove the stale lock file after confirming
-    no Wiki Run is active for this Published Wiki path.
+    Intentionally held for the whole run (prepare through model work to swap), not only the
+    final rename: concurrent Wiki Runs must not interleave staging or publication against
+    the same destination. Released on the normal exit path. If a previous process crashed,
+    operators may remove the stale lock file after confirming no Wiki Run is active for this
+    Published Wiki path.
     """
     _create_directory_path(publication.parent, "Published Wiki parent")
     lock_path = _publication_lock_path(publication)
@@ -2214,11 +2246,7 @@ def _stage_published_wiki(
 ) -> tuple[dict[str, str], tuple[_PublishedRepository, ...], str]:
     """Load a Host-owned real-directory Published Wiki into empty Staging for Refresh."""
     if publication.is_symlink() or _path_is_symlink_or_reparse(publication):
-        raise ValueError(
-            "Refresh requires an existing Host-owned real-directory Published Wiki; "
-            f"found a symbolic link at {publication}. Delete or clear the legacy symlink "
-            "layout and run a full Generate again (automatic migration is not supported)."
-        )
+        raise _legacy_symlink_publication_error(publication, for_refresh=True)
     if not publication.is_dir():
         raise ValueError(
             "Refresh requires an existing producer-managed Published Wiki "
@@ -2563,11 +2591,7 @@ def _swap_published_directory(
     if destination.is_symlink() or (
         os.path.lexists(destination) and _path_is_symlink_or_reparse(destination)
     ):
-        raise ValueError(
-            "Published Wiki path is a symbolic link (legacy producer layout). "
-            "okf-wiki no longer migrates symlink publications automatically. "
-            f"Delete or clear {destination} and run a full Generate again."
-        )
+        raise _legacy_symlink_publication_error(destination)
     if os.path.lexists(destination) and not destination.is_dir():
         raise ValueError(
             "Published Wiki path must be absent or a regular directory "
@@ -2637,11 +2661,7 @@ def _publish_wiki(
     if destination.is_symlink() or (
         os.path.lexists(destination) and _path_is_symlink_or_reparse(destination)
     ):
-        raise ValueError(
-            "Published Wiki path is a symbolic link (legacy producer layout). "
-            "okf-wiki no longer migrates symlink publications automatically. "
-            f"Delete or clear {destination} and run a full Generate again."
-        )
+        raise _legacy_symlink_publication_error(destination)
     if os.path.lexists(destination) and not destination.is_dir():
         raise ValueError(
             "Published Wiki path must be absent or a regular directory "
