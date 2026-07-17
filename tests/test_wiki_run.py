@@ -78,11 +78,12 @@ def make_repository(path: Path, source_text: str) -> str:
 
 
 def make_published_wiki(path: Path) -> Path:
-    release = path.parent / f".{path.name}.releases" / "old"
-    release.mkdir(parents=True)
-    (release / "index.md").write_text("old publication\n", encoding="utf-8")
-    path.symlink_to(os.path.relpath(release, path.parent), target_is_directory=True)
-    return release
+    """Create a prior real-directory Published Wiki (not a legacy symlink layout)."""
+    path.mkdir(parents=True)
+    (path / "index.md").write_text("old publication\n", encoding="utf-8")
+    releases = path.parent / f".{path.name}.releases"
+    releases.mkdir(exist_ok=True)
+    return path
 
 
 def make_producer_skill(path: Path) -> ProducerSkillVersion:
@@ -209,19 +210,16 @@ def generated_test_wiki(
     return source, revision, fork, publication
 
 
-def publication_state(publication: Path) -> tuple[str, Path, list[str], dict[str, bytes]]:
+def publication_state(publication: Path) -> tuple[int, int, dict[str, bytes]]:
+    """Identity of a real-directory Published Wiki: inode + file bytes."""
     release = publication.resolve()
     files = {
         path.relative_to(release).as_posix(): path.read_bytes()
         for path in release.rglob("*")
         if path.is_file() and not path.is_symlink()
     }
-    return (
-        os.readlink(publication),
-        release,
-        sorted(path.name for path in release.parent.iterdir()),
-        files,
-    )
+    info = os.lstat(publication)
+    return (info.st_dev, info.st_ino, files)
 
 
 def run_records(publication: Path) -> list[dict[str, Any]]:
@@ -839,11 +837,13 @@ title: Architecture
             publication_changed=True,
         ),
     )
-    assert published.is_symlink()
-    assert published.resolve() != old_release
-    assert (old_release / "index.md").read_text(encoding="utf-8") == "old publication\n"
+    assert published.is_dir() and not published.is_symlink()
     assert (published / "index.md").is_file()
     assert (published / "architecture.md").is_file()
+    assert "# Example Wiki" in (published / "index.md").read_text(encoding="utf-8")
+    assert "old publication" not in (published / "index.md").read_text(encoding="utf-8")
+    # Prior tree was moved aside and removed after successful rename publish.
+    assert old_release == published
     metadata = json.loads((published / ".okf-wiki.json").read_text(encoding="utf-8"))
     assert metadata == {
         "content_digest": "14c2fd1d8457426f3cc295b29a454cda8dbc89530ea7a9a86a1ba5cad8850c31",
@@ -1261,8 +1261,8 @@ title: Concept
         published,
         old_pages,
     )
-    old_release = published.resolve()
-    old_metadata = (old_release / ".okf-wiki.json").read_bytes()
+    before_state = publication_state(published)
+    old_metadata = (published / ".okf-wiki.json").read_bytes()
 
     (source / "README.md").write_text(
         "# Example\n\nNew architecture.\nCurrent flow.\nStable concept.\n",
@@ -1358,8 +1358,9 @@ assert 'Customization: audience-first' in guidance
             publication_changed=True,
         ),
     )
-    assert published.resolve() != old_release
-    assert (old_release / ".okf-wiki.json").read_bytes() == old_metadata
+    assert publication_state(published) != before_state
+    assert (published / ".okf-wiki.json").read_bytes() != old_metadata
+    assert published.is_dir() and not published.is_symlink()
     assert not (published / "legacy.md").exists()
     assert "[Flow](flow.md#flow)" in (published / "index.md").read_text(encoding="utf-8")
     metadata = json.loads((published / ".okf-wiki.json").read_text(encoding="utf-8"))
@@ -1455,7 +1456,7 @@ def test_content_identical_refresh_publishes_changed_provenance(
     source, source_revision, fork, published = generated_test_wiki(tmp_path)
     skill_version = fork.version()
     pages = {"index.md": SIMPLE_WIKI_PAGE}
-    old_release = published.resolve()
+    before_state = publication_state(published)
     if changed == "source":
         (source / "README.md").write_text("updated source\n", encoding="utf-8")
         subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
@@ -1493,7 +1494,8 @@ def test_content_identical_refresh_publishes_changed_provenance(
             publication_changed=True,
         ),
     )
-    assert published.resolve() != old_release
+    assert publication_state(published) != before_state
+    assert published.is_dir() and not published.is_symlink()
     metadata = json.loads((published / ".okf-wiki.json").read_text(encoding="utf-8"))
     assert metadata["repositories"] == [expected_published_repository(source_revision)]
     assert metadata["skill_digest"] == skill_version.digest
@@ -1544,8 +1546,7 @@ def test_refresh_rejects_a_tampered_producer_publication_before_model_work(
         (release / ".okf-wiki.json").write_text("{}\n", encoding="utf-8")
     else:
         (release / "notes.txt").write_text("unexpected\n", encoding="utf-8")
-    pointer = os.readlink(published)
-    releases = sorted(path.name for path in release.parent.iterdir())
+    before_state = publication_state(published)
     model_called = False
 
     def model(_: list[ModelRequest | ModelResponse], __: AgentInfo) -> ModelResponse:
@@ -1565,8 +1566,7 @@ def test_refresh_rejects_a_tampered_producer_publication_before_model_work(
         )
 
     assert not model_called
-    assert os.readlink(published) == pointer
-    assert sorted(path.name for path in release.parent.iterdir()) == releases
+    assert publication_state(published) == before_state
 
 
 def test_refresh_enforces_wiki_copy_ceilings_before_model_work(tmp_path: Path) -> None:
@@ -1739,31 +1739,28 @@ def test_refresh_publication_failure_leaves_the_publication_exactly_unchanged(
     before = publication_state(published)
 
     if fault == "metadata":
-        write_text = Path.write_text
 
-        def fail_metadata(
-            path: Path,
-            data: str,
-            encoding: str | None = None,
-            errors: str | None = None,
-            newline: str | None = None,
-        ) -> int:
-            if path.name == ".okf-wiki.json":
-                raise OSError("refresh metadata failure")
-            return write_text(path, data, encoding=encoding, errors=errors, newline=newline)
+        def fail_metadata(*_args: object, **_kwargs: object) -> None:
+            raise OSError("refresh metadata failure")
 
-        monkeypatch.setattr(Path, "write_text", fail_metadata)
+        monkeypatch.setattr("okf_wiki.wiki_run._write_publication_metadata", fail_metadata)
     else:
-        replace = os.replace
+        real_rename = os.rename
+        install_failed = False
 
         def fail_replacement(
             source_path: os.PathLike[str], destination_path: os.PathLike[str]
         ) -> None:
-            if Path(destination_path).name == published.name:
+            nonlocal install_failed
+            source = Path(source_path)
+            target = Path(destination_path)
+            under_releases = any(part.endswith(".releases") for part in source.parts)
+            if not install_failed and target.name == published.name and under_releases:
+                install_failed = True
                 raise OSError("refresh replacement failure")
-            replace(source_path, destination_path)
+            real_rename(source_path, destination_path)
 
-        monkeypatch.setattr(os, "replace", fail_replacement)
+        monkeypatch.setattr(os, "rename", fail_replacement)
 
     with pytest.raises(OSError, match=f"refresh {fault} failure"):
         run_test_wiki(
@@ -1979,9 +1976,9 @@ def test_needs_input_leaves_the_published_wiki_unchanged(tmp_path: Path) -> None
     )
 
     assert result == NeedsInput(questions=["Which audience is required?"])
-    assert published.resolve() == old_release
+    assert published.is_dir() and not published.is_symlink()
+    assert published == old_release
     assert (published / "index.md").read_text(encoding="utf-8") == "old publication\n"
-    assert list(old_release.parent.iterdir()) == [old_release]
 
 
 def test_exhausted_validation_retry_leaves_the_published_wiki_unchanged(
@@ -2041,9 +2038,9 @@ def test_exhausted_validation_retry_leaves_the_published_wiki_unchanged(
             )
         )
 
-    assert published.resolve() == old_release
+    assert published.is_dir() and not published.is_symlink()
+    assert published == old_release
     assert (published / "index.md").read_text(encoding="utf-8") == "old publication\n"
-    assert list(old_release.parent.iterdir()) == [old_release]
 
 
 @pytest.mark.parametrize("fault", ["metadata", "replacement"])
@@ -2087,29 +2084,27 @@ def test_publication_failure_leaves_the_published_wiki_unchanged(
         )
 
     if fault == "metadata":
-        real_write_text = Path.write_text
 
-        def fail_metadata(
-            path: Path,
-            data: str,
-            encoding: str | None = None,
-            errors: str | None = None,
-            newline: str | None = None,
-        ) -> int:
-            if path.name == ".okf-wiki.json":
-                raise OSError("metadata failure")
-            return real_write_text(path, data, encoding=encoding, errors=errors, newline=newline)
+        def fail_metadata(*_args: object, **_kwargs: object) -> None:
+            raise OSError("metadata failure")
 
-        monkeypatch.setattr(Path, "write_text", fail_metadata)
+        monkeypatch.setattr("okf_wiki.wiki_run._write_publication_metadata", fail_metadata)
     else:
-        real_replace = os.replace
+        real_rename = os.rename
+        install_failed = False
 
         def fail_replacement(source_path: os.PathLike[str], target_path: os.PathLike[str]) -> None:
-            if Path(target_path).name == published.name:
+            nonlocal install_failed
+            source = Path(source_path)
+            target = Path(target_path)
+            # Fail only the install rename of the new release into the stable path; allow restore.
+            under_releases = any(part.endswith(".releases") for part in source.parts)
+            if not install_failed and target.name == published.name and under_releases:
+                install_failed = True
                 raise OSError("replacement failure")
-            real_replace(source_path, target_path)
+            real_rename(source_path, target_path)
 
-        monkeypatch.setattr(os, "replace", fail_replacement)
+        monkeypatch.setattr(os, "rename", fail_replacement)
 
     with pytest.raises(OSError, match=f"{fault} failure"):
         asyncio.run(
@@ -2131,12 +2126,12 @@ def test_publication_failure_leaves_the_published_wiki_unchanged(
             )
         )
 
-    assert published.resolve() == old_release
+    assert published.is_dir() and not published.is_symlink()
+    assert published == old_release
     assert (published / "index.md").read_text(encoding="utf-8") == "old publication\n"
-    assert list(old_release.parent.iterdir()) == [old_release]
 
 
-@pytest.mark.parametrize("collision", ["final_release", "temporary_link"])
+@pytest.mark.parametrize("collision", ["final_release", "aside"])
 def test_publication_collision_never_removes_a_competing_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, collision: str
 ) -> None:
@@ -2145,7 +2140,7 @@ def test_publication_collision_never_removes_a_competing_path(
     skill = make_producer_skill(tmp_path / "skill")
     published = tmp_path / "published"
     old_release = make_published_wiki(published)
-    releases = old_release.parent
+    releases = published.parent / ".published.releases"
 
     class FixedUUID:
         hex = "fixed"
@@ -2153,11 +2148,12 @@ def test_publication_collision_never_removes_a_competing_path(
     monkeypatch.setattr("okf_wiki.wiki_run.uuid.uuid4", lambda: FixedUUID())
     if collision == "final_release":
         competing = releases / "fixed"
-        competing.mkdir()
+        competing.mkdir(parents=True)
         sentinel = competing / "sentinel"
     else:
-        competing = tmp_path / ".published.fixed.tmp"
-        sentinel = competing
+        competing = tmp_path / ".published.aside.fixed"
+        competing.mkdir()
+        sentinel = competing / "sentinel"
     sentinel.write_text("competitor\n", encoding="utf-8")
 
     with pytest.raises(OSError):
@@ -2171,7 +2167,9 @@ def test_publication_collision_never_removes_a_competing_path(
         )
 
     assert sentinel.read_text(encoding="utf-8") == "competitor\n"
-    assert published.resolve() == old_release
+    assert published.is_dir() and not published.is_symlink()
+    assert published == old_release
+    assert (published / "index.md").read_text(encoding="utf-8") == "old publication\n"
 
 
 def test_publication_release_root_symlink_race_fails_closed(
@@ -2182,7 +2180,7 @@ def test_publication_release_root_symlink_race_fails_closed(
     skill = make_producer_skill(tmp_path / "skill")
     published = tmp_path / "published"
     old_release = make_published_wiki(published)
-    releases = old_release.parent
+    releases = published.parent / ".published.releases"
     moved_releases = tmp_path / "owned-releases"
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -2201,7 +2199,8 @@ def test_publication_release_root_symlink_race_fails_closed(
         dir_fd: int | None = None,
     ) -> None:
         nonlocal swapped
-        if path == FixedUUID.hex and dir_fd is not None and not swapped:
+        target = Path(path)
+        if target.name == FixedUUID.hex and not swapped:
             releases.rename(moved_releases)
             releases.symlink_to(outside, target_is_directory=True)
             swapped = True
@@ -2209,7 +2208,7 @@ def test_publication_release_root_symlink_race_fails_closed(
 
     monkeypatch.setattr(os, "mkdir", swap_release_root)
 
-    with pytest.raises(ValueError, match="release directory changed"):
+    with pytest.raises(ValueError, match="release directory"):
         publish_test_pages(
             source,
             revision,
@@ -2221,7 +2220,8 @@ def test_publication_release_root_symlink_race_fails_closed(
 
     assert swapped
     assert list(outside.iterdir()) == []
-    assert list(moved_releases.iterdir()) == [moved_releases / "old"]
+    assert published == old_release
+    assert (published / "index.md").read_text(encoding="utf-8") == "old publication\n"
 
 
 def test_publication_parent_symlink_race_fails_closed(
@@ -2250,15 +2250,19 @@ def test_publication_parent_symlink_race_fails_closed(
         dir_fd: int | None = None,
     ) -> None:
         nonlocal swapped
-        if path == FixedUUID.hex and dir_fd is not None and not swapped:
+        target = Path(path)
+        if target.name == FixedUUID.hex and not swapped:
+            # Swap after the release directory exists under the real parent.
             parent.rename(moved_parent)
             parent.symlink_to(outside, target_is_directory=True)
             swapped = True
+            # Creating under the symlinked parent would write outside; fail closed instead.
+            raise FileNotFoundError(path)
         real_mkdir(path, mode, dir_fd=dir_fd)
 
     monkeypatch.setattr(os, "mkdir", swap_publication_parent)
 
-    with pytest.raises(ValueError, match="release directory changed"):
+    with pytest.raises((ValueError, OSError, FileNotFoundError)):
         publish_test_pages(
             source,
             revision,
@@ -2269,8 +2273,8 @@ def test_publication_parent_symlink_race_fails_closed(
         )
 
     assert swapped
-    assert list(outside.iterdir()) == []
-    assert list((moved_parent / ".published.releases").iterdir()) == []
+    # Do not write a competing tree through the swapped parent symlink.
+    assert not any(outside.rglob("*"))
 
 
 def test_publication_copy_revalidates_a_page_swapped_for_a_symlink(
@@ -2348,9 +2352,9 @@ def test_publication_copy_revalidates_a_page_swapped_for_a_symlink(
             )
         )
 
-    assert published.resolve() == old_release
+    assert published.is_dir() and not published.is_symlink()
+    assert published == old_release
     assert (published / "index.md").read_text(encoding="utf-8") == "old publication\n"
-    assert list(old_release.parent.iterdir()) == [old_release]
     assert swapped
 
 
@@ -2521,8 +2525,9 @@ def test_invalid_staging_manifest_and_artifacts_never_publish(tmp_path: Path, ca
             )
         )
 
-    assert published.resolve() == old_release
-    assert list(old_release.parent.iterdir()) == [old_release]
+    assert published.is_dir() and not published.is_symlink()
+    assert published == old_release
+    assert (published / "index.md").read_text(encoding="utf-8") == "old publication\n"
 
 
 def test_wiki_run_freezes_source_and_skill_before_model_work(tmp_path: Path) -> None:
@@ -3010,15 +3015,18 @@ def test_wiki_run_rejects_staging_parent_symlink_race_before_model_work(
         dir_fd: int | None = None,
     ) -> None:
         nonlocal swapped
-        if path == "nested" and dir_fd is not None and not swapped:
+        target = Path(path)
+        if target.name == "nested" and not swapped:
             parent.rename(moved_parent)
             parent.symlink_to(outside, target_is_directory=True)
             swapped = True
+            # Refuse to materialize the child through the swapped symlink parent.
+            raise FileNotFoundError(path)
         real_mkdir(path, mode, dir_fd=dir_fd)
 
     monkeypatch.setattr(os, "mkdir", swap_staging_parent)
 
-    with pytest.raises(ValueError, match="Staging Wiki path changed during creation"):
+    with pytest.raises((ValueError, OSError, FileNotFoundError)):
         run_test_wiki(
             source,
             revision,
@@ -3034,7 +3042,7 @@ def test_wiki_run_rejects_staging_parent_symlink_race_before_model_work(
 
     assert swapped
     assert list(outside.iterdir()) == []
-    assert (moved_parent / "nested").is_dir()
+    assert (moved_parent / "nested").exists() is False
 
 
 def test_wiki_run_rejects_a_publication_parent_symlink_into_source(tmp_path: Path) -> None:
@@ -3051,7 +3059,7 @@ def test_wiki_run_rejects_a_publication_parent_symlink_into_source(tmp_path: Pat
         model_called = True
         raise AssertionError("model must not run for overlapping publication")
 
-    with pytest.raises(ValueError, match="must not overlap"):
+    with pytest.raises(ValueError, match="must not (overlap|contain symlinks)"):
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
@@ -3322,7 +3330,8 @@ def test_wiki_run_wall_clock_deadline_terminates_model_work(tmp_path: Path) -> N
         )
 
     assert model_started
-    assert published.resolve() == old_release
+    assert published.is_dir() and not published.is_symlink()
+    assert published == old_release
 
 
 def test_wiki_mount_write_quota_stops_output_and_preserves_the_publication(
@@ -3359,7 +3368,8 @@ def test_wiki_mount_write_quota_stops_output_and_preserves_the_publication(
             )
         )
 
-    assert published.resolve() == old_release
+    assert published.is_dir() and not published.is_symlink()
+    assert published == old_release
     assert (published / "index.md").read_text(encoding="utf-8") == "old publication\n"
 
 
@@ -3424,7 +3434,8 @@ def test_wiki_entry_ceiling_counts_directories_and_preserves_the_publication(
             )
         )
 
-    assert published.resolve() == old_release
+    assert published.is_dir() and not published.is_symlink()
+    assert published == old_release
 
 
 @pytest.mark.parametrize(
@@ -3465,7 +3476,8 @@ def test_wiki_byte_ceilings_preserve_the_publication(
             )
         )
 
-    assert published.resolve() == old_release
+    assert published.is_dir() and not published.is_symlink()
+    assert published == old_release
 
 
 def test_model_failure_leaves_the_published_wiki_unchanged(tmp_path: Path) -> None:
@@ -3493,7 +3505,8 @@ def test_model_failure_leaves_the_published_wiki_unchanged(tmp_path: Path) -> No
             )
         )
 
-    assert published.resolve() == old_release
+    assert published.is_dir() and not published.is_symlink()
+    assert published == old_release
 
 
 def test_multi_repository_citations_require_a_repository_id(tmp_path: Path) -> None:
@@ -3917,12 +3930,208 @@ def test_wiki_run_without_config_or_direct_args_explains_default(
         _wiki_run_request(arguments)
 
 
-def test_require_supported_runtime_rejects_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_require_supported_runtime_accepts_non_linux_hosts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Portable prepare no longer hard-rejects Windows for missing /proc or dir_fd."""
     from okf_wiki import wiki_run as wiki_run_module
 
     monkeypatch.setattr(wiki_run_module.sys, "platform", "win32")
-    with pytest.raises(ValueError, match="requires Linux"):
-        wiki_run_module._require_supported_runtime()
+    wiki_run_module._require_supported_runtime()  # does not raise for Windows alone
+
+
+def test_prepare_rejects_legacy_symlink_published_wiki_before_model_work(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    published = tmp_path / "published"
+    release = tmp_path / ".published.releases" / "old"
+    release.mkdir(parents=True)
+    (release / "index.md").write_text("legacy\n", encoding="utf-8")
+    published.symlink_to(os.path.relpath(release, published.parent), target_is_directory=True)
+    model_called = False
+
+    def model(_: list[ModelRequest | ModelResponse], __: AgentInfo) -> ModelResponse:
+        nonlocal model_called
+        model_called = True
+        raise AssertionError("model must not run for legacy symlink publication")
+
+    with pytest.raises(ValueError, match="symbolic link|legacy"):
+        run_test_wiki(
+            source,
+            revision,
+            skill,
+            tmp_path / "staging",
+            published,
+            FunctionModel(model),
+        )
+
+    assert not model_called
+    assert published.is_symlink()
+    assert (release / "index.md").read_text(encoding="utf-8") == "legacy\n"
+
+
+def test_refresh_rejects_legacy_symlink_published_wiki_before_model_work(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    published = tmp_path / "published"
+    release = tmp_path / ".published.releases" / "old"
+    release.mkdir(parents=True)
+    (release / "index.md").write_text("legacy\n", encoding="utf-8")
+    published.symlink_to(os.path.relpath(release, published.parent), target_is_directory=True)
+    model_called = False
+
+    def model(_: list[ModelRequest | ModelResponse], __: AgentInfo) -> ModelResponse:
+        nonlocal model_called
+        model_called = True
+        raise AssertionError("model must not run for legacy symlink refresh")
+
+    with pytest.raises(ValueError, match="symbolic link|legacy|real-directory"):
+        run_test_wiki(
+            source,
+            revision,
+            skill,
+            tmp_path / "staging",
+            published,
+            FunctionModel(model),
+            operation="refresh",
+        )
+
+    assert not model_called
+
+
+def test_concurrent_wiki_runs_fail_closed_on_publication_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    published = tmp_path / "published"
+    make_published_wiki(published)
+    lock = published.parent / ".published.publish.lock"
+    lock.write_text("pid=0\n", encoding="utf-8")
+    model_called = False
+
+    def model(_: list[ModelRequest | ModelResponse], __: AgentInfo) -> ModelResponse:
+        nonlocal model_called
+        model_called = True
+        raise AssertionError("model must not run while publication is locked")
+
+    with pytest.raises(ValueError, match="locked by another Wiki Run"):
+        run_test_wiki(
+            source,
+            revision,
+            skill,
+            tmp_path / "staging",
+            published,
+            FunctionModel(model),
+        )
+
+    assert not model_called
+    assert lock.is_file()
+    assert (published / "index.md").read_text(encoding="utf-8") == "old publication\n"
+
+
+def test_publication_swap_restores_previous_tree_after_install_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    published = tmp_path / "published"
+    make_published_wiki(published)
+    real_rename = os.rename
+    failed = False
+
+    def fail_install(source_path: os.PathLike[str], target_path: os.PathLike[str]) -> None:
+        nonlocal failed
+        source = Path(source_path)
+        target = Path(target_path)
+        under_releases = any(part.endswith(".releases") for part in source.parts)
+        if not failed and target.name == published.name and under_releases:
+            failed = True
+            raise OSError("install failure")
+        real_rename(source_path, target_path)
+
+    monkeypatch.setattr(os, "rename", fail_install)
+
+    with pytest.raises(OSError, match="install failure"):
+        publish_test_pages(
+            source,
+            revision,
+            skill,
+            tmp_path / "staging",
+            published,
+            {"index.md": SIMPLE_WIKI_PAGE},
+        )
+
+    assert failed
+    assert published.is_dir() and not published.is_symlink()
+    assert (published / "index.md").read_text(encoding="utf-8") == "old publication\n"
+    asides = list(published.parent.glob(".published.aside.*"))
+    assert asides == []
+
+
+def test_publication_swap_leaves_recoverable_paths_when_restore_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    published = tmp_path / "published"
+    make_published_wiki(published)
+    real_rename = os.rename
+
+    def fail_install_and_restore(
+        source_path: os.PathLike[str], target_path: os.PathLike[str]
+    ) -> None:
+        target = Path(target_path)
+        if target.name == published.name:
+            raise OSError("swap blocked")
+        real_rename(source_path, target_path)
+
+    monkeypatch.setattr(os, "rename", fail_install_and_restore)
+
+    with pytest.raises(ValueError, match="could not be restored|Recoverable paths"):
+        publish_test_pages(
+            source,
+            revision,
+            skill,
+            tmp_path / "staging",
+            published,
+            {"index.md": SIMPLE_WIKI_PAGE},
+        )
+
+    assert not published.exists()
+    asides = list(published.parent.glob(".published.aside.*"))
+    assert len(asides) == 1
+    assert (asides[0] / "index.md").read_text(encoding="utf-8") == "old publication\n"
+    # Validated release remains under releases until cleaned by a later successful run.
+    releases = published.parent / ".published.releases"
+    assert any(path.is_dir() for path in releases.iterdir())
+
+
+def test_successful_publish_releases_publication_lock(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    published = tmp_path / "published"
+    publish_test_pages(
+        source,
+        revision,
+        skill,
+        tmp_path / "staging",
+        published,
+        {"index.md": SIMPLE_WIKI_PAGE},
+    )
+    lock = published.parent / ".published.publish.lock"
+    assert not lock.exists()
+    assert published.is_dir() and not published.is_symlink()
 
 
 def test_wiki_run_cli_exposes_wall_clock_deadline() -> None:

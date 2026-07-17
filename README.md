@@ -16,12 +16,19 @@ recorded in the [architecture decisions](docs/adr/).
 | **Python** | 3.14 |
 | **Git** | Local clean checkouts (no clone/fetch by the product) |
 | **uv** | [docs.astral.sh/uv](https://docs.astral.sh/uv/) for install and `uv run` |
-| **Host OS for Wiki Run** | **Linux only** in this release |
+| **Host OS for Wiki Run** | Portable hosts with absolute non-overlapping roots, exclusive create, and same-volume directory rename ([ADR 0017](docs/adr/0017-portable-host-filesystem-and-directory-rename-publication.md)). Linux is CI-proven; Windows is in product scope but **not yet covered by in-repo Windows CI smoke**—report gaps if you hit Host FS issues there. |
 
-Staging and publication use Unix directory file descriptors (`dir_fd`, `O_NOFOLLOW`) and
-`/proc/self/fd` for atomic publish. **Windows is not supported for `wiki-run` / `tui` / publish** —
-use [WSL2](https://learn.microsoft.com/windows/wsl/) or a Linux host. `okf-wiki init` and editing
-YAML / `.env` still work on any platform where Python runs.
+Wiki Run staging and publication use a **portable Host filesystem policy**: configured roots
+must be absolute and non-overlapping; Host-controlled path components must not be symbolic
+links (or detectable reparse points where the Host can detect them); single-file handoffs use
+temporary file then replace; publication exposes a complete validated tree as a **real directory**
+at the Published Wiki path via same-volume directory rename (not a producer-managed symlink).
+Cross-volume publication/releases layouts fail closed at prepare. Concurrent Wiki Runs against
+the same Published Wiki path fail closed under an exclusive publication lock. Legacy symlink
+publications are not auto-migrated—clear the path and full-Generate again. Default operating
+mode is full Generate into empty Staging; failures are re-run as separate Wiki Runs (Manual Retry
+or a new generate), not resume. `okf-wiki init` and editing YAML / `.env` work on any platform
+where Python runs.
 
 ## Install
 
@@ -257,8 +264,11 @@ secret-safe message; the previous Published Wiki is left unchanged.
 
 ## Refresh a Published Wiki
 
-Same application seam: copy the current publication into a new empty staging tree, then re-run the
-semantic loop against newer snapshots.
+Same application seam: copy the current **real-directory** Published Wiki into a new empty staging
+tree (prior pages are non-authoritative context), then re-run the semantic loop against newer
+snapshots. Success replaces the complete Published Wiki under the same directory-rename
+publication rules as Generate. Refresh is whole-wiki re-evaluation—not mechanical page-level
+incremental updates from source diffs.
 
 ```bash
 # YAML: operation: refresh and a fresh empty staging path, then:
@@ -274,9 +284,11 @@ OPENAI_API_KEY=... uv run --locked okf-wiki wiki-run "$SOURCE" \
   --model openai:gpt-5-mini
 ```
 
-Refresh needs a producer-managed publication from a successful Generate. Summaries report page
-adds/changes/removes; provenance can still publish when content is unchanged but revision/ignores
-or Skill digest changed.
+Refresh needs a Host-owned real-directory publication from a successful Generate (with
+`.okf-wiki.json` metadata). If the Published Wiki path is still a legacy producer-managed
+**symlink**, the Host refuses and does not migrate it—delete or clear the path and full-Generate
+again. Summaries report page adds/changes/removes; provenance can still publish when content is
+unchanged but revision/ignores or Skill digest changed.
 
 ## Interactive TUI
 
@@ -346,8 +358,9 @@ Pages need YAML frontmatter with a non-empty `title`. Citations:
 Before publish, the Host checks mechanical invariants (manifest match, links, citations, limits,
 no symlinks/temp files, etc.). Citation checks prove spans exist—not semantic entailment.
 
-Publication writes an immutable release plus `.okf-wiki.json`, then atomically moves the publication
-pointer. Metadata records repository IDs, revisions, Effective Source Ignores, Skill digest, model,
+Publication writes a complete release under a sibling releases directory plus `.okf-wiki.json`, then
+exposes it as the Published Wiki via same-volume directory rename (a real directory at the stable
+path, not a symlink pointer). Metadata records repository IDs, revisions, Effective Source Ignores, Skill digest, model,
 page hashes, and content digest. Reserved top-level `viz/` is not part of the semantic page set.
 
 ## Security and limits

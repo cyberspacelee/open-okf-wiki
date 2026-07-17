@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -254,11 +253,9 @@ def test_refresh_stage_tolerates_viz_artifacts_under_publication(tmp_path: Path)
     )
 
     publication = tmp_path / "published"
-    releases = tmp_path / ".published.releases"
-    release = releases / "old"
-    release.mkdir(parents=True)
+    publication.mkdir()
     page = "---\ntitle: Old\n---\n# Old\n\n[Source](repo:README.md#L1-L1)\n"
-    (release / "index.md").write_text(page, encoding="utf-8")
+    (publication / "index.md").write_text(page, encoding="utf-8")
     page_hash = hashlib.sha256(page.encode()).hexdigest()
     digest = _content_digest({"index.md": page_hash})
     metadata = {
@@ -275,15 +272,14 @@ def test_refresh_stage_tolerates_viz_artifacts_under_publication(tmp_path: Path)
         "pages": [{"path": "index.md", "sha256": page_hash}],
         "content_digest": digest,
     }
-    (release / PUBLICATION_METADATA_NAME).write_text(
+    (publication / PUBLICATION_METADATA_NAME).write_text(
         json.dumps(metadata, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    viz = release / VISUALIZATION_DIR_NAME
+    viz = publication / VISUALIZATION_DIR_NAME
     viz.mkdir()
     (viz / "index.html").write_text("<html>viz</html>\n", encoding="utf-8")
     (viz / "graph.json").write_text("{}\n", encoding="utf-8")
-    publication.symlink_to(os.path.relpath(release, publication.parent), target_is_directory=True)
 
     staging = tmp_path / "staging"
     staging.mkdir()

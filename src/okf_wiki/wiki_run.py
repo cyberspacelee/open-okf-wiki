@@ -1145,6 +1145,34 @@ class WikiRunApplication:
         checkouts, skill_input, staging, publication = _prepare_mounts(request)
         lifecycle["publication"] = publication
         lifecycle["skill_path"] = skill_input
+        publication_lock = _acquire_publication_lock(publication)
+        lifecycle["publication_lock"] = publication_lock
+        try:
+            return await self._run_prepared(
+                request,
+                run_id=run_id,
+                emit=emit,
+                lifecycle=lifecycle,
+                checkouts=checkouts,
+                skill_input=skill_input,
+                staging=staging,
+                publication=publication,
+            )
+        finally:
+            _release_publication_lock(publication_lock)
+
+    async def _run_prepared(
+        self,
+        request: WikiRunRequest,
+        *,
+        run_id: str,
+        emit: Callable[..., None],
+        lifecycle: dict[str, object],
+        checkouts: tuple[Path, ...],
+        skill_input: Path,
+        staging: Path,
+        publication: Path,
+    ) -> WikiRunResult:
         old_hashes: dict[str, str] = {}
         old_repositories: tuple[_PublishedRepository, ...] | None = None
         old_skill_digest: str | None = None
@@ -1453,31 +1481,30 @@ def _materialize_repository_snapshot(
     return used_files, used_bytes
 
 
-def _require_supported_runtime() -> None:
-    """Fail closed on hosts that cannot implement safe staging/publication.
+# Windows FILE_ATTRIBUTE_REPARSE_POINT — junctions and other reparse roots.
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
-    Staging and publication walk paths with Unix ``dir_fd`` + ``O_NOFOLLOW`` and
-    resolve stable directory handles via ``/proc/self/fd``. That stack is Linux-only
-    in this release (see README). Windows fails earlier inside ``os.open(..., dir_fd=)``
-    with a generic "path is not accessible" otherwise.
+
+def _require_supported_runtime() -> None:
+    """Portable capability check for Host staging/publication (ADR 0017).
+
+    Wiki Run no longer requires Linux-only ``dir_fd`` / ``/proc/self/fd``. Hosts must
+    support absolute paths, exclusive file create, and same-volume directory rename
+    (``os.replace`` / ``os.rename``). Stricter openat backends are optional, not baseline.
     """
-    if sys.platform.startswith("win"):
+    if not hasattr(os, "replace"):
         raise ValueError(
-            "okf-wiki Wiki Run requires Linux in this release (not Windows). "
-            "Staging/publication use Unix directory file descriptors (dir_fd, O_NOFOLLOW) "
-            "and /proc/self/fd for atomic publish. Run under WSL2 or a Linux host."
+            "okf-wiki Wiki Run requires os.replace for atomic single-file and directory "
+            f"publication handoff (missing on platform={sys.platform!r})."
         )
-    if not hasattr(os, "O_DIRECTORY") or os.O_DIRECTORY == 0:
-        raise ValueError(
-            "okf-wiki Wiki Run requires a host with os.O_DIRECTORY support (Linux). "
-            f"Current platform: {sys.platform!r}."
-        )
-    proc_fd = Path("/proc/self/fd")
-    if not proc_fd.is_dir():
-        raise ValueError(
-            "okf-wiki Wiki Run requires /proc/self/fd for atomic publication "
-            f"(missing on this host; platform={sys.platform!r}). Use Linux."
-        )
+
+
+def _is_disallowed_path_component(info: os.stat_result) -> bool:
+    """True for symlinks and detectable host reparse points (e.g. Windows junctions)."""
+    if stat.S_ISLNK(info.st_mode):
+        return True
+    attrs = getattr(info, "st_file_attributes", 0) or 0
+    return bool(attrs & _FILE_ATTRIBUTE_REPARSE_POINT)
 
 
 def _prepare_mounts(request: WikiRunRequest) -> tuple[tuple[Path, ...], Path, Path, Path]:
@@ -1508,7 +1535,10 @@ def _prepare_mounts(request: WikiRunRequest) -> tuple[tuple[Path, ...], Path, Pa
     publication_input = request.publication.absolute()
     if publication_input.name in {"", ".", ".."}:
         raise ValueError("Published Wiki path must name a directory")
-    publication = publication_input.parent.resolve(strict=False) / publication_input.name
+    publication_parent = publication_input.parent
+    _check_directory_path(publication_parent, "Published Wiki parent")
+    _create_directory_path(publication_parent, "Published Wiki parent")
+    publication = publication_parent.resolve(strict=True) / publication_input.name
     if (
         any(_overlaps(source, publication) for source in sources)
         or _overlaps(skill, publication)
@@ -1517,14 +1547,47 @@ def _prepare_mounts(request: WikiRunRequest) -> tuple[tuple[Path, ...], Path, Pa
         raise ValueError(
             "Repository Snapshots, Producer Skill, Staging Wiki, and Published Wiki must not overlap"
         )
-    _validate_release_root(publication.parent / f".{publication.name}.releases")
+    if publication.is_symlink() or (
+        os.path.lexists(publication) and _path_is_symlink_or_reparse(publication)
+    ):
+        raise ValueError(
+            "Published Wiki path is a symbolic link (legacy producer layout). "
+            "okf-wiki no longer migrates symlink publications automatically. "
+            f"Delete or clear {publication} and run a full Generate again."
+        )
+    if os.path.lexists(publication) and not publication.is_dir():
+        raise ValueError(
+            "Published Wiki path must be absent or a regular directory "
+            f"(found a non-directory at {publication})"
+        )
+    releases = publication.parent / f".{publication.name}.releases"
+    _validate_release_root(releases)
+    _ensure_same_volume_for_publication(publication, releases)
     return sources, skill, staging, publication
 
 
 def _existing_directory(path: Path, label: str) -> Path:
-    if not path.is_dir():
+    """Resolve an existing directory after portable symlink/reparse rejection."""
+    candidate = path if path.is_absolute() else path.absolute()
+    _check_directory_path(candidate, label)
+    try:
+        info = os.lstat(candidate)
+    except FileNotFoundError as error:
+        raise ValueError(f"{label} must be an existing directory") from error
+    except OSError as error:
+        raise operator_error(f"{label} path is not accessible", error) from error
+    if _is_disallowed_path_component(info):
+        raise ValueError(f"{label} path must not contain symlinks or host reparse points")
+    if not stat.S_ISDIR(info.st_mode):
         raise ValueError(f"{label} must be an existing directory")
-    return path.resolve(strict=True)
+    return candidate.resolve(strict=True)
+
+
+def _path_is_symlink_or_reparse(path: Path) -> bool:
+    try:
+        return _is_disallowed_path_component(os.lstat(path))
+    except OSError:
+        return path.is_symlink()
 
 
 def _check_directory_path(path: Path, label: str) -> None:
@@ -1539,40 +1602,57 @@ def _check_directory_path(path: Path, label: str) -> None:
             continue
         except OSError as error:
             raise operator_error(f"{label} path is not accessible", error) from error
-        if stat.S_ISLNK(info.st_mode):
-            raise ValueError(f"{label} path must not contain symlinks")
+        if _is_disallowed_path_component(info):
+            raise ValueError(f"{label} path must not contain symlinks or host reparse points")
         if not stat.S_ISDIR(info.st_mode):
             raise ValueError(f"{label} path must contain only directories")
 
 
 def _create_directory_path(path: Path, label: str) -> None:
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    """Create a directory tree with portable symlink/reparse rejection (no dir_fd)."""
+    if not path.is_absolute() or path.name in {"", ".", ".."} or ".." in path.parts:
+        raise ValueError(f"{label} path must be a canonical directory path")
+    current = Path(path.anchor)
     try:
-        descriptor = os.open(path.anchor, flags)
+        anchor_info = os.lstat(current)
     except OSError as error:
         raise operator_error(f"{label} path is not accessible", error) from error
-    try:
-        for part in path.parts[1:]:
+    if _is_disallowed_path_component(anchor_info) or not stat.S_ISDIR(anchor_info.st_mode):
+        raise ValueError(f"{label} path must not contain symlinks or non-directories")
+    for part in path.parts[1:]:
+        current = current / part
+        try:
+            info = os.lstat(current)
+        except FileNotFoundError:
             try:
-                child = os.open(part, flags, dir_fd=descriptor)
-            except FileNotFoundError:
-                try:
-                    os.mkdir(part, dir_fd=descriptor)
-                    child = os.open(part, flags, dir_fd=descriptor)
-                except OSError as error:
-                    raise operator_error(
-                        f"{label} directory could not be created", error
-                    ) from error
+                os.mkdir(current)
+            except FileExistsError:
+                pass
+            except OSError as error:
+                raise operator_error(f"{label} directory could not be created", error) from error
+            try:
+                info = os.lstat(current)
             except OSError as error:
                 raise operator_error(
                     f"{label} path must not contain symlinks or non-directories", error
                 ) from error
-            os.close(descriptor)
-            descriptor = child
-        if not _same_directory(path, descriptor):
-            raise ValueError(f"{label} path changed during creation")
-    finally:
-        os.close(descriptor)
+        except OSError as error:
+            raise operator_error(
+                f"{label} path must not contain symlinks or non-directories", error
+            ) from error
+        if _is_disallowed_path_component(info):
+            raise ValueError(f"{label} path must not contain symlinks or non-directories")
+        if not stat.S_ISDIR(info.st_mode):
+            raise ValueError(f"{label} path must not contain symlinks or non-directories")
+    try:
+        _check_directory_path(path, label)
+        final = os.lstat(path)
+    except ValueError:
+        raise
+    except OSError as error:
+        raise operator_error(f"{label} path is not accessible", error) from error
+    if _is_disallowed_path_component(final) or not stat.S_ISDIR(final.st_mode):
+        raise ValueError(f"{label} path changed during creation")
 
 
 def _overlaps(left: Path, right: Path) -> bool:
@@ -1580,11 +1660,56 @@ def _overlaps(left: Path, right: Path) -> bool:
 
 
 def _validate_release_root(path: Path) -> None:
-    if os.path.lexists(path) and (path.is_symlink() or not path.is_dir()):
+    if os.path.lexists(path) and (_path_is_symlink_or_reparse(path) or not path.is_dir()):
         raise ValueError("Published Wiki release directory must be a regular directory")
 
 
-def _open_release_root(path: Path) -> int:
+def _directory_identity(path: Path) -> tuple[int, int] | None:
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(info.st_mode) or _is_disallowed_path_component(info):
+        return None
+    return (info.st_dev, info.st_ino)
+
+
+def _ensure_same_volume_for_publication(publication: Path, releases: Path) -> None:
+    """Fail closed when Published Wiki and releases root cannot share a rename volume."""
+    parent = publication.parent
+    try:
+        parent_info = os.stat(parent)
+    except OSError as error:
+        raise operator_error("Published Wiki parent is not accessible", error) from error
+    if os.path.lexists(releases):
+        try:
+            release_info = os.lstat(releases)
+        except OSError as error:
+            raise operator_error(
+                "Published Wiki release directory is not accessible", error
+            ) from error
+        if _is_disallowed_path_component(release_info) or not stat.S_ISDIR(release_info.st_mode):
+            raise ValueError("Published Wiki release directory must be a regular directory")
+        if release_info.st_dev != parent_info.st_dev:
+            raise ValueError(
+                "Published Wiki path and release directory must share the same volume "
+                f"for atomic directory-rename publication (publication parent={parent}, "
+                f"releases={releases}). Move both onto one filesystem; copy fallback is not "
+                "supported."
+            )
+    if os.path.lexists(publication) and publication.is_dir() and not publication.is_symlink():
+        try:
+            publication_info = os.lstat(publication)
+        except OSError as error:
+            raise operator_error("Published Wiki path is not accessible", error) from error
+        if publication_info.st_dev != parent_info.st_dev:
+            raise ValueError(
+                "Published Wiki path and its parent must share the same volume "
+                f"for atomic directory-rename publication (path={publication})."
+            )
+
+
+def _ensure_release_root(path: Path) -> Path:
     _validate_release_root(path)
     try:
         os.mkdir(path)
@@ -1594,34 +1719,57 @@ def _open_release_root(path: Path) -> int:
         raise operator_error(
             "Published Wiki release directory could not be created", error
         ) from error
-    try:
-        descriptor = os.open(
-            path,
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-        )
-    except OSError as error:
-        raise ValueError("Published Wiki release directory must be a regular directory") from error
-    info = os.fstat(descriptor)
-    if not stat.S_ISDIR(info.st_mode):
-        os.close(descriptor)
+    _validate_release_root(path)
+    if not path.is_dir() or _path_is_symlink_or_reparse(path):
         raise ValueError("Published Wiki release directory must be a regular directory")
-    return descriptor
+    return path
 
 
-def _fd_directory_path(descriptor: int) -> Path:
-    return Path(f"/proc/self/fd/{descriptor}")
+def _publication_lock_path(publication: Path) -> Path:
+    return publication.parent / f".{publication.name}.publish.lock"
 
 
-def _same_directory(path: Path, descriptor: int) -> bool:
+def _acquire_publication_lock(publication: Path) -> Path:
+    """Exclusive Host publication lock (O_EXCL lock file). Released on process exit path.
+
+    If a previous process crashed, operators may remove the stale lock file after confirming
+    no Wiki Run is active for this Published Wiki path.
+    """
+    _create_directory_path(publication.parent, "Published Wiki parent")
+    lock_path = _publication_lock_path(publication)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
     try:
-        current = os.stat(path, follow_symlinks=False)
-        original = os.fstat(descriptor)
+        descriptor = os.open(lock_path, flags, 0o600)
+    except FileExistsError as error:
+        stale_hint = (
+            f"If no Wiki Run is active, remove the stale lock file after confirming the path "
+            f"is idle: {lock_path}"
+        )
+        raise ValueError(
+            f"Published Wiki path is locked by another Wiki Run: {publication}. {stale_hint}"
+        ) from error
+    except OSError as error:
+        raise operator_error(
+            f"Published Wiki lock could not be acquired for {publication}", error
+        ) from error
+    try:
+        payload = f"pid={os.getpid()}\n".encode("utf-8")
+        os.write(descriptor, payload)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    return lock_path
+
+
+def _release_publication_lock(lock_path: Path | None) -> None:
+    if lock_path is None:
+        return
+    try:
+        lock_path.unlink(missing_ok=True)
     except OSError:
-        return False
-    return stat.S_ISDIR(current.st_mode) and (current.st_dev, current.st_ino) == (
-        original.st_dev,
-        original.st_ino,
-    )
+        pass
 
 
 _MARKDOWN = MarkdownIt("commonmark").use(anchors_plugin, min_level=1, max_level=6)
@@ -2064,16 +2212,24 @@ class _PublicationMetadata(BaseModel):
 def _stage_published_wiki(
     publication: Path, staging: Path, limits: WikiRunLimits
 ) -> tuple[dict[str, str], tuple[_PublishedRepository, ...], str]:
-    releases = publication.parent / f".{publication.name}.releases"
-    if not publication.is_symlink() or releases.is_symlink() or not releases.is_dir():
-        raise ValueError("Refresh requires an existing producer-managed Published Wiki")
+    """Load a Host-owned real-directory Published Wiki into empty Staging for Refresh."""
+    if publication.is_symlink() or _path_is_symlink_or_reparse(publication):
+        raise ValueError(
+            "Refresh requires an existing Host-owned real-directory Published Wiki; "
+            f"found a symbolic link at {publication}. Delete or clear the legacy symlink "
+            "layout and run a full Generate again (automatic migration is not supported)."
+        )
+    if not publication.is_dir():
+        raise ValueError(
+            "Refresh requires an existing producer-managed Published Wiki "
+            f"(regular directory with publication metadata) at {publication}"
+        )
     try:
-        release_root = releases.resolve(strict=True)
         release = publication.resolve(strict=True)
     except OSError as error:
-        raise operator_error("Refresh Published Wiki pointer is not readable", error) from error
-    if not release.is_dir() or release.parent != release_root:
-        raise ValueError("Refresh Published Wiki pointer escapes its producer release directory")
+        raise operator_error("Refresh Published Wiki is not readable", error) from error
+    if not release.is_dir() or release.is_symlink():
+        raise ValueError("Refresh requires an existing producer-managed Published Wiki")
 
     metadata_path = release / PUBLICATION_METADATA_NAME
     if metadata_path.is_symlink() or not metadata_path.is_file():
@@ -2366,6 +2522,104 @@ def _selected_producer_skill(version: ProducerSkillVersion) -> Path:
     return path
 
 
+def _write_publication_metadata(path: Path, metadata: _PublicationMetadata) -> None:
+    encoded = (
+        json.dumps(metadata.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(temporary, flags, 0o644)
+        try:
+            view = memoryview(encoded)
+            while view:
+                view = view[os.write(descriptor, view) :]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        if os.path.lexists(path):
+            raise ValueError("Published Wiki metadata already exists in the release tree")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+class _PublicationSwapUnrecoverable(ValueError):
+    """Mid-swap failure where aside/release artifacts must be left for the operator."""
+
+
+def _swap_published_directory(
+    destination: Path,
+    new_release: Path,
+    *,
+    release_id: str,
+) -> None:
+    """Expose a complete release at the stable Published Wiki path via directory rename.
+
+    Mid-swap recovery: if the previous tree was moved aside and the new tree cannot be
+    installed, best-effort rename the previous tree back. Never leave a partial tree at
+    the stable name; if restore fails, leave recoverable aside/release paths and raise.
+    """
+    if destination.is_symlink() or (
+        os.path.lexists(destination) and _path_is_symlink_or_reparse(destination)
+    ):
+        raise ValueError(
+            "Published Wiki path is a symbolic link (legacy producer layout). "
+            "okf-wiki no longer migrates symlink publications automatically. "
+            f"Delete or clear {destination} and run a full Generate again."
+        )
+    if os.path.lexists(destination) and not destination.is_dir():
+        raise ValueError(
+            "Published Wiki path must be absent or a regular directory "
+            f"(found a non-directory at {destination})"
+        )
+
+    aside: Path | None = None
+    installed = False
+    try:
+        if os.path.lexists(destination):
+            aside = destination.parent / f".{destination.name}.aside.{release_id}"
+            if os.path.lexists(aside):
+                raise OSError(f"Published Wiki aside path already exists: {aside}")
+            os.rename(destination, aside)
+        os.rename(new_release, destination)
+        installed = True
+    except Exception as error:
+        if aside is not None and not os.path.lexists(destination):
+            try:
+                os.rename(aside, destination)
+                aside = None
+            except OSError as restore_error:
+                raise _PublicationSwapUnrecoverable(
+                    "Publication swap failed and the previous Published Wiki could not be "
+                    f"restored. Recoverable paths: previous tree={aside}; "
+                    f"new release={new_release if new_release.exists() else 'missing'}; "
+                    f"stable path={destination}. Swap error: {error}; restore error: "
+                    f"{restore_error}."
+                ) from restore_error
+        raise
+    finally:
+        if installed and aside is not None:
+            shutil.rmtree(aside, ignore_errors=True)
+
+
+def _cleanup_release_tree(releases: Path, *, keep: frozenset[str] = frozenset()) -> None:
+    """Best-effort delete superseded release directories after a successful swap."""
+    if not releases.is_dir() or releases.is_symlink():
+        return
+    try:
+        entries = list(releases.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if entry.name in keep:
+            continue
+        if entry.is_symlink():
+            continue
+        if entry.is_dir():
+            shutil.rmtree(entry, ignore_errors=True)
+
+
 def _publish_wiki(
     sources: Mapping[str, Path],
     staging: Path,
@@ -2377,32 +2631,39 @@ def _publish_wiki(
     model_name: str,
     limits: WikiRunLimits,
 ) -> None:
+    """Materialize a validated release then expose it via same-volume directory rename."""
     _check_directory_path(destination.parent, "Published Wiki parent")
     _create_directory_path(destination.parent, "Published Wiki parent")
-    parent_fd = os.open(
-        destination.parent,
-        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-    )
-    stable_parent = _fd_directory_path(parent_fd)
-    stable_destination = stable_parent / destination.name
-    if os.path.lexists(stable_destination) and not stable_destination.is_symlink():
-        os.close(parent_fd)
-        raise ValueError("Published Wiki path must be absent or a producer-managed symlink")
+    if destination.is_symlink() or (
+        os.path.lexists(destination) and _path_is_symlink_or_reparse(destination)
+    ):
+        raise ValueError(
+            "Published Wiki path is a symbolic link (legacy producer layout). "
+            "okf-wiki no longer migrates symlink publications automatically. "
+            f"Delete or clear {destination} and run a full Generate again."
+        )
+    if os.path.lexists(destination) and not destination.is_dir():
+        raise ValueError(
+            "Published Wiki path must be absent or a regular directory "
+            f"(found a non-directory at {destination})"
+        )
+
     releases = destination.parent / f".{destination.name}.releases"
-    try:
-        release_root_fd = _open_release_root(stable_parent / releases.name)
-    except Exception:
-        os.close(parent_fd)
-        raise
-    stable_releases = _fd_directory_path(release_root_fd)
+    parent_before = _directory_identity(destination.parent)
+    if parent_before is None:
+        raise ValueError("Published Wiki parent must be a regular directory")
+    _ensure_release_root(releases)
+    _ensure_same_volume_for_publication(destination, releases)
+    releases_before = _directory_identity(releases)
+    if releases_before is None:
+        raise ValueError("Published Wiki release directory must be a regular directory")
+
     release_id = uuid.uuid4().hex
-    final_release = stable_releases / release_id
-    temporary_link = stable_parent / f".{destination.name}.{release_id}.tmp"
+    final_release = releases / release_id
     final_release_owned = False
-    temporary_link_owned = False
     try:
         try:
-            os.mkdir(release_id, dir_fd=release_root_fd)
+            os.mkdir(final_release)
         except FileExistsError as error:
             raise OSError(f"Published Wiki release already exists: {release_id}") from error
         final_release_owned = True
@@ -2421,31 +2682,24 @@ def _publish_wiki(
             ],
             content_digest=_content_digest(page_hashes),
         )
-        (final_release / PUBLICATION_METADATA_NAME).write_text(
-            json.dumps(metadata.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        if not _same_directory(destination.parent, parent_fd) or not _same_directory(
-            releases, release_root_fd
+        _write_publication_metadata(final_release / PUBLICATION_METADATA_NAME, metadata)
+        if (
+            _directory_identity(destination.parent) != parent_before
+            or _directory_identity(releases) != releases_before
         ):
             raise ValueError("Published Wiki release directory changed during publication")
-        release_target = os.path.realpath(final_release)
-        os.symlink(
-            release_target,
-            temporary_link,
-            target_is_directory=True,
-        )
-        temporary_link_owned = True
-        if os.path.lexists(stable_destination) and not stable_destination.is_symlink():
-            raise ValueError("Published Wiki path must be absent or a producer-managed symlink")
-        os.replace(temporary_link, stable_destination)
-        temporary_link_owned = False
+        _ensure_same_volume_for_publication(destination, releases)
+        try:
+            _swap_published_directory(destination, final_release, release_id=release_id)
+        except _PublicationSwapUnrecoverable:
+            # Leave the validated release and aside tree for operator recovery.
+            final_release_owned = False
+            raise
+        final_release_owned = False
+        _cleanup_release_tree(releases)
+    except _PublicationSwapUnrecoverable:
+        raise
     except Exception:
-        if final_release_owned:
+        if final_release_owned and final_release.exists():
             shutil.rmtree(final_release, ignore_errors=True)
         raise
-    finally:
-        if temporary_link_owned:
-            temporary_link.unlink(missing_ok=True)
-        os.close(release_root_fd)
-        os.close(parent_fd)
