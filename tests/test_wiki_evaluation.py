@@ -15,7 +15,7 @@ from okf_wiki.wiki_run import WikiRunApplication, WikiRunRequest
 
 
 ROOT = Path(__file__).parents[1]
-REAL_MANIFEST = ROOT / "src/okf_wiki/wiki_evaluation_repositories.json"
+REAL_MANIFEST = ROOT / "src/okf_wiki/evaluation/wiki_evaluation_repositories.json"
 
 
 def make_repository(path: Path) -> str:

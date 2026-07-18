@@ -1,56 +1,25 @@
+"""Wiki Run application facade and orchestration."""
+
+from __future__ import annotations
+
 import asyncio
-import hashlib
-import json
 import os
-import posixpath
-import re
 import shutil
-import stat
-import sys
 import tempfile
 import time
-import uuid
-from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from fnmatch import fnmatchcase
-from pathlib import Path, PurePosixPath
-from typing import Annotated, Literal, cast
-from urllib.parse import unquote, unquote_to_bytes, urlsplit
+from pathlib import Path
+from typing import Literal
 
-import yaml
-from markdown_it import MarkdownIt
-from mdit_py_plugins.anchors import anchors_plugin
-from pydantic import (
-    AfterValidator,
-    BaseModel,
-    BeforeValidator,
-    ConfigDict,
-    Field,
-    StringConstraints,
-    ValidationError,
-    model_validator,
-)
 from pydantic_ai import (
     ModelRetry,
     ModelSettings,
     RunUsage,
-    UnexpectedModelBehavior,
     UsageLimitExceeded,
-    UsageLimits,
 )
-from pydantic_ai.models import Model
-from yaml.constructor import ConstructorError
-from yaml.nodes import MappingNode
-from yaml.resolver import BaseResolver
 
-from .security import (
-    MAX_ANALYZABLE_FILE_BYTES,
-    canonical_source_path,
-    environment_secrets,
-    git_read,
-    git_read_bytes,
-    redact_secrets,
-)
 from .analysis_workspace import (
     AnalysisReceipt as AnalysisReceipt,
     AnalysisWorkspace as AnalysisWorkspace,
@@ -64,431 +33,162 @@ from .adaptive_orchestration import (
     build_root_agent,
     should_enable_adaptive,
 )
-from .errors import operator_error
-from .provider_env import (
-    env_limit_overrides,
-    merge_limit_overrides,
-    resolve_model_identity,
-    resolve_model_settings,
-)
+from .errors import HostValidationError
 from .provider_retry import (
     ProviderRetryState,
     merge_retry_counters,
     prepare_model_with_provider_retry,
 )
-
-
-RepositoryId = Annotated[
-    str,
-    StringConstraints(strip_whitespace=True, pattern=r"^[a-z][a-z0-9-]{0,62}$"),
-]
-
-
-def _validate_ignore_pattern(pattern: str) -> str:
-    if (
-        "\\" in pattern
-        or "\x00" in pattern
-        or pattern.startswith("/")
-        or any(part in {"", ".", ".."} for part in pattern.split("/"))
-    ):
-        raise ValueError("ignore patterns must be repository-relative POSIX globs")
-    return pattern
-
-
-IgnorePattern = Annotated[
-    str,
-    StringConstraints(strip_whitespace=True, min_length=1, max_length=500),
-    AfterValidator(_validate_ignore_pattern),
-]
-
-# Host-owned Default Source Ignores (noise). Tests are intentionally not listed.
-DEFAULT_SOURCE_IGNORES: tuple[str, ...] = (
-    "node_modules/**",
-    ".venv/**",
-    "venv/**",
-    "env/**",
-    "__pycache__/**",
-    "dist/**",
-    "build/**",
-    "coverage/**",
-    ".git/**",
-    ".next/**",
-    ".turbo/**",
-    ".cache/**",
-    ".parcel-cache/**",
-    "vendor/**",
+from . import run_records
+from .run_models import (
+    DEFAULT_SOURCE_IGNORES as DEFAULT_SOURCE_IGNORES,
+    Complete as Complete,
+    IgnorePattern as IgnorePattern,
+    ModelProviderConfig as ModelProviderConfig,
+    NeedsInput as NeedsInput,
+    PagePath as PagePath,
+    ProducerSkillFork as ProducerSkillFork,
+    ProducerSkillVersion as ProducerSkillVersion,
+    Question as Question,
+    RepositoryId as RepositoryId,
+    RepositorySnapshot as RepositorySnapshot,
+    SkillDigest as SkillDigest,
+    WikiChangeSummary as WikiChangeSummary,
+    WikiManifest as WikiManifest,
+    WikiRunEvent as WikiRunEvent,
+    WikiRunLimits as WikiRunLimits,
+    WikiRunRecord as WikiRunRecord,
+    WikiRunRequest as WikiRunRequest,
+    WikiRunResourceLimitError as WikiRunResourceLimitError,
+    WikiRunResult as WikiRunResult,
+    resolve_effective_source_ignores as resolve_effective_source_ignores,
+)
+from .run_mounts import (
+    _FILE_ATTRIBUTE_REPARSE_POINT as _FILE_ATTRIBUTE_REPARSE_POINT,
+    _acquire_publication_lock,
+    _is_disallowed_path_component as _is_disallowed_path_component,
+    _prepare_mounts,
+    _release_publication_lock,
+    _require_supported_runtime as _require_supported_runtime,
+)
+from .run_publication import (
+    PUBLICATION_METADATA_NAME as PUBLICATION_METADATA_NAME,
+    _publish_wiki,
+    _published_repositories,
+    _stage_published_wiki,
+    _summarize_changes,
+    _write_publication_metadata as _write_publication_metadata,
+)
+from .run_records import (
+    _event_payload,
+    _record_publication_path,
+    _safe_model_error,
+    _write_run_record as _write_run_record,
+    load_run_record as load_run_record,
+)
+from .run_skill import _validate_producer_skill
+from .run_snapshots import (
+    _materialize_repository_snapshot as _materialize_repository_snapshot,
+    _write_source_inventory as _write_source_inventory,
+)
+from .run_validation import (
+    VISUALIZATION_DIR_NAME as VISUALIZATION_DIR_NAME,
+    _content_digest as _content_digest,
+    _hashes,
+    _validate_wiki as _validate_wiki,
+)
+from .security import (
+    git_read_bytes as git_read_bytes,
 )
 
-
-def resolve_effective_source_ignores(
-    *,
-    apply_default_source_ignores: bool,
-    user_ignore: tuple[str, ...],
-    frozen_effective_ignore: tuple[str, ...] | None = None,
-) -> tuple[str, ...]:
-    """Compute Effective Source Ignores for one repository.
-
-    When ``frozen_effective_ignore`` is set (Manual Retry), that expanded list is
-    authoritative and product defaults are not re-resolved.
-    """
-    if frozen_effective_ignore is not None:
-        return tuple(frozen_effective_ignore)
-    if apply_default_source_ignores:
-        # Preserve catalog order, then append user patterns not already present.
-        seen = set(DEFAULT_SOURCE_IGNORES)
-        extra = tuple(pattern for pattern in user_ignore if pattern not in seen)
-        return DEFAULT_SOURCE_IGNORES + extra
-    return tuple(user_ignore)
-
-
-def _validate_unique_repository_ids(ids: Iterable[str], message: str) -> None:
-    values = tuple(ids)
-    if len(values) != len(set(values)):
-        raise ValueError(message)
-
-
-class RepositorySnapshot(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    id: RepositoryId = "source"
-    path: Path
-    revision: Annotated[str, StringConstraints(strip_whitespace=True, to_lower=True, min_length=1)]
-    ignore: tuple[IgnorePattern, ...] = ()
-    apply_default_source_ignores: bool = True
-    # Manual Retry only: expanded Effective Source Ignores frozen at the earlier run.
-    frozen_effective_ignore: tuple[IgnorePattern, ...] | None = None
-
-    def effective_source_ignores(self) -> tuple[str, ...]:
-        return resolve_effective_source_ignores(
-            apply_default_source_ignores=self.apply_default_source_ignores,
-            user_ignore=tuple(self.ignore),
-            frozen_effective_ignore=(
-                None
-                if self.frozen_effective_ignore is None
-                else tuple(self.frozen_effective_ignore)
-            ),
-        )
-
-
-SkillDigest = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
-_DEFAULT_PRODUCER_SKILL = Path(__file__).with_name("producer_skill")
-_DEFAULT_PRODUCER_SKILL_DIGEST = "9f409d481942416264ea5be185195369e08246c99d5f4721813a18e3eadc115d"
-
-
-class ProducerSkillVersion(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    path: Path
-    digest: SkillDigest
-
-    @classmethod
-    def default(cls) -> "ProducerSkillVersion":
-        version = cls(path=_DEFAULT_PRODUCER_SKILL, digest=_DEFAULT_PRODUCER_SKILL_DIGEST)
-        return cls(path=_selected_producer_skill(version), digest=version.digest)
-
-    @classmethod
-    def from_directory(cls, path: Path) -> "ProducerSkillVersion":
-        resolved, digest = _validate_producer_skill(path)
-        return cls(path=resolved, digest=digest)
-
-
-class ProducerSkillFork(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    path: Path
-
-    @classmethod
-    def create(cls, version: ProducerSkillVersion, destination: Path) -> "ProducerSkillFork":
-        source = _selected_producer_skill(version)
-        target = destination.absolute()
-        if _overlaps(source, target.resolve(strict=False)):
-            raise ValueError("Skill Version and Skill Fork must not overlap")
-        try:
-            target.mkdir(parents=True, exist_ok=False)
-        except FileExistsError as error:
-            raise ValueError("Skill Fork destination must not already exist") from error
-        try:
-            shutil.copytree(source, target, dirs_exist_ok=True)
-            fork = cls(path=target.resolve(strict=True))
-            if fork.version().digest != version.digest:
-                raise ValueError("Skill Fork does not match its selected Skill Version")
-            return fork
-        except Exception:
-            shutil.rmtree(target, ignore_errors=True)
-            raise
-
-    def version(self) -> ProducerSkillVersion:
-        return ProducerSkillVersion.from_directory(self.path)
-
-
-class ModelProviderConfig(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
-
-    model: Model | str
-    settings: ModelSettings = Field(default_factory=ModelSettings)
-
-
-class WikiRunLimits(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    request_limit: int = Field(default=50, gt=0)
-    tool_calls_limit: int = Field(default=200, gt=0)
-    input_tokens_limit: int = Field(default=250_000, gt=0)
-    output_tokens_limit: int = Field(default=100_000, gt=0)
-    total_tokens_limit: int = Field(default=350_000, gt=0)
-    retries: int = Field(default=2, ge=0)
-    request_timeout_seconds: float = Field(default=120, gt=0)
-    tool_timeout_seconds: float = Field(default=30, gt=0)
-    wall_clock_timeout_seconds: float = Field(default=600, gt=0)
-    source_files_limit: int = Field(default=50_000, gt=0)
-    source_file_bytes_limit: int = Field(default=25_000_000, gt=0)
-    source_total_bytes_limit: int = Field(default=500_000_000, gt=0)
-    wiki_entries_limit: int = Field(default=2_000, gt=0)
-    wiki_file_bytes_limit: int = Field(default=1_000_000, gt=0)
-    wiki_total_bytes_limit: int = Field(default=50_000_000, gt=0)
-    wiki_write_bytes_limit: int = Field(default=200_000_000, gt=0)
-    analysis_receipt_bytes_limit: int = Field(default=128 * 1024, gt=0)
-    analysis_artifact_bytes_limit: int = Field(default=2 * 1024 * 1024, gt=0)
-    analysis_workspace_bytes_limit: int = Field(default=32 * 1024 * 1024, gt=0)
-    analysis_workspace_entries_limit: int = Field(default=256, gt=0)
-    context_target_tokens: int = Field(default=100_000, gt=0)
-    adaptive_source_files_threshold: int = Field(default=128, gt=0)
-    adaptive_source_bytes_threshold: int = Field(default=1_000_000, gt=0)
-    adaptive_max_depth: int = Field(default=2, ge=0, le=2)
-    adaptive_root_fanout: int = Field(default=2, ge=0, le=4)
-    adaptive_domain_fanout: int = Field(default=2, ge=0, le=2)
-    adaptive_child_concurrency: int = Field(default=4, gt=0, le=4)
-    adaptive_child_timeout_seconds: float = Field(default=120, gt=0)
-    adaptive_domain_request_limit: int = Field(default=6, gt=0)
-    adaptive_leaf_request_limit: int = Field(default=3, gt=0)
-    adaptive_domain_total_tokens_limit: int = Field(default=25_000, gt=0)
-    adaptive_leaf_total_tokens_limit: int = Field(default=18_000, gt=0)
-    adaptive_enable_reviewer: bool = True
-    adaptive_reviewer_request_limit: int = Field(default=5, gt=0)
-    adaptive_reviewer_total_tokens_limit: int = Field(default=30_000, gt=0)
-    adaptive_leaf_timeout_seconds: float = Field(default=90, gt=0)
-    adaptive_dynamic_workflow: bool = False
-
-    @classmethod
-    def build(cls, overrides: Mapping[str, object] | None = None) -> "WikiRunLimits":
-        """Construct limits with precedence: field defaults < env < explicit overrides."""
-        return cls(**merge_limit_overrides(env_limit_overrides(), overrides))
-
-    def usage_limits(self) -> UsageLimits:
-        return UsageLimits(
-            request_limit=self.request_limit,
-            tool_calls_limit=self.tool_calls_limit,
-            input_tokens_limit=self.input_tokens_limit,
-            output_tokens_limit=self.output_tokens_limit,
-            total_tokens_limit=self.total_tokens_limit,
-        )
-
-
-class _ConfiguredRepository(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    id: RepositoryId
-    path: Path
-    branch: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)] | None = None
-    revision: (
-        Annotated[
-            str,
-            StringConstraints(
-                strip_whitespace=True,
-                to_lower=True,
-                pattern=r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$",
-            ),
-        ]
-        | None
-    ) = None
-    ignore: tuple[IgnorePattern, ...] = ()
-    apply_default_source_ignores: bool = True
-
-    @model_validator(mode="after")
-    def validate_ref(self) -> "_ConfiguredRepository":
-        if (self.branch is None) == (self.revision is None):
-            raise ValueError("each repository must define exactly one of branch or revision")
-        return self
-
-
-class _ConfiguredSkill(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    path: Path
-    digest: SkillDigest
-
-
-def _coerce_configured_model(value: object) -> object:
-    if isinstance(value, str):
-        return {"identity": value}
-    return value
-
-
-class _ConfiguredModel(BaseModel):
-    """Non-secret model selection. Credentials stay in environment / ``.env``."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    identity: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)] | None = None
-    max_tokens: int | None = Field(default=None, gt=0)
-    temperature: float | None = Field(default=None, ge=0, le=2)
-    top_p: float | None = Field(default=None, gt=0, le=1)
-    timeout: float | None = Field(default=None, gt=0)
-
-
-class _WikiRunFileConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    version: Literal[1]
-    operation: Literal["generate", "refresh"] = "generate"
-    model: Annotated[_ConfiguredModel, BeforeValidator(_coerce_configured_model)] = Field(
-        default_factory=_ConfiguredModel
-    )
-    staging: Path
-    publication: Path
-    repositories: tuple[_ConfiguredRepository, ...] = Field(min_length=1, max_length=64)
-    skill: _ConfiguredSkill | None = None
-    # Raw mapping so omitted keys can still pick up env defaults via WikiRunLimits.build.
-    limits: dict[str, object] | None = None
-    retain_analysis_workspace: bool = False
-    write_visualization: bool = False
-
-    @model_validator(mode="after")
-    def validate_repository_ids(self) -> "_WikiRunFileConfig":
-        _validate_unique_repository_ids(
-            (repository.id for repository in self.repositories),
-            "repository IDs must be unique",
-        )
-        if self.limits is not None:
-            unknown = set(self.limits) - set(WikiRunLimits.model_fields)
-            if unknown:
-                names = ", ".join(sorted(unknown))
-                raise ValueError(f"Unknown limits fields: {names}")
-        return self
-
-
-PagePath = Annotated[str, StringConstraints(min_length=1, max_length=500)]
-Question = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
-
-
-class WikiManifest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    pages: list[PagePath] = Field(min_length=1)
-
-
-class WikiChangeSummary(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    added: list[PagePath] = Field(default_factory=list)
-    changed: list[PagePath] = Field(default_factory=list)
-    removed: list[PagePath] = Field(default_factory=list)
-    unchanged: list[PagePath] = Field(default_factory=list)
-    content_changed: bool = False
-    publication_changed: bool = False
-
-
-class Complete(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    status: Literal["complete"] = "complete"
-    manifest: WikiManifest
-    summary: WikiChangeSummary = Field(default_factory=WikiChangeSummary)
-
-
-class NeedsInput(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    status: Literal["needs_input"] = "needs_input"
-    questions: list[Question] = Field(min_length=1, max_length=5)
-
-
-type WikiRunResult = Complete | NeedsInput
-
-
-class WikiRunEvent(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    run_id: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{32}$")]
-    sequence: int = Field(gt=0)
-    timestamp: datetime
-    type: Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,63}$")]
-    node_id: Annotated[str, StringConstraints(min_length=1, max_length=64)] = "root"
-    payload: dict[str, object] = Field(default_factory=dict, max_length=32)
-
-
-class WikiRunRecord(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    schema_version: Literal[1] = 1
-    run_id: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{32}$")]
-    status: Literal["complete", "needs_input", "failed", "cancelled"]
-    operation: Literal["generate", "refresh"]
-    repositories: list[dict[str, object]] = Field(min_length=1, max_length=64)
-    skill: dict[str, str]
-    model: dict[str, object]
-    limits: dict[str, object]
-    explicit_answers: dict[str, str] = Field(default_factory=dict)
-    started_at: datetime
-    completed_at: datetime
-    duration_seconds: float = Field(ge=0)
-    usage: dict[str, object] = Field(default_factory=dict)
-    retry_counters: dict[str, int] = Field(default_factory=dict)
-    publication: dict[str, object] = Field(default_factory=dict)
-    failure_category: str | None = None
-
-
-class WikiRunResourceLimitError(UnexpectedModelBehavior, ValueError):
-    """A bounded Wiki Run stopped before it could produce a terminal result."""
-
-
-class WikiRunRequest(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
-
-    operation: Literal["generate", "refresh"] = "generate"
-    repositories: tuple[RepositorySnapshot, ...] = Field(min_length=1, max_length=64)
-    skill: ProducerSkillVersion
-    model: ModelProviderConfig
-    limits: WikiRunLimits
-    staging: Path
-    publication: Path
-    retain_analysis_workspace: bool = False
-    write_visualization: bool = False
-    explicit_answers: dict[str, str] = Field(default_factory=dict)
-    prior_run_id: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{32}$")] | None = None
-
-    @model_validator(mode="after")
-    def validate_repository_ids(self) -> "WikiRunRequest":
-        _validate_unique_repository_ids(
-            (repository.id for repository in self.repositories),
-            "Repository Snapshot IDs must be unique",
-        )
-        return self
-
-    @classmethod
-    def from_yaml(cls, path: Path) -> "WikiRunRequest":
-        return _wiki_run_request_from_yaml(path)
-
-    @classmethod
-    def from_run_record(
-        cls,
-        record: WikiRunRecord | Path | Mapping[str, object],
-        *,
-        staging: Path,
-        publication: Path,
-        model: Model | str | None = None,
-        explicit_answers: Mapping[str, str] | None = None,
-        retain_analysis_workspace: bool = False,
-    ) -> "WikiRunRequest":
-        """Build a Manual Retry Run from an immutable failed/cancelled run record."""
-        return _manual_retry_request(
-            record,
-            staging=staging,
-            publication=publication,
-            model=model,
-            explicit_answers=explicit_answers,
-            retain_analysis_workspace=retain_analysis_workspace,
-        )
+# Additional private symbols re-exported for test and tooling compatibility.
+from .run_config import (  # noqa: F401
+    _ConfiguredModel as _ConfiguredModel,
+    _ConfiguredRepository as _ConfiguredRepository,
+    _ConfiguredSkill as _ConfiguredSkill,
+    _UniqueKeySafeLoader as _UniqueKeySafeLoader,
+    _WikiRunFileConfig as _WikiRunFileConfig,
+    _coerce_configured_model as _coerce_configured_model,
+    _configured_path as _configured_path,
+    _construct_unique_mapping as _construct_unique_mapping,
+    _reject_yaml_secrets as _reject_yaml_secrets,
+    _resolve_branch as _resolve_branch,
+    _wiki_run_request_from_yaml as _wiki_run_request_from_yaml,
+)
+from .run_models import (  # noqa: F401
+    _validate_ignore_pattern as _validate_ignore_pattern,
+    _validate_unique_repository_ids as _validate_unique_repository_ids,
+)
+from .run_mounts import (  # noqa: F401
+    _check_directory_path as _check_directory_path,
+    _create_directory_path as _create_directory_path,
+    _directory_identity as _directory_identity,
+    _ensure_release_root as _ensure_release_root,
+    _ensure_same_volume_for_publication as _ensure_same_volume_for_publication,
+    _existing_directory as _existing_directory,
+    _legacy_symlink_publication_error as _legacy_symlink_publication_error,
+    _overlaps as _overlaps,
+    _path_is_symlink_or_reparse as _path_is_symlink_or_reparse,
+    _publication_lock_path as _publication_lock_path,
+    _validate_release_root as _validate_release_root,
+)
+from .run_publication import (  # noqa: F401
+    _PublicationMetadata as _PublicationMetadata,
+    _PublicationSwapUnrecoverable as _PublicationSwapUnrecoverable,
+    _PublishedPage as _PublishedPage,
+    _PublishedRepository as _PublishedRepository,
+    _cleanup_release_tree as _cleanup_release_tree,
+    _copy_regular_file_no_follow as _copy_regular_file_no_follow,
+    _copy_wiki_pages as _copy_wiki_pages,
+    _swap_published_directory as _swap_published_directory,
+)
+from .run_records import (  # noqa: F401
+    _EVENT_ENUM_RE as _EVENT_ENUM_RE,
+    _EVENT_SAFE_KEYS as _EVENT_SAFE_KEYS,
+    _RUN_RECORD_MAX_BYTES as _RUN_RECORD_MAX_BYTES,
+    _SECRET_SETTING_MARKERS as _SECRET_SETTING_MARKERS,
+    _exception_chain as _exception_chain,
+    _manual_retry_request as _manual_retry_request,
+    _model_secret_values as _model_secret_values,
+    _record_directory as _record_directory,
+    _record_model as _record_model,
+    _record_settings as _record_settings,
+    _record_usage as _record_usage,
+    _write_json_atomically as _write_json_atomically,
+)
+from .run_skill import (  # noqa: F401
+    _DEFAULT_PRODUCER_SKILL as _DEFAULT_PRODUCER_SKILL,
+    _DEFAULT_PRODUCER_SKILL_DIGEST as _DEFAULT_PRODUCER_SKILL_DIGEST,
+    _REQUIRED_PRODUCER_SKILL_PATHS as _REQUIRED_PRODUCER_SKILL_PATHS,
+    _SKILL_DIRECTORIES as _SKILL_DIRECTORIES,
+    _selected_producer_skill as _selected_producer_skill,
+    _validate_skill_frontmatter as _validate_skill_frontmatter,
+)
+from .run_snapshots import (  # noqa: F401
+    _FULL_COMMIT_RE as _FULL_COMMIT_RE,
+)
+from .run_validation import (  # noqa: F401
+    _CITATION_RE as _CITATION_RE,
+    _MARKDOWN as _MARKDOWN,
+    _TEMPORARY_NAMES as _TEMPORARY_NAMES,
+    _TEMPORARY_SUFFIXES as _TEMPORARY_SUFFIXES,
+    _is_canonical_page_path as _is_canonical_page_path,
+    _is_canonical_relative_path as _is_canonical_relative_path,
+    _is_temporary as _is_temporary,
+    _read_frontmatter as _read_frontmatter,
+    _tree_hashes as _tree_hashes,
+    _validate_citation as _validate_citation,
+)
+from .security import (  # noqa: F401
+    MAX_ANALYZABLE_FILE_BYTES as MAX_ANALYZABLE_FILE_BYTES,
+    canonical_source_path as canonical_source_path,
+    environment_secrets as environment_secrets,
+    git_read as git_read,
+    redact_secrets as redact_secrets,
+)
+
+# Keep os/sys available on this module for older tests that patch via wiki_run.
+import sys as sys  # noqa: F401
 
 
 _RUN_INSTRUCTIONS = """Run the trusted Producer Skill to produce the Wiki.
@@ -505,6 +205,34 @@ genuinely blocking questions.
 """
 
 
+def _default_retry_counters() -> dict[str, int]:
+    return {"provider": 0, "tool": 0, "output": 0}
+
+
+def _default_publication_status() -> dict[str, object]:
+    return {"status": "not_published", "changed": False}
+
+
+@dataclass
+class RunLifecycle:
+    """Mutable per-run state threaded through WikiRunApplication orchestration."""
+
+    publication: Path | None = None
+    skill_path: Path | None = None
+    usage: object | None = None
+    retry_counters: dict[str, int] = field(default_factory=_default_retry_counters)
+    publication_status: dict[str, object] = field(default_factory=_default_publication_status)
+    provider_retry: ProviderRetryState = field(default_factory=ProviderRetryState)
+    analysis_workspace: AnalysisWorkspace | None = None
+    adaptive: AdaptiveOrchestrator | None = None
+    adaptive_usage: dict[str, object] | None = None
+    adaptive_summary_emitted: bool = False
+    publication_lock: Path | None = None
+    visualization: dict[str, object] | None = None
+    visualization_error: str | None = None
+    observer_errors: int = 0
+
+
 def _resource_limit_message(errors: list[str]) -> str | None:
     for error in errors:
         text = error.casefold()
@@ -517,23 +245,6 @@ def _resource_limit_message(errors: list[str]) -> str | None:
         if "static-analysis size limit" in text:
             return "Source citation size quota was exceeded"
     return None
-
-
-def _exception_chain(error: BaseException) -> Iterator[BaseException]:
-    seen: set[int] = set()
-    pending: list[BaseException] = [error]
-    while pending:
-        current = pending.pop()
-        if id(current) in seen:
-            continue
-        seen.add(id(current))
-        yield current
-        if isinstance(current, BaseExceptionGroup):
-            pending.extend(current.exceptions)
-        if current.__cause__ is not None:
-            pending.append(current.__cause__)
-        if current.__context__ is not None:
-            pending.append(current.__context__)
 
 
 def _resource_limit_from_exception(error: BaseException) -> str | None:
@@ -556,409 +267,12 @@ def _resource_limit_from_exception(error: BaseException) -> str | None:
     return None
 
 
-_SECRET_SETTING_MARKERS = (
-    "api_key",
-    "apikey",
-    "authorization",
-    "credential",
-    "password",
-    "secret",
-    "token",
-)
-
-
-def _model_secret_values(settings: Mapping[str, object]) -> tuple[str, ...]:
-    values: set[str] = set()
-
-    def collect(value: object, *, sensitive: bool) -> None:
-        if isinstance(value, Mapping):
-            for key, item in value.items():
-                normalized = str(key).casefold().replace("-", "_")
-                collect(
-                    item,
-                    sensitive=sensitive
-                    or normalized in {"extra_body", "extra_headers"}
-                    or any(marker in normalized for marker in _SECRET_SETTING_MARKERS),
-                )
-        elif isinstance(value, (list, tuple)):
-            for item in value:
-                collect(item, sensitive=sensitive)
-        elif sensitive and isinstance(value, str) and value:
-            values.add(value)
-
-    collect(settings, sensitive=False)
-    values.update(environment_secrets())
-    return tuple(values)
-
-
-def _safe_model_error(error: Exception, settings: Mapping[str, object]) -> str | None:
-    secrets = _model_secret_values(settings)
-    if secrets and any(
-        redact_secrets(str(item), secrets) != str(item) for item in _exception_chain(error)
-    ):
-        return f"{type(error).__name__}: model provider diagnostics withheld"
-    return None
-
-
-_RUN_RECORD_MAX_BYTES = 128 * 1024
-
-
-def _record_settings(settings: Mapping[str, object]) -> dict[str, object]:
-    secrets = _model_secret_values(settings)
-
-    def sanitize(value: object, *, sensitive: bool = False, depth: int = 0) -> object:
-        if sensitive:
-            return "[redacted]"
-        if depth >= 4:
-            return "[truncated]"
-        if isinstance(value, Mapping):
-            result: dict[str, object] = {}
-            for key, item in list(value.items())[:64]:
-                normalized = str(key).casefold().replace("-", "_")
-                child_sensitive = normalized in {"extra_body", "extra_headers"} or any(
-                    marker in normalized for marker in _SECRET_SETTING_MARKERS
-                )
-                result[str(key)[:100]] = sanitize(item, sensitive=child_sensitive, depth=depth + 1)
-            return result
-        if isinstance(value, (list, tuple)):
-            return [sanitize(item, depth=depth + 1) for item in list(value)[:64]]
-        if isinstance(value, str):
-            return redact_secrets(value, secrets)[:2_000]
-        if value is None or isinstance(value, (bool, int, float)):
-            return value
-        return f"<{type(value).__name__}>"
-
-    value = sanitize(settings)
-    result = cast(dict[str, object], value) if isinstance(value, dict) else {}
-    encoded = json.dumps(result, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    if len(encoded) > 16 * 1024:
-        return {"truncated": True}
-    return result
-
-
-def _record_model(model: Model | str, settings: Mapping[str, object]) -> dict[str, object]:
-    secrets = _model_secret_values(settings)
-    if isinstance(model, str):
-        identity = model
-        replayable = True
-    else:
-        try:
-            identity = getattr(model, "model_name", None) or model.__class__.__name__
-        except Exception:
-            identity = model.__class__.__name__
-        replayable = False
-    return {
-        "identity": redact_secrets(str(identity), secrets)[:200],
-        "replayable": replayable,
-        "settings": _record_settings(settings),
-    }
-
-
-def _record_usage(usage: object, extra: Mapping[str, object] | None = None) -> dict[str, object]:
-    input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
-    output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
-    result = {
-        "requests": int(getattr(usage, "requests", 0) or 0),
-        "tool_calls": int(getattr(usage, "tool_calls", 0) or 0),
-        "input_tokens": input_tokens,
-        "cache_write_tokens": int(getattr(usage, "cache_write_tokens", 0) or 0),
-        "cache_read_tokens": int(getattr(usage, "cache_read_tokens", 0) or 0),
-        "output_tokens": output_tokens,
-        "total_tokens": input_tokens + output_tokens,
-    }
-    if extra:
-        for key in ("requests", "tool_calls", "input_tokens", "output_tokens"):
-            extra_value = extra.get(key, 0)
-            increment = extra_value if isinstance(extra_value, (int, float)) else 0
-            base_value = cast(int | float, result[key])
-            result[key] = int(base_value) + int(increment)
-        result["total_tokens"] = int(result["input_tokens"]) + int(result["output_tokens"])
-    return result
-
-
-_EVENT_ENUM_RE = re.compile(r"^[a-z0-9][a-z0-9_.:-]{0,63}$")
-_EVENT_SAFE_KEYS = {
-    "attempt",
-    "changed",
-    "count",
-    "depth",
-    "duration_seconds",
-    "dynamic_workflow",
-    "reviewer",
-    "fanout",
-    "retries",
-    "kind",
-    "node_kind",
-    "reason_code",
-    "status",
-    "total",
-    "wait_seconds",
-    "active",
-    "max_active",
-    "concurrency",
-    "critical_failures",
-    "receipt_bytes",
-    "requests",
-    "tool_calls",
-    "input_tokens",
-    "output_tokens",
-    "total_tokens",
-    "provider_attempts",
-    "provider_possible_duplicates",
-    "fallback",
-    "context_tokens",
-    "warning_tokens",
-    "before_tokens",
-    "target_tokens",
-}
-
-
-def _event_payload(payload: Mapping[str, object]) -> dict[str, object]:
-    """Keep public diagnostics to bounded counters and enum-like labels."""
-    result: dict[str, object] = {}
-    for raw_key, value in list(payload.items())[:32]:
-        key = str(raw_key)[:64]
-        if key not in _EVENT_SAFE_KEYS:
-            continue
-        if isinstance(value, bool) or isinstance(value, (int, float)):
-            result[key] = value
-        elif isinstance(value, str) and _EVENT_ENUM_RE.fullmatch(value):
-            result[key] = value
-    return result
-
-
-def _record_directory(publication: Path) -> Path:
-    return publication.parent / f".{publication.name}.runs"
-
-
-def load_run_record(path: Path) -> WikiRunRecord:
-    """Load a secret-free Wiki Run Record from disk."""
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise operator_error("Wiki Run Record is not readable JSON", error) from error
-    if not isinstance(payload, dict):
-        raise ValueError("Wiki Run Record must be a JSON object")
-    try:
-        return WikiRunRecord.model_validate(payload)
-    except ValidationError as error:
-        raise operator_error("Wiki Run Record is invalid", error) from error
-
-
-def _manual_retry_request(
-    record: WikiRunRecord | Path | Mapping[str, object],
-    *,
-    staging: Path,
-    publication: Path,
-    model: Model | str | None = None,
-    explicit_answers: Mapping[str, str] | None = None,
-    retain_analysis_workspace: bool = False,
-) -> WikiRunRequest:
-    """Create a fresh Manual Retry Run request from a terminal run record."""
-    if isinstance(record, Path):
-        loaded = load_run_record(record)
-    elif isinstance(record, WikiRunRecord):
-        loaded = record
-    else:
-        try:
-            loaded = WikiRunRecord.model_validate(record)
-        except ValidationError as error:
-            raise operator_error("Wiki Run Record is invalid", error) from error
-    if loaded.status not in {"failed", "cancelled"}:
-        raise ValueError("Manual Retry Run requires a failed or cancelled Wiki Run Record")
-    if not loaded.model.get("replayable", False) and model is None:
-        raise ValueError(
-            "Manual Retry Run requires an explicit model because the recorded model is "
-            "not replayable across processes"
-        )
-    repositories: list[RepositorySnapshot] = []
-    for item in loaded.repositories:
-        repo_id = str(item.get("id") or "repo")
-        path = Path(str(item["path"]))
-        revision = str(item["revision"])
-        ignore = tuple(str(pattern) for pattern in cast(list[object], item.get("ignore") or ()))
-        if "effective_ignore" not in item:
-            raise ValueError(
-                "Manual Retry Run requires frozen effective_ignore for each repository; "
-                "create a new Wiki Run if the record predates Effective Source Ignores"
-            )
-        frozen_effective = tuple(
-            str(pattern) for pattern in cast(list[object], item.get("effective_ignore") or ())
-        )
-        apply_defaults = bool(item.get("apply_default_source_ignores", True))
-        if not path.exists():
-            raise ValueError(f"Frozen repository path is no longer available: {path}")
-        # Fail closed if the exact revision cannot be resolved.
-        try:
-            resolved = git_read(path, "rev-parse", "--verify", f"{revision}^{{commit}}").strip()
-        except Exception as error:
-            raise operator_error(
-                f"Frozen repository revision is no longer available ({revision})",
-                error,
-            ) from error
-        if resolved.casefold() != revision.casefold():
-            raise ValueError(f"Frozen repository revision is no longer available: {revision}")
-        repositories.append(
-            RepositorySnapshot(
-                id=repo_id,
-                path=path,
-                revision=revision,
-                ignore=ignore,
-                apply_default_source_ignores=apply_defaults,
-                frozen_effective_ignore=frozen_effective,
-            )
-        )
-    skill_path = Path(str(loaded.skill["path"]))
-    skill_digest = str(loaded.skill["digest"])
-    if not skill_path.exists():
-        raise ValueError(f"Frozen Skill path is no longer available: {skill_path}")
-    try:
-        skill = ProducerSkillVersion.from_directory(skill_path)
-    except Exception as error:
-        raise operator_error(
-            f"Frozen Skill path is invalid: {skill_path}",
-            error,
-        ) from error
-    if skill.digest != skill_digest:
-        raise ValueError(
-            "Frozen Skill digest no longer matches the recorded Skill: "
-            f"expected {skill_digest}, found {skill.digest}"
-        )
-    try:
-        limits = WikiRunLimits.model_validate(loaded.limits)
-    except ValidationError as error:
-        raise operator_error("Manual Retry Run limits are invalid", error) from error
-    try:
-        if model is None:
-            model_identity = str(loaded.model["identity"])
-            settings = cast(dict[str, object], loaded.model.get("settings") or {})
-            model_config = ModelProviderConfig(
-                model=model_identity, settings=ModelSettings(**settings)
-            )
-        else:
-            settings = cast(dict[str, object], loaded.model.get("settings") or {})
-            model_config = ModelProviderConfig(model=model, settings=ModelSettings(**settings))
-    except Exception as error:
-        raise operator_error("Manual Retry Run model settings are invalid", error) from error
-    answers = dict(loaded.explicit_answers)
-    if explicit_answers is not None:
-        answers.update({str(key): str(value) for key, value in explicit_answers.items()})
-    return WikiRunRequest(
-        operation=loaded.operation,
-        repositories=tuple(repositories),
-        skill=skill,
-        model=model_config,
-        limits=limits,
-        staging=staging,
-        publication=publication,
-        retain_analysis_workspace=retain_analysis_workspace,
-        explicit_answers=answers,
-        prior_run_id=loaded.run_id,
-    )
-
-
-def _record_publication_path(value: Path) -> Path | None:
-    try:
-        candidate = value.absolute()
-        if not candidate.name:
-            return None
-        return candidate.parent.resolve(strict=False) / candidate.name
-    except OSError, RuntimeError, ValueError:
-        return None
-
-
-def _write_json_atomically(path: Path, data: bytes, *, max_bytes: int, label: str) -> None:
-    if len(data) > max_bytes:
-        raise ValueError(f"{label} exceeds the configured byte limit")
-    _check_directory_path(path.parent, f"{label} parent")
-    _create_directory_path(path.parent, f"{label} parent")
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(temporary, flags, 0o600)
-        try:
-            view = memoryview(data)
-            while view:
-                view = view[os.write(descriptor, view) :]
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        if os.path.lexists(path):
-            raise ValueError(f"{label} already exists")
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _write_run_record(
-    request: WikiRunRequest,
-    *,
-    run_id: str,
-    publication: Path,
-    status: Literal["complete", "needs_input", "failed", "cancelled"],
-    started_at: datetime,
-    completed_at: datetime,
-    usage: object,
-    retry_counters: Mapping[str, int],
-    publication_status: dict[str, object],
-    failure_category: str | None,
-    skill_path: Path | None = None,
-    adaptive_usage: Mapping[str, object] | None = None,
-) -> None:
-    secrets = _model_secret_values(request.model.settings)
-    repositories: list[dict[str, object]] = []
-    for repository in request.repositories:
-        path = redact_secrets(str(repository.path.resolve()), secrets)
-        effective = repository.effective_source_ignores()
-        item: dict[str, object] = {
-            "id": repository.id,
-            "path": path[:1_024],
-            "revision": repository.revision,
-            "apply_default_source_ignores": repository.apply_default_source_ignores,
-            "ignore": [redact_secrets(pattern, secrets)[:500] for pattern in repository.ignore],
-            "effective_ignore": [redact_secrets(pattern, secrets)[:500] for pattern in effective],
-        }
-        if len(path) > 1_024:
-            item["path_truncated"] = True
-        repositories.append(item)
-    skill = redact_secrets(str(skill_path or request.skill.path.resolve()), secrets)
-    answers = {
-        redact_secrets(str(key), secrets)[:128]: redact_secrets(str(value), secrets)[:500]
-        for key, value in list(request.explicit_answers.items())[:32]
-    }
-    record = WikiRunRecord(
-        run_id=run_id,
-        status=status,
-        operation=request.operation,
-        repositories=repositories,
-        skill={"path": skill[:1_024], "digest": request.skill.digest},
-        model=_record_model(request.model.model, request.model.settings),
-        limits=request.limits.model_dump(mode="json"),
-        explicit_answers=answers,
-        started_at=started_at,
-        completed_at=completed_at,
-        duration_seconds=max(0.0, (completed_at - started_at).total_seconds()),
-        usage=_record_usage(usage, adaptive_usage),
-        retry_counters=dict(retry_counters),
-        publication=publication_status,
-        failure_category=failure_category,
-    )
-    encoded = json.dumps(
-        record.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-    _write_json_atomically(
-        _record_directory(publication) / f"{run_id}.json",
-        encoded,
-        max_bytes=_RUN_RECORD_MAX_BYTES,
-        label="Wiki Run Record",
-    )
-
-
 class WikiRunApplication:
     def __init__(self, observer: Callable[[WikiRunEvent], object] | None = None) -> None:
         self._observer = observer
         self.last_visualization: dict[str, object] | None = None
         self.last_visualization_error: str | None = None
+        self.last_observer_errors: int = 0
 
     async def run(self, request: WikiRunRequest) -> WikiRunResult:
         run_id = os.urandom(16).hex()
@@ -966,14 +280,11 @@ class WikiRunApplication:
         started_at = datetime.now(UTC)
         self.last_visualization = None
         self.last_visualization_error = None
-        lifecycle: dict[str, object] = {
-            "publication": _record_publication_path(request.publication),
-            "skill_path": request.skill.path.absolute(),
-            "usage": None,
-            "retry_counters": {"provider": 0, "tool": 0, "output": 0},
-            "publication_status": {"status": "not_published", "changed": False},
-            "provider_retry": ProviderRetryState(),
-        }
+        self.last_observer_errors = 0
+        lifecycle = RunLifecycle(
+            publication=_record_publication_path(request.publication),
+            skill_path=request.skill.path.absolute(),
+        )
 
         def emit(
             event_type: str,
@@ -998,23 +309,22 @@ class WikiRunApplication:
                 try:
                     self._observer(event)
                 except Exception:
-                    pass
+                    # Observer failures must not change the run result; count only.
+                    lifecycle.observer_errors += 1
 
         def capture_adaptive_usage() -> None:
-            orchestration = lifecycle.get("adaptive")
-            if not isinstance(orchestration, AdaptiveOrchestrator):
+            orchestration = lifecycle.adaptive
+            if orchestration is None:
                 return
-            lifecycle["adaptive_usage"] = dict(orchestration.metrics.usage)
+            lifecycle.adaptive_usage = dict(orchestration.metrics.usage)
             if orchestration.policy.enabled:
-                cast(dict[str, int], lifecycle["retry_counters"])["child"] = (
-                    orchestration.metrics.retries
-                )
-            if orchestration.policy.enabled and not lifecycle.get("adaptive_summary_emitted"):
+                lifecycle.retry_counters["child"] = orchestration.metrics.retries
+            if orchestration.policy.enabled and not lifecycle.adaptive_summary_emitted:
                 emit(
                     "adaptive_summary",
                     {**orchestration.event_payload(), **orchestration.metrics.usage},
                 )
-                lifecycle["adaptive_summary_emitted"] = True
+                lifecycle.adaptive_summary_emitted = True
 
         emit("run_created")
         workspace: AnalysisWorkspace | None = None
@@ -1025,15 +335,13 @@ class WikiRunApplication:
                 retain=request.retain_analysis_workspace,
             )
             workspace.register_node("root", "root")
-            lifecycle["analysis_workspace"] = workspace
+            lifecycle.analysis_workspace = workspace
             result = await self._run_impl(request, run_id=run_id, emit=emit, lifecycle=lifecycle)
             capture_adaptive_usage()
-            visualization = lifecycle.get("visualization")
-            if isinstance(visualization, dict):
-                self.last_visualization = cast(dict[str, object], visualization)
-            visualization_error = lifecycle.get("visualization_error")
-            if isinstance(visualization_error, str):
-                self.last_visualization_error = visualization_error
+            if lifecycle.visualization is not None:
+                self.last_visualization = lifecycle.visualization
+            if lifecycle.visualization_error is not None:
+                self.last_visualization_error = lifecycle.visualization_error
             status: Literal["complete", "needs_input"] = (
                 "complete" if isinstance(result, Complete) else "needs_input"
             )
@@ -1053,9 +361,9 @@ class WikiRunApplication:
             return result
         except asyncio.CancelledError:
             capture_adaptive_usage()
-            lifecycle["retry_counters"] = merge_retry_counters(
-                cast(Mapping[str, int], lifecycle["retry_counters"]),
-                cast(ProviderRetryState, lifecycle["provider_retry"]),
+            lifecycle.retry_counters = merge_retry_counters(
+                lifecycle.retry_counters,
+                lifecycle.provider_retry,
             )
             emit("run_cancelled")
             if not self._finalize_record(
@@ -1070,14 +378,14 @@ class WikiRunApplication:
             raise
         except Exception as error:
             capture_adaptive_usage()
-            lifecycle["retry_counters"] = merge_retry_counters(
-                cast(Mapping[str, int], lifecycle["retry_counters"]),
-                cast(ProviderRetryState, lifecycle["provider_retry"]),
+            lifecycle.retry_counters = merge_retry_counters(
+                lifecycle.retry_counters,
+                lifecycle.provider_retry,
             )
-            if cast(ProviderRetryState, lifecycle["provider_retry"]).retries:
+            if lifecycle.provider_retry.retries:
                 emit(
                     "provider_retry_exhausted",
-                    cast(ProviderRetryState, lifecycle["provider_retry"]).as_counters(),
+                    lifecycle.provider_retry.as_counters(),
                 )
             emit("run_failed")
             if not self._finalize_record(
@@ -1091,6 +399,7 @@ class WikiRunApplication:
                 emit("run_record_failed", {"reason_code": "write_failed"})
             raise
         finally:
+            self.last_observer_errors = lifecycle.observer_errors
             if workspace is not None:
                 workspace.cleanup()
 
@@ -1100,34 +409,33 @@ class WikiRunApplication:
         *,
         run_id: str,
         started_at: datetime,
-        lifecycle: Mapping[str, object],
+        lifecycle: RunLifecycle,
         status: Literal["complete", "needs_input", "failed", "cancelled"],
         failure_category: str | None,
     ) -> bool:
-        publication = lifecycle.get("publication")
-        if not isinstance(publication, Path):
+        publication = lifecycle.publication
+        if publication is None:
             return False
-        adaptive_usage = lifecycle.get("adaptive_usage")
-        if adaptive_usage is None:
-            orchestration = lifecycle.get("adaptive")
-            metrics = getattr(orchestration, "metrics", None)
-            usage = getattr(metrics, "usage", None)
+        adaptive_usage = lifecycle.adaptive_usage
+        if adaptive_usage is None and lifecycle.adaptive is not None:
+            usage = lifecycle.adaptive.metrics.usage
             if isinstance(usage, Mapping):
                 adaptive_usage = dict(usage)
         try:
-            _write_run_record(
+            # Call via the defining module so tests can monkeypatch run_records._write_run_record.
+            run_records._write_run_record(
                 request,
                 run_id=run_id,
                 publication=publication,
                 status=status,
                 started_at=started_at,
                 completed_at=datetime.now(UTC),
-                usage=lifecycle.get("usage"),
-                retry_counters=cast(Mapping[str, int], lifecycle.get("retry_counters", {})),
-                publication_status=cast(dict[str, object], lifecycle["publication_status"]),
+                usage=lifecycle.usage,
+                retry_counters=lifecycle.retry_counters,
+                publication_status=lifecycle.publication_status,
                 failure_category=failure_category,
-                skill_path=cast(Path | None, lifecycle.get("skill_path")),
-                adaptive_usage=cast(Mapping[str, object] | None, adaptive_usage),
+                skill_path=lifecycle.skill_path,
+                adaptive_usage=adaptive_usage,
             )
             return True
         except Exception:
@@ -1140,13 +448,13 @@ class WikiRunApplication:
         *,
         run_id: str,
         emit: Callable[..., None],
-        lifecycle: dict[str, object],
+        lifecycle: RunLifecycle,
     ) -> WikiRunResult:
         checkouts, skill_input, staging, publication = _prepare_mounts(request)
-        lifecycle["publication"] = publication
-        lifecycle["skill_path"] = skill_input
+        lifecycle.publication = publication
+        lifecycle.skill_path = skill_input
         publication_lock = _acquire_publication_lock(publication)
-        lifecycle["publication_lock"] = publication_lock
+        lifecycle.publication_lock = publication_lock
         try:
             return await self._run_prepared(
                 request,
@@ -1167,7 +475,7 @@ class WikiRunApplication:
         *,
         run_id: str,
         emit: Callable[..., None],
-        lifecycle: dict[str, object],
+        lifecycle: RunLifecycle,
         checkouts: tuple[Path, ...],
         skill_input: Path,
         staging: Path,
@@ -1204,11 +512,17 @@ class WikiRunApplication:
                 sources[repository.id] = target
             try:
                 _write_source_inventory(source_mount, sources)
-            except Exception:
+            except Exception as inventory_error:
                 # Inventory is an optional accelerator; never change Snapshot membership.
-                emit("source_inventory_skipped", {"reason_code": "generation_failed"})
-            workspace = lifecycle.get("analysis_workspace")
-            if isinstance(workspace, AnalysisWorkspace):
+                emit(
+                    "source_inventory_skipped",
+                    {
+                        "reason_code": "generation_failed",
+                        "error_type": type(inventory_error).__name__,
+                    },
+                )
+            workspace = lifecycle.analysis_workspace
+            if workspace is not None:
                 workspace.configure_sources(
                     {
                         repository.id: (repository.revision, sources[repository.id])
@@ -1219,7 +533,7 @@ class WikiRunApplication:
             shutil.copytree(skill_input, skill, symlinks=True)
             _, skill_digest = _validate_producer_skill(skill)
             if skill_digest != request.skill.digest:
-                raise ValueError(
+                raise HostValidationError(
                     "Selected Skill Version changed while it was being frozen: "
                     f"expected {request.skill.digest}, found {skill_digest}"
                 )
@@ -1232,7 +546,7 @@ class WikiRunApplication:
                 source_bytes=used_bytes,
                 limits=request.limits,
             )
-            provider_state = cast(ProviderRetryState, lifecycle["provider_retry"])
+            provider_state = lifecycle.provider_retry
             wall_deadline = time.monotonic() + request.limits.wall_clock_timeout_seconds
             resolved_model = prepare_model_with_provider_retry(
                 request.model.model,
@@ -1240,6 +554,8 @@ class WikiRunApplication:
                 emit=emit,
                 wall_clock_deadline=wall_deadline,
             )
+            if workspace is None:
+                raise RuntimeError("Analysis Workspace was not initialized for this Wiki Run")
             agent, orchestration = build_root_agent(
                 model=resolved_model,
                 settings=settings,
@@ -1248,7 +564,7 @@ class WikiRunApplication:
                 source_mount=source_mount,
                 skill_mount=skill,
                 staging=staging,
-                workspace=cast(AnalysisWorkspace, workspace),
+                workspace=workspace,
                 run_id=run_id,
                 limits=request.limits,
                 adaptive=adaptive,
@@ -1256,8 +572,8 @@ class WikiRunApplication:
                 emit=emit,
             )
             run_usage = RunUsage()
-            lifecycle["usage"] = run_usage
-            lifecycle["adaptive"] = orchestration
+            lifecycle.usage = run_usage
+            lifecycle.adaptive = orchestration
 
             @agent.output_validator
             def validate_output(output: WikiRunResult) -> WikiRunResult:
@@ -1265,7 +581,7 @@ class WikiRunApplication:
                     emit("validation_started")
                     orchestration.validate_root_completion()
                     if output.summary != WikiChangeSummary():
-                        cast(dict[str, int], lifecycle["retry_counters"])["output"] += 1
+                        lifecycle.retry_counters["output"] += 1
                         raise ModelRetry(
                             "Complete.summary is host-owned and must be omitted or empty"
                         )
@@ -1273,7 +589,7 @@ class WikiRunApplication:
                     if errors:
                         if limit_error := _resource_limit_message(errors):
                             raise WikiRunResourceLimitError(limit_error)
-                        cast(dict[str, int], lifecycle["retry_counters"])["output"] += 1
+                        lifecycle.retry_counters["output"] += 1
                         raise ModelRetry(
                             "Staged Wiki validation failed:\n- " + "\n- ".join(errors[:20])
                         )
@@ -1296,10 +612,10 @@ class WikiRunApplication:
                     if safe_error := _safe_model_error(error, request.model.settings):
                         raise RuntimeError(safe_error) from None
                     raise
-            lifecycle["usage"] = result.usage
-            lifecycle["retry_counters"] = merge_retry_counters(
-                cast(Mapping[str, int], lifecycle["retry_counters"]),
-                cast(ProviderRetryState, lifecycle["provider_retry"]),
+            lifecycle.usage = result.usage
+            lifecycle.retry_counters = merge_retry_counters(
+                lifecycle.retry_counters,
+                lifecycle.provider_retry,
             )
             if isinstance(result.output, Complete):
                 new_hashes = _hashes(staging, result.output.manifest.pages)
@@ -1334,7 +650,7 @@ class WikiRunApplication:
                             from .wiki_visualization import generate_wiki_visualization
 
                             visualization = generate_wiki_visualization(publication)
-                            lifecycle["visualization"] = {
+                            lifecycle.visualization = {
                                 "output": str(visualization.output_dir),
                                 "index": str(visualization.index_path),
                                 "graph": str(visualization.graph_path),
@@ -1350,1376 +666,19 @@ class WikiRunApplication:
                                 },
                             )
                         except Exception as error:
-                            lifecycle["visualization_error"] = type(error).__name__
+                            lifecycle.visualization_error = type(error).__name__
                             emit(
                                 "visualization_failed",
                                 {"reason_code": type(error).__name__},
                             )
-                    lifecycle["publication_status"] = {
+                    lifecycle.publication_status = {
                         "status": "published",
                         "changed": True,
                     }
                 else:
-                    lifecycle["publication_status"] = {
+                    lifecycle.publication_status = {
                         "status": "unchanged",
                         "changed": False,
                     }
                 return output
             return result.output
-
-
-_FULL_COMMIT_RE = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
-
-
-def _write_source_inventory(source_mount: Path, sources: Mapping[str, Path]) -> Path:
-    """Write a Host-owned inventory under the source mount for Agent discovery."""
-    entries: list[dict[str, object]] = []
-    for repository_id, root in sorted(sources.items()):
-        files: list[str] = []
-        for path in sorted(root.rglob("*")):
-            if not path.is_file():
-                continue
-            relative = path.relative_to(root).as_posix()
-            if relative.startswith(".okf-wiki-host/"):
-                continue
-            files.append(relative)
-        entries.append(
-            {
-                "repository_id": repository_id,
-                "file_count": len(files),
-                "files": files[:2_000],
-                "truncated": len(files) > 2_000,
-            }
-        )
-    host_dir = source_mount / ".okf-wiki-host"
-    host_dir.mkdir(parents=True, exist_ok=True)
-    inventory_path = host_dir / "inventory.json"
-    inventory_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "role": "source_inventory",
-                "accelerator_only": True,
-                "repositories": entries,
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    return inventory_path
-
-
-def _materialize_repository_snapshot(
-    checkout: Path,
-    revision: str,
-    target: Path,
-    limits: WikiRunLimits,
-    *,
-    ignore: tuple[str, ...],
-    used_files: int,
-    used_bytes: int,
-) -> tuple[int, int]:
-    if _FULL_COMMIT_RE.fullmatch(revision) is None:
-        raise ValueError("Repository Snapshot revision must be a complete Git commit ID")
-    if git_read(checkout, "rev-parse", "--is-inside-work-tree").strip() != "true":
-        raise ValueError("Repository Snapshot must be a Git working tree")
-    top = Path(git_read(checkout, "rev-parse", "--show-toplevel").strip()).resolve()
-    if top != checkout:
-        raise ValueError("Repository Snapshot path must be the Git working-tree root")
-    resolved = git_read(checkout, "rev-parse", "--verify", f"{revision}^{{commit}}").strip()
-    if resolved.casefold() != revision.casefold():
-        raise ValueError("Repository Snapshot revision must resolve to the exact commit")
-    config_keys = git_read_bytes(
-        checkout, "config", "--includes", "--name-only", "--null", "--list"
-    ).split(b"\0")
-    if any(
-        key.lower().startswith(b"filter.")
-        and key.lower().rsplit(b".", 1)[-1] in {b"clean", b"smudge", b"process"}
-        for key in config_keys
-    ):
-        raise ValueError("Repository Snapshot checkout must not configure executable Git filters")
-    if git_read(checkout, "status", "--porcelain=v1", "--untracked-files=all").strip():
-        raise ValueError("Repository Snapshot checkout must be clean")
-
-    records = git_read_bytes(checkout, "ls-tree", "-r", "-l", "--full-tree", "-z", resolved).split(
-        b"\0"
-    )
-    blobs: list[tuple[bytes, bytes]] = []
-    for record in records:
-        if not record:
-            continue
-        metadata, raw_path = record.split(b"\t", 1)
-        _mode, object_type, object_id, raw_size = metadata.split()
-        relative = os.fsdecode(raw_path)
-        if any(fnmatchcase(relative, pattern) for pattern in ignore):
-            continue
-        if object_type != b"blob":
-            raise ValueError("Repository Snapshot contains an unsupported non-file tree entry")
-        size = int(raw_size)
-        if size > limits.source_file_bytes_limit:
-            raise ValueError("Repository Snapshot source file exceeds the configured byte limit")
-        used_bytes += size
-        if used_bytes > limits.source_total_bytes_limit:
-            raise ValueError("Repository Snapshot Set exceeds the configured total byte limit")
-        blobs.append((object_id, raw_path))
-        used_files += 1
-        if used_files > limits.source_files_limit:
-            raise ValueError("Repository Snapshot Set exceeds the configured file count limit")
-
-    target.mkdir()
-    for object_id, raw_path in blobs:
-        parts = raw_path.split(b"/")
-        if any(part in {b"", b".", b".."} for part in parts):
-            raise ValueError("Repository Snapshot contains an unsafe path")
-        destination = target.joinpath(*(os.fsdecode(part) for part in parts))
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        # Repository symlink blobs stay inert, so materialization cannot escape the snapshot.
-        # ponytail: one safe subprocess per blob; use `cat-file --batch` if profiling demands it.
-        destination.write_bytes(git_read_bytes(checkout, "cat-file", "blob", object_id.decode()))
-    return used_files, used_bytes
-
-
-# Windows FILE_ATTRIBUTE_REPARSE_POINT — junctions and other reparse roots.
-_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
-
-
-def _require_supported_runtime() -> None:
-    """Portable capability check for Host staging/publication (ADR 0017).
-
-    Wiki Run no longer requires Linux-only ``dir_fd`` / ``/proc/self/fd``. Hosts must
-    support absolute paths, exclusive file create (``O_CREAT|O_EXCL``), and same-volume
-    directory rename (``os.rename`` / ``os.replace``). Stricter openat backends are
-    optional, not baseline.
-    """
-    missing: list[str] = []
-    for name in ("rename", "replace", "mkdir", "fsync"):
-        if not hasattr(os, name):
-            missing.append(name)
-    if not hasattr(os, "O_CREAT") or not hasattr(os, "O_EXCL"):
-        missing.append("O_CREAT|O_EXCL")
-    if missing:
-        raise ValueError(
-            "okf-wiki Wiki Run requires portable Host filesystem primitives for atomic "
-            f"publication ({', '.join(missing)} missing on platform={sys.platform!r})."
-        )
-
-
-def _is_disallowed_path_component(info: os.stat_result | object) -> bool:
-    """True for symlinks and detectable host reparse points (e.g. Windows junctions)."""
-    mode = getattr(info, "st_mode", 0)
-    if stat.S_ISLNK(mode):
-        return True
-    attrs = getattr(info, "st_file_attributes", 0) or 0
-    return bool(attrs & _FILE_ATTRIBUTE_REPARSE_POINT)
-
-
-def _legacy_symlink_publication_error(path: Path, *, for_refresh: bool = False) -> ValueError:
-    """Operator-facing rejection of the retired symlink Published Wiki layout."""
-    if for_refresh:
-        return ValueError(
-            "Refresh requires an existing Host-owned real-directory Published Wiki; "
-            f"found a symbolic link or host reparse point at {path}. Delete or clear the "
-            "legacy symlink layout and run a full Generate again (automatic migration is "
-            "not supported)."
-        )
-    return ValueError(
-        "Published Wiki path is a symbolic link or host reparse point (legacy producer "
-        "layout). okf-wiki no longer migrates symlink publications automatically. "
-        f"Delete or clear {path} and run a full Generate again."
-    )
-
-
-def _prepare_mounts(request: WikiRunRequest) -> tuple[tuple[Path, ...], Path, Path, Path]:
-    _require_supported_runtime()
-    sources = tuple(
-        _existing_directory(repository.path, f"Repository Snapshot {repository.id}")
-        for repository in request.repositories
-    )
-    skill = _selected_producer_skill(request.skill)
-
-    for index, source in enumerate(sources):
-        if any(_overlaps(source, other) for other in sources[index + 1 :]):
-            raise ValueError("Repository Snapshots must not overlap")
-
-    staging_input = request.staging.absolute()
-    _check_directory_path(staging_input, "Staging Wiki")
-    staging = staging_input.resolve(strict=False)
-    if any(
-        _overlaps(source, skill) or _overlaps(source, staging) for source in sources
-    ) or _overlaps(skill, staging):
-        raise ValueError("Repository Snapshots, Producer Skill, and Staging Wiki must not overlap")
-    _create_directory_path(staging_input, "Staging Wiki")
-    staging = staging_input.resolve(strict=True)
-    if any(_overlaps(source, staging) for source in sources) or _overlaps(skill, staging):
-        raise ValueError("Repository Snapshots, Producer Skill, and Staging Wiki must not overlap")
-    if any(staging.iterdir()):
-        raise ValueError("Staging Wiki must be empty")
-    publication_input = request.publication.absolute()
-    if publication_input.name in {"", ".", ".."}:
-        raise ValueError("Published Wiki path must name a directory")
-    publication_parent = publication_input.parent
-    _check_directory_path(publication_parent, "Published Wiki parent")
-    _create_directory_path(publication_parent, "Published Wiki parent")
-    publication = publication_parent.resolve(strict=True) / publication_input.name
-    if (
-        any(_overlaps(source, publication) for source in sources)
-        or _overlaps(skill, publication)
-        or _overlaps(staging, publication)
-    ):
-        raise ValueError(
-            "Repository Snapshots, Producer Skill, Staging Wiki, and Published Wiki must not overlap"
-        )
-    if publication.is_symlink() or (
-        os.path.lexists(publication) and _path_is_symlink_or_reparse(publication)
-    ):
-        raise _legacy_symlink_publication_error(publication)
-    if os.path.lexists(publication) and not publication.is_dir():
-        raise ValueError(
-            "Published Wiki path must be absent or a regular directory "
-            f"(found a non-directory at {publication})"
-        )
-    releases = publication.parent / f".{publication.name}.releases"
-    _validate_release_root(releases)
-    _ensure_same_volume_for_publication(publication, releases)
-    return sources, skill, staging, publication
-
-
-def _existing_directory(path: Path, label: str) -> Path:
-    """Resolve an existing directory after portable symlink/reparse rejection."""
-    candidate = path if path.is_absolute() else path.absolute()
-    _check_directory_path(candidate, label)
-    try:
-        info = os.lstat(candidate)
-    except FileNotFoundError as error:
-        raise ValueError(f"{label} must be an existing directory") from error
-    except OSError as error:
-        raise operator_error(f"{label} path is not accessible", error) from error
-    if _is_disallowed_path_component(info):
-        raise ValueError(f"{label} path must not contain symlinks or host reparse points")
-    if not stat.S_ISDIR(info.st_mode):
-        raise ValueError(f"{label} must be an existing directory")
-    return candidate.resolve(strict=True)
-
-
-def _path_is_symlink_or_reparse(path: Path) -> bool:
-    try:
-        return _is_disallowed_path_component(os.lstat(path))
-    except OSError:
-        return path.is_symlink()
-
-
-def _check_directory_path(path: Path, label: str) -> None:
-    if not path.is_absolute() or path.name in {"", ".", ".."} or ".." in path.parts:
-        raise ValueError(f"{label} path must be a canonical directory path")
-    current = Path(path.anchor)
-    for part in path.parts[1:]:
-        current /= part
-        try:
-            info = os.lstat(current)
-        except FileNotFoundError:
-            continue
-        except OSError as error:
-            raise operator_error(f"{label} path is not accessible", error) from error
-        if _is_disallowed_path_component(info):
-            raise ValueError(f"{label} path must not contain symlinks or host reparse points")
-        if not stat.S_ISDIR(info.st_mode):
-            raise ValueError(f"{label} path must contain only directories")
-
-
-def _create_directory_path(path: Path, label: str) -> None:
-    """Create a directory tree with portable symlink/reparse rejection (no dir_fd)."""
-    if not path.is_absolute() or path.name in {"", ".", ".."} or ".." in path.parts:
-        raise ValueError(f"{label} path must be a canonical directory path")
-    current = Path(path.anchor)
-    try:
-        anchor_info = os.lstat(current)
-    except OSError as error:
-        raise operator_error(f"{label} path is not accessible", error) from error
-    if _is_disallowed_path_component(anchor_info) or not stat.S_ISDIR(anchor_info.st_mode):
-        raise ValueError(
-            f"{label} path must not contain symlinks, host reparse points, or non-directories"
-        )
-    for part in path.parts[1:]:
-        current = current / part
-        try:
-            info = os.lstat(current)
-        except FileNotFoundError:
-            try:
-                os.mkdir(current)
-            except FileExistsError:
-                pass
-            except OSError as error:
-                raise operator_error(f"{label} directory could not be created", error) from error
-            try:
-                info = os.lstat(current)
-            except OSError as error:
-                raise operator_error(
-                    f"{label} path must not contain symlinks, host reparse points, "
-                    "or non-directories",
-                    error,
-                ) from error
-        except OSError as error:
-            raise operator_error(
-                f"{label} path must not contain symlinks, host reparse points, or non-directories",
-                error,
-            ) from error
-        if _is_disallowed_path_component(info):
-            raise ValueError(
-                f"{label} path must not contain symlinks, host reparse points, or non-directories"
-            )
-        if not stat.S_ISDIR(info.st_mode):
-            raise ValueError(
-                f"{label} path must not contain symlinks, host reparse points, or non-directories"
-            )
-    try:
-        _check_directory_path(path, label)
-        final = os.lstat(path)
-    except ValueError:
-        raise
-    except OSError as error:
-        raise operator_error(f"{label} path is not accessible", error) from error
-    if _is_disallowed_path_component(final) or not stat.S_ISDIR(final.st_mode):
-        raise ValueError(f"{label} path changed during creation")
-
-
-def _overlaps(left: Path, right: Path) -> bool:
-    return left == right or left.is_relative_to(right) or right.is_relative_to(left)
-
-
-def _validate_release_root(path: Path) -> None:
-    if os.path.lexists(path) and (_path_is_symlink_or_reparse(path) or not path.is_dir()):
-        raise ValueError("Published Wiki release directory must be a regular directory")
-
-
-def _directory_identity(path: Path) -> tuple[int, int] | None:
-    try:
-        info = os.lstat(path)
-    except OSError:
-        return None
-    if not stat.S_ISDIR(info.st_mode) or _is_disallowed_path_component(info):
-        return None
-    return (info.st_dev, info.st_ino)
-
-
-def _ensure_same_volume_for_publication(publication: Path, releases: Path) -> None:
-    """Fail closed when Published Wiki and releases root cannot share a rename volume."""
-    parent = publication.parent
-    try:
-        parent_info = os.stat(parent)
-    except OSError as error:
-        raise operator_error("Published Wiki parent is not accessible", error) from error
-    if os.path.lexists(releases):
-        try:
-            release_info = os.lstat(releases)
-        except OSError as error:
-            raise operator_error(
-                "Published Wiki release directory is not accessible", error
-            ) from error
-        if _is_disallowed_path_component(release_info) or not stat.S_ISDIR(release_info.st_mode):
-            raise ValueError("Published Wiki release directory must be a regular directory")
-        if release_info.st_dev != parent_info.st_dev:
-            raise ValueError(
-                "Published Wiki path and release directory must share the same volume "
-                f"for atomic directory-rename publication (publication parent={parent}, "
-                f"releases={releases}). Move both onto one filesystem; copy fallback is not "
-                "supported."
-            )
-    if os.path.lexists(publication) and publication.is_dir() and not publication.is_symlink():
-        try:
-            publication_info = os.lstat(publication)
-        except OSError as error:
-            raise operator_error("Published Wiki path is not accessible", error) from error
-        if publication_info.st_dev != parent_info.st_dev:
-            raise ValueError(
-                "Published Wiki path and its parent must share the same volume "
-                f"for atomic directory-rename publication (path={publication})."
-            )
-
-
-def _ensure_release_root(path: Path) -> Path:
-    _validate_release_root(path)
-    try:
-        os.mkdir(path)
-    except FileExistsError:
-        pass
-    except OSError as error:
-        raise operator_error(
-            "Published Wiki release directory could not be created", error
-        ) from error
-    _validate_release_root(path)
-    if not path.is_dir() or _path_is_symlink_or_reparse(path):
-        raise ValueError("Published Wiki release directory must be a regular directory")
-    return path
-
-
-def _publication_lock_path(publication: Path) -> Path:
-    return publication.parent / f".{publication.name}.publish.lock"
-
-
-def _acquire_publication_lock(publication: Path) -> Path:
-    """Exclusive Host lock for one Wiki Run against a Published Wiki path (O_EXCL file).
-
-    Intentionally held for the whole run (prepare through model work to swap), not only the
-    final rename: concurrent Wiki Runs must not interleave staging or publication against
-    the same destination. Released on the normal exit path. If a previous process crashed,
-    operators may remove the stale lock file after confirming no Wiki Run is active for this
-    Published Wiki path.
-    """
-    _create_directory_path(publication.parent, "Published Wiki parent")
-    lock_path = _publication_lock_path(publication)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    try:
-        descriptor = os.open(lock_path, flags, 0o600)
-    except FileExistsError as error:
-        stale_hint = (
-            f"If no Wiki Run is active, remove the stale lock file after confirming the path "
-            f"is idle: {lock_path}"
-        )
-        raise ValueError(
-            f"Published Wiki path is locked by another Wiki Run: {publication}. {stale_hint}"
-        ) from error
-    except OSError as error:
-        raise operator_error(
-            f"Published Wiki lock could not be acquired for {publication}", error
-        ) from error
-    try:
-        payload = f"pid={os.getpid()}\n".encode("utf-8")
-        os.write(descriptor, payload)
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    return lock_path
-
-
-def _release_publication_lock(lock_path: Path | None) -> None:
-    if lock_path is None:
-        return
-    try:
-        lock_path.unlink(missing_ok=True)
-    except OSError:
-        pass
-
-
-_MARKDOWN = MarkdownIt("commonmark").use(anchors_plugin, min_level=1, max_level=6)
-_CITATION_RE = re.compile(r"repo:(?P<path>[^#]+)#L(?P<start>[1-9]\d*)-L(?P<end>[1-9]\d*)")
-_TEMPORARY_NAMES = {".DS_Store"}
-_TEMPORARY_SUFFIXES = (".swp", ".swo", ".temp", ".tmp", "~")
-PUBLICATION_METADATA_NAME = ".okf-wiki.json"
-# Reserved top-level directory for Host-owned Wiki Visualization artifacts.
-# Publication validation and refresh do not treat it as the semantic page set.
-VISUALIZATION_DIR_NAME = "viz"
-
-
-class _UniqueKeySafeLoader(yaml.SafeLoader):
-    pass
-
-
-def _construct_unique_mapping(
-    loader: _UniqueKeySafeLoader, node: MappingNode, deep: bool = False
-) -> dict[object, object]:
-    loader.flatten_mapping(node)
-    mapping: dict[object, object] = {}
-    for key_node, value_node in node.value:
-        key = loader.construct_object(key_node, deep=deep)
-        if not isinstance(key, Hashable):
-            raise ConstructorError(
-                "while constructing a mapping",
-                node.start_mark,
-                "found unhashable key",
-                key_node.start_mark,
-            )
-        if key in mapping:
-            raise ConstructorError(
-                "while constructing a mapping",
-                node.start_mark,
-                f"found duplicate key ({key!r})",
-                key_node.start_mark,
-            )
-        mapping[key] = loader.construct_object(value_node, deep=deep)
-    return mapping
-
-
-_UniqueKeySafeLoader.add_constructor(BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping)
-
-
-_CONFIG_SECRET_MARKERS = (
-    "authorization",
-    "apikey",
-    "credential",
-    "credentials",
-    "header",
-    "headers",
-    "key",
-    "password",
-    "secret",
-    "token",
-)
-
-
-def _reject_yaml_secrets(value: object) -> None:
-    if isinstance(value, Mapping):
-        for key, item in value.items():
-            normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
-            if any(normalized.endswith(marker) for marker in _CONFIG_SECRET_MARKERS):
-                raise ValueError(
-                    "Secrets and provider headers are not allowed in Wiki Run YAML; "
-                    "use process environment variables or a secret manager"
-                )
-            _reject_yaml_secrets(item)
-    elif isinstance(value, list):
-        for item in value:
-            _reject_yaml_secrets(item)
-
-
-def _configured_path(root: Path, value: Path) -> Path:
-    return Path(os.path.normpath(value if value.is_absolute() else root / value))
-
-
-def _resolve_branch(checkout: Path, branch: str) -> str:
-    try:
-        validated = git_read(checkout, "check-ref-format", "--branch", branch).strip()
-    except ValueError as error:
-        raise operator_error(f"Repository branch is invalid: {branch!r}", error) from error
-    if validated != branch:
-        raise ValueError(f"Repository branch is not canonical: {branch!r}")
-    try:
-        return git_read(
-            checkout, "rev-parse", "--verify", f"refs/heads/{branch}^{{commit}}"
-        ).strip()
-    except ValueError as error:
-        raise operator_error(
-            f"Repository branch does not resolve locally: {branch!r}", error
-        ) from error
-
-
-def _wiki_run_request_from_yaml(path: Path) -> WikiRunRequest:
-    config_path = path.resolve(strict=True)
-    try:
-        raw = yaml.load(config_path.read_text(encoding="utf-8"), Loader=_UniqueKeySafeLoader)
-    except (OSError, UnicodeError, yaml.YAMLError) as error:
-        raise operator_error("Wiki Run YAML is not readable valid UTF-8 YAML", error) from error
-    _reject_yaml_secrets(raw)
-    try:
-        config = _WikiRunFileConfig.model_validate(raw)
-    except ValidationError as error:
-        raise operator_error("Wiki Run YAML configuration is invalid", error) from error
-    root = config_path.parent
-    repositories = []
-    for configured in config.repositories:
-        checkout = _existing_directory(
-            _configured_path(root, configured.path),
-            f"Repository Snapshot {configured.id}",
-        )
-        revision = configured.revision or _resolve_branch(checkout, configured.branch or "")
-        repositories.append(
-            RepositorySnapshot(
-                id=configured.id,
-                path=checkout,
-                revision=revision,
-                ignore=configured.ignore,
-                apply_default_source_ignores=configured.apply_default_source_ignores,
-            )
-        )
-    skill = (
-        ProducerSkillVersion.default()
-        if config.skill is None
-        else ProducerSkillVersion(
-            path=_configured_path(root, config.skill.path),
-            digest=config.skill.digest,
-        )
-    )
-    try:
-        model_identity = resolve_model_identity(config.model.identity)
-        model_settings = resolve_model_settings(
-            max_tokens=config.model.max_tokens,
-            temperature=config.model.temperature,
-            top_p=config.model.top_p,
-            timeout=config.model.timeout,
-        )
-        limits = WikiRunLimits.build(config.limits)
-    except (ValidationError, ValueError) as error:
-        raise operator_error("Wiki Run YAML configuration is invalid", error) from error
-    return WikiRunRequest(
-        operation=config.operation,
-        repositories=tuple(repositories),
-        skill=skill,
-        model=ModelProviderConfig(model=model_identity, settings=model_settings),
-        limits=limits,
-        staging=_configured_path(root, config.staging),
-        publication=_configured_path(root, config.publication),
-        retain_analysis_workspace=config.retain_analysis_workspace,
-        write_visualization=config.write_visualization,
-    )
-
-
-def _validate_wiki(
-    sources: Mapping[str, Path], root: Path, manifest: WikiManifest, limits: WikiRunLimits
-) -> list[str]:
-    errors: list[str] = []
-    actual_pages: set[str] = set()
-    unreadable_pages: set[str] = set()
-    entries = 0
-    total_bytes = 0
-    stack = [(root, PurePosixPath())]
-    while stack:
-        directory, prefix = stack.pop()
-        for entry in os.scandir(directory):
-            relative = prefix / entry.name
-            relative_path = relative.as_posix()
-            # Wiki Visualization artifacts are Host-owned and outside the semantic page set.
-            if not prefix.parts and entry.name == VISUALIZATION_DIR_NAME:
-                continue
-            entries += 1
-            if entries > limits.wiki_entries_limit:
-                return ["Staging Wiki exceeds the configured entry count limit"]
-            if _is_temporary(entry.name):
-                errors.append(f"Temporary artifact is not allowed: {relative_path}")
-            if entry.is_symlink():
-                errors.append(f"Symlink is not allowed: {relative_path}")
-            elif entry.is_dir(follow_symlinks=False):
-                stack.append((Path(entry.path), relative))
-            elif not entry.is_file(follow_symlinks=False):
-                errors.append(f"Unsupported output artifact: {relative_path}")
-            else:
-                try:
-                    size = entry.stat(follow_symlinks=False).st_size
-                except OSError as error:
-                    errors.append(f"Unreadable output artifact {relative_path}: {error}")
-                    continue
-                if size > limits.wiki_file_bytes_limit:
-                    errors.append(f"Wiki file exceeds the configured byte limit: {relative_path}")
-                    unreadable_pages.add(relative_path)
-                total_bytes += size
-                if total_bytes > limits.wiki_total_bytes_limit:
-                    return ["Staging Wiki exceeds the configured total byte limit"]
-                if relative.suffix != ".md":
-                    errors.append(f"Only Markdown pages are allowed: {relative_path}")
-                else:
-                    actual_pages.add(relative_path)
-
-    declared_pages: set[str] = set()
-    if len(manifest.pages) > limits.wiki_entries_limit:
-        errors.append("Wiki Manifest exceeds the configured entry count limit")
-    for page in manifest.pages:
-        if not _is_canonical_page_path(page):
-            errors.append(f"Wiki Manifest path is not canonical Markdown: {page!r}")
-            continue
-        if page in declared_pages:
-            errors.append(f"Wiki Manifest contains duplicate page: {page}")
-        declared_pages.add(page)
-
-    for page in sorted(declared_pages - actual_pages):
-        errors.append(f"Wiki Manifest declares missing page: {page}")
-    for page in sorted(actual_pages - declared_pages):
-        errors.append(f"Staging contains undeclared page: {page}")
-    if "index.md" not in actual_pages:
-        errors.append("Staging Wiki must contain index.md")
-
-    headings: dict[str, set[str]] = {}
-    links: list[tuple[str, str]] = []
-    for page in sorted(actual_pages):
-        if page in unreadable_pages:
-            continue
-        try:
-            text = (root / page).read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            errors.append(f"Markdown page is not UTF-8: {page}")
-            continue
-        body, frontmatter_errors = _read_frontmatter(text, page)
-        errors.extend(frontmatter_errors)
-        if page == "index.md" and not body.strip():
-            errors.append("index.md must have non-empty entry content")
-        tokens = _MARKDOWN.parse(body)
-        if any(
-            token.type == "html_block"
-            or any(child.type == "html_inline" for child in (token.children or []))
-            for token in tokens
-        ):
-            errors.append(f"{page}: raw HTML is not allowed")
-        headings[page] = {
-            identifier
-            for token in tokens
-            if token.type == "heading_open"
-            if isinstance((identifier := token.attrGet("id")), str)
-        }
-        links.extend(
-            (page, target)
-            for token in tokens
-            for child in (token.children or [])
-            if child.type == "link_open"
-            if isinstance((target := child.attrGet("href")), str)
-        )
-
-    pages_with_valid_citations: set[str] = set()
-    for page, target in links:
-        if target.startswith("repo:"):
-            citation_error = _validate_citation(sources, target)
-            if citation_error:
-                errors.append(f"{page}: {citation_error}")
-            else:
-                pages_with_valid_citations.add(page)
-            continue
-        parsed = urlsplit(target)
-        if parsed.scheme:
-            if parsed.scheme.lower() not in {"http", "https", "mailto"}:
-                errors.append(f"{page}: unsupported link scheme: {target}")
-            continue
-        if parsed.netloc or parsed.query:
-            errors.append(f"{page}: internal Wiki link must be a relative .md path: {target}")
-            continue
-        link_path = unquote(parsed.path)
-        if not link_path and parsed.fragment:
-            resolved = page
-        elif not link_path or "\\" in link_path or not link_path.endswith(".md"):
-            errors.append(f"{page}: internal Wiki link must be a relative .md path: {target}")
-            continue
-        else:
-            resolved = posixpath.normpath(posixpath.join(posixpath.dirname(page), link_path))
-        if resolved == ".." or resolved.startswith("../") or resolved.startswith("/"):
-            errors.append(f"{page}: internal Wiki link escapes staging: {target}")
-            continue
-        if resolved not in actual_pages:
-            errors.append(f"{page}: internal Wiki link target does not exist: {target}")
-            continue
-        if parsed.fragment and unquote(parsed.fragment) not in headings.get(resolved, set()):
-            errors.append(f"{page}: internal Wiki link fragment does not exist: {target}")
-    for page in sorted(actual_pages - pages_with_valid_citations):
-        errors.append(f"{page}: at least one valid Source Citation is required")
-    return errors
-
-
-def _read_frontmatter(text: str, page: str) -> tuple[str, list[str]]:
-    lines = text.splitlines(keepends=True)
-    if not lines or lines[0].rstrip("\r\n") != "---":
-        return text, [f"{page}: YAML frontmatter is required"]
-    closing = next(
-        (index for index, line in enumerate(lines[1:], 1) if line.rstrip("\r\n") == "---"),
-        None,
-    )
-    if closing is None:
-        return text, [f"{page}: YAML frontmatter is not closed"]
-    try:
-        metadata = yaml.load("".join(lines[1:closing]), Loader=_UniqueKeySafeLoader)
-    except yaml.YAMLError as error:
-        return "".join(lines[closing + 1 :]), [f"{page}: invalid YAML frontmatter: {error}"]
-    errors = []
-    if not isinstance(metadata, dict):
-        errors.append(f"{page}: YAML frontmatter must be a mapping")
-    elif not isinstance(metadata.get("title"), str) or not metadata["title"].strip():
-        errors.append(f"{page}: YAML frontmatter title must be a non-empty string")
-    return "".join(lines[closing + 1 :]), errors
-
-
-def _validate_citation(sources: Mapping[str, Path], target: str) -> str | None:
-    match = _CITATION_RE.fullmatch(target)
-    if match is None:
-        return f"malformed Source Citation: {target}"
-    try:
-        path = canonical_source_path(match.group("path"))
-    except ValueError:
-        return f"Source Citation path is not repository-relative POSIX: {target}"
-    decoded_path = os.fsdecode(unquote_to_bytes(path))
-    parts = PurePosixPath(decoded_path).parts
-    if len(sources) == 1:
-        source = next(iter(sources.values()))
-    else:
-        if len(parts) < 2 or parts[0] not in sources:
-            return f"Source Citation must start with a repository ID: {target}"
-        source = sources[parts[0]]
-        parts = parts[1:]
-    cited = source.joinpath(*parts)
-    try:
-        cited_stat = cited.stat(follow_symlinks=False)
-    except OSError:
-        return f"Source Citation path does not exist: {target}"
-    if not stat.S_ISREG(cited_stat.st_mode):
-        return f"Source Citation path is not a regular file: {target}"
-    if cited_stat.st_size > MAX_ANALYZABLE_FILE_BYTES:
-        return f"Source Citation path exceeds the static-analysis size limit: {target}"
-    content = cited.read_bytes()
-    if b"\0" in content:
-        return f"Source Citation path is binary: {target}"
-    try:
-        line_count = len(content.decode("utf-8").splitlines())
-    except UnicodeDecodeError:
-        return f"Source Citation path is not UTF-8 text: {target}"
-    start, end = int(match.group("start")), int(match.group("end"))
-    if start > end or end > line_count:
-        return f"Source Citation line range does not resolve: {target}"
-    return None
-
-
-def _is_canonical_page_path(path: str) -> bool:
-    return _is_canonical_relative_path(path) and path.endswith(".md")
-
-
-def _is_canonical_relative_path(path: str) -> bool:
-    pure = PurePosixPath(path)
-    return (
-        bool(path)
-        and "\\" not in path
-        and not pure.is_absolute()
-        and all(part not in {"", ".", ".."} for part in path.split("/"))
-        and pure.as_posix() == path
-    )
-
-
-def _is_temporary(name: str) -> bool:
-    return name in _TEMPORARY_NAMES or name.startswith(".#") or name.endswith(_TEMPORARY_SUFFIXES)
-
-
-def _hashes(root: Path, paths: list[str]) -> dict[str, str]:
-    return {
-        path: hashlib.sha256(root.joinpath(*PurePosixPath(path).parts).read_bytes()).hexdigest()
-        for path in sorted(paths)
-    }
-
-
-def _tree_hashes(root: Path) -> dict[str, str]:
-    return _hashes(
-        root,
-        [path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()],
-    )
-
-
-def _content_digest(hashes: dict[str, str]) -> str:
-    canonical = json.dumps(hashes, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(canonical).hexdigest()
-
-
-class _PublishedPage(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    path: PagePath
-    sha256: SkillDigest
-
-
-class _PublishedRepository(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    id: RepositoryId
-    revision: Annotated[
-        str,
-        StringConstraints(
-            strip_whitespace=True,
-            to_lower=True,
-            pattern=r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$",
-        ),
-    ]
-    ignore: tuple[IgnorePattern, ...] = ()
-    apply_default_source_ignores: bool = True
-    effective_ignore: tuple[IgnorePattern, ...] = ()
-
-
-def _published_repositories(
-    repositories: tuple[RepositorySnapshot, ...],
-) -> tuple[_PublishedRepository, ...]:
-    return tuple(
-        _PublishedRepository(
-            id=repository.id,
-            revision=repository.revision,
-            ignore=repository.ignore,
-            apply_default_source_ignores=repository.apply_default_source_ignores,
-            effective_ignore=tuple(repository.effective_source_ignores()),
-        )
-        for repository in sorted(repositories, key=lambda repository: repository.id)
-    )
-
-
-class _PublicationMetadata(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    repositories: tuple[_PublishedRepository, ...] = Field(min_length=1)
-    skill_digest: SkillDigest
-    model: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
-    generated_at: datetime
-    pages: list[_PublishedPage] = Field(min_length=1)
-    content_digest: SkillDigest
-
-
-def _stage_published_wiki(
-    publication: Path, staging: Path, limits: WikiRunLimits
-) -> tuple[dict[str, str], tuple[_PublishedRepository, ...], str]:
-    """Load a Host-owned real-directory Published Wiki into empty Staging for Refresh."""
-    if publication.is_symlink() or _path_is_symlink_or_reparse(publication):
-        raise _legacy_symlink_publication_error(publication, for_refresh=True)
-    if not publication.is_dir():
-        raise ValueError(
-            "Refresh requires an existing producer-managed Published Wiki "
-            f"(regular directory with publication metadata) at {publication}"
-        )
-    try:
-        release = publication.resolve(strict=True)
-    except OSError as error:
-        raise operator_error("Refresh Published Wiki is not readable", error) from error
-    if not release.is_dir() or release.is_symlink():
-        raise ValueError("Refresh requires an existing producer-managed Published Wiki")
-
-    metadata_path = release / PUBLICATION_METADATA_NAME
-    if metadata_path.is_symlink() or not metadata_path.is_file():
-        raise ValueError("Refresh Published Wiki metadata is missing or not a regular file")
-    try:
-        metadata = _PublicationMetadata.model_validate_json(metadata_path.read_bytes())
-    except Exception as error:
-        raise operator_error("Refresh Published Wiki metadata is invalid", error) from error
-
-    page_hashes: dict[str, str] = {}
-    for page in metadata.pages:
-        if not _is_canonical_page_path(page.path):
-            raise ValueError(f"Refresh Published Wiki page path is not canonical: {page.path!r}")
-        if page.path in page_hashes:
-            raise ValueError(f"Refresh Published Wiki metadata has duplicate page: {page.path}")
-        page_hashes[page.path] = page.sha256
-    if len(page_hashes) > limits.wiki_entries_limit:
-        raise ValueError("Refresh Published Wiki exceeds the configured entry count limit")
-    if _content_digest(page_hashes) != metadata.content_digest:
-        raise ValueError("Refresh Published Wiki content digest does not match its page manifest")
-
-    actual_files: set[str] = set()
-    entries = 0
-    total_bytes = 0
-    stack = [(release, PurePosixPath())]
-    while stack:
-        directory, prefix = stack.pop()
-        for entry in os.scandir(directory):
-            relative = prefix / entry.name
-            relative_path = relative.as_posix()
-            # Skip Host-owned Wiki Visualization artifacts under the reserved viz/ directory.
-            if not prefix.parts and entry.name == VISUALIZATION_DIR_NAME:
-                continue
-            if relative_path != PUBLICATION_METADATA_NAME:
-                entries += 1
-                if entries > limits.wiki_entries_limit:
-                    raise ValueError(
-                        "Refresh Published Wiki exceeds the configured entry count limit"
-                    )
-            if entry.is_symlink():
-                raise ValueError(f"Refresh Published Wiki contains a symlink: {relative_path}")
-            if entry.is_dir(follow_symlinks=False):
-                stack.append((Path(entry.path), relative))
-            elif entry.is_file(follow_symlinks=False):
-                actual_files.add(relative_path)
-                if relative_path in page_hashes:
-                    size = entry.stat(follow_symlinks=False).st_size
-                    if size > limits.wiki_file_bytes_limit:
-                        raise ValueError(
-                            f"Refresh Published Wiki page exceeds the configured byte limit: "
-                            f"{relative_path}"
-                        )
-                    total_bytes += size
-                    if total_bytes > limits.wiki_total_bytes_limit:
-                        raise ValueError(
-                            "Refresh Published Wiki exceeds the configured total byte limit"
-                        )
-            else:
-                raise ValueError(
-                    f"Refresh Published Wiki contains an unsupported artifact: {relative_path}"
-                )
-    expected_files = set(page_hashes) | {PUBLICATION_METADATA_NAME}
-    if actual_files != expected_files:
-        raise ValueError("Refresh Published Wiki files do not match its page manifest")
-
-    for page in page_hashes:
-        source = release.joinpath(*PurePosixPath(page).parts)
-        destination = staging.joinpath(*PurePosixPath(page).parts)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        _copy_regular_file_no_follow(
-            source,
-            destination,
-            max_bytes=limits.wiki_file_bytes_limit,
-            label=f"Refresh Published Wiki page {page}",
-        )
-    if _hashes(staging, list(page_hashes)) != page_hashes:
-        raise ValueError("Refresh Published Wiki page hashes do not match its metadata after copy")
-    return page_hashes, metadata.repositories, metadata.skill_digest
-
-
-def _copy_regular_file_no_follow(
-    source: Path, destination: Path, *, max_bytes: int, label: str
-) -> int:
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        source_fd = os.open(source, flags)
-    except OSError as error:
-        raise ValueError(f"{label} is not a readable regular file") from error
-    destination_fd: int | None = None
-    try:
-        opened = os.fstat(source_fd)
-        current = os.lstat(source)
-        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (
-            current.st_dev,
-            current.st_ino,
-        ):
-            raise ValueError(f"{label} is not a readable regular file")
-        if opened.st_size > max_bytes:
-            raise ValueError(f"{label} exceeds the configured byte limit")
-        destination_fd = os.open(
-            destination,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-            0o644,
-        )
-        copied = 0
-        while chunk := os.read(source_fd, min(1024 * 1024, max_bytes - copied + 1)):
-            copied += len(chunk)
-            if copied > max_bytes:
-                raise ValueError(f"{label} exceeds the configured byte limit")
-            view = memoryview(chunk)
-            while view:
-                view = view[os.write(destination_fd, view) :]
-    except Exception:
-        if destination_fd is not None:
-            os.close(destination_fd)
-            destination_fd = None
-            destination.unlink(missing_ok=True)
-        raise
-    finally:
-        os.close(source_fd)
-        if destination_fd is not None:
-            os.close(destination_fd)
-    return copied
-
-
-def _copy_wiki_pages(
-    source: Path,
-    destination: Path,
-    manifest: WikiManifest,
-    limits: WikiRunLimits,
-) -> None:
-    total_bytes = 0
-    for page in manifest.pages:
-        relative = PurePosixPath(page)
-        target = destination.joinpath(*relative.parts)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        copied = _copy_regular_file_no_follow(
-            source.joinpath(*relative.parts),
-            target,
-            max_bytes=min(
-                limits.wiki_file_bytes_limit,
-                limits.wiki_total_bytes_limit - total_bytes,
-            ),
-            label=f"Staging Wiki page {page}",
-        )
-        total_bytes += copied
-
-
-def _summarize_changes(
-    old: dict[str, str], new: dict[str, str], *, provenance_changed: bool
-) -> WikiChangeSummary:
-    old_paths, new_paths = set(old), set(new)
-    shared = old_paths & new_paths
-    added = sorted(new_paths - old_paths)
-    changed = sorted(path for path in shared if old[path] != new[path])
-    removed = sorted(old_paths - new_paths)
-    unchanged = sorted(path for path in shared if old[path] == new[path])
-    content_changed = bool(added or changed or removed)
-    return WikiChangeSummary(
-        added=added,
-        changed=changed,
-        removed=removed,
-        unchanged=unchanged,
-        content_changed=content_changed,
-        publication_changed=content_changed or provenance_changed,
-    )
-
-
-_REQUIRED_PRODUCER_SKILL_PATHS = {
-    "SKILL.md",
-    "references/domain-research.md",
-    "references/generate.md",
-    "references/leaf-research.md",
-    "references/refresh.md",
-    "references/review.md",
-    "templates/architecture.md",
-    "templates/concept.md",
-    "templates/flow.md",
-    "templates/module.md",
-    "templates/overview.md",
-}
-_SKILL_DIRECTORIES = {"references", "templates"}
-
-
-def _validate_producer_skill(path: Path) -> tuple[Path, str]:
-    root = _existing_directory(path, "Producer Skill")
-    errors: list[str] = []
-    contents: dict[str, bytes] = {}
-    folded_paths: dict[str, str] = {}
-    stack = [(root, PurePosixPath())]
-    while stack:
-        directory, prefix = stack.pop()
-        try:
-            entries = list(os.scandir(directory))
-        except OSError as error:
-            errors.append(f"unreadable directory {prefix.as_posix() or '.'}: {error}")
-            continue
-        for entry in entries:
-            relative = prefix / entry.name
-            relative_path = relative.as_posix()
-            previous = folded_paths.setdefault(relative_path.casefold(), relative_path)
-            if previous != relative_path:
-                errors.append(f"ambiguous paths {previous!r} and {relative_path!r}")
-            if entry.is_symlink():
-                errors.append(f"symlink is not allowed: {relative_path}")
-                continue
-            if entry.is_dir(follow_symlinks=False):
-                if len(relative.parts) != 1 or relative_path not in _SKILL_DIRECTORIES:
-                    errors.append(f"unexpected directory: {relative_path}")
-                else:
-                    stack.append((Path(entry.path), relative))
-                continue
-            if not entry.is_file(follow_symlinks=False):
-                errors.append(f"unsupported artifact: {relative_path}")
-                continue
-            if relative_path != "SKILL.md" and (
-                len(relative.parts) != 2
-                or relative.parts[0] not in _SKILL_DIRECTORIES
-                or relative.suffix != ".md"
-            ):
-                errors.append(f"unexpected file: {relative_path}")
-            file_path = Path(entry.path)
-            try:
-                mode = file_path.stat().st_mode
-            except OSError as error:
-                errors.append(f"unreadable file {relative_path}: {error}")
-                continue
-            if mode & 0o444 == 0:
-                errors.append(f"unreadable file: {relative_path}")
-                continue
-            try:
-                data = file_path.read_bytes()
-            except OSError as error:
-                errors.append(f"unreadable file {relative_path}: {error}")
-                continue
-            contents[relative_path] = data
-            try:
-                text = data.decode("utf-8")
-            except UnicodeDecodeError:
-                errors.append(f"file is not UTF-8: {relative_path}")
-                continue
-            if not text.strip():
-                errors.append(f"file is empty: {relative_path}")
-
-    for missing in sorted(_REQUIRED_PRODUCER_SKILL_PATHS - contents.keys()):
-        errors.append(f"missing required file: {missing}")
-    if skill_bytes := contents.get("SKILL.md"):
-        errors.extend(_validate_skill_frontmatter(skill_bytes))
-    if errors:
-        raise ValueError("Invalid Producer Skill bundle:\n- " + "\n- ".join(errors))
-    return root, _content_digest(_tree_hashes(root))
-
-
-def _validate_skill_frontmatter(data: bytes) -> list[str]:
-    text = data.decode("utf-8")
-    lines = text.splitlines(keepends=True)
-    if not lines or lines[0].rstrip("\r\n") != "---":
-        return ["SKILL.md must start with YAML frontmatter"]
-    closing = next(
-        (index for index, line in enumerate(lines[1:], 1) if line.rstrip("\r\n") == "---"),
-        None,
-    )
-    if closing is None:
-        return ["SKILL.md YAML frontmatter is not closed"]
-    try:
-        metadata = yaml.load("".join(lines[1:closing]), Loader=_UniqueKeySafeLoader)
-    except yaml.YAMLError as error:
-        return [f"SKILL.md has invalid YAML frontmatter: {error}"]
-    errors: list[str] = []
-    if not isinstance(metadata, dict) or set(metadata) != {"name", "description"}:
-        errors.append("SKILL.md frontmatter must contain only name and description")
-    else:
-        name = metadata["name"]
-        if not isinstance(name, str) or re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name) is None:
-            errors.append("SKILL.md name must use lowercase hyphen-case")
-        description = metadata["description"]
-        if not isinstance(description, str) or not description.strip():
-            errors.append("SKILL.md description must be a non-empty string")
-    if not "".join(lines[closing + 1 :]).strip():
-        errors.append("SKILL.md instructions must not be empty")
-    return errors
-
-
-def _selected_producer_skill(version: ProducerSkillVersion) -> Path:
-    path, digest = _validate_producer_skill(version.path)
-    if digest != version.digest:
-        raise ValueError(
-            f"Selected Skill Version content changed: expected {version.digest}, found {digest}"
-        )
-    return path
-
-
-def _write_publication_metadata(path: Path, metadata: _PublicationMetadata) -> None:
-    encoded = (
-        json.dumps(metadata.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
-    ).encode("utf-8")
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(temporary, flags, 0o644)
-        try:
-            view = memoryview(encoded)
-            while view:
-                view = view[os.write(descriptor, view) :]
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        if os.path.lexists(path):
-            raise ValueError("Published Wiki metadata already exists in the release tree")
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-class _PublicationSwapUnrecoverable(ValueError):
-    """Mid-swap failure where aside/release artifacts must be left for the operator."""
-
-
-def _swap_published_directory(
-    destination: Path,
-    new_release: Path,
-    *,
-    release_id: str,
-) -> None:
-    """Expose a complete release at the stable Published Wiki path via directory rename.
-
-    Mid-swap recovery: if the previous tree was moved aside and the new tree cannot be
-    installed, best-effort rename the previous tree back. Never leave a partial tree at
-    the stable name; if restore fails, leave recoverable aside/release paths and raise.
-    """
-    if destination.is_symlink() or (
-        os.path.lexists(destination) and _path_is_symlink_or_reparse(destination)
-    ):
-        raise _legacy_symlink_publication_error(destination)
-    if os.path.lexists(destination) and not destination.is_dir():
-        raise ValueError(
-            "Published Wiki path must be absent or a regular directory "
-            f"(found a non-directory at {destination})"
-        )
-
-    aside: Path | None = None
-    installed = False
-    try:
-        if os.path.lexists(destination):
-            aside = destination.parent / f".{destination.name}.aside.{release_id}"
-            if os.path.lexists(aside):
-                raise OSError(f"Published Wiki aside path already exists: {aside}")
-            os.rename(destination, aside)
-        os.rename(new_release, destination)
-        installed = True
-    except Exception as error:
-        if aside is not None and not os.path.lexists(destination):
-            try:
-                os.rename(aside, destination)
-                aside = None
-            except OSError as restore_error:
-                raise _PublicationSwapUnrecoverable(
-                    "Publication swap failed and the previous Published Wiki could not be "
-                    f"restored. Recoverable paths: previous tree={aside}; "
-                    f"new release={new_release if new_release.exists() else 'missing'}; "
-                    f"stable path={destination}. Swap error: {error}; restore error: "
-                    f"{restore_error}."
-                ) from restore_error
-        raise
-    finally:
-        if installed and aside is not None:
-            shutil.rmtree(aside, ignore_errors=True)
-
-
-def _cleanup_release_tree(releases: Path, *, keep: frozenset[str] = frozenset()) -> None:
-    """Best-effort delete superseded release directories after a successful swap."""
-    if not releases.is_dir() or releases.is_symlink():
-        return
-    try:
-        entries = list(releases.iterdir())
-    except OSError:
-        return
-    for entry in entries:
-        if entry.name in keep:
-            continue
-        if entry.is_symlink():
-            continue
-        if entry.is_dir():
-            shutil.rmtree(entry, ignore_errors=True)
-
-
-def _publish_wiki(
-    sources: Mapping[str, Path],
-    staging: Path,
-    destination: Path,
-    manifest: WikiManifest,
-    *,
-    repositories: tuple[_PublishedRepository, ...],
-    skill_digest: str,
-    model_name: str,
-    limits: WikiRunLimits,
-) -> None:
-    """Materialize a validated release then expose it via same-volume directory rename."""
-    _check_directory_path(destination.parent, "Published Wiki parent")
-    _create_directory_path(destination.parent, "Published Wiki parent")
-    if destination.is_symlink() or (
-        os.path.lexists(destination) and _path_is_symlink_or_reparse(destination)
-    ):
-        raise _legacy_symlink_publication_error(destination)
-    if os.path.lexists(destination) and not destination.is_dir():
-        raise ValueError(
-            "Published Wiki path must be absent or a regular directory "
-            f"(found a non-directory at {destination})"
-        )
-
-    releases = destination.parent / f".{destination.name}.releases"
-    parent_before = _directory_identity(destination.parent)
-    if parent_before is None:
-        raise ValueError("Published Wiki parent must be a regular directory")
-    _ensure_release_root(releases)
-    _ensure_same_volume_for_publication(destination, releases)
-    releases_before = _directory_identity(releases)
-    if releases_before is None:
-        raise ValueError("Published Wiki release directory must be a regular directory")
-
-    release_id = uuid.uuid4().hex
-    final_release = releases / release_id
-    final_release_owned = False
-    try:
-        try:
-            os.mkdir(final_release)
-        except FileExistsError as error:
-            raise OSError(f"Published Wiki release already exists: {release_id}") from error
-        final_release_owned = True
-        _copy_wiki_pages(staging, final_release, manifest, limits)
-        errors = _validate_wiki(sources, final_release, manifest, limits)
-        if errors:
-            raise ValueError("Copied Wiki validation failed: " + "; ".join(errors))
-        page_hashes = _hashes(final_release, manifest.pages)
-        metadata = _PublicationMetadata(
-            repositories=repositories,
-            skill_digest=skill_digest,
-            model=model_name,
-            generated_at=datetime.now(UTC),
-            pages=[
-                _PublishedPage(path=path, sha256=digest) for path, digest in page_hashes.items()
-            ],
-            content_digest=_content_digest(page_hashes),
-        )
-        _write_publication_metadata(final_release / PUBLICATION_METADATA_NAME, metadata)
-        if (
-            _directory_identity(destination.parent) != parent_before
-            or _directory_identity(releases) != releases_before
-        ):
-            raise ValueError("Published Wiki release directory changed during publication")
-        _ensure_same_volume_for_publication(destination, releases)
-        try:
-            _swap_published_directory(destination, final_release, release_id=release_id)
-        except _PublicationSwapUnrecoverable:
-            # Leave the validated release and aside tree for operator recovery.
-            final_release_owned = False
-            raise
-        final_release_owned = False
-        _cleanup_release_tree(releases)
-    except _PublicationSwapUnrecoverable:
-        raise
-    except Exception:
-        if final_release_owned and final_release.exists():
-            shutil.rmtree(final_release, ignore_errors=True)
-        raise

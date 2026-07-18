@@ -1,6 +1,14 @@
 from pydantic import BaseModel, Field, ValidationError
 
-from okf_wiki.errors import format_validation_error, is_operator_safe_exception, operator_error
+from okf_wiki.errors import (
+    ConfigError,
+    HostValidationError,
+    OkfWikiError,
+    PublicationError,
+    format_validation_error,
+    is_operator_safe_exception,
+    operator_error,
+)
 from okf_wiki.security import PROVIDER_DIAGNOSTICS_WITHHELD, safe_error_message
 
 
@@ -24,11 +32,15 @@ def test_operator_error_preserves_validation_and_cause_detail() -> None:
         _Sample.model_validate({"count": 0})
     except ValidationError as error:
         wrapped = operator_error("Record is invalid", error)
+    assert isinstance(wrapped, ConfigError)
+    assert isinstance(wrapped, OkfWikiError)
+    assert isinstance(wrapped, ValueError)
     assert "Record is invalid:" in str(wrapped)
     assert "count" in str(wrapped)
 
     os_error = FileNotFoundError(2, "No such file", "/tmp/missing")
-    path_error = operator_error("Path is not readable", os_error)
+    path_error = operator_error("Path is not readable", os_error, error_cls=HostValidationError)
+    assert isinstance(path_error, HostValidationError)
     assert "Path is not readable:" in str(path_error)
     assert "No such file" in str(path_error)
 
@@ -49,3 +61,6 @@ def test_safe_error_message_still_withholds_provider_runtime_errors() -> None:
     )
     assert not is_operator_safe_exception(RuntimeError("opaque"))
     assert is_operator_safe_exception(ValueError("bad config"))
+    assert is_operator_safe_exception(ConfigError("bad config"))
+    assert is_operator_safe_exception(PublicationError("locked"))
+    assert not is_operator_safe_exception(AssertionError("internal"))

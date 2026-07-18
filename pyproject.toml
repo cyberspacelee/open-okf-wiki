@@ -39,6 +39,8 @@ markers = [
   "package_release: builds and runs fresh distribution artifacts",
 ]
 testpaths = ["tests"]
+# Allow shared helpers under tests/ (e.g. wiki_run_helpers) to be imported by test modules.
+pythonpath = ["tests"]
 
 [tool.ruff]
 target-version = "py314"

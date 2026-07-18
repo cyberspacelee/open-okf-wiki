@@ -5,7 +5,7 @@
       "id": "openwiki",
       "size": "small",
       "structure": "TypeScript command-line application with connectors, local persistence, and agent-driven Wiki generation",
-      "repository": "../../refs/openwiki",
+      "repository": "../../../refs/openwiki",
       "revision": "ddd1f609b23d83b96a800ea0f4d47e7d28a78c7d",
       "expected_topics": ["code mode", "personal mode", "connectors", "checkpointing", "wiki generation"]
     },
@@ -13,7 +13,7 @@
       "id": "iwe",
       "size": "medium",
       "structure": "multi-crate Rust workspace providing Markdown graph, LSP, CLI, and MCP interfaces",
-      "repository": "../../refs/iwe",
+      "repository": "../../../refs/iwe",
       "revision": "34b50679bd723579fa0b1dd80dfa0537237fce37",
       "expected_topics": ["knowledge graph", "inclusion links", "LSP", "CLI", "MCP"]
     },
@@ -21,7 +21,7 @@
       "id": "open-knowledge",
       "size": "large",
       "structure": "TypeScript monorepo with desktop and web applications, editor core, integrations, and shared packages",
-      "repository": "../../refs/open-knowledge",
+      "repository": "../../../refs/open-knowledge",
       "revision": "96563d1ea9b51b5854c5651a7091d8f96512f4cd",
       "expected_topics": ["Markdown editor", "desktop application", "web application", "AI integrations", "MCP"]
     }

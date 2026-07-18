@@ -15,6 +15,22 @@ _MAX_DETAIL_CHARS = 300
 _MAX_VALIDATION_ISSUES = 20
 
 
+class OkfWikiError(Exception):
+    """Base for okf-wiki operator-facing domain errors."""
+
+
+class ConfigError(OkfWikiError, ValueError):
+    """Invalid configuration, YAML, or run record."""
+
+
+class HostValidationError(OkfWikiError, ValueError):
+    """Host path, mount, skill, or wiki validation failure."""
+
+
+class PublicationError(OkfWikiError, ValueError):
+    """Publication lock or directory-swap failure."""
+
+
 def format_validation_error(
     error: ValidationError,
     *,
@@ -48,27 +64,36 @@ def operator_error(
     error: BaseException | None = None,
     *,
     detail: str | None = None,
-) -> ValueError:
-    """Build a ValueError that preserves operator detail without dumping payloads.
+    error_cls: type[OkfWikiError] = ConfigError,
+) -> OkfWikiError:
+    """Build a domain error that preserves operator detail without dumping payloads.
 
     - ``ValidationError`` → multi-line field list under ``prefix``
     - other causes / explicit ``detail`` → ``prefix: detail``
     - bare prefix when nothing useful is available
+
+    ``error_cls`` selects the domain subtype (default ``ConfigError``). Messages stay
+    identical to the prior ``ValueError`` form so CLI/tests matching on text keep working.
     """
     if isinstance(error, ValidationError):
-        return ValueError(format_validation_error(error, prefix=prefix))
+        return error_cls(format_validation_error(error, prefix=prefix))
     text = (detail if detail is not None else format_cause_detail(error) if error else "").strip()
     if text:
         # Avoid "prefix: prefix: ..." when the cause already starts with the same prefix.
         if text == prefix or text.startswith(f"{prefix}:"):
-            return ValueError(text)
-        return ValueError(f"{prefix}: {text}")
-    return ValueError(prefix)
+            return error_cls(text)
+        return error_cls(f"{prefix}: {text}")
+    return error_cls(prefix)
 
 
-def reraise_as_operator_error(prefix: str, error: BaseException) -> None:
+def reraise_as_operator_error(
+    prefix: str,
+    error: BaseException,
+    *,
+    error_cls: type[OkfWikiError] = ConfigError,
+) -> None:
     """Raise ``operator_error`` for ``error`` (never returns)."""
-    raise operator_error(prefix, error) from error
+    raise operator_error(prefix, error, error_cls=error_cls) from error
 
 
 def is_operator_safe_exception(error: BaseException) -> bool:
@@ -76,6 +101,7 @@ def is_operator_safe_exception(error: BaseException) -> bool:
     if isinstance(
         error,
         (
+            OkfWikiError,
             ValueError,
             OSError,
             TypeError,
@@ -83,7 +109,6 @@ def is_operator_safe_exception(error: BaseException) -> bool:
             TimeoutError,
             ArithmeticError,
             LookupError,
-            AssertionError,
         ),
     ):
         return True
@@ -92,6 +117,10 @@ def is_operator_safe_exception(error: BaseException) -> bool:
 
 
 __all__ = [
+    "ConfigError",
+    "HostValidationError",
+    "OkfWikiError",
+    "PublicationError",
     "format_cause_detail",
     "format_validation_error",
     "is_operator_safe_exception",

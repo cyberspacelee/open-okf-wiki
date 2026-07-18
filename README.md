@@ -385,7 +385,7 @@ OPENAI_API_KEY=... uv run --locked okf-wiki wiki-eval \
   --manifest /absolute/path/to/repositories.json
 ```
 
-Example live manifest: [wiki_evaluation_repositories.json](src/okf_wiki/wiki_evaluation_repositories.json).
+Example live manifest: [wiki_evaluation_repositories.json](src/okf_wiki/evaluation/wiki_evaluation_repositories.json).
 
 Design notes: [docs/research/pydanticai-greenfield-repo-to-wiki.md](docs/research/pydanticai-greenfield-repo-to-wiki.md).
 
