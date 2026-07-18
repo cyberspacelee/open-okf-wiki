@@ -52,7 +52,7 @@ async def run_tui(
     confirm_fn: Callable[[str], bool] | None = None,
     check_tty: bool = True,
     yolo: bool = False,
-    auto_start: bool = True,
+    auto_start: bool = False,
     max_turns: int | None = None,
 ) -> WikiRunResult | None:
     """Run the Operator Session interactive shell (Session API).

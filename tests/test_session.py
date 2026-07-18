@@ -608,6 +608,20 @@ def test_slash_sessions_and_resume(tmp_path: Path) -> None:
     assert any(m.content == "topic alpha" for m in session.message_history if m.role == "user")
     assert "were not resumed" in resumed.message or "not resumed" in resumed.message
 
+    # /switch is an alias; already-current Session is a no-op (not session_switched).
+    switched = session.handle_slash(f"/switch {sid[:12]}")
+    assert switched is not None
+    assert switched.session_switched is False
+    assert "Already on Session" in switched.message
+
+    session.handle_slash("/new")
+    other_id = session.session_id
+    assert other_id is not None and other_id != sid
+    back = session.handle_slash(f"/switch {sid[:12]}")
+    assert back is not None
+    assert back.session_switched is True
+    assert session.session_id == sid
+
 
 def test_default_sessions_dir_is_project_local(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -641,3 +655,26 @@ def test_slash_mode_and_usage_after_run(tmp_path: Path) -> None:
     usage = session.handle_slash("/usage")
     assert usage is not None
     assert turn.run_id and turn.run_id[:8] in usage.message or session.last_run_id
+
+
+def test_slash_run_requests_wiki_run_not_in_ask_mode(tmp_path: Path) -> None:
+    session = OperatorSession(base_request=_base_request(tmp_path), yolo=True)
+    run = session.handle_slash("/run")
+    assert run is not None
+    assert run.start_run is True
+    assert "Starting Wiki Run" in run.message
+
+    start = session.handle_slash("/start")
+    assert start is not None
+    assert start.start_run is True
+
+    session.set_mode("ask")
+    blocked = session.handle_slash("/run")
+    assert blocked is not None
+    assert blocked.start_run is False
+    assert "ask mode" in blocked.message
+
+    help_msg = session.handle_slash("/help")
+    assert help_msg is not None
+    assert "/run" in help_msg.message
+    assert "does not auto-start" in help_msg.message

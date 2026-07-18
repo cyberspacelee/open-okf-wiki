@@ -344,20 +344,24 @@ uv run --locked okf-wiki tui --config ./wiki-run.yaml
 uv run --locked okf-wiki tui --yes           # start with YOLO auto-approve
 ```
 
-Shows simplified Host progress cards (plan, children, receipts, compaction, validation, review,
-publish) and streams pydantic-ai model/tool events into the chat view (no chain-of-thought dump).
-Publication is approve/deny unless YOLO is on. Needs Input answers start a **new** Wiki Run with
-`explicit_answers` (does not resume the prior Semantic Workflow).
+Opens the Session shell **without** starting a Wiki Run. Type a goal (build mode) or `/run` to
+start generate/refresh from config. Shows Host progress cards (plan, children, receipts,
+compaction, validation, review, publish) and streams pydantic-ai model/tool events into the chat
+view (no chain-of-thought dump). Publication is approve/deny unless YOLO is on. Needs Input answers
+start a **new** Wiki Run with `explicit_answers` (does not resume the prior Semantic Workflow).
 
 Useful slash commands:
 
 | Command | Meaning |
 |---|---|
+| `/run` (`/start`) | Start a Wiki Run from Session config |
 | `/yolo [on\|off]` | Toggle publication auto-approve only |
 | `/mode build\|ask` | `build` starts Wiki Runs; `ask` records history only |
 | `/usage` | Last Wiki Run id/status in this Session |
 | `/doctor` | Credential presence (redacted) |
-| `/sessions` `/new` `/resume <id>` | Multi-session list / create / resume history |
+| `/sessions` | List Sessions (`*` = current) |
+| `/new` | Start a new empty Session (Host config unchanged) |
+| `/switch <id>` (`/resume`) | Switch Session; reloads history only (not Wiki Run graph) |
 | `/quit` | Exit |
 
 Sessions are stored under `.okf-wiki/sessions/` (history only—not Wiki Run graph resume). Non-TTY is

@@ -62,7 +62,7 @@ class SessionMessage:
 
 @dataclass(slots=True)
 class SlashCommandResult:
-    """Outcome of a slash command (no Wiki Run started)."""
+    """Outcome of a slash command (presentation adapter may start a Wiki Run)."""
 
     name: str
     message: str
@@ -72,6 +72,8 @@ class SlashCommandResult:
     # Multi-session slash side effects (ticket 07).
     session_switched: bool = False
     session_id: str | None = None
+    # When True, the TUI/shell should start a Wiki Run from Session config.
+    start_run: bool = False
 
 
 @dataclass(slots=True)
@@ -648,7 +650,10 @@ class OperatorSession:
                 except Exception:
                     pass
             rows = self.store.list_sessions()
-            return SlashCommandResult(name="sessions", message=format_session_list(rows))
+            return SlashCommandResult(
+                name="sessions",
+                message=format_session_list(rows, current_id=self.session_id),
+            )
 
         if name == "new":
             snapshot = self.start_new_session(title=arg or None)
@@ -656,23 +661,27 @@ class OperatorSession:
                 name="new",
                 message=(
                     f"Started new Operator Session {snapshot.id[:12]} "
-                    f"[{self.yolo_indicator()}]. Project Host config unchanged."
+                    f"[{self.yolo_indicator()}]. Project Host config unchanged. "
+                    "Chat view cleared — type a goal or /run."
                 ),
                 session_switched=True,
                 session_id=snapshot.id,
                 yolo=self.yolo,
             )
 
-        if name == "resume":
+        if name in {"resume", "switch"}:
             if not arg:
                 return SlashCommandResult(
-                    name="resume",
-                    message="Usage: /resume <session-id> — restores history only; does not publish.",
+                    name=name,
+                    message=(
+                        f"Usage: /{name} <session-id> — switch to that Session "
+                        "(history only; does not publish). List ids with /sessions."
+                    ),
                 )
             if self.store is None:
                 return SlashCommandResult(
-                    name="resume",
-                    message="Session store not configured; cannot resume.",
+                    name=name,
+                    message="Session store not configured; cannot switch Session.",
                 )
             # Accept full id or unique prefix from /sessions listing.
             target = arg.strip().lower()
@@ -685,29 +694,36 @@ class OperatorSession:
                     resolved = matches[0]
                 elif len(matches) == 0:
                     return SlashCommandResult(
-                        name="resume",
+                        name=name,
                         message=f"No Session matches id prefix {target!r}. Use /sessions.",
                     )
                 else:
                     return SlashCommandResult(
-                        name="resume",
+                        name=name,
                         message=f"Ambiguous Session prefix {target!r}; provide more characters.",
                     )
+            if self.session_id is not None and resolved == self.session_id:
+                return SlashCommandResult(
+                    name=name,
+                    message=f"Already on Session {resolved[:12]}.",
+                    session_id=resolved,
+                    yolo=self.yolo,
+                )
             try:
                 snapshot = self.resume_from_store(resolved)
             except Exception as error:
                 return SlashCommandResult(
-                    name="resume",
+                    name=name,
                     message=(
-                        f"Could not resume Session: "
+                        f"Could not switch Session: "
                         f"{type(error).__name__}: {safe_error_message(error) if isinstance(error, Exception) else error}"
                     ),
                 )
             hist = len(snapshot.messages)
             return SlashCommandResult(
-                name="resume",
+                name=name,
                 message=(
-                    f"Resumed Session {snapshot.id[:12]} "
+                    f"Switched to Session {snapshot.id[:12]} "
                     f"({hist} message(s), title={snapshot.title or '(none)'}). "
                     "History restored; Wiki Run graph and Staging publication were not resumed."
                 ),
@@ -716,21 +732,39 @@ class OperatorSession:
                 yolo=self.yolo,
             )
 
+        if name in {"run", "start", "generate", "refresh"}:
+            if self.mode == "ask":
+                return SlashCommandResult(
+                    name=name,
+                    message=(
+                        "Session is in ask mode — switch to /mode build before /run, "
+                        "or type a goal only after /mode build."
+                    ),
+                )
+            return SlashCommandResult(
+                name=name,
+                message="Starting Wiki Run from Session config…",
+                start_run=True,
+            )
+
         if name in {"help", "?"}:
             return SlashCommandResult(
                 name="help",
                 message=(
                     "Operator Session commands:\n"
+                    "  /run            Start a Wiki Run from Session config (alias: /start)\n"
                     "  /yolo [on|off]  Toggle publication auto-approve (YOLO)\n"
                     "  /mode build|ask Build starts Wiki Runs; ask records history only\n"
                     "  /usage          Last Wiki Run id/status in this Session\n"
                     "  /doctor         Credential presence (set/unset, redacted)\n"
-                    "  /sessions       List Operator Sessions for this project\n"
-                    "  /new            Start a new Session (Host config unchanged)\n"
-                    "  /resume <id>    Resume Session history (does not publish)\n"
+                    "  /sessions       List Operator Sessions (* = current)\n"
+                    "  /new            Start a new empty Session (Host config unchanged)\n"
+                    "  /switch <id>    Switch to another Session (alias: /resume)\n"
                     "  /quit           Exit the Session\n"
                     "  /help           This help\n"
-                    "In build mode, type a goal to start a Wiki Run from config.\n"
+                    "Entry does not auto-start a Wiki Run.\n"
+                    "Switching Session reloads chat history only — not Wiki Run graph or publish.\n"
+                    "In build mode, type a goal or /run to start a Wiki Run from config.\n"
                     "In ask mode, messages are recorded without Host publication.\n"
                     "Needs Input answers start a new Wiki Run with explicit_answers.\n"
                     "Publication requires approve/deny unless YOLO is on."

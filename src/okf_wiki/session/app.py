@@ -89,7 +89,7 @@ class OperatorSessionApp(App[WikiRunResult | None]):
         request: WikiRunRequest,
         *,
         yolo: bool = False,
-        auto_start: bool = True,
+        auto_start: bool = False,
         max_turns: int | None = None,
         store: SessionStore | None = None,
         sessions_dir: Path | None = None,
@@ -117,8 +117,10 @@ class OperatorSessionApp(App[WikiRunResult | None]):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
         with VerticalScroll(id="chat-view"):
-            yield StatusCard("Operator Session — type a goal, or /help. Ctrl+Q to quit.")
-        yield Input(placeholder="goal, slash command, or answer…", id="session-input")
+            yield StatusCard(
+                "Operator Session — type a goal or /run to start a Wiki Run. /help · Ctrl+Q quit."
+            )
+        yield Input(placeholder="goal, /run, or slash command…", id="session-input")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -155,23 +157,20 @@ class OperatorSessionApp(App[WikiRunResult | None]):
                 f"Resumed Operator Session {snapshot.id[:12]} "
                 f"[{self._session.yolo_indicator()}] — history only, no auto-publish."
             )
-            for message in self._session.message_history:
-                if message.role == "user":
-                    self._mount_user(message.content)
-                elif message.role in {"assistant", "system", "session"}:
-                    self._mount_status(f"{message.role}: {message.content}")
+            self._mount_history_messages()
         else:
             try:
                 created = self._session.start_new_session()
                 self._mount_status(
                     f"Operator Session {created.id[:12]} ready "
                     f"[{self._session.yolo_indicator()}]. "
-                    "Type a goal, or /help. /sessions /new /resume /quit."
+                    "No Wiki Run yet — type a goal or /run. "
+                    "/sessions /new /switch <id> /help /quit."
                 )
             except Exception:
                 self._mount_status(
                     f"Operator Session ready [{self._session.yolo_indicator()}]. "
-                    "Type a goal, or /help. /quit to exit."
+                    "No Wiki Run yet — type a goal or /run. /help /quit."
                 )
 
         chat = self.query_one("#chat-view", VerticalScroll)
@@ -188,6 +187,31 @@ class OperatorSessionApp(App[WikiRunResult | None]):
         self.sub_title = (
             f"{sid} · {self._session.mode_indicator()} · {self._session.yolo_indicator()}"
         )
+
+    def _mount_history_messages(self) -> None:
+        """Render Session message history into the chat view (no Host cards)."""
+        session = self._session
+        if session is None:
+            return
+        for message in session.message_history:
+            if message.role == "user":
+                self._mount_user(message.content)
+            elif message.role == "assistant":
+                chat = self.query_one("#chat-view", VerticalScroll)
+                chat.mount(AssistantReply(message.content))
+                chat.scroll_end(animate=False)
+            else:
+                self._mount_status(f"{message.role}: {message.content}")
+
+    async def _reload_session_view(self, banner: str) -> None:
+        """Clear the chat pane and show the active Session (after /new or /switch)."""
+        await self._close_active_reply()
+        chat = self.query_one("#chat-view", VerticalScroll)
+        await chat.remove_children()
+        await chat.mount(StatusCard(banner))
+        self._mount_history_messages()
+        self._refresh_subtitle()
+        chat.scroll_end(animate=False)
 
     async def prompt_async(self, prompt: str) -> str:
         """Show a prompt in the chat view and wait for the bottom Input."""
@@ -295,12 +319,25 @@ class OperatorSessionApp(App[WikiRunResult | None]):
         if session is None:
             return
 
+        # Refuse Session switches while a Wiki Run is in flight (state already busy).
+        first = stripped.split(maxsplit=1)[0].lower()
+        if first in {"/new", "/resume", "/switch"} and self._busy:
+            self._mount_status("cannot switch Session while a Wiki Run is active")
+            return
+
         slash = session.handle_slash(stripped)
         if slash is not None:
+            if slash.quit:
+                self._mount_status(slash.message)
+                self.action_quit_session()
+                return
+            if slash.session_switched:
+                await self._reload_session_view(slash.message)
+                return
             self._mount_status(slash.message)
             self._refresh_subtitle()
-            if slash.quit:
-                self.action_quit_session()
+            if slash.start_run:
+                self.run_wiki_turn(label=None)
             return
 
         self._mount_user(stripped)
@@ -367,7 +404,7 @@ async def run_operator_session_app(
     *,
     check_tty: bool = True,
     yolo: bool = False,
-    auto_start: bool = True,
+    auto_start: bool = False,
     max_turns: int | None = None,
     stdin: TextIO | None = None,
     store: SessionStore | None = None,

@@ -44,7 +44,7 @@ async def run_operator_session(
     input_fn: InputFn | None = None,
     check_tty: bool = True,
     yolo: bool = False,
-    auto_start: bool = True,
+    auto_start: bool = False,
     max_turns: int | None = None,
     stdin: TextIO | None = None,
     store: SessionStore | None = None,
@@ -61,8 +61,8 @@ async def run_operator_session(
     yolo:
         Initial YOLO (auto-approve publication) flag; also toggleable via ``/yolo``.
     auto_start:
-        When True, start one Wiki Run immediately on entry (generate/refresh
-        from config). When False, wait for the first prompt line.
+        When True, start one Wiki Run immediately on entry (legacy/tests only).
+        Default is False: wait for a goal line or ``/run``.
     max_turns:
         Optional cap on user turns (tests). ``None`` means unlimited until
         ``/quit`` or EOF.
@@ -115,7 +115,7 @@ async def _run_line_session(
     input_fn: InputFn | None = None,
     check_tty: bool = True,
     yolo: bool = False,
-    auto_start: bool = True,
+    auto_start: bool = False,
     max_turns: int | None = None,
     stdin: TextIO | None = None,
     store: SessionStore | None = None,
@@ -160,12 +160,13 @@ async def _run_line_session(
             created = session.start_new_session()
             print_line(
                 f"Operator Session {created.id[:12]} ready [{session.yolo_indicator()}]. "
-                "Type a goal, or /help. /sessions /new /resume /quit."
+                "No Wiki Run yet — type a goal or /run. "
+                "/sessions /new /switch <id> /help /quit."
             )
         except Exception:
             print_line(
                 f"Operator Session ready [{session.yolo_indicator()}]. "
-                "Type a goal, or /help. /quit to exit."
+                "No Wiki Run yet — type a goal or /run. /help /quit."
             )
 
     last_result: WikiRunResult | None = None
@@ -220,6 +221,12 @@ async def _run_line_session(
             print_line(slash.message)
             if slash.quit:
                 break
+            if slash.start_run:
+                try:
+                    last_result = await execute_run()
+                except Exception as error:
+                    print_line(f"run error: {_format_run_error(error)}")
+                    raise
             continue
 
         if session.mode == "ask":
@@ -241,7 +248,7 @@ def run_operator_session_sync(
     input_fn: InputFn | None = None,
     check_tty: bool = True,
     yolo: bool = False,
-    auto_start: bool = True,
+    auto_start: bool = False,
     max_turns: int | None = None,
     stdin: TextIO | None = None,
     store: SessionStore | None = None,

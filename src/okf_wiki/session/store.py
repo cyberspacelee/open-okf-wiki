@@ -367,16 +367,27 @@ class SessionStore:
         tmp.replace(path)
 
 
-def format_session_list(rows: list[SessionSummary]) -> str:
-    """Human-readable list for slash ``/sessions`` and CLI."""
+def format_session_list(
+    rows: list[SessionSummary],
+    *,
+    current_id: str | None = None,
+) -> str:
+    """Human-readable list for slash ``/sessions`` and CLI.
+
+    Marks the in-process Session with ``*`` when ``current_id`` is set.
+    """
     if not rows:
         return "No Operator Sessions yet. Use /new to create one."
-    lines = ["Operator Sessions (newest first):"]
+    lines = ["Operator Sessions (newest first; * = current):"]
     for row in rows:
         title = row.title or "(no title)"
         updated = _dt_to_json(row.updated_at)
-        lines.append(f"  {row.id[:12]}  {row.status:6}  {updated}  {title}")
-    lines.append("Resume with /resume <id> (history only; does not publish or resume Wiki Run).")
+        marker = "*" if current_id is not None and row.id == current_id else " "
+        lines.append(f"{marker} {row.id[:12]}  {row.status:6}  {updated}  {title}")
+    lines.append(
+        "Switch with /resume <id> or /switch <id> "
+        "(history only; does not publish or resume Wiki Run)."
+    )
     return "\n".join(lines)
 
 
