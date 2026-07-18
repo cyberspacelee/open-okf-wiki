@@ -11,8 +11,50 @@ from .errors import HostValidationError, PublicationError, operator_error
 from .run_models import WikiRunRequest
 
 
-# Windows FILE_ATTRIBUTE_REPARSE_POINT — junctions and other reparse roots.
+# Windows FILE_ATTRIBUTE_REPARSE_POINT — junctions, symlinks, cloud placeholders, …
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+# winnt.h reparse tags used for Host path policy (portable; values are stable).
+_IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003  # directory junction / volume mount
+_IO_REPARSE_TAG_SYMLINK = 0xA000000C
+# Benign filter/cloud tags that commonly appear as *ancestors* (e.g. OneDrive).
+# These do not replace Host roots the way junctions/symlinks do.
+_IO_REPARSE_TAG_FILE_PLACEHOLDER = 0x80000015
+_IO_REPARSE_TAG_WCI = 0x80000018
+_IO_REPARSE_TAG_WCI_1 = 0x90001018
+_IO_REPARSE_TAG_CLOUD = 0x9000001A  # family 0x9000n01A for n in 0..F
+_IO_REPARSE_TAG_PROJFS = 0x9000001C
+_IO_REPARSE_TAG_STORAGE_SYNC = 0x8000001E
+_IO_REPARSE_TAG_ONEDRIVE = 0x80000021
+_IO_REPARSE_TAG_AF_UNIX = 0x80000023
+
+_DISALLOWED_REPARSE_TAGS = frozenset(
+    {
+        _IO_REPARSE_TAG_MOUNT_POINT,
+        _IO_REPARSE_TAG_SYMLINK,
+    }
+)
+_ALLOWED_REPARSE_TAGS = frozenset(
+    {
+        _IO_REPARSE_TAG_FILE_PLACEHOLDER,
+        _IO_REPARSE_TAG_WCI,
+        _IO_REPARSE_TAG_WCI_1,
+        _IO_REPARSE_TAG_PROJFS,
+        _IO_REPARSE_TAG_STORAGE_SYNC,
+        _IO_REPARSE_TAG_ONEDRIVE,
+        _IO_REPARSE_TAG_AF_UNIX,
+    }
+)
+
+
+def _is_cloud_reparse_tag(tag: int) -> bool:
+    """True for the Windows cloud reparse family (OneDrive Files On-Demand, etc.)."""
+    # CLOUD..CLOUD_F: 0x9000n01A for n in 0..F
+    return (tag & 0xFFFF0FFF) == _IO_REPARSE_TAG_CLOUD
+
+
+def _is_allowed_reparse_tag(tag: int) -> bool:
+    return tag in _ALLOWED_REPARSE_TAGS or _is_cloud_reparse_tag(tag)
 
 
 def _require_supported_runtime() -> None:
@@ -36,13 +78,42 @@ def _require_supported_runtime() -> None:
         )
 
 
-def _is_disallowed_path_component(info: os.stat_result | object) -> bool:
-    """True for symlinks and detectable host reparse points (e.g. Windows junctions)."""
+def _disallowed_path_reason(info: os.stat_result | object) -> str | None:
+    """Return a short operator reason when a path component is Host-disallowed.
+
+    Portable policy (ADR 0017):
+    - Always reject POSIX/Windows symbolic links (``S_ISLNK``).
+    - On Windows reparse points, reject directory junctions and symlink reparse tags
+      that redirect Host roots; allow common cloud/filter tags (OneDrive, ProjFS, …)
+      so normal workspaces under cloud-sync roots can create staging/publication dirs.
+    - Reparse bit set with missing/unknown tag fails closed.
+    """
     mode = getattr(info, "st_mode", 0)
     if stat.S_ISLNK(mode):
-        return True
+        return "a symbolic link"
     attrs = getattr(info, "st_file_attributes", 0) or 0
-    return bool(attrs & _FILE_ATTRIBUTE_REPARSE_POINT)
+    if not (attrs & _FILE_ATTRIBUTE_REPARSE_POINT):
+        return None
+    tag = int(getattr(info, "st_reparse_tag", 0) or 0)
+    if tag in _DISALLOWED_REPARSE_TAGS:
+        if tag == _IO_REPARSE_TAG_MOUNT_POINT:
+            return "a directory junction or volume mount point"
+        return "a symbolic link reparse point"
+    if tag and _is_allowed_reparse_tag(tag):
+        return None
+    if tag:
+        return f"an unsupported host reparse point (tag=0x{tag:08X})"
+    # Reparse attribute without a tag (or non-Windows attrs): fail closed.
+    return "a host reparse point"
+
+
+def _is_disallowed_path_component(info: os.stat_result | object) -> bool:
+    """True for symlinks and disallowed host reparse points (junctions, unknown tags)."""
+    return _disallowed_path_reason(info) is not None
+
+
+def _path_component_error(label: str, reason: str) -> HostValidationError:
+    return HostValidationError(f"{label} path must not contain {reason}")
 
 
 def _legacy_symlink_publication_error(path: Path, *, for_refresh: bool = False) -> PublicationError:
@@ -134,8 +205,8 @@ def _existing_directory(path: Path, label: str) -> Path:
         raise operator_error(
             f"{label} path is not accessible", error, error_cls=HostValidationError
         ) from error
-    if _is_disallowed_path_component(info):
-        raise HostValidationError(f"{label} path must not contain symlinks or host reparse points")
+    if reason := _disallowed_path_reason(info):
+        raise _path_component_error(label, reason)
     if not stat.S_ISDIR(info.st_mode):
         raise HostValidationError(f"{label} must be an existing directory")
     return candidate.resolve(strict=True)
@@ -162,16 +233,19 @@ def _check_directory_path(path: Path, label: str) -> None:
             raise operator_error(
                 f"{label} path is not accessible", error, error_cls=HostValidationError
             ) from error
-        if _is_disallowed_path_component(info):
-            raise HostValidationError(
-                f"{label} path must not contain symlinks or host reparse points"
-            )
+        if reason := _disallowed_path_reason(info):
+            raise _path_component_error(label, reason)
         if not stat.S_ISDIR(info.st_mode):
             raise HostValidationError(f"{label} path must contain only directories")
 
 
 def _create_directory_path(path: Path, label: str) -> None:
-    """Create a directory tree with portable symlink/reparse rejection (no dir_fd)."""
+    """Create a directory tree with portable symlink/reparse rejection (no dir_fd).
+
+    Does not use ``O_DIRECTORY`` / ``dir_fd`` (not portable to Windows). Walks each
+    component with ``lstat`` + ``os.mkdir``, applying reparse-tag policy so cloud-sync
+    ancestors (OneDrive) can be used while junctions/symlinks still fail closed.
+    """
     if not path.is_absolute() or path.name in {"", ".", ".."} or ".." in path.parts:
         raise HostValidationError(f"{label} path must be a canonical directory path")
     current = Path(path.anchor)
@@ -181,10 +255,10 @@ def _create_directory_path(path: Path, label: str) -> None:
         raise operator_error(
             f"{label} path is not accessible", error, error_cls=HostValidationError
         ) from error
-    if _is_disallowed_path_component(anchor_info) or not stat.S_ISDIR(anchor_info.st_mode):
-        raise HostValidationError(
-            f"{label} path must not contain symlinks, host reparse points, or non-directories"
-        )
+    if reason := _disallowed_path_reason(anchor_info):
+        raise _path_component_error(label, reason)
+    if not stat.S_ISDIR(anchor_info.st_mode):
+        raise HostValidationError(f"{label} path must contain only directories")
     for part in path.parts[1:]:
         current = current / part
         try:
@@ -202,35 +276,32 @@ def _create_directory_path(path: Path, label: str) -> None:
                 info = os.lstat(current)
             except OSError as error:
                 raise operator_error(
-                    f"{label} path must not contain symlinks, host reparse points, "
-                    "or non-directories",
+                    f"{label} path is not accessible after create",
                     error,
                     error_cls=HostValidationError,
                 ) from error
         except OSError as error:
             raise operator_error(
-                f"{label} path must not contain symlinks, host reparse points, or non-directories",
+                f"{label} path is not accessible",
                 error,
                 error_cls=HostValidationError,
             ) from error
-        if _is_disallowed_path_component(info):
-            raise HostValidationError(
-                f"{label} path must not contain symlinks, host reparse points, or non-directories"
-            )
+        if reason := _disallowed_path_reason(info):
+            raise _path_component_error(label, reason)
         if not stat.S_ISDIR(info.st_mode):
-            raise HostValidationError(
-                f"{label} path must not contain symlinks, host reparse points, or non-directories"
-            )
+            raise HostValidationError(f"{label} path must contain only directories")
     try:
         _check_directory_path(path, label)
         final = os.lstat(path)
-    except ValueError:
+    except HostValidationError:
         raise
     except OSError as error:
         raise operator_error(
             f"{label} path is not accessible", error, error_cls=HostValidationError
         ) from error
-    if _is_disallowed_path_component(final) or not stat.S_ISDIR(final.st_mode):
+    if reason := _disallowed_path_reason(final):
+        raise HostValidationError(f"{label} path changed during creation ({reason})")
+    if not stat.S_ISDIR(final.st_mode):
         raise HostValidationError(f"{label} path changed during creation")
 
 

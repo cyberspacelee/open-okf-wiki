@@ -354,7 +354,7 @@ def test_wiki_run_rejects_symlinked_staging_before_model_work(
         model_called = True
         raise AssertionError("model must not run for a symlinked staging path")
 
-    with pytest.raises(ValueError, match="Staging Wiki path must not contain symlinks"):
+    with pytest.raises(ValueError, match="Staging Wiki path must not contain a symbolic link"):
         run_test_wiki(
             source,
             revision,
@@ -650,25 +650,61 @@ def test_require_supported_runtime_rejects_missing_portable_primitives(
         mounts_module._require_supported_runtime()
 
 
-def test_disallowed_path_component_detects_reparse_attribute() -> None:
-    """Host reparse points (e.g. Windows junctions) are rejected like symlinks."""
+def test_disallowed_path_component_detects_junction_and_allows_cloud_reparse() -> None:
+    """Symlinks/junctions fail closed; OneDrive-style cloud reparse tags are allowed."""
     from okf_wiki import run_mounts as mounts_module
 
-    plain = SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_file_attributes=0)
-    reparse = SimpleNamespace(
+    plain = SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_file_attributes=0, st_reparse_tag=0)
+    symlink = SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_file_attributes=0, st_reparse_tag=0)
+    untagged_reparse = SimpleNamespace(
         st_mode=stat.S_IFDIR | 0o755,
         st_file_attributes=mounts_module._FILE_ATTRIBUTE_REPARSE_POINT,
+        st_reparse_tag=0,
     )
-    symlink = SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_file_attributes=0)
+    junction = SimpleNamespace(
+        st_mode=stat.S_IFDIR | 0o755,
+        st_file_attributes=mounts_module._FILE_ATTRIBUTE_REPARSE_POINT,
+        st_reparse_tag=mounts_module._IO_REPARSE_TAG_MOUNT_POINT,
+    )
+    cloud = SimpleNamespace(
+        st_mode=stat.S_IFDIR | 0o755,
+        st_file_attributes=mounts_module._FILE_ATTRIBUTE_REPARSE_POINT,
+        st_reparse_tag=mounts_module._IO_REPARSE_TAG_CLOUD,
+    )
+    cloud_family = SimpleNamespace(
+        st_mode=stat.S_IFDIR | 0o755,
+        st_file_attributes=mounts_module._FILE_ATTRIBUTE_REPARSE_POINT,
+        st_reparse_tag=mounts_module._IO_REPARSE_TAG_CLOUD_1
+        if hasattr(mounts_module, "_IO_REPARSE_TAG_CLOUD_1")
+        else 0x9000101A,
+    )
+    onedrive = SimpleNamespace(
+        st_mode=stat.S_IFDIR | 0o755,
+        st_file_attributes=mounts_module._FILE_ATTRIBUTE_REPARSE_POINT,
+        st_reparse_tag=mounts_module._IO_REPARSE_TAG_ONEDRIVE,
+    )
+    unknown = SimpleNamespace(
+        st_mode=stat.S_IFDIR | 0o755,
+        st_file_attributes=mounts_module._FILE_ATTRIBUTE_REPARSE_POINT,
+        st_reparse_tag=0xA00000FF,
+    )
+
     assert mounts_module._is_disallowed_path_component(plain) is False
-    assert mounts_module._is_disallowed_path_component(reparse) is True
     assert mounts_module._is_disallowed_path_component(symlink) is True
+    assert mounts_module._is_disallowed_path_component(untagged_reparse) is True
+    assert mounts_module._is_disallowed_path_component(junction) is True
+    assert mounts_module._is_disallowed_path_component(cloud) is False
+    assert mounts_module._is_disallowed_path_component(cloud_family) is False
+    assert mounts_module._is_disallowed_path_component(onedrive) is False
+    assert mounts_module._is_disallowed_path_component(unknown) is True
+    assert "junction" in (mounts_module._disallowed_path_reason(junction) or "")
+    assert mounts_module._disallowed_path_reason(cloud) is None
 
 
-def test_prepare_rejects_host_reparse_point_on_controlled_path(
+def test_prepare_rejects_host_junction_reparse_on_controlled_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Application seam: reparse-looking path components fail before model work."""
+    """Application seam: directory junctions fail before model work."""
     from okf_wiki import run_mounts as mounts_module
 
     source = tmp_path / "source"
@@ -680,7 +716,7 @@ def test_prepare_rejects_host_reparse_point_on_controlled_path(
 
     host_key = os.path.normpath(os.fspath(host))
 
-    def lstat_with_reparse(
+    def lstat_with_junction(
         path: os.PathLike[str] | str, *, dir_fd: int | None = None
     ) -> os.stat_result | SimpleNamespace:
         info = real_lstat(path, dir_fd=dir_fd)
@@ -691,18 +727,19 @@ def test_prepare_rejects_host_reparse_point_on_controlled_path(
                 st_ino=info.st_ino,
                 st_dev=info.st_dev,
                 st_file_attributes=mounts_module._FILE_ATTRIBUTE_REPARSE_POINT,
+                st_reparse_tag=mounts_module._IO_REPARSE_TAG_MOUNT_POINT,
             )
         return info
 
-    monkeypatch.setattr(mounts_module.os, "lstat", lstat_with_reparse)
+    monkeypatch.setattr(mounts_module.os, "lstat", lstat_with_junction)
     model_called = False
 
     def model(_: list[ModelRequest | ModelResponse], __: AgentInfo) -> ModelResponse:
         nonlocal model_called
         model_called = True
-        raise AssertionError("model must not run when Host path has a reparse point")
+        raise AssertionError("model must not run when Host path has a junction")
 
-    with pytest.raises(ValueError, match="reparse|symlink"):
+    with pytest.raises(ValueError, match="junction|reparse|symlink"):
         run_test_wiki(
             source,
             revision,
@@ -713,6 +750,62 @@ def test_prepare_rejects_host_reparse_point_on_controlled_path(
         )
 
     assert not model_called
+
+
+def test_prepare_allows_cloud_reparse_ancestor_on_controlled_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OneDrive-style cloud reparse ancestors must not block staging creation."""
+    from okf_wiki import run_mounts as mounts_module
+
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    host = tmp_path / "host"
+    host.mkdir()
+    real_lstat = os.lstat
+    host_key = os.path.normpath(os.fspath(host))
+
+    def lstat_with_cloud(
+        path: os.PathLike[str] | str, *, dir_fd: int | None = None
+    ) -> os.stat_result | SimpleNamespace:
+        info = real_lstat(path, dir_fd=dir_fd)
+        if os.path.normpath(os.fspath(path)) == host_key:
+            return SimpleNamespace(
+                st_mode=info.st_mode,
+                st_ino=info.st_ino,
+                st_dev=info.st_dev,
+                st_file_attributes=mounts_module._FILE_ATTRIBUTE_REPARSE_POINT,
+                st_reparse_tag=mounts_module._IO_REPARSE_TAG_CLOUD,
+            )
+        return info
+
+    monkeypatch.setattr(mounts_module.os, "lstat", lstat_with_cloud)
+
+    result = run_test_wiki(
+        source,
+        revision,
+        skill,
+        host / "staging",
+        host / "published",
+        writing_model(
+            write_pages_code({"index.md": SIMPLE_WIKI_PAGE}),
+            ["index.md"],
+        ),
+    )
+    assert isinstance(result, Complete)
+    assert (host / "published" / "index.md").is_file()
+
+
+def test_create_directory_path_rejects_symlink_component(tmp_path: Path) -> None:
+    from okf_wiki import run_mounts as mounts_module
+
+    root = tmp_path / "root"
+    root.mkdir()
+    link = tmp_path / "link-parent"
+    link.symlink_to(root, target_is_directory=True)
+    with pytest.raises(ValueError, match="symbolic link"):
+        mounts_module._create_directory_path(link / "child", "Staging Wiki")
 
 
 def test_prepare_rejects_cross_volume_publication_and_releases(

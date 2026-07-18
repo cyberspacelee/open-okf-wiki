@@ -480,7 +480,9 @@ def test_wiki_run_rejects_a_publication_parent_symlink_into_source(tmp_path: Pat
         model_called = True
         raise AssertionError("model must not run for overlapping publication")
 
-    with pytest.raises(ValueError, match="must not (overlap|contain symlinks)"):
+    with pytest.raises(
+        ValueError, match="must not (overlap|contain a symbolic link|contain symlink)"
+    ):
         asyncio.run(
             WikiRunApplication().run(
                 WikiRunRequest(
