@@ -15,12 +15,15 @@ from ..provider_env import (
     ENV_OPENAI_PROJECT_ID,
 )
 
-# Credential-related env keys operators need for OpenAI-compatible runs.
+# Credential-related env keys operators need for common provider families.
 CREDENTIAL_ENV_KEYS: tuple[str, ...] = (
     ENV_OPENAI_API_KEY,
     ENV_OPENAI_BASE_URL,
     ENV_OPENAI_ORG_ID,
     ENV_OPENAI_PROJECT_ID,
+    "ANTHROPIC_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
 )
 
 

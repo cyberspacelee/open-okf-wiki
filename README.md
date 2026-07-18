@@ -39,17 +39,20 @@ uv run --locked okf-wiki --help
 
 | Command | Purpose |
 |---|---|
+| *(no subcommand, TTY)* | Opens the **Operator Session** (same as `tui`) |
 | `init` | Initialize a project directory and write `wiki-run.yaml` |
-| `wiki-run` | Generate or refresh a Wiki |
+| `wiki-run` | Generate or refresh a Wiki (non-interactive; use `--yes` to auto-approve publish) |
 | `wiki-retry` | Manual Retry Run from a failed or cancelled Wiki Run Record |
-| `tui` | Line-oriented interactive run operator (TTY) |
+| `tui` | Interactive **Operator Session** (TTY): cards, HITL publish, Needs Input, slash commands |
+| `doctor` | Credential presence report (set/unset, redacted; no raw secrets) |
 | `viz` | Static HTML Wiki Visualization from a Published Wiki |
 | `wiki-eval` | Deterministic or live producer evaluation |
 | `skill-fork` | Editable copy of a Skill Version |
 | `skill-inspect` | Validate a Skill directory and report its content digest |
 
-This release is CLI-only: no product web app. Optional Wiki Visualization is static HTML under
-`viz/` (browser or `file://`); it is not a run dashboard.
+This release is CLI-only: no product web app. Interactive use is Session-first on a TTY; automation
+uses `wiki-run` JSON. Optional Wiki Visualization is static HTML under `viz/` (browser or `file://`);
+it is not a run dashboard.
 
 ## Quick start
 
@@ -71,16 +74,27 @@ uv run --locked okf-wiki init ./my-wiki-project \
 cd ./my-wiki-project   # if you used 2b
 
 # 3) Edit wiki-run.yaml (model, repos, ignores) and .env
+uv run --locked okf-wiki doctor   # optional: check credentials (set/unset only)
 
-# 4) Generate — defaults to ./wiki-run.yaml when --config is omitted
-uv run --locked okf-wiki wiki-run
+# 4a) Interactive Operator Session (TTY; bare okf-wiki also works on a TTY)
+uv run --locked okf-wiki
+# or: uv run --locked okf-wiki tui
+
+# 4b) Non-interactive generate — defaults to ./wiki-run.yaml; --yes auto-approves publish
+uv run --locked okf-wiki wiki-run --yes
 
 # 5) Optional: static HTML + link graph of the Published Wiki
 uv run --locked okf-wiki viz ./.okf-wiki/wiki
 ```
 
-`init` never calls the model. `wiki-run` and `tui` load `./wiki-run.yaml` by default when you omit
-`--config` and do not pass direct source flags. Re-init with `--force` to replace an existing YAML.
+`init` never calls the model. On a TTY, bare `okf-wiki` opens the Operator Session. `wiki-run` and
+`tui` load `./wiki-run.yaml` by default when you omit `--config` and do not pass direct source flags.
+Re-init with `--force` to replace an existing YAML.
+
+**Publication is human-gated by default.** After validation (and the Wiki Reviewer when enabled),
+non-interactive `wiki-run` without `--yes` / `--yolo` ends in `awaiting_publication` (exit code **3**)
+and does not change the Published Wiki. Interactive Session prompts approve/deny; YOLO/`--yes` only
+auto-approves deferred publication (Host validation and locks still apply).
 
 ## Provider environment
 
@@ -97,7 +111,7 @@ current directory. Process environment always wins. `PYTHON_DOTENV_DISABLED=1` s
 
 | Variable | Purpose |
 |---|---|
-| `OPENAI_API_KEY` | API key (most gateways; some local servers may omit it) |
+| `OPENAI_API_KEY` | API key (required for `openai:*` unless `OPENAI_BASE_URL` alone is set for local authless servers) |
 | `OPENAI_BASE_URL` | Chat Completions base URL (usually ends with `/v1`) |
 | `OPENAI_ORG_ID` / `OPENAI_PROJECT_ID` | Optional OpenAI org/project |
 
@@ -111,6 +125,20 @@ OPENAI_API_KEY=sk-...
 OPENAI_API_KEY=...
 OPENAI_BASE_URL=https://openrouter.ai/api/v1
 # YAML / CLI: model: openai:your-served-model-id
+```
+
+### Other providers (preflight)
+
+When the model prefix matches, these keys are required before a Wiki Run starts:
+
+| Model prefix | Environment |
+|---|---|
+| `anthropic:` / `claude:` | `ANTHROPIC_API_KEY` |
+| `google:` / `gemini:` / … | `GOOGLE_API_KEY` or `GEMINI_API_KEY` |
+
+```bash
+uv run --locked okf-wiki doctor
+# stderr: human summary; stdout: JSON with set/unset, length, source (no raw secrets)
 ```
 
 ### Product defaults (non-secret)
@@ -127,15 +155,16 @@ YAML and CLI override these when set:
 | `OKF_WIKI_OUTPUT_TOKENS_LIMIT` | Run-level cumulative output budget |
 | `OKF_WIKI_TOTAL_TOKENS_LIMIT` | Run-level cumulative total budget |
 | `OKF_WIKI_REQUEST_TIMEOUT_SECONDS` | Provider request timeout |
+| `OKF_WIKI_ERROR_DUMP` | Opt-in path/`1`/`auto` for secret-scrubbed failure diagnostics |
 
-`.env.example` also lists Anthropic, Google, Azure OpenAI, and OpenRouter variables for other
-Pydantic AI provider prefixes.
+`.env.example` also lists Azure OpenAI and OpenRouter variables for other Pydantic AI prefixes.
 
 **Secrets never go in Wiki Run YAML.** Keys, tokens, and headers there are rejected. Credentials are
 not copied into prompts, run records, staging, or publication metadata.
 
-Invalid YAML or limits now report **field-level messages** (not a bare “configuration is invalid”).
-Provider transport failures that look secret-bearing remain withheld.
+Invalid YAML or limits report **field-level messages**. Operator-facing errors are secret-redacted but
+otherwise kept readable (missing API keys are not collapsed to a generic withheld string). Residual
+secret-like fragments after redaction may still be withheld.
 
 ## Initialize a project (`okf-wiki init`)
 
@@ -176,8 +205,9 @@ Success JSON includes `config`, `directory`, and short `next` steps. After init:
 1. Edit `repositories` (paths, `branch` or `revision`, optional `ignore`).
 2. Confirm `staging` / `publication` (defaults under `.okf-wiki/` beside the YAML).
 3. Set `model` and optional `limits` / `write_visualization`.
-4. Put credentials in `.env` beside the YAML.
-5. From the project directory: `okf-wiki wiki-run` or `okf-wiki tui`.
+4. Put credentials in `.env` beside the YAML; run `okf-wiki doctor` if unsure.
+5. From the project directory: `okf-wiki` / `okf-wiki tui` (interactive), or
+   `okf-wiki wiki-run --yes` (non-interactive publish).
 
 ### YAML contents
 
@@ -196,6 +226,9 @@ model: openai:gpt-5-mini
 #   max_tokens: 8192
 #   temperature: 0.2
 #   timeout: 120
+
+# Optional separate model for the Host Wiki Reviewer (falls back to model above):
+# reviewer_model: anthropic:claude-sonnet-4-6
 
 staging: .okf-wiki/staging
 publication: .okf-wiki/wiki
@@ -233,14 +266,19 @@ The product reads existing clean local checkouts; it does not clone, fetch, or p
 ### YAML mode (recommended)
 
 ```bash
-# From the project directory (./wiki-run.yaml):
-uv run --locked okf-wiki wiki-run
+# From the project directory (./wiki-run.yaml); --yes auto-approves publication:
+uv run --locked okf-wiki wiki-run --yes
 
 # Explicit path:
-uv run --locked okf-wiki wiki-run --config ./wiki-run.yaml
+uv run --locked okf-wiki wiki-run --config ./wiki-run.yaml --yes
+
+# Optional separate Reviewer model for this run:
+uv run --locked okf-wiki wiki-run --yes --reviewer-model anthropic:claude-sonnet-4-6
 ```
 
 Optional: `--write-visualization` / `--no-write-visualization` when not set in YAML.
+Without `--yes` / `--yolo`, a successful Staging validation ends in **`awaiting_publication`**
+(exit **3**); Staging is kept and the Published Wiki is unchanged until approval.
 
 ### Direct CLI (single repository)
 
@@ -255,12 +293,15 @@ OPENAI_API_KEY=... uv run --locked okf-wiki wiki-run "$SOURCE" \
   --source-revision "$REVISION" \
   --staging /absolute/path/to/empty-staging \
   --publication /absolute/path/to/published-wiki \
-  --model openai:gpt-5-mini
+  --model openai:gpt-5-mini \
+  --yes
 ```
 
-Success is one JSON object (`Complete` + manifest + change summary). Needs Input returns
-`status: needs_input` without publishing. Operational failures return `ok: false` with a type and
-secret-safe message; the previous Published Wiki is left unchanged.
+Success is one JSON object (`Complete` + manifest + change summary) when publication is approved
+(`--yes` / YOLO / interactive approve). Needs Input returns `status: needs_input` without publishing.
+`awaiting_publication` returns exit **3** with JSON `run_status` (and does not publish). Operational
+failures return `ok: false` with a type and secret-safe message; the previous Published Wiki is left
+unchanged.
 
 ## Refresh a Published Wiki
 
@@ -281,7 +322,8 @@ OPENAI_API_KEY=... uv run --locked okf-wiki wiki-run "$SOURCE" \
   --source-revision "$NEW_REVISION" \
   --staging /absolute/path/to/new-empty-refresh-staging \
   --publication /absolute/path/to/published-wiki \
-  --model openai:gpt-5-mini
+  --model openai:gpt-5-mini \
+  --yes
 ```
 
 Refresh needs a Host-owned real-directory publication from a successful Generate (with
@@ -290,16 +332,34 @@ Refresh needs a Host-owned real-directory publication from a successful Generate
 again. Summaries report page adds/changes/removes; provenance can still publish when content is
 unchanged but revision/ignores or Skill digest changed.
 
-## Interactive TUI
+## Operator Session (interactive)
 
-Line-oriented operator status (plan/branches/receipts)—not a web UI:
+Session-first interactive shell (not a web UI). On a TTY, bare `okf-wiki` is the same as `tui`:
 
 ```bash
+uv run --locked okf-wiki                     # TTY → Operator Session
 uv run --locked okf-wiki tui                 # ./wiki-run.yaml by default
 uv run --locked okf-wiki tui --config ./wiki-run.yaml
+uv run --locked okf-wiki tui --yes           # start with YOLO auto-approve
 ```
 
-Non-TTY is rejected; automation should use `wiki-run` JSON.
+Shows simplified Host progress cards (plan, children, receipts, compaction, validation, review,
+publish). Publication is approve/deny unless YOLO is on. Needs Input answers start a **new** Wiki
+Run with `explicit_answers` (does not resume the prior Semantic Workflow).
+
+Useful slash commands:
+
+| Command | Meaning |
+|---|---|
+| `/yolo [on\|off]` | Toggle publication auto-approve only |
+| `/mode build\|ask` | `build` starts Wiki Runs; `ask` records history only |
+| `/usage` | Last Wiki Run id/status in this Session |
+| `/doctor` | Credential presence (redacted) |
+| `/sessions` `/new` `/resume <id>` | Multi-session list / create / resume history |
+| `/quit` | Exit |
+
+Sessions are stored under `.okf-wiki/sessions/` (history only—not Wiki Run graph resume). Non-TTY is
+rejected for the Session entry; automation should use `wiki-run --yes` JSON.
 
 ## Wiki Visualization
 

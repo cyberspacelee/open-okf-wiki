@@ -12,6 +12,9 @@ model: openai:gpt-5-mini
 #   temperature: 0.2
 #   timeout: 120
 
+# Optional separate Host Wiki Reviewer model (falls back to model above):
+# reviewer_model: anthropic:claude-sonnet-4-6
+
 # Paths are relative to this YAML file.
 staging: ../.scratch/wiki-staging
 publication: ../wiki
