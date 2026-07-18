@@ -194,6 +194,13 @@ from .security import (  # noqa: F401
     git_read as git_read,
     redact_secrets as redact_secrets,
 )
+from .publication_status import (
+    status_awaiting as _status_awaiting,
+    status_declined as _status_declined,
+    status_not_started as _status_not_started,
+    status_published as _status_published,
+    status_unchanged as _status_unchanged,
+)
 
 # Keep os/sys available on this module for older tests that patch via wiki_run.
 import sys as sys  # noqa: F401
@@ -218,7 +225,7 @@ def _default_retry_counters() -> dict[str, int]:
 
 
 def _default_publication_status() -> dict[str, object]:
-    return {"status": "not_published", "changed": False}
+    return _status_not_started()
 
 
 @dataclass
@@ -292,6 +299,7 @@ class WikiRunApplication:
         self.last_visualization_error: str | None = None
         self.last_observer_errors: int = 0
         self.last_run_id: str | None = None
+        self.last_run_status: WikiRunRecordStatus | None = None
 
     async def run(self, request: WikiRunRequest) -> WikiRunResult:
         # Fail before snapshot freeze / mounts when credentials are clearly missing.
@@ -303,6 +311,7 @@ class WikiRunApplication:
         self.last_visualization_error = None
         self.last_observer_errors = 0
         self.last_run_id = run_id
+        self.last_run_status = None
         lifecycle = RunLifecycle(
             publication=_record_publication_path(request.publication),
             skill_path=request.skill.path.absolute(),
@@ -378,6 +387,7 @@ class WikiRunApplication:
             else:
                 status = "complete"
                 emit("run_succeeded")
+            self.last_run_status = status
             if not self._finalize_record(
                 request,
                 run_id=run_id,
@@ -395,6 +405,7 @@ class WikiRunApplication:
                 lifecycle.provider_retry,
             )
             emit("run_cancelled", {"error_type": "CancelledError"})
+            self.last_run_status = "cancelled"
             if not self._finalize_record(
                 request,
                 run_id=run_id,
@@ -417,6 +428,7 @@ class WikiRunApplication:
                     lifecycle.provider_retry.as_counters(),
                 )
             emit("run_failed", {"error_type": type(error).__name__})
+            self.last_run_status = "failed"
             if not self._finalize_record(
                 request,
                 run_id=run_id,
@@ -754,39 +766,18 @@ class WikiRunApplication:
                                     "visualization_failed",
                                     {"reason_code": type(error).__name__},
                                 )
-                        published_status: dict[str, object] = {
-                            "status": "published",
-                            "changed": True,
-                        }
-                        if review_fragment is not None:
-                            published_status["reviewer"] = review_fragment
-                        lifecycle.publication_status = published_status
+                        lifecycle.publication_status = _status_published(reviewer=review_fragment)
                         lifecycle.terminal_status = "complete"
                     elif decision == "denied":
                         # Operator declined: do not publish. Staging remains for
                         # further Session work; Published Wiki is untouched.
-                        declined_status: dict[str, object] = {
-                            "status": "publication_declined",
-                            "changed": False,
-                        }
-                        if review_fragment is not None:
-                            declined_status["reviewer"] = review_fragment
-                        lifecycle.publication_status = declined_status
+                        lifecycle.publication_status = _status_declined(reviewer=review_fragment)
                         lifecycle.terminal_status = "publication_declined"
                     else:
-                        awaiting_status: dict[str, object] = {
-                            "status": "awaiting_publication",
-                            "changed": False,
-                        }
-                        if review_fragment is not None:
-                            awaiting_status["reviewer"] = review_fragment
-                        lifecycle.publication_status = awaiting_status
+                        lifecycle.publication_status = _status_awaiting(reviewer=review_fragment)
                         lifecycle.terminal_status = "awaiting_publication"
                 else:
-                    lifecycle.publication_status = {
-                        "status": "unchanged",
-                        "changed": False,
-                    }
+                    lifecycle.publication_status = _status_unchanged()
                     lifecycle.terminal_status = "complete"
                 return output
             lifecycle.terminal_status = "needs_input"

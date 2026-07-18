@@ -617,3 +617,27 @@ def test_default_sessions_dir_is_project_local(
     monkeypatch.chdir(tmp_path)
     assert default_sessions_dir() == tmp_path / ".okf-wiki" / "sessions"
     assert default_sessions_dir(tmp_path / "proj") == tmp_path / "proj" / ".okf-wiki" / "sessions"
+
+
+def test_session_mode_ask_does_not_start_wiki_run(tmp_path: Path) -> None:
+    session = OperatorSession(base_request=_base_request(tmp_path), yolo=True)
+    session.set_mode("ask")
+    reply = session.note_ask("how does auth work?")
+    assert "ask mode" in reply
+    assert session.last_run_id is None
+    assert any(m.role == "user" and "auth" in m.content for m in session.message_history)
+    slash = session.handle_slash("/mode build")
+    assert slash is not None
+    assert session.mode == "build"
+    usage = session.handle_slash("/usage")
+    assert usage is not None
+    assert "No Wiki Run" in usage.message
+
+
+def test_slash_mode_and_usage_after_run(tmp_path: Path) -> None:
+    session = OperatorSession(base_request=_base_request(tmp_path, auto_approve=True), yolo=True)
+    turn = asyncio.run(session.run_wiki())
+    assert turn.run_id
+    usage = session.handle_slash("/usage")
+    assert usage is not None
+    assert turn.run_id and turn.run_id[:8] in usage.message or session.last_run_id

@@ -171,8 +171,11 @@ async def run_operator_session(
                 break
             continue
 
-        # Natural-language turn: record goal and start a fresh Wiki Run.
-        # Full multi-turn conversation Agent is intentionally stubbed here.
+        # Natural-language turn.
+        if session.mode == "ask":
+            print_line(session.note_ask(stripped))
+            continue
+        # build mode: record goal and start a fresh Wiki Run.
         try:
             last_result = await execute_run(label=stripped)
         except Exception as error:

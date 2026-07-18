@@ -521,3 +521,21 @@ def test_skill_inspect_cli_reports_the_current_resolved_version(
         "ok": True,
         "skill_version": {"digest": expected.digest, "path": str(expected.path)},
     }
+
+
+def test_normalize_argv_defaults_to_tui_on_tty(monkeypatch: pytest.MonkeyPatch) -> None:
+    from okf_wiki.cli import _normalize_argv
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    assert _normalize_argv([]) == ["tui"]
+    assert _normalize_argv(["--config", "x.yaml"]) == ["tui", "--config", "x.yaml"]
+    assert _normalize_argv(["wiki-run", "--yes"]) == ["wiki-run", "--yes"]
+
+
+def test_normalize_argv_leaves_non_tty_bare(monkeypatch: pytest.MonkeyPatch) -> None:
+    from okf_wiki.cli import _normalize_argv
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    assert _normalize_argv([]) == []

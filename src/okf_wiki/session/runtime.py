@@ -155,6 +155,7 @@ class OperatorSession:
 
     base_request: WikiRunRequest
     yolo: bool = False
+    mode: Literal["build", "ask"] = "build"
     publication_approval_handler: PublicationApprovalHandler | None = None
     on_card: CardSink | None = None
     store: SessionStore | None = None
@@ -167,14 +168,25 @@ class OperatorSession:
     last_run_id: str | None = None
     last_result: WikiRunResult | None = None
     last_request: WikiRunRequest | None = None
+    last_run_status: str | None = None
+    last_usage: dict[str, object] | None = None
 
     def set_yolo(self, enabled: bool) -> None:
         self.yolo = bool(enabled)
         state = "on" if self.yolo else "off"
         self._note("system", f"YOLO auto-approve publication: {state}")
 
+    def set_mode(self, mode: Literal["build", "ask"]) -> None:
+        if mode not in {"build", "ask"}:
+            raise ValueError("mode must be 'build' or 'ask'")
+        self.mode = mode
+        self._note("system", f"Session mode: {mode}")
+
     def yolo_indicator(self) -> str:
         return "YOLO" if self.yolo else "HITL"
+
+    def mode_indicator(self) -> str:
+        return self.mode
 
     def preflight(self) -> None:
         """Fail fast on missing credentials before expensive Session work."""
@@ -415,7 +427,8 @@ class OperatorSession:
         result = await application.run(run_request)
         self.last_result = result
         self.last_run_id = application.last_run_id or self.last_run_id
-        status = getattr(result, "status", type(result).__name__)
+        self.last_run_status = getattr(application, "last_run_status", None)
+        status = self.last_run_status or getattr(result, "status", type(result).__name__)
         self._note("assistant", f"Wiki Run finished: {status}")
         # Best-effort Session history persist after each Host job (not graph resume).
         if self.store is not None:
@@ -434,6 +447,26 @@ class OperatorSession:
             run_id=self.last_run_id,
             yolo=bool(run_request.auto_approve_publication),
         )
+
+    def note_ask(self, question: str) -> str:
+        """Record an ask-mode turn without starting a Wiki Run or publishing.
+
+        Full conversation ``Agent.iter`` remains future work; ask mode keeps
+        Operator Session multi-turn history without Host publication side effects.
+        """
+        self.append_user(question)
+        reply = (
+            "ask mode: recorded your question in Session history. "
+            "No Wiki Run started and Published Wiki is unchanged. "
+            "Switch to /mode build to generate or refresh the Wiki."
+        )
+        self._note("assistant", reply)
+        if self.store is not None:
+            try:
+                self.persist()
+            except Exception:
+                pass
+        return reply
 
     async def continue_after_needs_input(
         self,
@@ -498,6 +531,40 @@ class OperatorSession:
                 message=format_credential_report(report),
                 doctor_report=report,
             )
+
+        if name == "mode":
+            if arg in {"build", "b"}:
+                self.set_mode("build")
+            elif arg in {"ask", "a"}:
+                self.set_mode("ask")
+            elif arg == "":
+                return SlashCommandResult(
+                    name="mode",
+                    message=f"Session mode: {self.mode} (build starts Wiki Runs; ask records only)",
+                )
+            else:
+                return SlashCommandResult(
+                    name="mode",
+                    message="Usage: /mode build|ask — build runs Wiki jobs; ask only records history.",
+                )
+            return SlashCommandResult(
+                name="mode",
+                message=f"Session mode: {self.mode}",
+            )
+
+        if name == "usage":
+            if self.last_run_id is None and self.last_run_status is None:
+                return SlashCommandResult(
+                    name="usage",
+                    message="No Wiki Run in this Session yet.",
+                )
+            bits = [
+                f"last_run_id={self.last_run_id or '(none)'}",
+                f"last_run_status={self.last_run_status or '(unknown)'}",
+                f"mode={self.mode}",
+                f"yolo={self.yolo}",
+            ]
+            return SlashCommandResult(name="usage", message=" · ".join(bits))
 
         if name == "sessions":
             if self.store is None:
@@ -588,13 +655,16 @@ class OperatorSession:
                 message=(
                     "Operator Session commands:\n"
                     "  /yolo [on|off]  Toggle publication auto-approve (YOLO)\n"
+                    "  /mode build|ask Build starts Wiki Runs; ask records history only\n"
+                    "  /usage          Last Wiki Run id/status in this Session\n"
                     "  /doctor         Credential presence (set/unset, redacted)\n"
                     "  /sessions       List Operator Sessions for this project\n"
                     "  /new            Start a new Session (Host config unchanged)\n"
                     "  /resume <id>    Resume Session history (does not publish)\n"
                     "  /quit           Exit the Session\n"
                     "  /help           This help\n"
-                    "Type a goal to start a Wiki Run (generate/refresh from config).\n"
+                    "In build mode, type a goal to start a Wiki Run from config.\n"
+                    "In ask mode, messages are recorded without Host publication.\n"
                     "Needs Input answers start a new Wiki Run with explicit_answers.\n"
                     "Publication requires approve/deny unless YOLO is on."
                 ),

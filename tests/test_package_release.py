@@ -33,6 +33,7 @@ PACKAGE_FILES = {
     "provider_env.py",
     "provider_retry.py",
     "publication_gate.py",
+    "publication_status.py",
     "run_config.py",
     "run_models.py",
     "run_mounts.py",
@@ -407,6 +408,7 @@ Path('/wiki/index.md').write_text('---\\ntitle: Package Wiki\\n---\\n# Package W
     assert all(path == "/v1/chat/completions" for path in request_paths)
     assert json.loads(result.stdout) == {
         "ok": True,
+        "run_status": "complete",
         "result": {
             "manifest": {"pages": ["index.md"]},
             "status": "complete",

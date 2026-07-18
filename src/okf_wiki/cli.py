@@ -115,7 +115,7 @@ def _add_error_dump_flag(parser: argparse.ArgumentParser) -> None:
 
 def parser() -> argparse.ArgumentParser:
     command = argparse.ArgumentParser(prog="okf-wiki")
-    subcommands = command.add_subparsers(dest="command", required=True)
+    subcommands = command.add_subparsers(dest="command", required=False)
 
     init = subcommands.add_parser(
         "init",
@@ -521,8 +521,46 @@ def _wiki_run_request(arguments: argparse.Namespace):
     )
 
 
+_CLI_COMMANDS = frozenset(
+    {
+        "init",
+        "wiki-run",
+        "wiki-retry",
+        "tui",
+        "wiki-eval",
+        "skill-fork",
+        "skill-inspect",
+        "viz",
+        "doctor",
+    }
+)
+
+
+def _normalize_argv(argv: list[str]) -> list[str]:
+    """Session-first: bare invocation becomes `tui` (Operator Session).
+
+    When the first non-option token is missing or not a known subcommand, insert
+    ``tui`` so flags like ``--config`` still attach to the Session entry.
+    Non-TTY bare invocation is left as-is so argparse can fail or show help.
+    """
+    if any(arg in _CLI_COMMANDS for arg in argv):
+        return argv
+    # No subcommand token present.
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return argv
+    return ["tui", *argv]
+
+
 def main() -> int:
-    arguments = parser().parse_args()
+    arguments = parser().parse_args(_normalize_argv(sys.argv[1:]))
+    if getattr(arguments, "command", None) is None:
+        print(
+            "okf-wiki: interactive Operator Session requires a TTY; "
+            "pass a subcommand (wiki-run, doctor, …) for non-interactive use, "
+            "or run on a TTY for the default Session.",
+            file=sys.stderr,
+        )
+        return 2
     error_dump_path: Path | None = None
     try:
         if arguments.command == "doctor":
@@ -655,6 +693,20 @@ def main() -> int:
             visualization_error = getattr(application, "last_visualization_error", None)
             if visualization_error is not None:
                 payload["visualization_error"] = visualization_error
+            run_status = getattr(application, "last_run_status", None)
+            if run_status is not None:
+                payload["run_status"] = run_status
+            if run_status == "awaiting_publication":
+                print(
+                    "okf-wiki: run awaiting_publication — pass --yes/--yolo to auto-approve, "
+                    "or use `okf-wiki tui` / bare `okf-wiki` on a TTY to approve interactively.",
+                    file=sys.stderr,
+                )
+                payload["awaiting_publication"] = True
+                emit(payload)
+                return 3
+            if run_status == "publication_declined":
+                payload["publication_declined"] = True
             emit(payload)
             return 0
 

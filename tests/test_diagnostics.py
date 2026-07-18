@@ -24,13 +24,12 @@ def test_preflight_passes_when_openai_key_set(monkeypatch: pytest.MonkeyPatch) -
     preflight_provider_credentials("openai:gpt-5-mini")
 
 
-def test_preflight_passes_for_non_openai_and_non_string_models(
+def test_preflight_passes_for_unknown_and_non_string_models(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv(ENV_OPENAI_API_KEY, raising=False)
     monkeypatch.delenv(ENV_OPENAI_BASE_URL, raising=False)
     preflight_provider_credentials("test")
-    preflight_provider_credentials("anthropic:claude")
     preflight_provider_credentials(object())  # FunctionModel-style fixture
 
 
@@ -114,3 +113,11 @@ def test_doctor_report_set_unset_redacted_preview(
     text = format_credential_report(report)
     assert f"{ENV_OPENAI_API_KEY}: set (length={len(secret)}, source=process)" in text
     assert "OPENAI_ORG_ID: unset" in text
+
+
+def test_preflight_anthropic_requires_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    with pytest.raises(ConfigError, match="ANTHROPIC_API_KEY"):
+        preflight_provider_credentials("anthropic:claude-sonnet-4-6")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    preflight_provider_credentials("anthropic:claude-sonnet-4-6")
