@@ -1,3 +1,6 @@
+from pathlib import Path
+
+import pytest
 from pydantic import BaseModel, Field, ValidationError
 
 from okf_wiki.errors import (
@@ -9,8 +12,6 @@ from okf_wiki.errors import (
     is_operator_safe_exception,
     operator_error,
 )
-from pathlib import Path
-
 from okf_wiki.security import (
     PROVIDER_DIAGNOSTICS_WITHHELD,
     safe_error_message,
@@ -71,6 +72,37 @@ def test_safe_error_message_still_withholds_provider_runtime_errors() -> None:
     assert is_operator_safe_exception(ConfigError("bad config"))
     assert is_operator_safe_exception(PublicationError("locked"))
     assert not is_operator_safe_exception(AssertionError("internal"))
+
+
+def test_safe_error_message_surfaces_missing_credential_runtime_errors() -> None:
+    """OpenAI-style missing-key failures must not collapse to withheld solely by type."""
+    openai_style = (
+        "The api_key client option must be set either by passing api_key to the client "
+        "or by setting the OPENAI_API_KEY environment variable"
+    )
+    message = safe_error_message(RuntimeError(openai_style))
+    assert message != PROVIDER_DIAGNOSTICS_WITHHELD
+    assert "OPENAI_API_KEY" in message
+    assert "api_key client option" in message
+
+    # Exception type alone (e.g. SDK OpenAIError-like) must not force withhold.
+    class OpenAIError(Exception):
+        pass
+
+    sdk_message = safe_error_message(OpenAIError(openai_style))
+    assert sdk_message != PROVIDER_DIAGNOSTICS_WITHHELD
+    assert "OPENAI_API_KEY" in sdk_message
+
+
+def test_safe_error_message_surfaces_redacted_non_marker_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "live-env-secret-value-xyz"
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
+    message = safe_error_message(RuntimeError(f"upstream rejected token {secret}"))
+    assert message != PROVIDER_DIAGNOSTICS_WITHHELD
+    assert secret not in message
+    assert "upstream rejected token" in message
 
 
 def test_safe_exception_traceback_preserves_stacks_and_redacts_secrets() -> None:

@@ -132,6 +132,55 @@ def test_wiki_run_yaml_parse_errors_include_detail(tmp_path: Path) -> None:
     assert len(message) > len("Wiki Run YAML is not readable valid UTF-8 YAML:")
 
 
+def test_wiki_run_yaml_optional_reviewer_model_falls_back_when_omitted(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=source, check=True)
+    (source / "README.md").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-qm", "x"], cwd=source, check=True)
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=source, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    bare = tmp_path / "bare.yaml"
+    bare.write_text(
+        f"""version: 1
+model: openai:gpt-5-mini
+staging: ./staging
+publication: ./published
+repositories:
+  - id: app
+    path: ./source
+    revision: {revision}
+""",
+        encoding="utf-8",
+    )
+    with_reviewer = tmp_path / "with-reviewer.yaml"
+    with_reviewer.write_text(
+        f"""version: 1
+model: openai:gpt-5-mini
+reviewer_model: openai:gpt-4o-mini
+staging: ./staging
+publication: ./published
+repositories:
+  - id: app
+    path: ./source
+    revision: {revision}
+""",
+        encoding="utf-8",
+    )
+
+    bare_request = WikiRunRequest.from_yaml(bare)
+    assert bare_request.reviewer_model is None
+    reviewer_request = WikiRunRequest.from_yaml(with_reviewer)
+    assert reviewer_request.reviewer_model is not None
+    assert reviewer_request.reviewer_model.model == "openai:gpt-4o-mini"
+    assert reviewer_request.model.model == "openai:gpt-5-mini"
+
+
 def test_resolve_effective_source_ignores_unions_defaults_with_user_ignore() -> None:
     assert resolve_effective_source_ignores(
         apply_default_source_ignores=True,

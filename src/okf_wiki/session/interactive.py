@@ -1,0 +1,220 @@
+"""TTY adapter for the Operator Session API.
+
+Thin presentation over :class:`OperatorSession`: prints cards, prompts for
+slash commands / goals, HITL publish, and Needs Input. Non-TTY is rejected
+via :func:`okf_wiki.tui.require_tty`.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from typing import TextIO
+
+from rich.console import Console
+from rich.text import Text
+
+from ..security import safe_error_message
+from ..wiki_run import NeedsInput, WikiRunRequest, WikiRunResult
+from .runtime import (
+    InputFn,
+    OperatorSession,
+    interactive_publication_handler,
+)
+from .store import SessionStore, default_sessions_dir
+from .tty import require_tty
+
+
+def _default_input(prompt: str) -> str:
+    return input(prompt)
+
+
+def _format_run_error(error: BaseException) -> str:
+    if isinstance(error, Exception):
+        detail = safe_error_message(error)
+        return f"{type(error).__name__}: {detail}"
+    return f"{type(error).__name__}: {error}"
+
+
+async def run_operator_session(
+    request: WikiRunRequest,
+    *,
+    console: Console | None = None,
+    input_fn: InputFn | None = None,
+    check_tty: bool = True,
+    yolo: bool = False,
+    auto_start: bool = True,
+    max_turns: int | None = None,
+    stdin: TextIO | None = None,
+    store: SessionStore | None = None,
+    sessions_dir: Path | None = None,
+    resume_session_id: str | None = None,
+) -> WikiRunResult | None:
+    """Run the interactive Operator Session prompt loop.
+
+    Parameters
+    ----------
+    request:
+        Base Wiki Run request (usually from ``wiki-run.yaml``).
+    yolo:
+        Initial YOLO (auto-approve publication) flag; also toggleable via ``/yolo``.
+    auto_start:
+        When True, start one Wiki Run immediately on entry (generate/refresh
+        from config). When False, wait for the first prompt line.
+    max_turns:
+        Optional cap on user turns (tests). ``None`` means unlimited until
+        ``/quit`` or EOF.
+    store / sessions_dir:
+        Multi-session persistence (ticket 07). Defaults to
+        ``.okf-wiki/sessions`` under the current working directory.
+    resume_session_id:
+        When set, load that Session's history on entry (does not publish).
+    """
+    if check_tty:
+        require_tty(stdin) if stdin is not None else require_tty()
+
+    out = console or Console(stderr=False)
+    ask: InputFn = input_fn or _default_input
+
+    def print_line(text: str) -> None:
+        out.print(Text(text))
+
+    session_store = store
+    if session_store is None:
+        session_store = SessionStore(sessions_dir or default_sessions_dir())
+
+    session = OperatorSession(
+        base_request=request,
+        yolo=yolo or request.auto_approve_publication,
+        on_card=lambda card: print_line(card.text),
+        store=session_store,
+    )
+    # Interactive HITL unless YOLO is active for a given run.
+    session.publication_approval_handler = interactive_publication_handler(input_fn=ask)
+
+    # Credential preflight at Session entry (ticket 01 diagnostics).
+    session.preflight()
+
+    if resume_session_id:
+        snapshot = session.resume_from_store(resume_session_id)
+        print_line(
+            f"Resumed Operator Session {snapshot.id[:12]} "
+            f"[{session.yolo_indicator()}] — history only, no auto-publish. "
+            "Type a goal, or /help. /quit to exit."
+        )
+    else:
+        # Register a durable Session id without starting a Wiki Run.
+        try:
+            created = session.start_new_session()
+            print_line(
+                f"Operator Session {created.id[:12]} ready [{session.yolo_indicator()}]. "
+                "Type a goal, or /help. /sessions /new /resume /quit."
+            )
+        except Exception:
+            print_line(
+                f"Operator Session ready [{session.yolo_indicator()}]. "
+                "Type a goal, or /help. /quit to exit."
+            )
+
+    last_result: WikiRunResult | None = None
+    turns = 0
+
+    async def execute_run(*, label: str | None = None) -> WikiRunResult:
+        nonlocal last_result
+        if label:
+            session.append_user(label)
+            print_line(f"starting Wiki Run: {label!r}")
+        else:
+            print_line("starting Wiki Run from Session config")
+        turn = await session.run_wiki()
+        last_result = turn.result
+
+        # Needs Input: collect answers and start a **new** Wiki Run.
+        while isinstance(turn.result, NeedsInput):
+            print_line("needs input — answers start a new Wiki Run (prior run not resumed)")
+            answers = session.collect_needs_input_answers(
+                turn.result,
+                input_fn=ask,
+                run_id=turn.run_id,
+            )
+            turn = await session.continue_after_needs_input(turn, answers)
+            last_result = turn.result
+
+        status = getattr(turn.result, "status", type(turn.result).__name__)
+        print_line(f"run finished status={status} yolo={turn.yolo}")
+        return turn.result
+
+    if auto_start:
+        try:
+            last_result = await execute_run()
+        except Exception as error:
+            print_line(f"run error: {_format_run_error(error)}")
+            raise
+
+    while True:
+        if max_turns is not None and turns >= max_turns:
+            break
+        try:
+            line = ask("okf-wiki> ")
+        except EOFError:
+            print_line("EOF — exiting Operator Session")
+            break
+        turns += 1
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        slash = session.handle_slash(stripped)
+        if slash is not None:
+            print_line(slash.message)
+            if slash.quit:
+                break
+            continue
+
+        # Natural-language turn: record goal and start a fresh Wiki Run.
+        # Full multi-turn conversation Agent is intentionally stubbed here.
+        try:
+            last_result = await execute_run(label=stripped)
+        except Exception as error:
+            print_line(f"run error: {_format_run_error(error)}")
+            raise
+
+    return last_result
+
+
+def run_operator_session_sync(
+    request: WikiRunRequest,
+    *,
+    console: Console | None = None,
+    input_fn: InputFn | None = None,
+    check_tty: bool = True,
+    yolo: bool = False,
+    auto_start: bool = True,
+    max_turns: int | None = None,
+    stdin: TextIO | None = None,
+    store: SessionStore | None = None,
+    sessions_dir: Path | None = None,
+    resume_session_id: str | None = None,
+) -> WikiRunResult | None:
+    """Sync entry for CLI ``asyncio.run`` wrappers."""
+    return asyncio.run(
+        run_operator_session(
+            request,
+            console=console,
+            input_fn=input_fn,
+            check_tty=check_tty,
+            yolo=yolo,
+            auto_start=auto_start,
+            max_turns=max_turns,
+            stdin=stdin,
+            store=store,
+            sessions_dir=sessions_dir,
+            resume_session_id=resume_session_id,
+        )
+    )
+
+
+__all__ = [
+    "run_operator_session",
+    "run_operator_session_sync",
+]

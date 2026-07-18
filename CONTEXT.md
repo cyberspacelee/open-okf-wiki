@@ -42,19 +42,27 @@ _Avoid_: Python state machine, fixed role pipeline, Host Instructions dump
 
 **Run Plan**:
 The current objective, completion gates, evidence gaps, and delegated-scope status that keep one Wiki Run oriented across long investigation and compaction.
-_Avoid_: Todo transcript, message history, durable checkpoint
+_Avoid_: Todo transcript, Operator Session history, durable checkpoint of the Semantic Workflow
+
+**Operator Session**:
+The operator-facing multi-turn work context for one project: conversation history, HITL gates, mode, and zero or more Wiki Runs started from that context.
+_Avoid_: Wiki Run, chat session as a resumable Semantic Workflow, Production Run, model transcript as the Wiki
+
+**Wiki Reviewer**:
+An independent, bounded agent role that inspects the Staging Wiki against the Repository Snapshot Set and Producer Skill review guidance, producing a defects receipt for the operator and Root; it does not write Wiki pages or publish.
+_Avoid_: Host mechanical validation, Skill self-review alone, multi-model voting panel, publisher
 
 **Wiki Run**:
-One attempt to derive and publish a Wiki from a Repository Snapshot Set using one exact Skill Version or Skill Fork revision.
-_Avoid_: Agent turn, chat session, Production Run
+One attempt to derive and publish a Wiki from a Repository Snapshot Set using one exact Skill Version or Skill Fork revision; it may be started from an Operator Session but is not the Session itself.
+_Avoid_: Agent turn, Operator Session, Production Run
 
 **Wiki Run Record**:
-An immutable, secret-free terminal record of one Wiki Run's frozen inputs, outcome, usage, and publication status, used for audit and to create a Manual Retry Run.
-_Avoid_: Message history, Analysis Receipt, durable checkpoint
+An immutable, secret-free terminal record of one Wiki Run's frozen inputs, outcome, usage, and publication status, used for audit and to create a Manual Retry Run. Terminal statuses distinguish published success, needs input, failure, cancellation, awaiting operator publication approval, and operator-declined publication with Staging retained.
+_Avoid_: Operator Session history, Analysis Receipt, durable checkpoint of the Semantic Workflow
 
 **Staging Wiki**:
-The isolated candidate Wiki written during a Wiki Run and not visible as the published result until validation succeeds.
-_Avoid_: Published Wiki, model memory
+The isolated candidate Wiki written during a Wiki Run and not visible as the published result until validation succeeds and the operator (or YOLO) approves publication; declining publication leaves Staging intact for further Session work and does not alter the Published Wiki.
+_Avoid_: Published Wiki, model memory, automatic discard on publish denial
 
 **Published Wiki**:
 The complete validated Markdown tree made visible as the result of a successful Wiki Run.
@@ -73,8 +81,8 @@ A Wiki Run that updates an existing Published Wiki for a newer Repository Snapsh
 _Avoid_: Knowledge-graph invalidation, patch-only rendering
 
 **Manual Retry Run**:
-A newly created Wiki Run started by a human from an earlier Wiki Run Record after automatic retries are exhausted; it reuses the earlier run's frozen inputs by default but has its own run identity and does not resume the earlier conversation or partial receipts.
-_Avoid_: Resume, checkpoint recovery, automatic retry
+A newly created Wiki Run started by a human from an earlier Wiki Run Record after automatic retries are exhausted; it reuses the earlier run's frozen inputs by default but has its own run identity and does not resume the earlier Semantic Workflow or partial receipts (it may attach to the same Operator Session).
+_Avoid_: Resume of a Wiki Run graph, checkpoint recovery of Staging as Published, automatic retry
 
 **递归委派树**:
 一个 Wiki Run 内按 Root、Domain 和 Leaf 分层的有界 Agent 委派结构；每个 child 使用独立上下文调查受限 source scope，并向 parent 返回可复核的 Source Citation evidence。

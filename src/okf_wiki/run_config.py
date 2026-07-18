@@ -99,6 +99,10 @@ class _WikiRunFileConfig(BaseModel):
     model: Annotated[_ConfiguredModel, BeforeValidator(_coerce_configured_model)] = Field(
         default_factory=_ConfiguredModel
     )
+    # Optional separate Wiki Reviewer model; string or object form, same as ``model``.
+    reviewer_model: (
+        Annotated[_ConfiguredModel, BeforeValidator(_coerce_configured_model)] | None
+    ) = None
     staging: Path
     publication: Path
     repositories: tuple[_ConfiguredRepository, ...] = Field(min_length=1, max_length=64)
@@ -249,6 +253,18 @@ def _wiki_run_request_from_yaml(path: Path) -> WikiRunRequest:
             timeout=config.model.timeout,
         )
         limits = WikiRunLimits.build(config.limits)
+        reviewer_config: ModelProviderConfig | None = None
+        if config.reviewer_model is not None:
+            reviewer_identity = resolve_model_identity(config.reviewer_model.identity)
+            reviewer_settings = resolve_model_settings(
+                max_tokens=config.reviewer_model.max_tokens,
+                temperature=config.reviewer_model.temperature,
+                top_p=config.reviewer_model.top_p,
+                timeout=config.reviewer_model.timeout,
+            )
+            reviewer_config = ModelProviderConfig(
+                model=reviewer_identity, settings=reviewer_settings
+            )
     except (ValidationError, ValueError) as error:
         raise operator_error("Wiki Run YAML configuration is invalid", error) from error
     return WikiRunRequest(
@@ -261,4 +277,5 @@ def _wiki_run_request_from_yaml(path: Path) -> WikiRunRequest:
         publication=_configured_path(root, config.publication),
         retain_analysis_workspace=config.retain_analysis_workspace,
         write_visualization=config.write_visualization,
+        reviewer_model=reviewer_config,
     )

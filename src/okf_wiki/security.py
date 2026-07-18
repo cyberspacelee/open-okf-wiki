@@ -125,19 +125,16 @@ def environment_secrets(extra: tuple[str, ...] = ()) -> tuple[str, ...]:
 
 
 def safe_error_message(error: Exception, *, secrets: tuple[str, ...] = ()) -> str:
-    """Return a secret-safe operator message, or withhold provider diagnostics.
+    """Return a secret-safe operator message, or withhold residual secret-bearing text.
 
-    Host configuration / filesystem / validation errors are surfaced after redaction.
-    Provider transport and other opaque failures remain withheld when they look
-    secret-bearing or are not operator-safe exception types.
+    Known credential values are redacted first. The redacted message is surfaced for any
+    exception type — including provider ``RuntimeError`` / SDK failures — so operators see
+    actionable diagnostics (missing keys, timeouts, validation). Withhold only when residual
+    secret-like markers remain after redaction (``authorization:``, ``bearer ``, ``api_key=``,
+    ``password=``, ``secret=``, etc.).
     """
-    from .errors import is_operator_safe_exception
-
-    raw = str(error)
-    message = redact_secrets(raw, environment_secrets(secrets))
-    if message != raw or any(marker in message.casefold() for marker in _SECRET_TEXT_MARKERS):
-        return PROVIDER_DIAGNOSTICS_WITHHELD
-    if not is_operator_safe_exception(error):
+    message = redact_secrets(str(error), environment_secrets(secrets))
+    if any(marker in message.casefold() for marker in _SECRET_TEXT_MARKERS):
         return PROVIDER_DIAGNOSTICS_WITHHELD
     return message
 

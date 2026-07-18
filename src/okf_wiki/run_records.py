@@ -9,7 +9,7 @@ import uuid
 from collections.abc import Iterator, Mapping
 from datetime import datetime
 from pathlib import Path
-from typing import Literal, cast
+from typing import cast
 
 from pydantic import ValidationError
 from pydantic_ai import ModelSettings
@@ -22,6 +22,7 @@ from .run_models import (
     RepositorySnapshot,
     WikiRunLimits,
     WikiRunRecord,
+    WikiRunRecordStatus,
     WikiRunRequest,
 )
 from .run_mounts import _check_directory_path, _create_directory_path
@@ -201,6 +202,7 @@ _EVENT_SAFE_KEYS = {
     "warning_tokens",
     "before_tokens",
     "target_tokens",
+    "defect_count",
 }
 
 
@@ -396,7 +398,7 @@ def _write_run_record(
     *,
     run_id: str,
     publication: Path,
-    status: Literal["complete", "needs_input", "failed", "cancelled"],
+    status: WikiRunRecordStatus,
     started_at: datetime,
     completed_at: datetime,
     usage: object,

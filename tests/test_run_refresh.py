@@ -441,6 +441,7 @@ def test_refresh_enforces_wiki_copy_ceilings_before_model_work(tmp_path: Path) -
                     limits=WikiRunLimits(wiki_file_bytes_limit=10),
                     staging=tmp_path / "refresh-staging",
                     publication=published,
+                    auto_approve_publication=True,
                 )
             )
         )

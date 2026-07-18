@@ -11,13 +11,17 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
 
 from pydantic_ai import (
     ModelRetry,
     ModelSettings,
     RunUsage,
     UsageLimitExceeded,
+)
+
+from .publication_gate import (
+    PublicationApprovalHandler,
+    resolve_publication_approval,
 )
 
 from .analysis_workspace import (
@@ -30,9 +34,12 @@ from .analysis_workspace import (
 )
 from .adaptive_orchestration import (
     AdaptiveOrchestrator,
+    ReviewDefectsSummary,
     build_root_agent,
+    run_host_wiki_reviewer,
     should_enable_adaptive,
 )
+from .diagnostics import preflight_provider_credentials
 from .errors import HostValidationError
 from .provider_retry import (
     ProviderRetryState,
@@ -58,6 +65,7 @@ from .run_models import (
     WikiRunEvent as WikiRunEvent,
     WikiRunLimits as WikiRunLimits,
     WikiRunRecord as WikiRunRecord,
+    WikiRunRecordStatus as WikiRunRecordStatus,
     WikiRunRequest as WikiRunRequest,
     WikiRunResourceLimitError as WikiRunResourceLimitError,
     WikiRunResult as WikiRunResult,
@@ -231,6 +239,10 @@ class RunLifecycle:
     visualization: dict[str, object] | None = None
     visualization_error: str | None = None
     observer_errors: int = 0
+    # Set when agent work finishes successfully (Complete / NeedsInput / HITL gate).
+    terminal_status: WikiRunRecordStatus | None = None
+    # Bounded Wiki Reviewer defects for the publication gate / approval UI.
+    reviewer_defects: ReviewDefectsSummary | None = None
 
 
 def _resource_limit_message(errors: list[str]) -> str | None:
@@ -268,14 +280,22 @@ def _resource_limit_from_exception(error: BaseException) -> str | None:
 
 
 class WikiRunApplication:
-    def __init__(self, observer: Callable[[WikiRunEvent], object] | None = None) -> None:
+    def __init__(
+        self,
+        observer: Callable[[WikiRunEvent], object] | None = None,
+        *,
+        publication_approval_handler: PublicationApprovalHandler | None = None,
+    ) -> None:
         self._observer = observer
+        self._publication_approval_handler = publication_approval_handler
         self.last_visualization: dict[str, object] | None = None
         self.last_visualization_error: str | None = None
         self.last_observer_errors: int = 0
         self.last_run_id: str | None = None
 
     async def run(self, request: WikiRunRequest) -> WikiRunResult:
+        # Fail before snapshot freeze / mounts when credentials are clearly missing.
+        preflight_provider_credentials(request.model.model)
         run_id = os.urandom(16).hex()
         sequence = 0
         started_at = datetime.now(UTC)
@@ -344,13 +364,20 @@ class WikiRunApplication:
                 self.last_visualization = lifecycle.visualization
             if lifecycle.visualization_error is not None:
                 self.last_visualization_error = lifecycle.visualization_error
-            status: Literal["complete", "needs_input"] = (
-                "complete" if isinstance(result, Complete) else "needs_input"
-            )
-            if status == "complete":
-                emit("run_succeeded")
-            else:
+            if isinstance(result, NeedsInput):
+                status: WikiRunRecordStatus = "needs_input"
                 emit("needs_input")
+            elif lifecycle.terminal_status is not None:
+                status = lifecycle.terminal_status
+                if status == "awaiting_publication":
+                    emit("awaiting_publication")
+                elif status == "publication_declined":
+                    emit("publication_declined")
+                else:
+                    emit("run_succeeded")
+            else:
+                status = "complete"
+                emit("run_succeeded")
             if not self._finalize_record(
                 request,
                 run_id=run_id,
@@ -412,7 +439,7 @@ class WikiRunApplication:
         run_id: str,
         started_at: datetime,
         lifecycle: RunLifecycle,
-        status: Literal["complete", "needs_input", "failed", "cancelled"],
+        status: WikiRunRecordStatus,
         failure_category: str | None,
     ) -> bool:
         publication = lifecycle.publication
@@ -558,6 +585,18 @@ class WikiRunApplication:
             )
             if workspace is None:
                 raise RuntimeError("Analysis Workspace was not initialized for this Wiki Run")
+            reviewer_model_cfg = request.reviewer_model
+            resolved_reviewer_model: object | None = None
+            reviewer_settings: ModelSettings | None = None
+            if reviewer_model_cfg is not None:
+                reviewer_settings = ModelSettings(**reviewer_model_cfg.settings)
+                reviewer_settings["timeout"] = request.limits.request_timeout_seconds
+                resolved_reviewer_model = prepare_model_with_provider_retry(
+                    reviewer_model_cfg.model,
+                    state=provider_state,
+                    emit=emit,
+                    wall_clock_deadline=wall_deadline,
+                )
             agent, orchestration = build_root_agent(
                 model=resolved_model,
                 settings=settings,
@@ -572,6 +611,8 @@ class WikiRunApplication:
                 adaptive=adaptive,
                 write_limit=request.limits.wiki_write_bytes_limit,
                 emit=emit,
+                reviewer_model=resolved_reviewer_model,
+                reviewer_settings=reviewer_settings,
             )
             run_usage = RunUsage()
             lifecycle.usage = run_usage
@@ -634,55 +675,119 @@ class WikiRunApplication:
                 )
                 output = result.output.model_copy(update={"summary": summary})
                 if summary.publication_changed:
-                    emit("publication_started")
-                    model_name = result.response.model_name
-                    if not model_name:
-                        raise RuntimeError("Final model response did not identify its model")
-                    _publish_wiki(
-                        sources,
-                        staging,
-                        publication,
-                        output.manifest,
-                        repositories=_published_repositories(request.repositories),
-                        skill_digest=skill_digest,
-                        model_name=model_name,
-                        limits=request.limits,
+                    # Host-owned Wiki Reviewer before HITL publish (adaptive + non-adaptive).
+                    # Mechanical validation already ran in the Complete output_validator.
+                    defects_args: dict[str, object] | None = None
+                    if orchestration.policy.enable_reviewer:
+                        review_model = (
+                            resolved_reviewer_model
+                            if resolved_reviewer_model is not None
+                            else resolved_model
+                        )
+                        review_settings = (
+                            reviewer_settings if reviewer_settings is not None else settings
+                        )
+                        defects = await run_host_wiki_reviewer(
+                            model=review_model,
+                            settings=review_settings,
+                            source_mount=source_mount,
+                            skill_mount=skill,
+                            staging=staging,
+                            workspace=workspace,
+                            run_id=run_id,
+                            policy=orchestration.policy,
+                            root_deps=orchestration.root_deps,
+                            metrics=orchestration.metrics,
+                            emit=emit,
+                        )
+                        lifecycle.reviewer_defects = defects
+                        defects_args = defects.as_gate_args()
+                    decision, _requests, _results = await resolve_publication_approval(
+                        auto_approve=request.auto_approve_publication,
+                        handler=self._publication_approval_handler,
+                        defects=defects_args,
                     )
-                    emit("publication_succeeded")
-                    if request.write_visualization:
-                        try:
-                            from .wiki_visualization import generate_wiki_visualization
+                    review_fragment = (
+                        None
+                        if lifecycle.reviewer_defects is None
+                        else lifecycle.reviewer_defects.as_record_fragment()
+                    )
+                    if decision == "approved":
+                        emit("publication_started")
+                        model_name = result.response.model_name
+                        if not model_name:
+                            raise RuntimeError("Final model response did not identify its model")
+                        _publish_wiki(
+                            sources,
+                            staging,
+                            publication,
+                            output.manifest,
+                            repositories=_published_repositories(request.repositories),
+                            skill_digest=skill_digest,
+                            model_name=model_name,
+                            limits=request.limits,
+                        )
+                        emit("publication_succeeded")
+                        if request.write_visualization:
+                            try:
+                                from .wiki_visualization import generate_wiki_visualization
 
-                            visualization = generate_wiki_visualization(publication)
-                            lifecycle.visualization = {
-                                "output": str(visualization.output_dir),
-                                "index": str(visualization.index_path),
-                                "graph": str(visualization.graph_path),
-                                "generator_version": visualization.generator_version,
-                                "page_count": visualization.page_count,
-                                "edge_count": visualization.edge_count,
-                            }
-                            emit(
-                                "visualization_written",
-                                {
+                                visualization = generate_wiki_visualization(publication)
+                                lifecycle.visualization = {
                                     "output": str(visualization.output_dir),
                                     "index": str(visualization.index_path),
-                                },
-                            )
-                        except Exception as error:
-                            lifecycle.visualization_error = type(error).__name__
-                            emit(
-                                "visualization_failed",
-                                {"reason_code": type(error).__name__},
-                            )
-                    lifecycle.publication_status = {
-                        "status": "published",
-                        "changed": True,
-                    }
+                                    "graph": str(visualization.graph_path),
+                                    "generator_version": visualization.generator_version,
+                                    "page_count": visualization.page_count,
+                                    "edge_count": visualization.edge_count,
+                                }
+                                emit(
+                                    "visualization_written",
+                                    {
+                                        "output": str(visualization.output_dir),
+                                        "index": str(visualization.index_path),
+                                    },
+                                )
+                            except Exception as error:
+                                lifecycle.visualization_error = type(error).__name__
+                                emit(
+                                    "visualization_failed",
+                                    {"reason_code": type(error).__name__},
+                                )
+                        published_status: dict[str, object] = {
+                            "status": "published",
+                            "changed": True,
+                        }
+                        if review_fragment is not None:
+                            published_status["reviewer"] = review_fragment
+                        lifecycle.publication_status = published_status
+                        lifecycle.terminal_status = "complete"
+                    elif decision == "denied":
+                        # Operator declined: do not publish. Staging remains for
+                        # further Session work; Published Wiki is untouched.
+                        declined_status: dict[str, object] = {
+                            "status": "publication_declined",
+                            "changed": False,
+                        }
+                        if review_fragment is not None:
+                            declined_status["reviewer"] = review_fragment
+                        lifecycle.publication_status = declined_status
+                        lifecycle.terminal_status = "publication_declined"
+                    else:
+                        awaiting_status: dict[str, object] = {
+                            "status": "awaiting_publication",
+                            "changed": False,
+                        }
+                        if review_fragment is not None:
+                            awaiting_status["reviewer"] = review_fragment
+                        lifecycle.publication_status = awaiting_status
+                        lifecycle.terminal_status = "awaiting_publication"
                 else:
                     lifecycle.publication_status = {
                         "status": "unchanged",
                         "changed": False,
                     }
+                    lifecycle.terminal_status = "complete"
                 return output
+            lifecycle.terminal_status = "needs_input"
             return result.output

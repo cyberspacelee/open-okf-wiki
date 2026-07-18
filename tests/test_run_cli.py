@@ -69,7 +69,57 @@ def test_wiki_run_cli_exposes_wall_clock_deadline() -> None:
     assert arguments.wiki_total_bytes_limit == 16
     assert arguments.wiki_write_bytes_limit == 17
     assert arguments.publication == Path("published")
+    assert arguments.auto_approve_publication is False
     assert WikiRunLimits.model_fields.keys() <= vars(arguments).keys()
+
+
+def test_wiki_run_cli_exposes_reviewer_model_flag() -> None:
+    arguments = parser().parse_args(
+        [
+            "wiki-run",
+            "source",
+            "--source-revision",
+            "0" * 40,
+            "--staging",
+            "staging",
+            "--publication",
+            "published",
+            "--reviewer-model",
+            "openai:gpt-4o-mini",
+        ]
+    )
+    assert arguments.reviewer_model == "openai:gpt-4o-mini"
+
+
+def test_wiki_run_cli_yes_and_yolo_enable_auto_approve_publication() -> None:
+    yes_args = parser().parse_args(
+        [
+            "wiki-run",
+            "source",
+            "--source-revision",
+            "0" * 40,
+            "--staging",
+            "staging",
+            "--publication",
+            "published",
+            "--yes",
+        ]
+    )
+    yolo_args = parser().parse_args(
+        [
+            "wiki-run",
+            "source",
+            "--source-revision",
+            "0" * 40,
+            "--staging",
+            "staging",
+            "--publication",
+            "published",
+            "--yolo",
+        ]
+    )
+    assert yes_args.auto_approve_publication is True
+    assert yolo_args.auto_approve_publication is True
 
 
 def test_cli_exposes_only_the_greenfield_product_commands() -> None:
@@ -86,6 +136,7 @@ def test_cli_exposes_only_the_greenfield_product_commands() -> None:
         "skill-fork",
         "skill-inspect",
         "viz",
+        "doctor",
     )
 
 
@@ -365,12 +416,72 @@ def test_wiki_run_cli_includes_traceback_for_runtime_errors(
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
     assert payload["ok"] is False
-    # Message may still be withheld (RuntimeError is not operator-safe), but stack is present.
+    # Clean RuntimeError text is surfaced after redaction (not type-allowlisted away).
     assert payload["error"]["type"] == "RuntimeError"
+    assert "connection reset" in payload["error"]["message"]
     assert "traceback" in payload["error"]
     assert "connection reset" in payload["error"]["traceback"]
     assert "Traceback" in captured.err
     assert "connection reset" in captured.err
+
+
+def test_doctor_cli_reports_credentials_without_raw_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    secret = "doctor-cli-secret-never-emit"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_ORG_ID", raising=False)
+    monkeypatch.delenv("OPENAI_PROJECT_ID", raising=False)
+    (tmp_path / ".env").write_text(f"OPENAI_API_KEY={secret}\n", encoding="utf-8")
+    monkeypatch.setattr("sys.argv", ["okf-wiki", "doctor"])
+
+    assert main() == 0
+    captured = capsys.readouterr()
+    assert secret not in captured.out
+    assert secret not in captured.err
+    payload = json.loads(captured.out)
+    assert payload["ok"] is True
+    by_name = {item["name"]: item for item in payload["doctor"]["credentials"]}
+    assert by_name["OPENAI_API_KEY"]["status"] == "set"
+    assert by_name["OPENAI_API_KEY"]["length"] == len(secret)
+    assert by_name["OPENAI_API_KEY"]["source"] == "dotenv"
+    assert secret not in by_name["OPENAI_API_KEY"]["preview"]
+    assert "OPENAI_API_KEY: set" in captured.err
+    assert secret not in captured.err
+
+
+def test_wiki_run_cli_preflight_missing_openai_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "okf-wiki",
+            "wiki-run",
+            str(tmp_path / "source"),
+            "--source-revision",
+            "0" * 40,
+            "--staging",
+            str(tmp_path / "staging"),
+            "--publication",
+            str(tmp_path / "published"),
+            "--model",
+            "openai:gpt-5-mini",
+        ],
+    )
+
+    assert main() == 1
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["ok"] is False
+    assert payload["error"]["type"] == "ConfigError"
+    assert "OPENAI_API_KEY" in payload["error"]["message"]
+    assert ".env" in payload["error"]["message"]
+    assert "provider diagnostics withheld" not in payload["error"]["message"]
 
 
 def test_skill_fork_cli_creates_an_owned_copy_of_the_default(

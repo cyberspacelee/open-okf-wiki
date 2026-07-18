@@ -3,12 +3,29 @@ import asyncio
 import json
 import re
 import subprocess
+from dataclasses import dataclass, field
 
 import pytest
-from pydantic_ai import ModelSettings
-from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
+from pydantic_ai import ModelRequestContext, ModelSettings, RunUsage
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
+from pydantic_ai.models import ModelRequestParameters
+from pydantic_ai.models.test import TestModel
+from pydantic_ai.tools import RunContext
 from pydantic_ai_harness import CodeMode
-from pydantic_ai_harness.compaction import TieredCompaction
+from pydantic_ai_harness.compaction import (
+    ClampOversizedMessages,
+    ClearToolResults,
+    LimitWarner,
+    SummarizingCompaction,
+    TieredCompaction,
+)
 from pydantic_ai_harness.dynamic_workflow import DynamicWorkflow
 from pydantic_ai_harness.overflowing_tool_output import OverflowingToolOutput
 from pydantic_ai_harness.planning import Planning
@@ -21,6 +38,10 @@ from okf_wiki.adaptive_orchestration import (
     should_enable_adaptive,
 )
 from okf_wiki.analysis_workspace import AnalysisWorkspace
+from okf_wiki.context_capabilities import (
+    ObservableTieredCompaction,
+    build_context_capabilities,
+)
 from okf_wiki.wiki_run import WikiRunLimits
 from okf_wiki.wiki_run import (
     Complete,
@@ -33,7 +54,115 @@ from okf_wiki.wiki_run import (
 )
 
 
-def _builder(tmp_path: Path, limits: WikiRunLimits, *, adaptive: bool = True):
+def _has_context_stack(capabilities: list) -> None:
+    """Assert LimitWarner + ObservableTieredCompaction + OverflowingToolOutput."""
+    assert any(isinstance(capability, LimitWarner) for capability in capabilities)
+    assert any(isinstance(capability, ObservableTieredCompaction) for capability in capabilities)
+    assert any(isinstance(capability, TieredCompaction) for capability in capabilities)
+    assert any(isinstance(capability, OverflowingToolOutput) for capability in capabilities)
+
+
+def test_build_context_capabilities_returns_harness_stack(tmp_path: Path) -> None:
+    workspace = AnalysisWorkspace("a" * 32, root=tmp_path / "analysis")
+    try:
+        capabilities = build_context_capabilities(
+            model="test",
+            target_tokens=100_000,
+            workspace=workspace,
+        )
+        assert len(capabilities) == 3
+        warner, compaction, overflow = capabilities
+        assert isinstance(warner, LimitWarner)
+        assert warner.max_context_tokens == 100_000
+        assert warner.warning_threshold == 0.7
+        assert isinstance(compaction, ObservableTieredCompaction)
+        assert compaction.target_tokens == 50_000
+        assert compaction.trigger_tokens == 60_000
+        assert compaction.warning_tokens == 70_000
+        tier_types = [type(tier) for tier in compaction.tiers]
+        assert tier_types == [ClampOversizedMessages, ClearToolResults, SummarizingCompaction]
+        assert isinstance(overflow, OverflowingToolOutput)
+    finally:
+        workspace.cleanup()
+
+
+def test_build_context_capabilities_rejects_non_positive_target(tmp_path: Path) -> None:
+    workspace = AnalysisWorkspace("a" * 32, root=tmp_path / "analysis")
+    try:
+        with pytest.raises(ValueError, match="target_tokens"):
+            build_context_capabilities(model="test", target_tokens=0, workspace=workspace)
+    finally:
+        workspace.cleanup()
+
+
+@dataclass
+class _ObservationDeps:
+    compaction_warning_emitted: bool = False
+    depth: int = 1
+    role: str = "domain"
+    node_id: str | None = "domain-1"
+    events: list[tuple[str, dict, str | None]] = field(default_factory=list)
+
+    def emit(self, event_type: str, payload: dict, *, node_id: str | None = None) -> None:
+        self.events.append((event_type, payload, node_id))
+
+
+def test_observable_tiered_compaction_emits_warning_and_completed_on_over_budget() -> None:
+    """Synthetic over-budget history: warning once, then completed when clamp rewrites."""
+    content = "word " * 50_000
+    messages = [
+        ModelRequest(parts=[UserPromptPart(content="hi")]),
+        ModelResponse(parts=[TextPart(content=content)]),
+    ]
+    deps = _ObservationDeps()
+    model = TestModel()
+    capability = ObservableTieredCompaction(
+        tiers=[ClampOversizedMessages(max_part_chars=100, keep_head_chars=20, keep_tail_chars=20)],
+        target_tokens=100,
+        trigger_tokens=1_000,
+        warning_tokens=500,
+    )
+    run_ctx = RunContext(deps=deps, model=model, usage=RunUsage())
+    request = ModelRequestContext(
+        model=model,
+        messages=list(messages),
+        model_settings=None,
+        model_request_parameters=ModelRequestParameters(),
+    )
+    result = asyncio.run(capability.before_model_request(run_ctx, request))
+    event_types = [event[0] for event in deps.events]
+    assert event_types == ["compaction_warning", "compaction_completed"]
+    warning = deps.events[0][1]
+    assert warning["node_kind"] == "domain"
+    assert warning["depth"] == 1
+    assert warning["warning_tokens"] == 500
+    assert deps.events[0][2] == "domain-1"
+    completed = deps.events[1][1]
+    assert completed["target_tokens"] == 100
+    assert completed["before_tokens"] > 1_000
+    part0 = result.messages[1].parts[0]
+    part_content = getattr(part0, "content", "")
+    assert isinstance(part_content, str)
+    assert len(part_content) < len(content)
+    # Warning is once per deps instance.
+    again = ModelRequestContext(
+        model=model,
+        messages=list(messages),
+        model_settings=None,
+        model_request_parameters=ModelRequestParameters(),
+    )
+    asyncio.run(capability.before_model_request(run_ctx, again))
+    assert sum(1 for event in deps.events if event[0] == "compaction_warning") == 1
+
+
+def _builder(
+    tmp_path: Path,
+    limits: WikiRunLimits,
+    *,
+    adaptive: bool = True,
+    reviewer_model: object | None = None,
+    reviewer_settings: ModelSettings | None = None,
+):
     source = tmp_path / "source"
     skill = tmp_path / "skill"
     staging = tmp_path / "staging"
@@ -54,7 +183,9 @@ def _builder(tmp_path: Path, limits: WikiRunLimits, *, adaptive: bool = True):
         limits=limits,
         adaptive=adaptive,
         write_limit=1_000_000,
-        emit=lambda *_: None,
+        emit=lambda *_args, **_kwargs: None,
+        reviewer_model=reviewer_model,
+        reviewer_settings=reviewer_settings,
     )
     return agent, orchestration, workspace
 
@@ -102,6 +233,7 @@ def _run_adaptive(
                 limits=WikiRunLimits(**limit_values),
                 staging=tmp_path / "staging",
                 publication=tmp_path / "published",
+                auto_approve_publication=True,
             )
         )
     )
@@ -119,14 +251,16 @@ def test_small_scope_does_not_trigger_adaptive_fanout() -> None:
     )
 
 
-def test_small_scope_keeps_the_historical_single_agent_capability_set(tmp_path: Path) -> None:
+def test_small_scope_keeps_codemode_without_adaptive_roster(tmp_path: Path) -> None:
+    """Non-adaptive roots still get context capabilities; no Planning/SubAgents roster."""
     agent, orchestration, workspace = _builder(tmp_path, WikiRunLimits(), adaptive=False)
     try:
         assert not orchestration.policy.enabled
         capabilities = agent.root_capability.capabilities
         assert any(isinstance(capability, CodeMode) for capability in capabilities)
+        assert any(isinstance(capability, TieredCompaction) for capability in capabilities)
         assert not any(
-            isinstance(capability, (Planning, TieredCompaction, SubAgents, DynamicWorkflow))
+            isinstance(capability, (Planning, SubAgents, DynamicWorkflow))
             for capability in capabilities
         )
     finally:
@@ -150,8 +284,7 @@ def test_root_capabilities_use_explicit_roster_and_single_writer_mount(tmp_path:
         names = {entry.name for entry in subagents.agents}
         assert names == {"domain_1", "domain_2", "reviewer"}
         assert any(isinstance(capability, Planning) for capability in capabilities)
-        assert any(isinstance(capability, TieredCompaction) for capability in capabilities)
-        assert any(isinstance(capability, OverflowingToolOutput) for capability in capabilities)
+        _has_context_stack(list(capabilities))
 
         root_code = next(
             capability for capability in capabilities if isinstance(capability, CodeMode)
@@ -163,12 +296,20 @@ def test_root_capabilities_use_explicit_roster_and_single_writer_mount(tmp_path:
         domain = next(entry.agent.wrapped for entry in subagents.agents if entry.name == "domain_1")
         domain_capabilities = domain.root_capability.capabilities
         assert any(isinstance(capability, Planning) for capability in domain_capabilities)
-        assert any(isinstance(capability, TieredCompaction) for capability in domain_capabilities)
+        _has_context_stack(list(domain_capabilities))
         domain_code = next(
             capability for capability in domain_capabilities if isinstance(capability, CodeMode)
         )
         assert {mount.virtual_path for mount in domain_code.mount} == {"/source", "/skill"}
         assert not any(mount.virtual_path == "/wiki" for mount in domain_code.mount)
+
+        domain_sub = next(
+            capability for capability in domain_capabilities if isinstance(capability, SubAgents)
+        )
+        leaf = domain_sub.agents[0].agent.wrapped
+        leaf_capabilities = leaf.root_capability.capabilities
+        _has_context_stack(list(leaf_capabilities))
+        assert not any(isinstance(capability, SubAgents) for capability in leaf_capabilities)
 
         reviewer = next(
             entry.agent.wrapped for entry in subagents.agents if entry.name == "reviewer"
@@ -176,6 +317,7 @@ def test_root_capabilities_use_explicit_roster_and_single_writer_mount(tmp_path:
         reviewer_capabilities = reviewer.root_capability.capabilities
         assert any(isinstance(capability, Planning) for capability in reviewer_capabilities)
         assert not any(isinstance(capability, SubAgents) for capability in reviewer_capabilities)
+        _has_context_stack(list(reviewer_capabilities))
         reviewer_code = next(
             capability for capability in reviewer_capabilities if isinstance(capability, CodeMode)
         )
@@ -185,6 +327,36 @@ def test_root_capabilities_use_explicit_roster_and_single_writer_mount(tmp_path:
             "/skill": "read-only",
             "/wiki": "read-only",
         }
+    finally:
+        workspace.cleanup()
+
+
+def test_optional_reviewer_model_is_wired_into_roster(tmp_path: Path) -> None:
+    """Adaptive roster Reviewer uses reviewer_model when provided."""
+
+    def reviewer_fn(messages, info):
+        del messages, info
+        return ModelResponse(parts=[TextPart("unused")])
+
+    reviewer_model = FunctionModel(reviewer_fn)
+    agent, orchestration, workspace = _builder(
+        tmp_path,
+        WikiRunLimits(),
+        reviewer_model=reviewer_model,
+        reviewer_settings=ModelSettings(temperature=0.1),
+    )
+    try:
+        assert orchestration.policy.enable_reviewer
+        capabilities = agent.root_capability.capabilities
+        subagents = next(
+            capability for capability in capabilities if isinstance(capability, SubAgents)
+        )
+        reviewer = next(
+            entry.agent.wrapped for entry in subagents.agents if entry.name == "reviewer"
+        )
+        assert reviewer.model is reviewer_model
+        # Root keeps the producer TestModel from model="test".
+        assert agent.model is not reviewer_model
     finally:
         workspace.cleanup()
 
@@ -395,6 +567,7 @@ def test_adaptive_run_delegates_and_reduces_a_bounded_receipt(tmp_path: Path) ->
                 ),
                 staging=tmp_path / "staging",
                 publication=tmp_path / "published",
+                auto_approve_publication=True,
             )
         )
     )
@@ -508,6 +681,7 @@ def test_recursive_root_domain_leaf_reduces_child_receipts(tmp_path: Path) -> No
                 ),
                 staging=tmp_path / "staging",
                 publication=tmp_path / "published",
+                auto_approve_publication=True,
             )
         )
     )
@@ -612,6 +786,7 @@ def test_failed_domain_attempt_can_retry_once_and_clear_the_unresolved_state(
                 ),
                 staging=tmp_path / "staging",
                 publication=tmp_path / "published",
+                auto_approve_publication=True,
             )
         )
     )
@@ -646,12 +821,15 @@ def test_reviewer_loads_skill_reference_and_publishes_a_defects_receipt(
         ]
         if "You are a Wiki Reviewer." in instructions:
             assignment = re.search(
-                r"run_id=([0-9a-f]{32}), task_id=([^,]+), node_id=([^,]+), parent_id=([^,]+)",
+                r"run_id=([0-9a-f]{32}), task_id=([^,]+), node_id=([^,]+), parent_id=([^,]+), "
+                r"attempt=(\d+)",
                 instructions,
             )
             assert assignment is not None
-            run_id, task_id, node_id, parent_id = assignment.groups()
-            assert task_id == "reviewer" and node_id == "reviewer" and parent_id == "root"
+            run_id, task_id, node_id, parent_id, attempt = assignment.groups()
+            # Mid-run roster uses ``reviewer``; Host pre-publish uses ``publish-reviewer``.
+            assert task_id in {"reviewer", "publish-reviewer"}
+            assert node_id == task_id and parent_id == "root"
             if not run_code_returns:
                 # Load the product review skill, then inspect staged wiki before publishing.
                 code = (
@@ -662,7 +840,7 @@ def test_reviewer_loads_skill_reference_and_publishes_a_defects_receipt(
                     "assert 'Wiki' in wiki\n"
                     "handoff = publish_receipt("
                     f"run_id='{run_id}', node_id='{node_id}', parent_id='{parent_id}', "
-                    "attempt=1, status='complete', scope='review:wiki', "
+                    f"attempt={attempt}, status='complete', scope='review:wiki', "
                     "summary='reviewed staged pages against skill', "
                     "findings=['no critical defects'])\nprint(handoff)"
                 )
@@ -832,6 +1010,7 @@ def test_optional_dynamic_workflow_runs_one_typed_leaf_coordination_layer(
                 ),
                 staging=tmp_path / "staging",
                 publication=tmp_path / "published",
+                auto_approve_publication=True,
             )
         )
     )
@@ -942,6 +1121,7 @@ def test_unresolved_critical_branch_preserves_previous_published_wiki(tmp_path: 
                 ),
                 staging=tmp_path / "staging-prior",
                 publication=publication,
+                auto_approve_publication=True,
             )
         )
     )
@@ -1007,6 +1187,7 @@ def test_unresolved_critical_branch_preserves_previous_published_wiki(tmp_path: 
                     ),
                     staging=tmp_path / "staging-bad",
                     publication=publication,
+                    auto_approve_publication=True,
                 )
             )
         )
@@ -1081,6 +1262,7 @@ def test_parent_direct_fallback_receipt_clears_failed_child(tmp_path: Path) -> N
                 ),
                 staging=tmp_path / "staging",
                 publication=tmp_path / "published",
+                auto_approve_publication=True,
             )
         )
     )

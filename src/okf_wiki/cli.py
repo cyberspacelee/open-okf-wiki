@@ -187,6 +187,14 @@ def parser() -> argparse.ArgumentParser:
         help="Model identity (provider:name). Default: OKF_WIKI_MODEL or openai:gpt-5-mini",
     )
     wiki_run.add_argument(
+        "--reviewer-model",
+        default=None,
+        help=(
+            "Optional Wiki Reviewer model identity (provider:name). "
+            "Falls back to the producer --model when omitted."
+        ),
+    )
+    wiki_run.add_argument(
         "--max-tokens",
         type=int,
         help="Per-completion max output tokens (ModelSettings.max_tokens); env OKF_WIKI_MAX_TOKENS",
@@ -263,6 +271,17 @@ def parser() -> argparse.ArgumentParser:
         default=None,
         help="After successful publication, write a static Wiki Visualization under viz/",
     )
+    wiki_run.add_argument(
+        "--yes",
+        "--yolo",
+        action="store_true",
+        dest="auto_approve_publication",
+        default=False,
+        help=(
+            "Auto-approve publication after Host validation (YOLO / non-interactive yes). "
+            "Does not skip validation, mounts, or publication locks. Off by default."
+        ),
+    )
     _add_error_dump_flag(wiki_run)
 
     wiki_retry = subcommands.add_parser("wiki-retry")
@@ -270,9 +289,26 @@ def parser() -> argparse.ArgumentParser:
     wiki_retry.add_argument("--staging", type=Path, required=True)
     wiki_retry.add_argument("--publication", type=Path, required=True)
     wiki_retry.add_argument("--model")
+    wiki_retry.add_argument(
+        "--yes",
+        "--yolo",
+        action="store_true",
+        dest="auto_approve_publication",
+        default=False,
+        help=(
+            "Auto-approve publication after Host validation (YOLO / non-interactive yes). "
+            "Does not skip validation, mounts, or publication locks. Off by default."
+        ),
+    )
     _add_error_dump_flag(wiki_retry)
 
-    tui = subcommands.add_parser("tui")
+    tui = subcommands.add_parser(
+        "tui",
+        help=(
+            "Interactive Operator Session (conversation shell): stream analysis cards, "
+            "HITL publish approve/deny, Needs Input → new Wiki Run, slash controls"
+        ),
+    )
     tui.add_argument(
         "--config",
         type=Path,
@@ -280,6 +316,17 @@ def parser() -> argparse.ArgumentParser:
         help="Wiki Run YAML path (default: ./wiki-run.yaml when present)",
     )
     tui.add_argument("--retry-record", type=Path)
+    tui.add_argument(
+        "--yes",
+        "--yolo",
+        action="store_true",
+        dest="auto_approve_publication",
+        default=False,
+        help=(
+            "Start the Operator Session with YOLO (auto-approve publication). "
+            "Toggle later with /yolo. Does not skip validation or locks."
+        ),
+    )
     _add_error_dump_flag(tui)
 
     wiki_eval = subcommands.add_parser("wiki-eval")
@@ -308,6 +355,26 @@ def parser() -> argparse.ArgumentParser:
         "--output",
         type=Path,
         help="Directory for visualization artifacts (default: <publication>/viz)",
+    )
+
+    doctor = subcommands.add_parser(
+        "doctor",
+        help="Report credential-related environment presence (set/unset, redacted)",
+    )
+    doctor.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help=(
+            "Optional Wiki Run YAML path; when set, load .env beside that config "
+            "(same rule as wiki-run --config)"
+        ),
+    )
+    doctor.add_argument(
+        "--env-file",
+        type=Path,
+        default=None,
+        help="Optional .env path to load (default: .env beside --config or ./ .env)",
     )
     return command
 
@@ -370,6 +437,9 @@ def _wiki_run_request(arguments: argparse.Namespace):
     if config_path is None and not using_direct:
         config_path = _resolve_config_path(None, allow_default=True, command="wiki-run")
 
+    auto_approve = bool(getattr(arguments, "auto_approve_publication", False))
+    reviewer_model_arg = getattr(arguments, "reviewer_model", None)
+
     if config_path is not None:
         direct_values = (
             arguments.source,
@@ -385,7 +455,19 @@ def _wiki_run_request(arguments: argparse.Namespace):
         )
         if arguments.refresh or any(value is not None for value in direct_values):
             raise ValueError("--config cannot be combined with direct Wiki Run arguments")
-        return WikiRunRequest.from_yaml(config_path)
+        # --yes / --yolo / --reviewer-model may combine with --config.
+        request = WikiRunRequest.from_yaml(config_path)
+        updates: dict[str, object] = {}
+        if auto_approve and not request.auto_approve_publication:
+            updates["auto_approve_publication"] = True
+        if reviewer_model_arg is not None:
+            updates["reviewer_model"] = ModelProviderConfig(
+                model=resolve_model_identity(reviewer_model_arg),
+                settings=resolve_model_settings(),
+            )
+        if updates:
+            return request.model_copy(update=updates)
+        return request
 
     required = {
         "source": arguments.source,
@@ -405,6 +487,15 @@ def _wiki_run_request(arguments: argparse.Namespace):
         for name in WikiRunLimits.model_fields
         if getattr(arguments, name) is not None
     }
+    reviewer_config = None
+    if reviewer_model_arg is not None:
+        reviewer_config = ModelProviderConfig(
+            model=resolve_model_identity(reviewer_model_arg),
+            settings=resolve_model_settings(
+                max_tokens=getattr(arguments, "max_tokens", None),
+                temperature=getattr(arguments, "temperature", None),
+            ),
+        )
     return WikiRunRequest(
         operation="refresh" if arguments.refresh else "generate",
         repositories=(
@@ -425,6 +516,8 @@ def _wiki_run_request(arguments: argparse.Namespace):
         staging=arguments.staging,
         publication=arguments.publication,
         write_visualization=bool(arguments.write_visualization),
+        auto_approve_publication=auto_approve,
+        reviewer_model=reviewer_config,
     )
 
 
@@ -432,6 +525,39 @@ def main() -> int:
     arguments = parser().parse_args()
     error_dump_path: Path | None = None
     try:
+        if arguments.command == "doctor":
+            from .diagnostics import collect_credential_report, format_credential_report
+            from .diagnostics.doctor import CREDENTIAL_ENV_KEYS
+
+            # Snapshot process presence before dotenv so source hints stay honest.
+            process_keys = frozenset(
+                name for name in CREDENTIAL_ENV_KEYS if os.environ.get(name, "").strip()
+            )
+            if arguments.env_file is not None:
+                doctor_dotenv = arguments.env_file
+            elif arguments.config is not None:
+                doctor_dotenv = arguments.config.absolute().parent / ".env"
+            else:
+                doctor_dotenv = Path.cwd() / ".env"
+            if doctor_dotenv.is_file():
+                load_dotenv(doctor_dotenv, override=False)
+            report = collect_credential_report(
+                dotenv_path=doctor_dotenv if doctor_dotenv.is_file() else None,
+                process_keys=process_keys,
+            )
+            # Human-readable summary on stderr; machine-readable JSON on stdout.
+            print(format_credential_report(report), file=sys.stderr)
+            emit(
+                {
+                    "ok": True,
+                    "doctor": {
+                        "credentials": [item.as_dict() for item in report],
+                        "env_file": str(doctor_dotenv) if doctor_dotenv.is_file() else None,
+                    },
+                }
+            )
+            return 0
+
         dotenv = Path.cwd() / ".env"
         if arguments.command == "wiki-run" and arguments.config is not None:
             config_dotenv = arguments.config.absolute().parent / ".env"
@@ -541,6 +667,8 @@ def main() -> int:
                 publication=arguments.publication,
                 model=arguments.model,
             )
+            if getattr(arguments, "auto_approve_publication", False):
+                request = request.model_copy(update={"auto_approve_publication": True})
             application = WikiRunApplication()
             try:
                 result = asyncio.run(application.run(request))
@@ -569,6 +697,7 @@ def main() -> int:
             config_path = _resolve_config_path(arguments.config, allow_default=True, command="tui")
             assert config_path is not None
             configured = WikiRunRequest.from_yaml(config_path)
+            yolo = bool(getattr(arguments, "auto_approve_publication", False))
             if arguments.retry_record is not None:
                 request = WikiRunRequest.from_run_record(
                     arguments.retry_record,
@@ -580,8 +709,10 @@ def main() -> int:
                 )
             else:
                 request = configured
+            if yolo and not request.auto_approve_publication:
+                request = request.model_copy(update={"auto_approve_publication": True})
             try:
-                result = asyncio.run(run_tui(request))
+                result = asyncio.run(run_tui(request, yolo=yolo))
             except Exception as error:
                 error_dump_path = _maybe_write_error_dump(
                     arguments,
@@ -590,7 +721,10 @@ def main() -> int:
                     run_id=None,
                 )
                 raise
-            emit({"ok": True, "result": result.model_dump(mode="json")})
+            payload: dict[str, object] = {"ok": True, "session": True}
+            if result is not None:
+                payload["result"] = result.model_dump(mode="json")
+            emit(payload)
             return 0
 
         if arguments.command == "viz":

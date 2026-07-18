@@ -19,7 +19,6 @@ from typing import Any, Literal, cast
 from pydantic_ai import (
     Agent,
     FunctionToolset,
-    ModelRequestContext,
     ModelRetry,
     ModelSettings,
     RunUsage,
@@ -31,22 +30,7 @@ from pydantic_ai.capabilities import AbstractCapability, ValidatedToolArgs
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import RunContext
 from pydantic_ai_harness import CodeMode
-from pydantic_ai_harness.compaction import (
-    ClampOversizedMessages,
-    ClearToolResults,
-    LimitWarner,
-    SummarizingCompaction,
-    TieredCompaction,
-    estimate_token_count,
-)
-from pydantic_ai_harness.compaction._summarizing_compaction import _format_messages
 from pydantic_ai_harness.dynamic_workflow import DynamicWorkflow, WorkflowAgent
-from pydantic_ai_harness.overflowing_tool_output import (
-    Band,
-    OverflowingToolOutput,
-    Spill,
-    Truncate,
-)
 from pydantic_ai_harness.planning import Planning
 from pydantic_ai_harness.subagents import SubAgent, SubAgents
 from pydantic_monty import MountDir
@@ -58,10 +42,19 @@ from .analysis_workspace import (
     ReceiptArtifact,
     ReceiptEvidence,
 )
+from .context_capabilities import build_context_capabilities
+from .security import environment_secrets, redact_secrets
 
 
 Role = Literal["root", "domain", "leaf", "reviewer"]
 NodeState = Literal["pending", "running", "complete", "partial", "failed", "cancelled"]
+
+# Host pre-publish Reviewer node (distinct from adaptive mid-run roster ``reviewer``).
+HOST_PUBLISH_REVIEWER_NODE_ID = "publish-reviewer"
+
+# Bounded defects fields exposed on the publication gate / lifecycle.
+_MAX_DEFECT_FINDINGS = 16
+_MAX_DEFECT_TEXT_CHARS = 500
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,8 +205,11 @@ class _AdaptiveMetrics:
             self.next_attempts[node_id] = self.next_attempts.get(node_id, 1) + 1
 
     def unresolved_failures(self) -> int:
+        # Host pre-publish Reviewer soft-fails independently of research-tree health.
         return sum(
-            state in {"partial", "failed", "cancelled"} for state in self.node_states.values()
+            state in {"partial", "failed", "cancelled"}
+            for node_id, state in self.node_states.items()
+            if node_id != HOST_PUBLISH_REVIEWER_NODE_ID
         )
 
     def mark_direct_fallback(self, node_id: str) -> None:
@@ -711,122 +707,6 @@ class _OrchestrationEvents(AbstractCapability[AdaptiveDeps]):
         return result
 
 
-class _NoContentSummarizingCompaction(SummarizingCompaction[AdaptiveDeps]):
-    async def _summarize(
-        self,
-        messages: list[Any],
-        ctx: RunContext[AdaptiveDeps],
-        *,
-        previous_summary: str | None = None,
-    ) -> str:
-        from pydantic_ai import Agent
-
-        prompt = self.summary_prompt.format(messages=_format_messages(messages))
-        if previous_summary is not None:
-            prompt = f"{prompt}\n\n<previous_summary>\n{previous_summary}\n</previous_summary>"
-        model = self.model if self.model is not None else ctx.model
-        agent: Agent[None, str] = Agent(
-            model,
-            instructions=(
-                "You are a context summarization assistant. "
-                "Extract the most important information from conversations."
-            ),
-        )
-        agent.instrument = False
-        result = await agent.run(prompt, usage=ctx.usage)
-        return result.output.strip()
-
-
-@dataclass
-class _ObservableTieredCompaction(TieredCompaction[AdaptiveDeps]):
-    trigger_tokens: int = 1
-    warning_tokens: int = 1
-
-    async def before_model_request(
-        self,
-        ctx: RunContext[AdaptiveDeps],
-        request_context: ModelRequestContext,
-    ) -> ModelRequestContext:
-        messages = list(request_context.messages)
-        estimated = estimate_token_count(messages, self.tokenizer)
-        if estimated >= self.warning_tokens and isinstance(ctx.deps, AdaptiveDeps):
-            deps = ctx.deps
-            if not deps.compaction_warning_emitted:
-                deps.compaction_warning_emitted = True
-                deps.emit(
-                    "compaction_warning",
-                    {
-                        "depth": deps.depth,
-                        "node_kind": deps.role,
-                        "context_tokens": estimated,
-                        "warning_tokens": self.warning_tokens,
-                    },
-                    node_id=deps.node_id,
-                )
-        if estimated <= self.trigger_tokens:
-            request_context.messages = messages
-            return request_context
-        compacted = await self.compact(messages, ctx)
-        request_context.messages = compacted
-        if compacted != messages and isinstance(ctx.deps, AdaptiveDeps):
-            deps = ctx.deps
-            deps.emit(
-                "compaction_completed",
-                {
-                    "depth": deps.depth,
-                    "node_kind": deps.role,
-                    "before_tokens": estimated,
-                    "target_tokens": self.target_tokens,
-                },
-                node_id=deps.node_id,
-            )
-        return request_context
-
-
-def _compaction(model: object, target_tokens: int) -> TieredCompaction[AdaptiveDeps]:
-    target = max(1, target_tokens // 2)
-    trigger = max(1, math.floor(target_tokens * 0.6))
-    warning = max(1, math.floor(target_tokens * 0.7))
-    return _ObservableTieredCompaction(
-        tiers=[
-            ClampOversizedMessages(max_part_chars=32_000),
-            ClearToolResults(max_tokens=target, keep_pairs=3, clear_tool_inputs=True),
-            _NoContentSummarizingCompaction(
-                model=cast(Any, model), max_tokens=target, keep_messages=20
-            ),
-        ],
-        target_tokens=target,
-        trigger_tokens=trigger,
-        warning_tokens=warning,
-    )
-
-
-def _compaction_warning(target_tokens: int) -> LimitWarner:
-    return LimitWarner(
-        max_context_tokens=target_tokens,
-        warn_on=["context_window"],
-        warning_threshold=0.7,
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class _WorkspaceOverflowStore:
-    workspace: AnalysisWorkspace
-
-    async def write(self, key: str, data: bytes) -> str:
-        return self.workspace.publish_overflow(key, data)
-
-    async def read(self, handle: str) -> bytes:
-        return self.workspace.read_overflow(handle)
-
-
-def _overflow(workspace: AnalysisWorkspace) -> OverflowingToolOutput[Any]:
-    return OverflowingToolOutput(
-        bands=[Band(over=8_000, action=Spill(then=Truncate(max_chars=4_000)))],
-        store=_WorkspaceOverflowStore(workspace),
-    )
-
-
 def _mounts(
     *,
     source_mount: Path,
@@ -935,7 +815,11 @@ def _make_leaf(
         retries=2,
         toolsets=[_ReceiptToolset()],
         capabilities=[
-            _overflow(workspace),
+            *build_context_capabilities(
+                model=model,
+                target_tokens=policy.context_target_tokens,
+                workspace=workspace,
+            ),
             CodeMode(
                 max_retries=2,
                 os_access=None,
@@ -1044,9 +928,11 @@ def _make_domain(
     domain_capabilities: list[Any] = [
         _OrchestrationEvents(),
         Planning(),
-        _compaction_warning(policy.context_target_tokens),
-        _compaction(model, policy.context_target_tokens),
-        _overflow(workspace),
+        *build_context_capabilities(
+            model=model,
+            target_tokens=policy.context_target_tokens,
+            workspace=workspace,
+        ),
     ]
     if leaves:
         domain_capabilities.append(cast(Any, leaf_capability))
@@ -1119,6 +1005,49 @@ def _make_domain(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class ReviewDefectsSummary:
+    """Bounded, secret-safe Wiki Reviewer outcome for the publication gate."""
+
+    status: Literal["complete", "partial", "failed", "cancelled", "skipped"]
+    summary: str = ""
+    findings: tuple[str, ...] = ()
+    open_questions: tuple[str, ...] = ()
+    defect_count: int = 0
+
+    def as_gate_args(self) -> dict[str, object]:
+        """Shape attached to the deferred ``publish_wiki`` approval args."""
+        return {
+            "status": self.status,
+            "summary": self.summary,
+            "findings": list(self.findings),
+            "open_questions": list(self.open_questions),
+            "defect_count": self.defect_count,
+        }
+
+    def as_record_fragment(self) -> dict[str, object]:
+        """Compact fragment for Wiki Run Record publication metadata."""
+        return {
+            "status": self.status,
+            "summary": self.summary,
+            "defect_count": self.defect_count,
+            "findings": list(self.findings),
+        }
+
+
+def _bound_defect_text(value: str, *, max_chars: int = _MAX_DEFECT_TEXT_CHARS) -> str:
+    text = redact_secrets(" ".join(str(value).split()), environment_secrets())
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1] + "…"
+
+
+def _bound_defect_list(
+    values: list[str] | tuple[str, ...], *, max_items: int = _MAX_DEFECT_FINDINGS
+) -> tuple[str, ...]:
+    return tuple(_bound_defect_text(item) for item in list(values)[:max_items])
+
+
 def _make_reviewer(
     *,
     model: object,
@@ -1132,9 +1061,10 @@ def _make_reviewer(
     semaphore: asyncio.Semaphore,
     metrics: _AdaptiveMetrics,
     emit: Callable[..., None],
+    task_id: str = "reviewer",
+    max_calls: int = 2,
 ) -> SubAgent[AdaptiveDeps]:
     """Independent Wiki Reviewer: read-only /wiki, no delegation, defects receipt only."""
-    task_id = "reviewer"
     workspace.register_node(task_id, task_id, "root")
     metrics.register_node(task_id, "root")
 
@@ -1152,7 +1082,7 @@ def _make_reviewer(
 
     agent = Agent[AdaptiveDeps, str](
         cast(Any, model),
-        name="reviewer",
+        name=task_id,
         description=(
             "Independently review staged Wiki pages against source and the Producer Skill review "
             "checklist; publish a bounded defects receipt."
@@ -1166,9 +1096,11 @@ def _make_reviewer(
         capabilities=[
             _OrchestrationEvents(),
             Planning(),
-            _compaction_warning(policy.context_target_tokens),
-            _compaction(model, policy.context_target_tokens),
-            _overflow(workspace),
+            *build_context_capabilities(
+                model=model,
+                target_tokens=policy.context_target_tokens,
+                workspace=workspace,
+            ),
             CodeMode(
                 max_retries=2,
                 os_access=None,
@@ -1201,16 +1133,107 @@ def _make_reviewer(
     )
     return SubAgent(
         bounded,
-        name="reviewer",
+        name=task_id,
         usage_limits=_child_limits(policy, "reviewer"),
         timeout_seconds=policy.child_timeout_seconds,
         # One Reviewer roster slot; max_calls=2 allows the single intentional retry.
-        max_calls=2,
+        max_calls=max_calls,
         on_failure=(
             "Review incomplete. Retry once within budget; do not claim Complete if still unresolved."
         ),
         contain_errors=True,
     )
+
+
+async def run_host_wiki_reviewer(
+    *,
+    model: object,
+    settings: ModelSettings,
+    source_mount: Path,
+    skill_mount: Path,
+    staging: Path,
+    workspace: AnalysisWorkspace,
+    run_id: str,
+    policy: AdaptivePolicy,
+    root_deps: AdaptiveDeps,
+    metrics: _AdaptiveMetrics,
+    emit: Callable[..., None],
+) -> ReviewDefectsSummary:
+    """Run the Host-owned Wiki Reviewer once before the publication approval gate.
+
+    Soft-fails into a ``failed`` summary so the operator can still approve/deny;
+    Host mechanical validation remains independent and must already have passed.
+    """
+    emit(
+        "review_started",
+        {"node_kind": "reviewer", "status": "running"},
+        node_id=HOST_PUBLISH_REVIEWER_NODE_ID,
+    )
+    semaphore = root_deps.semaphore
+    subagent = _make_reviewer(
+        model=model,
+        settings=settings,
+        source_mount=source_mount,
+        skill_mount=skill_mount,
+        staging=staging,
+        workspace=workspace,
+        run_id=run_id,
+        policy=policy,
+        semaphore=semaphore,
+        metrics=metrics,
+        emit=emit,
+        task_id=HOST_PUBLISH_REVIEWER_NODE_ID,
+        # Host runs the Reviewer once; intentional single retry stays inside the agent.
+        max_calls=2,
+    )
+    prompt = (
+        "Review the staged Wiki pages under /wiki against /source and "
+        "/skill/references/review.md. Publish a bounded defects receipt via publish_receipt, "
+        "then return only that Handoff Ref JSON."
+    )
+    try:
+        async with asyncio.timeout(policy.child_timeout_seconds):
+            result = await subagent.agent.run(
+                prompt,
+                deps=root_deps,
+                usage_limits=subagent.usage_limits,
+            )
+        handoff = HandoffRef.model_validate_json(result.output)
+        receipt = workspace.read_receipt(handoff)
+        findings = _bound_defect_list(receipt.findings)
+        open_questions = _bound_defect_list(receipt.open_questions)
+        summary = ReviewDefectsSummary(
+            status=receipt.status,
+            summary=_bound_defect_text(receipt.summary),
+            findings=findings,
+            open_questions=open_questions,
+            defect_count=len(findings) + len(open_questions),
+        )
+        emit(
+            "review_succeeded",
+            {
+                "node_kind": "reviewer",
+                "status": summary.status,
+                "count": summary.defect_count,
+            },
+            node_id=HOST_PUBLISH_REVIEWER_NODE_ID,
+        )
+        return summary
+    except Exception as error:
+        reason = type(error).__name__
+        summary = ReviewDefectsSummary(
+            status="failed",
+            summary=_bound_defect_text(f"Wiki Reviewer did not complete: {reason}"),
+            findings=(),
+            open_questions=(),
+            defect_count=0,
+        )
+        emit(
+            "review_failed",
+            {"node_kind": "reviewer", "status": "failed", "reason_code": reason},
+            node_id=HOST_PUBLISH_REVIEWER_NODE_ID,
+        )
+        return summary
 
 
 @dataclass(slots=True)
@@ -1272,6 +1295,8 @@ def build_root_agent(
     adaptive: bool,
     write_limit: int,
     emit: Callable[..., None],
+    reviewer_model: object | None = None,
+    reviewer_settings: ModelSettings | None = None,
 ) -> tuple[Agent[Any, Any], AdaptiveOrchestrator]:
     policy = AdaptivePolicy.from_limits(limits, enabled=adaptive)
     metrics = _AdaptiveMetrics()
@@ -1348,18 +1373,21 @@ def build_root_agent(
         input_tokens_limit=int(getattr(limits, "input_tokens_limit", 250_000)),
         output_tokens_limit=int(getattr(limits, "output_tokens_limit", 100_000)),
     )
-    # Small CodeMode-only runs stay historically lean. Adaptive enables Planning,
-    # compaction, overflow, receipts, and the trusted child roster.
-    capabilities: list[Any] = []
+    # Every root that issues model requests gets harness context management.
+    # Adaptive additionally enables Planning, orchestration events, and children.
+    capabilities: list[Any] = [
+        *build_context_capabilities(
+            model=model,
+            target_tokens=policy.context_target_tokens,
+            workspace=workspace,
+        ),
+    ]
     toolsets: list[Any] = []
     if adaptive:
         capabilities.extend(
             [
                 _OrchestrationEvents(),
                 Planning(),
-                _compaction_warning(policy.context_target_tokens),
-                _compaction(model, policy.context_target_tokens),
-                _overflow(workspace),
             ]
         )
         toolsets.append(_ReceiptToolset())
@@ -1382,10 +1410,12 @@ def build_root_agent(
             for index in range(1, policy.root_fanout + 1)
         ]
         if policy.enable_reviewer:
+            review_model = model if reviewer_model is None else reviewer_model
+            review_settings = settings if reviewer_settings is None else reviewer_settings
             roster.append(
                 _make_reviewer(
-                    model=model,
-                    settings=settings,
+                    model=review_model,
+                    settings=review_settings,
                     source_mount=source_mount,
                     skill_mount=skill_mount,
                     staging=staging,
@@ -1454,6 +1484,9 @@ __all__ = [
     "AdaptiveDeps",
     "AdaptiveOrchestrator",
     "AdaptivePolicy",
+    "HOST_PUBLISH_REVIEWER_NODE_ID",
+    "ReviewDefectsSummary",
     "build_root_agent",
+    "run_host_wiki_reviewer",
     "should_enable_adaptive",
 ]

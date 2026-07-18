@@ -109,6 +109,7 @@ title: Architecture
                 ),
                 staging=staging,
                 publication=published,
+                auto_approve_publication=True,
             )
         )
     )
@@ -230,6 +231,7 @@ def test_publication_failure_leaves_the_published_wiki_unchanged(
                     ),
                     staging=tmp_path / "staging",
                     publication=published,
+                    auto_approve_publication=True,
                 )
             )
         )
@@ -456,6 +458,7 @@ def test_publication_copy_revalidates_a_page_swapped_for_a_symlink(
                     ),
                     staging=staging,
                     publication=published,
+                    auto_approve_publication=True,
                 )
             )
         )
@@ -492,6 +495,7 @@ def test_wiki_run_rejects_a_publication_parent_symlink_into_source(tmp_path: Pat
                     limits=WikiRunLimits(),
                     staging=tmp_path / "staging",
                     publication=publication_parent / "published",
+                    auto_approve_publication=True,
                 )
             )
         )

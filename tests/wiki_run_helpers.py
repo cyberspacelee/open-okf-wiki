@@ -78,12 +78,19 @@ def writing_model(
     code: str, pages: list[str], *, summary: dict[str, object] | None = None
 ) -> FunctionModel:
     def model(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
-        if any(
-            isinstance(part, ToolReturnPart) and part.tool_name == "run_code"
+        instructions = info.instructions or ""
+        # Host-owned Wiki Reviewer (pre-publish) and adaptive roster Reviewer share this prompt.
+        if "You are a Wiki Reviewer." in instructions:
+            return _reviewer_function_response(messages, instructions)
+
+        tool_returns = [
+            part
             for message in messages
             if isinstance(message, ModelRequest)
             for part in message.parts
-        ):
+            if isinstance(part, ToolReturnPart)
+        ]
+        if any(part.tool_name == "run_code" for part in tool_returns):
             complete = next(tool for tool in info.output_tools if tool.name.endswith("Complete"))
             payload: dict[str, object] = {
                 "status": "complete",
@@ -95,6 +102,51 @@ def writing_model(
         return ModelResponse(parts=[ToolCallPart("run_code", {"code": code})])
 
     return FunctionModel(model)
+
+
+def _reviewer_function_response(
+    messages: list[ModelRequest | ModelResponse], instructions: str
+) -> ModelResponse:
+    """Scripted Reviewer: publish a defects receipt via CodeMode, then return the Handoff Ref.
+
+    ``publish_receipt`` is exposed inside the CodeMode sandbox (not as a top-level tool),
+    matching the adaptive roster Reviewer tests.
+    """
+    import re
+
+    from pydantic_ai.messages import TextPart
+
+    run_code_returns = [
+        part
+        for message in messages
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, ToolReturnPart) and part.tool_name == "run_code"
+    ]
+    if run_code_returns:
+        content = run_code_returns[-1].content
+        if isinstance(content, dict):
+            content = content.get("output", content)
+        text = str(content).strip()
+        assert "Traceback" not in text and "Error" not in text, text
+        return ModelResponse(parts=[TextPart(text)])
+
+    assignment = re.search(
+        r"run_id=([0-9a-f]{32}), task_id=([^,]+), node_id=([^,]+), parent_id=([^,]+), "
+        r"attempt=(\d+)",
+        instructions,
+    )
+    if assignment is None:
+        raise AssertionError("Wiki Reviewer Host assignment missing from instructions")
+    run_id, task_id, node_id, parent_id, attempt = assignment.groups()
+    code = (
+        "handoff = publish_receipt("
+        f"run_id='{run_id}', node_id='{node_id}', parent_id='{parent_id}', "
+        f"attempt={attempt}, status='complete', scope='review:{task_id}', "
+        "summary='no critical defects', findings=[])\n"
+        "print(handoff)"
+    )
+    return ModelResponse(parts=[ToolCallPart("run_code", {"code": code})])
 
 
 TEST_WIKI_LIMITS = WikiRunLimits(
@@ -142,6 +194,7 @@ def run_test_wiki(
     model: FunctionModel,
     *,
     operation: Literal["generate", "refresh"] = "generate",
+    auto_approve_publication: bool = True,
 ) -> Complete | NeedsInput:
     return asyncio.run(
         WikiRunApplication().run(
@@ -153,6 +206,9 @@ def run_test_wiki(
                 limits=TEST_WIKI_LIMITS,
                 staging=staging,
                 publication=publication,
+                # Tests that assert a published wiki auto-approve by default (YOLO path).
+                # HITL awaiting/approve cases set this False and/or inject a handler.
+                auto_approve_publication=auto_approve_publication,
             )
         )
     )

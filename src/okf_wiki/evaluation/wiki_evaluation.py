@@ -242,6 +242,7 @@ async def evaluate_wiki_producer(
                     limits=selected_limits,
                     staging=run_root / "staging",
                     publication=run_root / "wiki",
+                    auto_approve_publication=True,
                 )
             )
             if not isinstance(result, Complete):

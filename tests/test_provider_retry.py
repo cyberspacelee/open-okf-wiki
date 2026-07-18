@@ -203,6 +203,7 @@ def test_manual_retry_reuses_frozen_inputs_with_a_new_identity(tmp_path: Path) -
                     staging=tmp_path / "staging-1",
                     publication=publication,
                     explicit_answers={"q1": "keep frozen"},
+                    auto_approve_publication=True,
                 )
             )
         )
@@ -247,7 +248,7 @@ def test_manual_retry_reuses_frozen_inputs_with_a_new_identity(tmp_path: Path) -
         staging=tmp_path / "staging-2",
         publication=publication,
         model=FunctionModel(success_model),
-    )
+    ).model_copy(update={"auto_approve_publication": True})
     assert retry_request.prior_run_id == first.run_id
     assert retry_request.explicit_answers["q1"] == "keep frozen"
     assert retry_request.repositories[0].revision == revision

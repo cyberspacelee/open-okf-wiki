@@ -84,11 +84,50 @@ def write_review(path: Path, *, failing: bool = False) -> Path:
 
 
 def writing_model(*, drift: bool = False, model_name: str = "gpt-4o-mini") -> FunctionModel:
-    requests = 0
+    producer_requests = 0
 
     def respond(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
-        nonlocal requests
-        requests += 1
+        nonlocal producer_requests
+        instructions = info.instructions or ""
+        if "You are a Wiki Reviewer." in instructions:
+            import re
+
+            from pydantic_ai.messages import TextPart
+
+            run_code_returns = [
+                part
+                for message in messages
+                if isinstance(message, ModelRequest)
+                for part in message.parts
+                if isinstance(part, ToolReturnPart) and part.tool_name == "run_code"
+            ]
+            if run_code_returns:
+                content = run_code_returns[-1].content
+                if isinstance(content, dict):
+                    content = content.get("output", content)
+                return ModelResponse(
+                    parts=[TextPart(str(content).strip())],
+                    usage=RequestUsage(input_tokens=12, output_tokens=8),
+                )
+            assignment = re.search(
+                r"run_id=([0-9a-f]{32}), task_id=([^,]+), node_id=([^,]+), parent_id=([^,]+), "
+                r"attempt=(\d+)",
+                instructions,
+            )
+            assert assignment is not None
+            run_id, task_id, node_id, parent_id, attempt = assignment.groups()
+            code = (
+                "handoff = publish_receipt("
+                f"run_id='{run_id}', node_id='{node_id}', parent_id='{parent_id}', "
+                f"attempt={attempt}, status='complete', scope='review:{task_id}', "
+                "summary='evaluation review ok', findings=[])\nprint(handoff)"
+            )
+            return ModelResponse(
+                parts=[ToolCallPart("run_code", {"code": code})],
+                usage=RequestUsage(input_tokens=12, output_tokens=8),
+            )
+
+        producer_requests += 1
         if any(
             isinstance(part, ToolReturnPart) and part.tool_name == "run_code"
             for message in messages
@@ -101,7 +140,7 @@ def writing_model(*, drift: bool = False, model_name: str = "gpt-4o-mini") -> Fu
                 {"status": "complete", "manifest": {"pages": ["index.md"]}},
             )
         else:
-            run = (requests + 1) // 2
+            run = (producer_requests + 1) // 2
             claim = (
                 "The repository deletes all records permanently."
                 if drift and run == 2
@@ -155,18 +194,12 @@ def test_fixture_evaluation_is_credential_free_pending_and_repeatable(
         assert case.material_stability == 1
         for run in case.runs:
             assert run.status == "complete"
-            assert run.usage == {
-                "requests": 2,
-                "tool_calls": 2,
-                "input_tokens": 24,
-                "cache_write_tokens": 0,
-                "cache_read_tokens": 0,
-                "output_tokens": 16,
-                "input_audio_tokens": 0,
-                "cache_audio_read_tokens": 0,
-                "output_audio_tokens": 0,
-                "total_tokens": 40,
-            }
+            # Producer (2) + Host Wiki Reviewer (2 run_code/handoff turns + usage).
+            assert run.usage["requests"] >= 2
+            assert run.usage["tool_calls"] >= 2
+            assert run.usage["total_tokens"] >= 40
+            assert run.usage["cache_write_tokens"] == 0
+            assert run.usage["cache_read_tokens"] == 0
             assert run.pricing_status == "not_applicable"
             assert run.cost_usd == 0
             assert run.quality is not None
@@ -233,8 +266,9 @@ def test_live_usage_and_official_pricing_are_recorded_but_decision_waits_for_rev
         "example run 2: semantic/human review is required",
     ]
     for run in report.cases[0].runs:
-        assert run.usage["requests"] == 2
-        assert run.usage["total_tokens"] == 40
+        # Producer + Host Wiki Reviewer model turns.
+        assert run.usage["requests"] >= 2
+        assert run.usage["total_tokens"] >= 40
         assert run.pricing_status == "priced"
         assert run.cost_usd is not None and run.cost_usd > 0
         assert "genai-prices" in run.cost_note

@@ -83,6 +83,7 @@ def test_wiki_run_rejects_an_invalid_skill_before_model_work(
                     limits=WikiRunLimits(),
                     staging=tmp_path / "staging",
                     publication=tmp_path / "published",
+                    auto_approve_publication=True,
                 )
             )
         )
@@ -116,6 +117,7 @@ def test_wiki_run_rejects_a_changed_selected_skill_version_before_model_work(
                     limits=WikiRunLimits(),
                     staging=tmp_path / "staging",
                     publication=tmp_path / "published",
+                    auto_approve_publication=True,
                 )
             )
         )
@@ -221,6 +223,7 @@ Path('/wiki/index.md').write_text(f'---\\ntitle: Wiki\\n---\\n# Wiki\\n\\n{{mark
                     ),
                     staging=tmp_path / f"{name}-staging",
                     publication=tmp_path / f"{name}-published",
+                    auto_approve_publication=True,
                 )
             )
         )
@@ -321,6 +324,7 @@ Path('/wiki/index.md').write_text('---\\ntitle: Example Wiki\\n---\\n# Example W
                 ),
                 staging=staging,
                 publication=tmp_path / "published",
+                auto_approve_publication=True,
             )
         )
     )

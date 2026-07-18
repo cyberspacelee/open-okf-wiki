@@ -296,12 +296,24 @@ class WikiRunEvent(BaseModel):
     payload: dict[str, object] = Field(default_factory=dict, max_length=32)
 
 
+# Terminal Wiki Run Record statuses. `complete` means publication succeeded
+# (or a documented successful no-op refresh). HITL publish adds awaiting/declined.
+WikiRunRecordStatus = Literal[
+    "complete",
+    "needs_input",
+    "failed",
+    "cancelled",
+    "awaiting_publication",
+    "publication_declined",
+]
+
+
 class WikiRunRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_version: Literal[1] = 1
     run_id: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{32}$")]
-    status: Literal["complete", "needs_input", "failed", "cancelled"]
+    status: WikiRunRecordStatus
     operation: Literal["generate", "refresh"]
     repositories: list[dict[str, object]] = Field(min_length=1, max_length=64)
     skill: dict[str, str]
@@ -333,6 +345,11 @@ class WikiRunRequest(BaseModel):
     publication: Path
     retain_analysis_workspace: bool = False
     write_visualization: bool = False
+    # YOLO / non-interactive explicit yes: auto-approve deferred publication only.
+    # Does not skip Host validation, mounts, or publication locks. Off by default.
+    auto_approve_publication: bool = False
+    # Optional separate Wiki Reviewer model identity; falls back to ``model`` when unset.
+    reviewer_model: ModelProviderConfig | None = None
     explicit_answers: dict[str, str] = Field(default_factory=dict)
     prior_run_id: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{32}$")] | None = None
 

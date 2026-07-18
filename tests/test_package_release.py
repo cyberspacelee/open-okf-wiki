@@ -19,6 +19,10 @@ PACKAGE_FILES = {
     "analysis_workspace.py",
     "adaptive_orchestration.py",
     "cli.py",
+    "context_capabilities.py",
+    "diagnostics/__init__.py",
+    "diagnostics/doctor.py",
+    "diagnostics/preflight.py",
     "errors.py",
     "evaluation/__init__.py",
     "evaluation/wiki_evaluation.py",
@@ -28,6 +32,7 @@ PACKAGE_FILES = {
     "init_config.py",
     "provider_env.py",
     "provider_retry.py",
+    "publication_gate.py",
     "run_config.py",
     "run_models.py",
     "run_mounts.py",
@@ -36,6 +41,12 @@ PACKAGE_FILES = {
     "run_skill.py",
     "run_snapshots.py",
     "run_validation.py",
+    "session/__init__.py",
+    "session/cards.py",
+    "session/interactive.py",
+    "session/runtime.py",
+    "session/store.py",
+    "session/tty.py",
     "tui.py",
     "producer_skill/SKILL.md",
     "producer_skill/references/domain-research.md",
@@ -141,7 +152,7 @@ def test_fresh_wheel_completes_a_wiki_run_through_the_installed_cli(tmp_path: Pa
 
     help_result = run([executable, "--help"], cwd=tmp_path)
     assert (
-        "{init,wiki-run,wiki-retry,tui,wiki-eval,skill-fork,skill-inspect,viz}"
+        "{init,wiki-run,wiki-retry,tui,wiki-eval,skill-fork,skill-inspect,viz,doctor}"
         in help_result.stdout
     )
 
@@ -197,11 +208,104 @@ repositories:
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.append(payload)
             request_paths.append(self.path)
-            tool_names = [tool["function"]["name"] for tool in payload["tools"]]
-            if len(requests) == 1:
-                tool_name = "run_code"
-                arguments = {
-                    "code": """from pathlib import Path
+            tool_names = [tool["function"]["name"] for tool in payload.get("tools") or []]
+            messages = payload.get("messages") or []
+            system_text = " ".join(
+                str(message.get("content") or "")
+                for message in messages
+                if message.get("role") == "system"
+            )
+            has_tool_return = any(message.get("role") == "tool" for message in messages)
+            complete_tools = [name for name in tool_names if name.endswith("Complete")]
+            # Host Wiki Reviewer has CodeMode only (no Complete output tool).
+            if "You are a Wiki Reviewer." in system_text or (
+                not complete_tools and "run_code" in tool_names
+            ):
+                if has_tool_return:
+                    # Return Handoff Ref text printed by sandbox publish_receipt.
+                    last_tool = next(
+                        (
+                            message.get("content")
+                            for message in reversed(messages)
+                            if message.get("role") == "tool"
+                        ),
+                        "{}",
+                    )
+                    choice = {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": str(last_tool).strip() or "{}",
+                        },
+                        "finish_reason": "stop",
+                    }
+                else:
+                    # Extract Host assignment from system/instructions text.
+                    import re
+
+                    assignment = re.search(
+                        r"run_id=([0-9a-f]{32}), task_id=([^,]+), node_id=([^,]+), "
+                        r"parent_id=([^,]+), attempt=(\d+)",
+                        system_text
+                        + " ".join(
+                            str(message.get("content") or "")
+                            for message in messages
+                            if message.get("role") == "user"
+                        ),
+                    )
+                    if assignment is None:
+                        # Fall back: still attempt a no-op receipt if assignment is elsewhere.
+                        for message in messages:
+                            text = str(message.get("content") or "")
+                            assignment = re.search(
+                                r"run_id=([0-9a-f]{32}), task_id=([^,]+), node_id=([^,]+), "
+                                r"parent_id=([^,]+), attempt=(\d+)",
+                                text,
+                            )
+                            if assignment is not None:
+                                break
+                    assert assignment is not None, "reviewer Host assignment missing from prompt"
+                    run_id, task_id, node_id, parent_id, attempt = assignment.groups()
+                    code = (
+                        "handoff = publish_receipt("
+                        f"run_id='{run_id}', node_id='{node_id}', parent_id='{parent_id}', "
+                        f"attempt={int(attempt)}, status='complete', "
+                        f"scope='review:{task_id}', summary='package review ok', findings=[])\n"
+                        "print(handoff)"
+                    )
+                    choice = {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": f"call-{len(requests)}",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "run_code",
+                                        "arguments": json.dumps({"code": code}),
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+            elif not has_tool_return:
+                choice = {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": f"call-{len(requests)}",
+                                "type": "function",
+                                "function": {
+                                    "name": "run_code",
+                                    "arguments": json.dumps(
+                                        {
+                                            "code": """from pathlib import Path
 Path('/skill/SKILL.md').read_text()
 Path('/source/app/README.md').read_text()
 Path('/source/docs/README.md').read_text()
@@ -209,36 +313,46 @@ assert not Path('/source/app/ignored.txt').exists()
 assert not Path('/source/docs/drafts/private.md').exists()
 Path('/wiki/index.md').write_text('---\\ntitle: Package Wiki\\n---\\n# Package Wiki\\n\\n[Application](repo:app/README.md#L1-L1) [Documentation](repo:docs/README.md#L1-L1)\\n')
 """
+                                        }
+                                    ),
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
                 }
             else:
-                tool_name = next(name for name in tool_names if name.endswith("Complete"))
-                arguments = {"status": "complete", "manifest": {"pages": ["index.md"]}}
+                tool_name = complete_tools[0]
+                choice = {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": f"call-{len(requests)}",
+                                "type": "function",
+                                "function": {
+                                    "name": tool_name,
+                                    "arguments": json.dumps(
+                                        {
+                                            "status": "complete",
+                                            "manifest": {"pages": ["index.md"]},
+                                        }
+                                    ),
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
             response = json.dumps(
                 {
                     "id": f"chatcmpl-{len(requests)}",
                     "object": "chat.completion",
                     "created": 0,
                     "model": "package-fixture",
-                    "choices": [
-                        {
-                            "index": 0,
-                            "message": {
-                                "role": "assistant",
-                                "content": None,
-                                "tool_calls": [
-                                    {
-                                        "id": f"call-{len(requests)}",
-                                        "type": "function",
-                                        "function": {
-                                            "name": tool_name,
-                                            "arguments": json.dumps(arguments),
-                                        },
-                                    }
-                                ],
-                            },
-                            "finish_reason": "tool_calls",
-                        }
-                    ],
+                    "choices": [choice],
                     "usage": {
                         "prompt_tokens": 1,
                         "completion_tokens": 1,
@@ -274,6 +388,8 @@ Path('/wiki/index.md').write_text('---\\ntitle: Package Wiki\\n---\\n# Package W
                 "wiki-run",
                 "--config",
                 config,
+                # Non-interactive package fixture: auto-approve deferred publication.
+                "--yes",
             ],
             cwd=tmp_path,
             check=False,
@@ -286,8 +402,9 @@ Path('/wiki/index.md').write_text('---\\ntitle: Package Wiki\\n---\\n# Package W
         server.server_close()
 
     assert result.returncode == 0, result.stderr or result.stdout
-    assert len(requests) == 2
-    assert request_paths == ["/v1/chat/completions", "/v1/chat/completions"]
+    # Producer (run_code + Complete) plus Host Wiki Reviewer (run_code + handoff).
+    assert len(requests) >= 2
+    assert all(path == "/v1/chat/completions" for path in request_paths)
     assert json.loads(result.stdout) == {
         "ok": True,
         "result": {

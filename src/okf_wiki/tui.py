@@ -1,22 +1,21 @@
-"""Line-oriented Python TUI for Wiki Run observation and operator actions."""
+"""Line-oriented Operator Session entry and legacy projection helpers.
+
+Interactive product path is :mod:`okf_wiki.session` (ADR 0018). This module
+keeps ``require_tty``, string projection helpers used by older tests, and a
+thin ``run_tui`` wrapper around the Session API.
+"""
 
 from __future__ import annotations
 
-import asyncio
-import sys
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
 
 from rich.console import Console
-from rich.text import Text
 
-from .security import environment_secrets, redact_secrets
+from .session.cards import project_events as project_session_cards
+from .session.runtime import OperatorSession
+from .session.tty import require_tty
 from .wiki_run import (
-    Complete,
-    NeedsInput,
-    WikiRunApplication,
     WikiRunEvent,
     WikiRunRequest,
     WikiRunResult,
@@ -24,97 +23,24 @@ from .wiki_run import (
 )
 
 
-@dataclass(slots=True)
-class TuiState:
-    """Projection of Host events for a line-oriented status display."""
+def project_events(events: list[WikiRunEvent]) -> list[str]:
+    """Deterministic string projection used by tests (no terminal required)."""
+    return [card.text for card in project_session_cards(events)]
 
-    run_id: str | None = None
-    nodes: dict[str, str] = field(default_factory=dict)
-    last_plan_total: int | None = None
-    last_tool: str | None = None
-    provider_wait: float | None = None
-    receipts: int = 0
-    compactions: int = 0
-    terminal: str | None = None
-    lines: list[str] = field(default_factory=list)
 
-    def observe(self, event: WikiRunEvent) -> str:
-        self.run_id = event.run_id
-        payload = event.payload
-        node = event.node_id
+def summarize_nodes(events: list[WikiRunEvent]) -> Mapping[str, str]:
+    """Last-known node status from a Host event sequence."""
+    nodes: dict[str, str] = {}
+    for event in events:
         if event.type in {
             "child_dispatched",
             "child_started",
             "child_finished",
             "child_rejected",
         }:
-            status = str(payload.get("status") or event.type.removeprefix("child_"))
-            self.nodes[node] = status
-            queue = payload.get("queue_seconds")
-            if event.type == "child_started" and isinstance(queue, (int, float)) and queue >= 0.05:
-                line = f"node {node}: {status} queue={float(queue):.2f}s"
-            else:
-                line = f"node {node}: {status}"
-        elif event.type == "plan_updated":
-            total = payload.get("total")
-            self.last_plan_total = int(total) if isinstance(total, (int, float)) else None
-            line = f"plan updated total={self.last_plan_total}"
-        elif event.type == "receipt_published":
-            self.receipts += 1
-            line = f"receipt published node={node} status={payload.get('status')}"
-        elif event.type in {"compaction_warning", "compaction_completed"}:
-            self.compactions += 1
-            line = f"compaction {event.type.removeprefix('compaction_')}"
-        elif event.type == "provider_retry_scheduled":
-            wait = payload.get("wait_seconds")
-            self.provider_wait = float(wait) if isinstance(wait, (int, float)) else None
-            line = (
-                f"provider retry attempt={payload.get('attempt')} "
-                f"wait={self.provider_wait}s kind={payload.get('kind')}"
-            )
-        elif event.type == "provider_retry_exhausted":
-            line = "provider retry exhausted"
-        elif event.type == "visualization_written":
-            index = payload.get("index") or payload.get("output") or ""
-            line = f"visualization written {index}"
-        elif event.type == "visualization_failed":
-            line = f"visualization failed reason={payload.get('reason_code')}"
-        elif event.type in {
-            "validation_started",
-            "validation_succeeded",
-            "publication_started",
-            "publication_succeeded",
-            "run_succeeded",
-            "run_failed",
-            "run_cancelled",
-            "needs_input",
-        }:
-            self.terminal = event.type
-            error_type = payload.get("error_type")
-            if event.type in {"run_failed", "run_cancelled"} and isinstance(error_type, str):
-                line = f"{event.type.replace('_', ' ')} error_type={error_type}"
-            else:
-                line = event.type.replace("_", " ")
-        else:
-            line = event.type.replace("_", " ")
-        rendered = redact_secrets(line, environment_secrets())
-        self.lines.append(rendered)
-        return rendered
-
-
-class _SupportsIsatty(Protocol):
-    def isatty(self) -> bool: ...
-
-
-def require_tty(stream: _SupportsIsatty = sys.stdin) -> None:
-    if not hasattr(stream, "isatty") or not stream.isatty():
-        raise RuntimeError(
-            "okf-wiki tui requires an interactive TTY; use `okf-wiki wiki-run` for JSON automation"
-        )
-
-
-def render_event_line(console: Console, line: str) -> None:
-    console.print(Text(line))
+            status = str(event.payload.get("status") or event.type.removeprefix("child_"))
+            nodes[event.node_id] = status
+    return nodes
 
 
 async def run_tui(
@@ -124,53 +50,28 @@ async def run_tui(
     input_fn: Callable[[str], str] | None = None,
     confirm_fn: Callable[[str], bool] | None = None,
     check_tty: bool = True,
-) -> WikiRunResult:
-    """Run one Wiki Run through the application seam with a line-oriented observer."""
-    if check_tty:
-        require_tty()
-    out = console or Console(stderr=False)
-    state = TuiState()
-    secrets = environment_secrets()
+    yolo: bool = False,
+    auto_start: bool = True,
+    max_turns: int | None = None,
+) -> WikiRunResult | None:
+    """Run the Operator Session interactive shell (Session API).
 
-    def observer(event: WikiRunEvent) -> None:
-        line = state.observe(event)
-        render_event_line(out, line)
+    ``confirm_fn`` is accepted for API stability with older call sites but is
+    unused; publication approve/deny uses ``input_fn`` via the Session gate.
+    """
+    del confirm_fn  # publication HITL uses input_fn through the Session handler
+    # Local import keeps this module free of interactive→tui cycles at import time.
+    from .session.interactive import run_operator_session
 
-    application = WikiRunApplication(observer=observer)
-    task = asyncio.create_task(application.run(request))
-    try:
-        result = await task
-    except asyncio.CancelledError:
-        out.print(Text("run cancelled"))
-        raise
-    except KeyboardInterrupt:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-        out.print(Text("run cancelled"))
-        raise
-
-    if isinstance(result, Complete):
-        out.print(Text(f"complete pages={len(result.manifest.pages)}"))
-        return result
-    if isinstance(result, NeedsInput):
-        out.print(Text("needs input"))
-        answers: dict[str, str] = {}
-        ask = input_fn or (lambda prompt: input(prompt))
-        for index, question in enumerate(result.questions, start=1):
-            safe_question = redact_secrets(question, secrets)
-            answer = ask(f"Q{index}: {safe_question}\n> ")
-            answers[f"{state.run_id or 'run'}:{index}"] = answer.strip()
-        out.print(
-            Text(
-                f"recorded {len(answers)} answers; start a fresh Wiki Run with "
-                "WikiRunRequest(explicit_answers=...)"
-            )
-        )
-        return result
-    return result
+    return await run_operator_session(
+        request,
+        console=console,
+        input_fn=input_fn,
+        check_tty=check_tty,
+        yolo=yolo or request.auto_approve_publication,
+        auto_start=auto_start,
+        max_turns=max_turns,
+    )
 
 
 def offer_manual_retry(
@@ -182,6 +83,8 @@ def offer_manual_retry(
     model: str | None = None,
 ) -> WikiRunRequest | None:
     """Offer Manual Retry from the newest failed/cancelled record near publication."""
+    from rich.text import Text
+
     out = console or Console(stderr=False)
     records_dir = publication.parent / f".{publication.name}.runs"
     if not records_dir.is_dir():
@@ -206,14 +109,11 @@ def offer_manual_retry(
     )
 
 
-def project_events(events: list[WikiRunEvent]) -> list[str]:
-    """Deterministic projection used by tests (no terminal required)."""
-    state = TuiState()
-    return [state.observe(event) for event in events]
-
-
-def summarize_nodes(events: list[WikiRunEvent]) -> Mapping[str, str]:
-    state = TuiState()
-    for event in events:
-        state.observe(event)
-    return dict(state.nodes)
+__all__ = [
+    "OperatorSession",
+    "offer_manual_retry",
+    "project_events",
+    "require_tty",
+    "run_tui",
+    "summarize_nodes",
+]

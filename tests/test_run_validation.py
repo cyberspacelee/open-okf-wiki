@@ -95,6 +95,7 @@ def test_complete_wiki_run_resolves_canonical_encoded_source_paths(tmp_path: Pat
                 ),
                 staging=staging,
                 publication=tmp_path / "published",
+                auto_approve_publication=True,
             )
         )
     )
@@ -160,6 +161,7 @@ def test_exhausted_validation_retry_leaves_the_published_wiki_unchanged(
                     ),
                     staging=tmp_path / "staging",
                     publication=published,
+                    auto_approve_publication=True,
                 )
             )
         )
@@ -195,6 +197,7 @@ def test_multi_repository_citations_require_a_repository_id(tmp_path: Path) -> N
                     limits=TEST_WIKI_LIMITS,
                     staging=tmp_path / "staging",
                     publication=tmp_path / "published",
+                    auto_approve_publication=True,
                 )
             )
         )
@@ -217,6 +220,7 @@ def test_source_inventory_is_written_and_does_not_gate_citations(tmp_path: Path)
                 limits=TEST_WIKI_LIMITS,
                 staging=tmp_path / "staging",
                 publication=tmp_path / "published",
+                auto_approve_publication=True,
             )
         )
     )

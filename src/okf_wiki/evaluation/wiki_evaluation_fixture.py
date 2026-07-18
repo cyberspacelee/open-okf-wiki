@@ -65,6 +65,44 @@ def fixture_model(case_id: str, pages: dict[str, str]) -> FunctionModel:
         ]
 
     def respond(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
+        instructions = info.instructions or ""
+        if "You are a Wiki Reviewer." in instructions:
+            from pydantic_ai.messages import TextPart
+            import re
+
+            run_code_returns = [
+                part
+                for message in messages
+                if isinstance(message, ModelRequest)
+                for part in message.parts
+                if isinstance(part, ToolReturnPart) and part.tool_name == "run_code"
+            ]
+            if run_code_returns:
+                content = run_code_returns[-1].content
+                if isinstance(content, dict):
+                    content = content.get("output", content)
+                return ModelResponse(
+                    parts=[TextPart(str(content).strip())],
+                    usage=RequestUsage(input_tokens=12, output_tokens=8),
+                )
+            assignment = re.search(
+                r"run_id=([0-9a-f]{32}), task_id=([^,]+), node_id=([^,]+), parent_id=([^,]+), "
+                r"attempt=(\d+)",
+                instructions,
+            )
+            assert assignment is not None
+            run_id, task_id, node_id, parent_id, attempt = assignment.groups()
+            review_code = (
+                "handoff = publish_receipt("
+                f"run_id='{run_id}', node_id='{node_id}', parent_id='{parent_id}', "
+                f"attempt={attempt}, status='complete', scope='review:{task_id}', "
+                "summary='fixture review ok', findings=[])\nprint(handoff)"
+            )
+            return ModelResponse(
+                parts=[ToolCallPart("run_code", {"code": review_code})],
+                usage=RequestUsage(input_tokens=12, output_tokens=8),
+            )
+
         returned = any(
             isinstance(part, ToolReturnPart) and part.tool_name == "run_code"
             for message in messages

@@ -64,6 +64,7 @@ def test_wiki_run_wall_clock_deadline_terminates_model_work(tmp_path: Path) -> N
                     ),
                     staging=tmp_path / "staging",
                     publication=published,
+                    auto_approve_publication=True,
                 )
             )
         )
@@ -103,6 +104,7 @@ def test_wiki_mount_write_quota_stops_output_and_preserves_the_publication(
                     ),
                     staging=tmp_path / "staging",
                     publication=published,
+                    auto_approve_publication=True,
                 )
             )
         )
@@ -137,6 +139,7 @@ def test_agent_usage_limit_is_an_explicit_resource_failure(tmp_path: Path) -> No
                     ),
                     staging=tmp_path / "staging",
                     publication=tmp_path / "published",
+                    auto_approve_publication=True,
                 )
             )
         )
@@ -169,6 +172,7 @@ def test_wiki_entry_ceiling_counts_directories_and_preserves_the_publication(
                     ),
                     staging=tmp_path / "staging",
                     publication=published,
+                    auto_approve_publication=True,
                 )
             )
         )
@@ -211,6 +215,7 @@ def test_wiki_byte_ceilings_preserve_the_publication(
                     ),
                     staging=tmp_path / "staging",
                     publication=published,
+                    auto_approve_publication=True,
                 )
             )
         )

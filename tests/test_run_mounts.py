@@ -119,6 +119,7 @@ def test_complete_validation_retry_lets_the_same_agent_fix_staging(tmp_path: Pat
                 ),
                 staging=staging,
                 publication=published,
+                auto_approve_publication=True,
             )
         )
     )
@@ -295,6 +296,7 @@ def test_invalid_staging_manifest_and_artifacts_never_publish(tmp_path: Path, ca
                     ),
                     staging=staging,
                     publication=published,
+                    auto_approve_publication=True,
                 )
             )
         )
@@ -324,6 +326,7 @@ def test_wiki_run_rejects_nested_staging_without_creating_it(tmp_path: Path) -> 
                     limits=WikiRunLimits(),
                     staging=staging,
                     publication=tmp_path / "published",
+                    auto_approve_publication=True,
                 )
             )
         )
@@ -443,6 +446,7 @@ def test_wiki_run_rejects_a_symlinked_release_root_before_model_work(tmp_path: P
                     limits=WikiRunLimits(),
                     staging=tmp_path / "staging",
                     publication=tmp_path / "published",
+                    auto_approve_publication=True,
                 )
             )
         )
@@ -482,6 +486,7 @@ def test_wiki_run_rejects_invalid_checkout_before_model_work(
                     limits=WikiRunLimits(),
                     staging=staging,
                     publication=tmp_path / "published",
+                    auto_approve_publication=True,
                 )
             )
         )
@@ -522,6 +527,7 @@ def test_wiki_run_rejects_an_oversized_source_blob_before_reading_it(
                     limits=WikiRunLimits(source_file_bytes_limit=5),
                     staging=tmp_path / "staging",
                     publication=tmp_path / "published",
+                    auto_approve_publication=True,
                 )
             )
         )
@@ -579,6 +585,7 @@ def test_wiki_run_rejects_source_count_and_total_ceilings_before_blob_reads(
                     limits=WikiRunLimits(**limits),
                     staging=tmp_path / "staging",
                     publication=tmp_path / "published",
+                    auto_approve_publication=True,
                 )
             )
         )
@@ -623,6 +630,7 @@ def test_wiki_run_rejects_executable_git_filter_without_running_it(tmp_path: Pat
                     limits=WikiRunLimits(),
                     staging=tmp_path / "staging",
                     publication=tmp_path / "published",
+                    auto_approve_publication=True,
                 )
             )
         )

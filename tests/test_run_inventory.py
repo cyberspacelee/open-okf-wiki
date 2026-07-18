@@ -49,6 +49,7 @@ def test_write_visualization_after_publish_is_optional_and_non_destructive(
                 staging=tmp_path / "staging",
                 publication=publication,
                 write_visualization=True,
+                auto_approve_publication=True,
             )
         )
     )
@@ -103,6 +104,7 @@ def test_source_inventory_failure_emits_error_type_and_continues(
                 limits=TEST_WIKI_LIMITS,
                 staging=tmp_path / "staging",
                 publication=tmp_path / "published",
+                auto_approve_publication=True,
             )
         )
     )
