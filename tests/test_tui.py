@@ -67,6 +67,16 @@ def test_tui_projects_plan_nodes_receipts_and_retries() -> None:
     assert nodes["domain-1"] == "complete"
 
 
+def test_tui_projects_run_failed_error_type() -> None:
+    lines = project_events(
+        [
+            _event(1, "run_created"),
+            _event(2, "run_failed", payload={"error_type": "HostValidationError"}),
+        ]
+    )
+    assert lines[-1] == "run failed error_type=HostValidationError"
+
+
 def test_tui_redacts_secret_like_fragments_from_lines(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-value")
     lines = project_events(

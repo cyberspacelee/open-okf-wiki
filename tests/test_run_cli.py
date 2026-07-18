@@ -220,15 +220,20 @@ def test_wiki_run_cli_withholds_secret_bearing_provider_diagnostics(
 
     assert main() == 1
 
-    output = capsys.readouterr().out
-    assert secret not in output
-    assert json.loads(output) == {
-        "error": {
-            "message": "RuntimeError: provider diagnostics withheld",
-            "type": "RuntimeError",
-        },
-        "ok": False,
-    }
+    captured = capsys.readouterr()
+    assert secret not in captured.out
+    assert secret not in captured.err
+    payload = json.loads(captured.out)
+    assert payload["ok"] is False
+    assert payload["error"]["message"] == "RuntimeError: provider diagnostics withheld"
+    assert payload["error"]["type"] == "RuntimeError"
+    # Message stays withheld, but a redacted stack is still available for debugging.
+    assert "traceback" in payload["error"]
+    assert secret not in payload["error"]["traceback"]
+    assert "Traceback" in payload["error"]["traceback"]
+    assert "Authorization: Bearer" not in payload["error"]["traceback"]
+    assert "Traceback" in captured.err
+    assert secret not in captured.err
 
 
 def test_wiki_run_cli_preserves_explicit_resource_limit_errors(
@@ -256,13 +261,116 @@ def test_wiki_run_cli_preserves_explicit_resource_limit_errors(
     )
 
     assert main() == 1
-    assert json.loads(capsys.readouterr().out) == {
-        "error": {
-            "message": "Agent usage quota was exceeded",
-            "type": "WikiRunResourceLimitError",
-        },
-        "ok": False,
-    }
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["ok"] is False
+    assert payload["error"]["message"] == "Agent usage quota was exceeded"
+    assert payload["error"]["type"] == "WikiRunResourceLimitError"
+    assert "Agent usage quota was exceeded" in payload["error"]["traceback"]
+    assert "WikiRunResourceLimitError" in payload["error"]["traceback"]
+    assert "Traceback" in captured.err
+
+
+def test_wiki_run_cli_includes_traceback_for_operator_config_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "okf-wiki",
+            "wiki-run",
+            "--config",
+            str(tmp_path / "missing-wiki-run.yaml"),
+        ],
+    )
+
+    assert main() == 1
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["ok"] is False
+    assert payload["error"]["type"] in {"ConfigError", "ValueError", "FileNotFoundError", "OSError"}
+    assert "traceback" in payload["error"]
+    assert "Traceback" in payload["error"]["traceback"]
+    assert "Traceback" in captured.err
+
+
+def test_wiki_run_cli_error_dump_writes_redacted_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    dump = tmp_path / "failure.diag.txt"
+    secret = "dump-secret-value"
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
+
+    async def fail(_: WikiRunApplication, __: WikiRunRequest) -> NeedsInput:
+        raise RuntimeError(f"provider Authorization: Bearer {secret}")
+
+    monkeypatch.setattr(WikiRunApplication, "run", fail)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "okf-wiki",
+            "wiki-run",
+            str(tmp_path / "source"),
+            "--source-revision",
+            "0" * 40,
+            "--staging",
+            str(tmp_path / "staging"),
+            "--publication",
+            str(tmp_path / "published"),
+            "--model",
+            "test",
+            "--error-dump",
+            str(dump),
+        ],
+    )
+
+    assert main() == 1
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["error"]["error_dump"] == str(dump.resolve())
+    assert dump.is_file()
+    text = dump.read_text(encoding="utf-8")
+    assert secret not in text
+    assert "error_type: RuntimeError" in text
+    assert "Traceback" in text
+    assert "Authorization: Bearer" not in text
+    assert str(dump) in captured.err or "error diagnostics" in captured.err
+
+
+def test_wiki_run_cli_includes_traceback_for_runtime_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async def fail(_: WikiRunApplication, __: WikiRunRequest) -> NeedsInput:
+        raise RuntimeError("model transport failed: connection reset")
+
+    monkeypatch.setattr(WikiRunApplication, "run", fail)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "okf-wiki",
+            "wiki-run",
+            str(tmp_path / "source"),
+            "--source-revision",
+            "0" * 40,
+            "--staging",
+            str(tmp_path / "staging"),
+            "--publication",
+            str(tmp_path / "published"),
+            "--model",
+            "test",
+        ],
+    )
+
+    assert main() == 1
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["ok"] is False
+    # Message may still be withheld (RuntimeError is not operator-safe), but stack is present.
+    assert payload["error"]["type"] == "RuntimeError"
+    assert "traceback" in payload["error"]
+    assert "connection reset" in payload["error"]["traceback"]
+    assert "Traceback" in captured.err
+    assert "connection reset" in captured.err
 
 
 def test_skill_fork_cli_creates_an_owned_copy_of_the_default(

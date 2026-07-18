@@ -133,6 +133,11 @@ def test_early_wiki_run_failure_still_writes_a_terminal_record(tmp_path: Path) -
     assert len(records) == 1
     assert records[0]["status"] == "failed"
     assert events[-1].type == "run_failed"
+    assert events[-1].payload.get("error_type") in {
+        "ValueError",
+        "HostValidationError",
+        "ConfigError",
+    }
 
 
 def test_needs_input_emits_a_terminal_event_and_record(tmp_path: Path) -> None:

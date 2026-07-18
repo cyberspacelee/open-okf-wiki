@@ -90,7 +90,11 @@ class TuiState:
             "needs_input",
         }:
             self.terminal = event.type
-            line = event.type.replace("_", " ")
+            error_type = payload.get("error_type")
+            if event.type in {"run_failed", "run_cancelled"} and isinstance(error_type, str):
+                line = f"{event.type.replace('_', ' ')} error_type={error_type}"
+            else:
+                line = event.type.replace("_", " ")
         else:
             line = event.type.replace("_", " ")
         rendered = redact_secrets(line, environment_secrets())

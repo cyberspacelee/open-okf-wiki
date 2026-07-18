@@ -273,6 +273,7 @@ class WikiRunApplication:
         self.last_visualization: dict[str, object] | None = None
         self.last_visualization_error: str | None = None
         self.last_observer_errors: int = 0
+        self.last_run_id: str | None = None
 
     async def run(self, request: WikiRunRequest) -> WikiRunResult:
         run_id = os.urandom(16).hex()
@@ -281,6 +282,7 @@ class WikiRunApplication:
         self.last_visualization = None
         self.last_visualization_error = None
         self.last_observer_errors = 0
+        self.last_run_id = run_id
         lifecycle = RunLifecycle(
             publication=_record_publication_path(request.publication),
             skill_path=request.skill.path.absolute(),
@@ -365,7 +367,7 @@ class WikiRunApplication:
                 lifecycle.retry_counters,
                 lifecycle.provider_retry,
             )
-            emit("run_cancelled")
+            emit("run_cancelled", {"error_type": "CancelledError"})
             if not self._finalize_record(
                 request,
                 run_id=run_id,
@@ -387,7 +389,7 @@ class WikiRunApplication:
                     "provider_retry_exhausted",
                     lifecycle.provider_retry.as_counters(),
                 )
-            emit("run_failed")
+            emit("run_failed", {"error_type": type(error).__name__})
             if not self._finalize_record(
                 request,
                 run_id=run_id,
@@ -608,8 +610,10 @@ class WikiRunApplication:
                     raise
                 except Exception as error:
                     if limit_error := _resource_limit_from_exception(error):
-                        raise WikiRunResourceLimitError(limit_error) from None
+                        # Keep the original chain so operators can see where the limit fired.
+                        raise WikiRunResourceLimitError(limit_error) from error
                     if safe_error := _safe_model_error(error, request.model.settings):
+                        # Secret-bearing provider failures must not re-emit the raw chain.
                         raise RuntimeError(safe_error) from None
                     raise
             lifecycle.usage = result.usage

@@ -9,7 +9,14 @@ from okf_wiki.errors import (
     is_operator_safe_exception,
     operator_error,
 )
-from okf_wiki.security import PROVIDER_DIAGNOSTICS_WITHHELD, safe_error_message
+from pathlib import Path
+
+from okf_wiki.security import (
+    PROVIDER_DIAGNOSTICS_WITHHELD,
+    safe_error_message,
+    safe_exception_traceback,
+    write_error_diagnostics,
+)
 
 
 class _Sample(BaseModel):
@@ -64,3 +71,47 @@ def test_safe_error_message_still_withholds_provider_runtime_errors() -> None:
     assert is_operator_safe_exception(ConfigError("bad config"))
     assert is_operator_safe_exception(PublicationError("locked"))
     assert not is_operator_safe_exception(AssertionError("internal"))
+
+
+def test_safe_exception_traceback_preserves_stacks_and_redacts_secrets() -> None:
+    try:
+        raise ConfigError("staging path is invalid")
+    except ConfigError as error:
+        stack = safe_exception_traceback(error)
+    assert stack is not None
+    assert "ConfigError" in stack
+    assert "staging path is invalid" in stack
+    assert "Traceback" in stack
+
+    # RuntimeError used to lose stacks entirely; debugging needs them without a log file.
+    try:
+        raise RuntimeError("model transport failed: connection reset")
+    except RuntimeError as error:
+        runtime_stack = safe_exception_traceback(error)
+    assert runtime_stack is not None
+    assert "RuntimeError" in runtime_stack
+    assert "connection reset" in runtime_stack
+
+    secret = "traceback-secret-token"
+    try:
+        raise RuntimeError(f"provider Authorization: Bearer {secret}")
+    except RuntimeError as error:
+        secret_stack = safe_exception_traceback(error)
+    assert secret_stack is not None
+    assert secret not in secret_stack
+    assert "Traceback" in secret_stack
+    assert "Authorization: Bearer" not in secret_stack
+
+
+def test_write_error_diagnostics_writes_scrubbed_file(tmp_path: Path) -> None:
+    path = tmp_path / "nested" / "err.diag.txt"
+    try:
+        raise ConfigError("staging path is invalid")
+    except ConfigError as error:
+        written = write_error_diagnostics(path, error=error, run_id="ab" * 16, command="wiki-run")
+    assert written == path.resolve()
+    text = path.read_text(encoding="utf-8")
+    assert "error_type: ConfigError" in text
+    assert "run_id: " in text
+    assert "staging path is invalid" in text
+    assert "Traceback" in text

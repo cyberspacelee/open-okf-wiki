@@ -1,6 +1,8 @@
 import argparse
 import asyncio
 import json
+import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -10,7 +12,11 @@ from .security import (
     environment_secrets,
     redact_secrets,
     safe_error_message,
+    safe_exception_traceback,
+    write_error_diagnostics,
 )
+
+_ERROR_DUMP_AUTO = "__auto__"
 
 
 def emit(payload: dict[str, object]) -> None:
@@ -25,6 +31,85 @@ def _safe_cli_error(error: Exception) -> str:
         f"{type(error).__name__}: {message}"
         if message == PROVIDER_DIAGNOSTICS_WITHHELD
         else message
+    )
+
+
+def _cli_error_payload(error: Exception) -> dict[str, object]:
+    """Build a secret-safe CLI error object with a redacted stack for debugging.
+
+    Message text may still be withheld for opaque/provider failures; the traceback is
+    kept whenever it can be credential-scrubbed so operators are not left without a stack.
+    """
+    payload: dict[str, object] = {
+        "message": _safe_cli_error(error),
+        "type": type(error).__name__,
+    }
+    traceback_text = safe_exception_traceback(error)
+    if traceback_text is not None:
+        payload["traceback"] = traceback_text
+    return payload
+
+
+def _error_dump_request(arguments: argparse.Namespace) -> str | None:
+    """Return dump mode: explicit path, auto token, or None."""
+    explicit = getattr(arguments, "error_dump", None)
+    if explicit is not None:
+        return str(explicit)
+    env = os.environ.get("OKF_WIKI_ERROR_DUMP")
+    if env is None or env.strip() == "":
+        return None
+    if env.strip() in {"1", "true", "TRUE", "yes", "YES", "auto", "AUTO"}:
+        return _ERROR_DUMP_AUTO
+    return env.strip()
+
+
+def _resolve_error_dump_path(
+    mode: str,
+    *,
+    publication: Path | None,
+    run_id: str | None,
+) -> Path:
+    if mode != _ERROR_DUMP_AUTO:
+        return Path(mode)
+    if publication is not None:
+        runs = publication.parent / f".{publication.name}.runs"
+        name = f"{run_id}.diag.txt" if run_id else "last-error.diag.txt"
+        return runs / name
+    name = f"okf-wiki-{run_id}.diag.txt" if run_id else "okf-wiki-error.diag.txt"
+    return Path.cwd() / name
+
+
+def _maybe_write_error_dump(
+    arguments: argparse.Namespace,
+    error: Exception,
+    *,
+    publication: Path | None = None,
+    run_id: str | None = None,
+) -> Path | None:
+    mode = _error_dump_request(arguments)
+    if mode is None:
+        return None
+    target = _resolve_error_dump_path(mode, publication=publication, run_id=run_id)
+    return write_error_diagnostics(
+        target,
+        error=error,
+        run_id=run_id,
+        command=getattr(arguments, "command", None),
+    )
+
+
+def _add_error_dump_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--error-dump",
+        nargs="?",
+        const=_ERROR_DUMP_AUTO,
+        default=None,
+        metavar="PATH",
+        help=(
+            "On failure, write secret-scrubbed diagnostics to PATH. "
+            "Omit PATH (or set OKF_WIKI_ERROR_DUMP=1) to auto-place under "
+            ".<publication>.runs/<run_id>.diag.txt when publication is known."
+        ),
     )
 
 
@@ -178,12 +263,14 @@ def parser() -> argparse.ArgumentParser:
         default=None,
         help="After successful publication, write a static Wiki Visualization under viz/",
     )
+    _add_error_dump_flag(wiki_run)
 
     wiki_retry = subcommands.add_parser("wiki-retry")
     wiki_retry.add_argument("record", type=Path)
     wiki_retry.add_argument("--staging", type=Path, required=True)
     wiki_retry.add_argument("--publication", type=Path, required=True)
     wiki_retry.add_argument("--model")
+    _add_error_dump_flag(wiki_retry)
 
     tui = subcommands.add_parser("tui")
     tui.add_argument(
@@ -193,6 +280,7 @@ def parser() -> argparse.ArgumentParser:
         help="Wiki Run YAML path (default: ./wiki-run.yaml when present)",
     )
     tui.add_argument("--retry-record", type=Path)
+    _add_error_dump_flag(tui)
 
     wiki_eval = subcommands.add_parser("wiki-eval")
     wiki_eval.add_argument("output", type=Path)
@@ -342,6 +430,7 @@ def _wiki_run_request(arguments: argparse.Namespace):
 
 def main() -> int:
     arguments = parser().parse_args()
+    error_dump_path: Path | None = None
     try:
         dotenv = Path.cwd() / ".env"
         if arguments.command == "wiki-run" and arguments.config is not None:
@@ -420,7 +509,16 @@ def main() -> int:
 
             request = _wiki_run_request(arguments)
             application = WikiRunApplication()
-            result = asyncio.run(application.run(request))
+            try:
+                result = asyncio.run(application.run(request))
+            except Exception as error:
+                error_dump_path = _maybe_write_error_dump(
+                    arguments,
+                    error,
+                    publication=request.publication,
+                    run_id=application.last_run_id,
+                )
+                raise
             payload: dict[str, object] = {
                 "ok": True,
                 "result": result.model_dump(mode="json"),
@@ -443,7 +541,17 @@ def main() -> int:
                 publication=arguments.publication,
                 model=arguments.model,
             )
-            result = asyncio.run(WikiRunApplication().run(request))
+            application = WikiRunApplication()
+            try:
+                result = asyncio.run(application.run(request))
+            except Exception as error:
+                error_dump_path = _maybe_write_error_dump(
+                    arguments,
+                    error,
+                    publication=request.publication,
+                    run_id=application.last_run_id,
+                )
+                raise
             emit(
                 {
                     "ok": True,
@@ -472,7 +580,16 @@ def main() -> int:
                 )
             else:
                 request = configured
-            result = asyncio.run(run_tui(request))
+            try:
+                result = asyncio.run(run_tui(request))
+            except Exception as error:
+                error_dump_path = _maybe_write_error_dump(
+                    arguments,
+                    error,
+                    publication=request.publication,
+                    run_id=None,
+                )
+                raise
             emit({"ok": True, "result": result.model_dump(mode="json")})
             return 0
 
@@ -522,10 +639,19 @@ def main() -> int:
         )
         return 0
     except Exception as error:
-        emit(
-            {
-                "error": {"message": _safe_cli_error(error), "type": type(error).__name__},
-                "ok": False,
-            }
-        )
+        error_payload = _cli_error_payload(error)
+        traceback_text = error_payload.get("traceback")
+        if isinstance(traceback_text, str) and traceback_text:
+            # Keep machine-readable JSON on stdout; human operators see the stack on stderr.
+            print(
+                traceback_text, file=sys.stderr, end="" if traceback_text.endswith("\n") else "\n"
+            )
+        # Config/init failures never entered wiki-run; still honor --error-dump / env.
+        dump = error_dump_path
+        if dump is None:
+            dump = _maybe_write_error_dump(arguments, error)
+        if dump is not None:
+            error_payload["error_dump"] = str(dump)
+            print(f"okf-wiki: wrote error diagnostics to {dump}", file=sys.stderr)
+        emit({"error": error_payload, "ok": False})
         return 1
