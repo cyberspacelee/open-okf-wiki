@@ -216,7 +216,7 @@ def _openai_provider(http_client: httpx.AsyncClient):
     """Build an OpenAIProvider that honors OpenAI-compatible env credentials."""
     from pydantic_ai.providers.openai import OpenAIProvider
 
-    from .provider_env import openai_api_key, openai_base_url
+    from .env import openai_api_key, openai_base_url
 
     # Pass base_url/api_key explicitly so OpenAI-compatible gateways (vLLM, LiteLLM,
     # OpenRouter-compatible proxies, local servers) resolve the same way as stock OpenAI.

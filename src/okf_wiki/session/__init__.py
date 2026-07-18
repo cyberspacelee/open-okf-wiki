@@ -9,13 +9,15 @@ slash controls. Multi-session list/resume uses :class:`SessionStore`
 
 from __future__ import annotations
 
-from .cards import SessionCard, card_texts, project_event, project_events
+from .cards import SessionCard, card_texts, project_event, project_events, summarize_nodes
 from .interactive import run_operator_session, run_operator_session_sync
 from .runtime import (
+    CollectAnswersFn,
     OperatorSession,
     SessionMessage,
     SlashCommandResult,
     WikiRunTurnResult,
+    format_run_error,
     interactive_publication_handler,
 )
 from .store import (
@@ -30,6 +32,7 @@ from .stream import StreamFragment, project_stream_event
 from .tty import require_tty
 
 __all__ = [
+    "CollectAnswersFn",
     "OperatorSession",
     "SessionCard",
     "SessionMessage",
@@ -42,6 +45,7 @@ __all__ = [
     "WikiRunTurnResult",
     "card_texts",
     "default_sessions_dir",
+    "format_run_error",
     "format_session_list",
     "interactive_publication_handler",
     "project_event",
@@ -50,4 +54,5 @@ __all__ = [
     "require_tty",
     "run_operator_session",
     "run_operator_session_sync",
+    "summarize_nodes",
 ]

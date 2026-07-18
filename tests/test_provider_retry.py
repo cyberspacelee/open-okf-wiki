@@ -8,7 +8,7 @@ from httpx import HTTPStatusError, Request, Response
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
 
-from okf_wiki.provider_retry import (
+from okf_wiki.host.provider.retry import (
     MAX_TRANSPORT_ATTEMPTS,
     ProviderRetryState,
     build_provider_transport,
@@ -17,7 +17,7 @@ from okf_wiki.provider_retry import (
     is_retryable_status,
     parse_retry_after,
 )
-from okf_wiki.wiki_run import (
+from okf_wiki.host import (
     Complete,
     ModelProviderConfig,
     ProducerSkillVersion,

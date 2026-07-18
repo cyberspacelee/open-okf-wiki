@@ -5,8 +5,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from ..errors import ConfigError
-from ..provider_env import (
+from ..host.errors import ConfigError
+from ..host.provider.env import (
     ENV_OPENAI_API_KEY,
     openai_api_key,
     openai_base_url,

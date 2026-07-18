@@ -1,3 +1,22 @@
+"""Host security primitives: git-read sandbox, path canonicalization, secret safety.
+
+Secret marker lists live here as the single source of truth. Other modules import
+these constants rather than redefining them:
+
+* ``_SECRET_ENV_MARKERS`` — environment variable *names* (substring, uppercased)
+  used by :func:`environment_secrets` to harvest known credential values.
+* ``_SECRET_TEXT_MARKERS`` — residual secret-like *text patterns* (casefolded) that
+  cause :func:`safe_error_message` / traceback scrubbing to withhold or redact.
+* ``_CONFIG_SECRET_MARKERS`` — YAML *key name endings* (normalized alnum) rejected by
+  ``host.config._reject_yaml_secrets`` so credentials never enter Wiki Run YAML.
+* ``_SECRET_SETTING_MARKERS`` — model-settings *key substrings* (casefolded, ``-``→``_``)
+  used by ``host.records`` when redacting recorded model settings.
+
+Do not invent parallel marker tuples in config/records; extend this module instead.
+"""
+
+from __future__ import annotations
+
 import os
 import shutil
 import subprocess
@@ -11,7 +30,13 @@ REDACTION = "[REDACTED CREDENTIAL]"
 PROVIDER_DIAGNOSTICS_WITHHELD = "provider diagnostics withheld"
 _MAX_TRACEBACK_CHARS = 32_768
 GIT_EXECUTABLE = shutil.which("git", path=os.defpath) or "git"
+
+# --- Secret marker lists (single source; import from here) -------------------
+
+# Env var names (substring match against name.upper()).
 _SECRET_ENV_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH", "COOKIE")
+
+# Residual secret-like text in operator messages / tracebacks (casefolded).
 _SECRET_TEXT_MARKERS = (
     "authorization:",
     "api_key=",
@@ -19,6 +44,33 @@ _SECRET_TEXT_MARKERS = (
     "bearer ",
     "password=",
     "secret=",
+)
+
+# YAML config key endings after stripping non-alnum and casefolding.
+# Used by host.config to reject secrets/headers in Wiki Run YAML.
+_CONFIG_SECRET_MARKERS = (
+    "authorization",
+    "apikey",
+    "credential",
+    "credentials",
+    "header",
+    "headers",
+    "key",
+    "password",
+    "secret",
+    "token",
+)
+
+# Model-settings key substrings after casefold + hyphen→underscore.
+# Used by host.records when sanitizing recorded provider settings.
+_SECRET_SETTING_MARKERS = (
+    "api_key",
+    "apikey",
+    "authorization",
+    "credential",
+    "password",
+    "secret",
+    "token",
 )
 
 

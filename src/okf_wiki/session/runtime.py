@@ -30,13 +30,13 @@ from ..diagnostics import (
     preflight_provider_credentials,
 )
 from ..diagnostics.doctor import CredentialStatus
-from ..publication_gate import (
+from ..host.publication.gate import (
     PublicationApprovalHandler,
     build_approve_results,
     build_deny_results,
 )
-from ..security import environment_secrets, redact_secrets, safe_error_message
-from ..wiki_run import (
+from ..host.security import environment_secrets, redact_secrets, safe_error_message
+from ..host import (
     NeedsInput,
     WikiRunApplication,
     WikiRunEvent,
@@ -50,6 +50,20 @@ if TYPE_CHECKING:
     from .store import SessionSnapshot, SessionStore
 
 MessageRole = Literal["user", "system", "assistant", "session"]
+
+# Sync or async collector: (needs_input, run_id) → answer map for a new Wiki Run.
+CollectAnswersFn = Callable[
+    [NeedsInput, str | None],
+    Mapping[str, str] | Awaitable[Mapping[str, str]],
+]
+
+
+def format_run_error(error: BaseException) -> str:
+    """Redacted one-line error for Session adapters (TUI / line shell)."""
+    if isinstance(error, Exception):
+        detail = safe_error_message(error)
+        return f"{type(error).__name__}: {detail}"
+    return f"{type(error).__name__}: {error}"
 
 
 @dataclass(slots=True, frozen=True)
@@ -205,7 +219,6 @@ class OperatorSession:
     last_result: WikiRunResult | None = None
     last_request: WikiRunRequest | None = None
     last_run_status: str | None = None
-    last_usage: dict[str, object] | None = None
 
     def set_yolo(self, enabled: bool) -> None:
         self.yolo = bool(enabled)
@@ -559,6 +572,85 @@ class OperatorSession:
             publication_approval_handler=publication_approval_handler,
         )
 
+    async def _resolve_needs_input_answers(
+        self,
+        needs_input: NeedsInput,
+        *,
+        run_id: str | None,
+        collect_answers: CollectAnswersFn | None,
+        input_fn: InputFn | None,
+        async_input_fn: Callable[[str], Awaitable[str]] | None,
+    ) -> dict[str, str]:
+        """Collect Needs Input answers via injectables (no UI)."""
+        if collect_answers is not None:
+            collected = collect_answers(needs_input, run_id)
+            if isinstance(collected, Mapping):
+                answers = collected
+            else:
+                answers = await collected
+            return {str(k): str(v) for k, v in answers.items()}
+        if async_input_fn is not None:
+            return await self.collect_needs_input_answers_async(
+                needs_input,
+                async_input_fn=async_input_fn,
+                run_id=run_id,
+            )
+        if input_fn is not None:
+            return self.collect_needs_input_answers(
+                needs_input,
+                input_fn=input_fn,
+                run_id=run_id,
+            )
+        raise TypeError(
+            "run_turn requires collect_answers, input_fn, or async_input_fn "
+            "when the Wiki Run returns NeedsInput"
+        )
+
+    async def run_turn(
+        self,
+        *,
+        label: str | None = None,
+        collect_answers: CollectAnswersFn | None = None,
+        input_fn: InputFn | None = None,
+        async_input_fn: Callable[[str], Awaitable[str]] | None = None,
+        publication_approval_handler: PublicationApprovalHandler | None = None,
+        request: WikiRunRequest | None = None,
+        explicit_answers: Mapping[str, str] | None = None,
+    ) -> WikiRunTurnResult:
+        """Run one operator turn: optional goal label → Wiki Run → Needs Input loop.
+
+        Pure product logic for both the Textual app and the line shell. Adapters
+        inject I/O only (``collect_answers``, ``input_fn``, or ``async_input_fn``)
+        and handle presentation of start/finish status themselves.
+
+        Needs Input always starts a **new** Wiki Run with ``explicit_answers``
+        (does not resume the prior graph). Publication HITL still goes through
+        ``publication_approval_handler`` / Session YOLO precedence on each Run.
+        """
+        if label:
+            self.append_user(label)
+
+        turn = await self.run_wiki(
+            request=request,
+            explicit_answers=explicit_answers,
+            publication_approval_handler=publication_approval_handler,
+        )
+
+        while isinstance(turn.result, NeedsInput):
+            answers = await self._resolve_needs_input_answers(
+                turn.result,
+                run_id=turn.run_id,
+                collect_answers=collect_answers,
+                input_fn=input_fn,
+                async_input_fn=async_input_fn,
+            )
+            turn = await self.continue_after_needs_input(
+                turn,
+                answers,
+                publication_approval_handler=publication_approval_handler,
+            )
+        return turn
+
     def handle_slash(self, line: str) -> SlashCommandResult | None:
         """Parse and apply a slash command. Returns None when line is not slash."""
         text = line.strip()
@@ -778,10 +870,12 @@ class OperatorSession:
 
 
 __all__ = [
+    "CollectAnswersFn",
     "InputFn",
     "OperatorSession",
     "SessionMessage",
     "SlashCommandResult",
     "WikiRunTurnResult",
+    "format_run_error",
     "interactive_publication_handler",
 ]

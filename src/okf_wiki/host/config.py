@@ -1,4 +1,26 @@
-"""YAML loading and Wiki Run request configuration."""
+"""YAML loading and Wiki Run request configuration.
+
+Request assembly converges on three host modules:
+
+* **YAML path** (this module) — ``_wiki_run_request_from_yaml`` / ``WikiRunRequest.from_yaml``
+  loads operator YAML, rejects secret-bearing keys via ``_CONFIG_SECRET_MARKERS`` from
+  :mod:`okf_wiki.host.security`, and builds a :class:`~okf_wiki.host.models.WikiRunRequest`.
+* **Manual Retry path** — :mod:`okf_wiki.host.records` (``_manual_retry_request`` /
+  ``WikiRunRequest.from_run_record``) rebuilds a request from a terminal run record.
+* **Programmatic construction** — construct :class:`~okf_wiki.host.models.WikiRunRequest`
+  (and nested types/factories in :mod:`okf_wiki.host.models`) directly in tests, CLI
+  helpers, or evaluation harnesses.
+
+Starter YAML files are written by :mod:`okf_wiki.host.init_config`.
+
+Host readiness after a request exists is **not** re-validated here. Use:
+
+* :func:`okf_wiki.host.prepare.prepare_mounts` — path/skill/volume checks
+* :func:`okf_wiki.host.prepare.prepare_run` — snapshot materialization + skill freeze
+
+Those entry points raise existing domain/host errors; this module does not invent a
+parallel ``validate_request_host_ready`` that would change error surfaces.
+"""
 
 from __future__ import annotations
 
@@ -23,8 +45,8 @@ from yaml.nodes import MappingNode
 from yaml.resolver import BaseResolver
 
 from .errors import ConfigError, operator_error
-from .provider_env import resolve_model_identity, resolve_model_settings
-from .run_models import (
+from .provider.env import resolve_model_identity, resolve_model_settings
+from .models import (
     IgnorePattern,
     ModelProviderConfig,
     ProducerSkillVersion,
@@ -35,8 +57,8 @@ from .run_models import (
     WikiRunRequest,
     _validate_unique_repository_ids,
 )
-from .run_mounts import _existing_directory
-from .security import git_read
+from .mounts import _existing_directory
+from .security import _CONFIG_SECRET_MARKERS, git_read
 
 
 class _ConfiguredRepository(BaseModel):
@@ -156,20 +178,6 @@ def _construct_unique_mapping(
 
 
 _UniqueKeySafeLoader.add_constructor(BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping)
-
-
-_CONFIG_SECRET_MARKERS = (
-    "authorization",
-    "apikey",
-    "credential",
-    "credentials",
-    "header",
-    "headers",
-    "key",
-    "password",
-    "secret",
-    "token",
-)
 
 
 def _reject_yaml_secrets(value: object) -> None:

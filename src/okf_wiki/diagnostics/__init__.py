@@ -6,8 +6,8 @@ operator-facing diagnostics without reaching into security/errors internals.
 
 from __future__ import annotations
 
-from ..errors import ConfigError, is_operator_safe_exception, operator_error
-from ..security import (
+from ..host.errors import ConfigError, is_operator_safe_exception, operator_error
+from ..host.security import (
     PROVIDER_DIAGNOSTICS_WITHHELD,
     safe_error_message,
     safe_exception_traceback,

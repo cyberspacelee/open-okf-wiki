@@ -17,7 +17,7 @@ from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.instrumented import InstrumentationSettings
 
-from okf_wiki.wiki_run import (
+from okf_wiki.host import (
     Complete,
     ModelProviderConfig,
     RepositorySnapshot,

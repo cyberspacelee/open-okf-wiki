@@ -9,13 +9,13 @@ from pathlib import Path, PurePosixPath
 import yaml
 
 from .errors import HostValidationError
-from .run_config import _UniqueKeySafeLoader
-from .run_models import ProducerSkillVersion
-from .run_mounts import _existing_directory
-from .run_validation import _content_digest, _tree_hashes
+from .config import _UniqueKeySafeLoader
+from .models import ProducerSkillVersion
+from .mounts import _existing_directory
+from .validation import _content_digest, _tree_hashes
 
 
-_DEFAULT_PRODUCER_SKILL = Path(__file__).with_name("producer_skill")
+_DEFAULT_PRODUCER_SKILL = Path(__file__).resolve().parents[1] / "producer_skill"
 _DEFAULT_PRODUCER_SKILL_DIGEST = "9f409d481942416264ea5be185195369e08246c99d5f4721813a18e3eadc115d"
 
 _REQUIRED_PRODUCER_SKILL_PATHS = {

@@ -11,8 +11,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Literal
 
-from ..security import environment_secrets, redact_secrets
-from ..wiki_run import WikiRunEvent
+from ..host.security import environment_secrets, redact_secrets
+from ..host import WikiRunEvent
 
 CardKind = Literal[
     "lifecycle",
@@ -221,10 +221,21 @@ def card_texts(cards: Iterable[SessionCard]) -> list[str]:
     return [card.text for card in cards]
 
 
+def summarize_nodes(events: Iterable[WikiRunEvent]) -> dict[str, str]:
+    """Last-known node status from a Host event sequence."""
+    nodes: dict[str, str] = {}
+    for event in events:
+        if event.type in _CHILD_TYPES:
+            status = str(event.payload.get("status") or event.type.removeprefix("child_"))
+            nodes[event.node_id] = status
+    return nodes
+
+
 __all__ = [
     "CardKind",
     "SessionCard",
     "card_texts",
     "project_event",
     "project_events",
+    "summarize_nodes",
 ]

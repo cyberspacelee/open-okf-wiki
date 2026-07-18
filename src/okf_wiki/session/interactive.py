@@ -15,11 +15,11 @@ from typing import TextIO
 from rich.console import Console
 from rich.text import Text
 
-from ..security import safe_error_message
-from ..wiki_run import NeedsInput, WikiRunRequest, WikiRunResult
+from ..host import NeedsInput, WikiRunRequest, WikiRunResult
 from .runtime import (
     InputFn,
     OperatorSession,
+    format_run_error,
     interactive_publication_handler,
 )
 from .store import SessionStore, default_sessions_dir
@@ -28,13 +28,6 @@ from .tty import require_tty
 
 def _default_input(prompt: str) -> str:
     return input(prompt)
-
-
-def _format_run_error(error: BaseException) -> str:
-    if isinstance(error, Exception):
-        detail = safe_error_message(error)
-        return f"{type(error).__name__}: {detail}"
-    return f"{type(error).__name__}: {error}"
 
 
 async def run_operator_session(
@@ -175,23 +168,23 @@ async def _run_line_session(
     async def execute_run(*, label: str | None = None) -> WikiRunResult:
         nonlocal last_result
         if label:
-            session.append_user(label)
             print_line(f"starting Wiki Run: {label!r}")
         else:
             print_line("starting Wiki Run from Session config")
-        turn = await session.run_wiki()
-        last_result = turn.result
 
-        while isinstance(turn.result, NeedsInput):
+        def collect_answers(needs: NeedsInput, run_id: str | None) -> dict[str, str]:
             print_line("needs input — answers start a new Wiki Run (prior run not resumed)")
-            answers = session.collect_needs_input_answers(
-                turn.result,
+            return session.collect_needs_input_answers(
+                needs,
                 input_fn=ask,
-                run_id=turn.run_id,
+                run_id=run_id,
             )
-            turn = await session.continue_after_needs_input(turn, answers)
-            last_result = turn.result
 
+        turn = await session.run_turn(
+            label=label,
+            collect_answers=collect_answers,
+        )
+        last_result = turn.result
         status = getattr(turn.result, "status", type(turn.result).__name__)
         print_line(f"run finished status={status} yolo={turn.yolo}")
         return turn.result
@@ -200,7 +193,7 @@ async def _run_line_session(
         try:
             last_result = await execute_run()
         except Exception as error:
-            print_line(f"run error: {_format_run_error(error)}")
+            print_line(f"run error: {format_run_error(error)}")
             raise
 
     while True:
@@ -225,7 +218,7 @@ async def _run_line_session(
                 try:
                     last_result = await execute_run()
                 except Exception as error:
-                    print_line(f"run error: {_format_run_error(error)}")
+                    print_line(f"run error: {format_run_error(error)}")
                     raise
             continue
 
@@ -235,7 +228,7 @@ async def _run_line_session(
         try:
             last_result = await execute_run(label=stripped)
         except Exception as error:
-            print_line(f"run error: {_format_run_error(error)}")
+            print_line(f"run error: {format_run_error(error)}")
             raise
 
     return last_result

@@ -11,7 +11,7 @@ from pydantic_ai import ModelRequest, ModelResponse, RequestUsage, ToolCallPart
 from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from ..security import GIT_EXECUTABLE
+from ..host.security import GIT_EXECUTABLE
 
 
 @dataclass(frozen=True, slots=True)

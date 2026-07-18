@@ -12,7 +12,7 @@ This is the selected rollout state after shipping:
 2. bounded Root → Domain → Leaf SubAgents with receipts
 3. optional Reviewer (read-only `/wiki`)
 4. provider transport retries and Manual Retry Runs
-5. the line-oriented `okf-wiki tui` operator surface
+5. the Textual Operator Session (`okf-wiki` / `okf-wiki tui`) as the default operator surface (ADR 0018)
 
 ## Evaluation arms
 

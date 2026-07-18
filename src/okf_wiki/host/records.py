@@ -1,4 +1,17 @@
-"""Wiki Run records: load, write, manual retry assembly, and secret redaction."""
+"""Wiki Run records: load, write, manual retry assembly, and secret redaction.
+
+**Manual Retry path** for request assembly lives here (``_manual_retry_request``),
+exposed publicly as :meth:`okf_wiki.host.models.WikiRunRequest.from_run_record`.
+
+Sibling assembly entry points:
+
+* YAML — :mod:`okf_wiki.host.config` (``WikiRunRequest.from_yaml``)
+* Programmatic — construct :class:`~okf_wiki.host.models.WikiRunRequest` / factories
+  in :mod:`okf_wiki.host.models` directly
+
+Secret-setting key markers (``_SECRET_SETTING_MARKERS``) are imported from
+:mod:`okf_wiki.host.security` — do not redefine them here.
+"""
 
 from __future__ import annotations
 
@@ -16,7 +29,7 @@ from pydantic_ai import ModelSettings
 from pydantic_ai.models import Model
 
 from .errors import operator_error
-from .run_models import (
+from .models import (
     ModelProviderConfig,
     ProducerSkillVersion,
     RepositorySnapshot,
@@ -25,8 +38,13 @@ from .run_models import (
     WikiRunRecordStatus,
     WikiRunRequest,
 )
-from .run_mounts import _check_directory_path, _create_directory_path
-from .security import environment_secrets, git_read, redact_secrets
+from .mounts import _check_directory_path, _create_directory_path
+from .security import (
+    _SECRET_SETTING_MARKERS,
+    environment_secrets,
+    git_read,
+    redact_secrets,
+)
 
 
 def _exception_chain(error: BaseException) -> Iterator[BaseException]:
@@ -44,17 +62,6 @@ def _exception_chain(error: BaseException) -> Iterator[BaseException]:
             pending.append(current.__cause__)
         if current.__context__ is not None:
             pending.append(current.__context__)
-
-
-_SECRET_SETTING_MARKERS = (
-    "api_key",
-    "apikey",
-    "authorization",
-    "credential",
-    "password",
-    "secret",
-    "token",
-)
 
 
 def _model_secret_values(settings: Mapping[str, object]) -> tuple[str, ...]:

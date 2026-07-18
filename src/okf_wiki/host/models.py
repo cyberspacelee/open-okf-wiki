@@ -1,4 +1,20 @@
-"""Domain types for Wiki Run."""
+"""Domain types and factories for Wiki Run.
+
+**Request assembly** — three construction paths converge on :class:`WikiRunRequest`:
+
+1. **YAML** — :meth:`WikiRunRequest.from_yaml` → :mod:`okf_wiki.host.config`
+2. **Manual Retry** — :meth:`WikiRunRequest.from_run_record` → :mod:`okf_wiki.host.records`
+3. **Programmatic** — construct :class:`WikiRunRequest` (and nested types such as
+   :class:`RepositorySnapshot`, :class:`ProducerSkillVersion`, :class:`WikiRunLimits`,
+   :class:`ModelProviderConfig`) directly
+
+Types and factories live here; YAML parsing and record I/O stay in config/records.
+Host readiness after a request exists is owned by :mod:`okf_wiki.host.prepare`
+(``prepare_mounts`` / ``prepare_run``), not by inventing a second validation layer.
+
+:class:`WikiRunResourceLimitError` is defined in :mod:`okf_wiki.host.errors` and
+re-exported here for import compatibility (``from okf_wiki.host.models import …``).
+"""
 
 from __future__ import annotations
 
@@ -17,16 +33,17 @@ from pydantic import (
 )
 from pydantic_ai import (
     ModelSettings,
-    UnexpectedModelBehavior,
     UsageLimits,
 )
 from pydantic_ai.models import Model
 
-from .errors import OkfWikiError
-from .provider_env import (
+from .provider.env import (
     env_limit_overrides,
     merge_limit_overrides,
 )
+
+# WikiRunResourceLimitError is defined in host.errors and re-exported here for
+# historical imports via host.models.
 
 
 RepositoryId = Annotated[
@@ -132,7 +149,7 @@ class ProducerSkillVersion(BaseModel):
 
     @classmethod
     def default(cls) -> "ProducerSkillVersion":
-        from .run_skill import (
+        from .skill import (
             _DEFAULT_PRODUCER_SKILL,
             _DEFAULT_PRODUCER_SKILL_DIGEST,
             _selected_producer_skill,
@@ -143,7 +160,7 @@ class ProducerSkillVersion(BaseModel):
 
     @classmethod
     def from_directory(cls, path: Path) -> "ProducerSkillVersion":
-        from .run_skill import _validate_producer_skill
+        from .skill import _validate_producer_skill
 
         resolved, digest = _validate_producer_skill(path)
         return cls(path=resolved, digest=digest)
@@ -158,8 +175,8 @@ class ProducerSkillFork(BaseModel):
     def create(cls, version: ProducerSkillVersion, destination: Path) -> "ProducerSkillFork":
         import shutil
 
-        from .run_mounts import _overlaps
-        from .run_skill import _selected_producer_skill
+        from .mounts import _overlaps
+        from .skill import _selected_producer_skill
 
         source = _selected_producer_skill(version)
         target = destination.absolute()
@@ -329,11 +346,18 @@ class WikiRunRecord(BaseModel):
     failure_category: str | None = None
 
 
-class WikiRunResourceLimitError(UnexpectedModelBehavior, OkfWikiError, ValueError):
-    """A bounded Wiki Run stopped before it could produce a terminal result."""
-
-
 class WikiRunRequest(BaseModel):
+    """Operator request for one Wiki Run.
+
+    Prefer the documented assembly entry points over ad-hoc field wiring when an
+    existing path already covers the use case:
+
+    * :meth:`from_yaml` — YAML config (implementation: ``host.config``)
+    * :meth:`from_run_record` — Manual Retry from a terminal record
+      (implementation: ``host.records``)
+    * direct construction — tests / evaluation / CLI programmatic builds
+    """
+
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
     operation: Literal["generate", "refresh"] = "generate"
@@ -363,7 +387,8 @@ class WikiRunRequest(BaseModel):
 
     @classmethod
     def from_yaml(cls, path: Path) -> "WikiRunRequest":
-        from .run_config import _wiki_run_request_from_yaml
+        """Load a Wiki Run request from operator YAML (see ``host.config``)."""
+        from .config import _wiki_run_request_from_yaml
 
         return _wiki_run_request_from_yaml(path)
 
@@ -378,8 +403,11 @@ class WikiRunRequest(BaseModel):
         explicit_answers: Mapping[str, str] | None = None,
         retain_analysis_workspace: bool = False,
     ) -> "WikiRunRequest":
-        """Build a Manual Retry Run from an immutable failed/cancelled run record."""
-        from .run_records import _manual_retry_request
+        """Build a Manual Retry Run from an immutable failed/cancelled run record.
+
+        Implementation: ``host.records._manual_retry_request``.
+        """
+        from .records import _manual_retry_request
 
         return _manual_retry_request(
             record,

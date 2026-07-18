@@ -16,8 +16,8 @@ import yaml
 from markdown_it import MarkdownIt
 from mdit_py_plugins.anchors import anchors_plugin
 
-from .run_config import _UniqueKeySafeLoader
-from .run_models import WikiManifest, WikiRunLimits
+from .config import _UniqueKeySafeLoader
+from .models import WikiManifest, WikiRunLimits
 from .security import MAX_ANALYZABLE_FILE_BYTES, canonical_source_path
 
 

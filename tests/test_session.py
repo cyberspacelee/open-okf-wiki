@@ -14,17 +14,16 @@ from pathlib import Path
 import pytest
 from pydantic_ai.tools import DeferredToolRequests
 
-from okf_wiki.publication_gate import build_approve_results, build_deny_results
+from okf_wiki.host.publication.gate import build_approve_results, build_deny_results
 from okf_wiki.session import (
     OperatorSession,
     SessionCard,
     interactive_publication_handler,
     project_events,
+    require_tty,
 )
 from okf_wiki.session.cards import card_texts
-from okf_wiki.tui import project_events as tui_project_events
-from okf_wiki.tui import require_tty
-from okf_wiki.wiki_run import (
+from okf_wiki.host import (
     ModelProviderConfig,
     NeedsInput,
     RepositorySnapshot,
@@ -135,13 +134,17 @@ def test_session_projects_events_to_ordered_cards() -> None:
     assert "awaiting publication" in cards[-1].text
 
 
-def test_session_card_projection_matches_tui_string_compat() -> None:
+def test_session_card_texts_are_stable_string_projection() -> None:
     events = [
         _event(1, "run_created"),
         _event(2, "plan_updated", payload={"total": 2}),
         _event(3, "run_failed", payload={"error_type": "HostValidationError"}),
     ]
-    assert card_texts(project_events(events)) == tui_project_events(events)
+    assert card_texts(project_events(events)) == [
+        "run created",
+        "plan updated total=2",
+        "run failed error_type=HostValidationError",
+    ]
 
 
 def test_session_redacts_secrets_from_cards(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -395,6 +398,151 @@ def test_session_needs_input_starts_new_run_with_explicit_answers(tmp_path: Path
     assert seen_answers[0][f"{first_run_id}:1"] == "operators"
 
 
+def test_session_run_turn_needs_input_loop(tmp_path: Path) -> None:
+    """run_turn owns the Needs Input → new Run loop (sync collect_answers)."""
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    publication = tmp_path / "published"
+    call_count = {"n": 0}
+    collected_run_ids: list[str | None] = []
+
+    def model(messages, info):
+        from pydantic_ai import ModelRequest, ModelResponse, ToolCallPart
+        from pydantic_ai.messages import ToolReturnPart
+
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            needs = next(tool for tool in info.output_tools if tool.name.endswith("NeedsInput"))
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        needs.name,
+                        {"status": "needs_input", "questions": ["Which audience?"]},
+                    )
+                ]
+            )
+        tool_returns = [
+            part
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+            if isinstance(part, ToolReturnPart)
+        ]
+        if any(part.tool_name == "run_code" for part in tool_returns):
+            complete = next(tool for tool in info.output_tools if tool.name.endswith("Complete"))
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        complete.name,
+                        {"status": "complete", "manifest": {"pages": ["index.md"]}},
+                    )
+                ]
+            )
+        code = write_pages_code({"index.md": SIMPLE_WIKI_PAGE})
+        return ModelResponse(parts=[ToolCallPart("run_code", {"code": code})])
+
+    from pydantic_ai.models.function import FunctionModel
+
+    request = WikiRunRequest(
+        repositories=(RepositorySnapshot(path=source, revision=revision),),
+        skill=skill,
+        model=ModelProviderConfig(model=FunctionModel(model)),
+        limits=TEST_WIKI_LIMITS,
+        staging=tmp_path / "staging-turn",
+        publication=publication,
+        auto_approve_publication=True,
+    )
+    session = OperatorSession(base_request=request, yolo=True)
+
+    def collect_answers(needs: NeedsInput, run_id: str | None) -> dict[str, str]:
+        assert needs.questions == ["Which audience?"]
+        collected_run_ids.append(run_id)
+        assert run_id is not None
+        return {f"{run_id}:1": "operators"}
+
+    turn = asyncio.run(
+        session.run_turn(
+            label="generate the wiki",
+            collect_answers=collect_answers,
+        )
+    )
+
+    assert [m.content for m in session.message_history if m.role == "user"] == ["generate the wiki"]
+    assert collected_run_ids and collected_run_ids[0] is not None
+    first_run_id = collected_run_ids[0]
+    assert turn.result.status == "complete"
+    assert turn.run_id is not None
+    assert turn.run_id != first_run_id
+    assert turn.request.explicit_answers[f"{first_run_id}:1"] == "operators"
+    assert (publication / "index.md").is_file()
+
+
+def test_session_run_turn_async_input_fn(tmp_path: Path) -> None:
+    """run_turn accepts async_input_fn without a custom collect_answers wrapper."""
+    source = tmp_path / "source"
+    revision = make_repository(source, "source\n")
+    skill = make_producer_skill(tmp_path / "skill")
+    publication = tmp_path / "published"
+    call_count = {"n": 0}
+
+    def model(messages, info):
+        from pydantic_ai import ModelRequest, ModelResponse, ToolCallPart
+        from pydantic_ai.messages import ToolReturnPart
+
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            needs = next(tool for tool in info.output_tools if tool.name.endswith("NeedsInput"))
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        needs.name,
+                        {"status": "needs_input", "questions": ["Audience?"]},
+                    )
+                ]
+            )
+        tool_returns = [
+            part
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+            if isinstance(part, ToolReturnPart)
+        ]
+        if any(part.tool_name == "run_code" for part in tool_returns):
+            complete = next(tool for tool in info.output_tools if tool.name.endswith("Complete"))
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        complete.name,
+                        {"status": "complete", "manifest": {"pages": ["index.md"]}},
+                    )
+                ]
+            )
+        code = write_pages_code({"index.md": SIMPLE_WIKI_PAGE})
+        return ModelResponse(parts=[ToolCallPart("run_code", {"code": code})])
+
+    from pydantic_ai.models.function import FunctionModel
+
+    request = WikiRunRequest(
+        repositories=(RepositorySnapshot(path=source, revision=revision),),
+        skill=skill,
+        model=ModelProviderConfig(model=FunctionModel(model)),
+        limits=TEST_WIKI_LIMITS,
+        staging=tmp_path / "staging-async",
+        publication=publication,
+        auto_approve_publication=True,
+    )
+    session = OperatorSession(base_request=request, yolo=True)
+
+    async def async_input_fn(prompt: str) -> str:
+        assert "Audience?" in prompt
+        return "ops"
+
+    turn = asyncio.run(session.run_turn(async_input_fn=async_input_fn))
+    assert turn.result.status == "complete"
+    assert (publication / "index.md").is_file()
+
+
 def test_session_collect_needs_input_answers(tmp_path: Path) -> None:
     session = OperatorSession(base_request=_base_request(tmp_path))
     answers = session.collect_needs_input_answers(
@@ -406,7 +554,7 @@ def test_session_collect_needs_input_answers(tmp_path: Path) -> None:
 
 
 def test_interactive_approval_handler_approve_and_deny() -> None:
-    from okf_wiki.publication_gate import build_publish_approval_request, decision_from_results
+    from okf_wiki.host.publication.gate import build_publish_approval_request, decision_from_results
 
     requests = build_publish_approval_request(
         tool_call_id="publish_ui",

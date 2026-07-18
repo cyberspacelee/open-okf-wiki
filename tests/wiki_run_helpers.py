@@ -14,7 +14,7 @@ from pydantic_ai import ModelRequest, ModelResponse, ToolCallPart
 from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from okf_wiki.wiki_run import (
+from okf_wiki.host import (
     AnalysisReceipt,
     Complete,
     ModelProviderConfig,

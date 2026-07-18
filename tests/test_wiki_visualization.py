@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from okf_wiki.cli import main, parser
-from okf_wiki.wiki_visualization import (
+from okf_wiki.viz.generate import (
     GENERATOR_VERSION,
     VISUALIZATION_DIR_NAME,
     WikiVisualizationResult,
@@ -145,7 +145,7 @@ def test_generate_wiki_visualization_does_not_call_model_provider(
 
     with (
         patch("pydantic_ai.Agent") as agent_cls,
-        patch("okf_wiki.wiki_run.WikiRunApplication") as app_cls,
+        patch("okf_wiki.host.lifecycle.WikiRunApplication") as app_cls,
     ):
         result = generate_wiki_visualization(wiki)
 
@@ -214,11 +214,8 @@ def test_viz_cli_generates_artifacts(
 
 def test_publication_validation_ignores_top_level_viz_directory(tmp_path: Path) -> None:
     """viz/ under a publication must not be treated as wiki pages requiring citations."""
-    from okf_wiki.wiki_run import (
-        WikiManifest,
-        WikiRunLimits,
-        _validate_wiki,
-    )
+    from okf_wiki.host import WikiManifest, WikiRunLimits
+    from okf_wiki.host.validation import _validate_wiki
 
     staging = tmp_path / "staging"
     staging.mkdir()
@@ -245,12 +242,12 @@ def test_publication_validation_ignores_top_level_viz_directory(tmp_path: Path) 
 
 def test_refresh_stage_tolerates_viz_artifacts_under_publication(tmp_path: Path) -> None:
     """Refresh may copy an existing publication that already has viz/ artifacts."""
-    from okf_wiki.wiki_run import (
+    from okf_wiki.host import WikiRunLimits
+    from okf_wiki.host.publication.fs import (
         PUBLICATION_METADATA_NAME,
-        WikiRunLimits,
-        _content_digest,
         _stage_published_wiki,
     )
+    from okf_wiki.host.validation import _content_digest
 
     publication = tmp_path / "published"
     publication.mkdir()

@@ -1,8 +1,20 @@
-"""Operator-facing error formatting for config, records, and host validation.
+"""Operator-facing domain errors and formatting for config, records, and host validation.
+
+Domain error types live here (not on models) so operator-safety and request assembly
+share one error surface:
+
+* :class:`OkfWikiError` / :class:`ConfigError` / :class:`HostValidationError` /
+  :class:`PublicationError`
+* :class:`WikiRunResourceLimitError` — bounded-run resource stop (also re-exported from
+  :mod:`okf_wiki.host.models` for compatibility)
 
 Keeps field-level detail without re-emitting raw rejected input payloads (which may be
 large or secret-bearing). Provider transport failures still go through
 ``safe_error_message`` redaction separately.
+
+Many host modules still raise plain ``ValueError`` for fail-closed checks (snapshots,
+analysis workspace, adaptive policy, mounts). Prefer domain errors for *new* operator
+surfaces; mass conversion is intentionally deferred.
 """
 
 from __future__ import annotations
@@ -10,6 +22,7 @@ from __future__ import annotations
 import re
 
 from pydantic import ValidationError
+from pydantic_ai import UnexpectedModelBehavior
 
 _MAX_DETAIL_CHARS = 300
 _MAX_VALIDATION_ISSUES = 20
@@ -29,6 +42,10 @@ class HostValidationError(OkfWikiError, ValueError):
 
 class PublicationError(OkfWikiError, ValueError):
     """Publication lock or directory-swap failure."""
+
+
+class WikiRunResourceLimitError(UnexpectedModelBehavior, OkfWikiError, ValueError):
+    """A bounded Wiki Run stopped before it could produce a terminal result."""
 
 
 def format_validation_error(
@@ -121,6 +138,7 @@ __all__ = [
     "HostValidationError",
     "OkfWikiError",
     "PublicationError",
+    "WikiRunResourceLimitError",
     "format_cause_detail",
     "format_validation_error",
     "is_operator_safe_exception",

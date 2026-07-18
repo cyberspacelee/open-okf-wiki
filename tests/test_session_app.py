@@ -19,7 +19,7 @@ from pydantic_ai.messages import (
 
 from okf_wiki.session.app import OperatorSessionApp, StatusCard
 from okf_wiki.session.stream import project_stream_event
-from okf_wiki.wiki_run import ModelProviderConfig, RepositorySnapshot, WikiRunRequest
+from okf_wiki.host import ModelProviderConfig, RepositorySnapshot, WikiRunRequest
 
 from wiki_run_helpers import (
     SIMPLE_WIKI_PAGE,

@@ -23,7 +23,7 @@ from pydantic_ai.messages import (
     ToolCallPartDelta,
 )
 
-from ..security import environment_secrets, redact_secrets
+from ..host.security import environment_secrets, redact_secrets
 
 StreamKind = Literal["text", "tool", "tool_result", "part", "other"]
 

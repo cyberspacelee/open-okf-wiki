@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from okf_wiki.wiki_run import (
+from okf_wiki.host import (
     Complete,
     ModelProviderConfig,
     RepositorySnapshot,
@@ -63,7 +63,7 @@ def test_write_visualization_after_publish_is_optional_and_non_destructive(
 
 
 def test_write_source_inventory_lists_materialized_files(tmp_path: Path) -> None:
-    from okf_wiki.wiki_run import _write_source_inventory
+    from okf_wiki.host.snapshots import _write_source_inventory
 
     mount = tmp_path / "source"
     mount.mkdir()
@@ -89,8 +89,8 @@ def test_source_inventory_failure_emits_error_type_and_continues(
     def fail_inventory(*_args: object, **_kwargs: object) -> object:
         raise OSError("inventory write failed")
 
-    # Application binds the helper at import time on the facade module.
-    monkeypatch.setattr("okf_wiki.wiki_run._write_source_inventory", fail_inventory)
+    # Prepare binds the helper at import time on the prepare module.
+    monkeypatch.setattr("okf_wiki.host.prepare._write_source_inventory", fail_inventory)
     result = asyncio.run(
         WikiRunApplication(observer=events.append).run(
             WikiRunRequest(

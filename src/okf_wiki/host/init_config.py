@@ -1,4 +1,8 @@
-"""Write a starter Wiki Run YAML configuration."""
+"""Write a starter Wiki Run YAML configuration.
+
+Part of request-assembly locality: starter files feed the YAML path in
+:mod:`okf_wiki.host.config` (``WikiRunRequest.from_yaml``).
+"""
 
 from __future__ import annotations
 

@@ -3,14 +3,14 @@ from pathlib import Path
 import pytest
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from okf_wiki.provider_env import (
+from okf_wiki.host.provider.env import (
     DEFAULT_MODEL_IDENTITY,
     env_limit_overrides,
     resolve_model_identity,
     resolve_model_settings,
 )
-from okf_wiki.provider_retry import ProviderRetryState, prepare_model_with_provider_retry
-from okf_wiki.wiki_run import WikiRunLimits, WikiRunRequest
+from okf_wiki.host.provider.retry import ProviderRetryState, prepare_model_with_provider_retry
+from okf_wiki.host import WikiRunLimits, WikiRunRequest
 
 
 def test_resolve_model_identity_prefers_configured_then_env(

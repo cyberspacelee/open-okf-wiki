@@ -21,10 +21,14 @@ from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.widgets import Footer, Header, Input, Markdown, Static
 
-from ..security import safe_error_message
-from ..wiki_run import NeedsInput, WikiRunRequest, WikiRunResult
+from ..host import NeedsInput, WikiRunRequest, WikiRunResult
 from .cards import SessionCard
-from .runtime import InputFn, OperatorSession, interactive_publication_handler
+from .runtime import (
+    InputFn,
+    OperatorSession,
+    format_run_error,
+    interactive_publication_handler,
+)
 from .store import SessionStore, default_sessions_dir
 from .stream import StreamFragment
 from .tty import require_tty
@@ -148,7 +152,7 @@ class OperatorSessionApp(App[WikiRunResult | None]):
         try:
             self._session.preflight()
         except Exception as error:
-            self._mount_status(f"preflight: {_format_run_error(error)}")
+            self._mount_status(f"preflight: {format_run_error(error)}")
             raise
 
         if self._resume_session_id:
@@ -361,42 +365,35 @@ class OperatorSessionApp(App[WikiRunResult | None]):
         try:
             await self._close_active_reply()
             if label:
-                session.append_user(label)
                 self._mount_status(f"starting Wiki Run: {label!r}")
             else:
                 self._mount_status("starting Wiki Run from Session config")
 
-            turn = await session.run_wiki()
-            self._last_result = turn.result
-
-            while isinstance(turn.result, NeedsInput):
+            async def collect_answers(needs: NeedsInput, run_id: str | None) -> dict[str, str]:
                 self._mount_status(
                     "needs input — answers start a new Wiki Run (prior run not resumed)"
                 )
-                answers = await session.collect_needs_input_answers_async(
-                    turn.result,
+                return await session.collect_needs_input_answers_async(
+                    needs,
                     async_input_fn=self.prompt_async,
-                    run_id=turn.run_id,
+                    run_id=run_id,
                 )
-                turn = await session.continue_after_needs_input(turn, answers)
-                self._last_result = turn.result
+
+            turn = await session.run_turn(
+                label=label,
+                collect_answers=collect_answers,
+            )
+            self._last_result = turn.result
 
             status = getattr(turn.result, "status", type(turn.result).__name__)
             self._mount_status(f"run finished status={status} yolo={turn.yolo}")
             self._refresh_subtitle()
         except Exception as error:
-            self._mount_status(f"run error: {_format_run_error(error)}")
+            self._mount_status(f"run error: {format_run_error(error)}")
             raise
         finally:
             await self._close_active_reply()
             self._busy = False
-
-
-def _format_run_error(error: BaseException) -> str:
-    if isinstance(error, Exception):
-        detail = safe_error_message(error)
-        return f"{type(error).__name__}: {detail}"
-    return f"{type(error).__name__}: {error}"
 
 
 async def run_operator_session_app(

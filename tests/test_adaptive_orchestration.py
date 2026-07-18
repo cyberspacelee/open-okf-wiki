@@ -32,18 +32,18 @@ from pydantic_ai_harness.planning import Planning
 from pydantic_ai_harness.subagents import SubAgents
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from okf_wiki.adaptive_orchestration import (
+from okf_wiki.host.adaptive import (
     AdaptivePolicy,
     build_root_agent,
     should_enable_adaptive,
 )
-from okf_wiki.analysis_workspace import AnalysisWorkspace
-from okf_wiki.context_capabilities import (
+from okf_wiki.host.analysis.workspace import AnalysisWorkspace
+from okf_wiki.host.context import (
     ObservableTieredCompaction,
     build_context_capabilities,
 )
-from okf_wiki.wiki_run import WikiRunLimits
-from okf_wiki.wiki_run import (
+from okf_wiki.host import WikiRunLimits
+from okf_wiki.host import (
     Complete,
     ModelProviderConfig,
     ProducerSkillVersion,

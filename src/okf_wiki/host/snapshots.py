@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from fnmatch import fnmatchcase
 from pathlib import Path
 
-from .run_models import WikiRunLimits
+from .models import WikiRunLimits
 from .security import git_read, git_read_bytes
 
 

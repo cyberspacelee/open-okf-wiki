@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from okf_wiki.wiki_run import (
+from okf_wiki.host import (
     AnalysisReceipt,
     AnalysisWorkspace,
     WikiRunLimits,
@@ -285,7 +285,7 @@ def test_analysis_workspace_publication_is_atomic_and_attempts_are_immutable(
     def fail_replace(_: str | os.PathLike[str], __: str | os.PathLike[str]) -> None:
         raise OSError("injected replacement failure")
 
-    monkeypatch.setattr("okf_wiki.analysis_workspace.os.replace", fail_replace)
+    monkeypatch.setattr("okf_wiki.host.analysis.workspace.os.replace", fail_replace)
     with pytest.raises(OSError, match="replacement"):
         workspace.publish_receipt(receipt)
     assert not list(workspace.root.rglob("*.json"))

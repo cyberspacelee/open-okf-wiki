@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from .errors import HostValidationError, PublicationError, operator_error
-from .run_models import WikiRunRequest
+from .models import WikiRunRequest
 
 
 # Windows FILE_ATTRIBUTE_REPARSE_POINT — junctions, symlinks, cloud placeholders, …
@@ -133,7 +133,7 @@ def _legacy_symlink_publication_error(path: Path, *, for_refresh: bool = False) 
 
 
 def _prepare_mounts(request: WikiRunRequest) -> tuple[tuple[Path, ...], Path, Path, Path]:
-    from .run_skill import _selected_producer_skill
+    from .skill import _selected_producer_skill
 
     _require_supported_runtime()
     sources = tuple(

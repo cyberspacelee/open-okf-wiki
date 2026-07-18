@@ -6,7 +6,7 @@ import asyncio
 
 from pydantic_ai.tools import DeferredToolResults, ToolDenied
 
-from okf_wiki.publication_gate import (
+from okf_wiki.host.publication.gate import (
     DEFAULT_DENY_MESSAGE,
     PUBLISH_TOOL_NAME,
     build_approve_results,

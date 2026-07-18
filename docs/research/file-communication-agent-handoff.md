@@ -29,9 +29,9 @@ Root 仍是唯一 Wiki 写作者。Child 只能读 `/source`、`/skill`，并写
 
 ## 1. 当前项目的事实约束
 
-当前 `WikiRunApplication` 在一次 `TemporaryDirectory` 内冻结 source 和 skill，并给单个 `Agent` 配置 `/source` 只读、`/skill` 只读、`/wiki` 读写挂载；随后只调用一次 `agent.run()`（[`wiki_run.py`](../../src/okf_wiki/wiki_run.py#L417-L505)）。当前没有 `/analysis` 挂载，也没有 child receipt 协议。
+当前 `WikiRunApplication` 在一次 `TemporaryDirectory` 内冻结 source 和 skill，并给单个 `Agent` 配置 `/source` 只读、`/skill` 只读、`/wiki` 读写挂载；随后只调用一次 `agent.run()`（[`host/lifecycle.py`](../../src/okf_wiki/host/lifecycle.py#L395-L560)）。当前没有 `/analysis` 挂载，也没有 child receipt 协议。
 
-项目的发布器已经有可复用的原子切换模式：先写 release 临时目录，最后用 `os.replace()` 替换 Wiki 指针（[`wiki_run.py`](../../src/okf_wiki/wiki_run.py#L1487-L1531)）。因此新增的研究文件不应直接进入 `/wiki` 或 Published Wiki；只需在同一个 run 临时根下增加独立 `/analysis`，并在 run 结束时清理。
+项目的发布器已经有可复用的原子切换模式：先写 release 临时目录，最后用 `os.replace()` 替换 Wiki 指针（[`host/publication/fs.py`](../../src/okf_wiki/host/publication/fs.py)）。因此新增的研究文件不应直接进入 `/wiki` 或 Published Wiki；只需在同一个 run 临时根下增加独立 `/analysis`，并在 run 结束时清理。
 
 ## 2. Harness 0.7.0 能提供什么，不能提供什么
 

@@ -9,7 +9,7 @@ import pytest
 from pydantic_ai import ModelRequest, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from okf_wiki.wiki_run import (
+from okf_wiki.host import (
     Complete,
     ModelProviderConfig,
     NeedsInput,
@@ -94,7 +94,7 @@ def test_record_write_failure_is_observable_without_changing_publication(
     def fail_record(*_: object, **__: object) -> None:
         raise OSError("record storage unavailable")
 
-    monkeypatch.setattr("okf_wiki.run_records._write_run_record", fail_record)
+    monkeypatch.setattr("okf_wiki.host.records._write_run_record", fail_record)
     result = asyncio.run(
         WikiRunApplication(observer=events.append).run(
             WikiRunRequest(
@@ -396,7 +396,7 @@ def test_yolo_auto_approve_publishes_after_validation(tmp_path: Path) -> None:
 
 def test_in_process_approval_handler_publishes(tmp_path: Path) -> None:
     """Operator Session / tests can approve deferred publish via Host handler."""
-    from okf_wiki.publication_gate import build_approve_results
+    from okf_wiki.host.publication.gate import build_approve_results
     from pydantic_ai.tools import DeferredToolRequests
 
     source = tmp_path / "source"
@@ -441,7 +441,7 @@ def test_in_process_approval_handler_publishes(tmp_path: Path) -> None:
 
 def test_in_process_deny_keeps_staging_and_published_unchanged(tmp_path: Path) -> None:
     """Deny: no publish, Staging retained, Published byte-identical, declined status."""
-    from okf_wiki.publication_gate import build_deny_results
+    from okf_wiki.host.publication.gate import build_deny_results
 
     source = tmp_path / "source"
     revision = make_repository(source, "source\n")
@@ -508,7 +508,7 @@ def test_in_process_deny_keeps_staging_and_published_unchanged(tmp_path: Path) -
 
 def test_in_process_deny_with_false_approval_value(tmp_path: Path) -> None:
     """Bare ``False`` in deferred approvals is treated as deny (not await)."""
-    from okf_wiki.publication_gate import build_deny_results
+    from okf_wiki.host.publication.gate import build_deny_results
 
     source = tmp_path / "source"
     revision = make_repository(source, "source\n")
@@ -561,7 +561,9 @@ def test_validation_failure_never_reaches_publication_gate(
         gate_calls += 1
         raise AssertionError("publication gate must not run after validation failure")
 
-    monkeypatch.setattr("okf_wiki.wiki_run.resolve_publication_approval", unexpected_gate)
+    monkeypatch.setattr(
+        "okf_wiki.host.publication.finalize.resolve_publication_approval", unexpected_gate
+    )
 
     # Staged page omits required citation — output_validator retries then fails.
     bad_page = "---\ntitle: Wiki\n---\n# Wiki\n\nNo citation.\n"
@@ -741,7 +743,7 @@ def test_optional_reviewer_model_is_wired_into_host_review(
 
     async def capture_review(**kwargs: object):
         seen_models.append(kwargs.get("model"))
-        from okf_wiki.adaptive_orchestration import ReviewDefectsSummary
+        from okf_wiki.host.adaptive import ReviewDefectsSummary
 
         return ReviewDefectsSummary(
             status="complete",
@@ -750,7 +752,7 @@ def test_optional_reviewer_model_is_wired_into_host_review(
             defect_count=1,
         )
 
-    monkeypatch.setattr("okf_wiki.wiki_run.run_host_wiki_reviewer", capture_review)
+    monkeypatch.setattr("okf_wiki.host.publication.finalize.run_host_wiki_reviewer", capture_review)
 
     result = asyncio.run(
         WikiRunApplication().run(

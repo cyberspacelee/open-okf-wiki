@@ -14,8 +14,8 @@ from okf_wiki.diagnostics import (
     safe_error_message,
 )
 from okf_wiki.diagnostics.doctor import CREDENTIAL_ENV_KEYS
-from okf_wiki.provider_env import ENV_OPENAI_API_KEY, ENV_OPENAI_BASE_URL
-from okf_wiki.security import PROVIDER_DIAGNOSTICS_WITHHELD, REDACTION
+from okf_wiki.host.provider.env import ENV_OPENAI_API_KEY, ENV_OPENAI_BASE_URL
+from okf_wiki.host.security import PROVIDER_DIAGNOSTICS_WITHHELD, REDACTION
 
 
 def test_preflight_passes_when_openai_key_set(monkeypatch: pytest.MonkeyPatch) -> None:

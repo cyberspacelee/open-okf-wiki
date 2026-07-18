@@ -10,8 +10,8 @@ from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from okf_wiki.cli import main
-from okf_wiki.wiki_evaluation import WikiEvaluationReport, evaluate_wiki_producer
-from okf_wiki.wiki_run import WikiRunApplication, WikiRunRequest
+from okf_wiki.evaluation import WikiEvaluationReport, evaluate_wiki_producer
+from okf_wiki.host import WikiRunApplication, WikiRunRequest
 
 
 ROOT = Path(__file__).parents[1]
@@ -398,7 +398,7 @@ def test_wiki_evaluation_cli_selects_fixture_by_default_and_passes_live_inputs(
         called.append(Namespace(workspace=workspace, **options))
         return Namespace(decision="pending_review")
 
-    monkeypatch.setattr("okf_wiki.wiki_evaluation.evaluate_wiki_producer", evaluate)
+    monkeypatch.setattr("okf_wiki.evaluation.wiki_evaluation.evaluate_wiki_producer", evaluate)
     output = tmp_path / "evaluation"
     manifest = tmp_path / "manifest.json"
     review = tmp_path / "review.json"

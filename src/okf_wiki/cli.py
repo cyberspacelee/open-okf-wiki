@@ -7,7 +7,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from .security import (
+from .host.security import (
     PROVIDER_DIAGNOSTICS_WITHHELD,
     environment_secrets,
     redact_secrets,
@@ -380,7 +380,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def _producer_skill_version(arguments: argparse.Namespace):
-    from .wiki_run import ProducerSkillVersion
+    from .host import ProducerSkillVersion
 
     if arguments.skill is None:
         if arguments.skill_digest is not None:
@@ -416,8 +416,8 @@ def _resolve_config_path(
 
 
 def _wiki_run_request(arguments: argparse.Namespace):
-    from .provider_env import resolve_model_identity, resolve_model_settings
-    from .wiki_run import (
+    from .host.provider.env import resolve_model_identity, resolve_model_settings
+    from .host import (
         ModelProviderConfig,
         RepositorySnapshot,
         WikiRunLimits,
@@ -604,8 +604,8 @@ def main() -> int:
         load_dotenv(dotenv, override=False)
 
         if arguments.command == "init":
-            from .init_config import write_wiki_run_config
-            from .provider_env import resolve_model_identity
+            from .host.init_config import write_wiki_run_config
+            from .host.provider.env import resolve_model_identity
 
             written = write_wiki_run_config(
                 arguments.config,
@@ -642,7 +642,7 @@ def main() -> int:
             return 0
 
         if arguments.command == "skill-inspect":
-            from .wiki_run import ProducerSkillVersion
+            from .host import ProducerSkillVersion
 
             version = ProducerSkillVersion.from_directory(arguments.path)
             emit(
@@ -654,7 +654,7 @@ def main() -> int:
             return 0
 
         if arguments.command == "skill-fork":
-            from .wiki_run import ProducerSkillFork
+            from .host import ProducerSkillFork
 
             fork = ProducerSkillFork.create(
                 _producer_skill_version(arguments), arguments.destination
@@ -669,7 +669,7 @@ def main() -> int:
             return 0
 
         if arguments.command == "wiki-run":
-            from .wiki_run import WikiRunApplication
+            from .host import WikiRunApplication
 
             request = _wiki_run_request(arguments)
             application = WikiRunApplication()
@@ -711,7 +711,7 @@ def main() -> int:
             return 0
 
         if arguments.command == "wiki-retry":
-            from .wiki_run import WikiRunApplication, WikiRunRequest
+            from .host import WikiRunApplication, WikiRunRequest
 
             request = WikiRunRequest.from_run_record(
                 arguments.record,
@@ -743,8 +743,8 @@ def main() -> int:
             return 0
 
         if arguments.command == "tui":
-            from .tui import run_tui
-            from .wiki_run import WikiRunRequest
+            from .session import run_operator_session
+            from .host import WikiRunRequest
 
             config_path = _resolve_config_path(arguments.config, allow_default=True, command="tui")
             assert config_path is not None
@@ -764,7 +764,7 @@ def main() -> int:
             if yolo and not request.auto_approve_publication:
                 request = request.model_copy(update={"auto_approve_publication": True})
             try:
-                result = asyncio.run(run_tui(request, yolo=yolo))
+                result = asyncio.run(run_operator_session(request, yolo=yolo))
             except Exception as error:
                 error_dump_path = _maybe_write_error_dump(
                     arguments,
@@ -780,7 +780,7 @@ def main() -> int:
             return 0
 
         if arguments.command == "viz":
-            from .wiki_visualization import generate_wiki_visualization
+            from .viz import generate_wiki_visualization
 
             visualization = generate_wiki_visualization(
                 arguments.publication,
@@ -801,7 +801,7 @@ def main() -> int:
             )
             return 0
 
-        from .wiki_evaluation import evaluate_wiki_producer
+        from .evaluation.wiki_evaluation import evaluate_wiki_producer
 
         report = asyncio.run(
             evaluate_wiki_producer(

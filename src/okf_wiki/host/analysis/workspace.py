@@ -23,8 +23,8 @@ from pydantic import (
     model_validator,
 )
 
-from .errors import operator_error
-from .security import MAX_ANALYZABLE_FILE_BYTES
+from ..errors import operator_error
+from ..security import MAX_ANALYZABLE_FILE_BYTES
 
 
 RECEIPT_SCHEMA = "okf.analysis.receipt/v1"

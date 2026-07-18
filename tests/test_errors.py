@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel, Field, ValidationError
 
-from okf_wiki.errors import (
+from okf_wiki.host.errors import (
     ConfigError,
     HostValidationError,
     OkfWikiError,
@@ -12,7 +12,7 @@ from okf_wiki.errors import (
     is_operator_safe_exception,
     operator_error,
 )
-from okf_wiki.security import (
+from okf_wiki.host.security import (
     PROVIDER_DIAGNOSTICS_WITHHELD,
     safe_error_message,
     safe_exception_traceback,

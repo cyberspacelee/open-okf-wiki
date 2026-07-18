@@ -29,7 +29,7 @@ from pydantic_ai_harness.overflowing_tool_output import (
     Truncate,
 )
 
-from .analysis_workspace import AnalysisWorkspace
+from .analysis.workspace import AnalysisWorkspace
 
 
 @runtime_checkable
