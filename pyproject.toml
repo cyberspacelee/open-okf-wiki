@@ -16,6 +16,7 @@ dependencies = [
     "pyyaml==6.0.3",
     "rich>=13.0.0",
     "tenacity>=8.0.0",
+    "textual==8.2.8",
 ]
 
 [project.scripts]

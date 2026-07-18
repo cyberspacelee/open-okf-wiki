@@ -4,9 +4,9 @@
 
 ## 结论
 
-有可参考的 TUI，但当前项目没有实现它。
+有可参考的 TUI；产品路径现已用 **Textual** 全屏 Operator Session 实现（对齐 Textual 官方 `mother.py` 聊天布局 + pydantic-ai `event_stream_handler` 流式事件），而不是自研布局协议。
 
-`refs/openwiki` 的终端界面是 OpenWiki 自己的 React/Ink 应用，不是 DeepAgents 提供的通用 TUI。当前 OKF Wiki 仍是 CLI-only：`argparse` 接收参数，运行结束后输出一个 JSON 对象；README 也明确说明没有 web frontend 或 Console process（[README](../../README.md#L22-L30)、[cli.py](../../src/okf_wiki/cli.py#L16-L18)、[cli.py](../../src/okf_wiki/cli.py#L184-L189)）。
+`refs/openwiki` 的终端界面是 OpenWiki 自己的 React/Ink 应用，不是 DeepAgents 提供的通用 TUI。非交互路径仍是 `wiki-run` JSON CLI；交互路径为 `okf-wiki` / `okf-wiki tui`（实现模块 `okf_wiki.session.app`）。
 
 ## 参考实现是什么
 
@@ -26,18 +26,17 @@ uv run --locked pai --help
 
 它是通用 Agent 聊天 CLI，不会自动获得 OKF Wiki 的 Repository Snapshot、CodeMode mounts、Wiki validation 或 atomic publication，因此不能直接替代 `WikiRunApplication`。
 
-## 对本项目的推荐
+## 对本项目的推荐（已落地修订）
 
-首版采用 Python 原生、行式交互 TUI，而不是引入 Node/Ink 或 Textual：
+采用成熟 Python 库，不自研 TUI 框架：
 
-1. 保留 `WikiRunApplication.run(request) -> WikiRunResult` 和现有 JSON CLI；CI、pipe、cron 继续使用非交互路径。
-2. 增加一个薄的 `okf-wiki tui` presentation adapter，复用 `prompt_toolkit + Rich`，只负责输入、状态、Markdown 和事件显示。
-3. 将内部 Agent 执行抽出可选 event sink；Pydantic AI 的 `Agent.iter()` 能异步遍历模型请求、工具执行和最终结果节点，适合在不改变终端结果契约的情况下驱动 UI（[Agent.iter API](https://github.com/pydantic/pydantic-ai/blob/v2.10.0/pydantic_ai_slim/pydantic_ai/agent/__init__.py#L943-L975)）。
-4. UI 显示 Run Plan、Root/Domain/Leaf 状态、当前工具、receipt 路径、retry/backoff 和最终 publication；不显示或持久化模型隐式 chain-of-thought。
-5. 递归 child 的细粒度状态来自 Host-owned event log/receipt，而不是尝试从 `run_code` 文本或目录扫描推断完成；这与现有文件通信 ADR 一致。
-6. 没有 TTY 时自动回退到 JSON/错误提示，保持 OpenWiki 已采用的 CI 行为。
+1. **Textual** 全屏 App（官方 `mother.py`：`VerticalScroll` + 底部 `Input` + `Markdown` / `Markdown.get_stream` 流式渲染）。
+2. **pydantic-ai** `event_stream_handler` / stream events 驱动模型文本与 tool 标签；Host `WikiRunEvent` 仍投影为 L1 cards。
+3. 保留 `WikiRunApplication.run(request) -> WikiRunResult` 和 JSON `wiki-run`；CI / pipe / cron 不变。
+4. 不显示 thinking / CoT；tool 只显示名称。
+5. 参考实现（不 vendoring）：[Textual mother.py](https://github.com/Textualize/textual/blob/main/examples/mother.py)、[Elia](https://github.com/darrenburns/elia)（Textual 聊天架构参考）。
 
-不要让通用 `pai` CLI 直接加载一个临时 Wiki Agent：那会绕过当前项目的快照冻结、只读 mount、输出验证和原子发布边界。也不要复制 OpenWiki 的整套 Ink App；对本项目而言，先做一个薄的状态/输入适配器即可，只有实际需要全屏布局、滚动 pane 或并行树视图时才引入更重的 TUI 框架。
+不要让通用 `pai` CLI 直接加载临时 Wiki Agent（会绕过快照/校验/发布边界）。不要复制 OpenWiki 整套 Ink App。
 
 ## 与现有一次性 `run()` 的关系
 

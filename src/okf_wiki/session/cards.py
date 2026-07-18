@@ -1,8 +1,8 @@
 """Simplified L1 analysis cards projected from Host Wiki Run events.
 
 The Operator Session UI never dumps chain-of-thought or raw provider bodies.
-Cards are secret-redacted, short labels suitable for a line-oriented shell or
-a richer TUI adapter later.
+Cards are secret-redacted, short labels suitable for the Textual fullscreen
+Session app and the line-oriented test/shell adapter.
 """
 
 from __future__ import annotations

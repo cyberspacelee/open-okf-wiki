@@ -7,7 +7,7 @@ import os
 import shutil
 import tempfile
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -292,9 +292,12 @@ class WikiRunApplication:
         observer: Callable[[WikiRunEvent], object] | None = None,
         *,
         publication_approval_handler: PublicationApprovalHandler | None = None,
+        event_stream_handler: Callable[..., Awaitable[None]] | None = None,
     ) -> None:
         self._observer = observer
         self._publication_approval_handler = publication_approval_handler
+        # Optional pydantic-ai event_stream_handler (Operator Session streaming TUI).
+        self._event_stream_handler = event_stream_handler
         self.last_visualization: dict[str, object] | None = None
         self.last_visualization_error: str | None = None
         self.last_observer_errors: int = 0
@@ -653,12 +656,21 @@ class WikiRunApplication:
 
             async with asyncio.timeout(request.limits.wall_clock_timeout_seconds):
                 try:
-                    result = await agent.run(
-                        f"Begin this {request.operation} Wiki Run.",
-                        deps=orchestration.root_deps,
-                        usage_limits=orchestration.root_usage_limits,
-                        usage=run_usage,
-                    )
+                    if self._event_stream_handler is not None:
+                        result = await agent.run(
+                            f"Begin this {request.operation} Wiki Run.",
+                            deps=orchestration.root_deps,
+                            usage_limits=orchestration.root_usage_limits,
+                            usage=run_usage,
+                            event_stream_handler=self._event_stream_handler,
+                        )
+                    else:
+                        result = await agent.run(
+                            f"Begin this {request.operation} Wiki Run.",
+                            deps=orchestration.root_deps,
+                            usage_limits=orchestration.root_usage_limits,
+                            usage=run_usage,
+                        )
                 except WikiRunResourceLimitError:
                     raise
                 except Exception as error:

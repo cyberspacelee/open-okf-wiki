@@ -334,7 +334,8 @@ unchanged but revision/ignores or Skill digest changed.
 
 ## Operator Session (interactive)
 
-Session-first interactive shell (not a web UI). On a TTY, bare `okf-wiki` is the same as `tui`:
+Session-first fullscreen TUI (Textual — scrollable chat view, bottom input, streaming model text
+and Host cards). On a TTY, bare `okf-wiki` is the same as `tui`:
 
 ```bash
 uv run --locked okf-wiki                     # TTY → Operator Session
@@ -344,8 +345,9 @@ uv run --locked okf-wiki tui --yes           # start with YOLO auto-approve
 ```
 
 Shows simplified Host progress cards (plan, children, receipts, compaction, validation, review,
-publish). Publication is approve/deny unless YOLO is on. Needs Input answers start a **new** Wiki
-Run with `explicit_answers` (does not resume the prior Semantic Workflow).
+publish) and streams pydantic-ai model/tool events into the chat view (no chain-of-thought dump).
+Publication is approve/deny unless YOLO is on. Needs Input answers start a **new** Wiki Run with
+`explicit_answers` (does not resume the prior Semantic Workflow).
 
 Useful slash commands:
 

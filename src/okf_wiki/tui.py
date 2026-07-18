@@ -1,8 +1,9 @@
-"""Line-oriented Operator Session entry and legacy projection helpers.
+"""Operator Session entry and legacy projection helpers.
 
-Interactive product path is :mod:`okf_wiki.session` (ADR 0018). This module
-keeps ``require_tty``, string projection helpers used by older tests, and a
-thin ``run_tui`` wrapper around the Session API.
+Interactive product path is :mod:`okf_wiki.session` (ADR 0018): fullscreen
+Textual app by default, with a line-oriented adapter for injectable tests.
+This module keeps ``require_tty``, string projection helpers used by older
+tests, and a thin ``run_tui`` wrapper around the Session API.
 """
 
 from __future__ import annotations

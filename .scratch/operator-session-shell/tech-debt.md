@@ -15,11 +15,17 @@ Updated after debt remediation pass.
 
 | Item | Why deferred |
 |---|---|
-| Full conversation `Agent.iter` ask/chat agent | Needs design for Host-free turns vs Wiki Runs; ask mode records history only for now |
+| Full conversation `Agent.iter` ask/chat agent | Needs design for Host-free turns vs Wiki Runs; ask mode records history only for now; Wiki Run streaming uses `event_stream_handler` in the Textual app |
 | Publish as model-invoked `requires_approval` tool | Host gate uses pydantic-ai DeferredTool *types* + handler; wiring into agent graph is a separate cut |
 | harness `StepPersistence` as Session store | File SessionStore is multi-session index; StepPersistence attaches to a conversation Agent when that exists |
 | Default entry without subcommand on non-TTY | Still requires explicit subcommand (wiki-run / doctor) — intentional for CI |
 | Multi-model reviewer panel | Explicitly out of scope (single Reviewer + optional model) |
+
+## Closed later
+
+| Item | Notes |
+|---|---|
+| Fullscreen TUI (OpenCode-like) | Textual `session/app.py` (mother.py layout): bottom input, scroll chat, stream Host cards + model text |
 
 ## Operator notes
 

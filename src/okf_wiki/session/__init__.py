@@ -26,6 +26,7 @@ from .store import (
     default_sessions_dir,
     format_session_list,
 )
+from .stream import StreamFragment, project_stream_event
 from .tty import require_tty
 
 __all__ = [
@@ -37,6 +38,7 @@ __all__ = [
     "SessionStore",
     "SessionSummary",
     "SlashCommandResult",
+    "StreamFragment",
     "WikiRunTurnResult",
     "card_texts",
     "default_sessions_dir",
@@ -44,6 +46,7 @@ __all__ = [
     "interactive_publication_handler",
     "project_event",
     "project_events",
+    "project_stream_event",
     "require_tty",
     "run_operator_session",
     "run_operator_session_sync",

@@ -17,7 +17,7 @@ snapshots only — never Wiki Run graph or Staging publication resume.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
@@ -44,6 +44,7 @@ from ..wiki_run import (
     WikiRunResult,
 )
 from .cards import SessionCard, project_event
+from .stream import StreamFragment, StreamSink, make_event_stream_handler
 
 if TYPE_CHECKING:
     from .store import SessionSnapshot, SessionStore
@@ -88,50 +89,81 @@ InputFn = Callable[[str], str]
 CardSink = Callable[[SessionCard], None]
 
 
+def _format_publication_defects(
+    defects: Mapping[str, object] | None,
+    *,
+    defects_formatter: Callable[[Mapping[str, object] | None], str] | None = None,
+) -> str:
+    if defects_formatter is not None:
+        return defects_formatter(defects)
+    if not defects:
+        return "No reviewer defects summary."
+    secrets = environment_secrets()
+    lines: list[str] = []
+    status = defects.get("status")
+    if status is not None:
+        lines.append(f"reviewer status: {status}")
+    summary = defects.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        lines.append(f"summary: {redact_secrets(summary.strip(), secrets)}")
+    count = defects.get("defect_count")
+    if count is not None:
+        lines.append(f"defect_count: {count}")
+    findings = defects.get("findings")
+    if isinstance(findings, Sequence) and not isinstance(findings, (str, bytes)):
+        for index, finding in enumerate(list(findings)[:8], start=1):
+            text = redact_secrets(str(finding), secrets)
+            lines.append(f"  {index}. {text}")
+    return "\n".join(lines) if lines else "No reviewer defects summary."
+
+
+def _publication_panel(
+    requests: DeferredToolRequests,
+    *,
+    defects_formatter: Callable[[Mapping[str, object] | None], str] | None = None,
+) -> str:
+    defects: Mapping[str, object] | None = None
+    if requests.approvals:
+        args = requests.approvals[0].args
+        if isinstance(args, dict):
+            raw = args.get("defects")
+            if isinstance(raw, Mapping):
+                defects = raw
+    return (
+        "=== Publish gate ===\n"
+        f"{_format_publication_defects(defects, defects_formatter=defects_formatter)}\n"
+        "Approve publication to the Published Wiki?\n"
+        "[y] approve  [n] deny (Staging kept, Published unchanged)"
+    )
+
+
 def interactive_publication_handler(
     *,
-    input_fn: InputFn,
+    input_fn: InputFn | None = None,
+    async_input_fn: Callable[[str], Awaitable[str]] | None = None,
     defects_formatter: Callable[[Mapping[str, object] | None], str] | None = None,
 ) -> PublicationApprovalHandler:
-    """Build a HITL approval handler that prompts the operator on stdin."""
+    """Build a HITL approval handler that prompts the operator.
 
-    def format_defects(defects: Mapping[str, object] | None) -> str:
-        if defects_formatter is not None:
-            return defects_formatter(defects)
-        if not defects:
-            return "No reviewer defects summary."
-        secrets = environment_secrets()
-        lines: list[str] = []
-        status = defects.get("status")
-        if status is not None:
-            lines.append(f"reviewer status: {status}")
-        summary = defects.get("summary")
-        if isinstance(summary, str) and summary.strip():
-            lines.append(f"summary: {redact_secrets(summary.strip(), secrets)}")
-        count = defects.get("defect_count")
-        if count is not None:
-            lines.append(f"defect_count: {count}")
-        findings = defects.get("findings")
-        if isinstance(findings, Sequence) and not isinstance(findings, (str, bytes)):
-            for index, finding in enumerate(list(findings)[:8], start=1):
-                text = redact_secrets(str(finding), secrets)
-                lines.append(f"  {index}. {text}")
-        return "\n".join(lines) if lines else "No reviewer defects summary."
+    Prefer ``async_input_fn`` for the fullscreen Textual app (non-blocking UI).
+    ``input_fn`` covers the line-oriented shell and unit tests.
+    """
+    if async_input_fn is not None:
+
+        async def async_handler(requests: DeferredToolRequests) -> DeferredToolResults:
+            panel = _publication_panel(requests, defects_formatter=defects_formatter)
+            answer = (await async_input_fn(f"{panel}\n> ")).strip().lower()
+            if answer in {"y", "yes", "approve", "a"}:
+                return build_approve_results(requests)
+            return build_deny_results(requests)
+
+        return async_handler
+
+    if input_fn is None:
+        raise TypeError("interactive_publication_handler requires input_fn or async_input_fn")
 
     def handler(requests: DeferredToolRequests) -> DeferredToolResults:
-        defects: Mapping[str, object] | None = None
-        if requests.approvals:
-            args = requests.approvals[0].args
-            if isinstance(args, dict):
-                raw = args.get("defects")
-                if isinstance(raw, Mapping):
-                    defects = raw
-        panel = (
-            "=== Publish gate ===\n"
-            f"{format_defects(defects)}\n"
-            "Approve publication to the Published Wiki?\n"
-            "[y] approve  [n] deny (Staging kept, Published unchanged)"
-        )
+        panel = _publication_panel(requests, defects_formatter=defects_formatter)
         answer = input_fn(f"{panel}\n> ").strip().lower()
         if answer in {"y", "yes", "approve", "a"}:
             return build_approve_results(requests)
@@ -158,6 +190,7 @@ class OperatorSession:
     mode: Literal["build", "ask"] = "build"
     publication_approval_handler: PublicationApprovalHandler | None = None
     on_card: CardSink | None = None
+    on_stream: StreamSink | None = None
     store: SessionStore | None = None
     session_id: str | None = None
     title: str | None = None
@@ -165,6 +198,7 @@ class OperatorSession:
     created_at: datetime | None = None
     message_history: list[SessionMessage] = field(default_factory=list)
     cards: list[SessionCard] = field(default_factory=list)
+    stream_fragments: list[StreamFragment] = field(default_factory=list)
     last_run_id: str | None = None
     last_result: WikiRunResult | None = None
     last_request: WikiRunRequest | None = None
@@ -349,6 +383,13 @@ class OperatorSession:
             self.on_card(card)
         return card
 
+    def observe_stream(self, fragment: StreamFragment) -> StreamFragment:
+        """Record a projected model/tool stream fragment and fan out to the sink."""
+        self.stream_fragments.append(fragment)
+        if self.on_stream is not None:
+            self.on_stream(fragment)
+        return fragment
+
     def request_for_run(
         self,
         *,
@@ -395,6 +436,27 @@ class OperatorSession:
         )
         return answers
 
+    async def collect_needs_input_answers_async(
+        self,
+        needs_input: NeedsInput,
+        *,
+        async_input_fn: Callable[[str], Awaitable[str]],
+        run_id: str | None = None,
+    ) -> dict[str, str]:
+        """Async Needs Input collection for the fullscreen TUI (non-blocking)."""
+        secrets = environment_secrets()
+        answers: dict[str, str] = {}
+        prefix = run_id or self.last_run_id or "run"
+        for index, question in enumerate(needs_input.questions, start=1):
+            safe_question = redact_secrets(question, secrets)
+            answer = await async_input_fn(f"Q{index}: {safe_question}\n> ")
+            answers[f"{prefix}:{index}"] = answer.strip()
+        self._note(
+            "session",
+            f"collected {len(answers)} Needs Input answer(s) for a new Wiki Run",
+        )
+        return answers
+
     async def run_wiki(
         self,
         *,
@@ -420,9 +482,14 @@ class OperatorSession:
             else self.publication_approval_handler
         )
         # When YOLO is on, Host auto_approve skips the handler (gate precedence).
+        # Stream handler only when a UI/test sink is attached (pydantic-ai events).
+        stream_handler = make_event_stream_handler(
+            self.observe_stream if self.on_stream is not None else None
+        )
         application = WikiRunApplication(
             observer=observer,
             publication_approval_handler=None if run_request.auto_approve_publication else handler,
+            event_stream_handler=stream_handler,
         )
         result = await application.run(run_request)
         self.last_result = result

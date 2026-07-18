@@ -1,8 +1,9 @@
 """TTY adapter for the Operator Session API.
 
-Thin presentation over :class:`OperatorSession`: prints cards, prompts for
-slash commands / goals, HITL publish, and Needs Input. Non-TTY is rejected
-via :func:`okf_wiki.tui.require_tty`.
+Default product path is the fullscreen Textual app (:mod:`okf_wiki.session.app`),
+following Textual's official chat layout (scroll + bottom input + streaming
+Markdown). A line-oriented Rich shell remains available when an injectable
+``input_fn`` is supplied (tests / headless scripting).
 """
 
 from __future__ import annotations
@@ -49,8 +50,9 @@ async def run_operator_session(
     store: SessionStore | None = None,
     sessions_dir: Path | None = None,
     resume_session_id: str | None = None,
+    line_mode: bool = False,
 ) -> WikiRunResult | None:
-    """Run the interactive Operator Session prompt loop.
+    """Run the interactive Operator Session.
 
     Parameters
     ----------
@@ -69,7 +71,58 @@ async def run_operator_session(
         ``.okf-wiki/sessions`` under the current working directory.
     resume_session_id:
         When set, load that Session's history on entry (does not publish).
+    line_mode:
+        Force the legacy line-oriented shell. Also selected automatically when
+        ``input_fn`` is provided (test injectables).
     """
+    use_line = line_mode or input_fn is not None
+    if not use_line:
+        from .app import run_operator_session_app
+
+        return await run_operator_session_app(
+            request,
+            console=console,
+            check_tty=check_tty,
+            yolo=yolo,
+            auto_start=auto_start,
+            max_turns=max_turns,
+            stdin=stdin,
+            store=store,
+            sessions_dir=sessions_dir,
+            resume_session_id=resume_session_id,
+            input_fn=input_fn,
+        )
+
+    return await _run_line_session(
+        request,
+        console=console,
+        input_fn=input_fn,
+        check_tty=check_tty,
+        yolo=yolo,
+        auto_start=auto_start,
+        max_turns=max_turns,
+        stdin=stdin,
+        store=store,
+        sessions_dir=sessions_dir,
+        resume_session_id=resume_session_id,
+    )
+
+
+async def _run_line_session(
+    request: WikiRunRequest,
+    *,
+    console: Console | None = None,
+    input_fn: InputFn | None = None,
+    check_tty: bool = True,
+    yolo: bool = False,
+    auto_start: bool = True,
+    max_turns: int | None = None,
+    stdin: TextIO | None = None,
+    store: SessionStore | None = None,
+    sessions_dir: Path | None = None,
+    resume_session_id: str | None = None,
+) -> WikiRunResult | None:
+    """Legacy line-oriented shell (Rich print + ``input()``)."""
     if check_tty:
         require_tty(stdin) if stdin is not None else require_tty()
 
@@ -87,12 +140,12 @@ async def run_operator_session(
         base_request=request,
         yolo=yolo or request.auto_approve_publication,
         on_card=lambda card: print_line(card.text),
+        on_stream=lambda frag: (
+            print_line(frag.text) if frag.kind != "text" else print_line(frag.text)
+        ),
         store=session_store,
     )
-    # Interactive HITL unless YOLO is active for a given run.
     session.publication_approval_handler = interactive_publication_handler(input_fn=ask)
-
-    # Credential preflight at Session entry (ticket 01 diagnostics).
     session.preflight()
 
     if resume_session_id:
@@ -103,7 +156,6 @@ async def run_operator_session(
             "Type a goal, or /help. /quit to exit."
         )
     else:
-        # Register a durable Session id without starting a Wiki Run.
         try:
             created = session.start_new_session()
             print_line(
@@ -129,7 +181,6 @@ async def run_operator_session(
         turn = await session.run_wiki()
         last_result = turn.result
 
-        # Needs Input: collect answers and start a **new** Wiki Run.
         while isinstance(turn.result, NeedsInput):
             print_line("needs input — answers start a new Wiki Run (prior run not resumed)")
             answers = session.collect_needs_input_answers(
@@ -171,11 +222,9 @@ async def run_operator_session(
                 break
             continue
 
-        # Natural-language turn.
         if session.mode == "ask":
             print_line(session.note_ask(stripped))
             continue
-        # build mode: record goal and start a fresh Wiki Run.
         try:
             last_result = await execute_run(label=stripped)
         except Exception as error:
@@ -198,6 +247,7 @@ def run_operator_session_sync(
     store: SessionStore | None = None,
     sessions_dir: Path | None = None,
     resume_session_id: str | None = None,
+    line_mode: bool = False,
 ) -> WikiRunResult | None:
     """Sync entry for CLI ``asyncio.run`` wrappers."""
     return asyncio.run(
@@ -213,6 +263,7 @@ def run_operator_session_sync(
             store=store,
             sessions_dir=sessions_dir,
             resume_session_id=resume_session_id,
+            line_mode=line_mode,
         )
     )
 
