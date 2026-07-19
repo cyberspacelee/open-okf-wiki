@@ -12,7 +12,7 @@ from pydantic_ai import ModelRequest, ModelResponse, ToolCallPart
 from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from okf_wiki.host import (
+from okf_wiki.run import (
     Complete,
     ModelProviderConfig,
     ProducerSkillFork,
@@ -39,7 +39,7 @@ def test_default_producer_skill_is_a_complete_content_addressed_version() -> Non
         for path in version.path.rglob("*")
         if path.is_file()
     } == REQUIRED_PRODUCER_SKILL_PATHS
-    assert version.digest == "9f409d481942416264ea5be185195369e08246c99d5f4721813a18e3eadc115d"
+    assert version.digest == "18035cd3dd3c8eb50e15aff602e4f2bbdbd3a5ee27a9dcefaa6d8183381603a1"
 
 
 @pytest.mark.parametrize(

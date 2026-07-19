@@ -8,7 +8,7 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
-from ..host.provider.env import (
+from ..run.provider.env import (
     ENV_OPENAI_API_KEY,
     ENV_OPENAI_BASE_URL,
     ENV_OPENAI_ORG_ID,

@@ -1,4 +1,4 @@
-"""Host-owned deterministic Wiki Visualization of a Published Wiki."""
+"""run-owned deterministic Wiki Visualization of a Published Wiki."""
 
 from __future__ import annotations
 

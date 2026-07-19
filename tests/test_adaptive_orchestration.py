@@ -32,19 +32,19 @@ from pydantic_ai_harness.planning import Planning
 from pydantic_ai_harness.subagents import SubAgents
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from okf_wiki.host.adaptive import (
+from okf_wiki.run.adaptive import (
     AdaptivePolicy,
     build_root_agent,
     build_root_assembly,
     should_enable_adaptive,
 )
-from okf_wiki.host.analysis.workspace import AnalysisWorkspace
-from okf_wiki.host.context import (
+from okf_wiki.run.analysis.workspace import AnalysisWorkspace
+from okf_wiki.run.context import (
     ObservableTieredCompaction,
     build_context_capabilities,
 )
-from okf_wiki.host import WikiRunLimits
-from okf_wiki.host import (
+from okf_wiki.run import WikiRunLimits
+from okf_wiki.run import (
     Complete,
     ModelProviderConfig,
     ProducerSkillVersion,
@@ -895,7 +895,7 @@ def test_reviewer_loads_skill_reference_and_publishes_a_defects_receipt(
             )
             assert assignment is not None
             run_id, task_id, node_id, parent_id, attempt = assignment.groups()
-            # Mid-run roster uses ``reviewer``; Host pre-publish uses ``publish-reviewer``.
+            # Mid-run roster uses ``reviewer``; Run Boundary pre-publish uses ``publish-reviewer``.
             assert task_id in {"reviewer", "publish-reviewer"}
             assert node_id == task_id and parent_id == "root"
             if not run_code_returns:
@@ -1127,7 +1127,7 @@ def test_domain_concurrency_reserves_leaf_fanout_slots(tmp_path: Path) -> None:
         WikiRunLimits(adaptive_child_concurrency=4, adaptive_domain_fanout=2),
     )
     try:
-        # Host must not allow 3 Domains to occupy 3 of 4 global slots when each Domain
+        # Run Boundary must not allow 3 Domains to occupy 3 of 4 global slots when each Domain
         # may still fan out 2 Leaves (only one Leaf slot would remain).
         # Global child concurrency remains 4; domain parent gate reserves leaf capacity.
         assert orchestration.policy.child_concurrency == 4

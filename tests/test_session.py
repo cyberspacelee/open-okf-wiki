@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from pydantic_ai.tools import DeferredToolRequests
 
-from okf_wiki.host.publication.gate import build_approve_results, build_deny_results
+from okf_wiki.run.publication.gate import build_approve_results, build_deny_results
 from okf_wiki.session import (
     OperatorSession,
     SessionCard,
@@ -24,7 +24,7 @@ from okf_wiki.session import (
     require_tty,
 )
 from okf_wiki.session.cards import card_texts
-from okf_wiki.host import (
+from okf_wiki.run import (
     ModelProviderConfig,
     NeedsInput,
     RepositorySnapshot,
@@ -139,12 +139,12 @@ def test_session_card_texts_are_stable_string_projection() -> None:
     events = [
         _event(1, "run_created"),
         _event(2, "plan_updated", payload={"total": 2}),
-        _event(3, "run_failed", payload={"error_type": "HostValidationError"}),
+        _event(3, "run_failed", payload={"error_type": "RunValidationError"}),
     ]
     assert card_texts(project_events(events)) == [
         "run created",
         "plan updated total=2",
-        "run failed error_type=HostValidationError",
+        "run failed error_type=RunValidationError",
     ]
 
 
@@ -391,7 +391,7 @@ def test_session_needs_input_starts_new_run_with_explicit_answers(tmp_path: Path
     seen_answers.append(dict(second.request.explicit_answers))
 
     assert second.request.explicit_answers["%s:1" % first_run_id] == "operators"
-    # New Host run identity (different from the Needs Input run).
+    # New Wiki Run identity (different from the Needs Input run).
     assert second.run_id is not None
     assert second.run_id != first_run_id
     assert second.result.status == "complete"
@@ -555,7 +555,7 @@ def test_session_collect_needs_input_answers(tmp_path: Path) -> None:
 
 
 def test_interactive_approval_handler_approve_and_deny() -> None:
-    from okf_wiki.host.publication.gate import build_publish_approval_request, decision_from_results
+    from okf_wiki.run.publication.gate import build_publish_approval_request, decision_from_results
 
     requests = build_publish_approval_request(
         tool_call_id="publish_ui",
@@ -637,7 +637,7 @@ def test_session_store_create_list_resume_history(tmp_path: Path) -> None:
     assert rows[0].title == "generate the wiki"
     assert rows[0].status == "active"
 
-    # Fresh in-process Session resumes history only (same Host request object).
+    # Fresh in-process Session resumes history only (same WikiRunRequest object).
     other = OperatorSession(
         base_request=request,
         store=store,
@@ -651,7 +651,7 @@ def test_session_store_create_list_resume_history(tmp_path: Path) -> None:
     ]
     assert other.yolo is True
     assert other.session_id == saved.id
-    # Resume does not carry Host job cards / last result.
+    # Resume does not carry run progress cards / last result.
     assert other.cards == []
     assert other.last_result is None
 
@@ -696,7 +696,7 @@ def test_session_resume_does_not_auto_publish(tmp_path: Path) -> None:
     assert [m.content for m in resumed_session.message_history if m.role == "user"] == [
         "draft notes only"
     ]
-    # Resume is history-only: no Host turn result, no auto-publish.
+    # Resume is history-only: no run turn result, no auto-publish.
     assert resumed_session.last_result is None
     assert resumed_session.last_request is None
     assert publication_state(publication) == before
@@ -722,7 +722,7 @@ def test_session_new_does_not_destroy_host_config(tmp_path: Path) -> None:
     assert result.session_id is not None
     assert result.session_id != first.id
     assert session.message_history == []
-    # Host config file and base_request paths untouched.
+    # Run Boundary config file and base_request paths untouched.
     assert config_path.read_text(encoding="utf-8") == "model: openai:gpt-5-mini\n"
     assert session.base_request.staging == request.staging
     assert session.base_request.publication == request.publication

@@ -9,12 +9,12 @@ from pathlib import Path
 import pytest
 
 from okf_wiki.cli import _wiki_run_request, main, parser
-from okf_wiki.host import (
+from okf_wiki.run import (
     DEFAULT_SOURCE_IGNORES,
     WikiRunRequest,
     resolve_effective_source_ignores,
 )
-from okf_wiki.host.snapshots import _materialize_repository_snapshot
+from okf_wiki.run.snapshots import _materialize_repository_snapshot
 
 from wiki_run_helpers import (
     TEST_WIKI_LIMITS,

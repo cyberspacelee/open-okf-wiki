@@ -1,7 +1,7 @@
 """Operator Session runtime: multi-turn shell over bounded Wiki Runs.
 
 The Session is the interactive product object (ADR 0018). A Wiki Run remains a
-bounded Host job with frozen inputs; the Session starts Runs, projects Host
+bounded Wiki Run with frozen inputs; the Session starts Runs, projects run
 events into simplified cards, resolves deferred publication approval (HITL or
 YOLO), and closes Needs Input by starting a **new** Wiki Run with
 ``explicit_answers``.
@@ -9,7 +9,7 @@ YOLO), and closes Needs Input by starting a **new** Wiki Run with
 Multi-turn natural-language "ask" is currently stubbed: operator goals are
 recorded in Session message history and a fresh Wiki Run is started from the
 base request (optionally carrying answers). A full conversation Agent.iter
-loop may attach later without changing the Host seam.
+loop may attach later without changing the Run Boundary seam.
 
 Multi-session list/resume (ticket 07) uses :class:`SessionStore` for history
 snapshots only — never Wiki Run graph or Staging publication resume.
@@ -30,13 +30,13 @@ from ..diagnostics import (
     preflight_provider_credentials,
 )
 from ..diagnostics.doctor import CredentialStatus
-from ..host.publication.gate import (
+from ..run.publication.gate import (
     PublicationApprovalHandler,
     build_approve_results,
     build_deny_results,
 )
-from ..host.security import environment_secrets, redact_secrets, safe_error_message
-from ..host import (
+from ..run.security import environment_secrets, redact_secrets, safe_error_message
+from ..run import (
     NeedsInput,
     WikiRunApplication,
     WikiRunEvent,
@@ -126,7 +126,7 @@ SLASH_COMMANDS: tuple[SlashCommandSpec, ...] = (
         "List Sessions, or switch with /sessions <n|id>",
         takes_ref=True,
     ),
-    SlashCommandSpec("new", "Start a new empty Session (Host config unchanged)", takes_ref=True),
+    SlashCommandSpec("new", "Start a new empty Session (run config unchanged)", takes_ref=True),
     SlashCommandSpec(
         "switch",
         "Switch Session by list number or id (alias: /resume)",
@@ -256,7 +256,7 @@ def format_slash_help() -> str:
             "Entry does not auto-start a Wiki Run.",
             "Switching Session clears the chat pane and reloads that Session's history only.",
             "In build mode, type a goal or /run to start a Wiki Run from config.",
-            "In ask mode, messages are recorded without Host publication.",
+            "In ask mode, messages are recorded without run publication.",
             "Needs Input answers start a new Wiki Run with explicit_answers.",
             "Publication requires approve/deny unless YOLO is on.",
             "TUI: Tab completes slash commands and Session numbers/ids; Shift+Tab cycles.",
@@ -412,7 +412,7 @@ class OperatorSession:
     """In-process Operator Session: history, cards, YOLO, Wiki Run jobs.
 
     Inject ``publication_approval_handler`` for tests; interactive adapters pass
-    :func:`interactive_publication_handler`. When ``yolo`` is True, the Host
+    :func:`interactive_publication_handler`. When ``yolo`` is True, the Run Boundary
     auto-approves deferred publication (validation and Reviewer still run).
 
     Optional ``store`` enables multi-session create/list/resume (ticket 07).
@@ -498,7 +498,7 @@ class OperatorSession:
         """Restore multi-turn history from a store snapshot.
 
         Does not start a Wiki Run, does not publish Staging, and does not
-        resume a Semantic Workflow / graph. Cards and last Host result are
+        resume a Semantic Workflow / graph. Cards and last run result are
         cleared so resume is conversation context only.
         """
         self.session_id = snapshot.id
@@ -508,7 +508,7 @@ class OperatorSession:
         self.yolo = bool(snapshot.yolo)
         self.message_history = list(snapshot.messages)
         self.last_run_id = snapshot.last_run_id
-        # In-process Host job view is not part of resume.
+        # In-process Wiki Run view is not part of resume.
         self.cards = []
         self.last_result = None
         self.last_request = None
@@ -541,11 +541,11 @@ class OperatorSession:
         return saved
 
     def start_new_session(self, *, title: str | None = None) -> SessionSnapshot:
-        """Start a new Session without destroying project Host config.
+        """Start a new Session without destroying project run config.
 
         Persists the current Session if a store is configured and the current
         Session has history or an id, then clears in-process history for a
-        fresh Session. Host ``base_request`` (wiki-run.yaml paths) is unchanged.
+        fresh Session. Session ``base_request`` (wiki-run.yaml paths) is unchanged.
         """
         from .store import SessionSnapshot, new_session_id
 
@@ -632,7 +632,7 @@ class OperatorSession:
     ) -> WikiRunRequest:
         """Build the next Wiki Run request from Session state.
 
-        Always produces a **new** run identity at Host time. Merges
+        Always produces a **new** run identity at run start. Merges
         ``explicit_answers`` into the request for Needs Input follow-ups.
         YOLO on the Session forces ``auto_approve_publication=True``.
         """
@@ -715,7 +715,7 @@ class OperatorSession:
             if publication_approval_handler is not None
             else self.publication_approval_handler
         )
-        # When YOLO is on, Host auto_approve skips the handler (gate precedence).
+        # When YOLO is on, run auto_approve skips the handler (gate precedence).
         # Stream handler only when a UI/test sink is attached (pydantic-ai events).
         stream_handler = make_event_stream_handler(
             self.observe_stream if self.on_stream is not None else None
@@ -731,7 +731,7 @@ class OperatorSession:
         self.last_run_status = getattr(application, "last_run_status", None)
         status = self.last_run_status or getattr(result, "status", type(result).__name__)
         self._note("assistant", f"Wiki Run finished: {status}")
-        # Best-effort Session history persist after each Host job (not graph resume).
+        # Best-effort Session history persist after each Wiki Run (not graph resume).
         if self.store is not None:
             try:
                 if self.title is None and self.message_history:
@@ -753,7 +753,7 @@ class OperatorSession:
         """Record an ask-mode turn without starting a Wiki Run or publishing.
 
         Full conversation ``Agent.iter`` remains future work; ask mode keeps
-        Operator Session multi-turn history without Host publication side effects.
+        Operator Session multi-turn history without run publication side effects.
         """
         self.append_user(question)
         reply = (
@@ -1030,7 +1030,7 @@ class OperatorSession:
                 name="new",
                 message=(
                     f"── New Session {snapshot.id[:12]} ──\n"
-                    f"[{self.yolo_indicator()}] Project Host config unchanged.\n"
+                    f"[{self.yolo_indicator()}] Project run config unchanged.\n"
                     "Chat cleared — type a goal or /run."
                 ),
                 session_switched=True,

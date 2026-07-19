@@ -16,13 +16,17 @@ _Avoid_: Live checkout, mutable branch
 The non-empty collection of named Repository Snapshots used together by one Wiki Run.
 _Avoid_: Workspace, implicit repository list
 
-**Host Instructions**:
-The short, non-forkable run shell the product injects for every Wiki Run: mount and trust boundaries, activation of the selected Producer Skill, and Host-enforced role limits.
+**Run Boundary**:
+The trusted execution boundary for one Wiki Run: freeze Snapshot Set and Skill, mount permissions, credentials and budgets, mechanical validation, staging, and atomic publication. Implemented as `okf_wiki.run`. Not the Operator Session, not the Semantic Workflow, and not the Pydantic AI Harness. (Pre-0019 ADRs may still say “Host” for this role.)
+_Avoid_: host OS, Agent Host, host agent, HTTP host, harness (pydantic-ai-harness), product web app
+
+**Run Instructions**:
+The short, non-forkable shell the product injects for every Wiki Run: mount and trust boundaries, activation of the selected Producer Skill, and boundary-enforced role limits.
 _Avoid_: system prompt monolith, Producer Skill body, conversation-level one-off prompt, Skill Fork override
 
 **Producer Skill**:
 The trusted, versioned method-and-template bundle that teaches how a Repository Snapshot Set becomes a Wiki—investigation, page design, writing, review, and completion criteria—without owning Snapshot membership, budgets, or publication enforcement.
-_Avoid_: Target-repository Skill, Host Instructions, system prompt blob, ignore catalog, Python workflow
+_Avoid_: Target-repository Skill, Run Instructions, system prompt blob, ignore catalog, Python workflow
 
 **Skill Version**:
 An immutable release of the Producer Skill identified by its exact content digest.
@@ -30,15 +34,15 @@ _Avoid_: Latest Skill, implicit override, re-resolved prompt text
 
 **Skill Fork**:
 An explicitly created editable copy of a Skill Version whose changes are owned and versioned separately from product releases.
-_Avoid_: Hidden prompt override, automatically upgraded Skill, Host Instructions edit
+_Avoid_: Hidden prompt override, automatically upgraded Skill, Run Instructions edit
 
 **Wiki Template**:
 An adaptable page scaffold in the Producer Skill that guides structure, questions, style, and diagrams without fixing the final page set.
 _Avoid_: Renderer schema, mandatory page taxonomy, typed content block
 
 **Semantic Workflow**:
-The model-directed sequence of repository exploration, page design, writing, review, and completion decisions for one Wiki Run, directed by the Producer Skill within Host limits.
-_Avoid_: Python state machine, fixed role pipeline, Host Instructions dump
+The model-directed sequence of repository exploration, page design, writing, review, and completion decisions for one Wiki Run, directed by the Producer Skill within Run Boundary limits.
+_Avoid_: Python state machine, fixed role pipeline, Run Instructions dump
 
 **Run Plan**:
 The current objective, completion gates, evidence gaps, and delegated-scope status that keep one Wiki Run oriented across long investigation and compaction.
@@ -50,7 +54,7 @@ _Avoid_: Wiki Run, chat session as a resumable Semantic Workflow, Production Run
 
 **Wiki Reviewer**:
 An independent, bounded agent role that inspects the Staging Wiki against the Repository Snapshot Set and Producer Skill review guidance, producing a defects receipt for the operator and Root; it does not write Wiki pages or publish.
-_Avoid_: Host mechanical validation, Skill self-review alone, multi-model voting panel, publisher
+_Avoid_: Run Boundary mechanical validation, Skill self-review alone, multi-model voting panel, publisher
 
 **Wiki Run**:
 One attempt to derive and publish a Wiki from a Repository Snapshot Set using one exact Skill Version or Skill Fork revision; it may be started from an Operator Session but is not the Session itself.
@@ -102,7 +106,7 @@ _Avoid_: /wiki、共享控制总线、永久知识库
 
 **Default Source Ignores**:
 Product-defined repository-relative path patterns that omit common non-evidence tracked paths from every Repository Snapshot unless that repository disables them for the Wiki Run.
-_Avoid_: gitignore import, Skill-owned ignore catalog, silent host filter
+_Avoid_: gitignore import, Skill-owned ignore catalog, silent platform filter
 
 **Effective Source Ignores**:
 The frozen set of repository-relative path patterns actually applied when materializing one Repository Snapshot for one Wiki Run; the union of Default Source Ignores when enabled and that repository's configured ignore patterns.
@@ -111,3 +115,7 @@ _Avoid_: live working-tree filter, re-resolved product defaults at retry, model-
 **Wiki Visualization**:
 A read-only, deterministically derived presentation of one Published Wiki for human browsing of pages and their cross-link graph; optional beside publication, not the Wiki itself and not the Wiki Run operator surface.
 _Avoid_: knowledge graph, product web app, Staging Wiki, model transcript, run dashboard
+
+## Reading older ADRs
+
+ADRs before [0019](docs/adr/0019-prefer-run-boundary-over-host.md) may say **Host** for what is now **Run Boundary**, and **Host Instructions** for **Run Instructions**. Map those phrases; do not reintroduce `okf_wiki.host` or `Host*` APIs.

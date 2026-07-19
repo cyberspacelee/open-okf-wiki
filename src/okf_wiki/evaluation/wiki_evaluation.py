@@ -22,9 +22,9 @@ from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_evals import Case, Dataset
 from pydantic_evals.reporting import ReportCase
 
-from ..host.errors import operator_error
-from ..host.security import git_read_bytes, safe_error_message
-from ..host import (
+from ..run.errors import operator_error
+from ..run.security import git_read_bytes, safe_error_message
+from ..run import (
     Complete,
     ModelProviderConfig,
     ProducerSkillVersion,
@@ -34,7 +34,7 @@ from ..host import (
     WikiRunRequest,
     resolve_effective_source_ignores,
 )
-from ..host.publication.fs import PUBLICATION_METADATA_NAME
+from ..run.publication.fs import PUBLICATION_METADATA_NAME
 from .wiki_evaluation_fixture import fixture_cases, fixture_model
 
 

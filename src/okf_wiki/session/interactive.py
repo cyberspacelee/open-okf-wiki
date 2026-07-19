@@ -15,7 +15,7 @@ from typing import TextIO
 from rich.console import Console
 from rich.text import Text
 
-from ..host import NeedsInput, WikiRunRequest, WikiRunResult
+from ..run import NeedsInput, WikiRunRequest, WikiRunResult
 from .runtime import (
     InputFn,
     OperatorSession,

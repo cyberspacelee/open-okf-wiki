@@ -5,9 +5,9 @@ The composer sits in normal vertical flow above the Footer so the input never
 overlaps keybinding labels (no ``dock: bottom`` on ``Input``).
 
 Slash commands support Tab / Shift+Tab completion and inline ghost suggestions.
-Host progress cards and pydantic-ai stream fragments mount into the chat view
+run progress cards and pydantic-ai stream fragments mount into the chat view
 via Session ``on_card`` / ``on_stream``. Presentation only — Session API and
-Wiki Run Host remain the product seams.
+Wiki Run Boundary remain the product seams.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from textual.containers import Vertical, VerticalScroll
 from textual.suggester import Suggester
 from textual.widgets import Footer, Header, Input, Markdown, Static
 
-from ..host import NeedsInput, WikiRunRequest, WikiRunResult
+from ..run import NeedsInput, WikiRunRequest, WikiRunResult
 from .cards import SessionCard
 from .runtime import (
     InputFn,
@@ -124,7 +124,7 @@ class AssistantReply(Markdown):
 
 
 class StatusCard(Static):
-    """Host L1 card or single-line system/status line."""
+    """Run L1 card or single-line system/status line."""
 
 
 class SystemNotice(Static):
@@ -391,7 +391,7 @@ class OperatorSessionApp(App[WikiRunResult | None]):
         bar.update(self._session_context_hint())
 
     def _history_widgets(self) -> list[UserPrompt | AssistantReply | StatusCard | SystemNotice]:
-        """Build chat widgets from the active Session history (no Host cards)."""
+        """Build chat widgets from the active Session history (no run progress cards)."""
         session = self._session
         if session is None:
             return []
@@ -406,7 +406,7 @@ class OperatorSessionApp(App[WikiRunResult | None]):
         return widgets
 
     def _mount_history_messages(self) -> None:
-        """Render Session message history into the chat view (no Host cards)."""
+        """Render Session message history into the chat view (no run progress cards)."""
         chat = self.query_one("#chat-view", VerticalScroll)
         for widget in self._history_widgets():
             chat.mount(widget)
@@ -416,7 +416,7 @@ class OperatorSessionApp(App[WikiRunResult | None]):
         """Hard-clear the chat pane and show only the active Session."""
         await self._close_active_reply()
         chat = self.query_one("#chat-view", VerticalScroll)
-        # Explicit wipe so prior Host cards / stream bubbles cannot linger.
+        # Explicit wipe so prior run progress cards / stream bubbles cannot linger.
         await chat.remove_children()
         chat.scroll_home(animate=False)
         widgets: list[UserPrompt | AssistantReply | StatusCard | SystemNotice] = [

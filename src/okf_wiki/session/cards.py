@@ -1,4 +1,4 @@
-"""Simplified L1 analysis cards projected from Host Wiki Run events.
+"""Simplified L1 analysis cards projected from Wiki Run events.
 
 The Operator Session UI never dumps chain-of-thought or raw provider bodies.
 Cards are secret-redacted, short labels suitable for the Textual fullscreen
@@ -11,8 +11,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Literal
 
-from ..host.security import environment_secrets, redact_secrets
-from ..host import WikiRunEvent
+from ..run.security import environment_secrets, redact_secrets
+from ..run import WikiRunEvent
 
 CardKind = Literal[
     "lifecycle",
@@ -187,10 +187,10 @@ def project_event(
     *,
     secrets: frozenset[str] | tuple[str, ...] | None = None,
 ) -> SessionCard:
-    """Project one Host event into a secret-safe Session card."""
+    """Project one run event into a secret-safe Session card."""
     secret_tuple = _secret_tuple(secrets)
     line = redact_secrets(_format_line(event), secret_tuple)
-    # Payload is already Host-sanitized; still redact any residual secret-like text.
+    # Payload is already run-sanitized; still redact any residual secret-like text.
     safe_payload: dict[str, object] = {}
     for key, value in event.payload.items():
         if isinstance(value, str):
@@ -222,7 +222,7 @@ def card_texts(cards: Iterable[SessionCard]) -> list[str]:
 
 
 def summarize_nodes(events: Iterable[WikiRunEvent]) -> dict[str, str]:
-    """Last-known node status from a Host event sequence."""
+    """Last-known node status from a run event sequence."""
     nodes: dict[str, str] = {}
     for event in events:
         if event.type in _CHILD_TYPES:

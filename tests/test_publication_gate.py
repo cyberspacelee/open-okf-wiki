@@ -1,4 +1,4 @@
-"""Unit tests for Host publication deferred-approval gate."""
+"""Unit tests for run publication deferred-approval gate."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import asyncio
 
 from pydantic_ai.tools import DeferredToolResults, ToolDenied
 
-from okf_wiki.host.publication.gate import (
+from okf_wiki.run.publication.gate import (
     DEFAULT_DENY_MESSAGE,
     PUBLISH_TOOL_NAME,
     build_approve_results,

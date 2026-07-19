@@ -14,7 +14,7 @@ from pydantic_ai import ModelRequest, ModelResponse, ToolCallPart
 from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from okf_wiki.host import (
+from okf_wiki.run import (
     AnalysisReceipt,
     Complete,
     ModelProviderConfig,
@@ -79,7 +79,7 @@ def writing_model(
 ) -> FunctionModel:
     def model(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
         instructions = info.instructions or ""
-        # Host-owned Wiki Reviewer (pre-publish) and adaptive roster Reviewer share this prompt.
+        # run-owned Wiki Reviewer (pre-publish) and adaptive roster Reviewer share this prompt.
         if "You are a Wiki Reviewer." in instructions:
             return _reviewer_function_response(messages, instructions)
 
@@ -137,7 +137,7 @@ def _reviewer_function_response(
         instructions,
     )
     if assignment is None:
-        raise AssertionError("Wiki Reviewer Host assignment missing from instructions")
+        raise AssertionError("Wiki Reviewer run assignment missing from instructions")
     run_id, task_id, node_id, parent_id, attempt = assignment.groups()
     code = (
         "handoff = publish_receipt("

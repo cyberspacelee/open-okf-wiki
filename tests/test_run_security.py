@@ -17,7 +17,7 @@ from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.instrumented import InstrumentationSettings
 
-from okf_wiki.host import (
+from okf_wiki.run import (
     Complete,
     ModelProviderConfig,
     RepositorySnapshot,
@@ -115,7 +115,7 @@ def test_complete_wiki_run_writes_a_bounded_secret_free_terminal_record(
     }
     assert record["limits"] == TEST_WIKI_LIMITS.model_dump(mode="json")
     assert record["explicit_answers"] == {}
-    # Producer turns plus Host Wiki Reviewer child usage (isolated, still recorded).
+    # Producer turns plus Wiki Reviewer child usage (isolated, still recorded).
     assert record["usage"]["requests"] >= 2
     assert record["retry_counters"] == {
         "provider": 0,

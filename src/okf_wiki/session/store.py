@@ -15,7 +15,7 @@ Operator Session continuity is different:
 
 * Multiple named Sessions per project (list / create / resume).
 * Session history is lightweight ``SessionMessage`` turns (operator goals,
-  slash notes, Host job outcomes) — not a provider-valid ModelMessage log.
+  slash notes, Wiki Run outcomes) — not a provider-valid ModelMessage log.
 * Ticket 06 intentionally stubs the conversation Agent.iter loop; each goal
   starts a **new** bounded Wiki Run. There is no conversation Agent to attach
   ``StepPersistence`` to without inventing a second checkpoint protocol.
@@ -26,7 +26,7 @@ Operator Session continuity is different:
 When a conversation Agent lands later, ``StepPersistence`` can attach to
 *that* Agent's runs for message-snapshot continuity without replacing this
 Session index/store. Using it as the multi-session product store today would
-conflate Host/agent step resume with Operator Session list/resume.
+conflate run/agent step resume with Operator Session list/resume.
 
 This module is the product Session seam; it never mutates Staging or Published
 Wiki and never resumes a Wiki Run graph.
@@ -282,7 +282,7 @@ class SessionStore:
         status: SessionStatus = "active",
         messages: Sequence[SessionMessage] | None = None,
     ) -> SessionSnapshot:
-        """Create and persist a new Session. Never touches Host project config."""
+        """Create and persist a new Session. Never touches run project config."""
         self.ensure_root()
         sid = session_id or new_session_id()
         if not _SESSION_ID_RE.match(sid):

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from .host.security import (
+from .run.security import (
     PROVIDER_DIAGNOSTICS_WITHHELD,
     environment_secrets,
     redact_secrets,
@@ -278,7 +278,7 @@ def parser() -> argparse.ArgumentParser:
         dest="auto_approve_publication",
         default=False,
         help=(
-            "Auto-approve publication after Host validation (YOLO / non-interactive yes). "
+            "Auto-approve publication after run validation (YOLO / non-interactive yes). "
             "Does not skip validation, mounts, or publication locks. Off by default."
         ),
     )
@@ -296,7 +296,7 @@ def parser() -> argparse.ArgumentParser:
         dest="auto_approve_publication",
         default=False,
         help=(
-            "Auto-approve publication after Host validation (YOLO / non-interactive yes). "
+            "Auto-approve publication after run validation (YOLO / non-interactive yes). "
             "Does not skip validation, mounts, or publication locks. Off by default."
         ),
     )
@@ -380,7 +380,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def _producer_skill_version(arguments: argparse.Namespace):
-    from .host import ProducerSkillVersion
+    from .run import ProducerSkillVersion
 
     if arguments.skill is None:
         if arguments.skill_digest is not None:
@@ -416,8 +416,8 @@ def _resolve_config_path(
 
 
 def _wiki_run_request(arguments: argparse.Namespace):
-    from .host.provider.env import resolve_model_identity, resolve_model_settings
-    from .host import (
+    from .run.provider.env import resolve_model_identity, resolve_model_settings
+    from .run import (
         ModelProviderConfig,
         RepositorySnapshot,
         WikiRunLimits,
@@ -604,8 +604,8 @@ def main() -> int:
         load_dotenv(dotenv, override=False)
 
         if arguments.command == "init":
-            from .host.init_config import write_wiki_run_config
-            from .host.provider.env import resolve_model_identity
+            from .run.init_config import write_wiki_run_config
+            from .run.provider.env import resolve_model_identity
 
             written = write_wiki_run_config(
                 arguments.config,
@@ -642,7 +642,7 @@ def main() -> int:
             return 0
 
         if arguments.command == "skill-inspect":
-            from .host import ProducerSkillVersion
+            from .run import ProducerSkillVersion
 
             version = ProducerSkillVersion.from_directory(arguments.path)
             emit(
@@ -654,7 +654,7 @@ def main() -> int:
             return 0
 
         if arguments.command == "skill-fork":
-            from .host import ProducerSkillFork
+            from .run import ProducerSkillFork
 
             fork = ProducerSkillFork.create(
                 _producer_skill_version(arguments), arguments.destination
@@ -669,7 +669,7 @@ def main() -> int:
             return 0
 
         if arguments.command == "wiki-run":
-            from .host import WikiRunApplication
+            from .run import WikiRunApplication
 
             request = _wiki_run_request(arguments)
             application = WikiRunApplication()
@@ -711,7 +711,7 @@ def main() -> int:
             return 0
 
         if arguments.command == "wiki-retry":
-            from .host import WikiRunApplication, WikiRunRequest
+            from .run import WikiRunApplication, WikiRunRequest
 
             request = WikiRunRequest.from_run_record(
                 arguments.record,
@@ -744,7 +744,7 @@ def main() -> int:
 
         if arguments.command == "tui":
             from .session import run_operator_session
-            from .host import WikiRunRequest
+            from .run import WikiRunRequest
 
             config_path = _resolve_config_path(arguments.config, allow_default=True, command="tui")
             assert config_path is not None

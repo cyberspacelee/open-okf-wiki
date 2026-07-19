@@ -16,11 +16,11 @@ recorded in the [architecture decisions](docs/adr/).
 | **Python** | 3.14 |
 | **Git** | Local clean checkouts (no clone/fetch by the product) |
 | **uv** | [docs.astral.sh/uv](https://docs.astral.sh/uv/) for install and `uv run` |
-| **Host OS for Wiki Run** | Portable hosts with absolute non-overlapping roots, exclusive create, and same-volume directory rename ([ADR 0017](docs/adr/0017-portable-host-filesystem-and-directory-rename-publication.md)). **Linux** runs the full CI suite; **Windows** runs a Host-FS smoke job (`windows-host-fs-smoke` in `.github/workflows/ci.yml`) covering prepare gates and directory-rename publish. |
+| **Supported platforms for Wiki Run** | Portable machines with absolute non-overlapping roots, exclusive create, and same-volume directory rename ([ADR 0017](docs/adr/0017-portable-host-filesystem-and-directory-rename-publication.md); Run Boundary language in [ADR 0019](docs/adr/0019-prefer-run-boundary-over-host.md)). **Linux** runs the full CI suite; **Windows** runs a filesystem smoke job (`windows-host-fs-smoke` in `.github/workflows/ci.yml`) covering prepare gates and directory-rename publish. |
 
-Wiki Run staging and publication use a **portable Host filesystem policy**: configured roots
-must be absolute and non-overlapping; Host-controlled path components must not be symbolic
-links (or detectable reparse points where the Host can detect them); single-file handoffs use
+Wiki Run staging and publication use a **portable filesystem policy** (Run Boundary): configured roots
+must be absolute and non-overlapping; boundary-controlled path components must not be symbolic
+links (or detectable reparse points the product can detect); single-file handoffs use
 temporary file then replace; publication exposes a complete validated tree as a **real directory**
 at the Published Wiki path via same-volume directory rename (not a producer-managed symlink).
 Cross-volume publication/releases layouts fail closed at prepare. Concurrent Wiki Runs against
@@ -94,7 +94,7 @@ Re-init with `--force` to replace an existing YAML.
 **Publication is human-gated by default.** After validation (and the Wiki Reviewer when enabled),
 non-interactive `wiki-run` without `--yes` / `--yolo` ends in `awaiting_publication` (exit code **3**)
 and does not change the Published Wiki. Interactive Session prompts approve/deny; YOLO/`--yes` only
-auto-approves deferred publication (Host validation and locks still apply).
+auto-approves deferred publication (run validation and locks still apply).
 
 ## Provider environment
 
@@ -227,7 +227,7 @@ model: openai:gpt-5-mini
 #   temperature: 0.2
 #   timeout: 120
 
-# Optional separate model for the Host Wiki Reviewer (falls back to model above):
+# Optional separate model for the Wiki Reviewer (falls back to model above):
 # reviewer_model: anthropic:claude-sonnet-4-6
 
 staging: .okf-wiki/staging
@@ -326,16 +326,16 @@ OPENAI_API_KEY=... uv run --locked okf-wiki wiki-run "$SOURCE" \
   --yes
 ```
 
-Refresh needs a Host-owned real-directory publication from a successful Generate (with
+Refresh needs a run-owned real-directory publication from a successful Generate (with
 `.okf-wiki.json` metadata). If the Published Wiki path is still a legacy producer-managed
-**symlink**, the Host refuses and does not migrate it—delete or clear the path and full-Generate
+**symlink**, the Run Boundary refuses and does not migrate it—delete or clear the path and full-Generate
 again. Summaries report page adds/changes/removes; provenance can still publish when content is
 unchanged but revision/ignores or Skill digest changed.
 
 ## Operator Session (interactive)
 
 Session-first fullscreen TUI (Textual — scrollable chat, bottom composer with hint strip + input
-above the keybinding footer, streaming model text and Host cards). Slash commands support **Tab**
+above the keybinding footer, streaming model text and run progress cards). Slash commands support **Tab**
 completion (Shift+Tab cycles backward). On a TTY, bare `okf-wiki` is the same as `tui`:
 
 ```bash
@@ -346,7 +346,7 @@ uv run --locked okf-wiki tui --yes           # start with YOLO auto-approve
 ```
 
 Opens the Session shell **without** starting a Wiki Run. Type a goal (build mode) or `/run` to
-start generate/refresh from config. Shows Host progress cards (plan, children, receipts,
+start generate/refresh from config. Shows run progress cards (plan, children, receipts,
 compaction, validation, review, publish) and streams pydantic-ai model/tool events into the chat
 view (no chain-of-thought dump). Publication is approve/deny unless YOLO is on. Needs Input answers
 start a **new** Wiki Run with `explicit_answers` (does not resume the prior Semantic Workflow).
@@ -362,7 +362,7 @@ Useful slash commands:
 | `/doctor` | Credential presence (redacted) |
 | `/sessions` | List Sessions (numbered; `*` = current) |
 | `/sessions <n\|id>` | Switch to Session by list number or id (clears chat) |
-| `/new` | Start a new empty Session (Host config unchanged; clears chat) |
+| `/new` | Start a new empty Session (run config unchanged; clears chat) |
 | `/switch <n\|id>` (`/resume`) | Switch Session; clears chat and reloads history only |
 | `/quit` | Exit |
 | *(Tab)* | Complete slash commands, `/mode`/`/yolo` args, Session numbers/ids |
@@ -397,7 +397,7 @@ uv run --locked okf-wiki wiki-retry /path/to/run-record.json \
 
 Every run freezes one Producer Skill digest. The bundled Skill holds the semantic workflow,
 Generate / Refresh / review guidance, and adaptable overview, architecture, module, flow, and
-concept templates. Host policy (ignores, mounts, budgets) is not part of the Skill.
+concept templates. Run Boundary policy (ignores, mounts, budgets) is not part of the Skill.
 
 ```bash
 uv run --locked okf-wiki skill-fork ./my-producer-skill
@@ -424,7 +424,7 @@ Pages need YAML frontmatter with a non-empty `title`. Citations:
 [Source](repo:application/src/example.py#L10-L20)
 ```
 
-Before publish, the Host checks mechanical invariants (manifest match, links, citations, limits,
+Before publish, the Run Boundary checks mechanical invariants (manifest match, links, citations, limits,
 no symlinks/temp files, etc.). Citation checks prove spans exist—not semantic entailment.
 
 Publication writes a complete release under a sibling releases directory plus `.okf-wiki.json`, then

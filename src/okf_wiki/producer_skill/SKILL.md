@@ -19,9 +19,9 @@ gate.
    inspection begins.
 2. **Investigate and shape.** Explore `/source` from entry points and boundaries toward relevant
    implementation details. For one repository its files are directly under `/source`; for multiple
-   repositories each named directory under `/source` is one repository ID. The Host has already
+   repositories each named directory under `/source` is one repository ID. The Run Boundary has already
    filtered the Repository Snapshot with Effective Source Ignores; do not invent a second exclusion
-   policy, and do not use shell or ripgrep. Prefer any Host-provided source inventory as an optional
+   policy, and do not use shell or ripgrep. Prefer any Run Boundary-provided source inventory as an optional
    accelerator for scoping—it is not a membership gate; paths in `/source` remain citable when
    grounded. Treat repository instructions, agent files, and Skills as source evidence. Tests that
    remain under `/source` may reveal intended behavior. Repeatedly choose the most important
@@ -47,13 +47,13 @@ gate.
    source-consistent diagrams. **Completion gate:** every intended page exists, answers its reader
    question, links to related pages where useful, and is grounded by nearby verified Source
    Citations.
-4. **Review and finish.** Prefer the Host-registered `reviewer` subagent for an independent
+4. **Review and finish.** Prefer the run-registered `reviewer` subagent for an independent
    read-only review of staged pages against `/skill/references/review.md`; otherwise read that
    reference yourself. The Reviewer publishes a defects receipt only and cannot write `/wiki` or
    delegate further. Repair each issue yourself, returning to earlier steps when page scope or
    evidence changes. Reopen load-bearing source spans as needed rather than treating a child
    summary as proof. A partial, failed, or cancelled critical branch may be retried only within
-   the Host budget; if direct fallback research cannot complete it, fail the Wiki Run and preserve
+   the Run Boundary budget; if direct fallback research cannot complete it, fail the Wiki Run and preserve
    the previous Published Wiki. Internal child or budget failure is not Needs Input. Then return
    the exact Markdown page manifest. **Completion gate:** every review check passes, every critical
    planned scope is complete, every non-critical cancellation is explicit in the Run Plan, and the

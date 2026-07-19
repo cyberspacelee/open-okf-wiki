@@ -1,6 +1,6 @@
 """Operator Session: conversation shell over bounded Wiki Runs (ADR 0018).
 
-Primary product seam for interactive use. Host Wiki Run application remains
+Primary product seam for interactive use. WikiRunApplication remains
 the production/publication authority; this package owns Session history,
 card projection, HITL/YOLO approval wiring, Needs Input → new Run, and
 slash controls. Multi-session list/resume uses :class:`SessionStore`

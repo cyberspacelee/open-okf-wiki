@@ -4,7 +4,7 @@ Start from the empty Staging Wiki.
 
 1. Find each repository's stated purpose, executable or library entry points, public interfaces,
    major directories, configuration, and tests that reveal intended behavior (tests remaining in
-   the Snapshot are evidence, not noise). Use any Host inventory only as a discovery aid. Identify
+   the Snapshot are evidence, not noise). Use any run inventory only as a discovery aid. Identify
    how the repositories relate before deciding the Wiki shape.
 2. Follow high-signal dependencies and call paths until the important boundaries, modules, flows,
    and domain concepts are understood. Branch according to what the repository contains rather than

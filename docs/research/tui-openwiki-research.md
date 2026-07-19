@@ -40,7 +40,7 @@ uv run --locked pai --help
 
 ## 与现有一次性 `run()` 的关系
 
-当前 `wiki_run.py` 在一次 `Agent.run()` 中等待最终结果（[host/lifecycle.py](../../src/okf_wiki/host/lifecycle.py#L536-L560)）。因此“加 TUI”不只是换输出格式：若要显示模型/工具/递归状态，需要在不破坏 output validator、usage limits、wall-clock deadline 和 publication 流程的前提下增加事件观察 seam。最小安全顺序是先抽出内部事件回调，再接 TUI；不要把 UI 状态机塞回语义 workflow 或 Host 的发布逻辑。
+当前 `wiki_run.py` 在一次 `Agent.run()` 中等待最终结果（[host/lifecycle.py](../../src/okf_wiki/run/lifecycle.py#L536-L560)）。因此“加 TUI”不只是换输出格式：若要显示模型/工具/递归状态，需要在不破坏 output validator、usage limits、wall-clock deadline 和 publication 流程的前提下增加事件观察 seam。最小安全顺序是先抽出内部事件回调，再接 TUI；不要把 UI 状态机塞回语义 workflow 或 Host 的发布逻辑。
 
 ## 资料
 

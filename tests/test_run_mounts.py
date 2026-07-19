@@ -14,8 +14,8 @@ from pydantic_ai import ModelRequest, ModelResponse, ToolCallPart, UnexpectedMod
 from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from okf_wiki.host.security import MAX_ANALYZABLE_FILE_BYTES
-from okf_wiki.host import (
+from okf_wiki.run.security import MAX_ANALYZABLE_FILE_BYTES
+from okf_wiki.run import (
     Complete,
     ModelProviderConfig,
     RepositorySnapshot,
@@ -501,7 +501,7 @@ def test_wiki_run_rejects_an_oversized_source_blob_before_reading_it(
     revision = make_repository(source, "too large\n")
     skill = make_producer_skill(tmp_path / "skill")
     real_git_read_bytes = __import__(
-        "okf_wiki.host.security", fromlist=["git_read_bytes"]
+        "okf_wiki.run.security", fromlist=["git_read_bytes"]
     ).git_read_bytes
 
     def reject_blob_read(repository: Path, *arguments: str) -> bytes:
@@ -509,7 +509,7 @@ def test_wiki_run_rejects_an_oversized_source_blob_before_reading_it(
             raise AssertionError("oversized source blob must not be read")
         return real_git_read_bytes(repository, *arguments)
 
-    monkeypatch.setattr("okf_wiki.host.snapshots.git_read_bytes", reject_blob_read)
+    monkeypatch.setattr("okf_wiki.run.snapshots.git_read_bytes", reject_blob_read)
 
     with pytest.raises(ValueError, match="source file exceeds.*limit"):
         asyncio.run(
@@ -562,7 +562,7 @@ def test_wiki_run_rejects_source_count_and_total_ceilings_before_blob_reads(
         ).stdout.strip()
     skill = make_producer_skill(tmp_path / "skill")
     real_git_read_bytes = __import__(
-        "okf_wiki.host.security", fromlist=["git_read_bytes"]
+        "okf_wiki.run.security", fromlist=["git_read_bytes"]
     ).git_read_bytes
 
     def reject_blob_read(repository: Path, *arguments: str) -> bytes:
@@ -573,7 +573,7 @@ def test_wiki_run_rejects_source_count_and_total_ceilings_before_blob_reads(
     def model(_: list[ModelRequest | ModelResponse], __: AgentInfo) -> ModelResponse:
         raise AssertionError("model must not run for an oversized snapshot")
 
-    monkeypatch.setattr("okf_wiki.host.snapshots.git_read_bytes", reject_blob_read)
+    monkeypatch.setattr("okf_wiki.run.snapshots.git_read_bytes", reject_blob_read)
 
     with pytest.raises(ValueError, match=message):
         asyncio.run(
@@ -642,7 +642,7 @@ def test_require_supported_runtime_accepts_non_linux_hosts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Portable prepare no longer hard-rejects Windows for missing /proc or dir_fd."""
-    from okf_wiki.host import mounts as mounts_module
+    from okf_wiki.run import mounts as mounts_module
 
     monkeypatch.setattr(mounts_module.sys, "platform", "win32")
     mounts_module._require_supported_runtime()  # does not raise for Windows alone
@@ -651,16 +651,16 @@ def test_require_supported_runtime_accepts_non_linux_hosts(
 def test_require_supported_runtime_rejects_missing_portable_primitives(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from okf_wiki.host import mounts as mounts_module
+    from okf_wiki.run import mounts as mounts_module
 
     monkeypatch.delattr(mounts_module.os, "rename", raising=False)
-    with pytest.raises(ValueError, match="portable Host filesystem|rename"):
+    with pytest.raises(ValueError, match="portable filesystem|rename"):
         mounts_module._require_supported_runtime()
 
 
 def test_disallowed_path_component_detects_junction_and_allows_cloud_reparse() -> None:
     """Symlinks/junctions fail closed; OneDrive-style cloud reparse tags are allowed."""
-    from okf_wiki.host import mounts as mounts_module
+    from okf_wiki.run import mounts as mounts_module
 
     plain = SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_file_attributes=0, st_reparse_tag=0)
     symlink = SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_file_attributes=0, st_reparse_tag=0)
@@ -713,7 +713,7 @@ def test_prepare_rejects_host_junction_reparse_on_controlled_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Application seam: directory junctions fail before model work."""
-    from okf_wiki.host import mounts as mounts_module
+    from okf_wiki.run import mounts as mounts_module
 
     source = tmp_path / "source"
     revision = make_repository(source, "source\n")
@@ -745,7 +745,7 @@ def test_prepare_rejects_host_junction_reparse_on_controlled_path(
     def model(_: list[ModelRequest | ModelResponse], __: AgentInfo) -> ModelResponse:
         nonlocal model_called
         model_called = True
-        raise AssertionError("model must not run when Host path has a junction")
+        raise AssertionError("model must not run when run path has a junction")
 
     with pytest.raises(ValueError, match="junction|reparse|symlink"):
         run_test_wiki(
@@ -764,7 +764,7 @@ def test_prepare_allows_cloud_reparse_ancestor_on_controlled_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """OneDrive-style cloud reparse ancestors must not block staging creation."""
-    from okf_wiki.host import mounts as mounts_module
+    from okf_wiki.run import mounts as mounts_module
 
     source = tmp_path / "source"
     revision = make_repository(source, "source\n")
@@ -806,7 +806,7 @@ def test_prepare_allows_cloud_reparse_ancestor_on_controlled_path(
 
 
 def test_create_directory_path_rejects_symlink_component(tmp_path: Path) -> None:
-    from okf_wiki.host import mounts as mounts_module
+    from okf_wiki.run import mounts as mounts_module
 
     root = tmp_path / "root"
     root.mkdir()
@@ -820,7 +820,7 @@ def test_prepare_rejects_cross_volume_publication_and_releases(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Same-volume check fails closed when releases root is on a different st_dev."""
-    from okf_wiki.host import mounts as mounts_module
+    from okf_wiki.run import mounts as mounts_module
 
     source = tmp_path / "source"
     revision = make_repository(source, "source\n")

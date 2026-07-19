@@ -9,16 +9,16 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import okf_wiki.host.publication.finalize as finalize_mod
-from okf_wiki.host.adaptive.reviewer import ReviewDefectsSummary
-from okf_wiki.host.models import WikiManifest, WikiRunLimits
-from okf_wiki.host.publication.finalize import (
+import okf_wiki.run.publication.finalize as finalize_mod
+from okf_wiki.run.adaptive.reviewer import ReviewDefectsSummary
+from okf_wiki.run.models import WikiManifest, WikiRunLimits
+from okf_wiki.run.publication.finalize import (
     PublicationContext,
     PublicationOutcome,
     finalize,
 )
-from okf_wiki.host.publication.gate import build_approve_results, build_deny_results
-from okf_wiki.host.publication.status import (
+from okf_wiki.run.publication.gate import build_approve_results, build_deny_results
+from okf_wiki.run.publication.status import (
     status_awaiting,
     status_declined,
     status_published,
@@ -260,12 +260,12 @@ def test_yolo_takes_precedence_over_handler(
 
 
 def test_public_exports() -> None:
-    from okf_wiki.host import PublicationContext as HostContext
-    from okf_wiki.host import PublicationOutcome as HostOutcome
-    from okf_wiki.host import finalize as host_finalize
-    from okf_wiki.host.publication import PublicationContext as PubContext
-    from okf_wiki.host.publication import PublicationOutcome as PubOutcome
-    from okf_wiki.host.publication.finalize import finalize as sub_finalize
+    from okf_wiki.run import PublicationContext as HostContext
+    from okf_wiki.run import PublicationOutcome as HostOutcome
+    from okf_wiki.run import finalize as host_finalize
+    from okf_wiki.run.publication import PublicationContext as PubContext
+    from okf_wiki.run.publication import PublicationOutcome as PubOutcome
+    from okf_wiki.run.publication.finalize import finalize as sub_finalize
 
     assert HostOutcome is PublicationOutcome
     assert PubOutcome is PublicationOutcome
@@ -279,8 +279,8 @@ def test_public_exports() -> None:
 
 
 def test_assess_staging_changes_provenance(tmp_path: Path) -> None:
-    from okf_wiki.host.models import RepositorySnapshot
-    from okf_wiki.host.publication.accept import assess_staging_changes
+    from okf_wiki.run.models import RepositorySnapshot
+    from okf_wiki.run.publication.accept import assess_staging_changes
 
     staging = tmp_path / "staging"
     staging.mkdir()

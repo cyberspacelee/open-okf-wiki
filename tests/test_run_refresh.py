@@ -14,7 +14,7 @@ from pydantic_ai import ModelRequest, ModelResponse, ToolCallPart, UnexpectedMod
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from okf_wiki.cli import main
-from okf_wiki.host import (
+from okf_wiki.run import (
     Complete,
     ModelProviderConfig,
     NeedsInput,
@@ -597,7 +597,7 @@ def test_refresh_publication_failure_leaves_the_publication_exactly_unchanged(
             raise OSError("refresh metadata failure")
 
         monkeypatch.setattr(
-            "okf_wiki.host.publication.fs._write_publication_metadata", fail_metadata
+            "okf_wiki.run.publication.fs._write_publication_metadata", fail_metadata
         )
     else:
         real_rename = os.rename

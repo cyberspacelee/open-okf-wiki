@@ -11,7 +11,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from okf_wiki.cli import main
 from okf_wiki.evaluation import WikiEvaluationReport, evaluate_wiki_producer
-from okf_wiki.host import WikiRunApplication, WikiRunRequest
+from okf_wiki.run import WikiRunApplication, WikiRunRequest
 
 
 ROOT = Path(__file__).parents[1]
@@ -194,7 +194,7 @@ def test_fixture_evaluation_is_credential_free_pending_and_repeatable(
         assert case.material_stability == 1
         for run in case.runs:
             assert run.status == "complete"
-            # Producer (2) + Host Wiki Reviewer (2 run_code/handoff turns + usage).
+            # Producer (2) + Wiki Reviewer (2 run_code/handoff turns + usage).
             assert run.usage["requests"] >= 2
             assert run.usage["tool_calls"] >= 2
             assert run.usage["total_tokens"] >= 40
@@ -266,7 +266,7 @@ def test_live_usage_and_official_pricing_are_recorded_but_decision_waits_for_rev
         "example run 2: semantic/human review is required",
     ]
     for run in report.cases[0].runs:
-        # Producer + Host Wiki Reviewer model turns.
+        # Producer + Wiki Reviewer model turns.
         assert run.usage["requests"] >= 2
         assert run.usage["total_tokens"] >= 40
         assert run.pricing_status == "priced"

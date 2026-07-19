@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from okf_wiki.cli import main, parser
-from okf_wiki.host import (
+from okf_wiki.run import (
     NeedsInput,
     ProducerSkillFork,
     ProducerSkillVersion,
@@ -141,7 +141,7 @@ def test_cli_exposes_only_the_greenfield_product_commands() -> None:
 
 
 def test_init_refuses_to_overwrite_without_force(tmp_path: Path) -> None:
-    from okf_wiki.host.init_config import write_wiki_run_config
+    from okf_wiki.run.init_config import write_wiki_run_config
 
     config = tmp_path / "wiki-run.yaml"
     write_wiki_run_config(config)
@@ -185,7 +185,7 @@ def test_init_into_directory_creates_project_root(
 
 
 def test_init_directory_with_relative_config_name(tmp_path: Path) -> None:
-    from okf_wiki.host.init_config import write_wiki_run_config
+    from okf_wiki.run.init_config import write_wiki_run_config
 
     project = tmp_path / "nested" / "proj"
     written = write_wiki_run_config(Path("run.yaml"), directory=project)

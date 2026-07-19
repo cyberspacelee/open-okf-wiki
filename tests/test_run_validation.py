@@ -11,7 +11,7 @@ from pydantic_ai import ModelRequest, ModelResponse, ToolCallPart, UnexpectedMod
 from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from okf_wiki.host import (
+from okf_wiki.run import (
     Complete,
     ModelProviderConfig,
     ProducerSkillVersion,

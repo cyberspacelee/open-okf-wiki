@@ -25,41 +25,6 @@ PACKAGE_FILES = {
     "evaluation/wiki_evaluation_corpus.json",
     "evaluation/wiki_evaluation_fixture.py",
     "evaluation/wiki_evaluation_repositories.json",
-    "host/__init__.py",
-    "host/adaptive/__init__.py",
-    "host/adaptive/agents.py",
-    "host/adaptive/deps.py",
-    "host/adaptive/orchestration.py",
-    "host/adaptive/policy.py",
-    "host/adaptive/receipts.py",
-    "host/adaptive/reviewer.py",
-    "host/analysis/__init__.py",
-    "host/analysis/workspace.py",
-    "host/config.py",
-    "host/context.py",
-    "host/errors.py",
-    "host/events.py",
-    "host/filesystem.py",
-    "host/init_config.py",
-    "host/lifecycle.py",
-    "host/models.py",
-    "host/mounts.py",
-    "host/prepare.py",
-    "host/provider/__init__.py",
-    "host/provider/env.py",
-    "host/provider/retry.py",
-    "host/publication/__init__.py",
-    "host/publication/accept.py",
-    "host/publication/finalize.py",
-    "host/publication/fs.py",
-    "host/publication/gate.py",
-    "host/publication/status.py",
-    "host/readiness.py",
-    "host/records.py",
-    "host/security.py",
-    "host/skill.py",
-    "host/snapshots.py",
-    "host/validation.py",
     "producer_skill/SKILL.md",
     "producer_skill/references/domain-research.md",
     "producer_skill/references/generate.md",
@@ -71,6 +36,41 @@ PACKAGE_FILES = {
     "producer_skill/templates/flow.md",
     "producer_skill/templates/module.md",
     "producer_skill/templates/overview.md",
+    "run/__init__.py",
+    "run/adaptive/__init__.py",
+    "run/adaptive/agents.py",
+    "run/adaptive/deps.py",
+    "run/adaptive/orchestration.py",
+    "run/adaptive/policy.py",
+    "run/adaptive/receipts.py",
+    "run/adaptive/reviewer.py",
+    "run/analysis/__init__.py",
+    "run/analysis/workspace.py",
+    "run/config.py",
+    "run/context.py",
+    "run/errors.py",
+    "run/events.py",
+    "run/filesystem.py",
+    "run/init_config.py",
+    "run/lifecycle.py",
+    "run/models.py",
+    "run/mounts.py",
+    "run/prepare.py",
+    "run/provider/__init__.py",
+    "run/provider/env.py",
+    "run/provider/retry.py",
+    "run/publication/__init__.py",
+    "run/publication/accept.py",
+    "run/publication/finalize.py",
+    "run/publication/fs.py",
+    "run/publication/gate.py",
+    "run/publication/status.py",
+    "run/readiness.py",
+    "run/records.py",
+    "run/security.py",
+    "run/skill.py",
+    "run/snapshots.py",
+    "run/validation.py",
     "session/__init__.py",
     "session/app.py",
     "session/cards.py",
@@ -234,7 +234,7 @@ repositories:
             )
             has_tool_return = any(message.get("role") == "tool" for message in messages)
             complete_tools = [name for name in tool_names if name.endswith("Complete")]
-            # Host Wiki Reviewer has CodeMode only (no Complete output tool).
+            # Run Boundary Wiki Reviewer has CodeMode only (no Complete output tool).
             if "You are a Wiki Reviewer." in system_text or (
                 not complete_tools and "run_code" in tool_names
             ):
@@ -257,7 +257,7 @@ repositories:
                         "finish_reason": "stop",
                     }
                 else:
-                    # Extract Host assignment from system/instructions text.
+                    # Extract run assignment from system/instructions text.
                     import re
 
                     assignment = re.search(
@@ -281,7 +281,7 @@ repositories:
                             )
                             if assignment is not None:
                                 break
-                    assert assignment is not None, "reviewer Host assignment missing from prompt"
+                    assert assignment is not None, "reviewer run assignment missing from prompt"
                     run_id, task_id, node_id, parent_id, attempt = assignment.groups()
                     code = (
                         "handoff = publish_receipt("
@@ -419,7 +419,7 @@ Path('/wiki/index.md').write_text('---\\ntitle: Package Wiki\\n---\\n# Package W
         server.server_close()
 
     assert result.returncode == 0, result.stderr or result.stdout
-    # Producer (run_code + Complete) plus Host Wiki Reviewer (run_code + handoff).
+    # Producer (run_code + Complete) plus Wiki Reviewer (run_code + handoff).
     assert len(requests) >= 2
     assert all(path == "/v1/chat/completions" for path in request_paths)
     assert json.loads(result.stdout) == {
@@ -443,7 +443,7 @@ Path('/wiki/index.md').write_text('---\\ntitle: Package Wiki\\n---\\n# Package W
         .read_text(encoding="utf-8")
         .startswith("---\ntitle: Package Wiki\n---")
     )
-    from okf_wiki.host import resolve_effective_source_ignores
+    from okf_wiki.run import resolve_effective_source_ignores
 
     metadata = json.loads((publication / ".okf-wiki.json").read_text(encoding="utf-8"))
 

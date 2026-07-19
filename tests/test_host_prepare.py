@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from okf_wiki.host.errors import HostValidationError
-from okf_wiki.host.models import ModelProviderConfig, RepositorySnapshot, WikiRunRequest
-from okf_wiki.host.prepare import PreparedMounts, prepare_mounts, prepare_run
-from okf_wiki.host.skill import _DEFAULT_PRODUCER_SKILL_DIGEST
+from okf_wiki.run.errors import RunValidationError
+from okf_wiki.run.models import ModelProviderConfig, RepositorySnapshot, WikiRunRequest
+from okf_wiki.run.prepare import PreparedMounts, prepare_mounts, prepare_run
+from okf_wiki.run.skill import _DEFAULT_PRODUCER_SKILL_DIGEST
 
 from wiki_run_helpers import (
     TEST_WIKI_LIMITS,
@@ -125,8 +125,8 @@ def test_prepare_run_skill_digest_mismatch(tmp_path: Path, monkeypatch: pytest.M
     def wrong_digest(path: Path) -> tuple[Path, str]:
         return path, "0" * 64
 
-    monkeypatch.setattr("okf_wiki.host.prepare._validate_producer_skill", wrong_digest)
-    with pytest.raises(HostValidationError, match="changed while it was being frozen"):
+    monkeypatch.setattr("okf_wiki.run.prepare._validate_producer_skill", wrong_digest)
+    with pytest.raises(RunValidationError, match="changed while it was being frozen"):
         prepare_run(request, emit=lambda *_a, **_k: None, mounts=mounts)
 
 
@@ -142,7 +142,7 @@ def test_prepare_run_inventory_skip_event(tmp_path: Path, monkeypatch: pytest.Mo
     def fail_inventory(*_args: object, **_kwargs: object) -> object:
         raise OSError("inventory write failed")
 
-    monkeypatch.setattr("okf_wiki.host.prepare._write_source_inventory", fail_inventory)
+    monkeypatch.setattr("okf_wiki.run.prepare._write_source_inventory", fail_inventory)
     with prepare_run(
         request,
         emit=lambda t, p=None, **_k: events.append((t, p)),

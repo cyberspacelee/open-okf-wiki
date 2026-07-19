@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 import pytest
 
 from okf_wiki.session import card_texts, project_events, require_tty, summarize_nodes
-from okf_wiki.host import WikiRunEvent
+from okf_wiki.run import WikiRunEvent
 
 
 def _event(
@@ -79,11 +79,11 @@ def test_tui_projects_run_failed_error_type() -> None:
         project_events(
             [
                 _event(1, "run_created"),
-                _event(2, "run_failed", payload={"error_type": "HostValidationError"}),
+                _event(2, "run_failed", payload={"error_type": "RunValidationError"}),
             ]
         )
     )
-    assert lines[-1] == "run failed error_type=HostValidationError"
+    assert lines[-1] == "run failed error_type=RunValidationError"
 
 
 def test_tui_redacts_secret_like_fragments_from_lines(monkeypatch: pytest.MonkeyPatch) -> None:

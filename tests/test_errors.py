@@ -3,16 +3,16 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel, Field, ValidationError
 
-from okf_wiki.host.errors import (
+from okf_wiki.run.errors import (
     ConfigError,
-    HostValidationError,
+    RunValidationError,
     OkfWikiError,
     PublicationError,
     format_validation_error,
     is_operator_safe_exception,
     operator_error,
 )
-from okf_wiki.host.security import (
+from okf_wiki.run.security import (
     PROVIDER_DIAGNOSTICS_WITHHELD,
     safe_error_message,
     safe_exception_traceback,
@@ -47,8 +47,8 @@ def test_operator_error_preserves_validation_and_cause_detail() -> None:
     assert "count" in str(wrapped)
 
     os_error = FileNotFoundError(2, "No such file", "/tmp/missing")
-    path_error = operator_error("Path is not readable", os_error, error_cls=HostValidationError)
-    assert isinstance(path_error, HostValidationError)
+    path_error = operator_error("Path is not readable", os_error, error_cls=RunValidationError)
+    assert isinstance(path_error, RunValidationError)
     assert "Path is not readable:" in str(path_error)
     assert "No such file" in str(path_error)
 

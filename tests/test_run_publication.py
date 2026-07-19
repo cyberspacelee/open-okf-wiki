@@ -14,7 +14,7 @@ from pydantic_ai import ModelRequest, ModelResponse, ToolCallPart
 from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from okf_wiki.host import (
+from okf_wiki.run import (
     Complete,
     ModelProviderConfig,
     RepositorySnapshot,
@@ -198,7 +198,7 @@ def test_publication_failure_leaves_the_published_wiki_unchanged(
             raise OSError("metadata failure")
 
         monkeypatch.setattr(
-            "okf_wiki.host.publication.fs._write_publication_metadata", fail_metadata
+            "okf_wiki.run.publication.fs._write_publication_metadata", fail_metadata
         )
     else:
         real_rename = os.rename
@@ -257,7 +257,7 @@ def test_publication_collision_never_removes_a_competing_path(
     class FixedUUID:
         hex = "fixed"
 
-    monkeypatch.setattr("okf_wiki.host.publication.fs.uuid.uuid4", lambda: FixedUUID())
+    monkeypatch.setattr("okf_wiki.run.publication.fs.uuid.uuid4", lambda: FixedUUID())
     if collision == "final_release":
         competing = releases / "fixed"
         competing.mkdir(parents=True)
@@ -302,7 +302,7 @@ def test_publication_release_root_symlink_race_fails_closed(
     class FixedUUID:
         hex = "fixed-release-race"
 
-    monkeypatch.setattr("okf_wiki.host.publication.fs.uuid.uuid4", lambda: FixedUUID())
+    monkeypatch.setattr("okf_wiki.run.publication.fs.uuid.uuid4", lambda: FixedUUID())
 
     def swap_release_root(
         path: os.PathLike[str] | str,
@@ -353,7 +353,7 @@ def test_publication_parent_symlink_race_fails_closed(
     class FixedUUID:
         hex = "fixed-parent-race"
 
-    monkeypatch.setattr("okf_wiki.host.publication.fs.uuid.uuid4", lambda: FixedUUID())
+    monkeypatch.setattr("okf_wiki.run.publication.fs.uuid.uuid4", lambda: FixedUUID())
 
     def swap_publication_parent(
         path: os.PathLike[str] | str,

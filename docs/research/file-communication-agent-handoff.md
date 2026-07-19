@@ -29,9 +29,9 @@ Root 仍是唯一 Wiki 写作者。Child 只能读 `/source`、`/skill`，并写
 
 ## 1. 当前项目的事实约束
 
-当前 `WikiRunApplication` 在一次 `TemporaryDirectory` 内冻结 source 和 skill，并给单个 `Agent` 配置 `/source` 只读、`/skill` 只读、`/wiki` 读写挂载；随后只调用一次 `agent.run()`（[`host/lifecycle.py`](../../src/okf_wiki/host/lifecycle.py#L395-L560)）。当前没有 `/analysis` 挂载，也没有 child receipt 协议。
+当前 `WikiRunApplication` 在一次 `TemporaryDirectory` 内冻结 source 和 skill，并给单个 `Agent` 配置 `/source` 只读、`/skill` 只读、`/wiki` 读写挂载；随后只调用一次 `agent.run()`（[`host/lifecycle.py`](../../src/okf_wiki/run/lifecycle.py#L395-L560)）。当前没有 `/analysis` 挂载，也没有 child receipt 协议。
 
-项目的发布器已经有可复用的原子切换模式：先写 release 临时目录，最后用 `os.replace()` 替换 Wiki 指针（[`host/publication/fs.py`](../../src/okf_wiki/host/publication/fs.py)）。因此新增的研究文件不应直接进入 `/wiki` 或 Published Wiki；只需在同一个 run 临时根下增加独立 `/analysis`，并在 run 结束时清理。
+项目的发布器已经有可复用的原子切换模式：先写 release 临时目录，最后用 `os.replace()` 替换 Wiki 指针（[`host/publication/fs.py`](../../src/okf_wiki/run/publication/fs.py)）。因此新增的研究文件不应直接进入 `/wiki` 或 Published Wiki；只需在同一个 run 临时根下增加独立 `/analysis`，并在 run 结束时清理。
 
 ## 2. Harness 0.7.0 能提供什么，不能提供什么
 
@@ -209,7 +209,7 @@ Harness `FileSystem` 的 root containment、symlink 检查、allow/deny/protecte
 
 - **默认**：`/analysis` 位于当前 `TemporaryDirectory`，run 成功、失败或取消后都清理；只把最终 Wiki 和小型运行摘要保留。
 - **调试保留**：Host 在 cleanup 前按显式 retention flag 将某个 run 复制到诊断目录；不要默认永久保留所有 child 原文。
-- **durable 模式**：若未来需要 crash/restart resume，改用 Host-owned store（数据库、对象存储或自定义 `OverflowStore`），以 `run_id/node_id/attempt` 做 key，附 TTL/GC、hash 和状态索引。不能仅把 `/tmp` 改成永久目录。
+- **durable 模式**：若未来需要 crash/restart resume，改用 run-owned store（数据库、对象存储或自定义 `OverflowStore`），以 `run_id/node_id/attempt` 做 key，附 TTL/GC、hash 和状态索引。不能仅把 `/tmp` 改成永久目录。
 - Harness `LocalFileStore` 默认 keep-forever，TTL prune 是 opt-in；它适合 Spill 的后续 read-back，但若直接拿来做项目 receipt store，必须显式配置 cleanup 和 ownership（[官方 README](https://github.com/pydantic/pydantic-ai-harness/blob/v0.7.0/pydantic_ai_harness/overflowing_tool_output/README.md#L155-L188)）。
 
 ### 4.7 大文件读取
@@ -271,7 +271,7 @@ Parent 不应一次读取整个 artifact：
 ## 8. 已确认的第一版策略
 
 1. `/analysis` 默认是 run-local 临时空间；成功、失败或取消后删除。需要诊断时，Host 才通过显式 retention 选项复制指定 run。
-2. Child 不直接写任意路径；使用 Host-owned `publish_receipt`，由 Host 分配路径、校验 schema/quota/hash，并以临时文件加原子替换发布。
+2. Child 不直接写任意路径；使用 run-owned `publish_receipt`，由 Host 分配路径、校验 schema/quota/hash，并以临时文件加原子替换发布。
 3. Canonical receipt 是 immutable UTF-8 JSON；每条 evidence 必须带冻结 `source_revision`、路径、行号和内容 hash。单 receipt 初始上限取 128 KiB；长文本放可选 Markdown artifact，并受独立 workspace quota 约束。
 
 在这些约束下，最小实现仍是：**增加一个 run-local `/analysis` mount、规定 immutable JSON receipt、child 返回短路径/status、Root 读取后综合；不引入文件 watcher、lock manager 或独立消息队列。**

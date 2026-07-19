@@ -31,7 +31,7 @@ from okf_wiki.session.runtime import (
 )
 from okf_wiki.session.store import SessionStore
 from okf_wiki.session.stream import project_stream_event
-from okf_wiki.host import ModelProviderConfig, RepositorySnapshot, WikiRunRequest
+from okf_wiki.run import ModelProviderConfig, RepositorySnapshot, WikiRunRequest
 from textual.widgets import Footer
 
 from wiki_run_helpers import (
@@ -245,7 +245,7 @@ def test_operator_session_app_hint_bar_shows_matches_while_typing(tmp_path: Path
 def test_operator_session_app_switch_clears_chat_and_sessions_by_index(
     tmp_path: Path,
 ) -> None:
-    """/new and /sessions N clear Host cards and reload the target Session."""
+    """/new and /sessions N clear run progress cards and reload the target Session."""
     request = _base_request(tmp_path, auto_approve=True)
     sessions_dir = tmp_path / "sessions"
     app = OperatorSessionApp(
@@ -258,7 +258,7 @@ def test_operator_session_app_switch_clears_chat_and_sessions_by_index(
     async def scenario() -> None:
         async with app.run_test() as pilot:
             chat = app.query_one("#chat-view")
-            # Seed a Host-style card that must vanish on Session switch.
+            # Seed a run progress card that must vanish on Session switch.
             chat.mount(StatusCard("stale host card from prior run"))
             await pilot.pause()
             assert any("stale host card" in str(w.render()) for w in app.query(StatusCard))

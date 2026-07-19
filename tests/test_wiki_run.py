@@ -9,7 +9,7 @@ import pytest
 from pydantic_ai import ModelRequest, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from okf_wiki.host import (
+from okf_wiki.run import (
     Complete,
     ModelProviderConfig,
     NeedsInput,
@@ -94,7 +94,7 @@ def test_record_write_failure_is_observable_without_changing_publication(
     def fail_record(*_: object, **__: object) -> None:
         raise OSError("record storage unavailable")
 
-    monkeypatch.setattr("okf_wiki.host.records.write_run_record", fail_record)
+    monkeypatch.setattr("okf_wiki.run.records.write_run_record", fail_record)
     result = asyncio.run(
         WikiRunApplication(observer=events.append).run(
             WikiRunRequest(
@@ -145,7 +145,7 @@ def test_early_wiki_run_failure_still_writes_a_terminal_record(tmp_path: Path) -
     assert events[-1].type == "run_failed"
     assert events[-1].payload.get("error_type") in {
         "ValueError",
-        "HostValidationError",
+        "RunValidationError",
         "ConfigError",
     }
 
@@ -311,7 +311,7 @@ def test_model_failure_leaves_the_published_wiki_unchanged(tmp_path: Path) -> No
 
 
 def test_validated_run_awaits_publication_without_auto_approve(tmp_path: Path) -> None:
-    """Without YOLO / auto-approve, Host validation must not publish."""
+    """Without YOLO / auto-approve, run validation must not publish."""
     source = tmp_path / "source"
     revision = make_repository(source, "source\n")
     skill = make_producer_skill(tmp_path / "skill")
@@ -395,8 +395,8 @@ def test_yolo_auto_approve_publishes_after_validation(tmp_path: Path) -> None:
 
 
 def test_in_process_approval_handler_publishes(tmp_path: Path) -> None:
-    """Operator Session / tests can approve deferred publish via Host handler."""
-    from okf_wiki.host.publication.gate import build_approve_results
+    """Operator Session / tests can approve deferred publish via publication handler."""
+    from okf_wiki.run.publication.gate import build_approve_results
     from pydantic_ai.tools import DeferredToolRequests
 
     source = tmp_path / "source"
@@ -441,7 +441,7 @@ def test_in_process_approval_handler_publishes(tmp_path: Path) -> None:
 
 def test_in_process_deny_keeps_staging_and_published_unchanged(tmp_path: Path) -> None:
     """Deny: no publish, Staging retained, Published byte-identical, declined status."""
-    from okf_wiki.host.publication.gate import build_deny_results
+    from okf_wiki.run.publication.gate import build_deny_results
 
     source = tmp_path / "source"
     revision = make_repository(source, "source\n")
@@ -508,7 +508,7 @@ def test_in_process_deny_keeps_staging_and_published_unchanged(tmp_path: Path) -
 
 def test_in_process_deny_with_false_approval_value(tmp_path: Path) -> None:
     """Bare ``False`` in deferred approvals is treated as deny (not await)."""
-    from okf_wiki.host.publication.gate import build_deny_results
+    from okf_wiki.run.publication.gate import build_deny_results
 
     source = tmp_path / "source"
     revision = make_repository(source, "source\n")
@@ -562,7 +562,7 @@ def test_validation_failure_never_reaches_publication_gate(
         raise AssertionError("publication gate must not run after validation failure")
 
     monkeypatch.setattr(
-        "okf_wiki.host.publication.finalize.resolve_publication_approval", unexpected_gate
+        "okf_wiki.run.publication.finalize.resolve_publication_approval", unexpected_gate
     )
 
     # Staged page omits required citation — output_validator retries then fails.
@@ -589,7 +589,7 @@ def test_validation_failure_never_reaches_publication_gate(
 
 
 def test_non_adaptive_path_runs_reviewer_before_publish_gate(tmp_path: Path) -> None:
-    """Host-owned Wiki Reviewer runs on non-adaptive generate before HITL publish."""
+    """run-owned Wiki Reviewer runs on non-adaptive generate before HITL publish."""
     source = tmp_path / "source"
     revision = make_repository(source, "source\n")
     skill = make_producer_skill(tmp_path / "skill")
@@ -643,7 +643,7 @@ def test_non_adaptive_path_runs_reviewer_before_publish_gate(tmp_path: Path) -> 
 
 
 def test_disable_reviewer_skips_agent_not_validation(tmp_path: Path) -> None:
-    """adaptive_enable_reviewer=false skips Reviewer but Host validation still runs."""
+    """adaptive_enable_reviewer=false skips Reviewer but run validation still runs."""
     source = tmp_path / "source"
     revision = make_repository(source, "source\n")
     skill = make_producer_skill(tmp_path / "skill")
@@ -732,7 +732,7 @@ def test_gate_still_requires_approval_after_successful_review(tmp_path: Path) ->
 def test_optional_reviewer_model_is_wired_into_host_review(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Optional reviewer_model is prepared and used for Host pre-publish review."""
+    """Optional reviewer_model is prepared and used for Run Boundary pre-publish review."""
     source = tmp_path / "source"
     revision = make_repository(source, "source\n")
     skill = make_producer_skill(tmp_path / "skill")
@@ -743,7 +743,7 @@ def test_optional_reviewer_model_is_wired_into_host_review(
 
     async def capture_review(**kwargs: object):
         seen_models.append(kwargs.get("model"))
-        from okf_wiki.host.adaptive import ReviewDefectsSummary
+        from okf_wiki.run.adaptive import ReviewDefectsSummary
 
         return ReviewDefectsSummary(
             status="complete",
@@ -752,7 +752,7 @@ def test_optional_reviewer_model_is_wired_into_host_review(
             defect_count=1,
         )
 
-    monkeypatch.setattr("okf_wiki.host.adaptive.reviewer.run_host_wiki_reviewer", capture_review)
+    monkeypatch.setattr("okf_wiki.run.adaptive.reviewer.run_wiki_reviewer", capture_review)
 
     result = asyncio.run(
         WikiRunApplication().run(
