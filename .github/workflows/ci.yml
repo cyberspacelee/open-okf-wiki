@@ -5,7 +5,23 @@ on:
   push:
 
 jobs:
-  verify:
+  typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @okf-wiki/contract test
+      - run: pnpm --filter @okf-wiki/core test
+      - run: pnpm --filter @okf-wiki/agent test
+
+  legacy-python:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,6 +50,7 @@ jobs:
           if-no-files-found: error
 
   # Portable Host FS smoke (ADR 0017): real-directory publish + prepare gates on Windows.
+  # Legacy Python path; kept until publication parity is fully covered by TypeScript tests.
   windows-host-fs-smoke:
     runs-on: windows-latest
     steps:

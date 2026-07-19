@@ -1,0 +1,385 @@
+import { lstat, readdir, readFile, realpath } from "node:fs/promises";
+import path from "node:path";
+import { assertAbsolutePath, assertNoSymlinkComponents } from "./paths.js";
+import { isPathInside } from "./workspace-store.js";
+
+/** Soft cap on listed / readable published wiki pages. */
+export const PUBLISHED_WIKI_MAX_PAGES = 500;
+/** Soft cap on a single published page size (bytes). */
+export const PUBLISHED_WIKI_MAX_FILE_BYTES = 1_000_000;
+
+export type PublishedWikiPage = {
+  /** Relative POSIX path under the publication root (e.g. `overview.md`). */
+  path: string;
+  content: string;
+  /** Non-empty frontmatter title when present. */
+  title?: string;
+};
+
+export type PublishedWikiErrorCode =
+  | "not_found"
+  | "empty"
+  | "invalid_path"
+  | "symlink"
+  | "too_large"
+  | "io";
+
+/**
+ * Structured error for published-wiki list/read helpers.
+ * Callers (HTTP layer) map `code` to status codes.
+ */
+export class PublishedWikiError extends Error {
+  readonly code: PublishedWikiErrorCode;
+
+  constructor(code: PublishedWikiErrorCode, message: string) {
+    super(message);
+    this.name = "PublishedWikiError";
+    this.code = code;
+  }
+}
+
+/**
+ * Extract a non-empty YAML frontmatter `title` value, if present.
+ * Mirrors the mechanical check in {@link hasNonEmptyTitleFrontmatter}.
+ */
+export function extractTitleFromFrontmatter(content: string): string | undefined {
+  const trimmed = content.replace(/^\uFEFF/, "");
+  if (!trimmed.startsWith("---")) {
+    return undefined;
+  }
+  const firstNl = trimmed.indexOf("\n");
+  if (firstNl < 0) {
+    return undefined;
+  }
+  if (trimmed.slice(0, firstNl).trim() !== "---") {
+    return undefined;
+  }
+  const rest = trimmed.slice(firstNl + 1);
+  const close = rest.search(/^---\s*$/m);
+  if (close < 0) {
+    return undefined;
+  }
+  const front = rest.slice(0, close);
+  const match = front.match(/^\s*title\s*:\s*(.+?)\s*$/m);
+  if (!match) {
+    return undefined;
+  }
+  let raw = match[1]!.trim();
+  // JSON-style quoted string from fixture agent: title: "Foo"
+  if (
+    (raw.startsWith('"') && raw.endsWith('"')) ||
+    (raw.startsWith("'") && raw.endsWith("'"))
+  ) {
+    const inner = raw.slice(1, -1);
+    try {
+      // Prefer JSON unquote when double-quoted so escapes work.
+      if (raw.startsWith('"')) {
+        raw = JSON.parse(raw) as string;
+      } else {
+        raw = inner.trim();
+      }
+    } catch {
+      raw = inner.trim();
+    }
+  }
+  const title = raw.trim();
+  return title.length > 0 ? title : undefined;
+}
+
+/**
+ * Resolve `relativePath` under `root` with pure string checks.
+ * Rejects absolute paths, empty roots, and `..` segments.
+ */
+export function resolvePublishedWikiPath(root: string, relativePath: string): string {
+  if (typeof root !== "string" || root.trim() === "") {
+    throw new PublishedWikiError("invalid_path", "root must be a non-empty absolute path");
+  }
+  const resolvedRoot = path.resolve(root);
+
+  if (typeof relativePath !== "string" || !relativePath.trim()) {
+    throw new PublishedWikiError("invalid_path", "path must be a non-empty relative path");
+  }
+
+  const trimmed = relativePath.trim();
+  if (path.isAbsolute(trimmed)) {
+    throw new PublishedWikiError("invalid_path", "absolute paths are not allowed");
+  }
+  if (/^[a-zA-Z]:/.test(trimmed) || trimmed.startsWith("\\\\")) {
+    throw new PublishedWikiError("invalid_path", "absolute paths are not allowed");
+  }
+
+  const segments = trimmed.split(/[/\\]+/).filter((s) => s.length > 0);
+  if (segments.length === 0) {
+    throw new PublishedWikiError("invalid_path", "path must be a non-empty relative path");
+  }
+  for (const segment of segments) {
+    if (segment === "..") {
+      throw new PublishedWikiError(
+        "invalid_path",
+        "path escapes root: '..' segments are not allowed",
+      );
+    }
+    if (segment === ".") {
+      continue;
+    }
+  }
+
+  const resolved = path.resolve(resolvedRoot, ...segments);
+  if (!isPathInside(resolvedRoot, resolved) || resolved === resolvedRoot) {
+    // Must be a file under root, not the root itself.
+    if (resolved === resolvedRoot) {
+      throw new PublishedWikiError("invalid_path", "path must name a file under the wiki root");
+    }
+    throw new PublishedWikiError("invalid_path", `path escapes root: ${relativePath}`);
+  }
+  return resolved;
+}
+
+/** Convert an absolute path under root to a POSIX-style relative path. */
+export function toPublishedWikiPosixRelative(root: string, absolutePath: string): string {
+  const rel = path.relative(path.resolve(root), path.resolve(absolutePath));
+  if (rel.startsWith("..") || path.isAbsolute(rel) || rel === "") {
+    throw new PublishedWikiError("invalid_path", "path is outside root");
+  }
+  return rel.split(path.sep).join("/");
+}
+
+/**
+ * After string resolution, walk from root to leaf with `lstat` (no follow).
+ * Rejects any symlink component so reads cannot escape via links.
+ */
+async function assertPublishedPathSafe(root: string, absolutePath: string): Promise<void> {
+  const resolvedRoot = path.resolve(root);
+  const resolved = path.resolve(absolutePath);
+
+  if (!isPathInside(resolvedRoot, resolved)) {
+    throw new PublishedWikiError("invalid_path", `path escapes root: ${absolutePath}`);
+  }
+
+  const rel = path.relative(resolvedRoot, resolved);
+  const segments = rel === "" ? [] : rel.split(path.sep).filter((s) => s.length > 0);
+
+  let current = resolvedRoot;
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    let info;
+    try {
+      info = await lstat(current);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      if (code === "ENOENT") {
+        throw new PublishedWikiError("not_found", `path does not exist: ${rel || "."}`);
+      }
+      throw new PublishedWikiError(
+        "io",
+        `cannot stat ${rel || "."}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (info.isSymbolicLink()) {
+      const shown = path.relative(resolvedRoot, current) || ".";
+      throw new PublishedWikiError("symlink", `path contains symlink component: ${shown}`);
+    }
+  }
+
+  try {
+    const realRoot = await realpath(resolvedRoot);
+    const realTarget = await realpath(resolved);
+    if (!isPathInside(realRoot, realTarget)) {
+      throw new PublishedWikiError(
+        "invalid_path",
+        `path escapes root after realpath: ${absolutePath}`,
+      );
+    }
+  } catch (error) {
+    if (error instanceof PublishedWikiError) {
+      throw error;
+    }
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ENOENT") {
+      throw new PublishedWikiError("not_found", `path does not exist: ${rel || "."}`);
+    }
+    throw new PublishedWikiError(
+      "io",
+      `cannot realpath: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function assertPublicationRoot(publicationPath: string): Promise<string> {
+  let resolved: string;
+  try {
+    resolved = path.resolve(assertAbsolutePath(publicationPath, "publicationPath"));
+  } catch (error) {
+    throw new PublishedWikiError(
+      "invalid_path",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+
+  let rootInfo;
+  try {
+    rootInfo = await lstat(resolved);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ENOENT") {
+      throw new PublishedWikiError(
+        "not_found",
+        `publication path does not exist: ${resolved}`,
+      );
+    }
+    throw new PublishedWikiError(
+      "io",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+
+  if (rootInfo.isSymbolicLink()) {
+    throw new PublishedWikiError("symlink", `publicationPath is a symlink: ${resolved}`);
+  }
+  if (!rootInfo.isDirectory()) {
+    throw new PublishedWikiError(
+      "invalid_path",
+      `publicationPath is not a directory: ${resolved}`,
+    );
+  }
+
+  try {
+    await assertNoSymlinkComponents(resolved, "publicationPath");
+  } catch (error) {
+    throw new PublishedWikiError(
+      "symlink",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+
+  return resolved;
+}
+
+/**
+ * Recursively list `.md` files under `publicationPath` as relative POSIX paths.
+ * Sorted lexicographically. Does not follow symlinks.
+ *
+ * @throws {PublishedWikiError} `not_found` if missing, `empty` if no markdown pages.
+ */
+export async function listPublishedWikiPages(publicationPath: string): Promise<string[]> {
+  const root = await assertPublicationRoot(publicationPath);
+  const pages: string[] = [];
+
+  async function walk(dir: string, rel: string): Promise<void> {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch (error) {
+      throw new PublishedWikiError(
+        "io",
+        `cannot read directory ${rel || "."}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    // Stable order for deterministic UI / tests.
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const entry of entries) {
+      const absPath = path.join(dir, entry.name);
+      const relPath = rel ? `${rel}/${entry.name}` : entry.name;
+
+      let info;
+      try {
+        info = await lstat(absPath);
+      } catch {
+        continue;
+      }
+
+      // Never follow symlinks (path-escape safety).
+      if (info.isSymbolicLink()) {
+        continue;
+      }
+      if (info.isDirectory()) {
+        await walk(absPath, relPath);
+      } else if (info.isFile() && entry.name.toLowerCase().endsWith(".md")) {
+        pages.push(relPath.split(path.sep).join("/"));
+        if (pages.length > PUBLISHED_WIKI_MAX_PAGES) {
+          throw new PublishedWikiError(
+            "too_large",
+            `published wiki has more than ${PUBLISHED_WIKI_MAX_PAGES} pages`,
+          );
+        }
+      }
+    }
+  }
+
+  await walk(root, "");
+
+  if (pages.length === 0) {
+    throw new PublishedWikiError(
+      "empty",
+      `published wiki has no markdown pages: ${root}`,
+    );
+  }
+
+  pages.sort((a, b) => a.localeCompare(b));
+  return pages;
+}
+
+/**
+ * Read one markdown page under `publicationPath`.
+ * `relativePath` must be a relative path with no `..` segments.
+ *
+ * @throws {PublishedWikiError} on escape, missing file, symlink, or size cap.
+ */
+export async function readPublishedWikiPage(
+  publicationPath: string,
+  relativePath: string,
+): Promise<PublishedWikiPage> {
+  const root = await assertPublicationRoot(publicationPath);
+  const abs = resolvePublishedWikiPath(root, relativePath);
+  await assertPublishedPathSafe(root, abs);
+
+  let info;
+  try {
+    info = await lstat(abs);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ENOENT") {
+      throw new PublishedWikiError("not_found", `page not found: ${relativePath}`);
+    }
+    throw new PublishedWikiError(
+      "io",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+
+  if (info.isSymbolicLink()) {
+    throw new PublishedWikiError("symlink", `path is a symlink: ${relativePath}`);
+  }
+  if (!info.isFile()) {
+    throw new PublishedWikiError("invalid_path", `path is not a file: ${relativePath}`);
+  }
+  if (!abs.toLowerCase().endsWith(".md")) {
+    throw new PublishedWikiError("invalid_path", `path is not a markdown file: ${relativePath}`);
+  }
+  if (info.size > PUBLISHED_WIKI_MAX_FILE_BYTES) {
+    throw new PublishedWikiError(
+      "too_large",
+      `page exceeds max size (${info.size} > ${PUBLISHED_WIKI_MAX_FILE_BYTES} bytes)`,
+    );
+  }
+
+  let content: string;
+  try {
+    content = await readFile(abs, "utf8");
+  } catch (error) {
+    throw new PublishedWikiError(
+      "io",
+      `cannot read ${relativePath}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  const posixPath = toPublishedWikiPosixRelative(root, abs);
+  const title = extractTitleFromFrontmatter(content);
+  const page: PublishedWikiPage = { path: posixPath, content };
+  if (title !== undefined) {
+    page.title = title;
+  }
+  return page;
+}

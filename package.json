@@ -1,0 +1,21 @@
+{
+  "name": "okf-wiki",
+  "private": true,
+  "version": "0.2.0-dev",
+  "description": "Generate source-grounded Markdown Wikis from local Git repositories (Mastra + local Web UI).",
+  "packageManager": "pnpm@10.33.2",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm -r run build",
+    "test": "pnpm -r run test",
+    "typecheck": "pnpm -r run typecheck",
+    "dev:web": "pnpm --filter @okf-wiki/web dev",
+    "dev:server": "pnpm --filter @okf-wiki/server dev",
+    "cli": "pnpm --filter @okf-wiki/cli start"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

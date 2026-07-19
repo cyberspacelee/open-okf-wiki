@@ -2,6 +2,8 @@
 
 This context defines the language for deriving a source-grounded Markdown wiki from one or more fixed source repositories.
 
+**Implementation note:** The live product is the TypeScript monorepo (`packages/*`: Web UI, localhost server, Mastra agent, `@okf-wiki/core` Run Boundary). See [ADR 0020](docs/adr/0020-typescript-mastra-web-workspace.md) and [ADR 0021](docs/adr/0021-retire-python-primary-path.md). Python under `src/okf_wiki` is frozen legacy. Terms below remain domain vocabulary; older ADRs may still name Python packages.
+
 ## Language
 
 **Wiki**:
@@ -17,8 +19,8 @@ The non-empty collection of named Repository Snapshots used together by one Wiki
 _Avoid_: Workspace, implicit repository list
 
 **Run Boundary**:
-The trusted execution boundary for one Wiki Run: freeze Snapshot Set and Skill, mount permissions, credentials and budgets, mechanical validation, staging, and atomic publication. Implemented as `okf_wiki.run`. Not the Operator Session, not the Semantic Workflow, and not the Pydantic AI Harness. (Pre-0019 ADRs may still say “Host” for this role.)
-_Avoid_: host OS, Agent Host, host agent, HTTP host, harness (pydantic-ai-harness), product web app
+The trusted execution boundary for one Wiki Run: freeze Snapshot Set and Skill, mount permissions, credentials and budgets, mechanical validation, staging, and atomic publication. Product implementation: `@okf-wiki/core` (legacy Python lived in `okf_wiki.run`). Not the Operator Session and not the Semantic Workflow. (Pre-0019 ADRs may still say “Host” for this role.)
+_Avoid_: host OS, Agent Host, host agent, HTTP host, harness, product web app
 
 **Run Instructions**:
 The short, non-forkable shell the product injects for every Wiki Run: mount and trust boundaries, activation of the selected Producer Skill, and boundary-enforced role limits.

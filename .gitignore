@@ -9,3 +9,26 @@ __pycache__/
 /tmp/
 .agents/
 .claude/
+
+# Node / monorepo
+node_modules/
+packages/*/dist/
+apps/*/dist/
+*.tsbuildinfo
+.pnpm-store/
+
+# Build artifacts
+*.egg-info/
+dist/
+*.whl
+
+# Local operator data
+.okf-wiki/
+
+# Editors / OS
+.DS_Store
+.idea/
+*.swp
+
+# Local agent scratch / specs
+.scratch/

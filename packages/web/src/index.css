@@ -1,0 +1,468 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-heading: var(--font-sans);
+  --font-sans: "Geist Variable", sans-serif;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  color-scheme: light dark;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+/* Prefer system dark mode when no explicit .dark / .light class is set */
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    --background: oklch(0.145 0 0);
+    --foreground: oklch(0.985 0 0);
+    --card: oklch(0.205 0 0);
+    --card-foreground: oklch(0.985 0 0);
+    --popover: oklch(0.205 0 0);
+    --popover-foreground: oklch(0.985 0 0);
+    --primary: oklch(0.922 0 0);
+    --primary-foreground: oklch(0.205 0 0);
+    --secondary: oklch(0.269 0 0);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.269 0 0);
+    --muted-foreground: oklch(0.708 0 0);
+    --accent: oklch(0.269 0 0);
+    --accent-foreground: oklch(0.985 0 0);
+    --destructive: oklch(0.704 0.191 22.216);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.556 0 0);
+    --chart-1: oklch(0.87 0 0);
+    --chart-2: oklch(0.556 0 0);
+    --chart-3: oklch(0.439 0 0);
+    --chart-4: oklch(0.371 0 0);
+    --chart-5: oklch(0.269 0 0);
+    --sidebar: oklch(0.205 0 0);
+    --sidebar-foreground: oklch(0.985 0 0);
+    --sidebar-primary: oklch(0.488 0.243 264.376);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.269 0 0);
+    --sidebar-accent-foreground: oklch(0.985 0 0);
+    --sidebar-border: oklch(1 0 0 / 10%);
+    --sidebar-ring: oklch(0.556 0 0);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply min-h-svh bg-background text-foreground antialiased;
+  }
+  html {
+    @apply font-sans;
+  }
+  #root {
+    @apply min-h-svh;
+  }
+}
+
+/* Operator layout helpers (semantic tokens) */
+
+.app-shell {
+  @apply flex min-h-svh bg-background text-foreground;
+}
+
+.sidebar {
+  @apply flex w-60 shrink-0 flex-col gap-4 border-r border-sidebar-border bg-sidebar p-4 text-sidebar-foreground;
+}
+
+.brand {
+  @apply flex flex-col gap-0.5 px-2;
+}
+
+.nav {
+  @apply flex flex-col gap-1;
+}
+
+.nav-link {
+  @apply block rounded-lg px-3 py-2 text-sm text-sidebar-foreground no-underline transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground;
+}
+
+.nav-link.active {
+  @apply bg-sidebar-accent font-semibold text-sidebar-accent-foreground;
+}
+
+.sidebar-foot {
+  @apply mt-auto px-2 text-xs leading-relaxed text-muted-foreground;
+}
+
+.main {
+  @apply flex min-w-0 flex-1 flex-col gap-5 p-6 md:p-8;
+}
+
+.page-header h1 {
+  @apply mb-1 text-2xl font-semibold tracking-tight;
+}
+
+.page-header p {
+  @apply m-0 max-w-3xl text-sm text-muted-foreground;
+}
+
+.row-between {
+  @apply flex items-start justify-between gap-4;
+}
+
+.breadcrumb {
+  @apply mb-2 text-sm text-muted-foreground;
+}
+
+.breadcrumb a {
+  @apply text-muted-foreground no-underline hover:text-foreground hover:underline;
+}
+
+.subnav {
+  @apply flex flex-wrap gap-1 border-b border-border pb-2;
+}
+
+.subnav-link {
+  @apply rounded-lg px-3 py-1.5 text-sm text-muted-foreground no-underline transition-colors hover:bg-muted hover:text-foreground;
+}
+
+.subnav-link.active {
+  @apply bg-muted font-semibold text-foreground;
+}
+
+.form {
+  @apply flex max-w-xl flex-col gap-4;
+}
+
+.field {
+  @apply flex flex-col gap-1.5 text-sm;
+}
+
+.field-hint {
+  @apply text-xs leading-relaxed text-muted-foreground;
+}
+
+.checkbox-field {
+  @apply flex-row items-start gap-2.5;
+}
+
+.checkbox-field input[type="checkbox"] {
+  @apply mt-0.5 size-4 accent-primary;
+}
+
+.checkbox-field > span {
+  @apply flex flex-col gap-0.5;
+}
+
+.form-actions {
+  @apply mt-1 flex flex-wrap items-center gap-3;
+}
+
+.kv {
+  @apply m-0 flex flex-col gap-4;
+}
+
+.kv-grid {
+  @apply grid gap-4 sm:grid-cols-2;
+}
+
+.kv div {
+  @apply grid gap-1;
+}
+
+.kv dt {
+  @apply text-xs text-muted-foreground;
+}
+
+.kv dd {
+  @apply m-0 break-words;
+}
+
+.muted-block {
+  @apply mt-6 border-t border-border pt-5;
+}
+
+.muted {
+  @apply text-muted-foreground;
+}
+
+.mono {
+  @apply font-mono text-[0.9rem];
+}
+
+.small {
+  @apply text-sm;
+}
+
+code.mono {
+  @apply text-[0.85em];
+}
+
+.row-actions {
+  @apply flex flex-wrap items-center gap-2;
+}
+
+.page-list {
+  @apply m-0 list-disc pl-4;
+}
+
+.page-list li {
+  @apply my-0.5;
+}
+
+.row-link {
+  @apply font-semibold text-foreground no-underline hover:underline;
+}
+
+.inline-link {
+  @apply ml-1 text-primary no-underline hover:underline;
+}
+
+.actions-cell {
+  @apply text-right whitespace-nowrap;
+}
+
+.empty-inline {
+  @apply py-1;
+}
+
+.checklist {
+  @apply mt-4 flex list-disc flex-col gap-1.5 pl-5 text-sm text-muted-foreground;
+}
+
+.run-publish-actions {
+  @apply mt-4 flex flex-col gap-3 border-t border-border pt-4;
+}
+
+.run-event-log {
+  @apply mt-4 border-t border-border pt-3;
+}
+
+.panel-subtitle {
+  @apply mb-2 text-sm font-semibold;
+}
+
+.event-log {
+  @apply m-0 max-h-40 list-disc overflow-auto pl-4 text-muted-foreground;
+}
+
+.success-text {
+  @apply text-sm font-medium text-emerald-600 dark:text-emerald-400;
+}
+
+.wiki-layout {
+  @apply grid gap-4 lg:grid-cols-[16rem_minmax(0,1fr)];
+}
+
+.wiki-page-list {
+  @apply m-0 flex list-none flex-col gap-0.5 p-0;
+}
+
+.wiki-page-link {
+  @apply w-full rounded-lg px-2.5 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground;
+}
+
+.wiki-page-link.active {
+  @apply bg-muted font-semibold text-foreground;
+}
+
+.wiki-page-title {
+  @apply mb-1 text-xl font-semibold tracking-tight;
+}
+
+.wiki-page-path {
+  @apply mb-4;
+}
+
+.wiki-markdown {
+  @apply max-w-none text-sm leading-relaxed;
+}
+
+.wiki-markdown h1,
+.wiki-markdown h2,
+.wiki-markdown h3,
+.wiki-markdown h4 {
+  @apply mt-6 mb-2 font-semibold tracking-tight;
+}
+
+.wiki-markdown h1 {
+  @apply text-2xl;
+}
+
+.wiki-markdown h2 {
+  @apply text-xl;
+}
+
+.wiki-markdown h3 {
+  @apply text-lg;
+}
+
+.wiki-markdown p {
+  @apply my-3;
+}
+
+.wiki-markdown a {
+  @apply text-primary underline underline-offset-2;
+}
+
+.wiki-markdown ul,
+.wiki-markdown ol {
+  @apply my-3 pl-5;
+}
+
+.wiki-markdown ul {
+  @apply list-disc;
+}
+
+.wiki-markdown ol {
+  @apply list-decimal;
+}
+
+.wiki-markdown code {
+  @apply rounded bg-muted px-1 py-0.5 font-mono text-[0.85em];
+}
+
+.wiki-markdown pre {
+  @apply my-3 overflow-x-auto rounded-lg bg-muted p-3;
+}
+
+.wiki-markdown pre code {
+  @apply bg-transparent p-0;
+}
+
+.wiki-markdown table {
+  @apply my-3 w-full border-collapse text-sm;
+}
+
+.wiki-markdown th,
+.wiki-markdown td {
+  @apply border border-border px-2 py-1 text-left;
+}
+
+.wiki-markdown blockquote {
+  @apply my-3 border-l-2 border-border pl-3 text-muted-foreground;
+}
+
+@media (max-width: 720px) {
+  .app-shell {
+    @apply flex-col;
+  }
+
+  .sidebar {
+    @apply w-full border-r-0 border-b border-sidebar-border;
+  }
+
+  .main {
+    @apply p-4;
+  }
+
+  .row-between {
+    @apply flex-col;
+  }
+}
