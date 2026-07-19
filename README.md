@@ -334,8 +334,9 @@ unchanged but revision/ignores or Skill digest changed.
 
 ## Operator Session (interactive)
 
-Session-first fullscreen TUI (Textual — scrollable chat view, bottom input, streaming model text
-and Host cards). On a TTY, bare `okf-wiki` is the same as `tui`:
+Session-first fullscreen TUI (Textual — scrollable chat, bottom composer with hint strip + input
+above the keybinding footer, streaming model text and Host cards). Slash commands support **Tab**
+completion (Shift+Tab cycles backward). On a TTY, bare `okf-wiki` is the same as `tui`:
 
 ```bash
 uv run --locked okf-wiki                     # TTY → Operator Session
@@ -359,10 +360,12 @@ Useful slash commands:
 | `/mode build\|ask` | `build` starts Wiki Runs; `ask` records history only |
 | `/usage` | Last Wiki Run id/status in this Session |
 | `/doctor` | Credential presence (redacted) |
-| `/sessions` | List Sessions (`*` = current) |
-| `/new` | Start a new empty Session (Host config unchanged) |
-| `/switch <id>` (`/resume`) | Switch Session; reloads history only (not Wiki Run graph) |
+| `/sessions` | List Sessions (numbered; `*` = current) |
+| `/sessions <n\|id>` | Switch to Session by list number or id (clears chat) |
+| `/new` | Start a new empty Session (Host config unchanged; clears chat) |
+| `/switch <n\|id>` (`/resume`) | Switch Session; clears chat and reloads history only |
 | `/quit` | Exit |
+| *(Tab)* | Complete slash commands, `/mode`/`/yolo` args, Session numbers/ids |
 
 Sessions are stored under `.okf-wiki/sessions/` (history only—not Wiki Run graph resume). Non-TTY is
 rejected for the Session entry; automation should use `wiki-run --yes` JSON.

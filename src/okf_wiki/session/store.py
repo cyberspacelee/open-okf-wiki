@@ -375,20 +375,62 @@ def format_session_list(
     """Human-readable list for slash ``/sessions`` and CLI.
 
     Marks the in-process Session with ``*`` when ``current_id`` is set.
+    Rows are numbered (1 = newest) so ``/switch 1`` / ``/sessions 2`` work.
     """
     if not rows:
         return "No Operator Sessions yet. Use /new to create one."
     lines = ["Operator Sessions (newest first; * = current):"]
-    for row in rows:
+    for index, row in enumerate(rows, start=1):
         title = row.title or "(no title)"
         updated = _dt_to_json(row.updated_at)
         marker = "*" if current_id is not None and row.id == current_id else " "
-        lines.append(f"{marker} {row.id[:12]}  {row.status:6}  {updated}  {title}")
-    lines.append(
-        "Switch with /resume <id> or /switch <id> "
-        "(history only; does not publish or resume Wiki Run)."
-    )
+        lines.append(f"{index:>2}{marker} {row.id[:12]}  {row.status:6}  {updated}  {title}")
+    lines.append("Switch: /sessions <n|id>  or  /switch <n|id>  (Tab completes; history only).")
     return "\n".join(lines)
+
+
+def resolve_session_ref(
+    rows: Sequence[SessionSummary],
+    ref: str,
+) -> str:
+    """Resolve a 1-based list index, full id, or unique id prefix to a full Session id.
+
+    ``rows`` should be in the same order as :meth:`SessionStore.list_sessions`
+    (newest first) so numeric indices match ``/sessions`` output.
+
+    Raises:
+        SessionNotFoundError: no match
+        ValueError: empty ref or ambiguous prefix
+    """
+    text = ref.strip().lower()
+    if not text:
+        raise ValueError("Session ref is empty. Use /sessions to list.")
+
+    if text.isdigit():
+        index = int(text)
+        if index < 1 or index > len(rows):
+            raise SessionNotFoundError(
+                f"No Session at index {index} (list has {len(rows)}). Use /sessions."
+            )
+        return rows[index - 1].id
+
+    if len(text) >= 32:
+        for row in rows:
+            if row.id == text:
+                return row.id
+        raise SessionNotFoundError(f"No Session with id {text[:12]}…. Use /sessions.")
+
+    matches = [row.id for row in rows if row.id.startswith(text)]
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise SessionNotFoundError(
+            f"No Session matches {text!r}. Use /sessions for numbers or ids."
+        )
+    raise ValueError(
+        f"Ambiguous Session prefix {text!r} ({len(matches)} matches); "
+        "use a longer id or the list number from /sessions."
+    )
 
 
 __all__ = [
@@ -401,4 +443,5 @@ __all__ = [
     "derive_title",
     "format_session_list",
     "new_session_id",
+    "resolve_session_ref",
 ]

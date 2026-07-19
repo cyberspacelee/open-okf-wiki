@@ -27,6 +27,7 @@ from .store import (
     SessionSummary,
     default_sessions_dir,
     format_session_list,
+    resolve_session_ref,
 )
 from .stream import StreamFragment, project_stream_event
 from .tty import require_tty
@@ -48,6 +49,7 @@ __all__ = [
     "format_run_error",
     "format_session_list",
     "interactive_publication_handler",
+    "resolve_session_ref",
     "project_event",
     "project_events",
     "project_stream_event",

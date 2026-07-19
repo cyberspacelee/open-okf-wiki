@@ -8,6 +8,7 @@ Do not assert Rich markup or terminal escape codes.
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -744,6 +745,12 @@ def test_slash_sessions_and_resume(tmp_path: Path) -> None:
     assert listed is not None
     assert sid[:12] in listed.message
     assert "topic alpha" in listed.message
+    # Numbered rows for /sessions N and /switch N.
+    assert (
+        re.search(r"^\s*1[\s*]", listed.message, re.M)
+        or "1*" in listed.message
+        or "1 " in listed.message
+    )
 
     session.handle_slash("/new")
     assert session.session_id != sid
@@ -769,6 +776,55 @@ def test_slash_sessions_and_resume(tmp_path: Path) -> None:
     assert back is not None
     assert back.session_switched is True
     assert session.session_id == sid
+
+
+def test_slash_sessions_index_and_sessions_ref_switch(tmp_path: Path) -> None:
+    """/sessions <n|id> and /switch <n> switch Sessions (newest-first indices)."""
+    from okf_wiki.session import SessionStore, resolve_session_ref
+    from okf_wiki.session.store import format_session_list
+
+    store = SessionStore(tmp_path / "sessions")
+    session = OperatorSession(base_request=_base_request(tmp_path), store=store)
+    session.append_user("first")
+    session.persist()
+    first_id = session.session_id
+    assert first_id is not None
+
+    session.handle_slash("/new")
+    session.append_user("second")
+    session.persist()
+    second_id = session.session_id
+    assert second_id is not None and second_id != first_id
+
+    rows = store.list_sessions()
+    assert rows[0].id == second_id  # newest first
+    assert resolve_session_ref(rows, "1") == second_id
+    assert resolve_session_ref(rows, "2") == first_id
+    assert resolve_session_ref(rows, first_id[:12]) == first_id
+
+    listed = format_session_list(rows, current_id=second_id)
+    assert "1*" in listed or re.search(r"1\*", listed)
+    assert first_id[:12] in listed and second_id[:12] in listed
+
+    # /sessions 2 switches to the older Session (index is from current list).
+    switched = session.handle_slash("/sessions 2")
+    assert switched is not None
+    assert switched.session_switched is True
+    assert session.session_id == first_id
+    assert any(m.content == "first" for m in session.message_history if m.role == "user")
+
+    # Id / prefix switch still works after list reorders on persist.
+    back = session.handle_slash(f"/switch {second_id[:12]}")
+    assert back is not None
+    assert back.session_switched is True
+    assert session.session_id == second_id
+
+    # Numeric index uses the list order at command time (after persist of current).
+    by_index = session.handle_slash("/switch 2")
+    assert by_index is not None
+    assert by_index.session_switched is True
+    assert session.session_id == first_id
+    assert session.session_id != second_id
 
 
 def test_default_sessions_dir_is_project_local(

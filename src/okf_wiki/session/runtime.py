@@ -90,6 +90,225 @@ class SlashCommandResult:
     start_run: bool = False
 
 
+@dataclass(slots=True, frozen=True)
+class SlashCommandSpec:
+    """One Operator Session slash command (primary name + optional aliases/args)."""
+
+    name: str
+    summary: str
+    aliases: tuple[str, ...] = ()
+    args: tuple[str, ...] = ()
+    # Free-form / dynamic argument (Session id, list index, optional title).
+    takes_ref: bool = False
+
+
+# Canonical slash catalog — keep /help text and TUI Tab completion in sync.
+SLASH_COMMANDS: tuple[SlashCommandSpec, ...] = (
+    SlashCommandSpec(
+        "run",
+        "Start a Wiki Run from Session config",
+        aliases=("start", "generate", "refresh"),
+    ),
+    SlashCommandSpec(
+        "yolo",
+        "Toggle publication auto-approve (YOLO)",
+        args=("on", "off"),
+    ),
+    SlashCommandSpec(
+        "mode",
+        "build starts Wiki Runs; ask records history only",
+        args=("build", "ask"),
+    ),
+    SlashCommandSpec("usage", "Last Wiki Run id/status in this Session"),
+    SlashCommandSpec("doctor", "Credential presence (set/unset, redacted)"),
+    SlashCommandSpec(
+        "sessions",
+        "List Sessions, or switch with /sessions <n|id>",
+        takes_ref=True,
+    ),
+    SlashCommandSpec("new", "Start a new empty Session (Host config unchanged)", takes_ref=True),
+    SlashCommandSpec(
+        "switch",
+        "Switch Session by list number or id (alias: /resume)",
+        aliases=("resume",),
+        takes_ref=True,
+    ),
+    SlashCommandSpec("quit", "Exit the Session", aliases=("exit", "q")),
+    SlashCommandSpec("help", "Show slash command help", aliases=("?",)),
+)
+
+
+def slash_command_names() -> tuple[str, ...]:
+    """Primary names plus aliases, for suggesters and tests."""
+    names: list[str] = []
+    for spec in SLASH_COMMANDS:
+        names.append(spec.name)
+        names.extend(spec.aliases)
+    return tuple(names)
+
+
+def slash_suggestion_strings() -> tuple[str, ...]:
+    """Full command strings (with leading ``/``) for inline Input suggestions."""
+    items: list[str] = []
+    for spec in SLASH_COMMANDS:
+        names = (spec.name, *spec.aliases)
+        for name in names:
+            if spec.args:
+                for arg in spec.args:
+                    items.append(f"/{name} {arg}")
+                items.append(f"/{name} ")
+            items.append(f"/{name}")
+    # Prefer shorter exact commands first so prefix match feels natural.
+    return tuple(sorted(set(items), key=lambda s: (len(s), s)))
+
+
+def list_slash_completions(
+    value: str,
+    *,
+    session_ids: Sequence[str] = (),
+) -> list[str]:
+    """Return slash completions for the current input line (leading ``/`` only).
+
+    Completes the command name, fixed args (``/mode``, ``/yolo``), and Session
+    refs for ``/switch`` / ``/resume`` / ``/sessions`` when ``session_ids`` is
+    provided (newest-first order; indices match ``/sessions``).
+    """
+    text = value
+    if not text.startswith("/"):
+        return []
+    body = text[1:]
+    if " " in body:
+        name, _, arg_prefix = body.partition(" ")
+        name_l = name.lower()
+        spec = _slash_spec_for_name(name_l)
+        if spec is None:
+            return []
+        if spec.args:
+            arg_key = arg_prefix.casefold()
+            return [f"/{name} {arg}" for arg in spec.args if arg.casefold().startswith(arg_key)]
+        if spec.takes_ref and name_l in {"switch", "resume", "sessions"}:
+            return _session_ref_completions(name, arg_prefix, session_ids)
+        return []
+
+    prefix = body.casefold()
+    matches: list[str] = []
+    for spec in SLASH_COMMANDS:
+        for name in (spec.name, *spec.aliases):
+            if name.casefold().startswith(prefix):
+                # Trailing space when the command expects an argument next.
+                if (spec.args or spec.takes_ref) and prefix == name.casefold():
+                    matches.append(f"/{name} ")
+                else:
+                    matches.append(f"/{name}")
+    # Unique, stable order (primary catalog order, then alias order).
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in matches:
+        if item not in seen:
+            seen.add(item)
+            ordered.append(item)
+    return ordered
+
+
+def apply_slash_completion(
+    value: str,
+    *,
+    reverse: bool = False,
+    session_ids: Sequence[str] = (),
+) -> str | None:
+    """Return the next Tab-completion replacement for ``value``, or None."""
+    matches = list_slash_completions(value, session_ids=session_ids)
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    # Longest common prefix when it advances the line (bash-style).
+    common = _common_prefix(matches)
+    if len(common) > len(value):
+        return common
+    # Otherwise cycle through full matches.
+    try:
+        idx = matches.index(value)
+    except ValueError:
+        idx = -1
+    if reverse:
+        return matches[(idx - 1) % len(matches)]
+    return matches[(idx + 1) % len(matches)]
+
+
+def format_slash_help() -> str:
+    """Human-readable /help body (shared by Session shell adapters)."""
+    lines = ["Operator Session commands:"]
+    for spec in SLASH_COMMANDS:
+        label = f"/{spec.name}"
+        if spec.args:
+            label = f"/{spec.name} {'|'.join(spec.args)}"
+        elif spec.name in {"sessions", "switch"}:
+            label = f"/{spec.name} [n|id]"
+        alias_note = ""
+        if spec.aliases:
+            shown = ", ".join(f"/{a}" for a in spec.aliases if a not in {"?", "q", "exit"})
+            if shown:
+                alias_note = f" (alias: {shown})"
+        lines.append(f"  {label:<20} {spec.summary}{alias_note}")
+    lines.extend(
+        [
+            "Entry does not auto-start a Wiki Run.",
+            "Switching Session clears the chat pane and reloads that Session's history only.",
+            "In build mode, type a goal or /run to start a Wiki Run from config.",
+            "In ask mode, messages are recorded without Host publication.",
+            "Needs Input answers start a new Wiki Run with explicit_answers.",
+            "Publication requires approve/deny unless YOLO is on.",
+            "TUI: Tab completes slash commands and Session numbers/ids; Shift+Tab cycles.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _session_ref_completions(
+    command: str,
+    arg_prefix: str,
+    session_ids: Sequence[str],
+) -> list[str]:
+    """Completions for /switch|/resume|/sessions args: list index or id prefix."""
+    if not session_ids:
+        return []
+    key = arg_prefix.strip().casefold()
+    matches: list[str] = []
+    seen: set[str] = set()
+    for index, session_id in enumerate(session_ids, start=1):
+        short = session_id[:12]
+        # Prefer the list number (matches /sessions output) then short id.
+        for token in (str(index), short):
+            if key and not token.casefold().startswith(key):
+                continue
+            item = f"/{command} {token}"
+            if item not in seen:
+                seen.add(item)
+                matches.append(item)
+    return matches
+
+
+def _slash_spec_for_name(name: str) -> SlashCommandSpec | None:
+    key = name.casefold()
+    for spec in SLASH_COMMANDS:
+        if spec.name == key or key in spec.aliases:
+            return spec
+    return None
+
+
+def _common_prefix(items: Sequence[str]) -> str:
+    if not items:
+        return ""
+    prefix = items[0]
+    for item in items[1:]:
+        while not item.startswith(prefix):
+            prefix = prefix[:-1]
+            if not prefix:
+                return ""
+    return prefix
+
+
 @dataclass(slots=True)
 class WikiRunTurnResult:
     """Result of one Wiki Run started from the Session."""
@@ -651,6 +870,61 @@ class OperatorSession:
             )
         return turn
 
+    def _switch_to_session_ref(self, ref: str, *, command_name: str) -> SlashCommandResult:
+        """Switch to a Session by list index, full id, or unique prefix."""
+        from .store import SessionNotFoundError, resolve_session_ref
+
+        if self.store is None:
+            return SlashCommandResult(
+                name=command_name,
+                message="Session store not configured; cannot switch Session.",
+            )
+        # Persist current so it appears in /sessions before we leave it.
+        if self.session_id is not None or self.message_history:
+            try:
+                self.persist()
+            except Exception:
+                pass
+        rows = self.store.list_sessions()
+        try:
+            resolved = resolve_session_ref(rows, ref)
+        except SessionNotFoundError as error:
+            return SlashCommandResult(name=command_name, message=str(error))
+        except ValueError as error:
+            return SlashCommandResult(name=command_name, message=str(error))
+
+        if self.session_id is not None and resolved == self.session_id:
+            return SlashCommandResult(
+                name=command_name,
+                message=f"Already on Session {resolved[:12]}.",
+                session_id=resolved,
+                yolo=self.yolo,
+            )
+        try:
+            snapshot = self.resume_from_store(resolved)
+        except Exception as error:
+            return SlashCommandResult(
+                name=command_name,
+                message=(
+                    f"Could not switch Session: "
+                    f"{type(error).__name__}: "
+                    f"{safe_error_message(error) if isinstance(error, Exception) else error}"
+                ),
+            )
+        hist = len(snapshot.messages)
+        return SlashCommandResult(
+            name=command_name,
+            message=(
+                f"── Switched to Session {snapshot.id[:12]} ──\n"
+                f"{hist} message(s), title={snapshot.title or '(none)'}.\n"
+                "Chat cleared and history reloaded "
+                "(Wiki Run graph / Staging publication were not resumed)."
+            ),
+            session_switched=True,
+            session_id=snapshot.id,
+            yolo=self.yolo,
+        )
+
     def handle_slash(self, line: str) -> SlashCommandResult | None:
         """Parse and apply a slash command. Returns None when line is not slash."""
         text = line.strip()
@@ -741,6 +1015,9 @@ class OperatorSession:
                     self.persist()
                 except Exception:
                     pass
+            # /sessions <n|id> switches; bare /sessions lists.
+            if arg:
+                return self._switch_to_session_ref(arg, command_name="sessions")
             rows = self.store.list_sessions()
             return SlashCommandResult(
                 name="sessions",
@@ -752,9 +1029,9 @@ class OperatorSession:
             return SlashCommandResult(
                 name="new",
                 message=(
-                    f"Started new Operator Session {snapshot.id[:12]} "
-                    f"[{self.yolo_indicator()}]. Project Host config unchanged. "
-                    "Chat view cleared — type a goal or /run."
+                    f"── New Session {snapshot.id[:12]} ──\n"
+                    f"[{self.yolo_indicator()}] Project Host config unchanged.\n"
+                    "Chat cleared — type a goal or /run."
                 ),
                 session_switched=True,
                 session_id=snapshot.id,
@@ -766,63 +1043,11 @@ class OperatorSession:
                 return SlashCommandResult(
                     name=name,
                     message=(
-                        f"Usage: /{name} <session-id> — switch to that Session "
-                        "(history only; does not publish). List ids with /sessions."
+                        f"Usage: /{name} <n|id> — switch by /sessions list number or id "
+                        "(history only). List with /sessions."
                     ),
                 )
-            if self.store is None:
-                return SlashCommandResult(
-                    name=name,
-                    message="Session store not configured; cannot switch Session.",
-                )
-            # Accept full id or unique prefix from /sessions listing.
-            target = arg.strip().lower()
-            resolved = target
-            if len(target) < 32:
-                matches = [
-                    row.id for row in self.store.list_sessions() if row.id.startswith(target)
-                ]
-                if len(matches) == 1:
-                    resolved = matches[0]
-                elif len(matches) == 0:
-                    return SlashCommandResult(
-                        name=name,
-                        message=f"No Session matches id prefix {target!r}. Use /sessions.",
-                    )
-                else:
-                    return SlashCommandResult(
-                        name=name,
-                        message=f"Ambiguous Session prefix {target!r}; provide more characters.",
-                    )
-            if self.session_id is not None and resolved == self.session_id:
-                return SlashCommandResult(
-                    name=name,
-                    message=f"Already on Session {resolved[:12]}.",
-                    session_id=resolved,
-                    yolo=self.yolo,
-                )
-            try:
-                snapshot = self.resume_from_store(resolved)
-            except Exception as error:
-                return SlashCommandResult(
-                    name=name,
-                    message=(
-                        f"Could not switch Session: "
-                        f"{type(error).__name__}: {safe_error_message(error) if isinstance(error, Exception) else error}"
-                    ),
-                )
-            hist = len(snapshot.messages)
-            return SlashCommandResult(
-                name=name,
-                message=(
-                    f"Switched to Session {snapshot.id[:12]} "
-                    f"({hist} message(s), title={snapshot.title or '(none)'}). "
-                    "History restored; Wiki Run graph and Staging publication were not resumed."
-                ),
-                session_switched=True,
-                session_id=snapshot.id,
-                yolo=self.yolo,
-            )
+            return self._switch_to_session_ref(arg, command_name=name)
 
         if name in {"run", "start", "generate", "refresh"}:
             if self.mode == "ask":
@@ -840,28 +1065,7 @@ class OperatorSession:
             )
 
         if name in {"help", "?"}:
-            return SlashCommandResult(
-                name="help",
-                message=(
-                    "Operator Session commands:\n"
-                    "  /run            Start a Wiki Run from Session config (alias: /start)\n"
-                    "  /yolo [on|off]  Toggle publication auto-approve (YOLO)\n"
-                    "  /mode build|ask Build starts Wiki Runs; ask records history only\n"
-                    "  /usage          Last Wiki Run id/status in this Session\n"
-                    "  /doctor         Credential presence (set/unset, redacted)\n"
-                    "  /sessions       List Operator Sessions (* = current)\n"
-                    "  /new            Start a new empty Session (Host config unchanged)\n"
-                    "  /switch <id>    Switch to another Session (alias: /resume)\n"
-                    "  /quit           Exit the Session\n"
-                    "  /help           This help\n"
-                    "Entry does not auto-start a Wiki Run.\n"
-                    "Switching Session reloads chat history only — not Wiki Run graph or publish.\n"
-                    "In build mode, type a goal or /run to start a Wiki Run from config.\n"
-                    "In ask mode, messages are recorded without Host publication.\n"
-                    "Needs Input answers start a new Wiki Run with explicit_answers.\n"
-                    "Publication requires approve/deny unless YOLO is on."
-                ),
-            )
+            return SlashCommandResult(name="help", message=format_slash_help())
 
         return SlashCommandResult(
             name=name,
@@ -873,9 +1077,16 @@ __all__ = [
     "CollectAnswersFn",
     "InputFn",
     "OperatorSession",
+    "SLASH_COMMANDS",
     "SessionMessage",
     "SlashCommandResult",
+    "SlashCommandSpec",
     "WikiRunTurnResult",
+    "apply_slash_completion",
     "format_run_error",
+    "format_slash_help",
     "interactive_publication_handler",
+    "list_slash_completions",
+    "slash_command_names",
+    "slash_suggestion_strings",
 ]

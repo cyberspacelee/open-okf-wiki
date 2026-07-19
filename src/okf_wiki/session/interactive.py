@@ -211,7 +211,12 @@ async def _run_line_session(
 
         slash = session.handle_slash(stripped)
         if slash is not None:
-            print_line(slash.message)
+            if slash.session_switched:
+                print_line("")
+                print_line(slash.message)
+                print_line("")
+            else:
+                print_line(slash.message)
             if slash.quit:
                 break
             if slash.start_run:
