@@ -13,6 +13,7 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
 import { WorkspaceSubnav } from "../components/WorkspaceSubnav";
+import { workspaceHref } from "../lib/workspace-path";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -155,7 +156,7 @@ export function WorkspaceSourcesPage() {
           <p className="breadcrumb">
             <Link to="/workspaces">Workspaces</Link>
             <span aria-hidden="true"> / </span>
-            <Link to={`/workspaces/${encodeURIComponent(id)}`}>
+            <Link to={workspaceHref(id, "", rootPathHint)}>
               {workspace?.name ?? id}
             </Link>
             <span aria-hidden="true"> / </span>

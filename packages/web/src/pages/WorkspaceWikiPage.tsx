@@ -14,6 +14,7 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
 import { WorkspaceSubnav } from "../components/WorkspaceSubnav";
+import { workspaceHref } from "../lib/workspace-path";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -268,7 +269,7 @@ export function WorkspaceWikiPage() {
           <p className="breadcrumb">
             <Link to="/workspaces">Workspaces</Link>
             <span aria-hidden="true"> / </span>
-            <Link to={`/workspaces/${encodeURIComponent(id)}`}>
+            <Link to={workspaceHref(id, "", rootPathHint)}>
               {workspace?.name ?? id}
             </Link>
             <span aria-hidden="true"> / </span>
@@ -298,7 +299,7 @@ export function WorkspaceWikiPage() {
                 </EmptyHeader>
                 <EmptyContent>
                   <Link
-                    to={`/workspaces/${encodeURIComponent(id)}/run`}
+                    to={workspaceHref(id, "/run", rootPathHint)}
                     className={cn(buttonVariants())}
                   >
                     Go to Run

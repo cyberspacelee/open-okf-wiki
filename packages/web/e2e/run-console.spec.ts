@@ -31,10 +31,12 @@ test.describe("run console", () => {
 
     await expect(page.getByTestId("run-list")).toBeVisible({ timeout: 15_000 });
     // Fixture mode completes quickly; UI polls while status is running.
-    await expect(page.getByTestId("run-last-status")).toHaveText("awaiting_publication", {
-      timeout: 20_000,
-    });
-    await expect(page.getByTestId("run-list")).toContainText("awaiting_publication");
+    await expect(page.getByTestId("run-last-status")).toHaveAttribute(
+      "data-status",
+      "awaiting_publication",
+      { timeout: 20_000 },
+    );
+    await expect(page.getByTestId("run-list")).toContainText("Awaiting publication");
     // No stub / not-wired failure text.
     await expect(page.getByTestId("run-page")).not.toContainText("Wiki Run agent not wired yet");
   });

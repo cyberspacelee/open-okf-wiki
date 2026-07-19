@@ -7,6 +7,8 @@ export {
   runWikiAgent,
   stagingDirForRun,
   redactErrorMessage,
+  shouldUseFixtureMode,
+  resolveModelConfig,
   type WikiRunAgentInput,
   type WikiRunAgentResult,
 } from "./run.js";

@@ -46,16 +46,23 @@ export OPENAI_API_KEY=sk-...
 # Optional gateway:
 # export OPENAI_BASE_URL=https://openrouter.ai/api/v1
 
-# 3) Start the localhost API (default http://127.0.0.1:8787)
-pnpm dev:server
-# or: pnpm --filter @okf-wiki/server dev
-
-# 4) Start the Operator Web UI (separate terminal)
-pnpm dev:web
-# or: pnpm --filter @okf-wiki/web dev
+# 3) Start API + Web together (hot reload)
+pnpm dev
+# → API  http://127.0.0.1:8787
+# → UI   http://127.0.0.1:5173  (proxies /api → server)
 ```
 
-Open the Web UI, create a Workspace pointing at local Git repository paths, configure model identity, and start a Wiki Run. Secrets never go in workspace JSON—only environment or user-level settings.
+`pnpm dev` builds shared packages once, then runs in parallel:
+
+| Process | Hot reload |
+|---|---|
+| `@okf-wiki/web` | Vite HMR |
+| `@okf-wiki/server` | `node --watch` |
+| `contract` / `core` / `agent` | `tsc --watch` → dist changes restart the server |
+
+Split terminals if you prefer: `pnpm dev:server` and `pnpm dev:web`.
+
+Open the Web UI, create a Workspace pointing at local Git repository paths, pick a model from Settings, and start a Wiki Run. Secrets stay in the Settings model catalog (or env), never in workspace JSON.
 
 ### Provider environment
 
@@ -93,13 +100,10 @@ pnpm --filter @okf-wiki/web test:e2e
 ### Same machine (default)
 
 ```bash
-# Terminal 1 — API (loopback only)
-pnpm dev:server
-# → http://127.0.0.1:8787
-
-# Terminal 2 — UI
-pnpm dev:web
-# → http://127.0.0.1:5173  (or localhost)
+# One command — API + UI (hot reload)
+pnpm dev
+# → UI  http://127.0.0.1:5173
+# → API http://127.0.0.1:8787
 ```
 
 Smoke API:

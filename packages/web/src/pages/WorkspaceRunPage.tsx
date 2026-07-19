@@ -15,7 +15,9 @@ import {
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
+import { RunStatusBadge } from "../components/RunStatusBadge";
 import { WorkspaceSubnav } from "../components/WorkspaceSubnav";
+import { workspaceHref } from "../lib/workspace-path";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -346,7 +348,7 @@ export function WorkspaceRunPage() {
           <p className="breadcrumb">
             <Link to="/workspaces">Workspaces</Link>
             <span aria-hidden="true"> / </span>
-            <Link to={`/workspaces/${encodeURIComponent(id)}`}>
+            <Link to={workspaceHref(id, "", rootPathHint)}>
               {workspace?.name ?? id}
             </Link>
             <span aria-hidden="true"> / </span>
@@ -395,7 +397,7 @@ export function WorkspaceRunPage() {
                 {!canStart ? (
                   <p className="muted">
                     Add at least one source before starting a run.{" "}
-                    <Link to={`/workspaces/${encodeURIComponent(id)}/sources`}>Open Sources</Link>
+                    <Link to={workspaceHref(id, "/sources", rootPathHint)}>Open Sources</Link>
                   </p>
                 ) : null}
 
@@ -404,7 +406,9 @@ export function WorkspaceRunPage() {
                     <dl className="kv">
                       <div>
                         <dt>Last run status</dt>
-                        <dd data-testid="run-last-status">{lastRun.status}</dd>
+                        <dd data-testid="run-last-status" data-status={lastRun.status}>
+                          <RunStatusBadge status={lastRun.status} />
+                        </dd>
                       </div>
                       {lastRun.error ? (
                         <div>
@@ -509,7 +513,9 @@ export function WorkspaceRunPage() {
                       {runs.map((run) => (
                         <TableRow key={run.runId} data-run-id={run.runId}>
                           <TableCell className="mono small">{run.runId}</TableCell>
-                          <TableCell>{run.status}</TableCell>
+                          <TableCell>
+                            <RunStatusBadge status={run.status} />
+                          </TableCell>
                           <TableCell className="muted small whitespace-normal">
                             {run.error ?? "—"}
                           </TableCell>

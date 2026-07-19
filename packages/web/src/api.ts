@@ -39,7 +39,7 @@ export type WorkspaceConfig = {
   name: string;
   rootPath: string;
   sources: WorkspaceSource[];
-  model: { id: string };
+  model: { id: string; profileId?: string };
   publicationPath: string;
   limits: {
     requestTimeoutSeconds: number;
@@ -63,6 +63,46 @@ export type HealthResponse = {
   pid?: number;
 };
 
+export type ProviderApiShape = "completions" | "responses";
+
+export type ModelProfilePublic = {
+  id: string;
+  name: string;
+  modelId: string;
+  baseUrl: string;
+  apiKeySet: boolean;
+  apiKeyMasked: string | null;
+  apiShape: ProviderApiShape;
+};
+
+export type ProviderPublic = {
+  version: 2;
+  models: ModelProfilePublic[];
+  defaultModelProfileId?: string;
+  envFallback: {
+    openaiBaseUrlSet: boolean;
+    openaiApiKeySet: boolean;
+  };
+};
+
+export type ModelProfileWriteInput = {
+  name: string;
+  modelId: string;
+  baseUrl?: string;
+  /** Omit to keep on update; empty string or null to clear. */
+  apiKey?: string | null;
+  apiShape?: ProviderApiShape;
+  id?: string;
+};
+
+export type ProviderTestResult = {
+  ok: boolean;
+  apiShape: ProviderApiShape;
+  status?: number;
+  message: string;
+  latencyMs?: number;
+};
+
 export type DoctorResponse = {
   ok: boolean;
   node: string;
@@ -75,6 +115,17 @@ export type DoctorResponse = {
   env: {
     openaiBaseUrlSet: boolean;
     openaiApiKeySet: boolean;
+  };
+  provider?: {
+    configured: boolean;
+    modelCount?: number;
+    defaultModelProfileId?: string | null;
+    baseUrlSet: boolean;
+    apiKeySet: boolean;
+    apiShape: ProviderApiShape;
+    baseUrlSource: "stored" | "env" | "none";
+    apiKeySource: "stored" | "env" | "none";
+    baseUrlHost: string | null;
   };
 };
 
@@ -96,11 +147,15 @@ export type CreateWorkspaceInput = {
   name: string;
   rootPath: string;
   publicationPath?: string;
+  /** Preferred: select a Settings model profile. */
+  modelProfileId?: string;
+  /** Legacy free-text model id. */
   modelId?: string;
 };
 
 export type PatchWorkspaceInput = {
   name?: string;
+  modelProfileId?: string;
   modelId?: string;
   publicationPath?: string;
   adaptive?: boolean;
@@ -230,6 +285,59 @@ export function getHealth(): Promise<HealthResponse> {
 
 export function getDoctor(): Promise<DoctorResponse> {
   return request<DoctorResponse>("/api/doctor");
+}
+
+export function getProvider(): Promise<{ provider: ProviderPublic }> {
+  return request<{ provider: ProviderPublic }>("/api/provider");
+}
+
+export function createModelProfile(
+  input: ModelProfileWriteInput,
+): Promise<{ provider: ProviderPublic; model?: ModelProfilePublic }> {
+  return request("/api/provider/models", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateModelProfile(
+  profileId: string,
+  input: ModelProfileWriteInput,
+): Promise<{ provider: ProviderPublic; model?: ModelProfilePublic }> {
+  return request(`/api/provider/models/${encodeURIComponent(profileId)}`, {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteModelProfile(
+  profileId: string,
+): Promise<{ provider: ProviderPublic }> {
+  return request(`/api/provider/models/${encodeURIComponent(profileId)}`, {
+    method: "DELETE",
+  });
+}
+
+export function setDefaultModelProfile(
+  defaultModelProfileId: string | null,
+): Promise<{ provider: ProviderPublic }> {
+  return request("/api/provider/default", {
+    method: "PUT",
+    body: JSON.stringify({ defaultModelProfileId }),
+  });
+}
+
+export function testProvider(input?: {
+  modelProfileId?: string;
+  baseUrl?: string;
+  apiKey?: string;
+  apiShape?: ProviderApiShape;
+  modelId?: string;
+}): Promise<{ result: ProviderTestResult }> {
+  return request<{ result: ProviderTestResult }>("/api/provider/test", {
+    method: "POST",
+    body: JSON.stringify(input ?? {}),
+  });
 }
 
 export function listWorkspaces(): Promise<{ workspaces: WorkspaceSummary[] }> {

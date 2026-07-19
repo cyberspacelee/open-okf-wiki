@@ -2,12 +2,15 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   createWorkspace,
+  getProvider,
   listWorkspaces,
+  type ModelProfilePublic,
   type WorkspaceSummary,
 } from "../api";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
+import { ModelSelect } from "../components/ModelSelect";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -36,19 +39,36 @@ import {
 export function WorkspacesPage() {
   const navigate = useNavigate();
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
+  const [models, setModels] = useState<ModelProfilePublic[]>([]);
+  const [defaultModelProfileId, setDefaultModelProfileId] = useState<string | undefined>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState("");
   const [rootPath, setRootPath] = useState("");
+  const [modelProfileId, setModelProfileId] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await listWorkspaces();
-      setWorkspaces(data.workspaces);
+      const [wsData, providerData] = await Promise.all([
+        listWorkspaces(),
+        getProvider().catch(() => null),
+      ]);
+      setWorkspaces(wsData.workspaces);
+      const catalog = providerData?.provider;
+      const catalogModels = catalog?.models ?? [];
+      setModels(catalogModels);
+      setDefaultModelProfileId(catalog?.defaultModelProfileId);
+      // Prefer default, else first model.
+      const preferred =
+        catalog?.defaultModelProfileId &&
+        catalogModels.some((m) => m.id === catalog.defaultModelProfileId)
+          ? catalog.defaultModelProfileId
+          : catalogModels[0]?.id ?? "";
+      setModelProfileId((prev) => prev || preferred);
     } catch (err) {
       setError(err);
     } finally {
@@ -68,6 +88,7 @@ export function WorkspacesPage() {
       const { workspace } = await createWorkspace({
         name: name.trim(),
         rootPath: rootPath.trim(),
+        ...(modelProfileId ? { modelProfileId } : {}),
       });
       setName("");
       setRootPath("");
@@ -87,8 +108,9 @@ export function WorkspacesPage() {
           <div>
             <h1>Workspaces</h1>
             <p>
-              A Workspace is a local project: Git sources, model id, and wiki output path. Secrets stay
-              in environment variables, not in workspace.json.
+              A Workspace is a local project: Git sources, selected model, and wiki output path.
+              Models and credentials are managed in{" "}
+              <Link to="/settings">Settings</Link>.
             </p>
           </div>
           <Button
@@ -143,10 +165,23 @@ export function WorkspacesPage() {
                     <code>.okf-wiki/</code> if needed.
                   </span>
                 </div>
+                <ModelSelect
+                  models={models}
+                  value={modelProfileId}
+                  onChange={setModelProfileId}
+                  defaultModelProfileId={defaultModelProfileId}
+                  required={models.length > 0}
+                  allowEmpty={models.length === 0}
+                />
                 <div className="form-actions">
                   <Button
                     type="submit"
-                    disabled={submitting || !name.trim() || !rootPath.trim()}
+                    disabled={
+                      submitting ||
+                      !name.trim() ||
+                      !rootPath.trim() ||
+                      (models.length > 0 && !modelProfileId)
+                    }
                     data-testid="workspace-create-submit"
                   >
                     {submitting ? "Creating…" : "Create workspace"}
@@ -172,8 +207,10 @@ export function WorkspacesPage() {
                 </EmptyHeader>
                 <EmptyContent>
                   <ul className="checklist text-left">
+                    <li>
+                      Configure models in <Link to="/settings">Settings</Link>
+                    </li>
                     <li>Add local Git checkout paths (no clone / no credentials)</li>
-                    <li>Configure enterprise OpenAI-compatible model id</li>
                     <li>Run Wiki generation with HITL publish</li>
                   </ul>
                   {!showForm ? (

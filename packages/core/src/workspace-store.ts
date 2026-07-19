@@ -56,7 +56,12 @@ export type CreateWorkspaceOptions = {
   name: string;
   rootPath: string;
   publicationPath?: string;
+  /** @deprecated Prefer modelProfileId — free-text model id only as fallback. */
   modelId?: string;
+  /** Settings model profile id; denormalizes model.id from the catalog. */
+  modelProfileId?: string;
+  /** Denormalized served model id when profile is known. */
+  resolvedModelId?: string;
 };
 
 /**
@@ -96,9 +101,10 @@ export async function createWorkspace(options: CreateWorkspaceOptions): Promise<
   await mkdir(publicationPath, { recursive: true });
 
   const modelId =
-    options.modelId !== undefined && options.modelId.trim() !== ""
-      ? options.modelId.trim()
-      : DEFAULT_MODEL_ID;
+    options.resolvedModelId?.trim() ||
+    options.modelId?.trim() ||
+    DEFAULT_MODEL_ID;
+  const modelProfileId = options.modelProfileId?.trim() || undefined;
 
   const now = new Date().toISOString();
   return {
@@ -107,7 +113,10 @@ export async function createWorkspace(options: CreateWorkspaceOptions): Promise<
     name: options.name.trim(),
     rootPath,
     sources: [],
-    model: { id: modelId },
+    model: {
+      id: modelId,
+      ...(modelProfileId ? { profileId: modelProfileId } : {}),
+    },
     publicationPath,
     limits: WorkspaceLimitsSchema.parse({}),
     adaptive: false,

@@ -1,10 +1,17 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
+import { createOpenAI } from "@ai-sdk/openai";
 import { Agent } from "@mastra/core/agent";
+import type { MastraModelConfig } from "@mastra/core/llm";
 import { createCodeMode } from "@mastra/core/tools";
 import { LocalSandbox } from "@mastra/core/workspace";
 import type { WorkspaceConfig, WikiRunRecordStatus } from "@okf-wiki/contract";
-import { WORKSPACE_DIR_NAME } from "@okf-wiki/core";
+import {
+  WORKSPACE_DIR_NAME,
+  hasProviderCredentials,
+  loadProviderConfig,
+  resolveProviderRuntime,
+} from "@okf-wiki/core";
 import { listMarkdownPages, writeFileContained } from "./fs-ops.js";
 import { resolveSkillPath } from "./skill-path.js";
 import { createWikiRunTools } from "./tools.js";
@@ -47,18 +54,28 @@ function throwIfAborted(signal?: AbortSignal): void {
   }
 }
 
-/** True when we should skip the LLM and write a fixture page. */
-export function shouldUseFixtureMode(env: NodeJS.ProcessEnv = process.env): boolean {
+/**
+ * True when we should skip the LLM and write a fixture page.
+ * Checks process env and the machine-local provider profile.
+ */
+export async function shouldUseFixtureMode(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<boolean> {
   if (env.OKF_WIKI_AGENT_MODE === "fixture") {
     return true;
   }
   if (env.OKF_WIKI_AGENT_MODE === "live") {
     return false;
   }
-  // Default: fixture when no enterprise model credentials/endpoint are configured.
-  const hasKey = Boolean(env.OPENAI_API_KEY?.trim());
-  const hasUrl = Boolean(env.OPENAI_BASE_URL?.trim());
-  return !hasKey && !hasUrl;
+  // Default: fixture when no stored profile or OPENAI_* credentials exist.
+  try {
+    const provider = await loadProviderConfig();
+    return !hasProviderCredentials(provider, env);
+  } catch {
+    const hasKey = Boolean(env.OPENAI_API_KEY?.trim());
+    const hasUrl = Boolean(env.OPENAI_BASE_URL?.trim());
+    return !hasKey && !hasUrl;
+  }
 }
 
 export function stagingDirForRun(workspaceRoot: string, runId: string): string {
@@ -196,17 +213,43 @@ function buildInstructions(workspace: WorkspaceConfig): string {
   ].join("\n");
 }
 
-function resolveModelConfig(workspace: WorkspaceConfig): {
-  id: `${string}/${string}`;
-  url?: string;
-  apiKey: string;
-} {
-  const rawId = workspace.model?.id?.trim() || process.env.OKF_WIKI_MODEL_ID?.trim() || "openai/default";
+/**
+ * Resolve Mastra model config from workspace model selection + Settings catalog.
+ * Supports OpenAI-compatible chat completions and the Responses API shape.
+ */
+export async function resolveModelConfig(
+  workspace: WorkspaceConfig,
+): Promise<MastraModelConfig> {
+  const provider = await loadProviderConfig();
+  const runtime = resolveProviderRuntime(provider, {
+    profileId: workspace.model?.profileId,
+    modelId: workspace.model?.id,
+  });
+
+  const rawId =
+    runtime.modelId?.trim() ||
+    workspace.model?.id?.trim() ||
+    process.env.OKF_WIKI_MODEL_ID?.trim() ||
+    "openai/default";
   // Mastra OpenAICompatibleConfig requires provider/model form.
   const id = (rawId.includes("/") ? rawId : `openai/${rawId}`) as `${string}/${string}`;
-  const url = process.env.OPENAI_BASE_URL?.trim() || undefined;
-  const apiKey = process.env.OPENAI_API_KEY?.trim() || "local";
-  return { id, url, apiKey };
+  const modelIdOnly = id.includes("/") ? id.slice(id.indexOf("/") + 1) : id;
+
+  if (runtime.apiShape === "responses") {
+    // Official / compatible Responses API via AI SDK OpenAI provider.
+    const openai = createOpenAI({
+      apiKey: runtime.apiKey,
+      ...(runtime.baseUrl ? { baseURL: runtime.baseUrl } : {}),
+    });
+    return openai.responses(modelIdOnly);
+  }
+
+  // Default: OpenAI-compatible chat completions (…/v1/chat/completions).
+  return {
+    id,
+    url: runtime.baseUrl,
+    apiKey: runtime.apiKey,
+  };
 }
 
 async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: string): Promise<WikiRunAgentResult> {
@@ -229,16 +272,12 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
     }),
   });
 
-  const model = resolveModelConfig(input.workspace);
+  const model = await resolveModelConfig(input.workspace);
   const agent = new Agent({
     id: "okf-wiki-root",
     name: "OKF Wiki Root",
     instructions: [buildInstructions(input.workspace), codeModeInstructions],
-    model: {
-      id: model.id,
-      url: model.url,
-      apiKey: model.apiKey,
-    },
+    model,
     tools: {
       ...tools,
       execute_typescript,
@@ -303,7 +342,7 @@ export async function runWikiAgent(input: WikiRunAgentInput): Promise<WikiRunAge
   try {
     throwIfAborted(input.abortSignal);
 
-    if (shouldUseFixtureMode()) {
+    if (await shouldUseFixtureMode()) {
       return await runFixture(input, wikiRoot);
     }
 

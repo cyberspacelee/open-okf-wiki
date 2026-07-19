@@ -14,14 +14,15 @@ Primary product implementation for OKF Wiki. See [ADR 0020](../docs/adr/0020-typ
 
 ```bash
 pnpm install
+pnpm dev                              # API + Web + lib watch (one command)
+# UI: http://127.0.0.1:5173  API: http://127.0.0.1:8787
+
 pnpm --filter @okf-wiki/contract test
 pnpm --filter @okf-wiki/core test
 pnpm --filter @okf-wiki/agent test
-pnpm --filter @okf-wiki/server dev    # http://127.0.0.1:8787
-pnpm --filter @okf-wiki/web dev
 pnpm --filter @okf-wiki/cli start doctor
 ```
 
-Workspace root scripts: `pnpm dev:server`, `pnpm dev:web`, `pnpm test`, `pnpm typecheck`.
+Workspace root scripts: `pnpm dev`, `pnpm dev:server`, `pnpm dev:web`, `pnpm test`, `pnpm typecheck`.
 
 The former Python package was removed ([ADR 0021](../docs/adr/0021-retire-python-primary-path.md)).

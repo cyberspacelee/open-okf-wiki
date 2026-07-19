@@ -34,9 +34,11 @@ test.describe("run publication HITL", () => {
 
     await page.getByTestId("run-start").click();
     await expect(page.getByTestId("run-list")).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByTestId("run-last-status")).toHaveText("awaiting_publication", {
-      timeout: 20_000,
-    });
+    await expect(page.getByTestId("run-last-status")).toHaveAttribute(
+      "data-status",
+      "awaiting_publication",
+      { timeout: 20_000 },
+    );
 
     // Publication review controls and pages list
     await expect(page.getByTestId("run-publish-actions")).toBeVisible();
@@ -46,10 +48,12 @@ test.describe("run publication HITL", () => {
     await expect(page.getByTestId("run-pages-list")).toContainText("overview.md");
 
     await page.getByTestId("run-approve").click();
-    await expect(page.getByTestId("run-last-status")).toHaveText("published", {
-      timeout: 15_000,
-    });
-    await expect(page.getByTestId("run-list")).toContainText("published");
+    await expect(page.getByTestId("run-last-status")).toHaveAttribute(
+      "data-status",
+      "published",
+      { timeout: 15_000 },
+    );
+    await expect(page.getByTestId("run-list")).toContainText("Published");
     // Actions should disappear once no longer awaiting publication.
     await expect(page.getByTestId("run-publish-actions")).toHaveCount(0);
   });
@@ -61,15 +65,19 @@ test.describe("run publication HITL", () => {
 
     await page.getByTestId("run-start").click();
     await expect(page.getByTestId("run-list")).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByTestId("run-last-status")).toHaveText("awaiting_publication", {
-      timeout: 20_000,
-    });
+    await expect(page.getByTestId("run-last-status")).toHaveAttribute(
+      "data-status",
+      "awaiting_publication",
+      { timeout: 20_000 },
+    );
 
     await page.getByTestId("run-deny").click();
-    await expect(page.getByTestId("run-last-status")).toHaveText("publication_declined", {
-      timeout: 15_000,
-    });
-    await expect(page.getByTestId("run-list")).toContainText("publication_declined");
+    await expect(page.getByTestId("run-last-status")).toHaveAttribute(
+      "data-status",
+      "publication_declined",
+      { timeout: 15_000 },
+    );
+    await expect(page.getByTestId("run-list")).toContainText("Publication declined");
     await expect(page.getByTestId("run-publish-actions")).toHaveCount(0);
   });
 });

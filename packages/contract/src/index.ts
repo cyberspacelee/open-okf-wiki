@@ -56,3 +56,22 @@ export {
   type AnalysisReceipt,
   type HandoffRef,
 } from "./receipt.js";
+
+export {
+  ProviderApiShapeSchema,
+  ModelProfileSchema,
+  ProviderConfigSchema,
+  ProviderConfigV1Schema,
+  ModelProfilePublicSchema,
+  ProviderPublicSchema,
+  ModelProfileWriteSchema,
+  ProviderTestResultSchema,
+  type ProviderApiShape,
+  type ModelProfile,
+  type ProviderConfig,
+  type ProviderConfigV1,
+  type ModelProfilePublic,
+  type ProviderPublic,
+  type ModelProfileWrite,
+  type ProviderTestResult,
+} from "./provider.js";

@@ -5,6 +5,7 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
 import { WorkspaceSubnav } from "../components/WorkspaceSubnav";
+import { workspaceHref } from "../lib/workspace-path";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -75,7 +76,12 @@ export function WorkspaceDetailPage() {
                 </div>
                 <div>
                   <dt>Model</dt>
-                  <dd className="mono">{workspace.model.id}</dd>
+                  <dd className="mono">
+                    {workspace.model.id}
+                    {workspace.model.profileId ? (
+                      <span className="muted small"> · profile {workspace.model.profileId}</span>
+                    ) : null}
+                  </dd>
                 </div>
                 <div>
                   <dt>Publication path</dt>
@@ -102,7 +108,7 @@ export function WorkspaceDetailPage() {
                   <dd>
                     {workspace.sources.length}{" "}
                     <Link
-                      to={`/workspaces/${encodeURIComponent(workspace.id)}/sources`}
+                      to={workspaceHref(workspace.id, "/sources", rootPathHint)}
                       className="inline-link"
                     >
                       Manage sources
@@ -126,13 +132,13 @@ export function WorkspaceDetailPage() {
               </dl>
               <div className="form-actions">
                 <Link
-                  to={`/workspaces/${encodeURIComponent(workspace.id)}/settings`}
+                  to={workspaceHref(workspace.id, "/settings", rootPathHint)}
                   className={cn(buttonVariants({ variant: "outline" }))}
                 >
                   Edit settings
                 </Link>
                 <Link
-                  to={`/workspaces/${encodeURIComponent(workspace.id)}/sources`}
+                  to={workspaceHref(workspace.id, "/sources", rootPathHint)}
                   className={cn(buttonVariants())}
                 >
                   Sources

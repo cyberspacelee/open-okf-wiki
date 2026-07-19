@@ -34,10 +34,20 @@ export const WorkspaceSourceSchema = z.object({
 
 export type WorkspaceSource = z.infer<typeof WorkspaceSourceSchema>;
 
-/** Non-secret model identity. Credentials live in env / user settings only. */
+/**
+ * Workspace model selection.
+ * Credentials and base URL live in Settings model profiles only.
+ * `id` is a denormalized modelId for display; `profileId` is the catalog key.
+ */
 export const ModelRefSchema = z.object({
-  /** Mastra-style id, e.g. `openai/my-served-model`. */
+  /**
+   * Served model identity (denormalized from the selected profile), e.g.
+   * `openai/my-served-model`. Kept so overview still renders if the profile
+   * was deleted.
+   */
   id: z.string().trim().min(1),
+  /** Reference to a machine-local Settings model profile. */
+  profileId: z.string().trim().min(1).optional(),
 });
 
 export type ModelRef = z.infer<typeof ModelRefSchema>;

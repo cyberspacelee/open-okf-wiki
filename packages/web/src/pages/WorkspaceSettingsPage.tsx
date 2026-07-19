@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
+  getProvider,
   getWorkspace,
   patchWorkspace,
+  type ModelProfilePublic,
   type WorkspaceConfig,
 } from "../api";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
+import { ModelSelect } from "../components/ModelSelect";
 import { WorkspaceSubnav } from "../components/WorkspaceSubnav";
+import { workspaceHref } from "../lib/workspace-path";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -19,25 +23,37 @@ export function WorkspaceSettingsPage() {
   const [searchParams] = useSearchParams();
   const rootPathHint = searchParams.get("rootPath") ?? undefined;
   const [workspace, setWorkspace] = useState<WorkspaceConfig | null>(null);
+  const [models, setModels] = useState<ModelProfilePublic[]>([]);
+  const [defaultModelProfileId, setDefaultModelProfileId] = useState<string | undefined>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
   const [saved, setSaved] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const [name, setName] = useState("");
-  const [modelId, setModelId] = useState("");
+  const [modelProfileId, setModelProfileId] = useState("");
   const [publicationPath, setPublicationPath] = useState("");
   const [adaptive, setAdaptive] = useState(false);
   const [reviewer, setReviewer] = useState(false);
 
-  const applyWorkspace = useCallback((ws: WorkspaceConfig) => {
-    setWorkspace(ws);
-    setName(ws.name);
-    setModelId(ws.model.id);
-    setPublicationPath(ws.publicationPath);
-    setAdaptive(ws.adaptive);
-    setReviewer(ws.reviewer);
-  }, []);
+  const applyWorkspace = useCallback(
+    (ws: WorkspaceConfig, catalog: ModelProfilePublic[]) => {
+      setWorkspace(ws);
+      setName(ws.name);
+      setPublicationPath(ws.publicationPath);
+      setAdaptive(ws.adaptive);
+      setReviewer(ws.reviewer);
+
+      // Prefer profileId; else match denormalized model id; else keep empty.
+      if (ws.model.profileId && catalog.some((m) => m.id === ws.model.profileId)) {
+        setModelProfileId(ws.model.profileId);
+      } else {
+        const byModelId = catalog.find((m) => m.modelId === ws.model.id);
+        setModelProfileId(byModelId?.id ?? ws.model.profileId ?? "");
+      }
+    },
+    [],
+  );
 
   const load = useCallback(async () => {
     if (!id) {
@@ -47,8 +63,14 @@ export function WorkspaceSettingsPage() {
     setError(null);
     setSaved(false);
     try {
-      const data = await getWorkspace(id, rootPathHint);
-      applyWorkspace(data.workspace);
+      const [wsData, providerData] = await Promise.all([
+        getWorkspace(id, rootPathHint),
+        getProvider().catch(() => null),
+      ]);
+      const catalog = providerData?.provider.models ?? [];
+      setModels(catalog);
+      setDefaultModelProfileId(providerData?.provider.defaultModelProfileId);
+      applyWorkspace(wsData.workspace, catalog);
     } catch (err) {
       setError(err);
       setWorkspace(null);
@@ -74,14 +96,14 @@ export function WorkspaceSettingsPage() {
         id,
         {
           name: name.trim(),
-          modelId: modelId.trim(),
+          ...(modelProfileId ? { modelProfileId } : {}),
           publicationPath: publicationPath.trim(),
           adaptive,
           reviewer,
         },
         workspace?.rootPath ?? rootPathHint,
       );
-      applyWorkspace(result.workspace);
+      applyWorkspace(result.workspace, models);
       setSaved(true);
     } catch (err) {
       setError(err);
@@ -90,6 +112,15 @@ export function WorkspaceSettingsPage() {
     }
   }
 
+  const selectedModel = models.find((m) => m.id === modelProfileId);
+  const orphanModelId =
+    workspace &&
+    !selectedModel &&
+    workspace.model.id &&
+    !models.some((m) => m.modelId === workspace.model.id)
+      ? workspace.model.id
+      : null;
+
   return (
     <Layout>
       <div data-testid="settings-page" className="flex flex-col gap-5">
@@ -97,7 +128,7 @@ export function WorkspaceSettingsPage() {
           <p className="breadcrumb">
             <Link to="/workspaces">Workspaces</Link>
             <span aria-hidden="true"> / </span>
-            <Link to={`/workspaces/${encodeURIComponent(id)}`}>
+            <Link to={workspaceHref(id, "", rootPathHint)}>
               {workspace?.name ?? id}
             </Link>
             <span aria-hidden="true"> / </span>
@@ -105,7 +136,8 @@ export function WorkspaceSettingsPage() {
           </p>
           <h1>Workspace settings</h1>
           <p>
-            Edit non-secret project configuration. Model credentials remain in environment variables.
+            Project options for this workspace. Models and credentials are configured only under{" "}
+            <Link to="/settings">Settings</Link>.
           </p>
         </header>
 
@@ -133,25 +165,32 @@ export function WorkspaceSettingsPage() {
                     data-testid="settings-name-input"
                   />
                 </div>
-                <div className="field">
-                  <Label htmlFor="settings-model">Model id</Label>
-                  <Input
-                    id="settings-model"
-                    type="text"
-                    value={modelId}
-                    onChange={(e) => {
-                      setModelId(e.target.value);
-                      setSaved(false);
-                    }}
-                    placeholder="openai/my-served-model"
-                    required
-                    className="font-mono"
-                    data-testid="settings-model-input"
-                  />
-                  <span className="field-hint">
-                    Non-secret model identity (for example <code>openai/my-served-model</code>).
-                  </span>
-                </div>
+
+                <ModelSelect
+                  models={models}
+                  value={modelProfileId}
+                  onChange={(next) => {
+                    setModelProfileId(next);
+                    setSaved(false);
+                  }}
+                  defaultModelProfileId={defaultModelProfileId}
+                  required={models.length > 0}
+                  data-testid="settings-model-select"
+                />
+                {/* Keep a stable test id for e2e that assert selection */}
+                <input
+                  type="hidden"
+                  data-testid="settings-model-input"
+                  value={selectedModel?.modelId ?? orphanModelId ?? ""}
+                  readOnly
+                />
+                {orphanModelId ? (
+                  <p className="muted small" data-testid="settings-model-orphan">
+                    Previous model id <code className="mono">{orphanModelId}</code> is no longer in
+                    Settings. Pick a configured model above.
+                  </p>
+                ) : null}
+
                 <div className="field">
                   <Label htmlFor="settings-publication">Publication path (absolute)</Label>
                   <Input
@@ -206,8 +245,8 @@ export function WorkspaceSettingsPage() {
                     disabled={
                       submitting ||
                       !name.trim() ||
-                      !modelId.trim() ||
-                      !publicationPath.trim()
+                      !publicationPath.trim() ||
+                      (models.length > 0 && !modelProfileId)
                     }
                     data-testid="settings-save"
                   >
@@ -230,6 +269,16 @@ export function WorkspaceSettingsPage() {
                   <dt>ID</dt>
                   <dd className="mono">{workspace.id}</dd>
                 </div>
+                <div>
+                  <dt>Selected model id</dt>
+                  <dd className="mono">{workspace.model.id}</dd>
+                </div>
+                {workspace.model.profileId ? (
+                  <div>
+                    <dt>Model profile</dt>
+                    <dd className="mono">{workspace.model.profileId}</dd>
+                  </div>
+                ) : null}
               </dl>
             </CardContent>
           </Card>

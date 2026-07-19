@@ -177,11 +177,19 @@
 }
 
 .sidebar {
-  @apply flex w-60 shrink-0 flex-col gap-4 border-r border-sidebar-border bg-sidebar p-4 text-sidebar-foreground;
+  @apply flex w-60 shrink-0 flex-col gap-4 border-r border-sidebar-border bg-sidebar p-4 text-sidebar-foreground transition-[width] duration-200 ease-out;
+}
+
+.sidebar.is-collapsed {
+  @apply w-14 items-stretch px-2;
 }
 
 .brand {
-  @apply flex flex-col gap-0.5 px-2;
+  @apply flex min-w-0 flex-col gap-0.5 px-2;
+}
+
+.brand-collapsed {
+  @apply items-center px-0 text-center;
 }
 
 .nav {
@@ -189,15 +197,32 @@
 }
 
 .nav-link {
-  @apply block rounded-lg px-3 py-2 text-sm text-sidebar-foreground no-underline transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground;
+  @apply flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-sidebar-foreground no-underline transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground;
+}
+
+.nav-link-collapsed {
+  @apply justify-center px-2;
 }
 
 .nav-link.active {
   @apply bg-sidebar-accent font-semibold text-sidebar-accent-foreground;
 }
 
+/* Pin foot + collapse control to the bottom of the sidebar. */
+.sidebar-bottom {
+  @apply mt-auto flex flex-col gap-2 border-t border-sidebar-border pt-3;
+}
+
+.sidebar-bottom-collapsed {
+  @apply items-center border-t-0 pt-0;
+}
+
 .sidebar-foot {
-  @apply mt-auto px-2 text-xs leading-relaxed text-muted-foreground;
+  @apply px-2 text-xs leading-relaxed text-muted-foreground;
+}
+
+.sidebar-toggle {
+  @apply text-muted-foreground hover:text-sidebar-foreground;
 }
 
 .main {
@@ -238,6 +263,46 @@
 
 .form {
   @apply flex max-w-xl flex-col gap-4;
+}
+
+.form-wide {
+  @apply max-w-2xl;
+}
+
+.radio-row {
+  @apply mt-1 flex flex-col gap-2;
+}
+
+.radio-option {
+  @apply flex cursor-pointer items-start gap-2.5 rounded-lg border border-border px-3 py-2.5 text-sm transition-colors hover:bg-muted/50;
+}
+
+.radio-option:has(input:checked) {
+  @apply border-ring bg-muted/60;
+}
+
+.radio-option input[type="radio"] {
+  @apply mt-1 size-4 accent-primary;
+}
+
+.radio-option > span {
+  @apply flex flex-col gap-0.5;
+}
+
+.provider-test-result {
+  @apply mt-1 flex flex-wrap items-center gap-2 rounded-lg border border-border px-3 py-2;
+}
+
+.provider-test-result.ok {
+  @apply border-emerald-500/30 bg-emerald-500/5;
+}
+
+.provider-test-result.fail {
+  @apply border-destructive/30 bg-destructive/5;
+}
+
+.model-select {
+  @apply flex h-8 w-full rounded-lg border border-input bg-background px-2.5 text-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50;
 }
 
 .field {
@@ -456,6 +521,18 @@ code.mono {
 
   .sidebar {
     @apply w-full border-r-0 border-b border-sidebar-border;
+  }
+
+  .sidebar.is-collapsed {
+    @apply w-full flex-row flex-wrap items-center gap-2 px-3 py-2;
+  }
+
+  .sidebar.is-collapsed .nav {
+    @apply w-full flex-row flex-wrap;
+  }
+
+  .sidebar.is-collapsed .sidebar-bottom {
+    @apply ml-auto mt-0 border-t-0 pt-0;
   }
 
   .main {

@@ -57,3 +57,22 @@ export {
   type AddSourceOptions,
   type WorkspaceSummary,
 } from "./workspace-store.js";
+export {
+  PROVIDER_FILE_NAME,
+  defaultProviderPath,
+  loadProviderConfig,
+  saveProviderConfig,
+  createModelProfile,
+  updateModelProfile,
+  deleteModelProfile,
+  setDefaultModelProfile,
+  getModelProfile,
+  migrateProviderConfigV1,
+  maskSecret,
+  toModelProfilePublic,
+  toProviderPublic,
+  resolveProviderRuntime,
+  hasProviderCredentials,
+  testProviderConnection,
+  type ResolvedProviderRuntime,
+} from "./provider-store.js";

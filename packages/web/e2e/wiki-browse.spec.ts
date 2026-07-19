@@ -27,13 +27,17 @@ test.describe("published wiki browse", () => {
     await expect(page.getByTestId("run-page")).toBeVisible();
     await page.getByTestId("run-start").click();
     await expect(page.getByTestId("run-list")).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByTestId("run-last-status")).toHaveText("awaiting_publication", {
-      timeout: 20_000,
-    });
+    await expect(page.getByTestId("run-last-status")).toHaveAttribute(
+      "data-status",
+      "awaiting_publication",
+      { timeout: 20_000 },
+    );
     await page.getByTestId("run-approve").click();
-    await expect(page.getByTestId("run-last-status")).toHaveText("published", {
-      timeout: 15_000,
-    });
+    await expect(page.getByTestId("run-last-status")).toHaveAttribute(
+      "data-status",
+      "published",
+      { timeout: 15_000 },
+    );
 
     // 2. Open Wiki tab
     await page.getByTestId("workspace-subnav-wiki").click();

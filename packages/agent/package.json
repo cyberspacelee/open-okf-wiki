@@ -11,10 +11,12 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsc -p tsconfig.json && node --test dist/**/*.test.js"
   },
   "dependencies": {
+    "@ai-sdk/openai": "^2.0.114",
     "@mastra/core": "1.51.0",
     "@okf-wiki/contract": "workspace:*",
     "@okf-wiki/core": "workspace:*",

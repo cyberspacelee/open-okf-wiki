@@ -1,4 +1,5 @@
-import { NavLink } from "react-router-dom";
+import { NavLink, useSearchParams } from "react-router-dom";
+import { workspaceHref } from "../lib/workspace-path";
 
 type Props = {
   workspaceId: string;
@@ -13,14 +14,15 @@ const tabs = [
 ] as const;
 
 export function WorkspaceSubnav({ workspaceId }: Props) {
-  const base = `/workspaces/${encodeURIComponent(workspaceId)}`;
+  const [searchParams] = useSearchParams();
+  const rootPath = searchParams.get("rootPath");
 
   return (
     <nav className="subnav" aria-label="Workspace sections">
       {tabs.map((tab) => (
         <NavLink
           key={tab.label}
-          to={`${base}${tab.suffix}`}
+          to={workspaceHref(workspaceId, tab.suffix, rootPath)}
           end={tab.end}
           className={({ isActive }) => (isActive ? "subnav-link active" : "subnav-link")}
           data-testid={tab.testId}
