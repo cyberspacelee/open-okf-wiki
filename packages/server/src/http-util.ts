@@ -1,14 +1,44 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-/** Vite (and similar) dev servers on any loopback port. */
-const DEV_ORIGIN_RE = /^http:\/\/(localhost|127\.0\.0\.1):\d+$/;
+/** Vite (and similar) on loopback. */
+const LOOPBACK_ORIGIN_RE = /^http:\/\/(localhost|127\.0\.0\.1):\d+$/;
+
+/**
+ * Private / link-local HTTP origins (LAN). Only used when
+ * `OKF_WIKI_ALLOW_LAN=1` so the API is not open to arbitrary sites by default.
+ */
+const PRIVATE_LAN_ORIGIN_RE =
+  /^http:\/\/((10\.\d{1,3}\.\d{1,3}\.\d{1,3})|(192\.168\.\d{1,3}\.\d{1,3})|(172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3})|(\[[0-9a-fA-F:]+\])):\d+$/;
+
+export function isLanAccessEnabled(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const raw = (env.OKF_WIKI_ALLOW_LAN ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+export function isAllowedCorsOrigin(
+  origin: string,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (LOOPBACK_ORIGIN_RE.test(origin)) {
+    return true;
+  }
+  if (isLanAccessEnabled(env) && PRIVATE_LAN_ORIGIN_RE.test(origin)) {
+    return true;
+  }
+  return false;
+}
 
 export function applyCors(req: IncomingMessage, res: ServerResponse): void {
   const origin = req.headers.origin;
-  if (origin && DEV_ORIGIN_RE.test(origin)) {
+  if (origin && isAllowedCorsOrigin(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
+    res.setHeader(
+      "Access-Control-Allow-Methods",
+      "GET, POST, PATCH, DELETE, OPTIONS",
+    );
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept");
     res.setHeader("Access-Control-Max-Age", "86400");
   }

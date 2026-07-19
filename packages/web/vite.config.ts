@@ -11,4 +11,10 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  server: {
+    // 0.0.0.0 = reachable on LAN; override with `vite --host 127.0.0.1` for local-only.
+    host: process.env.VITE_DEV_HOST ?? "0.0.0.0",
+    port: Number(process.env.VITE_DEV_PORT ?? "5173"),
+    strictPort: true,
+  },
 });

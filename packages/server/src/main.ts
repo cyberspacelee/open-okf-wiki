@@ -31,6 +31,7 @@ import {
   applyCors,
   BodyTooLargeError,
   InvalidJsonError,
+  isLanAccessEnabled,
   matchRoute,
   readJsonBody,
   sendError,
@@ -55,13 +56,35 @@ import {
 
 const host = process.env.OKF_WIKI_HOST ?? "127.0.0.1";
 const port = Number(process.env.OKF_WIKI_PORT ?? "8787");
+const allowLan = isLanAccessEnabled();
 
-// Bind loopback only — never default to 0.0.0.0.
-if (host !== "127.0.0.1" && host !== "localhost" && host !== "::1") {
-  process.stderr.write(
-    `refusing to bind non-loopback host "${host}" (set OKF_WIKI_HOST to 127.0.0.1)\n`,
-  );
-  process.exit(1);
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+const LAN_BIND_HOSTS = new Set(["0.0.0.0", "::", "[::]"]);
+
+// Default: loopback only. LAN requires explicit OKF_WIKI_ALLOW_LAN=1.
+if (!LOOPBACK_HOSTS.has(host)) {
+  if (!allowLan) {
+    process.stderr.write(
+      `refusing to bind non-loopback host "${host}" without OKF_WIKI_ALLOW_LAN=1\n` +
+        `  local only:  OKF_WIKI_HOST=127.0.0.1 (default)\n` +
+        `  LAN access:  OKF_WIKI_ALLOW_LAN=1 OKF_WIKI_HOST=0.0.0.0\n`,
+    );
+    process.exit(1);
+  }
+  if (!LAN_BIND_HOSTS.has(host) && !isPrivateOrLinkLocalHost(host)) {
+    process.stderr.write(
+      `refusing to bind host "${host}" even with LAN enabled (use 0.0.0.0 or a private IP)\n`,
+    );
+    process.exit(1);
+  }
+}
+
+function isPrivateOrLinkLocalHost(value: string): boolean {
+  // IPv4 private ranges only (simple operator LAN case).
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(value)) return true;
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(value)) return true;
+  if (/^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(value)) return true;
+  return false;
 }
 
 function runGitVersion(): Promise<{ ok: boolean; version: string | null }> {
@@ -94,6 +117,9 @@ async function handleHealth(_req: IncomingMessage, res: ServerResponse): Promise
     service: "okf-wiki-server",
     version: "0.2.0-dev",
     pid: process.pid,
+    host,
+    port,
+    allowLan,
   });
 }
 
@@ -1267,6 +1293,12 @@ const server = createServer((req, res) => {
 
 server.listen(port, host, () => {
   process.stdout.write(`okf-wiki server listening on http://${host}:${port}\n`);
+  if (allowLan) {
+    process.stdout.write(
+      `LAN access enabled (OKF_WIKI_ALLOW_LAN=1). Use http://<this-machine-ip>:${port} from other devices.\n` +
+        `Point the Web UI at the same host: VITE_API_BASE=http://<this-machine-ip>:${port}\n`,
+    );
+  }
 });
 
 server.on("error", (err: NodeJS.ErrnoException) => {

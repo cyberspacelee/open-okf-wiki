@@ -87,3 +87,64 @@ Web UI end-to-end (Playwright):
 pnpm --filter @okf-wiki/web exec playwright install chromium
 pnpm --filter @okf-wiki/web test:e2e
 ```
+
+## Manual verification
+
+### Same machine (default)
+
+```bash
+# Terminal 1 — API (loopback only)
+pnpm dev:server
+# → http://127.0.0.1:8787
+
+# Terminal 2 — UI
+pnpm dev:web
+# → http://127.0.0.1:5173  (or localhost)
+```
+
+Smoke API:
+
+```bash
+curl -s http://127.0.0.1:8787/api/health
+curl -s http://127.0.0.1:8787/api/doctor
+```
+
+Operator flow in the browser:
+
+1. Open **Workspaces** → create a workspace with an **absolute** root path (e.g. `D:/ws/demo` or `/tmp/demo`).
+2. **Sources** → add a **clean** local Git checkout (absolute path).
+3. **Run** → Start generate (fixture mode without API keys writes `overview.md`).
+4. When status is `awaiting_publication` → **Approve publish**.
+5. **Wiki** → open `overview.md`.
+
+### LAN (another device on the same network)
+
+Server defaults refuse non-loopback binds. Opt in explicitly:
+
+```bash
+# On the host machine — find its LAN IP first, e.g. 192.168.1.20
+# Linux: ip -4 route get 1.1.1.1 | awk '{print $7; exit}'
+# Windows: ipconfig
+
+export OKF_WIKI_ALLOW_LAN=1
+export OKF_WIKI_HOST=0.0.0.0
+export OKF_WIKI_PORT=8787
+pnpm dev:server
+
+# UI must call the API via the LAN IP (not 127.0.0.1)
+export VITE_API_BASE=http://192.168.1.20:8787
+export VITE_DEV_HOST=0.0.0.0
+pnpm dev:web
+```
+
+On another device:
+
+- Open `http://192.168.1.20:5173`
+- API health: `http://192.168.1.20:8787/api/health` (`allowLan: true`)
+
+**Notes**
+
+- Firewall must allow TCP **8787** and **5173** on the host.
+- Workspace/source paths are on the **server machine** filesystem (remote browsers still operate the host’s disks).
+- Only private-range CORS origins are allowed when LAN is enabled (10/8, 172.16–31, 192.168/16).
+- Do not expose this to the public internet; it is a local operator tool with filesystem access.
