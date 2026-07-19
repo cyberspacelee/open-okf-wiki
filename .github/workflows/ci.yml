@@ -20,51 +20,22 @@ jobs:
       - run: pnpm --filter @okf-wiki/contract test
       - run: pnpm --filter @okf-wiki/core test
       - run: pnpm --filter @okf-wiki/agent test
+      - run: pnpm --filter @okf-wiki/server typecheck
+      - run: pnpm --filter @okf-wiki/web typecheck
 
-  legacy-python:
+  web-e2e:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: pnpm/action-setup@v4
         with:
-          version: "0.11.28"
-          enable-cache: true
-      - run: uv python install
-      - run: uv lock --check
-      - run: uv sync --locked
-      - run: uv run --locked ruff format --check .
-      - run: uv run --locked ruff check .
-      - run: uv run --locked ty check src tests
-      - run: git diff --check
-      - run: uv run --locked pytest -m "not package_release"
-      - run: uv run --locked pytest -m package_release tests/test_package_release.py
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @okf-wiki/web exec playwright install chromium --with-deps
+      - run: pnpm --filter @okf-wiki/web test:e2e
         env:
-          OKF_WIKI_RELEASE_DIST: ${{ github.workspace }}/dist
-      - uses: actions/upload-artifact@v4
-        if: success()
-        with:
-          name: release-artifacts
-          path: |
-            dist/*.whl
-            dist/*.tar.gz
-          if-no-files-found: error
-
-  # Portable Host FS smoke (ADR 0017): real-directory publish + prepare gates on Windows.
-  # Legacy Python path; kept until publication parity is fully covered by TypeScript tests.
-  windows-host-fs-smoke:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          version: "0.11.28"
-          enable-cache: true
-      - run: uv python install
-      - run: uv sync --locked
-      - name: Host filesystem smoke tests
-        run: >
-          uv run --locked pytest -q
-          tests/test_wiki_run.py
-          -k "require_supported or legacy_symlink or concurrent_wiki or publication_swap or
-          complete_wiki_run_validates or prepare_rejects_cross_volume or
-          prepare_rejects_host_reparse or disallowed_path_component or content_identical_refresh"
+          CI: "true"

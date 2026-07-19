@@ -4,7 +4,7 @@ OKF Wiki turns a pinned **Repository Snapshot Set** into a source-grounded Markd
 
 The product is a **local Web UI**, a **localhost Node server**, and a **Mastra agent**, with a trusted **Run Boundary** in TypeScript (`@okf-wiki/core`). The operator configures a **Workspace** of local Git checkouts; the agent follows a versioned Producer Skill, writes pages into isolated Staging, and returns a typed terminal result. The Run Boundary freezes snapshots and skill digests, enforces path policy, validates Markdown mechanically, and publishes the whole Wiki atomically.
 
-Vocabulary lives in [CONTEXT.md](CONTEXT.md). Architecture decisions are in [docs/adr/](docs/adr/). The TypeScript monorepo layout is described in [packages/README.md](packages/README.md) and [ADR 0020](docs/adr/0020-typescript-mastra-web-workspace.md). Python is no longer the primary product path ([ADR 0021](docs/adr/0021-retire-python-primary-path.md)).
+Vocabulary lives in [CONTEXT.md](CONTEXT.md). Architecture decisions are in [docs/adr/](docs/adr/). The monorepo layout is described in [packages/README.md](packages/README.md) and [ADR 0020](docs/adr/0020-typescript-mastra-web-workspace.md). The former Python package was removed ([ADR 0021](docs/adr/0021-retire-python-primary-path.md)).
 
 ## Requirements
 
@@ -81,14 +81,9 @@ pnpm typecheck
 
 Or run the workspace test script: `pnpm test`.
 
-## Legacy Python
-
-The Python package under [`src/okf_wiki`](src/okf_wiki) is **frozen legacy**. It is not the primary product path and should not be extended for new features ([ADR 0021](docs/adr/0021-retire-python-primary-path.md), [`src/okf_wiki/LEGACY.md`](src/okf_wiki/LEGACY.md)).
-
-Historically this repository shipped a Pydantic AI CLI / Textual Operator Session. That tree remains for reference and for the optional legacy CI job; new work lands in `packages/*` and `apps/*`.
+Web UI end-to-end (Playwright):
 
 ```bash
-# Optional historical path only — not recommended for new use
-uv sync --locked
-uv run --locked okf-wiki --help
+pnpm --filter @okf-wiki/web exec playwright install chromium
+pnpm --filter @okf-wiki/web test:e2e
 ```

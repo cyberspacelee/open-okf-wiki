@@ -14,12 +14,12 @@ ADR 0006 kept Python as the product harness over Pydantic AI. ADR 0020 adopted T
 1. **Primary product:** TypeScript on Node.js 22+ — local Web UI (`@okf-wiki/web`), localhost server (`@okf-wiki/server`), Mastra agent (`@okf-wiki/agent`), Run Boundary (`@okf-wiki/core`), contracts (`@okf-wiki/contract`), and related packages.
 2. **Python is not primary:** `src/okf_wiki` is **frozen legacy**. Do not extend it for new features, new operator surfaces, or new ADRs that assume a Python-first product.
 3. **ADR 0006:** Historical record only. Its “Python owns the thin harness” decision no longer describes the product. Run Boundary duties live in TypeScript (`@okf-wiki/core`) per ADR 0020.
-4. **Tree retention:** The Python source tree may remain for reference, historical tests, and a legacy CI job. Removal is a separate, explicit cleanup—not required by this decision.
-5. **Documentation and CI:** Root README and monorepo docs are TypeScript / Web-first. CI runs TypeScript package tests as the product path; Python CI, if kept, is labeled legacy.
+4. **Tree removal:** The Python package (`src/okf_wiki`), Python tests, `pyproject.toml` / `uv.lock`, and Python CI jobs are **removed**. Historical Pydantic AI / Textual design remains only in older ADRs and git history.
+5. **Documentation and CI:** Root README and monorepo docs are TypeScript / Web-first. CI runs TypeScript package tests and Web e2e only.
 
 ## Consequences
 
-- New work targets `packages/*` (and `apps/*` when present), not `src/okf_wiki`.
-- Operator onboarding uses `pnpm install`, the local server, and the Web UI—not `uv run okf-wiki` as the default.
-- Follow-up ADRs may still supersede framework-specific wording from older Python/Pydantic AI decisions as TypeScript implementations land.
-- Domain language in CONTEXT.md remains authoritative; implementation package names in prose should prefer `@okf-wiki/*` over `okf_wiki.*` when describing the live product.
+- All product work targets `packages/*` (and `apps/*` when present).
+- Operator onboarding uses `pnpm install`, the local server, and the Web UI.
+- Follow-up ADRs may still supersede framework-specific wording from older Python/Pydantic AI decisions as TypeScript implementations evolve.
+- Domain language in CONTEXT.md remains authoritative; implementation package names in prose use `@okf-wiki/*`.

@@ -24,4 +24,4 @@ pnpm --filter @okf-wiki/cli start doctor
 
 Workspace root scripts: `pnpm dev:server`, `pnpm dev:web`, `pnpm test`, `pnpm typecheck`.
 
-The Python package under `src/okf_wiki` is frozen legacy ([LEGACY.md](../src/okf_wiki/LEGACY.md)) and is not the main path.
+The former Python package was removed ([ADR 0021](../docs/adr/0021-retire-python-primary-path.md)).
