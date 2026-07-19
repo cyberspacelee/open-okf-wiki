@@ -1,4 +1,22 @@
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8787";
+/**
+ * API origin for fetch / EventSource.
+ *
+ * Default: **same origin** (empty string) so the UI works for any host:port
+ * you open (127.0.0.1, localhost, or LAN IP). In dev, Vite proxies `/api` →
+ * the local server (see vite.config.ts).
+ *
+ * Optional override: `VITE_API_BASE=http://host:8787` when the API is not
+ * reverse-proxied on the same origin.
+ */
+function resolveApiBase(): string {
+  const raw = (import.meta.env.VITE_API_BASE as string | undefined)?.trim();
+  if (raw) {
+    return raw.replace(/\/$/, "");
+  }
+  return "";
+}
+
+const API_BASE = resolveApiBase();
 
 export type WorkspaceSummary = {
   id: string;

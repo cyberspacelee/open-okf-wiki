@@ -119,32 +119,28 @@ Operator flow in the browser:
 
 ### LAN (another device on the same network)
 
-Server defaults refuse non-loopback binds. Opt in explicitly:
+No hardcoded IP in the client. The UI uses **same-origin** `/api/*`; Vite proxies to the local API. You only open `http://<host-ip>:5173`.
 
 ```bash
-# On the host machine — find its LAN IP first, e.g. 192.168.1.20
-# Linux: ip -4 route get 1.1.1.1 | awk '{print $7; exit}'
-# Windows: ipconfig
-
+# Host machine — allow API on all interfaces (opt-in)
 export OKF_WIKI_ALLOW_LAN=1
 export OKF_WIKI_HOST=0.0.0.0
 export OKF_WIKI_PORT=8787
 pnpm dev:server
 
-# UI must call the API via the LAN IP (not 127.0.0.1)
-export VITE_API_BASE=http://192.168.1.20:8787
-export VITE_DEV_HOST=0.0.0.0
+# UI (default already listens on 0.0.0.0:5173 and proxies /api → 127.0.0.1:8787)
 pnpm dev:web
 ```
 
-On another device:
+On another device (or this host via LAN IP):
 
-- Open `http://192.168.1.20:5173`
-- API health: `http://192.168.1.20:8787/api/health` (`allowLan: true`)
+1. Find the host IP (e.g. `192.168.1.20` / `ipconfig` / `ip a`).
+2. Open **`http://<host-ip>:5173`** — any reachable IP:port the host has.
+3. Optional direct API check: `http://<host-ip>:8787/api/health` (`allowLan: true`).
 
 **Notes**
 
-- Firewall must allow TCP **8787** and **5173** on the host.
-- Workspace/source paths are on the **server machine** filesystem (remote browsers still operate the host’s disks).
-- Only private-range CORS origins are allowed when LAN is enabled (10/8, 172.16–31, 192.168/16).
-- Do not expose this to the public internet; it is a local operator tool with filesystem access.
+- Firewall: allow TCP **5173** (and **8787** if you hit the API directly).
+- Paths are always on the **host** disk (browser is only a remote control).
+- Optional override if UI and API are not same-origin: `VITE_API_BASE=http://host:8787`.
+- Do not expose this to the public internet.
