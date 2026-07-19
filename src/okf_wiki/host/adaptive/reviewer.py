@@ -64,6 +64,41 @@ def _bound_defect_list(
     return tuple(_bound_defect_text(item) for item in list(values)[:max_items])
 
 
+@dataclass(slots=True)
+class HostWikiReviewer:
+    """Adaptive adapter for the publication :class:`StagingReviewer` protocol.
+
+    Holds Host pre-publish wiring so lifecycle / finalize never see AdaptiveDeps,
+    AdaptivePolicy, or metrics as publication kwargs.
+    """
+
+    model: object
+    settings: ModelSettings
+    source_mount: Path
+    skill_mount: Path
+    staging: Path
+    workspace: AnalysisWorkspace
+    run_id: str
+    policy: AdaptivePolicy
+    root_deps: AdaptiveDeps
+    metrics: _AdaptiveMetrics
+
+    async def review_staging(self, *, emit: Callable[..., None]) -> ReviewDefectsSummary:
+        return await run_host_wiki_reviewer(
+            model=self.model,
+            settings=self.settings,
+            source_mount=self.source_mount,
+            skill_mount=self.skill_mount,
+            staging=self.staging,
+            workspace=self.workspace,
+            run_id=self.run_id,
+            policy=self.policy,
+            root_deps=self.root_deps,
+            metrics=self.metrics,
+            emit=emit,
+        )
+
+
 async def run_host_wiki_reviewer(
     *,
     model: object,
@@ -157,6 +192,7 @@ async def run_host_wiki_reviewer(
 
 __all__ = [
     "HOST_PUBLISH_REVIEWER_NODE_ID",
+    "HostWikiReviewer",
     "ReviewDefectsSummary",
     "run_host_wiki_reviewer",
 ]

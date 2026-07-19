@@ -2,11 +2,11 @@
 
 Owns the post-Complete publication decision so lifecycle stays thin:
 
-  finalize(...) -> PublicationOutcome
+  finalize(PublicationContext) -> PublicationOutcome
 
 Steps when the change summary requires publication:
 
-1. Optional Host Wiki Reviewer (or accept precomputed defects)
+1. Optional Host Wiki Reviewer via :class:`StagingReviewer` (or precomputed defects)
 2. HITL / YOLO via :func:`resolve_publication_approval`
 3. On approve: emit ``publication_started``, filesystem publish, emit
    ``publication_succeeded``
@@ -16,6 +16,9 @@ Wiki Visualization remains lifecycle-owned after a successful publish (ADR 0016)
 
 Host-owned gate using pydantic-ai deferred shapes; not agent-inline deferred
 tools (ADR 0018 shapes compatible).
+
+Adaptive / Harness types stay behind :class:`StagingReviewer` adapters — this
+module does not import AdaptiveDeps, AdaptivePolicy, or metrics.
 """
 
 from __future__ import annotations
@@ -23,27 +26,30 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Protocol
 
-from pydantic_ai import ModelSettings
-
-from ..adaptive.deps import AdaptiveDeps
-from ..adaptive.policy import AdaptivePolicy
-from ..adaptive.reviewer import ReviewDefectsSummary, run_host_wiki_reviewer
+from ..adaptive.reviewer import ReviewDefectsSummary
 from ..models import (
     RepositorySnapshot,
     WikiManifest,
     WikiRunLimits,
     WikiRunRecordStatus,
 )
-from .fs import _publish_wiki, _published_repositories
+from .fs import _publish_wiki, published_repository_views
 from .gate import PublicationApprovalHandler, PublicationDecision, resolve_publication_approval
 from .status import status_awaiting, status_declined, status_published, status_unchanged
 
-if TYPE_CHECKING:
-    from ..analysis.workspace import AnalysisWorkspace
-
 EmitFn = Callable[..., None]
+
+
+class StagingReviewer(Protocol):
+    """Host pre-publish Wiki Reviewer seam (protocol in publication).
+
+    Adaptive implements this with :class:`~okf_wiki.host.adaptive.reviewer.HostWikiReviewer`.
+    Tests inject fakes without AdaptiveDeps / policy wiring.
+    """
+
+    async def review_staging(self, *, emit: EmitFn) -> ReviewDefectsSummary: ...
 
 
 @dataclass(frozen=True)
@@ -61,42 +67,39 @@ class PublicationOutcome:
     decision: PublicationDecision | None = None
 
 
-async def finalize(
-    *,
-    publication_changed: bool,
-    auto_approve: bool,
-    handler: PublicationApprovalHandler | None,
-    emit: EmitFn,
-    sources: Mapping[str, Path],
-    staging: Path,
-    publication: Path,
-    manifest: WikiManifest,
-    repositories: tuple[RepositorySnapshot, ...],
-    skill_digest: str,
-    model_name: str | None,
-    limits: WikiRunLimits,
-    enable_reviewer: bool = False,
-    reviewer_defects: ReviewDefectsSummary | None = None,
-    review_model: object | None = None,
-    review_settings: ModelSettings | None = None,
-    source_mount: Path | None = None,
-    skill_mount: Path | None = None,
-    workspace: AnalysisWorkspace | None = None,
-    run_id: str = "",
-    policy: AdaptivePolicy | None = None,
-    root_deps: AdaptiveDeps | None = None,
-    metrics: Any | None = None,
-) -> PublicationOutcome:
-    """Run pre-publish review, Host approval gate, and optional filesystem publish.
+@dataclass(frozen=True, slots=True)
+class PublicationContext:
+    """Inputs for one Host publication finalize decision.
 
-    Zero product behavior change relative to the previous lifecycle-inlined chain:
+    ``reviewer`` runs only when publication is required and ``reviewer_defects``
+    is not already supplied (precomputed / test path).
+    """
+
+    publication_changed: bool
+    auto_approve: bool
+    handler: PublicationApprovalHandler | None
+    emit: EmitFn
+    sources: Mapping[str, Path]
+    staging: Path
+    publication: Path
+    manifest: WikiManifest
+    repositories: tuple[RepositorySnapshot, ...]
+    skill_digest: str
+    model_name: str | None
+    limits: WikiRunLimits
+    reviewer: StagingReviewer | None = None
+    reviewer_defects: ReviewDefectsSummary | None = None
+
+
+async def finalize(context: PublicationContext) -> PublicationOutcome:
+    """Run pre-publish review, Host approval gate, and optional filesystem publish.
 
     * ``publication_changed=False`` → unchanged / complete (no gate, no review)
     * YOLO / ``auto_approve`` → approve without calling the handler
     * handler approve / deny / None → published / declined / awaiting
-    * Reviewer runs only when ``enable_reviewer`` and no precomputed defects
+    * Reviewer runs only when ``reviewer`` is set and no precomputed defects
     """
-    if not publication_changed:
+    if not context.publication_changed:
         return PublicationOutcome(
             terminal_status="complete",
             publication_status=status_unchanged(),
@@ -105,45 +108,33 @@ async def finalize(
             decision=None,
         )
 
-    defects = reviewer_defects
-    if enable_reviewer and defects is None:
-        defects = await _run_reviewer(
-            review_model=review_model,
-            review_settings=review_settings,
-            source_mount=source_mount,
-            skill_mount=skill_mount,
-            staging=staging,
-            workspace=workspace,
-            run_id=run_id,
-            policy=policy,
-            root_deps=root_deps,
-            metrics=metrics,
-            emit=emit,
-        )
+    defects = context.reviewer_defects
+    if context.reviewer is not None and defects is None:
+        defects = await context.reviewer.review_staging(emit=context.emit)
 
     defects_args: dict[str, object] | None = None if defects is None else defects.as_gate_args()
     decision, _requests, _results = await resolve_publication_approval(
-        auto_approve=auto_approve,
-        handler=handler,
+        auto_approve=context.auto_approve,
+        handler=context.handler,
         defects=defects_args,
     )
     review_fragment = None if defects is None else defects.as_record_fragment()
 
     if decision == "approved":
-        if not model_name:
+        if not context.model_name:
             raise RuntimeError("Final model response did not identify its model")
-        emit("publication_started")
+        context.emit("publication_started")
         _publish_wiki(
-            sources,
-            staging,
-            publication,
-            manifest,
-            repositories=_published_repositories(repositories),
-            skill_digest=skill_digest,
-            model_name=model_name,
-            limits=limits,
+            context.sources,
+            context.staging,
+            context.publication,
+            context.manifest,
+            repositories=published_repository_views(context.repositories),
+            skill_digest=context.skill_digest,
+            model_name=context.model_name,
+            limits=context.limits,
         )
-        emit("publication_succeeded")
+        context.emit("publication_succeeded")
         return PublicationOutcome(
             terminal_status="complete",
             publication_status=status_published(reviewer=review_fragment),
@@ -172,48 +163,9 @@ async def finalize(
     )
 
 
-async def _run_reviewer(
-    *,
-    review_model: object | None,
-    review_settings: ModelSettings | None,
-    source_mount: Path | None,
-    skill_mount: Path | None,
-    staging: Path,
-    workspace: AnalysisWorkspace | None,
-    run_id: str,
-    policy: AdaptivePolicy | None,
-    root_deps: AdaptiveDeps | None,
-    metrics: Any | None,
-    emit: EmitFn,
-) -> ReviewDefectsSummary:
-    """Invoke Host Wiki Reviewer; fail closed only on missing Host wiring."""
-    if (
-        review_model is None
-        or review_settings is None
-        or source_mount is None
-        or skill_mount is None
-        or workspace is None
-        or policy is None
-        or root_deps is None
-        or metrics is None
-    ):
-        raise RuntimeError("Host Wiki Reviewer is enabled but finalize is missing reviewer inputs")
-    return await run_host_wiki_reviewer(
-        model=review_model,
-        settings=review_settings,
-        source_mount=source_mount,
-        skill_mount=skill_mount,
-        staging=staging,
-        workspace=workspace,
-        run_id=run_id,
-        policy=policy,
-        root_deps=root_deps,
-        metrics=metrics,
-        emit=emit,
-    )
-
-
 __all__ = [
+    "PublicationContext",
     "PublicationOutcome",
+    "StagingReviewer",
     "finalize",
 ]

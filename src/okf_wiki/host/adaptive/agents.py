@@ -269,6 +269,128 @@ def _handoff_validator(agent: Agent[AdaptiveDeps, str]) -> None:
         return handoff.model_dump_json()
 
 
+def _assignment_suffix(
+    *,
+    run_id: str,
+    task_id: str,
+    node_id: str,
+    parent_id: str,
+    attempt: int,
+) -> str:
+    return (
+        "Call publish_receipt with named fields matching this Host assignment, not a nested "
+        "receipt object. "
+        f"Host assignment: run_id={run_id}, task_id={task_id}, node_id={node_id}, "
+        f"parent_id={parent_id}, attempt={attempt}."
+    )
+
+
+def _wrap_research_subagent(
+    *,
+    agent: Agent[AdaptiveDeps, str],
+    name: str,
+    task_id: str,
+    node_id: str,
+    parent_id: str,
+    depth: int,
+    role: Role,
+    semaphore: asyncio.Semaphore,
+    parent_semaphore: asyncio.Semaphore | None,
+    retry_request_cost: int,
+    retry_token_cost: int,
+    metrics: _AdaptiveMetrics,
+    emit: Callable[..., None],
+    policy: AdaptivePolicy,
+    usage_role: Literal["domain", "leaf", "reviewer"],
+    timeout_seconds: float,
+    max_calls: int,
+    on_failure: str,
+) -> SubAgent[AdaptiveDeps]:
+    """Shared Agent → handoff validator → BoundedAgent → SubAgent packaging."""
+    agent.instrument = False
+    _handoff_validator(agent)
+    bounded = _BoundedAgent(
+        agent,
+        task_id=task_id,
+        node_id=node_id,
+        parent_id=parent_id,
+        depth=depth,
+        role=role,
+        semaphore=semaphore,
+        parent_semaphore=parent_semaphore,
+        retry_request_cost=retry_request_cost,
+        retry_token_cost=retry_token_cost,
+        metrics=metrics,
+        emit=emit,
+    )
+    return SubAgent(
+        bounded,
+        name=name,
+        usage_limits=_child_limits(policy, usage_role),
+        timeout_seconds=timeout_seconds,
+        max_calls=max_calls,
+        on_failure=on_failure,
+        contain_errors=True,
+    )
+
+
+def _research_agent(
+    *,
+    model: object,
+    settings: ModelSettings,
+    name: str,
+    description: str,
+    instructions: Callable[[RunContext[AdaptiveDeps]], str],
+    workspace: AnalysisWorkspace,
+    policy: AdaptivePolicy,
+    source_mount: Path,
+    skill_mount: Path,
+    staging: Path | None,
+    write_limit: int,
+    wiki_mode: Literal["read-write", "read-only"] | None,
+    extra_capabilities: list[Any],
+    include_planning: bool,
+) -> Agent[AdaptiveDeps, str]:
+    """Build a research-role Agent with context stack, optional Planning, and CodeMode mounts."""
+    capabilities: list[Any] = []
+    if include_planning:
+        capabilities.extend([_OrchestrationEvents(), Planning()])
+    capabilities.extend(
+        build_context_capabilities(
+            model=model,
+            target_tokens=policy.context_target_tokens,
+            workspace=workspace,
+        )
+    )
+    capabilities.extend(extra_capabilities)
+    capabilities.append(
+        CodeMode(
+            max_retries=2,
+            os_access=None,
+            mount=_mounts(
+                source_mount=source_mount,
+                skill_mount=skill_mount,
+                staging=staging,
+                root=False,
+                write_limit=write_limit,
+                wiki_mode=wiki_mode,
+            ),
+        )
+    )
+    return Agent[AdaptiveDeps, str](
+        cast(Any, model),
+        name=name,
+        description=description,
+        deps_type=AdaptiveDeps,
+        output_type=str,
+        instructions=instructions,
+        model_settings=settings,
+        retries=2,
+        toolsets=[_ReceiptToolset()],
+        capabilities=capabilities,
+    )
+
+
 def _make_leaf(
     *,
     model: object,
@@ -294,45 +416,35 @@ def _make_leaf(
         return (
             "You are a Leaf Researcher. Read /skill/references/leaf-research.md in full before "
             "reading /source, then follow it. /source and /skill are read-only; /wiki and further "
-            "delegation are unavailable. Call publish_receipt with named fields matching this "
-            "Host assignment, not a nested receipt object. "
-            f"Host assignment: run_id={run_id}, task_id={task_id}, node_id={node_id}, "
-            f"parent_id={parent_id}, attempt={deps.attempt}."
+            "delegation are unavailable. "
+            + _assignment_suffix(
+                run_id=run_id,
+                task_id=task_id,
+                node_id=node_id,
+                parent_id=parent_id,
+                attempt=deps.attempt,
+            )
         )
 
-    agent = Agent[AdaptiveDeps, str](
-        cast(Any, model),
+    agent = _research_agent(
+        model=model,
+        settings=settings,
         name=f"leaf_{index}",
         description="Investigate one self-contained source scope and publish a bounded receipt.",
-        deps_type=AdaptiveDeps,
-        output_type=str,
         instructions=leaf_instructions,
-        model_settings=settings,
-        retries=2,
-        toolsets=[_ReceiptToolset()],
-        capabilities=[
-            *build_context_capabilities(
-                model=model,
-                target_tokens=policy.context_target_tokens,
-                workspace=workspace,
-            ),
-            CodeMode(
-                max_retries=2,
-                os_access=None,
-                mount=_mounts(
-                    source_mount=source_mount,
-                    skill_mount=skill_mount,
-                    staging=None,
-                    root=False,
-                    write_limit=0,
-                ),
-            ),
-        ],
+        workspace=workspace,
+        policy=policy,
+        source_mount=source_mount,
+        skill_mount=skill_mount,
+        staging=None,
+        write_limit=0,
+        wiki_mode=None,
+        extra_capabilities=[],
+        include_planning=False,
     )
-    agent.instrument = False
-    _handoff_validator(agent)
-    bounded = _BoundedAgent(
-        agent,
+    return _wrap_research_subagent(
+        agent=agent,
+        name=f"leaf_{index}",
         task_id=task_id,
         node_id=node_id,
         parent_id=parent_id,
@@ -344,18 +456,14 @@ def _make_leaf(
         retry_token_cost=policy.leaf_total_tokens_limit,
         metrics=metrics,
         emit=emit,
-    )
-    return SubAgent(
-        bounded,
-        name=f"leaf_{index}",
-        usage_limits=_child_limits(policy, "leaf"),
+        policy=policy,
+        usage_role="leaf",
         timeout_seconds=policy.leaf_timeout_seconds,
         # One intentional Host retry; tool_retries covers transient ModelRetry only.
         max_calls=2,
         on_failure=(
             "Leaf incomplete. Retry once within budget, else leave unresolved and continue."
         ),
-        contain_errors=True,
     )
 
 
@@ -400,38 +508,31 @@ def _make_domain(
         else []
     )
     leaf_agents = [entry.agent for entry in leaves]
-    leaf_capability: object
+    extra_capabilities: list[Any] = []
     if policy.dynamic_workflow and leaves:
         # DynamicWorkflow is intentionally one-layer only. Leaf agents have no
         # DynamicWorkflow capability, so nesting cannot be silently introduced.
-        leaf_capability = DynamicWorkflow(
-            agents=[WorkflowAgent(cast(Any, agent)) for agent in leaf_agents],
-            max_agent_calls=policy.domain_fanout,
-            max_retries=2,
-            forward_usage=False,
-            sub_agent_usage_limits=_child_limits(policy, "leaf"),
+        extra_capabilities.append(
+            DynamicWorkflow(
+                agents=[WorkflowAgent(cast(Any, agent)) for agent in leaf_agents],
+                max_agent_calls=policy.domain_fanout,
+                max_retries=2,
+                forward_usage=False,
+                sub_agent_usage_limits=_child_limits(policy, "leaf"),
+            )
         )
     elif leaves:
-        leaf_capability = SubAgents(
-            agents=leaves,
-            agent_folders=None,
-            inherit_tools=False,
-            forward_usage=False,
-            # max_calls=2 owns the intentional second attempt; keep tool retries thin.
-            tool_retries=1,
-            contain_errors=True,
+        extra_capabilities.append(
+            SubAgents(
+                agents=leaves,
+                agent_folders=None,
+                inherit_tools=False,
+                forward_usage=False,
+                # max_calls=2 owns the intentional second attempt; keep tool retries thin.
+                tool_retries=1,
+                contain_errors=True,
+            )
         )
-    domain_capabilities: list[Any] = [
-        _OrchestrationEvents(),
-        Planning(),
-        *build_context_capabilities(
-            model=model,
-            target_tokens=policy.context_target_tokens,
-            workspace=workspace,
-        ),
-    ]
-    if leaves:
-        domain_capabilities.append(cast(Any, leaf_capability))
 
     def domain_instructions(ctx: RunContext[AdaptiveDeps]) -> str:
         deps = _require_deps(ctx)
@@ -441,41 +542,35 @@ def _make_domain(
             "A DynamicWorkflow cannot be nested. When two independent Leaf scopes are needed, fan "
             "them out in one CodeMode script with asyncio.gather over delegate_task (or the "
             "optional DynamicWorkflow); do not serialize independent Leaf work. Every "
-            "delegate_task must be self-contained. Call publish_receipt with named fields matching "
-            "this Host assignment, not a nested receipt object. "
-            f"Host assignment: run_id={run_id}, task_id={task_id}, node_id={task_id}, "
-            f"parent_id=root, attempt={deps.attempt}."
+            "delegate_task must be self-contained. "
+            + _assignment_suffix(
+                run_id=run_id,
+                task_id=task_id,
+                node_id=task_id,
+                parent_id="root",
+                attempt=deps.attempt,
+            )
         )
 
-    agent = Agent[AdaptiveDeps, str](
-        cast(Any, model),
+    agent = _research_agent(
+        model=model,
+        settings=settings,
         name=f"domain_{index}",
         description="Research one bounded domain and reduce child receipts into one handoff.",
-        deps_type=AdaptiveDeps,
-        output_type=str,
         instructions=domain_instructions,
-        model_settings=settings,
-        retries=2,
-        toolsets=[_ReceiptToolset()],
-        capabilities=[
-            *domain_capabilities,
-            CodeMode(
-                max_retries=2,
-                os_access=None,
-                mount=_mounts(
-                    source_mount=source_mount,
-                    skill_mount=skill_mount,
-                    staging=None,
-                    root=False,
-                    write_limit=write_limit,
-                ),
-            ),
-        ],
+        workspace=workspace,
+        policy=policy,
+        source_mount=source_mount,
+        skill_mount=skill_mount,
+        staging=None,
+        write_limit=write_limit,
+        wiki_mode=None,
+        extra_capabilities=extra_capabilities,
+        include_planning=True,
     )
-    agent.instrument = False
-    _handoff_validator(agent)
-    bounded = _BoundedAgent(
-        agent,
+    return _wrap_research_subagent(
+        agent=agent,
+        name=f"domain_{index}",
         task_id=task_id,
         node_id=task_id,
         parent_id="root",
@@ -487,17 +582,13 @@ def _make_domain(
         retry_token_cost=policy.domain_total_tokens_limit,
         metrics=metrics,
         emit=emit,
-    )
-    return SubAgent(
-        bounded,
-        name=f"domain_{index}",
-        usage_limits=_child_limits(policy, "domain"),
+        policy=policy,
+        usage_role="domain",
         timeout_seconds=policy.child_timeout_seconds,
         max_calls=2,
         on_failure=(
             "Domain incomplete. Retry once within budget, else leave unresolved and fallback."
         ),
-        contain_errors=True,
     )
 
 
@@ -526,52 +617,39 @@ def _make_reviewer(
         return (
             "You are a Wiki Reviewer. Read /skill/references/review.md in full before inspecting "
             "/wiki or /source, then follow it. /source, /skill, and /wiki are read-only; you cannot "
-            "delegate or write Wiki pages. Publish a defects receipt through publish_receipt with "
-            "named fields matching this Host assignment, not a nested receipt object. Root remains "
-            "the only writer and will decide how to repair. "
-            f"Host assignment: run_id={run_id}, task_id={task_id}, node_id={task_id}, "
-            f"parent_id=root, attempt={deps.attempt}."
+            "delegate or write Wiki pages. Root remains the only writer and will decide how to "
+            "repair. "
+            + _assignment_suffix(
+                run_id=run_id,
+                task_id=task_id,
+                node_id=task_id,
+                parent_id="root",
+                attempt=deps.attempt,
+            )
         )
 
-    agent = Agent[AdaptiveDeps, str](
-        cast(Any, model),
+    agent = _research_agent(
+        model=model,
+        settings=settings,
         name=task_id,
         description=(
             "Independently review staged Wiki pages against source and the Producer Skill review "
             "checklist; publish a bounded defects receipt."
         ),
-        deps_type=AdaptiveDeps,
-        output_type=str,
         instructions=reviewer_instructions,
-        model_settings=settings,
-        retries=2,
-        toolsets=[_ReceiptToolset()],
-        capabilities=[
-            _OrchestrationEvents(),
-            Planning(),
-            *build_context_capabilities(
-                model=model,
-                target_tokens=policy.context_target_tokens,
-                workspace=workspace,
-            ),
-            CodeMode(
-                max_retries=2,
-                os_access=None,
-                mount=_mounts(
-                    source_mount=source_mount,
-                    skill_mount=skill_mount,
-                    staging=staging,
-                    root=False,
-                    write_limit=0,
-                    wiki_mode="read-only",
-                ),
-            ),
-        ],
+        workspace=workspace,
+        policy=policy,
+        source_mount=source_mount,
+        skill_mount=skill_mount,
+        staging=staging,
+        write_limit=0,
+        wiki_mode="read-only",
+        extra_capabilities=[],
+        include_planning=True,
     )
-    agent.instrument = False
-    _handoff_validator(agent)
-    bounded = _BoundedAgent(
-        agent,
+    return _wrap_research_subagent(
+        agent=agent,
+        name=task_id,
         task_id=task_id,
         node_id=task_id,
         parent_id="root",
@@ -583,18 +661,14 @@ def _make_reviewer(
         retry_token_cost=policy.reviewer_total_tokens_limit,
         metrics=metrics,
         emit=emit,
-    )
-    return SubAgent(
-        bounded,
-        name=task_id,
-        usage_limits=_child_limits(policy, "reviewer"),
+        policy=policy,
+        usage_role="reviewer",
         timeout_seconds=policy.child_timeout_seconds,
         # One Reviewer roster slot; max_calls=2 allows the single intentional retry.
         max_calls=max_calls,
         on_failure=(
             "Review incomplete. Retry once within budget; do not claim Complete if still unresolved."
         ),
-        contain_errors=True,
     )
 
 

@@ -1,25 +1,22 @@
-"""Wiki Run records: load, write, manual retry assembly, and secret redaction.
+"""Wiki Run records: load, write, and Manual Retry assembly.
 
 **Manual Retry path** for request assembly lives here (``_manual_retry_request``),
 exposed publicly as :meth:`okf_wiki.host.models.WikiRunRequest.from_run_record`.
+
+Event payload sanitization and model-error redaction live in
+:mod:`okf_wiki.host.events` (re-exported here for compatibility).
 
 Sibling assembly entry points:
 
 * YAML — :mod:`okf_wiki.host.config` (``WikiRunRequest.from_yaml``)
 * Programmatic — construct :class:`~okf_wiki.host.models.WikiRunRequest` / factories
   in :mod:`okf_wiki.host.models` directly
-
-Secret-setting key markers (``_SECRET_SETTING_MARKERS``) are imported from
-:mod:`okf_wiki.host.security` — do not redefine them here.
 """
 
 from __future__ import annotations
 
 import json
-import os
-import re
-import uuid
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import cast
@@ -38,7 +35,12 @@ from .models import (
     WikiRunRecordStatus,
     WikiRunRequest,
 )
-from .mounts import _check_directory_path, _create_directory_path
+from .events import (
+    exception_chain,
+    safe_model_error,
+    sanitize_event_payload,
+)
+from .filesystem import check_directory_path, create_directory_path, write_bytes_atomically
 from .security import (
     _SECRET_SETTING_MARKERS,
     environment_secrets,
@@ -46,22 +48,10 @@ from .security import (
     redact_secrets,
 )
 
-
-def _exception_chain(error: BaseException) -> Iterator[BaseException]:
-    seen: set[int] = set()
-    pending: list[BaseException] = [error]
-    while pending:
-        current = pending.pop()
-        if id(current) in seen:
-            continue
-        seen.add(id(current))
-        yield current
-        if isinstance(current, BaseExceptionGroup):
-            pending.extend(current.exceptions)
-        if current.__cause__ is not None:
-            pending.append(current.__cause__)
-        if current.__context__ is not None:
-            pending.append(current.__context__)
+# Compatibility re-exports / aliases.
+_exception_chain = exception_chain
+_safe_model_error = safe_model_error
+_event_payload = sanitize_event_payload
 
 
 def _model_secret_values(settings: Mapping[str, object]) -> tuple[str, ...]:
@@ -86,15 +76,6 @@ def _model_secret_values(settings: Mapping[str, object]) -> tuple[str, ...]:
     collect(settings, sensitive=False)
     values.update(environment_secrets())
     return tuple(values)
-
-
-def _safe_model_error(error: Exception, settings: Mapping[str, object]) -> str | None:
-    secrets = _model_secret_values(settings)
-    if secrets and any(
-        redact_secrets(str(item), secrets) != str(item) for item in _exception_chain(error)
-    ):
-        return f"{type(error).__name__}: model provider diagnostics withheld"
-    return None
 
 
 _RUN_RECORD_MAX_BYTES = 128 * 1024
@@ -170,60 +151,6 @@ def _record_usage(usage: object, extra: Mapping[str, object] | None = None) -> d
             base_value = cast(int | float, result[key])
             result[key] = int(base_value) + int(increment)
         result["total_tokens"] = int(result["input_tokens"]) + int(result["output_tokens"])
-    return result
-
-
-# Allow PascalCase exception type names (e.g. OSError) as bounded diagnostic labels.
-_EVENT_ENUM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")
-_EVENT_SAFE_KEYS = {
-    "attempt",
-    "changed",
-    "count",
-    "depth",
-    "duration_seconds",
-    "dynamic_workflow",
-    "reviewer",
-    "fanout",
-    "retries",
-    "kind",
-    "node_kind",
-    "reason_code",
-    "error_type",
-    "status",
-    "total",
-    "wait_seconds",
-    "active",
-    "max_active",
-    "concurrency",
-    "critical_failures",
-    "receipt_bytes",
-    "requests",
-    "tool_calls",
-    "input_tokens",
-    "output_tokens",
-    "total_tokens",
-    "provider_attempts",
-    "provider_possible_duplicates",
-    "fallback",
-    "context_tokens",
-    "warning_tokens",
-    "before_tokens",
-    "target_tokens",
-    "defect_count",
-}
-
-
-def _event_payload(payload: Mapping[str, object]) -> dict[str, object]:
-    """Keep public diagnostics to bounded counters and enum-like labels."""
-    result: dict[str, object] = {}
-    for raw_key, value in list(payload.items())[:32]:
-        key = str(raw_key)[:64]
-        if key not in _EVENT_SAFE_KEYS:
-            continue
-        if isinstance(value, bool) or isinstance(value, (int, float)):
-            result[key] = value
-        elif isinstance(value, str) and _EVENT_ENUM_RE.fullmatch(value):
-            result[key] = value
     return result
 
 
@@ -357,7 +284,7 @@ def _manual_retry_request(
     )
 
 
-def _record_publication_path(value: Path) -> Path | None:
+def record_publication_path(value: Path) -> Path | None:
     """Best-effort absolute publication path for run records.
 
     Prefer a resolved parent + final name when the filesystem cooperates. On failure,
@@ -377,30 +304,16 @@ def _record_publication_path(value: Path) -> Path | None:
         return candidate
 
 
+_record_publication_path = record_publication_path
+
+
 def _write_json_atomically(path: Path, data: bytes, *, max_bytes: int, label: str) -> None:
-    if len(data) > max_bytes:
-        raise ValueError(f"{label} exceeds the configured byte limit")
-    _check_directory_path(path.parent, f"{label} parent")
-    _create_directory_path(path.parent, f"{label} parent")
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(temporary, flags, 0o600)
-        try:
-            view = memoryview(data)
-            while view:
-                view = view[os.write(descriptor, view) :]
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        if os.path.lexists(path):
-            raise ValueError(f"{label} already exists")
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    check_directory_path(path.parent, f"{label} parent")
+    create_directory_path(path.parent, f"{label} parent")
+    write_bytes_atomically(path, data, max_bytes=max_bytes, label=label)
 
 
-def _write_run_record(
+def write_run_record(
     request: WikiRunRequest,
     *,
     run_id: str,
@@ -462,3 +375,17 @@ def _write_run_record(
         max_bytes=_RUN_RECORD_MAX_BYTES,
         label="Wiki Run Record",
     )
+
+
+# Private alias kept for test monkeypatches during the deepening transition.
+_write_run_record = write_run_record
+
+
+__all__ = [
+    "exception_chain",
+    "load_run_record",
+    "record_publication_path",
+    "safe_model_error",
+    "sanitize_event_payload",
+    "write_run_record",
+]

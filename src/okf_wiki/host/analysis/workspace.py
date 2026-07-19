@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import shutil
 import tempfile
@@ -640,28 +639,9 @@ def _bounded_utf8_slice(raw: bytes, offset: int, limit: int) -> tuple[int, str]:
 
 
 def _write_atomic(path: Path, data: bytes, max_bytes: int, label: str) -> None:
-    if len(data) > max_bytes:
-        raise ValueError(f"{label} exceeds the configured byte limit")
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        descriptor = os.open(
-            temporary,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-        )
-        try:
-            view = memoryview(data)
-            while view:
-                view = view[os.write(descriptor, view) :]
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        if os.path.lexists(path):
-            raise ValueError(f"{label} already exists")
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    from ..filesystem import write_bytes_atomically
+
+    write_bytes_atomically(path, data, max_bytes=max_bytes, label=label)
 
 
 __all__ = [

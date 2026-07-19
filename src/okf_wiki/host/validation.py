@@ -30,9 +30,10 @@ _TEMPORARY_SUFFIXES = (".swp", ".swo", ".temp", ".tmp", "~")
 VISUALIZATION_DIR_NAME = "viz"
 
 
-def _validate_wiki(
+def validate_wiki(
     sources: Mapping[str, Path], root: Path, manifest: WikiManifest, limits: WikiRunLimits
 ) -> list[str]:
+    """Mechanically validate a Staging or release Wiki tree against Host invariants."""
     errors: list[str] = []
     actual_pages: set[str] = set()
     unreadable_pages: set[str] = set()
@@ -166,6 +167,10 @@ def _validate_wiki(
     return errors
 
 
+# Private alias kept for in-package call sites during the deepening transition.
+_validate_wiki = validate_wiki
+
+
 def _read_frontmatter(text: str, page: str) -> tuple[str, list[str]]:
     lines = text.splitlines(keepends=True)
     if not lines or lines[0].rstrip("\r\n") != "---":
@@ -246,15 +251,20 @@ def _is_temporary(name: str) -> bool:
     return name in _TEMPORARY_NAMES or name.startswith(".#") or name.endswith(_TEMPORARY_SUFFIXES)
 
 
-def _hashes(root: Path, paths: list[str]) -> dict[str, str]:
+def page_hashes(root: Path, paths: list[str]) -> dict[str, str]:
+    """SHA-256 digests for the listed relative paths under ``root``."""
     return {
         path: hashlib.sha256(root.joinpath(*PurePosixPath(path).parts).read_bytes()).hexdigest()
         for path in sorted(paths)
     }
 
 
+# Private alias kept for in-package call sites during the deepening transition.
+_hashes = page_hashes
+
+
 def _tree_hashes(root: Path) -> dict[str, str]:
-    return _hashes(
+    return page_hashes(
         root,
         [path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()],
     )
@@ -263,3 +273,10 @@ def _tree_hashes(root: Path) -> dict[str, str]:
 def _content_digest(hashes: dict[str, str]) -> str:
     canonical = json.dumps(hashes, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(canonical).hexdigest()
+
+
+__all__ = [
+    "VISUALIZATION_DIR_NAME",
+    "page_hashes",
+    "validate_wiki",
+]

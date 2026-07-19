@@ -94,7 +94,7 @@ def test_record_write_failure_is_observable_without_changing_publication(
     def fail_record(*_: object, **__: object) -> None:
         raise OSError("record storage unavailable")
 
-    monkeypatch.setattr("okf_wiki.host.records._write_run_record", fail_record)
+    monkeypatch.setattr("okf_wiki.host.records.write_run_record", fail_record)
     result = asyncio.run(
         WikiRunApplication(observer=events.append).run(
             WikiRunRequest(
@@ -752,7 +752,7 @@ def test_optional_reviewer_model_is_wired_into_host_review(
             defect_count=1,
         )
 
-    monkeypatch.setattr("okf_wiki.host.publication.finalize.run_host_wiki_reviewer", capture_review)
+    monkeypatch.setattr("okf_wiki.host.adaptive.reviewer.run_host_wiki_reviewer", capture_review)
 
     result = asyncio.run(
         WikiRunApplication().run(

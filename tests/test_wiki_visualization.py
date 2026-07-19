@@ -215,7 +215,7 @@ def test_viz_cli_generates_artifacts(
 def test_publication_validation_ignores_top_level_viz_directory(tmp_path: Path) -> None:
     """viz/ under a publication must not be treated as wiki pages requiring citations."""
     from okf_wiki.host import WikiManifest, WikiRunLimits
-    from okf_wiki.host.validation import _validate_wiki
+    from okf_wiki.host.validation import validate_wiki
 
     staging = tmp_path / "staging"
     staging.mkdir()
@@ -231,7 +231,7 @@ def test_publication_validation_ignores_top_level_viz_directory(tmp_path: Path) 
     source.mkdir()
     (source / "README.md").write_text("line\n", encoding="utf-8")
 
-    errors = _validate_wiki(
+    errors = validate_wiki(
         {"repo": source},
         staging,
         WikiManifest(pages=["index.md"]),
@@ -245,7 +245,7 @@ def test_refresh_stage_tolerates_viz_artifacts_under_publication(tmp_path: Path)
     from okf_wiki.host import WikiRunLimits
     from okf_wiki.host.publication.fs import (
         PUBLICATION_METADATA_NAME,
-        _stage_published_wiki,
+        stage_published_wiki_for_refresh,
     )
     from okf_wiki.host.validation import _content_digest
 
@@ -280,7 +280,9 @@ def test_refresh_stage_tolerates_viz_artifacts_under_publication(tmp_path: Path)
 
     staging = tmp_path / "staging"
     staging.mkdir()
-    page_hashes, _repos, _skill = _stage_published_wiki(publication, staging, WikiRunLimits())
+    page_hashes, _repos, _skill = stage_published_wiki_for_refresh(
+        publication, staging, WikiRunLimits()
+    )
     assert page_hashes == {"index.md": page_hash}
     assert (staging / "index.md").is_file()
     assert not (staging / VISUALIZATION_DIR_NAME).exists()

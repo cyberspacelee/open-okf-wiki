@@ -8,12 +8,15 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from pydantic_ai import ModelSettings
 
 import okf_wiki.host.publication.finalize as finalize_mod
 from okf_wiki.host.adaptive.reviewer import ReviewDefectsSummary
 from okf_wiki.host.models import WikiManifest, WikiRunLimits
-from okf_wiki.host.publication.finalize import PublicationOutcome, finalize
+from okf_wiki.host.publication.finalize import (
+    PublicationContext,
+    PublicationOutcome,
+    finalize,
+)
 from okf_wiki.host.publication.gate import build_approve_results, build_deny_results
 from okf_wiki.host.publication.status import (
     status_awaiting,
@@ -35,9 +38,9 @@ def _events() -> tuple[list[tuple[str, object | None]], Any]:
     return seen, emit
 
 
-def _base_kwargs(tmp_path: Path, emit: Any, **overrides: Any) -> Any:
-    """Build kwargs for ``finalize``; typed as Any so call-site spreads type-check."""
-    kwargs: dict[str, Any] = {
+def _context(tmp_path: Path, emit: Any, **overrides: Any) -> PublicationContext:
+    """Build a PublicationContext; overrides replace constructor fields."""
+    fields: dict[str, Any] = {
         "publication_changed": True,
         "auto_approve": False,
         "handler": None,
@@ -50,10 +53,11 @@ def _base_kwargs(tmp_path: Path, emit: Any, **overrides: Any) -> Any:
         "skill_digest": "a" * 64,
         "model_name": "test-model",
         "limits": LIMITS,
-        "enable_reviewer": False,
+        "reviewer": None,
+        "reviewer_defects": None,
     }
-    kwargs.update(overrides)
-    return kwargs
+    fields.update(overrides)
+    return PublicationContext(**fields)
 
 
 def test_unchanged_skips_gate_and_publish(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -62,7 +66,7 @@ def test_unchanged_skips_gate_and_publish(tmp_path: Path, monkeypatch: pytest.Mo
     # Patch via the module object: package re-exports `finalize` as the function.
     monkeypatch.setattr(finalize_mod, "_publish_wiki", publish)
 
-    outcome = asyncio.run(finalize(**_base_kwargs(tmp_path, emit, publication_changed=False)))
+    outcome = asyncio.run(finalize(_context(tmp_path, emit, publication_changed=False)))
 
     assert outcome == PublicationOutcome(
         terminal_status="complete",
@@ -80,7 +84,7 @@ def test_yolo_approves_and_publishes(tmp_path: Path, monkeypatch: pytest.MonkeyP
     publish = MagicMock()
     monkeypatch.setattr(finalize_mod, "_publish_wiki", publish)
 
-    outcome = asyncio.run(finalize(**_base_kwargs(tmp_path, emit, auto_approve=True)))
+    outcome = asyncio.run(finalize(_context(tmp_path, emit, auto_approve=True)))
 
     assert outcome.published is True
     assert outcome.terminal_status == "complete"
@@ -98,7 +102,7 @@ def test_awaiting_without_handler_or_yolo(tmp_path: Path, monkeypatch: pytest.Mo
     publish = MagicMock()
     monkeypatch.setattr(finalize_mod, "_publish_wiki", publish)
 
-    outcome = asyncio.run(finalize(**_base_kwargs(tmp_path, emit)))
+    outcome = asyncio.run(finalize(_context(tmp_path, emit)))
 
     assert outcome.published is False
     assert outcome.terminal_status == "awaiting_publication"
@@ -116,7 +120,7 @@ def test_handler_deny_declines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     def handler(requests):
         return build_deny_results(requests)
 
-    outcome = asyncio.run(finalize(**_base_kwargs(tmp_path, emit, handler=handler)))
+    outcome = asyncio.run(finalize(_context(tmp_path, emit, handler=handler)))
 
     assert outcome.published is False
     assert outcome.terminal_status == "publication_declined"
@@ -134,7 +138,7 @@ def test_handler_approve_publishes(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     def handler(requests):
         return build_approve_results(requests)
 
-    outcome = asyncio.run(finalize(**_base_kwargs(tmp_path, emit, handler=handler)))
+    outcome = asyncio.run(finalize(_context(tmp_path, emit, handler=handler)))
 
     assert outcome.published is True
     assert outcome.terminal_status == "complete"
@@ -151,7 +155,7 @@ def test_approved_without_model_name_raises(
     monkeypatch.setattr(finalize_mod, "_publish_wiki", publish)
 
     with pytest.raises(RuntimeError, match="did not identify its model"):
-        asyncio.run(finalize(**_base_kwargs(tmp_path, emit, auto_approve=True, model_name="")))
+        asyncio.run(finalize(_context(tmp_path, emit, auto_approve=True, model_name="")))
     publish.assert_not_called()
     assert events == []  # do not emit publication_started before model_name is known
 
@@ -161,7 +165,6 @@ def test_precomputed_defects_skip_reviewer(tmp_path: Path, monkeypatch: pytest.M
     publish = MagicMock()
     monkeypatch.setattr(finalize_mod, "_publish_wiki", publish)
     reviewer = AsyncMock()
-    monkeypatch.setattr(finalize_mod, "run_host_wiki_reviewer", reviewer)
 
     defects = ReviewDefectsSummary(
         status="complete",
@@ -171,53 +174,44 @@ def test_precomputed_defects_skip_reviewer(tmp_path: Path, monkeypatch: pytest.M
     )
     outcome = asyncio.run(
         finalize(
-            **_base_kwargs(
+            _context(
                 tmp_path,
                 emit,
                 auto_approve=True,
-                enable_reviewer=True,
+                reviewer=reviewer,
                 reviewer_defects=defects,
             )
         )
     )
 
-    reviewer.assert_not_called()
+    reviewer.review_staging.assert_not_called()
     assert outcome.reviewer_defects is defects
     assert outcome.publication_status == status_published(reviewer=defects.as_record_fragment())
     assert [event for event, _ in events] == ["publication_started", "publication_succeeded"]
 
 
-def test_enable_reviewer_invokes_host_reviewer(
+def test_reviewer_port_invokes_staging_reviewer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     events, emit = _events()
     publish = MagicMock()
     monkeypatch.setattr(finalize_mod, "_publish_wiki", publish)
     defects = ReviewDefectsSummary(status="partial", summary="needs work", defect_count=2)
-    reviewer = AsyncMock(return_value=defects)
-    monkeypatch.setattr(finalize_mod, "run_host_wiki_reviewer", reviewer)
+    reviewer = AsyncMock()
+    reviewer.review_staging = AsyncMock(return_value=defects)
 
     outcome = asyncio.run(
         finalize(
-            **_base_kwargs(
+            _context(
                 tmp_path,
                 emit,
                 auto_approve=True,
-                enable_reviewer=True,
-                review_model=object(),
-                review_settings=ModelSettings(),
-                source_mount=tmp_path / "source-mount",
-                skill_mount=tmp_path / "skill-mount",
-                workspace=object(),
-                run_id="ab" * 16,
-                policy=object(),
-                root_deps=object(),
-                metrics=object(),
+                reviewer=reviewer,
             )
         )
     )
 
-    reviewer.assert_awaited_once()
+    reviewer.review_staging.assert_awaited_once()
     assert outcome.reviewer_defects is defects
     assert outcome.publication_status["reviewer"] == defects.as_record_fragment()
     assert [event for event, _ in events] == ["publication_started", "publication_succeeded"]
@@ -232,10 +226,9 @@ def test_awaiting_attaches_reviewer_fragment(
 
     outcome = asyncio.run(
         finalize(
-            **_base_kwargs(
+            _context(
                 tmp_path,
                 emit,
-                enable_reviewer=True,
                 reviewer_defects=defects,
             )
         )
@@ -259,9 +252,7 @@ def test_yolo_takes_precedence_over_handler(
         called = True
         return build_deny_results(requests)
 
-    outcome = asyncio.run(
-        finalize(**_base_kwargs(tmp_path, emit, auto_approve=True, handler=handler))
-    )
+    outcome = asyncio.run(finalize(_context(tmp_path, emit, auto_approve=True, handler=handler)))
 
     assert called is False
     assert outcome.published is True
@@ -269,15 +260,47 @@ def test_yolo_takes_precedence_over_handler(
 
 
 def test_public_exports() -> None:
+    from okf_wiki.host import PublicationContext as HostContext
     from okf_wiki.host import PublicationOutcome as HostOutcome
     from okf_wiki.host import finalize as host_finalize
+    from okf_wiki.host.publication import PublicationContext as PubContext
     from okf_wiki.host.publication import PublicationOutcome as PubOutcome
     from okf_wiki.host.publication.finalize import finalize as sub_finalize
 
     assert HostOutcome is PublicationOutcome
     assert PubOutcome is PublicationOutcome
+    assert HostContext is PublicationContext
+    assert PubContext is PublicationContext
     assert host_finalize is finalize
     assert sub_finalize is finalize
     # Package must not shadow the finalize submodule with the function.
     assert finalize_mod is not finalize
     assert hasattr(finalize_mod, "_publish_wiki")
+
+
+def test_assess_staging_changes_provenance(tmp_path: Path) -> None:
+    from okf_wiki.host.models import RepositorySnapshot
+    from okf_wiki.host.publication.accept import assess_staging_changes
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    page = "---\ntitle: T\n---\n# T\n\n[s](repo:a.md#L1-L1)\n"
+    (staging / "index.md").write_text(page, encoding="utf-8")
+
+    assessment = assess_staging_changes(
+        staging=staging,
+        pages=["index.md"],
+        old_hashes={},
+        old_repositories=None,
+        old_skill_digest=None,
+        operation="generate",
+        repositories=(
+            RepositorySnapshot(
+                path=tmp_path / "repo",
+                revision="a" * 40,
+            ),
+        ),
+        skill_digest="b" * 64,
+    )
+    assert assessment.summary.publication_changed is True
+    assert "index.md" in assessment.new_hashes

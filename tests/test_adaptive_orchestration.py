@@ -35,6 +35,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from okf_wiki.host.adaptive import (
     AdaptivePolicy,
     build_root_agent,
+    build_root_assembly,
     should_enable_adaptive,
 )
 from okf_wiki.host.analysis.workspace import AnalysisWorkspace
@@ -267,6 +268,59 @@ def test_small_scope_keeps_codemode_without_adaptive_roster(tmp_path: Path) -> N
         workspace.cleanup()
 
 
+def test_root_assembly_topology_snapshot_is_host_facing(tmp_path: Path) -> None:
+    """Topology assertions go through RootAssembly, not Harness capability graphs."""
+    source = tmp_path / "source"
+    skill = tmp_path / "skill"
+    staging = tmp_path / "staging"
+    source.mkdir()
+    skill.mkdir()
+    staging.mkdir()
+    workspace = AnalysisWorkspace("a" * 32, root=tmp_path / "analysis")
+    try:
+        assembly = build_root_assembly(
+            model="test",
+            settings=ModelSettings(),
+            output_type=str,
+            instructions="test",
+            source_mount=source,
+            skill_mount=skill,
+            staging=staging,
+            workspace=workspace,
+            run_id="a" * 32,
+            limits=WikiRunLimits(),
+            adaptive=True,
+            write_limit=1_000_000,
+            emit=lambda *_args, **_kwargs: None,
+        )
+        snapshot = assembly.topology_snapshot()
+        assert snapshot["adaptive_enabled"] is True
+        assert snapshot["root_fanout"] == 2
+        assert snapshot["enable_reviewer"] is True
+        assert snapshot["has_publish_reviewer"] is True
+        assert set(assembly.root_subagent_names()) == {"domain_1", "domain_2", "reviewer"}
+
+        disabled = build_root_assembly(
+            model="test",
+            settings=ModelSettings(),
+            output_type=str,
+            instructions="test",
+            source_mount=source,
+            skill_mount=skill,
+            staging=staging,
+            workspace=workspace,
+            run_id="b" * 32,
+            limits=WikiRunLimits(adaptive_enable_reviewer=False),
+            adaptive=True,
+            write_limit=1_000_000,
+            emit=lambda *_args, **_kwargs: None,
+        )
+        assert disabled.topology_snapshot()["enable_reviewer"] is False
+        assert set(disabled.root_subagent_names()) == {"domain_1", "domain_2"}
+    finally:
+        workspace.cleanup()
+
+
 def test_root_capabilities_use_explicit_roster_and_single_writer_mount(tmp_path: Path) -> None:
     agent, orchestration, workspace = _builder(tmp_path, WikiRunLimits())
     try:
@@ -362,18 +416,32 @@ def test_optional_reviewer_model_is_wired_into_roster(tmp_path: Path) -> None:
 
 
 def test_reviewer_can_be_disabled_from_the_roster(tmp_path: Path) -> None:
-    agent, orchestration, workspace = _builder(
-        tmp_path, WikiRunLimits(adaptive_enable_reviewer=False)
-    )
+    source = tmp_path / "source"
+    skill = tmp_path / "skill"
+    staging = tmp_path / "staging"
+    source.mkdir()
+    skill.mkdir()
+    staging.mkdir()
+    workspace = AnalysisWorkspace("a" * 32, root=tmp_path / "analysis")
     try:
-        assert orchestration.policy.enabled
-        assert not orchestration.policy.enable_reviewer
-        subagents = next(
-            capability
-            for capability in agent.root_capability.capabilities
-            if isinstance(capability, SubAgents)
+        assembly = build_root_assembly(
+            model="test",
+            settings=ModelSettings(),
+            output_type=str,
+            instructions="test",
+            source_mount=source,
+            skill_mount=skill,
+            staging=staging,
+            workspace=workspace,
+            run_id="c" * 32,
+            limits=WikiRunLimits(adaptive_enable_reviewer=False),
+            adaptive=True,
+            write_limit=1_000_000,
+            emit=lambda *_args, **_kwargs: None,
         )
-        assert {entry.name for entry in subagents.agents} == {"domain_1", "domain_2"}
+        assert assembly.policy.enabled
+        assert not assembly.policy.enable_reviewer
+        assert set(assembly.root_subagent_names()) == {"domain_1", "domain_2"}
     finally:
         workspace.cleanup()
 
@@ -1061,18 +1129,25 @@ def test_domain_concurrency_reserves_leaf_fanout_slots(tmp_path: Path) -> None:
     try:
         # Host must not allow 3 Domains to occupy 3 of 4 global slots when each Domain
         # may still fan out 2 Leaves (only one Leaf slot would remain).
-        domain_sem = orchestration.root_deps.semaphore
+        # Global child concurrency remains 4; domain parent gate reserves leaf capacity.
         assert orchestration.policy.child_concurrency == 4
         assert orchestration.policy.domain_fanout == 2
-        # Probe the private domain gate via the first domain wrapper.
+        assert orchestration.root_deps.semaphore._value == 4  # type: ignore[attr-defined]
+        # Reserved domain capacity: child_concurrency - domain_fanout = 2
+        # (see build_root_assembly domain_semaphore construction).
+        expected_domain_capacity = max(
+            1, orchestration.policy.child_concurrency - orchestration.policy.domain_fanout
+        )
+        assert expected_domain_capacity == 2
         subagents = next(
             capability
             for capability in agent.root_capability.capabilities
             if isinstance(capability, SubAgents)
         )
         domain_wrapper = next(entry.agent for entry in subagents.agents if entry.name == "domain_1")
-        assert domain_wrapper._parent_semaphore._value == 2  # type: ignore[attr-defined]
-        assert domain_sem._value == 4
+        parent = domain_wrapper._parent_semaphore  # type: ignore[attr-defined]
+        assert parent is not None
+        assert parent._value == expected_domain_capacity  # type: ignore[attr-defined]
     finally:
         workspace.cleanup()
 

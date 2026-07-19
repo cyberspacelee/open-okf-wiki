@@ -70,9 +70,10 @@ class _PublishedRepository(BaseModel):
     effective_ignore: tuple[IgnorePattern, ...] = ()
 
 
-def _published_repositories(
+def published_repository_views(
     repositories: tuple[RepositorySnapshot, ...],
 ) -> tuple[_PublishedRepository, ...]:
+    """Project Repository Snapshots into Host publication provenance views."""
     return tuple(
         _PublishedRepository(
             id=repository.id,
@@ -83,6 +84,10 @@ def _published_repositories(
         )
         for repository in sorted(repositories, key=lambda repository: repository.id)
     )
+
+
+# Private alias kept for in-package call sites during the deepening transition.
+_published_repositories = published_repository_views
 
 
 class _PublicationMetadata(BaseModel):
@@ -96,7 +101,7 @@ class _PublicationMetadata(BaseModel):
     content_digest: SkillDigest
 
 
-def _stage_published_wiki(
+def stage_published_wiki_for_refresh(
     publication: Path, staging: Path, limits: WikiRunLimits
 ) -> tuple[dict[str, str], tuple[_PublishedRepository, ...], str]:
     """Load a Host-owned real-directory Published Wiki into empty Staging for Refresh."""
@@ -209,6 +214,10 @@ def _stage_published_wiki(
     return page_hashes, metadata.repositories, metadata.skill_digest
 
 
+# Private alias kept for in-package / test call sites during the deepening transition.
+_stage_published_wiki = stage_published_wiki_for_refresh
+
+
 def _copy_regular_file_no_follow(
     source: Path, destination: Path, *, max_bytes: int, label: str
 ) -> int:
@@ -277,9 +286,10 @@ def _copy_wiki_pages(
         total_bytes += copied
 
 
-def _summarize_changes(
+def summarize_wiki_changes(
     old: dict[str, str], new: dict[str, str], *, provenance_changed: bool
 ) -> WikiChangeSummary:
+    """Host-owned Staging vs prior Published Wiki change summary."""
     old_paths, new_paths = set(old), set(new)
     shared = old_paths & new_paths
     added = sorted(new_paths - old_paths)
@@ -295,6 +305,10 @@ def _summarize_changes(
         content_changed=content_changed,
         publication_changed=content_changed or provenance_changed,
     )
+
+
+# Private alias kept for in-package call sites during the deepening transition.
+_summarize_changes = summarize_wiki_changes
 
 
 def _write_publication_metadata(path: Path, metadata: _PublicationMetadata) -> None:
@@ -470,3 +484,11 @@ def _publish_wiki(
         if final_release_owned and final_release.exists():
             shutil.rmtree(final_release, ignore_errors=True)
         raise
+
+
+__all__ = [
+    "PUBLICATION_METADATA_NAME",
+    "published_repository_views",
+    "stage_published_wiki_for_refresh",
+    "summarize_wiki_changes",
+]

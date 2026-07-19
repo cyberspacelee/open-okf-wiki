@@ -20,13 +20,15 @@ from pydantic_ai import (
 from ..diagnostics import preflight_provider_credentials
 from . import records as run_records
 from .adaptive import (
-    AdaptiveOrchestrator,
+    CriticalBranchesIncomplete,
     ReviewDefectsSummary,
-    build_root_agent,
+    RootAssembly,
+    build_root_assembly,
     should_enable_adaptive,
 )
 from .analysis.workspace import AnalysisWorkspace
 from .errors import WikiRunResourceLimitError
+from .events import exception_chain, safe_model_error, sanitize_event_payload
 from .models import (
     Complete,
     NeedsInput,
@@ -36,35 +38,18 @@ from .models import (
     WikiRunRequest,
     WikiRunResult,
 )
-from .mounts import (
-    _acquire_publication_lock,
-    _release_publication_lock,
-)
-from .prepare import PreparedMounts, PreparedRun, prepare_mounts, prepare_run
 from .provider.retry import (
     ProviderRetryState,
     merge_retry_counters,
     prepare_model_with_provider_retry,
 )
-from .publication.finalize import finalize as finalize_publication
-from .publication.fs import (
-    _PublishedRepository,
-    _published_repositories,
-    _stage_published_wiki,
-    _summarize_changes,
-)
+from .publication.accept import assess_staging_changes
+from .publication.finalize import PublicationContext, finalize as finalize_publication
 from .publication.gate import PublicationApprovalHandler
-from .publication.status import status_not_started as _status_not_started
-from .records import (
-    _event_payload,
-    _exception_chain,
-    _record_publication_path,
-    _safe_model_error,
-)
-from .validation import (
-    _hashes,
-    _validate_wiki,
-)
+from .publication.status import status_not_started
+from .readiness import HostReadiness, open_host_readiness
+from .records import record_publication_path
+from .validation import validate_wiki
 
 
 _RUN_INSTRUCTIONS = """Run the trusted Producer Skill to produce the Wiki.
@@ -86,7 +71,7 @@ def _default_retry_counters() -> dict[str, int]:
 
 
 def _default_publication_status() -> dict[str, object]:
-    return _status_not_started()
+    return status_not_started()
 
 
 @dataclass
@@ -100,7 +85,7 @@ class RunLifecycle:
     publication_status: dict[str, object] = field(default_factory=_default_publication_status)
     provider_retry: ProviderRetryState = field(default_factory=ProviderRetryState)
     analysis_workspace: AnalysisWorkspace | None = None
-    adaptive: AdaptiveOrchestrator | None = None
+    adaptive: RootAssembly | None = None
     adaptive_usage: dict[str, object] | None = None
     adaptive_summary_emitted: bool = False
     publication_lock: Path | None = None
@@ -128,7 +113,7 @@ def _resource_limit_message(errors: list[str]) -> str | None:
 
 
 def _resource_limit_from_exception(error: BaseException) -> str | None:
-    for current in _exception_chain(error):
+    for current in exception_chain(error):
         if isinstance(current, WikiRunResourceLimitError):
             return str(current)
         if isinstance(current, UsageLimitExceeded):
@@ -177,7 +162,7 @@ class WikiRunApplication:
         self.last_run_id = run_id
         self.last_run_status = None
         lifecycle = RunLifecycle(
-            publication=_record_publication_path(request.publication),
+            publication=record_publication_path(request.publication),
             skill_path=request.skill.path.absolute(),
         )
 
@@ -189,7 +174,7 @@ class WikiRunApplication:
         ) -> None:
             nonlocal sequence
             sequence += 1
-            safe_payload = _event_payload(payload or {})
+            safe_payload = sanitize_event_payload(payload or {})
             event = WikiRunEvent(
                 run_id=run_id,
                 sequence=sequence,
@@ -327,8 +312,8 @@ class WikiRunApplication:
             if isinstance(usage, Mapping):
                 adaptive_usage = dict(usage)
         try:
-            # Call via the defining module so tests can monkeypatch host.records._write_run_record.
-            run_records._write_run_record(
+            # Call via the defining module so tests can monkeypatch host.records.write_run_record.
+            run_records.write_run_record(
                 request,
                 run_id=run_id,
                 publication=publication,
@@ -355,53 +340,20 @@ class WikiRunApplication:
         emit: Callable[..., None],
         lifecycle: RunLifecycle,
     ) -> WikiRunResult:
-        mounts = prepare_mounts(request)
-        lifecycle.publication = mounts.publication
-        lifecycle.skill_path = mounts.skill_input
-        publication_lock = _acquire_publication_lock(mounts.publication)
-        lifecycle.publication_lock = publication_lock
-        try:
-            return await self._run_prepared(
-                request,
-                run_id=run_id,
-                emit=emit,
-                lifecycle=lifecycle,
-                mounts=mounts,
-            )
-        finally:
-            _release_publication_lock(publication_lock)
-
-    async def _run_prepared(
-        self,
-        request: WikiRunRequest,
-        *,
-        run_id: str,
-        emit: Callable[..., None],
-        lifecycle: RunLifecycle,
-        mounts: PreparedMounts,
-    ) -> WikiRunResult:
-        old_hashes: dict[str, str] = {}
-        old_repositories: tuple[_PublishedRepository, ...] | None = None
-        old_skill_digest: str | None = None
-        if request.operation == "refresh":
-            old_hashes, old_repositories, old_skill_digest = _stage_published_wiki(
-                mounts.publication, mounts.staging, request.limits
-            )
-        with prepare_run(
+        with open_host_readiness(
             request,
             emit=emit,
             workspace=lifecycle.analysis_workspace,
-            mounts=mounts,
-        ) as prepared:
+        ) as ready:
+            lifecycle.publication = ready.publication
+            lifecycle.skill_path = ready.skill_input
+            lifecycle.publication_lock = ready.publication_lock
             return await self._run_agent(
                 request,
                 run_id=run_id,
                 emit=emit,
                 lifecycle=lifecycle,
-                prepared=prepared,
-                old_hashes=old_hashes,
-                old_repositories=old_repositories,
-                old_skill_digest=old_skill_digest,
+                ready=ready,
             )
 
     async def _run_agent(
@@ -411,11 +363,9 @@ class WikiRunApplication:
         run_id: str,
         emit: Callable[..., None],
         lifecycle: RunLifecycle,
-        prepared: PreparedRun,
-        old_hashes: dict[str, str],
-        old_repositories: tuple[_PublishedRepository, ...] | None,
-        old_skill_digest: str | None,
+        ready: HostReadiness,
     ) -> WikiRunResult:
+        prepared = ready.prepared
         source_mount = prepared.source_mount
         skill = prepared.skill
         skill_digest = prepared.skill_digest
@@ -453,7 +403,7 @@ class WikiRunApplication:
                 emit=emit,
                 wall_clock_deadline=wall_deadline,
             )
-        agent, orchestration = build_root_agent(
+        assembly = build_root_assembly(
             model=resolved_model,
             settings=settings,
             output_type=[Complete, NeedsInput],
@@ -470,19 +420,23 @@ class WikiRunApplication:
             reviewer_model=resolved_reviewer_model,
             reviewer_settings=reviewer_settings,
         )
+        agent = assembly.agent
         run_usage = RunUsage()
         lifecycle.usage = run_usage
-        lifecycle.adaptive = orchestration
+        lifecycle.adaptive = assembly
 
         @agent.output_validator
         def validate_output(output: WikiRunResult) -> WikiRunResult:
             if isinstance(output, Complete):
                 emit("validation_started")
-                orchestration.validate_root_completion()
+                try:
+                    assembly.validate_completion()
+                except CriticalBranchesIncomplete as error:
+                    raise ModelRetry(str(error)) from error
                 if output.summary != WikiChangeSummary():
                     lifecycle.retry_counters["output"] += 1
                     raise ModelRetry("Complete.summary is host-owned and must be omitted or empty")
-                errors = _validate_wiki(sources, staging, output.manifest, request.limits)
+                errors = validate_wiki(sources, staging, output.manifest, request.limits)
                 if errors:
                     if limit_error := _resource_limit_message(errors):
                         raise WikiRunResourceLimitError(limit_error)
@@ -498,16 +452,16 @@ class WikiRunApplication:
                 if self._event_stream_handler is not None:
                     result = await agent.run(
                         f"Begin this {request.operation} Wiki Run.",
-                        deps=orchestration.root_deps,
-                        usage_limits=orchestration.root_usage_limits,
+                        deps=assembly.root_deps,
+                        usage_limits=assembly.root_usage_limits,
                         usage=run_usage,
                         event_stream_handler=self._event_stream_handler,
                     )
                 else:
                     result = await agent.run(
                         f"Begin this {request.operation} Wiki Run.",
-                        deps=orchestration.root_deps,
-                        usage_limits=orchestration.root_usage_limits,
+                        deps=assembly.root_deps,
+                        usage_limits=assembly.root_usage_limits,
                         usage=run_usage,
                     )
             except WikiRunResourceLimitError:
@@ -516,7 +470,7 @@ class WikiRunApplication:
                 if limit_error := _resource_limit_from_exception(error):
                     # Keep the original chain so operators can see where the limit fired.
                     raise WikiRunResourceLimitError(limit_error) from error
-                if safe_error := _safe_model_error(error, request.model.settings):
+                if safe_error := safe_model_error(error, request.model.settings):
                     # Secret-bearing provider failures must not re-emit the raw chain.
                     raise RuntimeError(safe_error) from None
                 raise
@@ -526,46 +480,36 @@ class WikiRunApplication:
             lifecycle.provider_retry,
         )
         if isinstance(result.output, Complete):
-            new_hashes = _hashes(staging, result.output.manifest.pages)
-            summary = _summarize_changes(
-                old_hashes,
-                new_hashes,
-                provenance_changed=(
-                    request.operation == "generate"
-                    or old_repositories != _published_repositories(request.repositories)
-                    or old_skill_digest != skill_digest
-                ),
+            assessment = assess_staging_changes(
+                staging=staging,
+                pages=result.output.manifest.pages,
+                old_hashes=ready.old_hashes,
+                old_repositories=ready.old_repositories,
+                old_skill_digest=ready.old_skill_digest,
+                operation=request.operation,
+                repositories=request.repositories,
+                skill_digest=skill_digest,
             )
+            summary = assessment.summary
             output = result.output.model_copy(update={"summary": summary})
             # Publication finalize owns review → gate → fs publish (ADR 0018 shapes).
             # Visualization stays here so publication does not depend on viz (ADR 0016).
-            review_model = (
-                resolved_reviewer_model if resolved_reviewer_model is not None else resolved_model
-            )
-            review_settings = reviewer_settings if reviewer_settings is not None else settings
             outcome = await finalize_publication(
-                publication_changed=summary.publication_changed,
-                auto_approve=request.auto_approve_publication,
-                handler=self._publication_approval_handler,
-                emit=emit,
-                sources=sources,
-                staging=staging,
-                publication=publication,
-                manifest=output.manifest,
-                repositories=request.repositories,
-                skill_digest=skill_digest,
-                model_name=result.response.model_name,
-                limits=request.limits,
-                enable_reviewer=orchestration.policy.enable_reviewer,
-                review_model=review_model,
-                review_settings=review_settings,
-                source_mount=source_mount,
-                skill_mount=skill,
-                workspace=workspace,
-                run_id=run_id,
-                policy=orchestration.policy,
-                root_deps=orchestration.root_deps,
-                metrics=orchestration.metrics,
+                PublicationContext(
+                    publication_changed=summary.publication_changed,
+                    auto_approve=request.auto_approve_publication,
+                    handler=self._publication_approval_handler,
+                    emit=emit,
+                    sources=sources,
+                    staging=staging,
+                    publication=publication,
+                    manifest=output.manifest,
+                    repositories=request.repositories,
+                    skill_digest=skill_digest,
+                    model_name=result.response.model_name,
+                    limits=request.limits,
+                    reviewer=assembly.staging_reviewer(),
+                )
             )
             lifecycle.reviewer_defects = outcome.reviewer_defects
             lifecycle.publication_status = outcome.publication_status

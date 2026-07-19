@@ -389,7 +389,7 @@ def _publication_lock_path(publication: Path) -> Path:
     return publication.parent / f".{publication.name}.publish.lock"
 
 
-def _acquire_publication_lock(publication: Path) -> Path:
+def acquire_publication_lock(publication: Path) -> Path:
     """Exclusive Host lock for one Wiki Run against a Published Wiki path (O_EXCL file).
 
     Intentionally held for the whole run (prepare through model work to swap), not only the
@@ -428,10 +428,16 @@ def _acquire_publication_lock(publication: Path) -> Path:
     return lock_path
 
 
-def _release_publication_lock(lock_path: Path | None) -> None:
+def release_publication_lock(lock_path: Path | None) -> None:
+    """Release a lock acquired by :func:`acquire_publication_lock`."""
     if lock_path is None:
         return
     try:
         lock_path.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+# Private aliases kept for in-package call sites during the deepening transition.
+_acquire_publication_lock = acquire_publication_lock
+_release_publication_lock = release_publication_lock

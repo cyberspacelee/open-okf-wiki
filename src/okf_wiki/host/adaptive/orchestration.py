@@ -2,6 +2,9 @@
 
 This module owns Root capability assembly only. Policy, deps, receipts, child
 agent factories, and the host pre-publish reviewer live in sibling modules.
+
+Public deep entry: :func:`build_root_assembly` → :class:`RootAssembly`.
+:func:`build_root_agent` remains a thin compatibility wrapper for tests.
 """
 
 from __future__ import annotations
@@ -30,9 +33,17 @@ from .policy import AdaptivePolicy, should_enable_adaptive
 from .receipts import _ReceiptToolset
 from .reviewer import (
     HOST_PUBLISH_REVIEWER_NODE_ID,
+    HostWikiReviewer,
     ReviewDefectsSummary,
     run_host_wiki_reviewer,
 )
+
+
+class CriticalBranchesIncomplete(Exception):
+    """Domain signal: critical research branches remain unresolved.
+
+    Lifecycle maps this to framework ``ModelRetry`` at the agent edge.
+    """
 
 
 @dataclass(slots=True)
@@ -45,8 +56,18 @@ class AdaptiveOrchestrator:
     metrics: _AdaptiveMetrics
 
     def validate_root_completion(self) -> None:
+        """Framework-edge helper: raises ``ModelRetry`` for incomplete critical branches."""
         if self.metrics.unresolved_failures():
             raise ModelRetry(
+                "One or more critical research branches are incomplete. Resolve them within the "
+                "bounded retry or direct-fallback budget; otherwise fail this Wiki Run. Do not "
+                "claim Complete or convert an internal branch failure into NeedsInput."
+            )
+
+    def validate_completion(self) -> None:
+        """Host-facing completion gate (no framework types)."""
+        if self.metrics.unresolved_failures():
+            raise CriticalBranchesIncomplete(
                 "One or more critical research branches are incomplete. Resolve them within the "
                 "bounded retry or direct-fallback budget; otherwise fail this Wiki Run. Do not "
                 "claim Complete or convert an internal branch failure into NeedsInput."
@@ -66,7 +87,91 @@ class AdaptiveOrchestrator:
         }
 
 
-def build_root_agent(
+@dataclass(slots=True)
+class RootAssembly:
+    """Deep Host handle for one assembled Root + recursive delegation tree."""
+
+    agent: Agent[Any, Any]
+    orchestrator: AdaptiveOrchestrator
+    source_mount: Path
+    skill_mount: Path
+    staging: Path
+    workspace: AnalysisWorkspace
+    run_id: str
+    model: object
+    settings: ModelSettings
+    reviewer_model: object | None
+    reviewer_settings: ModelSettings | None
+
+    @property
+    def policy(self) -> AdaptivePolicy:
+        return self.orchestrator.policy
+
+    @property
+    def root_deps(self) -> AdaptiveDeps:
+        return self.orchestrator.root_deps
+
+    @property
+    def root_usage_limits(self) -> UsageLimits:
+        return self.orchestrator.root_usage_limits
+
+    @property
+    def metrics(self) -> _AdaptiveMetrics:
+        return self.orchestrator.metrics
+
+    def validate_completion(self) -> None:
+        self.orchestrator.validate_completion()
+
+    def event_payload(self) -> dict[str, object]:
+        return self.orchestrator.event_payload()
+
+    def staging_reviewer(self) -> HostWikiReviewer | None:
+        """Host pre-publish Wiki Reviewer adapter, or None when disabled."""
+        if not self.policy.enable_reviewer:
+            return None
+        review_model = self.model if self.reviewer_model is None else self.reviewer_model
+        review_settings = (
+            self.settings if self.reviewer_settings is None else self.reviewer_settings
+        )
+        return HostWikiReviewer(
+            model=review_model,
+            settings=review_settings,
+            source_mount=self.source_mount,
+            skill_mount=self.skill_mount,
+            staging=self.staging,
+            workspace=self.workspace,
+            run_id=self.run_id,
+            policy=self.policy,
+            root_deps=self.root_deps,
+            metrics=self.metrics,
+        )
+
+    def topology_snapshot(self) -> dict[str, object]:
+        """Host-facing topology summary for tests (no Harness capability walk)."""
+        return {
+            "adaptive_enabled": self.policy.enabled,
+            "max_depth": self.policy.max_depth,
+            "root_fanout": self.policy.root_fanout,
+            "domain_fanout": self.policy.domain_fanout,
+            "child_concurrency": self.policy.child_concurrency,
+            "enable_reviewer": self.policy.enable_reviewer,
+            "dynamic_workflow": self.policy.dynamic_workflow,
+            "has_publish_reviewer": self.staging_reviewer() is not None,
+        }
+
+    def root_subagent_names(self) -> list[str]:
+        """Names of Root-level SubAgents roster entries (empty when adaptive is off)."""
+        from pydantic_ai_harness.subagents import SubAgents
+
+        names: list[str] = []
+        for capability in self.agent.root_capability.capabilities:
+            if isinstance(capability, SubAgents):
+                for entry in capability.agents:
+                    names.append(str(getattr(entry, "name", entry)))
+        return names
+
+
+def build_root_assembly(
     *,
     model: object,
     settings: ModelSettings,
@@ -83,7 +188,8 @@ def build_root_agent(
     emit: Callable[..., None],
     reviewer_model: object | None = None,
     reviewer_settings: ModelSettings | None = None,
-) -> tuple[Agent[Any, Any], AdaptiveOrchestrator]:
+) -> RootAssembly:
+    """Assemble Root agent + 递归委派树; hide SubAgents/DynamicWorkflow wiring."""
     policy = AdaptivePolicy.from_limits(limits, enabled=adaptive)
     metrics = _AdaptiveMetrics()
     semaphore = asyncio.Semaphore(policy.child_concurrency)
@@ -263,7 +369,59 @@ def build_root_agent(
         capabilities=capabilities,
     )
     root.instrument = False
-    return root, AdaptiveOrchestrator(policy, root_deps, root_usage, metrics)
+    orchestrator = AdaptiveOrchestrator(policy, root_deps, root_usage, metrics)
+    return RootAssembly(
+        agent=root,
+        orchestrator=orchestrator,
+        source_mount=source_mount,
+        skill_mount=skill_mount,
+        staging=staging,
+        workspace=workspace,
+        run_id=run_id,
+        model=model,
+        settings=settings,
+        reviewer_model=reviewer_model,
+        reviewer_settings=reviewer_settings,
+    )
+
+
+def build_root_agent(
+    *,
+    model: object,
+    settings: ModelSettings,
+    output_type: object,
+    instructions: str,
+    source_mount: Path,
+    skill_mount: Path,
+    staging: Path,
+    workspace: AnalysisWorkspace,
+    run_id: str,
+    limits: object,
+    adaptive: bool,
+    write_limit: int,
+    emit: Callable[..., None],
+    reviewer_model: object | None = None,
+    reviewer_settings: ModelSettings | None = None,
+) -> tuple[Agent[Any, Any], AdaptiveOrchestrator]:
+    """Compatibility wrapper: return ``(agent, orchestrator)`` from :func:`build_root_assembly`."""
+    assembly = build_root_assembly(
+        model=model,
+        settings=settings,
+        output_type=output_type,
+        instructions=instructions,
+        source_mount=source_mount,
+        skill_mount=skill_mount,
+        staging=staging,
+        workspace=workspace,
+        run_id=run_id,
+        limits=limits,
+        adaptive=adaptive,
+        write_limit=write_limit,
+        emit=emit,
+        reviewer_model=reviewer_model,
+        reviewer_settings=reviewer_settings,
+    )
+    return assembly.agent, assembly.orchestrator
 
 
 # Backward-compatible re-exports for call sites that import from this module.
@@ -271,9 +429,12 @@ __all__ = [
     "AdaptiveDeps",
     "AdaptiveOrchestrator",
     "AdaptivePolicy",
+    "CriticalBranchesIncomplete",
     "HOST_PUBLISH_REVIEWER_NODE_ID",
     "ReviewDefectsSummary",
+    "RootAssembly",
     "build_root_agent",
+    "build_root_assembly",
     "run_host_wiki_reviewer",
     "should_enable_adaptive",
 ]
