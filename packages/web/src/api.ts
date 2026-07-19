@@ -250,30 +250,6 @@ export function patchWorkspace(
   );
 }
 
-export function deleteWorkspace(
-  id: string,
-  options?: { deleteFiles?: boolean; rootPath?: string },
-): Promise<{
-  ok: boolean;
-  id: string;
-  removedFromIndex: boolean;
-  deletedMeta: boolean;
-  rootPath: string;
-}> {
-  const params = new URLSearchParams();
-  if (options?.deleteFiles) {
-    params.set("deleteFiles", "true");
-  }
-  if (options?.rootPath) {
-    params.set("rootPath", options.rootPath);
-  }
-  const query = params.toString();
-  return request(
-    `/api/workspaces/${encodeURIComponent(id)}${query ? `?${query}` : ""}`,
-    { method: "DELETE" },
-  );
-}
-
 export function addSource(
   workspaceId: string,
   input: AddSourceInput,
@@ -322,13 +298,6 @@ export function probeSources(
   );
 }
 
-export function probeGit(path: string): Promise<GitProbe> {
-  return request<GitProbe>("/api/git/probe", {
-    method: "POST",
-    body: JSON.stringify({ path }),
-  });
-}
-
 export function listRuns(
   workspaceId: string,
   rootPath?: string,
@@ -336,19 +305,6 @@ export function listRuns(
   return request(
     withRootPathQuery(
       `/api/workspaces/${encodeURIComponent(workspaceId)}/runs`,
-      rootPath,
-    ),
-  );
-}
-
-export function getRun(
-  workspaceId: string,
-  runId: string,
-  rootPath?: string,
-): Promise<{ run: StoredRunRecord }> {
-  return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}`,
       rootPath,
     ),
   );

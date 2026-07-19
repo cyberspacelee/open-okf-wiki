@@ -8,15 +8,15 @@ import {
 } from "@okf-wiki/contract";
 import { WORKSPACE_DIR_NAME, isPathInside } from "@okf-wiki/core";
 
-export const RUNS_DIR_NAME = "runs";
+const RUNS_DIR_NAME = "runs";
 
 /** Absolute path to `{root}/.okf-wiki/runs`. */
-export function runsDir(rootPath: string): string {
+function runsDir(rootPath: string): string {
   return path.join(path.resolve(rootPath), WORKSPACE_DIR_NAME, RUNS_DIR_NAME);
 }
 
 /** Absolute path to `{root}/.okf-wiki/runs/{runId}.json`. */
-export function runRecordPath(rootPath: string, runId: string): string {
+function runRecordPath(rootPath: string, runId: string): string {
   return path.join(runsDir(rootPath), `${runId}.json`);
 }
 

@@ -123,9 +123,3 @@ export function abortRun(runId: string): boolean {
 export function clearRunAbortController(runId: string): void {
   abortControllers.delete(runId);
 }
-
-/** Test/helper: drop all buses (not used in production paths). */
-export function _resetRunEventBusesForTests(): void {
-  buses.clear();
-  abortControllers.clear();
-}
