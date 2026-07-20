@@ -20,11 +20,7 @@ import {
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input";
 import { MessageParts } from "../components/session/MessageParts";
-import {
-  encodeChoiceMessage,
-  encodeInputMessage,
-  extractPendingFromMessages,
-} from "../components/session/decision-types";
+import { extractPendingFromMessages } from "../components/session/decision-types";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
@@ -49,24 +45,33 @@ function sessionMessagesToUI(
     id: m.id,
     role: m.role,
     parts: m.parts.map((p) => {
-      if (p.type === "text") {
+      if (p.type === "text" && "text" in p) {
         return { type: "text" as const, text: p.text };
       }
       if (p.type.startsWith("tool-")) {
+        const tool = p as {
+          type: string;
+          toolCallId?: string;
+          state?: string;
+          input?: unknown;
+          output?: unknown;
+          errorText?: string;
+        };
         return {
-          type: p.type as `tool-${string}`,
-          toolCallId: p.toolCallId ?? p.type,
-          state: (p.state as "output-available") ?? "output-available",
-          input: p.input,
-          output: p.output,
-          errorText: p.errorText,
+          type: tool.type as `tool-${string}`,
+          toolCallId: tool.toolCallId ?? tool.type,
+          state: (tool.state as "output-available") ?? "output-available",
+          input: tool.input,
+          output: tool.output,
+          errorText: tool.errorText,
         } as UIMessage["parts"][number];
       }
       if (p.type.startsWith("data-")) {
+        const dataPart = p as { type: string; id?: string; data?: unknown };
         return {
-          type: p.type as `data-${string}`,
-          id: p.id,
-          data: p.data,
+          type: dataPart.type as `data-${string}`,
+          id: dataPart.id,
+          data: dataPart.data,
         } as UIMessage["parts"][number];
       }
       return { type: "text" as const, text: JSON.stringify(p) };
@@ -200,6 +205,15 @@ function SessionChatPanel({
   rootPathHint?: string;
 }) {
   const [input, setInput] = useState("");
+  const [linkedRunId, setLinkedRunId] = useState(
+    session.workflow?.linkedRunId as string | undefined,
+  );
+  const [gateStep, setGateStep] = useState<"plan-gate" | "publish-gate">(
+    session.workflow?.phase === "awaiting_publish"
+      ? "publish-gate"
+      : "plan-gate",
+  );
+  const [resumePlan, setResumePlan] = useState(session.workflow?.plan);
 
   const chatApi = useMemo(() => {
     const base = `/api/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(session.id)}/chat`;
@@ -211,8 +225,79 @@ function SessionChatPanel({
   }, [workspaceId, session.id, workspace.rootPath, rootPathHint]);
 
   const transport = useMemo(
-    () => new DefaultChatTransport({ api: chatApi }),
-    [chatApi],
+    () =>
+      new DefaultChatTransport({
+        api: chatApi,
+        prepareSendMessagesRequest: ({ messages: msgs }) => {
+          const last = msgs[msgs.length - 1];
+          let resumeData: { action: "approve" | "deny"; plan?: typeof resumePlan } | undefined;
+          if (last?.role === "user") {
+            for (const p of last.parts ?? []) {
+              if (
+                p.type === "text" &&
+                typeof p.text === "string" &&
+                (p.text === "approve" || p.text === "deny")
+              ) {
+                resumeData = { action: p.text };
+              }
+            }
+          }
+
+          // Prefer live state; fall back to parsing assistant transcript for run id / gate.
+          let runId = linkedRunId;
+          let step = gateStep;
+          const plan = resumePlan;
+          for (const m of msgs) {
+            if (m.role !== "assistant") {
+              continue;
+            }
+            for (const p of m.parts ?? []) {
+              if (p.type === "text" && typeof p.text === "string") {
+                const runMatch = p.text.match(/Wiki Run\s+`([0-9a-f-]{8,})`/i);
+                if (runMatch?.[1]) {
+                  runId = runMatch[1];
+                }
+                if (/Publish the staged wiki/i.test(p.text)) {
+                  step = "publish-gate";
+                } else if (/Proposed wiki plan/i.test(p.text)) {
+                  step = "plan-gate";
+                }
+              }
+              if (
+                p.type === "data-choice" &&
+                p.data &&
+                typeof p.data === "object" &&
+                "question" in (p.data as object)
+              ) {
+                const q = String((p.data as { question?: string }).question ?? "");
+                if (/publish/i.test(q)) {
+                  step = "publish-gate";
+                } else if (/plan/i.test(q)) {
+                  step = "plan-gate";
+                }
+              }
+            }
+          }
+
+          if (resumeData && step === "plan-gate" && plan) {
+            resumeData = { ...resumeData, plan };
+          }
+
+          return {
+            body: {
+              messages: msgs,
+              ...(resumeData && runId
+                ? {
+                    resumeData,
+                    runId,
+                    step,
+                  }
+                : {}),
+            },
+          };
+        },
+      }),
+    [chatApi, linkedRunId, gateStep, resumePlan],
   );
 
   const initialMessages = useMemo(
@@ -230,6 +315,45 @@ function SessionChatPanel({
     () => extractPendingFromMessages(messages),
     [messages],
   );
+
+  // Track workflow run id / gate from streamed assistant text + decisions.
+  useEffect(() => {
+    for (const m of messages) {
+      if (m.role !== "assistant") {
+        continue;
+      }
+      for (const p of m.parts ?? []) {
+        if (p.type === "text" && typeof p.text === "string") {
+          const runMatch = p.text.match(/Wiki Run\s+`([0-9a-f-]{8,})`/i);
+          if (runMatch?.[1]) {
+            setLinkedRunId(runMatch[1]);
+          }
+          if (/Publish the staged wiki/i.test(p.text)) {
+            setGateStep("publish-gate");
+          }
+          if (/Proposed wiki plan/i.test(p.text)) {
+            setGateStep("plan-gate");
+          }
+        }
+        if (
+          p.type === "data-choice" &&
+          p.data &&
+          typeof p.data === "object" &&
+          "options" in (p.data as object)
+        ) {
+          const q = (p.data as { question?: string }).question ?? "";
+          if (/publish/i.test(q)) {
+            setGateStep("publish-gate");
+          } else if (/plan/i.test(q)) {
+            setGateStep("plan-gate");
+          }
+        }
+      }
+    }
+    if (session.workflow?.plan) {
+      setResumePlan(session.workflow.plan);
+    }
+  }, [messages, session.workflow?.plan]);
   const choiceOnly = pending?.mode === "choice_only";
   const inputOnly = pending?.mode === "input_only";
   const canType = !choiceOnly;
@@ -250,7 +374,18 @@ function SessionChatPanel({
       if (isBusy) {
         return;
       }
-      void sendMessage({ text: encodeChoiceMessage(optionId) });
+      // Option ids are workflow resume actions: approve | deny (and aliases).
+      const action =
+        optionId === "approve" ||
+        optionId === "approve_write" ||
+        optionId === "publish_now"
+          ? "approve"
+          : optionId === "deny" ||
+              optionId === "reject_plan" ||
+              optionId === "keep_staging"
+            ? "deny"
+            : optionId;
+      void sendMessage({ text: action });
     },
     [isBusy, sendMessage],
   );
@@ -261,15 +396,10 @@ function SessionChatPanel({
       if (!text || isBusy || choiceOnly) {
         return;
       }
-      const payload =
-        pending &&
-        (pending.mode === "input_only" || pending.mode === "choice_or_input")
-          ? encodeInputMessage(text)
-          : text;
-      void sendMessage({ text: payload });
+      void sendMessage({ text });
       setInput("");
     },
-    [choiceOnly, isBusy, pending, sendMessage],
+    [choiceOnly, isBusy, sendMessage],
   );
 
   return (

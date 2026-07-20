@@ -1,4 +1,53 @@
 /**
+ * HTTP transport for the operator Web UI.
+ * Domain types come from `@okf-wiki/contract` — do not redeclare schemas here.
+ */
+
+import type {
+  GitProbe,
+  ModelProfilePublic,
+  ModelProfileWrite,
+  OperatorSession,
+  ProviderApiShape,
+  ProviderPublic,
+  ProviderTestResult,
+  RunSseEvent,
+  SkillFileContent,
+  SkillFileEntry,
+  SkillInfo,
+  StoredRunRecord,
+  ToolPartState,
+  WikiRunPlan,
+  WikiRunRecordStatus,
+  WorkspaceConfig,
+  WorkspaceSource,
+  SourceOrigin,
+} from "@okf-wiki/contract";
+
+export type {
+  GitProbe,
+  ModelProfilePublic,
+  OperatorSession,
+  ProviderApiShape,
+  ProviderPublic,
+  ProviderTestResult,
+  RunSseEvent,
+  SkillFileContent,
+  SkillFileEntry,
+  SkillInfo,
+  StoredRunRecord,
+  ToolPartState,
+  WikiRunPlan,
+  WikiRunRecordStatus,
+  WorkspaceConfig,
+  WorkspaceSource,
+  SourceOrigin,
+};
+
+/** Alias kept for existing call sites (create/update model profile body). */
+export type ModelProfileWriteInput = ModelProfileWrite;
+
+/**
  * API origin for fetch / EventSource.
  *
  * Default: **same origin** (empty string) so the UI works for any host:port
@@ -18,6 +67,7 @@ function resolveApiBase(): string {
 
 const API_BASE = resolveApiBase();
 
+/** App-index list row (not the full WorkspaceConfig document). */
 export type WorkspaceSummary = {
   id: string;
   name: string;
@@ -26,107 +76,11 @@ export type WorkspaceSummary = {
   sourceCount: number;
 };
 
-export type SourceOrigin =
-  | { type: "path" }
-  | { type: "clone"; remoteUrl: string; ref?: string; clonedAt: string };
-
-export type WorkspaceSource = {
-  id: string;
-  path: string;
-  applyDefaultIgnores: boolean;
-  ignore: string[];
-  origin?: SourceOrigin;
-};
-
-export type WorkspaceConfig = {
-  version: 1;
-  id: string;
-  name: string;
-  rootPath: string;
-  sources: WorkspaceSource[];
-  model: { id: string; profileId?: string };
-  publicationPath: string;
-  limits: {
-    requestTimeoutSeconds: number;
-    contextTargetTokens?: number;
-    inputTokensLimit?: number;
-    outputTokensLimit?: number;
-    totalTokensLimit?: number;
-    maxSteps?: number;
-  };
-  adaptive: boolean;
-  reviewer: boolean;
-  planConfirm?: boolean;
-  skillPath?: string;
-  createdAt: string;
-  lastOpenedAt?: string;
-};
-
-export type SkillInfo = {
-  path: string;
-  kind: "bundled" | "fork";
-  digest: string;
-  name?: string;
-  description?: string;
-  files: string[];
-};
-
-export type SkillFileEntry = {
-  path: string;
-  kind: "file" | "directory";
-};
-
-export type SkillFileContent = {
-  path: string;
-  content: string;
-  bytes: number;
-};
-
 export type HealthResponse = {
   ok: boolean;
   service: string;
   version?: string;
   pid?: number;
-};
-
-export type ProviderApiShape = "completions" | "responses";
-
-export type ModelProfilePublic = {
-  id: string;
-  name: string;
-  modelId: string;
-  baseUrl: string;
-  apiKeySet: boolean;
-  apiKeyMasked: string | null;
-  apiShape: ProviderApiShape;
-};
-
-export type ProviderPublic = {
-  version: 2;
-  models: ModelProfilePublic[];
-  defaultModelProfileId?: string;
-  envFallback: {
-    openaiBaseUrlSet: boolean;
-    openaiApiKeySet: boolean;
-  };
-};
-
-export type ModelProfileWriteInput = {
-  name: string;
-  modelId: string;
-  baseUrl?: string;
-  /** Omit to keep on update; empty string or null to clear. */
-  apiKey?: string | null;
-  apiShape?: ProviderApiShape;
-  id?: string;
-};
-
-export type ProviderTestResult = {
-  ok: boolean;
-  apiShape: ProviderApiShape;
-  status?: number;
-  message: string;
-  latencyMs?: number;
 };
 
 export type DoctorResponse = {
@@ -153,15 +107,6 @@ export type DoctorResponse = {
     apiKeySource: "stored" | "env" | "none";
     baseUrlHost: string | null;
   };
-};
-
-export type GitProbe = {
-  path: string;
-  isGit: boolean;
-  head: string | null;
-  branch: string | null;
-  dirty: boolean;
-  error: string | null;
 };
 
 export type SourceProbeResult = {
@@ -202,40 +147,12 @@ export type CloneSourceInput = {
   ref?: string;
 };
 
-export type WikiRunRecordStatus =
-  | "running"
-  | "published"
-  | "needs_input"
-  | "failed"
-  | "cancelled"
-  | "awaiting_plan"
-  | "awaiting_publication"
-  | "publication_declined";
-
-export type WikiRunPlan = {
-  summary: string;
-  pages: Array<{ path: string; purpose: string }>;
-  notes?: string;
-};
-
-export type StoredRunRecord = {
-  runId: string;
-  workspaceId: string;
-  status: WikiRunRecordStatus;
-  error?: string;
-  autoApprove?: boolean;
-  skillPath?: string;
-  skillDigest?: string;
-  plan?: WikiRunPlan;
-  pages?: string[];
-  summary?: string;
-  createdAt: string;
-  updatedAt: string;
-};
-
 export type CreateRunInput = {
   autoApprove?: boolean;
 };
+
+/** @deprecated Prefer OperatorSession from contract; alias for call sites. */
+export type OperatorSessionDto = OperatorSession;
 
 export class ApiError extends Error {
   readonly status: number;
@@ -614,47 +531,6 @@ export function createRun(
 
 // --- Operator Session (conversational workspace) ---
 
-export type OperatorSessionDto = {
-  id: string;
-  workspaceId: string;
-  title: string;
-  status: "active" | "waiting" | "running" | "completed" | "failed";
-  messages: Array<{
-    id: string;
-    role: "user" | "assistant" | "system";
-    parts: Array<{
-      type: string;
-      text?: string;
-      toolCallId?: string;
-      toolName?: string;
-      state?: string;
-      input?: unknown;
-      output?: unknown;
-      errorText?: string;
-      id?: string;
-      data?: unknown;
-    }>;
-    createdAt?: string;
-  }>;
-  workflow: {
-    plan?: WikiRunPlan;
-    linkedRunId?: string;
-    phase?: string;
-    notes?: string;
-  };
-  pending: {
-    type: string;
-    question: string;
-    mode?: string;
-    selectionMode?: string;
-    options: Array<{ id: string; label: string; description?: string }>;
-    inputPlaceholder?: string;
-    toolCallId?: string;
-  } | null;
-  createdAt: string;
-  updatedAt: string;
-};
-
 export function getOrCreateSession(
   workspaceId: string,
   rootPath?: string,
@@ -773,28 +649,6 @@ export function cancelRun(
     { method: "POST", body: JSON.stringify({}) },
   );
 }
-
-export type ToolPartState =
-  | "input-streaming"
-  | "input-available"
-  | "output-available"
-  | "output-error";
-
-export type RunSseEvent = {
-  type: "status" | "log" | "error" | "done" | "text" | "tool" | "tool_result" | "part";
-  runId: string;
-  sequence: number;
-  status?: WikiRunRecordStatus;
-  message?: string;
-  partType?: string;
-  text?: string;
-  toolName?: string;
-  toolCallId?: string;
-  toolState?: ToolPartState;
-  inputSummary?: string;
-  outputSummary?: string;
-  nodeId?: string;
-};
 
 /** Absolute EventSource URL for run progress SSE. */
 export function runEventsUrl(

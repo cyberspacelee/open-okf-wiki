@@ -5,17 +5,27 @@
 
 import { Agent } from "@mastra/core/agent";
 import type { MastraModelConfig } from "@mastra/core/llm";
+import { ADAPTIVE_RUN_LIMITS } from "./limits.js";
 import type { WikiRunTools } from "./tools.js";
 
 export type SubagentBundle = {
   domainResearcher?: Agent;
   leafResearcher?: Agent;
   reviewer?: Agent;
+  /** Host-enforced maxSteps for domain research generate/stream. */
+  domainMaxSteps: number;
+  /** Host-enforced maxSteps for leaf research generate/stream. */
+  leafMaxSteps: number;
+  /** Host-enforced maxSteps for reviewer generate. */
+  reviewerMaxSteps: number;
 };
 
 /**
  * Build optional specialist agents. Only research tools are attached —
  * never write_wiki on Domain/Leaf/Reviewer.
+ *
+ * Step caps from ADAPTIVE_RUN_LIMITS are returned on the bundle so callers
+ * pass them to generate/stream (host-enforced, not prompt-only).
  */
 export function createSubagents(options: {
   model: MastraModelConfig;
@@ -30,7 +40,11 @@ export function createSubagents(options: {
     read_skill: options.tools.read_skill,
   };
 
-  const out: SubagentBundle = {};
+  const out: SubagentBundle = {
+    domainMaxSteps: ADAPTIVE_RUN_LIMITS.domainMaxSteps,
+    leafMaxSteps: ADAPTIVE_RUN_LIMITS.leafMaxSteps,
+    reviewerMaxSteps: ADAPTIVE_RUN_LIMITS.reviewerMaxSteps,
+  };
 
   if (options.adaptive) {
     out.domainResearcher = new Agent({
@@ -44,6 +58,7 @@ export function createSubagents(options: {
         "Investigate only the scope in the user message using list_source/read_source.",
         "Return a concise receipt: findings, source paths, open questions.",
         "Do not write wiki pages. Do not invent citations.",
+        `Stay within ${ADAPTIVE_RUN_LIMITS.domainMaxSteps} tool steps (host-enforced).`,
       ].join("\n"),
       tools: researchTools,
     });
@@ -59,6 +74,7 @@ export function createSubagents(options: {
         "Inspect a narrow path/module using list_source/read_source only.",
         "Return short evidence bullets with concrete paths.",
         "Do not write wiki pages.",
+        `Stay within ${ADAPTIVE_RUN_LIMITS.leafMaxSteps} tool steps (host-enforced).`,
       ].join("\n"),
       tools: researchTools,
     });

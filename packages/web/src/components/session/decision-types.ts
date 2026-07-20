@@ -10,17 +10,22 @@ export type PendingInteraction = {
   toolCallId?: string;
 };
 
-/** Encode structured choice for the chat protocol (server parses __choice__:). */
-export function encodeChoiceMessage(optionId: string): string {
-  return `__choice__:${optionId}`;
-}
-
-export function encodeInputMessage(text: string): string {
-  return `__input__:${text}`;
-}
+/** Structured resume for workflow plan/publication gates (no string protocol). */
+export type SessionResumePayload = {
+  action: "approve" | "deny";
+  /** Optional plan when approving plan-gate. */
+  plan?: {
+    summary: string;
+    pages: Array<{ path: string; purpose: string }>;
+    notes?: string;
+  };
+};
 
 export function extractPendingFromMessages(
-  messages: Array<{ role: string; parts: Array<{ type: string; input?: unknown; data?: unknown; state?: string }> }>,
+  messages: Array<{
+    role: string;
+    parts: Array<{ type: string; input?: unknown; data?: unknown; state?: string }>;
+  }>,
 ): PendingInteraction | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]!;
@@ -34,7 +39,7 @@ export function extractPendingFromMessages(
           return {
             type: d.type ?? "choice",
             question: d.question,
-            mode: d.mode ?? "choice_or_input",
+            mode: d.mode ?? "choice_only",
             selectionMode: d.selectionMode ?? "single",
             options: d.options ?? [],
             inputPlaceholder: d.inputPlaceholder,
@@ -48,7 +53,7 @@ export function extractPendingFromMessages(
           return {
             type: d.type ?? "choice",
             question: d.question,
-            mode: d.mode ?? "choice_or_input",
+            mode: d.mode ?? "choice_only",
             selectionMode: d.selectionMode ?? "single",
             options: d.options ?? [],
             inputPlaceholder: d.inputPlaceholder,

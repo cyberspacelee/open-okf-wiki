@@ -5,10 +5,10 @@ Primary product implementation for OKF Wiki. See [ADR 0020](../docs/adr/0020-typ
 | Package | Role |
 |---|---|
 | `@okf-wiki/contract` | Zod schemas (Workspace, Run, Session, events, receipts) |
-| `@okf-wiki/core` | Run Boundary + session store + local git probe (no Mastra) |
-| `@okf-wiki/agent` | Mastra agent assembly + session UI-message stream |
-| `@okf-wiki/server` | Localhost HTTP API (`127.0.0.1`) + Session chat endpoints |
-| `@okf-wiki/web` | Operator Web UI (Vite + React + Session chat) |
+| `@okf-wiki/core` | Run Boundary: path policy, publish, session/run stores, git probe (no Mastra) |
+| `@okf-wiki/agent` | Mastra wiki-run workflow + agent tools + Session stream via `@mastra/ai-sdk` |
+| `@okf-wiki/server` | Localhost HTTP API; starts/resumes workflow; thin Session chat adapter |
+| `@okf-wiki/web` | Operator Web UI (Vite + React + Session `useChat`); types from contract |
 | `@okf-wiki/cli` | Headless CLI helpers |
 | `@okf-wiki/skill` | Bundled Producer Skill assets |
 

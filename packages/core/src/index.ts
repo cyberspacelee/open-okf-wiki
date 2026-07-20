@@ -8,7 +8,11 @@ export {
 export {
   assertAbsolutePath,
   assertNoSymlinkComponents,
+  assertContainedPathSafe,
+  isPathInside,
+  resolveContainedPath,
   resolveExistingDir,
+  toPosixRelative,
 } from "./paths.js";
 export {
   skillDigest,
@@ -40,7 +44,6 @@ export {
   appendSessionMessages,
   replaceSessionMessages,
 } from "./session-store.js";
-export { validateInteractionResume } from "./session-decision.js";
 export {
   countMarkdownFiles,
   publishStagingToPublication,
@@ -74,7 +77,6 @@ export {
   workspaceConfigPath,
   workspaceMetaDir,
   defaultAppStatePath,
-  isPathInside,
   createWorkspace,
   loadWorkspace,
   saveWorkspace,

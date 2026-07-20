@@ -22,25 +22,19 @@ test.describe("Session chatbot (AI Elements)", () => {
     await expect(page.getByTestId("session-conversation")).toBeVisible();
     await expectVisibleBox(page.getByTestId("session-input"));
 
-    // Kick off plan
+    // Kick off plan (Session forces plan gate via wiki-run workflow)
     await page.getByTestId("session-input").fill("generate a wiki plan");
     await page.getByTestId("session-send").click();
 
-    // Assistant markdown (Streamdown via MessageResponse)
-    await expect(page.getByRole("heading", { name: /proposed wiki plan/i })).toBeVisible({
-      timeout: 30_000,
+    // Assistant plan text + decision chips (workflow suspend → data-choice)
+    await expect(page.getByText(/proposed wiki plan/i).first()).toBeVisible({
+      timeout: 45_000,
     });
     await expect(page.getByTestId("session-message-text").first()).toBeVisible({
       timeout: 10_000,
     });
 
-    // Tool card from Elements
-    await expect(page.getByText(/list_source/i).first()).toBeVisible({
-      timeout: 15_000,
-    });
-    await expect(page.getByText(/Completed|Running/i).first()).toBeVisible();
-
-    // Dynamic decision chips
+    // Dynamic decision chips (approve | deny)
     await expect(page.getByTestId("session-decision").first()).toBeVisible({
       timeout: 15_000,
     });
@@ -48,17 +42,16 @@ test.describe("Session chatbot (AI Elements)", () => {
     await expect(chips.first()).toBeVisible();
     expect(await chips.count()).toBeGreaterThanOrEqual(2);
 
-    // Prefer structured approve_write option id
-    const writeChip = page.getByTestId("session-choice-approve_write");
+    const writeChip = page.getByTestId("session-choice-approve");
     if ((await writeChip.count()) > 0) {
       await writeChip.click();
     } else {
       await chips.filter({ hasText: /write/i }).first().click();
     }
 
-    // Next assistant turn after choice — real staging materialize
-    await expect(page.getByText(/staged|writing|publish/i).first()).toBeVisible({
-      timeout: 30_000,
+    // After plan approve: write then publication gate (not the plan "page(s)" copy)
+    await expect(page.getByText(/Publish the staged wiki/i).first()).toBeVisible({
+      timeout: 90_000,
     });
 
     // choice_only publish gate: free text disabled
@@ -68,12 +61,12 @@ test.describe("Session chatbot (AI Elements)", () => {
     await expect(page.getByTestId("session-input")).toBeDisabled();
     await expect(page.getByTestId("session-send")).toBeDisabled();
 
-    // Publish via product gate (choice_only chip)
-    const publishChip = page.getByTestId("session-choice-publish_now");
-    await expect(publishChip).toBeVisible({ timeout: 10_000 });
+    // Publish via workflow resume (approve)
+    const publishChip = page.getByTestId("session-choice-approve");
+    await expect(publishChip).toBeVisible({ timeout: 15_000 });
     await publishChip.click();
-    await expect(page.getByText(/publish/i).first()).toBeVisible({
-      timeout: 30_000,
+    await expect(page.getByText(/Published Wiki|published/i).first()).toBeVisible({
+      timeout: 60_000,
     });
   });
 });

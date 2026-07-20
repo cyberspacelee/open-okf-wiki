@@ -9,7 +9,6 @@ import {
   loadOperatorSession,
   listOperatorSessions,
 } from "./session-store.js";
-import { validateInteractionResume } from "./session-decision.js";
 
 test("create/load/list operator sessions", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-sess-"));
@@ -56,29 +55,4 @@ test("appendSessionMessages updates pending and workflow", async () => {
   assert.equal(next.messages.length, 1);
   assert.equal(next.status, "waiting");
   assert.equal(next.pending?.mode, "choice_only");
-});
-
-test("validateInteractionResume enforces modes", () => {
-  const pending = {
-    type: "choice" as const,
-    question: "Q",
-    mode: "choice_only" as const,
-    selectionMode: "single" as const,
-    options: [
-      { id: "a", label: "A" },
-      { id: "b", label: "B" },
-    ],
-  };
-  validateInteractionResume(pending, {
-    channel: "choice",
-    selectedIds: ["a"],
-  });
-  assert.throws(
-    () =>
-      validateInteractionResume(pending, {
-        channel: "input",
-        text: "nope",
-      }),
-    /option/,
-  );
 });

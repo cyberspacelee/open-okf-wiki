@@ -2,12 +2,13 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { spawn } from "node:child_process";
 import path from "node:path";
 import {
-  createSessionChatStream,
+  createSessionWorkflowStream,
   redactErrorMessage,
   resolveSkillPath,
-  runWikiAgent,
-  stagingDirForRun,
+  resumeWikiRun,
+  startWikiRun,
   uiMessagesToSessionMessages,
+  type SessionStreamBody,
 } from "@okf-wiki/agent";
 import {
   addSource,
@@ -30,7 +31,6 @@ import {
   loadWorkspaceById,
   probeLocalGit,
   PublishedWikiError,
-  publishStagingToPublication,
   readPublishedWikiPage,
   readSkillFile,
   registerWorkspaceInAppIndex,
@@ -759,22 +759,6 @@ async function handleProbeSources(
 }
 
 /**
- * Publish staging → publicationPath for a run that is ready for publication.
- * Caller must ensure the run is in `awaiting_publication` (or just became so).
- */
-async function publishRunStaging(
-  workspace: WorkspaceConfig,
-  runId: string,
-): Promise<{ publicationPath: string; pageCount: number }> {
-  const stagingDir = stagingDirForRun(workspace.rootPath, runId);
-  return publishStagingToPublication({
-    stagingDir,
-    publicationPath: workspace.publicationPath,
-    runId,
-  });
-}
-
-/**
  * Persist a status change and emit matching SSE events.
  * When status is terminal, also emits a `done` event so streams close.
  * Does not overwrite an already-cancelled record (cancel wins races);
@@ -830,77 +814,9 @@ type ProcessRunOptions = {
   plan?: WikiRunPlan;
 };
 
-function projectAgentPart(runId: string, part: {
-  type: string;
-  partType?: string;
-  text?: string;
-  toolName?: string;
-  toolCallId?: string;
-  toolState?: "input-streaming" | "input-available" | "output-available" | "output-error";
-  inputSummary?: string;
-  outputSummary?: string;
-  nodeId?: string;
-  message?: string;
-}): void {
-  if (part.type === "log") {
-    emitRunEvent(runId, {
-      type: "log",
-      message: part.message ?? "log",
-      nodeId: part.nodeId,
-    });
-    return;
-  }
-  if (part.type === "text") {
-    emitRunEvent(runId, {
-      type: "text",
-      partType: part.partType ?? "text",
-      text: part.text,
-      message: part.text,
-      nodeId: part.nodeId ?? "root",
-    });
-    return;
-  }
-  if (part.type === "tool") {
-    emitRunEvent(runId, {
-      type: "tool",
-      partType: part.partType,
-      toolName: part.toolName,
-      toolCallId: part.toolCallId,
-      toolState: part.toolState,
-      inputSummary: part.inputSummary,
-      message: part.toolName
-        ? `${part.toolName}${part.inputSummary ? ` (${part.inputSummary})` : ""}`
-        : part.inputSummary,
-      nodeId: part.nodeId ?? "root",
-    });
-    return;
-  }
-  if (part.type === "tool_result") {
-    emitRunEvent(runId, {
-      type: "tool_result",
-      partType: part.partType,
-      toolName: part.toolName,
-      toolCallId: part.toolCallId,
-      toolState: part.toolState,
-      outputSummary: part.outputSummary,
-      message: part.outputSummary ?? part.toolName,
-      nodeId: part.nodeId ?? "root",
-    });
-    return;
-  }
-  emitRunEvent(runId, {
-    type: "part",
-    partType: part.partType,
-    text: part.text,
-    message: part.message,
-    nodeId: part.nodeId,
-  });
-}
-
 /**
- * Background agent work for a run. Errors are written onto the run record.
- * When the agent reaches `awaiting_publication` and `autoApprove` is true,
- * the server publishes staging automatically and marks the run `published`.
+ * Background Wiki Run via Mastra wiki-run workflow (single production path).
+ * Plan/write/publish gates live in the workflow; autoApprove skips suspends.
  */
 function processRunInBackground(
   workspace: WorkspaceConfig,
@@ -908,24 +824,27 @@ function processRunInBackground(
   options: ProcessRunOptions = {},
 ): void {
   const autoApprove = options.autoApprove;
-  const phase =
-    options.phase ??
-    (workspace.planConfirm && autoApprove !== true ? "plan" : "write");
+  const skipPlanConfirm =
+    options.phase === "write" ||
+    Boolean(options.plan) ||
+    autoApprove === true ||
+    !workspace.planConfirm;
 
   void (async () => {
     const abortSignal = registerRunAbortController(runId);
     emitRunStatus(
       runId,
       "running",
-      phase === "plan" ? "Wiki Run plan phase started" : "Wiki Run started",
+      skipPlanConfirm ? "Wiki Run started" : "Wiki Run plan phase started",
     );
     emitRunEvent(runId, {
       type: "log",
-      message: phase === "plan" ? "agent plan phase started" : "agent started",
+      message: skipPlanConfirm
+        ? "wiki workflow started"
+        : "wiki workflow plan phase started",
     });
 
     try {
-      // If cancel raced ahead of agent start, honor it immediately.
       if (abortSignal.aborted) {
         await finalizeRunStatus(workspace.rootPath, runId, {
           status: "cancelled",
@@ -935,17 +854,31 @@ function processRunInBackground(
         return;
       }
 
-      const result = await runWikiAgent({
+      const result = await startWikiRun({
         runId,
         workspace,
         autoApprove,
-        phase,
+        skipPlanConfirm,
         plan: options.plan,
-        abortSignal,
-        onPart: (part) => projectAgentPart(runId, part),
+        onEvent: (event) => {
+          if (event.type === "part") {
+            emitRunEvent(runId, {
+              type: "part",
+              partType: event.partType,
+              message: event.message,
+              text: event.text,
+              nodeId: event.nodeId,
+            });
+            return;
+          }
+          emitRunEvent(runId, {
+            type: "log",
+            message: event.message,
+            nodeId: event.nodeId,
+          });
+        },
       });
 
-      // Prefer cancelled if abort fired while agent was finishing.
       if (abortSignal.aborted || result.status === "cancelled") {
         await finalizeRunStatus(workspace.rootPath, runId, {
           status: "cancelled",
@@ -973,64 +906,18 @@ function processRunInBackground(
         return;
       }
 
-      if (result.status === "awaiting_publication" && autoApprove === true) {
-        // Re-check abort before the publish side-effect (cancel can race here).
-        if (abortSignal.aborted) {
-          await finalizeRunStatus(workspace.rootPath, runId, {
-            status: "cancelled",
-            error: "cancelled",
-            pages: result.pages ?? null,
-            summary: result.summary ?? "Wiki Run cancelled",
-          });
-          return;
-        }
-        emitRunEvent(runId, {
-          type: "log",
-          message: "agent done; auto-publishing",
-        });
-        try {
-          if (abortSignal.aborted) {
-            await finalizeRunStatus(workspace.rootPath, runId, {
-              status: "cancelled",
-              error: "cancelled",
-              pages: result.pages ?? null,
-              summary: result.summary ?? "Wiki Run cancelled",
-            });
-            return;
-          }
-          const published = await publishRunStaging(workspace, runId);
-          await finalizeRunStatus(workspace.rootPath, runId, {
-            status: "published",
-            error: null,
-            pages: result.pages ?? null,
-            summary:
-              result.summary ??
-              `Published ${published.pageCount} page(s) (auto-approve)`,
-          });
-          return;
-        } catch (publishError) {
-          await finalizeRunStatus(workspace.rootPath, runId, {
-            status: "failed",
-            error: `auto-publish failed: ${redactErrorMessage(publishError)}`,
-            pages: result.pages ?? null,
-            summary: result.summary ?? null,
-          });
-          return;
-        }
-      }
-
       emitRunEvent(runId, {
         type: "log",
-        message: result.summary ?? `agent finished: ${result.status}`,
+        message: result.summary ?? `workflow finished: ${result.status}`,
       });
       await finalizeRunStatus(workspace.rootPath, runId, {
         status: result.status,
         error: result.error ?? null,
         pages: result.pages ?? null,
         summary: result.summary ?? null,
+        ...(result.plan ? { plan: result.plan } : {}),
       });
     } catch (error) {
-      // Never log raw stacks — they may include API keys / tokens from model SDKs.
       process.stderr.write(`run ${runId} failed: ${redactErrorMessage(error)}\n`);
       try {
         const status: WikiRunRecordStatus = abortSignal.aborted
@@ -1047,6 +934,99 @@ function processRunInBackground(
           `run ${runId} status update failed: ${redactErrorMessage(updateError)}\n`,
         );
       }
+    } finally {
+      clearRunAbortController(runId);
+    }
+  })();
+}
+
+/**
+ * Resume a suspended wiki-run workflow (plan or publication) and persist status.
+ */
+function resumeRunInBackground(
+  workspace: WorkspaceConfig,
+  runId: string,
+  gate: "plan" | "publication",
+  action: "approve" | "deny",
+  plan?: WikiRunPlan,
+): void {
+  void (async () => {
+    const abortSignal = registerRunAbortController(runId);
+    emitRunStatus(
+      runId,
+      "running",
+      gate === "plan" ? "Resuming after plan decision" : "Resuming after publication decision",
+    );
+    try {
+      if (abortSignal.aborted) {
+        await finalizeRunStatus(workspace.rootPath, runId, {
+          status: "cancelled",
+          error: "cancelled",
+          summary: "Wiki Run cancelled",
+        });
+        return;
+      }
+
+      const result = await resumeWikiRun({
+        runId,
+        gate,
+        action,
+        plan,
+        onEvent: (event) => {
+          emitRunEvent(runId, {
+            type: "log",
+            message: event.message,
+            nodeId: event.nodeId,
+          });
+        },
+      });
+
+      if (abortSignal.aborted || result.status === "cancelled") {
+        await finalizeRunStatus(workspace.rootPath, runId, {
+          status: "cancelled",
+          error: "cancelled",
+          pages: result.pages ?? null,
+          summary: result.summary ?? "Wiki Run cancelled",
+        });
+        return;
+      }
+
+      if (result.status === "awaiting_plan") {
+        await finalizeRunStatus(workspace.rootPath, runId, {
+          status: "awaiting_plan",
+          error: null,
+          plan: result.plan ?? plan ?? null,
+          summary: result.summary ?? "Awaiting plan confirmation",
+        });
+        return;
+      }
+
+      if (result.status === "awaiting_publication") {
+        await finalizeRunStatus(workspace.rootPath, runId, {
+          status: "awaiting_publication",
+          error: null,
+          pages: result.pages ?? null,
+          summary: result.summary ?? "Awaiting publication approval",
+          plan: result.plan ?? plan ?? null,
+        });
+        return;
+      }
+
+      await finalizeRunStatus(workspace.rootPath, runId, {
+        status: result.status,
+        error: result.error ?? null,
+        pages: result.pages ?? null,
+        summary: result.summary ?? null,
+        ...(result.plan || plan ? { plan: result.plan ?? plan ?? null } : {}),
+      });
+    } catch (error) {
+      process.stderr.write(
+        `run ${runId} resume failed: ${redactErrorMessage(error)}\n`,
+      );
+      await finalizeRunStatus(workspace.rootPath, runId, {
+        status: "failed",
+        error: redactErrorMessage(error),
+      }).catch(() => undefined);
     } finally {
       clearRunAbortController(runId);
     }
@@ -1276,11 +1256,8 @@ async function handleApprovePlan(
       summary: "Plan approved; write phase starting",
       error: null,
     });
-    processRunInBackground(workspace, runId, {
-      autoApprove: existing.autoApprove,
-      phase: "write",
-      plan,
-    });
+    // Resume the suspended Mastra workflow plan-gate (same runId).
+    resumeRunInBackground(workspace, runId, "plan", "approve", plan);
     sendJson(res, 200, { run: updated });
   } catch (error) {
     if (error instanceof RunStatusConflictError) {
@@ -1322,6 +1299,8 @@ async function handleDenyPlan(
       error: "plan declined",
       summary: "Plan declined by operator",
     });
+    // Best-effort: close suspended workflow snapshot.
+    resumeRunInBackground(workspace, runId, "plan", "deny", existing.plan);
     emitRunDone(runId, "cancelled", "Plan declined by operator");
     sendJson(res, 200, { run: updated });
   } catch (error) {
@@ -1676,24 +1655,21 @@ async function handleApprovePublication(
   }
 
   try {
-    const published = await publishRunStaging(workspace, runId);
     const updated = await updateRunRecord(workspace.rootPath, runId, {
-      status: "published",
+      status: "running",
       error: null,
-      summary: run.summary ?? `Published ${published.pageCount} page(s)`,
+      summary: "Publication approved; publishing…",
     });
-    emitRunDone(
-      runId,
-      "published",
-      updated.summary ?? `Published ${published.pageCount} page(s)`,
-    );
+    resumeRunInBackground(workspace, runId, "publication", "approve");
     sendJson(res, 200, {
       run: updated,
-      publicationPath: published.publicationPath,
-      pageCount: published.pageCount,
+      publicationPath: workspace.publicationPath,
     });
   } catch (error) {
-    // Stay in awaiting_publication so the operator can fix and retry approve.
+    if (error instanceof RunStatusConflictError) {
+      sendError(res, 409, error.message);
+      return;
+    }
     const message = redactErrorMessage(error);
     emitRunEvent(runId, {
       type: "error",
@@ -1735,12 +1711,21 @@ async function handleDenyPublication(
     return;
   }
 
-  const updated = await updateRunRecord(workspace.rootPath, runId, {
-    status: "publication_declined",
-    error: null,
-  });
-  emitRunDone(runId, "publication_declined", "Publication declined");
-  sendJson(res, 200, { run: updated });
+  try {
+    const updated = await updateRunRecord(workspace.rootPath, runId, {
+      status: "running",
+      error: null,
+      summary: "Publication declining…",
+    });
+    resumeRunInBackground(workspace, runId, "publication", "deny");
+    sendJson(res, 200, { run: updated });
+  } catch (error) {
+    if (error instanceof RunStatusConflictError) {
+      sendError(res, 409, error.message);
+      return;
+    }
+    sendError(res, 400, error instanceof Error ? error.message : String(error));
+  }
 }
 
 /**
@@ -2119,7 +2104,7 @@ async function handleGetSession(
 
 /**
  * AI SDK UI message stream for conversational Session.
- * Body: { messages: UIMessage[] }
+ * Body: { messages, resumeData?, runId?, step? } — production via Mastra wiki workflow + toAISdkStream.
  */
 async function handleSessionChat(
   req: IncomingMessage,
@@ -2140,21 +2125,19 @@ async function handleSessionChat(
     return;
   }
 
-  const body = (await readJsonBody(req)) as { messages?: unknown };
+  const body = (await readJsonBody(req)) as SessionStreamBody;
   const messages = (Array.isArray(body.messages) ? body.messages : []) as UIMessage[];
 
-  // Persist full client message list (conversation source of truth for this turn).
   const asSessionMessages = uiMessagesToSessionMessages(messages);
 
   try {
-    const chat = await createSessionChatStream({
+    const chat = await createSessionWorkflowStream({
       session: { ...session, messages: asSessionMessages },
       workspace,
       messages,
+      body,
     });
 
-    // Persist after stream completes (consume side-effect via onEnd-like finalize after pipe).
-    const originalEnd = res.end.bind(res);
     let finalized = false;
     const finalizeOnce = async () => {
       if (finalized) {
@@ -2165,9 +2148,8 @@ async function handleSessionChat(
         const result = await chat.finalize();
         let workflow = { ...result.workflow };
 
-        // Product Run Boundary side effects from conversation choices.
-        if (result.sideEffects?.materializeRun) {
-          const { runId, pages, summary } = result.sideEffects.materializeRun;
+        if (result.sideEffects?.upsertRun) {
+          const u = result.sideEffects.upsertRun;
           try {
             let frozenSkillPath: string | undefined;
             let frozenSkillDigest: string | undefined;
@@ -2175,48 +2157,35 @@ async function handleSessionChat(
               frozenSkillPath = await resolveSkillPath(workspace.skillPath);
               frozenSkillDigest = await skillDigest(frozenSkillPath);
             } catch {
-              // Skill optional for materialize record; still register the run.
+              // optional freeze
             }
-            await registerRunRecord(workspace.rootPath, workspace.id, {
-              runId,
-              status: "awaiting_publication",
-              pages,
-              summary: summary ?? `Session staged ${pages.length} page(s)`,
-              skillPath: frozenSkillPath,
-              skillDigest: frozenSkillDigest,
-            });
+            const existing = await loadRun(workspace.rootPath, u.runId);
+            if (!existing) {
+              await registerRunRecord(workspace.rootPath, workspace.id, {
+                runId: u.runId,
+                status: (u.status as WikiRunRecordStatus) ?? "running",
+                pages: u.pages,
+                summary: u.summary,
+                skillPath: frozenSkillPath,
+                skillDigest: frozenSkillDigest,
+              });
+            } else {
+              await updateRunRecord(workspace.rootPath, u.runId, {
+                status: u.status as WikiRunRecordStatus,
+                pages: u.pages ?? null,
+                summary: u.summary ?? null,
+                ...(u.plan ? { plan: u.plan } : {}),
+                error: null,
+              }).catch(() => undefined);
+            }
             workflow = {
               ...workflow,
-              linkedRunId: runId,
-              phase: "awaiting_publish",
+              linkedRunId: u.runId,
             };
           } catch (error) {
             process.stderr.write(
-              `session materialize run failed: ${redactErrorMessage(error)}\n`,
+              `session run upsert failed: ${redactErrorMessage(error)}\n`,
             );
-          }
-        }
-
-        if (result.sideEffects?.publishRunId) {
-          const runId = result.sideEffects.publishRunId;
-          try {
-            const published = await publishRunStaging(workspace, runId);
-            await updateRunRecord(workspace.rootPath, runId, {
-              status: "published",
-              error: null,
-              summary: `Published ${published.pageCount} page(s) from Session`,
-            }).catch(() => {
-              // Run record may be missing in edge cases; publish still attempted.
-            });
-            workflow = { ...workflow, linkedRunId: runId, phase: "done" };
-          } catch (error) {
-            process.stderr.write(
-              `session publish failed: ${redactErrorMessage(error)}\n`,
-            );
-            await updateRunRecord(workspace.rootPath, runId, {
-              status: "failed",
-              error: `publish failed: ${redactErrorMessage(error)}`,
-            }).catch(() => undefined);
           }
         }
 
@@ -2243,9 +2212,6 @@ async function handleSessionChat(
     res.on("close", () => {
       void finalizeOnce();
     });
-
-    // Prevent double-end issues
-    void originalEnd;
 
     pipeUIMessageStreamToResponse({
       response: res,

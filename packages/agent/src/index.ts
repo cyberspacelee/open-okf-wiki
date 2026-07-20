@@ -15,12 +15,7 @@ export {
 
 export { resolveSkillPath, resolveBundledSkillPath } from "./skill-path.js";
 
-export {
-  projectMastraChunk,
-  fixtureStreamParts,
-  sanitizeSummary,
-  type WikiStreamPart,
-} from "./stream-parts.js";
+export { sanitizeSummary } from "./stream-parts.js";
 
 export {
   createSubagents,
@@ -31,7 +26,30 @@ export {
 export { ADAPTIVE_RUN_LIMITS, adaptiveLimitsInstruction } from "./limits.js";
 
 export {
-  createSessionChatStream,
+  createSessionWorkflowStream,
   uiMessagesToSessionMessages,
-  type SessionChatResult,
-} from "./session-chat.js";
+  type SessionStreamResult,
+  type SessionStreamBody,
+  type SessionStreamSideEffects,
+} from "./session-stream.js";
+
+export { getMastra, mastraStorageDir, resetMastraForTests } from "./mastra-instance.js";
+
+export {
+  wikiRunWorkflow,
+  WIKI_RUN_WORKFLOW_ID,
+  type WikiRunWorkflowInput,
+  type WikiRunWorkflowOutput,
+} from "./wiki-workflow.js";
+
+export {
+  startWikiRun,
+  resumeWikiRun,
+  type StartWikiRunInput,
+  type ResumeWikiRunInput,
+  type WikiRunOrchestrationResult,
+  type WikiWorkflowJobEvent,
+} from "./wiki-run.js";
+
+export { openWikiWorkflowUiStream } from "./workflow-ui-stream.js";
+export { mapWorkflowStreamEvent } from "./workflow-events.js";

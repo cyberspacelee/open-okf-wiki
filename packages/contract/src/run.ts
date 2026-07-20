@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { ModelRefSchema, WorkspaceSourceSchema } from "./workspace.js";
 
 export const WikiRunRecordStatusSchema = z.enum([
   "running",
@@ -47,70 +46,10 @@ export function exitCodeForStatus(status: WikiRunRecordStatus): WikiRunExitCodeV
   }
 }
 
-export const CompleteSchema = z.object({
-  kind: z.literal("complete"),
-  pages: z.array(z.string().min(1)).min(1),
-  summary: z.string().optional(),
-});
-
-export type Complete = z.infer<typeof CompleteSchema>;
-
-export const NeedsInputSchema = z.object({
-  kind: z.literal("needs_input"),
-  questions: z
-    .array(
-      z.object({
-        id: z.string().min(1),
-        prompt: z.string().min(1),
-      }),
-    )
-    .min(1),
-});
-
-export type NeedsInput = z.infer<typeof NeedsInputSchema>;
-
-export const WikiRunOutcomeSchema = z.discriminatedUnion("kind", [
-  CompleteSchema,
-  NeedsInputSchema,
-]);
-
-export type WikiRunOutcome = z.infer<typeof WikiRunOutcomeSchema>;
-
-/**
- * Frozen inputs for one Wiki Run.
- * Built from Workspace config + optional CLI overrides; no framework types.
- */
-export const WikiRunRequestSchema = z.object({
-  workspaceId: z.string().min(1),
-  sources: z.array(WorkspaceSourceSchema).min(1),
-  model: ModelRefSchema,
-  publicationPath: z.string().min(1),
-  skillPath: z.string().min(1).optional(),
-  /** Content digest of the frozen Producer Skill for this run. */
-  skillDigest: z.string().min(1).optional(),
-  adaptive: z.boolean().default(false),
-  reviewer: z.boolean().default(false),
-  planConfirm: z.boolean().default(false),
-  autoApprovePublication: z.boolean().default(false),
-  explicitAnswers: z.record(z.string(), z.string()).optional(),
-  retainAnalysisScratch: z.boolean().default(false),
-});
-
-export type WikiRunRequest = z.infer<typeof WikiRunRequestSchema>;
-
-export const WikiRunResultSchema = z.object({
-  runId: z.string().min(1),
-  status: WikiRunRecordStatusSchema,
-  outcome: WikiRunOutcomeSchema.optional(),
-  error: z.string().optional(),
-  publicationPath: z.string().optional(),
-});
-
-export type WikiRunResult = z.infer<typeof WikiRunResultSchema>;
-
 /**
  * Lightweight persisted run record for the Web UI / server registry.
- * Agent orchestration updates status asynchronously after create.
+ * Frozen skill fields + plan live on the record; orchestration is the
+ * Mastra wiki-run workflow (not a parallel WikiRunRequest DTO).
  */
 /** Intended page set proposed during plan-confirm (operator-facing). */
 export const WikiRunPlanSchema = z.object({

@@ -582,6 +582,11 @@ export function WorkspaceRunPage() {
 
                     <div className="run-event-log mono small" data-testid="run-event-log">
                       <h3 className="panel-subtitle">Job events</h3>
+                      <p className="muted small mb-2">
+                        Status and wiki-run workflow steps (same workflow as Session). Detailed
+                        tool/token streams appear on the{" "}
+                        <Link to={workspaceHref(id, "/session", rootPathHint)}>Session</Link> page.
+                      </p>
                       {eventLog.length === 0 ? (
                         <p className="muted">No events yet.</p>
                       ) : (
@@ -591,10 +596,6 @@ export function WorkspaceRunPage() {
                           ))}
                         </ul>
                       )}
-                      <p className="muted small mt-2">
-                        For conversational planning, use{" "}
-                        <Link to={workspaceHref(id, "/session", rootPathHint)}>Session</Link>.
-                      </p>
                     </div>
 
                     {lastRun.skillDigest ? (

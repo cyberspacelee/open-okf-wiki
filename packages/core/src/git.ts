@@ -2,16 +2,14 @@ import { spawn } from "node:child_process";
 import { access, mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 import type { GitProbe } from "@okf-wiki/contract";
+import { isPathInside } from "./paths.js";
 
-/** Local path containment (avoid importing workspace-store → circular with probeLocalGit). */
+/** Dest must be strictly inside parent (not equal). */
 function isStrictlyInside(parent: string, child: string): boolean {
-  const resolvedParent = path.resolve(parent);
-  const resolvedChild = path.resolve(child);
-  if (resolvedParent === resolvedChild) {
+  if (path.resolve(parent) === path.resolve(child)) {
     return false;
   }
-  const rel = path.relative(resolvedParent, resolvedChild);
-  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+  return isPathInside(parent, child);
 }
 
 function runGit(

@@ -14,6 +14,7 @@ The primary operator surface is the **Session** page — a multi-turn conversati
 | [ADR 0020](docs/adr/0020-typescript-mastra-web-workspace.md) | TypeScript / Mastra / Web layout |
 | [ADR 0021](docs/adr/0021-retire-python-primary-path.md) | Python primary path retired |
 | [ADR 0024](docs/adr/0024-session-as-conversational-workspace.md) | Session as conversational workspace |
+| [ADR 0025](docs/adr/0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) | Single Mastra workflow + official AI SDK bridge |
 
 ## Requirements
 

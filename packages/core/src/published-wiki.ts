@@ -1,7 +1,12 @@
-import { lstat, readdir, readFile, realpath } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { assertAbsolutePath, assertNoSymlinkComponents } from "./paths.js";
-import { isPathInside } from "./workspace-store.js";
+import {
+  assertAbsolutePath,
+  assertContainedPathSafe,
+  assertNoSymlinkComponents,
+  resolveContainedPath,
+  toPosixRelative,
+} from "./paths.js";
 
 /** Soft cap on listed / readable published wiki pages. */
 export const PUBLISHED_WIKI_MAX_PAGES = 500;
@@ -87,121 +92,64 @@ export function extractTitleFromFrontmatter(content: string): string | undefined
 }
 
 /**
- * Resolve `relativePath` under `root` with pure string checks.
- * Rejects absolute paths, empty roots, and `..` segments.
+ * Resolve `relativePath` under publication root via core containment.
+ * Rejects empty path / wiki-root-as-file (browse always targets a page).
  */
 export function resolvePublishedWikiPath(root: string, relativePath: string): string {
-  if (typeof root !== "string" || root.trim() === "") {
-    throw new PublishedWikiError("invalid_path", "root must be a non-empty absolute path");
-  }
-  const resolvedRoot = path.resolve(root);
-
   if (typeof relativePath !== "string" || !relativePath.trim()) {
     throw new PublishedWikiError("invalid_path", "path must be a non-empty relative path");
   }
-
-  const trimmed = relativePath.trim();
-  if (path.isAbsolute(trimmed)) {
-    throw new PublishedWikiError("invalid_path", "absolute paths are not allowed");
-  }
-  if (/^[a-zA-Z]:/.test(trimmed) || trimmed.startsWith("\\\\")) {
-    throw new PublishedWikiError("invalid_path", "absolute paths are not allowed");
-  }
-
-  const segments = trimmed.split(/[/\\]+/).filter((s) => s.length > 0);
-  if (segments.length === 0) {
-    throw new PublishedWikiError("invalid_path", "path must be a non-empty relative path");
-  }
-  for (const segment of segments) {
-    if (segment === "..") {
-      throw new PublishedWikiError(
-        "invalid_path",
-        "path escapes root: '..' segments are not allowed",
-      );
-    }
-    if (segment === ".") {
-      continue;
-    }
-  }
-
-  const resolved = path.resolve(resolvedRoot, ...segments);
-  if (!isPathInside(resolvedRoot, resolved) || resolved === resolvedRoot) {
-    // Must be a file under root, not the root itself.
-    if (resolved === resolvedRoot) {
+  try {
+    const resolved = resolveContainedPath(root, relativePath);
+    if (path.resolve(resolved) === path.resolve(root)) {
       throw new PublishedWikiError("invalid_path", "path must name a file under the wiki root");
     }
-    throw new PublishedWikiError("invalid_path", `path escapes root: ${relativePath}`);
-  }
-  return resolved;
-}
-
-/** Convert an absolute path under root to a POSIX-style relative path. */
-export function toPublishedWikiPosixRelative(root: string, absolutePath: string): string {
-  const rel = path.relative(path.resolve(root), path.resolve(absolutePath));
-  if (rel.startsWith("..") || path.isAbsolute(rel) || rel === "") {
-    throw new PublishedWikiError("invalid_path", "path is outside root");
-  }
-  return rel.split(path.sep).join("/");
-}
-
-/**
- * After string resolution, walk from root to leaf with `lstat` (no follow).
- * Rejects any symlink component so reads cannot escape via links.
- */
-async function assertPublishedPathSafe(root: string, absolutePath: string): Promise<void> {
-  const resolvedRoot = path.resolve(root);
-  const resolved = path.resolve(absolutePath);
-
-  if (!isPathInside(resolvedRoot, resolved)) {
-    throw new PublishedWikiError("invalid_path", `path escapes root: ${absolutePath}`);
-  }
-
-  const rel = path.relative(resolvedRoot, resolved);
-  const segments = rel === "" ? [] : rel.split(path.sep).filter((s) => s.length > 0);
-
-  let current = resolvedRoot;
-  for (const segment of segments) {
-    current = path.join(current, segment);
-    let info;
-    try {
-      info = await lstat(current);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException | undefined)?.code;
-      if (code === "ENOENT") {
-        throw new PublishedWikiError("not_found", `path does not exist: ${rel || "."}`);
-      }
-      throw new PublishedWikiError(
-        "io",
-        `cannot stat ${rel || "."}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-    if (info.isSymbolicLink()) {
-      const shown = path.relative(resolvedRoot, current) || ".";
-      throw new PublishedWikiError("symlink", `path contains symlink component: ${shown}`);
-    }
-  }
-
-  try {
-    const realRoot = await realpath(resolvedRoot);
-    const realTarget = await realpath(resolved);
-    if (!isPathInside(realRoot, realTarget)) {
-      throw new PublishedWikiError(
-        "invalid_path",
-        `path escapes root after realpath: ${absolutePath}`,
-      );
-    }
+    return resolved;
   } catch (error) {
     if (error instanceof PublishedWikiError) {
       throw error;
     }
-    const code = (error as NodeJS.ErrnoException | undefined)?.code;
-    if (code === "ENOENT") {
-      throw new PublishedWikiError("not_found", `path does not exist: ${rel || "."}`);
+    throw new PublishedWikiError(
+      "invalid_path",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
+
+/** Convert an absolute path under root to a POSIX-style relative path. */
+export function toPublishedWikiPosixRelative(root: string, absolutePath: string): string {
+  try {
+    const rel = toPosixRelative(root, absolutePath);
+    if (rel === ".") {
+      throw new PublishedWikiError("invalid_path", "path is outside root");
+    }
+    return rel;
+  } catch (error) {
+    if (error instanceof PublishedWikiError) {
+      throw error;
     }
     throw new PublishedWikiError(
-      "io",
-      `cannot realpath: ${error instanceof Error ? error.message : String(error)}`,
+      "invalid_path",
+      error instanceof Error ? error.message : String(error),
     );
+  }
+}
+
+/**
+ * Symlink-safe check via core {@link assertContainedPathSafe}, mapped to PublishedWikiError.
+ */
+async function assertPublishedPathSafe(root: string, absolutePath: string): Promise<void> {
+  try {
+    await assertContainedPathSafe(root, absolutePath);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/symlink/i.test(message)) {
+      throw new PublishedWikiError("symlink", message);
+    }
+    if (/does not exist|ENOENT/i.test(message)) {
+      throw new PublishedWikiError("not_found", message);
+    }
+    throw new PublishedWikiError("invalid_path", message);
   }
 }
 

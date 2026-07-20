@@ -18,7 +18,9 @@
   },
   "dependencies": {
     "@ai-sdk/openai": "^2.0.114",
+    "@mastra/ai-sdk": "1.6.2",
     "@mastra/core": "1.51.0",
+    "@mastra/libsql": "1.16.0",
     "@okf-wiki/contract": "workspace:*",
     "@okf-wiki/core": "workspace:*",
     "ai": "^7.0.31",

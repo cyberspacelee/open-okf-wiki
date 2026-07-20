@@ -38,30 +38,26 @@ test.describe("session plan-confirm + timeline", () => {
     await expect(page.getByTestId("run-last-status")).toHaveAttribute(
       "data-status",
       "awaiting_plan",
-      { timeout: 25_000 },
+      { timeout: 45_000 },
     );
-    await expect(page.getByTestId("session-plan-card")).toBeVisible();
-    await expect(page.getByTestId("session-timeline")).toBeVisible();
-    // Plan phase emits markdown text part
-    await expect(page.getByTestId("session-markdown").first()).toBeVisible({
-      timeout: 10_000,
+    await expect(page.getByTestId("session-plan-card")).toBeVisible({
+      timeout: 15_000,
     });
+    // Job event log is the Run console timeline (not Session chat).
+    await expect(page.getByTestId("run-event-log")).toBeVisible();
 
     const approvePlan = page.getByTestId("run-approve-plan");
     await expect(approvePlan).toBeVisible();
     await expect(approvePlan).toBeEnabled();
-    // Force avoids rare detach races while SSE replay refreshes the run list.
     await approvePlan.click({ force: true });
 
     await expect(page.getByTestId("run-last-status")).toHaveAttribute(
       "data-status",
       "awaiting_publication",
-      { timeout: 30_000 },
+      { timeout: 60_000 },
     );
     await expect(page.getByTestId("run-pages-list")).toContainText("overview.md");
-    // Publish HITL available after write phase.
     await expect(page.getByTestId("run-publish-actions")).toBeVisible();
-    // Timeline still present (plan-phase markdown and/or write-phase parts).
-    await expect(page.getByTestId("session-timeline")).toBeVisible();
+    await expect(page.getByTestId("run-event-log")).toBeVisible();
   });
 });

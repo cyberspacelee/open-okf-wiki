@@ -11,7 +11,13 @@ import {
   type WorkspaceSource,
 } from "@okf-wiki/contract";
 import { probeLocalGit } from "./git.js";
-import { assertAbsolutePath, resolveExistingDir } from "./paths.js";
+import {
+  assertAbsolutePath,
+  isPathInside,
+  resolveExistingDir,
+} from "./paths.js";
+
+export { isPathInside };
 
 export const WORKSPACE_DIR_NAME = ".okf-wiki";
 export const WORKSPACE_FILE_NAME = "workspace.json";
@@ -39,17 +45,6 @@ export function defaultAppStatePath(): string {
     return path.join(path.resolve(home), APP_STATE_FILE_NAME);
   }
   return path.join(homedir(), WORKSPACE_DIR_NAME, APP_STATE_FILE_NAME);
-}
-
-/** True if `child` is `parent` or a path strictly inside it. */
-export function isPathInside(parent: string, child: string): boolean {
-  const resolvedParent = path.resolve(parent);
-  const resolvedChild = path.resolve(child);
-  if (resolvedParent === resolvedChild) {
-    return true;
-  }
-  const rel = path.relative(resolvedParent, resolvedChild);
-  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
 }
 
 export type CreateWorkspaceOptions = {
