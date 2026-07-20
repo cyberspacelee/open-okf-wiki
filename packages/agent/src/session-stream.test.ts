@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { UIMessage } from "ai";
 import {
+  helpTextForSessionTurn,
   isKickoff,
+  isKickoffPhrase,
+  resolveSessionTurnMode,
   sessionMessagesToUIMessages,
   uiMessagesToSessionMessages,
 } from "./session-stream.js";
@@ -18,6 +21,216 @@ test("isKickoff requires generate-ish phrase on idle/done only", () => {
   // undefined phase treated like idle (fresh session)
   assert.equal(isKickoff("generate", undefined), true);
   assert.equal(isKickoff("please run", "idle"), true);
+});
+
+test("isKickoffPhrase is phase-agnostic", () => {
+  assert.equal(isKickoffPhrase("generate"), true);
+  assert.equal(isKickoffPhrase("hello"), false);
+  assert.equal(isKickoffPhrase(""), false);
+});
+
+test("resolveSessionTurnMode: resume when resumeData + existingRunId", () => {
+  const r = resolveSessionTurnMode({
+    userText: "approve",
+    phase: "awaiting_plan",
+    status: "waiting",
+    hasSources: true,
+    resumeData: { action: "approve" },
+    existingRunId: "run-1",
+  });
+  assert.deepEqual(r, { mode: "resume" });
+});
+
+test("resolveSessionTurnMode: start on kickoff idle/done with sources", () => {
+  assert.deepEqual(
+    resolveSessionTurnMode({
+      userText: "generate",
+      phase: "idle",
+      status: "active",
+      hasSources: true,
+    }),
+    { mode: "start" },
+  );
+  assert.deepEqual(
+    resolveSessionTurnMode({
+      userText: "generate a wiki plan",
+      phase: "done",
+      status: "completed",
+      hasSources: true,
+    }),
+    { mode: "start" },
+  );
+  // undefined phase ≈ idle
+  assert.deepEqual(
+    resolveSessionTurnMode({
+      userText: "generate",
+      phase: undefined,
+      status: "active",
+      hasSources: true,
+    }),
+    { mode: "start" },
+  );
+});
+
+test("resolveSessionTurnMode: free-text never auto-starts", () => {
+  assert.deepEqual(
+    resolveSessionTurnMode({
+      userText: "hello there",
+      phase: "idle",
+      status: "active",
+      hasSources: true,
+    }),
+    { mode: "help", helpReason: "not_kickoff" },
+  );
+  assert.deepEqual(
+    resolveSessionTurnMode({
+      userText: "",
+      phase: "idle",
+      status: "active",
+      hasSources: true,
+    }),
+    { mode: "help", helpReason: "not_kickoff" },
+  );
+});
+
+test("resolveSessionTurnMode: no sources on kickoff or free-text", () => {
+  assert.deepEqual(
+    resolveSessionTurnMode({
+      userText: "generate",
+      phase: "idle",
+      status: "active",
+      hasSources: false,
+    }),
+    { mode: "help", helpReason: "no_sources" },
+  );
+  // Free-text without sources must not suggest "say generate" first.
+  assert.deepEqual(
+    resolveSessionTurnMode({
+      userText: "hello",
+      phase: "idle",
+      status: "active",
+      hasSources: false,
+    }),
+    { mode: "help", helpReason: "no_sources" },
+  );
+});
+
+test("resolveSessionTurnMode: mid-flight phases block start", () => {
+  assert.deepEqual(
+    resolveSessionTurnMode({
+      userText: "generate",
+      phase: "planning",
+      status: "active",
+      hasSources: true,
+    }),
+    { mode: "help", helpReason: "running" },
+  );
+  assert.deepEqual(
+    resolveSessionTurnMode({
+      userText: "generate",
+      phase: "writing",
+      status: "active",
+      hasSources: true,
+    }),
+    { mode: "help", helpReason: "running" },
+  );
+});
+
+test("resolveSessionTurnMode: pending gate without resume", () => {
+  assert.deepEqual(
+    resolveSessionTurnMode({
+      userText: "hello",
+      phase: "awaiting_plan",
+      status: "waiting",
+      hasSources: true,
+    }),
+    { mode: "help", helpReason: "pending_gate" },
+  );
+  assert.deepEqual(
+    resolveSessionTurnMode({
+      userText: "generate",
+      phase: "awaiting_publish",
+      status: "waiting",
+      hasSources: true,
+    }),
+    { mode: "help", helpReason: "pending_gate" },
+  );
+  // resumeData alone without run id is not resume
+  assert.deepEqual(
+    resolveSessionTurnMode({
+      userText: "approve",
+      phase: "awaiting_plan",
+      status: "waiting",
+      hasSources: true,
+      resumeData: { action: "approve" },
+    }),
+    { mode: "help", helpReason: "pending_gate" },
+  );
+});
+
+test("resolveSessionTurnMode: running blocks start", () => {
+  assert.deepEqual(
+    resolveSessionTurnMode({
+      userText: "generate",
+      phase: "idle",
+      status: "running",
+      hasSources: true,
+    }),
+    { mode: "help", helpReason: "running" },
+  );
+});
+
+test("resolveSessionTurnMode: resume still wins while running", () => {
+  assert.deepEqual(
+    resolveSessionTurnMode({
+      userText: "approve",
+      phase: "awaiting_plan",
+      status: "running",
+      hasSources: true,
+      resumeData: { action: "approve" },
+      existingRunId: "run-1",
+    }),
+    { mode: "resume" },
+  );
+});
+
+test("helpTextForSessionTurn is contextual", () => {
+  assert.match(
+    helpTextForSessionTurn({ helpReason: "no_sources" }),
+    /Sources/,
+  );
+  assert.match(
+    helpTextForSessionTurn({ helpReason: "running" }),
+    /Stop/,
+  );
+  assert.match(
+    helpTextForSessionTurn({
+      helpReason: "pending_gate",
+      phase: "awaiting_plan",
+      userText: "hello",
+    }),
+    /approve/,
+  );
+  // Kickoff-like at gate: do not pretend generate will start
+  const gateKickoff = helpTextForSessionTurn({
+    helpReason: "pending_gate",
+    phase: "awaiting_plan",
+    userText: "generate",
+  });
+  assert.match(gateKickoff, /pending/i);
+  assert.match(gateKickoff, /before starting/i);
+  assert.match(
+    helpTextForSessionTurn({
+      helpReason: "pending_gate",
+      phase: "awaiting_publish",
+      userText: "generate",
+    }),
+    /publication/i,
+  );
+  assert.match(
+    helpTextForSessionTurn({ helpReason: "not_kickoff" }),
+    /generate/,
+  );
 });
 
 test("uiMessagesToSessionMessages preserves tool and data parts", () => {

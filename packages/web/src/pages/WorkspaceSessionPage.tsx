@@ -15,8 +15,10 @@ import {
 import {
   PromptInput,
   PromptInputBody,
+  PromptInputFooter,
   PromptInputSubmit,
   PromptInputTextarea,
+  PromptInputTools,
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input";
 import { MessageParts } from "../components/session/MessageParts";
@@ -27,11 +29,14 @@ import { LoadingState } from "../components/LoadingState";
 import { WorkspaceSubnav } from "../components/WorkspaceSubnav";
 import {
   cancelRun,
+  createSession,
   getOrCreateSession,
   getSession,
   getWorkspace,
   listRuns,
+  listSessions,
   type OperatorSessionDto,
+  type OperatorSessionSummary,
   type WikiRunPlan,
   type WorkspaceConfig,
 } from "../api";
@@ -40,7 +45,14 @@ import { workspaceHref } from "../lib/workspace-path";
 import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { MessageSquareIcon } from "lucide-react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { MessageSquareIcon, PlusIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 function sessionMessagesToUI(
@@ -173,6 +185,33 @@ function extractResumePlan(
   return undefined;
 }
 
+function summaryFromSession(session: OperatorSessionDto): OperatorSessionSummary {
+  return {
+    id: session.id,
+    title: session.title,
+    status: session.status,
+    updatedAt: session.updatedAt,
+    createdAt: session.createdAt,
+    pending: session.pending,
+    workflow: session.workflow,
+  };
+}
+
+function upsertSessionSummary(
+  list: OperatorSessionSummary[],
+  summary: OperatorSessionSummary,
+): OperatorSessionSummary[] {
+  const next = list.filter((s) => s.id !== summary.id);
+  next.push(summary);
+  next.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return next;
+}
+
+function formatSessionLabel(session: OperatorSessionSummary): string {
+  const when = session.updatedAt.slice(0, 16).replace("T", " ");
+  return `${session.title} · ${when}`;
+}
+
 export function WorkspaceSessionPage() {
   const { t } = useI18n();
   const { id = "" } = useParams<{ id: string }>();
@@ -184,10 +223,15 @@ export function WorkspaceSessionPage() {
   const [sessionMeta, setSessionMeta] = useState<OperatorSessionDto | null>(
     null,
   );
+  const [sessionList, setSessionList] = useState<OperatorSessionSummary[]>([]);
   const [bootError, setBootError] = useState<unknown>(null);
   const [loading, setLoading] = useState(true);
+  const [switching, setSwitching] = useState(false);
+  const [creating, setCreating] = useState(false);
 
-  // Boot workspace + session
+  const rootPath = workspace?.rootPath ?? rootPathHint;
+
+  // Boot workspace + current session + history list
   useEffect(() => {
     if (!id) {
       return;
@@ -202,14 +246,18 @@ export function WorkspaceSessionPage() {
           return;
         }
         setWorkspace(ws.workspace);
-        const { session } = await getOrCreateSession(
-          id,
-          ws.workspace.rootPath ?? rootPathHint,
-        );
+        const root = ws.workspace.rootPath ?? rootPathHint;
+        const [{ session }, listRes] = await Promise.all([
+          getOrCreateSession(id, root),
+          listSessions(id, root),
+        ]);
         if (cancelled) {
           return;
         }
         setSessionMeta(session);
+        setSessionList(
+          upsertSessionSummary(listRes.sessions, summaryFromSession(session)),
+        );
       } catch (err) {
         if (!cancelled) {
           setBootError(err);
@@ -225,11 +273,80 @@ export function WorkspaceSessionPage() {
     };
   }, [id, rootPathHint]);
 
+  const newestSessionId = sessionList[0]?.id;
+  const readOnly =
+    sessionMeta != null &&
+    newestSessionId != null &&
+    sessionMeta.id !== newestSessionId;
+
+  const handleSessionMetaChange = useCallback((session: OperatorSessionDto) => {
+    setSessionMeta(session);
+    setSessionList((prev) =>
+      upsertSessionSummary(prev, summaryFromSession(session)),
+    );
+  }, []);
+
+  const handleSwitchSession = useCallback(
+    async (sessionId: string) => {
+      if (!id || !sessionId || sessionId === sessionMeta?.id || switching) {
+        return;
+      }
+      setSwitching(true);
+      setBootError(null);
+      try {
+        const { session } = await getSession(id, sessionId, rootPath);
+        setSessionMeta(session);
+        setSessionList((prev) =>
+          upsertSessionSummary(prev, summaryFromSession(session)),
+        );
+      } catch (err) {
+        setBootError(err);
+      } finally {
+        setSwitching(false);
+      }
+    },
+    [id, rootPath, sessionMeta?.id, switching],
+  );
+
+  const handleNewSession = useCallback(async () => {
+    if (!id || creating) {
+      return;
+    }
+    setCreating(true);
+    setBootError(null);
+    try {
+      const { session } = await createSession(id, undefined, rootPath);
+      setSessionMeta(session);
+      setSessionList((prev) =>
+        upsertSessionSummary(prev, summaryFromSession(session)),
+      );
+    } catch (err) {
+      setBootError(err);
+    } finally {
+      setCreating(false);
+    }
+  }, [id, creating, rootPath]);
+
+  const handleSwitchToLatest = useCallback(() => {
+    if (newestSessionId) {
+      void handleSwitchSession(newestSessionId);
+    }
+  }, [newestSessionId, handleSwitchSession]);
+
+  const sessionSelectItems = useMemo(
+    () =>
+      sessionList.map((s) => ({
+        value: s.id,
+        label: formatSessionLabel(s),
+      })),
+    [sessionList],
+  );
+
   return (
     <Layout>
       <div
         data-testid="session-chat-page"
-        className="flex h-[calc(100vh-2rem)] max-h-[900px] flex-col gap-3"
+        className="relative flex min-h-0 flex-1 flex-col gap-3 overflow-hidden h-[calc(100vh-3rem)] max-h-[960px]"
       >
         <header className="page-header shrink-0">
           <p className="breadcrumb">
@@ -246,7 +363,51 @@ export function WorkspaceSessionPage() {
               <h1>{t.session.title}</h1>
               <p className="muted text-sm">{t.session.description}</p>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <div
+                className="flex flex-wrap items-center gap-2"
+                data-testid="session-list"
+              >
+                {sessionMeta && sessionList.length > 0 ? (
+                  <Select
+                    value={sessionMeta.id}
+                    onValueChange={(value) => {
+                      if (typeof value === "string" && value) {
+                        void handleSwitchSession(value);
+                      }
+                    }}
+                    items={sessionSelectItems}
+                    disabled={switching || creating || loading}
+                  >
+                    <SelectTrigger
+                      size="sm"
+                      className="min-w-[12rem] max-w-[18rem]"
+                      data-testid="session-select"
+                      aria-label={t.session.switchSession}
+                    >
+                      <SelectValue placeholder={t.session.sessions} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {sessionList.map((s) => (
+                        <SelectItem key={s.id} value={s.id}>
+                          {formatSessionLabel(s)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : null}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handleNewSession()}
+                  disabled={creating || loading || switching}
+                  data-testid="session-new"
+                >
+                  <PlusIcon className="size-3.5" aria-hidden />
+                  {creating ? t.session.creatingSession : t.session.newSession}
+                </Button>
+              </div>
               {sessionMeta ? (
                 <Badge variant="secondary" data-testid="session-status">
                   {sessionMeta.status}
@@ -254,7 +415,8 @@ export function WorkspaceSessionPage() {
               ) : null}
               {sessionMeta?.workflow?.linkedRunId ? (
                 <Badge variant="outline" data-testid="session-linked-run">
-                  {t.session.runPrefix} {sessionMeta.workflow.linkedRunId.slice(0, 8)}…
+                  {t.session.runPrefix}{" "}
+                  {sessionMeta.workflow.linkedRunId.slice(0, 8)}…
                 </Badge>
               ) : null}
               <Link
@@ -268,7 +430,11 @@ export function WorkspaceSessionPage() {
           </div>
         </header>
 
-        {id ? <WorkspaceSubnav workspaceId={id} /> : null}
+        {id ? (
+          <div className="shrink-0">
+            <WorkspaceSubnav workspaceId={id} />
+          </div>
+        ) : null}
         <ErrorBanner
           error={bootError}
           onDismiss={() => {
@@ -280,12 +446,16 @@ export function WorkspaceSessionPage() {
           <LoadingState label={t.session.loading} />
         ) : (
           <SessionChatPanel
+            key={sessionMeta.id}
             workspaceId={id}
             workspace={workspace}
             session={sessionMeta}
             rootPathHint={rootPathHint}
-            kickoff={kickoff}
-            onSessionMetaChange={setSessionMeta}
+            kickoff={kickoff && !readOnly}
+            readOnly={readOnly}
+            onSessionMetaChange={handleSessionMetaChange}
+            onNewSession={() => void handleNewSession()}
+            onSwitchToLatest={handleSwitchToLatest}
           />
         )}
       </div>
@@ -299,14 +469,20 @@ function SessionChatPanel({
   session,
   rootPathHint,
   kickoff,
+  readOnly = false,
   onSessionMetaChange,
+  onNewSession,
+  onSwitchToLatest,
 }: {
   workspaceId: string;
   workspace: WorkspaceConfig;
   session: OperatorSessionDto;
   rootPathHint?: string;
   kickoff?: boolean;
+  readOnly?: boolean;
   onSessionMetaChange?: (session: OperatorSessionDto) => void;
+  onNewSession?: () => void;
+  onSwitchToLatest?: () => void;
 }) {
   const { t } = useI18n();
   const [input, setInput] = useState("");
@@ -415,7 +591,7 @@ function SessionChatPanel({
   /** Single-flight send: blocks double-click / double-kickoff races. */
   const sendTurn = useCallback(
     (text: string) => {
-      if (sendInFlight.current || isBusy) {
+      if (readOnly || sendInFlight.current || isBusy) {
         return;
       }
       sendInFlight.current = true;
@@ -424,15 +600,15 @@ function SessionChatPanel({
         sendInFlight.current = false;
       });
     },
-    [isBusy, sendMessage],
+    [isBusy, readOnly, sendMessage],
   );
 
   const pending = useMemo(() => {
-    if (suppressDecisions) {
+    if (suppressDecisions || readOnly) {
       return null;
     }
     return extractPendingFromMessages(messages);
-  }, [messages, suppressDecisions]);
+  }, [messages, suppressDecisions, readOnly]);
 
   // Track linkedRunId / gate / plan from structured session state + data parts.
   useEffect(() => {
@@ -527,7 +703,7 @@ function SessionChatPanel({
 
   // Session-first kickoff from Runs page (?kickoff=1).
   useEffect(() => {
-    if (!kickoff || kickoffSent.current) {
+    if (readOnly || !kickoff || kickoffSent.current) {
       return;
     }
     const hasSources = (workspace.sources?.length ?? 0) > 0;
@@ -544,12 +720,13 @@ function SessionChatPanel({
     }
     kickoffSent.current = true;
     sendTurn("generate a wiki plan");
-  }, [kickoff, workspace.sources, session.workflow?.phase, status, sendTurn]);
+  }, [kickoff, readOnly, workspace.sources, session.workflow?.phase, status, sendTurn]);
 
   const choiceOnly = pending?.mode === "choice_only";
   const inputOnly = pending?.mode === "input_only";
-  const canType = !choiceOnly;
+  const canType = !readOnly && !choiceOnly;
   const hasSources = (workspace.sources?.length ?? 0) > 0;
+  const composerDisabled = readOnly || isBusy || choiceOnly || !hasSources;
 
   const latestAssistantId = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -562,7 +739,7 @@ function SessionChatPanel({
 
   const handleChoice = useCallback(
     (optionId: string) => {
-      if (isBusy || sendInFlight.current) {
+      if (readOnly || isBusy || sendInFlight.current) {
         return;
       }
       // Option ids are workflow resume actions: approve | deny (and aliases).
@@ -578,19 +755,19 @@ function SessionChatPanel({
             : optionId;
       sendTurn(action);
     },
-    [isBusy, sendTurn],
+    [isBusy, readOnly, sendTurn],
   );
 
   const handleSubmit = useCallback(
     (message: PromptInputMessage) => {
       const text = message.text.trim();
-      if (!text || isBusy || choiceOnly || sendInFlight.current) {
+      if (!text || readOnly || isBusy || choiceOnly || sendInFlight.current) {
         return;
       }
       sendTurn(text);
       setInput("");
     },
-    [choiceOnly, isBusy, sendTurn],
+    [choiceOnly, isBusy, readOnly, sendTurn],
   );
 
   /**
@@ -648,8 +825,11 @@ function SessionChatPanel({
   return (
     <>
       <ErrorBanner error={error} onDismiss={() => clearError()} />
-      <div className="flex min-h-0 flex-1 flex-col rounded-lg border bg-card">
-        <div className="flex items-center justify-end gap-2 border-b px-3 py-2">
+      <div
+        className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border bg-card"
+        data-testid="session-chat-shell"
+      >
+        <div className="flex shrink-0 items-center justify-end gap-2 border-b px-3 py-2">
           {linkedRunId ? (
             <Badge variant="outline" data-testid="session-chat-run-id">
               {linkedRunId.slice(0, 8)}…
@@ -658,7 +838,7 @@ function SessionChatPanel({
           <Badge variant="secondary" data-testid="session-chat-status">
             {status}
           </Badge>
-          {isBusy ? (
+          {isBusy && !readOnly ? (
             <Button
               type="button"
               variant="destructive"
@@ -670,7 +850,10 @@ function SessionChatPanel({
             </Button>
           ) : null}
         </div>
-        <Conversation className="min-h-0" data-testid="session-conversation">
+        <Conversation
+          className="min-h-0 flex-1"
+          data-testid="session-conversation"
+        >
           <ConversationContent className="gap-4 p-4">
             {messages.length === 0 ? (
               <ConversationEmptyState
@@ -685,7 +868,9 @@ function SessionChatPanel({
                     <MessageParts
                       message={message}
                       isLatestAssistant={
-                        message.id === latestAssistantId && !suppressDecisions
+                        !readOnly &&
+                        message.id === latestAssistantId &&
+                        !suppressDecisions
                       }
                       onChoice={handleChoice}
                     />
@@ -697,7 +882,36 @@ function SessionChatPanel({
           <ConversationScrollButton />
         </Conversation>
 
-        <div className="border-t p-3">
+        <div className="shrink-0 border-t p-3">
+          {readOnly ? (
+            <div
+              className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-dashed bg-muted/40 px-3 py-2"
+              data-testid="session-readonly-banner"
+            >
+              <p className="text-xs text-muted-foreground">
+                {t.session.readOnlyHistory}
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={onSwitchToLatest}
+                  data-testid="session-switch-latest"
+                >
+                  {t.session.switchToLatest}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={onNewSession}
+                  data-testid="session-readonly-new"
+                >
+                  {t.session.newSession}
+                </Button>
+              </div>
+            </div>
+          ) : null}
           {choiceOnly ? (
             <p
               className="mb-2 text-xs text-muted-foreground"
@@ -723,25 +937,36 @@ function SessionChatPanel({
               <PromptInputTextarea
                 value={input}
                 onChange={(e) => setInput(e.currentTarget.value)}
-                disabled={!canType || isBusy || !hasSources}
+                disabled={composerDisabled || !canType}
                 placeholder={
-                  !hasSources
-                    ? t.session.placeholderNoSources
-                    : choiceOnly
-                      ? t.session.placeholderChoice
-                      : (pending?.inputPlaceholder ?? t.session.placeholderDefault)
+                  readOnly
+                    ? t.session.placeholderReadOnly
+                    : !hasSources
+                      ? t.session.placeholderNoSources
+                      : choiceOnly
+                        ? t.session.placeholderChoice
+                        : (pending?.inputPlaceholder ??
+                          t.session.placeholderDefault)
                 }
                 data-testid="session-input"
               />
             </PromptInputBody>
-            <PromptInputSubmit
-              status={isBusy ? "streaming" : "ready"}
-              disabled={
-                isBusy || choiceOnly || !canType || !input.trim() || !hasSources
-              }
-              data-testid="session-send"
-              onStop={() => handleStop()}
-            />
+            <PromptInputFooter>
+              <PromptInputTools />
+              <PromptInputSubmit
+                status={isBusy ? "streaming" : "ready"}
+                disabled={
+                  readOnly ||
+                  isBusy ||
+                  choiceOnly ||
+                  !canType ||
+                  !input.trim() ||
+                  !hasSources
+                }
+                data-testid="session-send"
+                onStop={() => handleStop()}
+              />
+            </PromptInputFooter>
           </PromptInput>
         </div>
       </div>

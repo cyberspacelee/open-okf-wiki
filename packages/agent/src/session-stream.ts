@@ -161,6 +161,28 @@ function lastUserText(messages: UIMessage[]): string {
   return "";
 }
 
+/** Why a turn stayed in help mode (contextual assistant copy). */
+export type SessionTurnHelpReason =
+  | "no_sources"
+  | "pending_gate"
+  | "running"
+  | "not_kickoff";
+
+export type SessionTurnModeResult = {
+  mode: "start" | "resume" | "help";
+  helpReason?: SessionTurnHelpReason;
+};
+
+/** Generate-ish user text (phase-agnostic). Free-chat must not auto-start. */
+export function isKickoffPhrase(text: string): boolean {
+  const t = text.trim();
+  if (!t) {
+    return false;
+  }
+  // Keep broad enough for e2e / kickoff ("generate a wiki plan") and help copy ("generate").
+  return /generate|wiki|plan|开始|生成|写|run/i.test(t);
+}
+
 /**
  * True when user text should start a new Wiki Run.
  * Only on idle/done (never while a gate or run is mid-flight), and only for
@@ -170,12 +192,89 @@ export function isKickoff(text: string, phase: string | undefined): boolean {
   if (phase !== "idle" && phase !== undefined && phase !== "done") {
     return false;
   }
-  const t = text.trim();
-  if (!t) {
-    return false;
+  return isKickoffPhrase(text);
+}
+
+/**
+ * Pure turn-mode resolution for Operator Session chat.
+ * Product rule: only generate-ish kickoff on idle/done starts a run; free-chat never does.
+ */
+export function resolveSessionTurnMode(input: {
+  userText: string;
+  phase: string | undefined;
+  status: OperatorSession["status"] | string;
+  hasSources: boolean;
+  resumeData?: { action: "approve" | "deny"; plan?: WikiRunPlan };
+  existingRunId?: string;
+}): SessionTurnModeResult {
+  const { userText, phase, status, hasSources, resumeData, existingRunId } =
+    input;
+  const phaseNorm = phase ?? "idle";
+  const atGate =
+    phaseNorm === "awaiting_plan" || phaseNorm === "awaiting_publish";
+
+  // Resume wins when we have both payload and a linked run.
+  if (resumeData && existingRunId) {
+    return { mode: "resume" };
   }
-  // Keep broad enough for e2e / kickoff ("generate a wiki plan") and help copy ("generate").
-  return /generate|wiki|plan|开始|生成|写|run/i.test(t);
+
+  // Soft guard: avoid stacking a second start while a run is mid-flight.
+  // Cover both session.status and workflow phases set during start/write.
+  if (
+    status === "running" ||
+    phaseNorm === "planning" ||
+    phaseNorm === "writing"
+  ) {
+    return { mode: "help", helpReason: "running" };
+  }
+
+  // Start only on generate-ish kickoff at idle/done with sources present.
+  if (isKickoff(userText, phase) && !resumeData && hasSources) {
+    return { mode: "start" };
+  }
+
+  // Pending plan/publish gate without a valid resume payload.
+  if (atGate) {
+    return { mode: "help", helpReason: "pending_gate" };
+  }
+
+  // Any non-resume turn without sources — do not suggest generate first.
+  if (!hasSources) {
+    return { mode: "help", helpReason: "no_sources" };
+  }
+
+  return { mode: "help", helpReason: "not_kickoff" };
+}
+
+/** Contextual help copy for non-start/resume turns. */
+export function helpTextForSessionTurn(input: {
+  helpReason: SessionTurnHelpReason;
+  phase?: string;
+  userText?: string;
+}): string {
+  const phase = input.phase ?? "idle";
+  switch (input.helpReason) {
+    case "no_sources":
+      return "Add at least one Git source under **Sources** before starting a Wiki Run.";
+    case "pending_gate": {
+      // Kickoff-like text at a gate: do not pretend "generate" will start a run.
+      if (isKickoffPhrase(input.userText ?? "")) {
+        if (phase === "awaiting_publish") {
+          return "A publication decision is still pending. Complete or deny the publish gate (use the decision options above) before starting a new Wiki Run with **generate**.";
+        }
+        return "A plan decision is still pending. Complete or deny the plan gate (use the decision options above) before starting a new Wiki Run with **generate**.";
+      }
+      if (phase === "awaiting_publish") {
+        return "A publication decision is waiting. Pick **approve** or **deny** above to continue — free-text chat will not advance this gate.";
+      }
+      return "A plan decision is waiting. Pick **approve** or **deny** above to continue — free-text chat will not advance this gate.";
+    }
+    case "running":
+      return "A Wiki Run is already in progress. Wait for it to finish, or use **Stop** to cancel it.";
+    case "not_kickoff":
+    default:
+      return "Continue the wiki session: say **generate** to start a Wiki Run, or pick a decision option above.";
+  }
 }
 
 function optionsForPlan(plan: WikiRunPlan): InteractionOption[] {
@@ -454,13 +553,21 @@ export async function createSessionWorkflowStream(input: {
     }
   }
 
-  let mode: "start" | "resume" | "help" = "help";
+  const hasSources = (input.workspace.sources?.length ?? 0) > 0;
+  const turn = resolveSessionTurnMode({
+    userText,
+    phase,
+    status: input.session.status,
+    hasSources,
+    resumeData,
+    existingRunId,
+  });
+  const mode = turn.mode;
   let runId = existingRunId ?? randomUUID();
   let resumeStep = input.body?.step;
 
-  if (resumeData && existingRunId) {
-    mode = "resume";
-    runId = existingRunId;
+  if (mode === "resume") {
+    runId = existingRunId!;
     if (!resumeStep) {
       resumeStep =
         input.session.workflow.phase === "awaiting_publish" ||
@@ -468,17 +575,7 @@ export async function createSessionWorkflowStream(input: {
           ? "publish-gate"
           : "plan-gate";
     }
-  } else if (
-    isKickoff(userText, phase) &&
-    !resumeData &&
-    // Soft guard: avoid stacking a second start while status is still running
-    // (client double-send before finalize). Server also holds an in-flight lock.
-    input.session.status !== "running" &&
-    // No run id / registry until sources exist (execute also guards; keeps eager
-    // server register from creating orphan running records).
-    (input.workspace.sources?.length ?? 0) > 0
-  ) {
-    mode = "start";
+  } else if (mode === "start") {
     runId = randomUUID();
   }
 
@@ -626,15 +723,21 @@ export async function createSessionWorkflowStream(input: {
 
       if (mode === "help") {
         await writeText(
-          "Continue the wiki session: say **generate** to start a Wiki Run, or pick a decision option above.",
+          helpTextForSessionTurn({
+            helpReason: turn.helpReason ?? "not_kickoff",
+            phase,
+            userText,
+          }),
         );
         status = "active";
         return;
       }
 
-      if (!input.workspace.sources?.length) {
+      // Defensive: start/resume should not run without sources (mode resolution
+      // already blocks start; resume of a pre-source run is not product-valid).
+      if (!hasSources) {
         await writeText(
-          "Add at least one Git source under **Sources** before starting a Wiki Run.",
+          helpTextForSessionTurn({ helpReason: "no_sources", phase, userText }),
         );
         status = "active";
         return;

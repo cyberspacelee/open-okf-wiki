@@ -589,6 +589,46 @@ export function createRun(
 
 // --- Operator Session (conversational workspace) ---
 
+/** List row from GET /sessions (no message bodies). */
+export type OperatorSessionSummary = {
+  id: string;
+  title: string;
+  status: OperatorSession["status"];
+  updatedAt: string;
+  createdAt: string;
+  pending?: OperatorSession["pending"];
+  workflow?: OperatorSession["workflow"];
+};
+
+export function listSessions(
+  workspaceId: string,
+  rootPath?: string,
+): Promise<{ sessions: OperatorSessionSummary[] }> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/sessions`,
+      rootPath,
+    ),
+  );
+}
+
+export function createSession(
+  workspaceId: string,
+  input?: { title?: string },
+  rootPath?: string,
+): Promise<{ session: OperatorSessionDto }> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/sessions`,
+      rootPath,
+    ),
+    {
+      method: "POST",
+      body: JSON.stringify(input ?? {}),
+    },
+  );
+}
+
 export function getOrCreateSession(
   workspaceId: string,
   rootPath?: string,

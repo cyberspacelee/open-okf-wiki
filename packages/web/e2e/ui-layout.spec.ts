@@ -84,6 +84,14 @@ test.describe("UI layout smoke — Session / Settings skill / Sources", () => {
     await expect(page.getByTestId("session-chat-page")).toBeVisible();
     await expectVisibleBox(page.getByTestId("session-conversation"), { minWidth: 160 });
     await expectVisibleBox(page.getByTestId("session-input"), { minWidth: 80 });
+    await expectVisibleBox(page.getByTestId("session-prompt"), { minWidth: 80 });
+    await expect(page.getByTestId("session-list")).toBeVisible();
+    await expectVisibleBox(page.getByTestId("session-select"), { minWidth: 80 });
+    await expectVisibleBox(page.getByTestId("session-new"), { minWidth: 40 });
+    // New session → history switcher has 2 entries; older is read-only
+    await page.getByTestId("session-new").click();
+    await expect(page.getByTestId("session-chat-page")).toBeVisible();
+    await expect(page.getByTestId("session-readonly-banner")).toHaveCount(0);
     void rootPath;
   });
 

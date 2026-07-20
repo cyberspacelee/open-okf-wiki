@@ -237,6 +237,14 @@ export const zh: MessageTree = {
     placeholderNoSources: "请先添加源码（源码页）",
     placeholderChoice: "请选择上方选项…",
     placeholderDefault: "向 Wiki 智能体发送消息…",
+    sessions: "会话列表",
+    switchSession: "切换会话",
+    newSession: "新建会话",
+    creatingSession: "创建中…",
+    readOnlyHistory:
+      "这是历史会话（只读）。切换到最新会话或新建会话以继续对话。",
+    switchToLatest: "切换到最新",
+    placeholderReadOnly: "历史会话只读",
   },
   runs: {
     breadcrumbWorkspaces: "工作区",
