@@ -39,10 +39,8 @@ test.describe("run console", () => {
     await expect(page.getByTestId("run-list")).toContainText("Awaiting publication");
     // No stub / not-wired failure text.
     await expect(page.getByTestId("run-page")).not.toContainText("Wiki Run agent not wired yet");
-    // Session timeline renders AI-SDK-style parts (not a plain log-only console).
-    await expect(page.getByTestId("session-timeline")).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByTestId("session-tool-card").first()).toBeVisible({
-      timeout: 10_000,
-    });
+    // Job console event log (conversation lives on Session page).
+    await expect(page.getByTestId("run-event-log")).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByTestId("run-publish-actions")).toBeVisible();
   });
 });

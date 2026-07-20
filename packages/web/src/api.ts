@@ -612,6 +612,75 @@ export function createRun(
   );
 }
 
+// --- Operator Session (conversational workspace) ---
+
+export type OperatorSessionDto = {
+  id: string;
+  workspaceId: string;
+  title: string;
+  status: "active" | "waiting" | "running" | "completed" | "failed";
+  messages: Array<{
+    id: string;
+    role: "user" | "assistant" | "system";
+    parts: Array<{
+      type: string;
+      text?: string;
+      toolCallId?: string;
+      toolName?: string;
+      state?: string;
+      input?: unknown;
+      output?: unknown;
+      errorText?: string;
+      id?: string;
+      data?: unknown;
+    }>;
+    createdAt?: string;
+  }>;
+  workflow: {
+    plan?: WikiRunPlan;
+    linkedRunId?: string;
+    phase?: string;
+    notes?: string;
+  };
+  pending: {
+    type: string;
+    question: string;
+    mode?: string;
+    selectionMode?: string;
+    options: Array<{ id: string; label: string; description?: string }>;
+    inputPlaceholder?: string;
+    toolCallId?: string;
+  } | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export function getOrCreateSession(
+  workspaceId: string,
+  rootPath?: string,
+): Promise<{ session: OperatorSessionDto; created: boolean }> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/sessions/current`,
+      rootPath,
+    ),
+    { method: "POST", body: JSON.stringify({}) },
+  );
+}
+
+export function getSession(
+  workspaceId: string,
+  sessionId: string,
+  rootPath?: string,
+): Promise<{ session: OperatorSessionDto }> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}`,
+      rootPath,
+    ),
+  );
+}
+
 /**
  * Manual Retry: new run reusing frozen skillPath/skillDigest from a terminal run.
  */

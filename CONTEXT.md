@@ -63,8 +63,8 @@ The current objective, completion gates, evidence gaps, and delegated-scope stat
 _Avoid_: Todo transcript, Operator Session history, durable checkpoint of the Semantic Workflow
 
 **Operator Session**:
-The operator-facing multi-turn work context for one project: conversation history, HITL gates, mode, and zero or more Wiki Runs started from that context.
-_Avoid_: Wiki Run, chat session as a resumable Semantic Workflow, Production Run, model transcript as the Wiki
+The operator-facing **Conversational Workspace** for one project: AI SDK message history (`parts`), pending user decisions (dynamic options / free text by mode), workflow view (plan, linked runs), and zero or more Wiki Runs started from that context. Primary UI is the Session chatbot page (AI Elements + `useChat`), not a one-shot job request.
+_Avoid_: Wiki Run, chat session as a resumable Semantic Workflow graph, Production Run, model transcript as the Wiki, Run console as the only operator surface
 
 **Wiki Reviewer**:
 An independent, bounded agent role that inspects the Staging Wiki against the Repository Snapshot Set and Producer Skill review guidance, producing a defects receipt for the operator and Root; it does not write Wiki pages or publish.

@@ -49,6 +49,27 @@ export {
 } from "./skill.js";
 
 export {
+  OperatorSessionStatusSchema,
+  InteractionOptionSchema,
+  InteractionModeSchema,
+  PendingInteractionSchema,
+  InteractionResumeSchema,
+  SessionWorkflowStateSchema,
+  SessionMessagePartSchema,
+  SessionMessageSchema,
+  OperatorSessionSchema,
+  type OperatorSessionStatus,
+  type InteractionOption,
+  type InteractionMode,
+  type PendingInteraction,
+  type InteractionResume,
+  type SessionWorkflowState,
+  type SessionMessagePart,
+  type SessionMessage,
+  type OperatorSession,
+} from "./session.js";
+
+export {
   StreamFragmentSchema,
   RunEventPayloadSchema,
   RunEventSchema,

@@ -56,13 +56,12 @@ test.describe("UI layout smoke — Session / Settings skill / Sources", () => {
     await expectVisibleBox(page.getByTestId("settings-skill-save-file"));
     await expectVisibleBox(page.getByTestId("settings-skill-reset"));
 
-    // --- Session layout after fixture run ---
+    // --- Runs job console layout ---
     await page.getByTestId("workspace-subnav-run").click();
     await expect(page.getByTestId("run-page")).toBeVisible();
-    // Breadcrumb matches Session title (regression: used to say "Run")
-    await expect(page.getByTestId("run-page").locator(".breadcrumb")).toContainText("Session");
+    await expect(page.getByTestId("run-page").locator(".breadcrumb")).toContainText("Runs");
     await expect(page.getByTestId("run-page").getByRole("heading", { level: 1 })).toHaveText(
-      "Session",
+      "Runs",
     );
     await expectVisibleBox(page.getByTestId("run-start"));
 
@@ -72,39 +71,16 @@ test.describe("UI layout smoke — Session / Settings skill / Sources", () => {
       "awaiting_publication",
       { timeout: 25_000 },
     );
-
-    const timeline = page.getByTestId("session-timeline");
-    await expectVisibleBox(timeline, { minWidth: 160, minHeight: 40 });
-    // CSS contract: scrollable max height
-    const maxH = await timeline.evaluate((el) => getComputedStyle(el).maxHeight);
-    expect(maxH === "none" || parseFloat(maxH) > 0).toBeTruthy();
-    const overflowY = await timeline.evaluate((el) => getComputedStyle(el).overflowY);
-    expect(["auto", "scroll", "overlay"]).toContain(overflowY);
-
-    // Markdown + tool cards painted
-    await expect(page.getByTestId("session-markdown").first()).toBeVisible({
-      timeout: 10_000,
-    });
-    await expectVisibleBox(page.getByTestId("session-markdown").first(), {
-      minHeight: 12,
-    });
-    const toolCard = page.getByTestId("session-tool-card").first();
-    await expectVisibleBox(toolCard, { minWidth: 80, minHeight: 24 });
-    const toolBorder = await toolCard.evaluate((el) => getComputedStyle(el).borderTopWidth);
-    expect(parseFloat(toolBorder)).toBeGreaterThan(0);
-
-    const subagent = page.getByTestId("session-subagent-card").first();
-    await expectVisibleBox(subagent, { minWidth: 80, minHeight: 24 });
-    // Subagent accent border-left
-    const blw = await subagent.evaluate((el) => getComputedStyle(el).borderLeftWidth);
-    expect(parseFloat(blw)).toBeGreaterThanOrEqual(2);
-
+    await expectVisibleBox(page.getByTestId("run-event-log"), { minWidth: 120 });
     await expectVisibleBox(page.getByTestId("run-publish-actions"));
     await expectVisibleBox(page.getByTestId("run-approve"));
     await expectVisibleBox(page.getByTestId("run-retry"));
 
-    // Header actions row should not collapse to zero height
-    await expectVisibleBox(page.getByTestId("run-start"));
+    // --- Session chatbot layout (AI Elements) ---
+    await page.getByTestId("workspace-subnav-session").click();
+    await expect(page.getByTestId("session-chat-page")).toBeVisible();
+    await expectVisibleBox(page.getByTestId("session-conversation"), { minWidth: 160 });
+    await expectVisibleBox(page.getByTestId("session-input"), { minWidth: 80 });
     void rootPath;
   });
 
@@ -129,58 +105,36 @@ test.describe("UI layout smoke — Session / Settings skill / Sources", () => {
       "awaiting_publication",
       { timeout: 25_000 },
     );
-    // Prefer filled timeline; fall back to empty placeholder if SSE missed (still layout).
-    const timeline = page.getByTestId("session-timeline");
-    const empty = page.getByTestId("session-timeline-empty");
-    await expect(timeline.or(empty).first()).toBeVisible({ timeout: 10_000 });
-    if (await timeline.count()) {
-      await expectVisibleBox(timeline, { minWidth: 80 });
-    } else {
-      await expectVisibleBox(empty, { minWidth: 80 });
-    }
-    // Publish HITL region usable; buttons must remain enabled (layout may stack full-width).
-    const publish = page.getByTestId("run-publish-actions");
-    await expect(publish).toBeVisible();
-    await publish.scrollIntoViewIfNeeded();
+    await expect(page.getByTestId("run-event-log")).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByTestId("run-publish-actions")).toBeVisible();
     await expect(page.getByTestId("run-approve")).toBeEnabled();
     await expect(page.getByTestId("run-deny")).toBeEnabled();
-    // Prefer non-zero size; if still 0 due to animation, clickability is enough signal.
-    const approveBox = await page.getByTestId("run-approve").boundingBox();
-    if (approveBox) {
-      expect(approveBox.width * approveBox.height).toBeGreaterThan(0);
-    }
+
+    await page.getByTestId("workspace-subnav-session").click();
+    await expect(page.getByTestId("session-chat-page")).toBeVisible();
+    await expectVisibleBox(page.getByTestId("session-input"), { minWidth: 60 });
   });
 
-  test("plan-confirm card layout when planConfirm enabled", async ({ page }) => {
+  test("session chatbot layout with dynamic decisions", async ({ page }) => {
     await page.setViewportSize({ width: 1024, height: 768 });
     await createWorkspaceViaUi(page, "E2E PlanLayout");
     const gitRepo = createTempGitRepo("plan-layout");
     await addSourceViaUi(page, gitRepo);
 
-    await page.getByTestId("workspace-subnav-settings").click();
-    await page.getByTestId("settings-plan-confirm").check();
-    await page.getByTestId("settings-save").click();
-    await expect(page.getByRole("status")).toContainText(/saved/i, { timeout: 10_000 });
+    await page.getByTestId("workspace-subnav-session").click();
+    await expect(page.getByTestId("session-chat-page")).toBeVisible();
+    await page.getByTestId("session-input").fill("generate a wiki plan");
+    await page.getByTestId("session-send").click();
 
-    await page.getByTestId("workspace-subnav-run").click();
-    await page.getByTestId("run-start").click();
-    await expect(page.getByTestId("run-last-status")).toHaveAttribute(
-      "data-status",
-      "awaiting_plan",
-      { timeout: 25_000 },
-    );
-
-    const planCard = page.getByTestId("session-plan-card");
-    await expect(planCard).toBeVisible({ timeout: 15_000 });
-    await expectVisibleBox(planCard, { minWidth: 120, minHeight: 60 });
-    const borderColor = await planCard.evaluate((el) => getComputedStyle(el).borderTopColor);
-    // Amber-ish warning border (not transparent / not fully transparent)
-    expect(borderColor === "rgba(0, 0, 0, 0)" || borderColor === "transparent").toBeFalsy();
-    await expectVisibleBox(page.getByTestId("run-approve-plan"));
-    await expectVisibleBox(page.getByTestId("run-deny-plan"));
-    // Plan phase should surface markdown and/or status in the timeline area
-    await expect(
-      page.getByTestId("session-markdown").or(page.getByTestId("session-timeline")).first(),
-    ).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole("heading", { name: /proposed wiki plan/i })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByTestId("session-decision").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    await expectVisibleBox(page.getByTestId("session-decision").first(), {
+      minWidth: 100,
+      minHeight: 24,
+    });
   });
 });

@@ -35,6 +35,66 @@ export type CreateRunOptions = {
   skillDigest?: string;
 };
 
+/** Create a run record with a known id (e.g. Session materialize). */
+export type RegisterRunOptions = CreateRunOptions & {
+  runId: string;
+  status?: WikiRunRecordStatus;
+  pages?: string[];
+  summary?: string;
+};
+
+/**
+ * Persist a run record with an explicit runId and optional terminal-ish status.
+ * Used when Session already wrote staging and only needs a product run record.
+ */
+export async function registerRunRecord(
+  rootPath: string,
+  workspaceId: string,
+  options: RegisterRunOptions,
+): Promise<StoredRunRecord> {
+  const resolvedRoot = path.resolve(rootPath);
+  const dir = runsDir(resolvedRoot);
+  if (!isPathInside(resolvedRoot, dir)) {
+    throw new Error("refusing to write runs outside workspace meta directory");
+  }
+  if (
+    !options.runId ||
+    options.runId.includes("..") ||
+    options.runId.includes("/") ||
+    options.runId.includes("\\")
+  ) {
+    throw new Error("invalid runId");
+  }
+
+  const now = new Date().toISOString();
+  const record: StoredRunRecord = {
+    runId: options.runId,
+    workspaceId,
+    status: options.status ?? "running",
+    createdAt: now,
+    updatedAt: now,
+  };
+  if (typeof options.autoApprove === "boolean") {
+    record.autoApprove = options.autoApprove;
+  }
+  if (typeof options.skillPath === "string" && options.skillPath.trim()) {
+    record.skillPath = options.skillPath.trim();
+  }
+  if (typeof options.skillDigest === "string" && options.skillDigest.trim()) {
+    record.skillDigest = options.skillDigest.trim();
+  }
+  if (Array.isArray(options.pages)) {
+    record.pages = options.pages;
+  }
+  if (typeof options.summary === "string") {
+    record.summary = options.summary;
+  }
+
+  const parsed = StoredRunRecordSchema.parse(record);
+  await atomicWriteJson(runRecordPath(resolvedRoot, options.runId), parsed);
+  return parsed;
+}
+
 /**
  * Create a run record with status `running` and persist it.
  * The server starts agent work after returning this record.

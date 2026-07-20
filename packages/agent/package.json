@@ -20,6 +20,7 @@
     "@mastra/core": "1.51.0",
     "@okf-wiki/contract": "workspace:*",
     "@okf-wiki/core": "workspace:*",
+    "ai": "^7.0.31",
     "zod": "^4.4.3"
   },
   "devDependencies": {

@@ -29,3 +29,9 @@ export {
 } from "./subagents.js";
 
 export { ADAPTIVE_RUN_LIMITS, adaptiveLimitsInstruction } from "./limits.js";
+
+export {
+  createSessionChatStream,
+  uiMessagesToSessionMessages,
+  type SessionChatResult,
+} from "./session-chat.js";

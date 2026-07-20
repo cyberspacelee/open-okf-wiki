@@ -8,7 +8,8 @@ type Props = {
 const tabs = [
   { suffix: "", label: "Overview", end: true, testId: "workspace-subnav-overview" },
   { suffix: "/sources", label: "Sources", end: false, testId: "workspace-subnav-sources" },
-  { suffix: "/run", label: "Session", end: false, testId: "workspace-subnav-run" },
+  { suffix: "/session", label: "Session", end: false, testId: "workspace-subnav-session" },
+  { suffix: "/run", label: "Runs", end: false, testId: "workspace-subnav-run" },
   { suffix: "/wiki", label: "Wiki", end: false, testId: "workspace-subnav-wiki" },
   { suffix: "/settings", label: "Settings", end: false, testId: "workspace-subnav-settings" },
 ] as const;

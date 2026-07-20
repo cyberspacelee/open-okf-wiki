@@ -33,6 +33,15 @@ export {
   writeAnalysisReceipt,
 } from "./analysis-scratch.js";
 export {
+  createOperatorSession,
+  loadOperatorSession,
+  saveOperatorSession,
+  listOperatorSessions,
+  appendSessionMessages,
+  replaceSessionMessages,
+} from "./session-store.js";
+export { validateInteractionResume } from "./session-decision.js";
+export {
   countMarkdownFiles,
   publishStagingToPublication,
   type PublishStagingInput,

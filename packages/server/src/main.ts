@@ -2,15 +2,18 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { spawn } from "node:child_process";
 import path from "node:path";
 import {
+  createSessionChatStream,
   redactErrorMessage,
   resolveSkillPath,
   runWikiAgent,
   stagingDirForRun,
+  uiMessagesToSessionMessages,
 } from "@okf-wiki/agent";
 import {
   addSource,
   cloneIntoWorkspace,
   createModelProfile,
+  createOperatorSession,
   createSkillFork,
   createWorkspace,
   deleteModelProfile,
@@ -18,9 +21,11 @@ import {
   getModelProfile,
   getSkillInfo,
   hasProviderCredentials,
+  listOperatorSessions,
   listPublishedWikiPages,
   listSkillDir,
   listWorkspaceSummaries,
+  loadOperatorSession,
   loadProviderConfig,
   loadWorkspaceById,
   probeLocalGit,
@@ -31,6 +36,7 @@ import {
   registerWorkspaceInAppIndex,
   removeSource,
   removeWorkspaceFromAppIndex,
+  replaceSessionMessages,
   resolveProviderRuntime,
   saveWorkspace,
   setDefaultModelProfile,
@@ -43,6 +49,7 @@ import {
   updateModelProfile,
   writeSkillFile,
 } from "@okf-wiki/core";
+import { pipeUIMessageStreamToResponse, type UIMessage } from "ai";
 import {
   isTerminalRunStatus,
   ModelProfileWriteSchema,
@@ -78,6 +85,7 @@ import {
   createRun,
   listRuns,
   loadRun,
+  registerRunRecord,
   RunStatusConflictError,
   updateRunRecord,
 } from "./run-registry.ts";
@@ -2037,6 +2045,261 @@ async function handleRunEvents(
   }
 }
 
+async function handleListSessions(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  url: URL,
+): Promise<void> {
+  const rootPath = url.searchParams.get("rootPath") ?? undefined;
+  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
+  if (!workspace) {
+    sendError(res, 404, `workspace not found: ${id}`);
+    return;
+  }
+  const sessions = await listOperatorSessions(workspace.rootPath);
+  sendJson(res, 200, {
+    sessions: sessions.map((s) => ({
+      id: s.id,
+      title: s.title,
+      status: s.status,
+      updatedAt: s.updatedAt,
+      createdAt: s.createdAt,
+      pending: s.pending,
+      workflow: s.workflow,
+    })),
+  });
+}
+
+async function handleCreateSession(
+  req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  url: URL,
+): Promise<void> {
+  const rootPath = url.searchParams.get("rootPath") ?? undefined;
+  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
+  if (!workspace) {
+    sendError(res, 404, `workspace not found: ${id}`);
+    return;
+  }
+  const body = (await readJsonBody(req).catch(() => ({}))) as { title?: unknown };
+  const title =
+    typeof body.title === "string" && body.title.trim()
+      ? body.title.trim()
+      : `Wiki Session · ${workspace.name}`;
+  const session = await createOperatorSession({
+    workspaceRoot: workspace.rootPath,
+    workspaceId: workspace.id,
+    title,
+  });
+  sendJson(res, 201, { session });
+}
+
+async function handleGetSession(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  sessionId: string,
+  url: URL,
+): Promise<void> {
+  const rootPath = url.searchParams.get("rootPath") ?? undefined;
+  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
+  if (!workspace) {
+    sendError(res, 404, `workspace not found: ${id}`);
+    return;
+  }
+  const session = await loadOperatorSession(workspace.rootPath, sessionId);
+  if (!session || session.workspaceId !== workspace.id) {
+    sendError(res, 404, `session not found: ${sessionId}`);
+    return;
+  }
+  sendJson(res, 200, { session });
+}
+
+/**
+ * AI SDK UI message stream for conversational Session.
+ * Body: { messages: UIMessage[] }
+ */
+async function handleSessionChat(
+  req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  sessionId: string,
+  url: URL,
+): Promise<void> {
+  const rootPath = url.searchParams.get("rootPath") ?? undefined;
+  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
+  if (!workspace) {
+    sendError(res, 404, `workspace not found: ${id}`);
+    return;
+  }
+  const session = await loadOperatorSession(workspace.rootPath, sessionId);
+  if (!session || session.workspaceId !== workspace.id) {
+    sendError(res, 404, `session not found: ${sessionId}`);
+    return;
+  }
+
+  const body = (await readJsonBody(req)) as { messages?: unknown };
+  const messages = (Array.isArray(body.messages) ? body.messages : []) as UIMessage[];
+
+  // Persist full client message list (conversation source of truth for this turn).
+  const asSessionMessages = uiMessagesToSessionMessages(messages);
+
+  try {
+    const chat = await createSessionChatStream({
+      session: { ...session, messages: asSessionMessages },
+      workspace,
+      messages,
+    });
+
+    // Persist after stream completes (consume side-effect via onEnd-like finalize after pipe).
+    const originalEnd = res.end.bind(res);
+    let finalized = false;
+    const finalizeOnce = async () => {
+      if (finalized) {
+        return;
+      }
+      finalized = true;
+      try {
+        const result = await chat.finalize();
+        let workflow = { ...result.workflow };
+
+        // Product Run Boundary side effects from conversation choices.
+        if (result.sideEffects?.materializeRun) {
+          const { runId, pages, summary } = result.sideEffects.materializeRun;
+          try {
+            let frozenSkillPath: string | undefined;
+            let frozenSkillDigest: string | undefined;
+            try {
+              frozenSkillPath = await resolveSkillPath(workspace.skillPath);
+              frozenSkillDigest = await skillDigest(frozenSkillPath);
+            } catch {
+              // Skill optional for materialize record; still register the run.
+            }
+            await registerRunRecord(workspace.rootPath, workspace.id, {
+              runId,
+              status: "awaiting_publication",
+              pages,
+              summary: summary ?? `Session staged ${pages.length} page(s)`,
+              skillPath: frozenSkillPath,
+              skillDigest: frozenSkillDigest,
+            });
+            workflow = {
+              ...workflow,
+              linkedRunId: runId,
+              phase: "awaiting_publish",
+            };
+          } catch (error) {
+            process.stderr.write(
+              `session materialize run failed: ${redactErrorMessage(error)}\n`,
+            );
+          }
+        }
+
+        if (result.sideEffects?.publishRunId) {
+          const runId = result.sideEffects.publishRunId;
+          try {
+            const published = await publishRunStaging(workspace, runId);
+            await updateRunRecord(workspace.rootPath, runId, {
+              status: "published",
+              error: null,
+              summary: `Published ${published.pageCount} page(s) from Session`,
+            }).catch(() => {
+              // Run record may be missing in edge cases; publish still attempted.
+            });
+            workflow = { ...workflow, linkedRunId: runId, phase: "done" };
+          } catch (error) {
+            process.stderr.write(
+              `session publish failed: ${redactErrorMessage(error)}\n`,
+            );
+            await updateRunRecord(workspace.rootPath, runId, {
+              status: "failed",
+              error: `publish failed: ${redactErrorMessage(error)}`,
+            }).catch(() => undefined);
+          }
+        }
+
+        await replaceSessionMessages(
+          workspace.rootPath,
+          sessionId,
+          [...asSessionMessages, result.assistantMessage],
+          {
+            status: result.status,
+            pending: result.pending,
+            workflow,
+          },
+        );
+      } catch (error) {
+        process.stderr.write(
+          `session chat finalize failed: ${redactErrorMessage(error)}\n`,
+        );
+      }
+    };
+
+    res.on("finish", () => {
+      void finalizeOnce();
+    });
+    res.on("close", () => {
+      void finalizeOnce();
+    });
+
+    // Prevent double-end issues
+    void originalEnd;
+
+    pipeUIMessageStreamToResponse({
+      response: res,
+      stream: chat.stream,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "no-cache, no-transform",
+      },
+    });
+  } catch (error) {
+    if (!res.headersSent) {
+      sendError(
+        res,
+        500,
+        error instanceof Error ? error.message : "session chat failed",
+      );
+    }
+  }
+}
+
+/** Get or create the latest session for a workspace (v1 single default thread). */
+async function handleGetOrCreateSession(
+  req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  url: URL,
+): Promise<void> {
+  const rootPath = url.searchParams.get("rootPath") ?? undefined;
+  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
+  if (!workspace) {
+    sendError(res, 404, `workspace not found: ${id}`);
+    return;
+  }
+  const existing = await listOperatorSessions(workspace.rootPath);
+  if (existing.length > 0) {
+    sendJson(res, 200, { session: existing[0], created: false });
+    return;
+  }
+  // Allow POST body title
+  let title: string | undefined;
+  if (req.method === "POST") {
+    const body = (await readJsonBody(req).catch(() => ({}))) as { title?: unknown };
+    if (typeof body.title === "string") {
+      title = body.title;
+    }
+  }
+  const session = await createOperatorSession({
+    workspaceRoot: workspace.rootPath,
+    workspaceId: workspace.id,
+    title: title ?? `Wiki Session · ${workspace.name}`,
+  });
+  sendJson(res, 201, { session, created: true });
+}
+
 async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void> {
   applyCors(req, res);
 
@@ -2166,6 +2429,47 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
       const params = matchRoute(pathname, "/api/workspaces/:id/skill");
       if (params && method === "GET") {
         await handleGetSkill(req, res, params.id!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(
+        pathname,
+        "/api/workspaces/:id/sessions/current",
+      );
+      if (params && (method === "GET" || method === "POST")) {
+        await handleGetOrCreateSession(req, res, params.id!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(
+        pathname,
+        "/api/workspaces/:id/sessions/:sessionId/chat",
+      );
+      if (params && method === "POST") {
+        await handleSessionChat(req, res, params.id!, params.sessionId!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(
+        pathname,
+        "/api/workspaces/:id/sessions/:sessionId",
+      );
+      if (params && method === "GET") {
+        await handleGetSession(req, res, params.id!, params.sessionId!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(pathname, "/api/workspaces/:id/sessions");
+      if (params && method === "GET") {
+        await handleListSessions(req, res, params.id!, url);
+        return;
+      }
+      if (params && method === "POST") {
+        await handleCreateSession(req, res, params.id!, url);
         return;
       }
     }

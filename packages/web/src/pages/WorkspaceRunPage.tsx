@@ -20,9 +20,6 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
 import { RunStatusBadge } from "../components/RunStatusBadge";
-import { SessionTimeline } from "../components/session/SessionTimeline";
-import { reduceSseToTimeline } from "../components/session/timeline-from-sse";
-import type { SessionTimelineItem } from "../components/session/types";
 import { WorkspaceSubnav } from "../components/WorkspaceSubnav";
 import { workspaceHref } from "../lib/workspace-path";
 import { Button } from "@/components/ui/button";
@@ -56,7 +53,8 @@ export function WorkspaceRunPage() {
   const [publishing, setPublishing] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState<unknown>(null);
-  const [timeline, setTimeline] = useState<SessionTimelineItem[]>([]);
+  /** Simple job event lines (not the conversational Session UI). */
+  const [eventLog, setEventLog] = useState<string[]>([]);
   /** When true, fall back to poll only (SSE failed or unavailable). */
   const [usePollFallback, setUsePollFallback] = useState(false);
   const sseRef = useRef<EventSource | null>(null);
@@ -96,8 +94,20 @@ export function WorkspaceRunPage() {
     );
   }, []);
 
-  const appendTimelineEvent = useCallback((event: RunSseEvent) => {
-    setTimeline((prev) => reduceSseToTimeline(prev, event));
+  const appendEventLog = useCallback((event: RunSseEvent) => {
+    const line =
+      event.message ||
+      event.text ||
+      (event.toolName
+        ? `${event.toolName}${event.toolState ? ` (${event.toolState})` : ""}`
+        : event.type);
+    if (!line) {
+      return;
+    }
+    setEventLog((prev) => {
+      const next = [...prev, `[${event.type}] ${line}`];
+      return next.length > 80 ? next.slice(-80) : next;
+    });
   }, []);
 
   // Prefer EventSource while running. For HITL gates, replay the ring buffer once
@@ -125,7 +135,7 @@ export function WorkspaceRunPage() {
     if (needsTerminalReplay) {
       sseReplayKeysRef.current.add(replayKey);
       // Rebuild timeline from the full ring buffer for this gate (includes write-phase tools).
-      setTimeline([]);
+      setEventLog([]);
     }
 
     const root = workspace.rootPath ?? rootPathHint;
@@ -184,7 +194,7 @@ export function WorkspaceRunPage() {
         return;
       }
 
-      appendTimelineEvent(event);
+      appendEventLog(event);
 
       const terminal =
         event.type === "done" ||
@@ -235,7 +245,7 @@ export function WorkspaceRunPage() {
       sseRef.current = null;
       if (!cancelled) {
         setUsePollFallback(true);
-        appendTimelineEvent({
+        appendEventLog({
           type: "log",
           runId: latestRunId,
           sequence: Date.now(),
@@ -262,7 +272,7 @@ export function WorkspaceRunPage() {
     latestStatus,
     latestRunId,
     usePollFallback,
-    appendTimelineEvent,
+    appendEventLog,
     applyRunPatch,
   ]);
 
@@ -284,7 +294,7 @@ export function WorkspaceRunPage() {
     }
     setStarting(true);
     setError(null);
-    setTimeline([]);
+    setEventLog([]);
     setUsePollFallback(false);
     sseReplayKeysRef.current = new Set();
     try {
@@ -294,14 +304,7 @@ export function WorkspaceRunPage() {
         workspace?.rootPath ?? rootPathHint,
       );
       setRuns((prev) => [result.run, ...prev.filter((r) => r.runId !== result.run.runId)]);
-      setTimeline([
-        {
-          kind: "status",
-          id: `${result.run.runId}-created`,
-          message: "run created",
-          status: result.run.status,
-        },
-      ]);
+      setEventLog([`[status] run created (${result.run.status})`]);
     } catch (err) {
       setError(err);
     } finally {
@@ -315,7 +318,7 @@ export function WorkspaceRunPage() {
     }
     setRetrying(true);
     setError(null);
-    setTimeline([]);
+    setEventLog([]);
     setUsePollFallback(false);
     sseReplayKeysRef.current = new Set();
     try {
@@ -328,13 +331,8 @@ export function WorkspaceRunPage() {
         result.run,
         ...prev.filter((r) => r.runId !== result.run.runId),
       ]);
-      setTimeline([
-        {
-          kind: "status",
-          id: `${result.run.runId}-retry`,
-          message: `manual retry from ${result.retriedFrom} (skill digest frozen)`,
-          status: result.run.status,
-        },
+      setEventLog([
+        `[status] manual retry from ${result.retriedFrom} (skill digest frozen)`,
       ]);
     } catch (err) {
       setError(err);
@@ -358,15 +356,7 @@ export function WorkspaceRunPage() {
       setRuns((prev) =>
         prev.map((r) => (r.runId === result.run.runId ? result.run : r)),
       );
-      setTimeline((prev) => [
-        ...prev,
-        {
-          kind: "status",
-          id: `${result.run.runId}-cancel`,
-          message: "cancel requested",
-          status: result.run.status,
-        },
-      ]);
+      setEventLog((prev) => [...prev, "[status] cancel requested"]);
     } catch (err) {
       setError(err);
     } finally {
@@ -391,14 +381,9 @@ export function WorkspaceRunPage() {
         prev.map((r) => (r.runId === result.run.runId ? result.run : r)),
       );
       setUsePollFallback(false);
-      setTimeline((prev) => [
+      setEventLog((prev) => [
         ...prev,
-        {
-          kind: "status",
-          id: `${result.run.runId}-plan-approved`,
-          message: "plan approved — write phase starting",
-          status: result.run.status,
-        },
+        "[status] plan approved — write phase starting",
       ]);
     } catch (err) {
       setError(err);
@@ -491,13 +476,13 @@ export function WorkspaceRunPage() {
               {workspace?.name ?? id}
             </Link>
             <span aria-hidden="true"> / </span>
-            <span>Session</span>
+            <span>Runs</span>
           </p>
-          <h1>Session</h1>
+          <h1>Runs</h1>
           <p>
-            Operator session for this workspace: start a Wiki Run, watch markdown / tool / subagent
-            output live, then approve or decline publication. A Wiki Run is a bounded job — not a
-            resumable chat transcript.
+            Job console for Wiki Runs: start headless generate, cancel, approve or decline
+            publication. For conversational planning and dynamic decisions, use{" "}
+            <Link to={workspaceHref(id, "/session", rootPathHint)}>Session</Link>.
           </p>
         </header>
 
@@ -595,9 +580,21 @@ export function WorkspaceRunPage() {
                       </div>
                     </dl>
 
-                    <div className="run-session-timeline" data-testid="run-event-log">
-                      <h3 className="panel-subtitle">Live session timeline</h3>
-                      <SessionTimeline items={timeline} />
+                    <div className="run-event-log mono small" data-testid="run-event-log">
+                      <h3 className="panel-subtitle">Job events</h3>
+                      {eventLog.length === 0 ? (
+                        <p className="muted">No events yet.</p>
+                      ) : (
+                        <ul className="event-log" data-testid="run-event-list">
+                          {eventLog.map((line, i) => (
+                            <li key={`${i}-${line.slice(0, 24)}`}>{line}</li>
+                          ))}
+                        </ul>
+                      )}
+                      <p className="muted small mt-2">
+                        For conversational planning, use{" "}
+                        <Link to={workspaceHref(id, "/session", rootPathHint)}>Session</Link>.
+                      </p>
                     </div>
 
                     {lastRun.skillDigest ? (
