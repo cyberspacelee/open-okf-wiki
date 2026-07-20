@@ -42,6 +42,19 @@ export {
 } from "./skill.js";
 
 export {
+  DEFAULT_KICKOFF_TEXT,
+  KICKOFF_SLASH_NAMES,
+  expandChatSlash,
+  isKickoffPhrase,
+  normalizeSessionUserText,
+  isKickoff,
+  resolveSessionTurnMode,
+  helpTextForSessionTurn,
+  type SessionTurnHelpReason,
+  type SessionTurnModeResult,
+} from "./session-policy.js";
+
+export {
   OperatorSessionStatusSchema,
   InteractionOptionSchema,
   InteractionModeSchema,

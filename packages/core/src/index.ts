@@ -113,6 +113,24 @@ export {
   type IgnorePresetId,
 } from "./source-ignores.js";
 export {
+  isDurableRunStatus,
+  isCancellableRunStatus,
+  cancelWinsOverPatch,
+  canTransitionToCancelled,
+  applyLateAbortStatus,
+} from "./run-status-policy.js";
+export {
+  createRun,
+  registerRunRecord,
+  updateRunRecord,
+  loadRun,
+  listRuns,
+  RunStatusConflictError,
+  type CreateRunOptions,
+  type RegisterRunOptions,
+  type RunRecordPatch,
+} from "./run-store.js";
+export {
   PROVIDER_FILE_NAME,
   defaultProviderPath,
   loadProviderConfig,

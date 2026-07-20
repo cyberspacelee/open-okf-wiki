@@ -29,9 +29,16 @@ export {
   createSessionWorkflowStream,
   uiMessagesToSessionMessages,
   sessionMessagesToUIMessages,
+  helpTextForSessionTurn,
+  isKickoff,
+  isKickoffPhrase,
+  normalizeSessionUserText,
+  resolveSessionTurnMode,
   type SessionStreamResult,
   type SessionStreamBody,
   type SessionStreamSideEffects,
+  type SessionTurnHelpReason,
+  type SessionTurnModeResult,
 } from "./session-stream.js";
 
 export { getMastra, mastraStorageDir, resetMastraForTests } from "./mastra-instance.js";
@@ -51,6 +58,25 @@ export {
   type WikiRunOrchestrationResult,
   type WikiWorkflowJobEvent,
 } from "./wiki-run.js";
+
+export {
+  mapWorkflowResult,
+  extractSuspendGate,
+  sessionViewFromTerminal,
+  isDurableRunStatus,
+  type WikiWorkflowTerminal,
+  type SessionTerminalView,
+  type SuspendGatePayload,
+} from "./workflow-result.js";
+
+export {
+  openWikiRunWorkflow,
+  stepIdForGate,
+  type WikiRunOpenParams,
+  type WikiRunStartParams,
+  type WikiRunResumeParams,
+  type WikiRunWorkflowHandle,
+} from "./wiki-run-orchestrator.js";
 
 export { openWikiWorkflowUiStream } from "./workflow-ui-stream.js";
 export { mapWorkflowStreamEvent } from "./workflow-events.js";

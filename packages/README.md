@@ -1,6 +1,6 @@
 # TypeScript monorepo
 
-Primary product implementation for OKF Wiki. See [ADR 0020](../docs/adr/0020-typescript-mastra-web-workspace.md), [ADR 0021](../docs/adr/0021-retire-python-primary-path.md), and [ADR 0024](../docs/adr/0024-session-as-conversational-workspace.md).
+Primary product implementation for OKF Wiki. Current ADRs: [0020](../docs/adr/0020-typescript-mastra-web-workspace.md) (stack), [0021](../docs/adr/0021-retire-python-primary-path.md) (no Python path), [0022](../docs/adr/0022-source-clone-into-workspace.md) (operator clone), [0024](../docs/adr/0024-session-as-conversational-workspace.md) (Session), [0025](../docs/adr/0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) (single workflow + AI SDK bridge). Full index: [docs/adr/README.md](../docs/adr/README.md).
 
 | Package | Role |
 |---|---|

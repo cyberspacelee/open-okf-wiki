@@ -1,21 +1,15 @@
 /**
- * Official Mastra → AI SDK UI stream bridge (same pattern as handleWorkflowStream).
- * Returns the UI stream plus a result() promise so product finalize can map suspend/terminal.
- *
- * Does NOT wrap in createUIMessageStream — callers that own the Session turn
- * (createSessionWorkflowStream) already use createUIMessageStream with
- * originalMessages so workflow parts merge into one assistant bubble.
+ * Session projection adapter: Mastra wiki-run → AI SDK UI stream (toAISdkStream).
+ * Opening/abort bind lives in wiki-run-orchestrator (ADR 0025).
  */
 
 import { toAISdkStream } from "@mastra/ai-sdk";
 import type { UIMessageChunk } from "ai";
 import type { WikiRunPlan, WorkspaceConfig } from "@okf-wiki/contract";
-import { getMastra } from "./mastra-instance.js";
 import {
-  bindRunAbortSignal,
-  unbindRunAbortSignal,
-} from "./run-abort.js";
-import { WIKI_RUN_WORKFLOW_ID } from "./wiki-workflow.js";
+  openWikiRunWorkflow,
+  type WikiRunOpenParams,
+} from "./wiki-run-orchestrator.js";
 
 export type WikiWorkflowUiStart = {
   kind: "start";
@@ -40,7 +34,7 @@ export type WikiWorkflowUiResume = {
 
 /**
  * Open a wiki-run workflow stream converted with @mastra/ai-sdk toAISdkStream.
- * Mirrors handleWorkflowStream internals while exposing result() for product side effects.
+ * Exposes result() so Session finalize can map suspend/terminal once.
  */
 export async function openWikiWorkflowUiStream(
   params: WikiWorkflowUiStart | WikiWorkflowUiResume,
@@ -48,54 +42,36 @@ export async function openWikiWorkflowUiStream(
   stream: ReadableStream<UIMessageChunk>;
   result: () => Promise<unknown>;
 }> {
-  if (params.abortSignal) {
-    bindRunAbortSignal(params.runId, params.abortSignal);
-  }
+  const openParams: WikiRunOpenParams =
+    params.kind === "resume"
+      ? {
+          kind: "resume",
+          runId: params.runId,
+          step: params.step,
+          resumeData: params.resumeData,
+          abortSignal: params.abortSignal,
+        }
+      : {
+          kind: "start",
+          runId: params.runId,
+          workspace: params.workspace,
+          autoApprove: params.autoApprove,
+          skipPlanConfirm: params.skipPlanConfirm,
+          forcePlanConfirm: params.forcePlanConfirm,
+          plan: params.plan,
+          abortSignal: params.abortSignal,
+        };
 
-  const release = () => {
-    if (params.abortSignal) {
-      unbindRunAbortSignal(params.runId);
-    }
-  };
+  const handle = await openWikiRunWorkflow(openParams);
 
-  try {
-    const mastra = getMastra();
-    const workflow = mastra.getWorkflow(WIKI_RUN_WORKFLOW_ID);
-    const run = await workflow.createRun({ runId: params.runId });
+  // Raw AI SDK chunks — no nested createUIMessageStream (avoids duplicate assistant ids).
+  const stream = toAISdkStream(handle.output as never, {
+    from: "workflow",
+  }) as unknown as ReadableStream<UIMessageChunk>;
 
-    const output =
-      params.kind === "resume"
-        ? run.resumeStream({
-            step: params.step,
-            resumeData: params.resumeData,
-          })
-        : run.stream({
-            inputData: {
-              runId: params.runId,
-              workspace: params.workspace,
-              autoApprove: params.autoApprove,
-              skipPlanConfirm: params.skipPlanConfirm,
-              forcePlanConfirm: params.forcePlanConfirm,
-              plan: params.plan,
-            },
-          });
+  // Unbind after the workflow result settles (success, suspend, or error).
+  // Do not unbind on stream cancel alone — result() may still be awaited.
+  const result = () => handle.output.result.finally(handle.release);
 
-    // Raw AI SDK chunks — no nested createUIMessageStream (avoids duplicate assistant ids).
-    const stream = toAISdkStream(output, {
-      from: "workflow",
-    }) as unknown as ReadableStream<UIMessageChunk>;
-
-    // Unbind after the workflow result settles (success, suspend, or error).
-    // Do not unbind on stream cancel alone — result() may still be awaited.
-    const result = () =>
-      (output.result as Promise<unknown>).finally(release);
-
-    return {
-      stream,
-      result,
-    };
-  } catch (error) {
-    release();
-    throw error;
-  }
+  return { stream, result };
 }

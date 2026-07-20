@@ -4,7 +4,7 @@ import {
   assertContainedPathSafe,
   resolveContainedPath,
   toPosixRelative,
-} from "./path-policy.js";
+} from "@okf-wiki/core";
 
 export type ListEntry = {
   name: string;

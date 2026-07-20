@@ -71,7 +71,7 @@ export const en = {
     emptyDescription:
       "Create a workspace with an absolute root path. Then add local Git checkouts as sources.",
     checklistModels: "Configure models in",
-    checklistSources: "Add local Git checkout paths (no clone / no credentials)",
+    checklistSources: "Add sources: link a local Git checkout or clone into the workspace",
     checklistRun: "Run Wiki generation with HITL publish",
     colName: "Name",
     colRoot: "Root path",

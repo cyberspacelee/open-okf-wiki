@@ -1,7 +1,13 @@
 /**
  * Operator Session slash commands (AI Elements command palette + free-text).
- * Local actions stay on the client; chat actions expand into sendTurn text.
+ * Chat expansion shares catalog semantics with @okf-wiki/contract session-policy.
+ * Local actions stay on the client.
  */
+
+import {
+  DEFAULT_KICKOFF_TEXT,
+  expandChatSlash,
+} from "@okf-wiki/contract";
 
 export type SessionSlashLocalAction =
   | "help"
@@ -26,14 +32,14 @@ export type SessionCommandDef = {
   local?: SessionSlashLocalAction;
 };
 
-/** Canonical command catalog for palette + help. */
+/** Canonical command catalog for palette + help (UI chrome over shared policy). */
 export const SESSION_COMMANDS: SessionCommandDef[] = [
   {
     id: "generate",
     command: "/generate",
     label: "Generate wiki",
     description: "Start a Wiki Run (plan → write → publish)",
-    sendText: "generate a wiki plan",
+    sendText: DEFAULT_KICKOFF_TEXT,
   },
   {
     id: "approve",
@@ -86,6 +92,15 @@ export const SESSION_COMMANDS: SessionCommandDef[] = [
   },
 ];
 
+const LOCAL_SLASH: Record<string, SessionSlashLocalAction> = {
+  reset: "reset",
+  stop: "stop",
+  new: "new",
+  delete: "delete",
+  help: "help",
+  commands: "help",
+};
+
 export function parseSessionSlashInput(text: string): SessionSlashParseResult {
   const t = text.trim();
   if (!t.startsWith("/")) {
@@ -98,34 +113,16 @@ export function parseSessionSlashInput(text: string): SessionSlashParseResult {
   const name = match[1]!.toLowerCase();
   const args = (match[2] ?? "").trim();
 
-  switch (name) {
-    case "generate":
-    case "run":
-    case "wiki":
-    case "plan":
-      return {
-        kind: "send",
-        text: args || "generate a wiki plan",
-      };
-    case "approve":
-      return { kind: "send", text: "approve" };
-    case "deny":
-    case "reject":
-      return { kind: "send", text: "deny" };
-    case "reset":
-      return { kind: "local", action: "reset" };
-    case "stop":
-      return { kind: "local", action: "stop" };
-    case "new":
-      return { kind: "local", action: "new" };
-    case "delete":
-      return { kind: "local", action: "delete" };
-    case "help":
-    case "commands":
-      return { kind: "local", action: "help" };
-    default:
-      return { kind: "local", action: "help" };
+  const send = expandChatSlash(name, args);
+  if (send !== null) {
+    return { kind: "send", text: send };
   }
+
+  const local = LOCAL_SLASH[name];
+  if (local) {
+    return { kind: "local", action: local };
+  }
+  return { kind: "local", action: "help" };
 }
 
 /** Filter palette while user types `/gen…`. */
@@ -148,7 +145,6 @@ export function isSlashMenuOpenQuery(text: string): boolean {
   if (!text.startsWith("/")) {
     return false;
   }
-  // Close once user typed a full command with trailing space + args, or multi-word.
   if (/\s/.test(text.slice(1))) {
     return false;
   }
@@ -201,7 +197,7 @@ export function sessionSlashHelpMarkdown(): string {
       (c) => `- \`${c.command}\` — ${c.description}`,
     ),
     "",
-    "You can also type **generate a wiki plan** without a slash.",
+    `You can also type **${DEFAULT_KICKOFF_TEXT}** without a slash.`,
   ];
   return lines.join("\n");
 }

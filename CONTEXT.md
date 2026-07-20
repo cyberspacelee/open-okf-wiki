@@ -134,6 +134,11 @@ _Avoid_: live working-tree filter, re-resolved product defaults at retry, model-
 A read-only, deterministically derived presentation of one Published Wiki for human browsing of pages and their cross-link graph; optional beside publication, not the Wiki itself and not the Wiki Run operator surface.
 _Avoid_: knowledge graph, product web app, Staging Wiki, model transcript, run dashboard
 
-## Reading older ADRs
+## Reading ADRs
 
-ADRs before [0019](docs/adr/0019-prefer-run-boundary-over-host.md) may say **Host** for what is now **Run Boundary**, and **Host Instructions** for **Run Instructions**. Map those phrases; do not reintroduce `okf_wiki.host` or `Host*` APIs.
+Index and current-stack shortlist: [docs/adr/README.md](docs/adr/README.md).
+
+- Pre-[0019](docs/adr/0019-prefer-run-boundary-over-host.md): **Host** / **Host Instructions** → **Run Boundary** / **Run Instructions**. Do not reintroduce `okf_wiki.host` or `Host*` APIs.
+- Pre-[0021](docs/adr/0021-retire-python-primary-path.md): Python / Pydantic AI harness language → TypeScript `@okf-wiki/core` (Run Boundary) + `@okf-wiki/agent` (Mastra).
+- [0020](docs/adr/0020-typescript-mastra-web-workspace.md) §6 originally forbade product clone; **operator clone** is allowed per [0022](docs/adr/0022-source-clone-into-workspace.md) (Semantic Workflow still never clones).
+- Session stream / single write path: [0024](docs/adr/0024-session-as-conversational-workspace.md) + [0025](docs/adr/0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) supersede transitional Session-SSE wording in [0023](docs/adr/0023-operator-session-stream-and-plan-confirm.md).

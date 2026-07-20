@@ -1,23 +1,19 @@
 /**
- * Product-facing Wiki Run orchestration over the Mastra wiki-run workflow.
- * Server/Session call this instead of Session-local materialize or ad-hoc agent glue.
+ * Run console / headless job projection over the wiki-run workflow.
+ * Open + abort bind: wiki-run-orchestrator; terminal map: workflow-result.
  */
 
-import type {
-  WikiRunPlan,
-  WikiRunRecordStatus,
-  WorkspaceConfig,
-} from "@okf-wiki/contract";
-import { getMastra } from "./mastra-instance.js";
-import {
-  bindRunAbortSignal,
-  unbindRunAbortSignal,
-} from "./run-abort.js";
-import {
-  WIKI_RUN_WORKFLOW_ID,
-  type WikiRunWorkflowOutput,
-} from "./wiki-workflow.js";
+import type { WikiRunPlan, WorkspaceConfig } from "@okf-wiki/contract";
 import { redactErrorMessage } from "./run.js";
+import {
+  openWikiRunWorkflow,
+  stepIdForGate,
+} from "./wiki-run-orchestrator.js";
+import { applyLateAbortStatus } from "@okf-wiki/core";
+import {
+  mapWorkflowResult,
+  type WikiWorkflowTerminal,
+} from "./workflow-result.js";
 import {
   mapWorkflowStreamEvent,
   type WikiWorkflowJobEvent,
@@ -41,17 +37,8 @@ export type StartWikiRunInput = {
   abortSignal?: AbortSignal;
 };
 
-export type WikiRunOrchestrationResult = {
-  status: WikiRunRecordStatus;
-  pages?: string[];
-  plan?: WikiRunPlan;
-  summary?: string;
-  error?: string;
-  publicationPath?: string;
-  /** True when workflow is suspended waiting for operator resume. */
-  suspended?: boolean;
-  suspendGate?: "plan" | "publication";
-};
+/** Job/orchestration result — same shape as unified WikiWorkflowTerminal. */
+export type WikiRunOrchestrationResult = WikiWorkflowTerminal;
 
 function isCancelledError(error: unknown): boolean {
   if (!error || typeof error !== "object") {
@@ -62,92 +49,7 @@ function isCancelledError(error: unknown): boolean {
     return true;
   }
   const message = error instanceof Error ? error.message : String(error);
-  return /plan declined|cancelled/i.test(message);
-}
-
-function mapSuspendedResult(result: {
-  status: string;
-  suspended?: unknown;
-  suspendPayload?: unknown;
-  steps?: Record<string, { suspendPayload?: unknown; status?: string; output?: unknown }>;
-}): WikiRunOrchestrationResult | null {
-  if (result.status !== "suspended") {
-    return null;
-  }
-
-  type GatePayload = {
-    gate?: string;
-    plan?: WikiRunPlan;
-    pages?: string[];
-    summary?: string;
-  };
-
-  const payloads: GatePayload[] = [];
-
-  // Top-level suspend payload (current gate only).
-  if (result.suspendPayload && typeof result.suspendPayload === "object") {
-    payloads.push(result.suspendPayload as GatePayload);
-  }
-
-  // Only steps that are still suspended — completed steps may retain old suspendPayload.
-  const steps = result.steps ?? {};
-  for (const step of Object.values(steps)) {
-    if (step?.status !== "suspended") {
-      continue;
-    }
-    if (step.suspendPayload && typeof step.suspendPayload === "object") {
-      payloads.push(step.suspendPayload as GatePayload);
-    }
-  }
-
-  for (const payload of payloads) {
-    if (payload.gate === "plan" && payload.plan) {
-      return {
-        status: "awaiting_plan",
-        plan: payload.plan,
-        summary: "Awaiting plan confirmation",
-        suspended: true,
-        suspendGate: "plan",
-      };
-    }
-    if (payload.gate === "publication") {
-      return {
-        status: "awaiting_publication",
-        pages: payload.pages,
-        summary: payload.summary ?? "Awaiting publication approval",
-        suspended: true,
-        suspendGate: "publication",
-      };
-    }
-  }
-
-  // Fallback: treat unknown suspend as needs_input.
-  return {
-    status: "needs_input",
-    summary: "Workflow suspended",
-    suspended: true,
-  };
-}
-
-function mapSuccessResult(result: {
-  status: string;
-  result?: WikiRunWorkflowOutput;
-}): WikiRunOrchestrationResult {
-  const output = result.result;
-  if (!output) {
-    return {
-      status: "failed",
-      error: "workflow finished without output",
-    };
-  }
-  return {
-    status: output.status,
-    pages: output.pages,
-    plan: output.plan,
-    summary: output.summary,
-    error: output.error,
-    publicationPath: output.publicationPath,
-  };
+  return /plan declined|cancelled|aborted/i.test(message);
 }
 
 async function consumeWorkflowStream(
@@ -172,21 +74,12 @@ async function consumeWorkflowStream(
   return output.result;
 }
 
-function mapTerminalWorkflowResult(result: unknown): WikiRunOrchestrationResult {
-  const suspended = mapSuspendedResult(result as never);
-  if (suspended) {
-    return suspended;
-  }
-  if ((result as { status?: string }).status === "failed") {
-    const err =
-      (result as { error?: unknown }).error ??
-      (result as { steps?: unknown }).steps;
-    return {
-      status: "failed",
-      error: redactErrorMessage(err ?? "workflow failed"),
-    };
-  }
-  return mapSuccessResult(result as never);
+function cancelledResult(): WikiRunOrchestrationResult {
+  return {
+    status: "cancelled",
+    error: "cancelled",
+    summary: "Wiki Run cancelled",
+  };
 }
 
 /**
@@ -196,64 +89,37 @@ function mapTerminalWorkflowResult(result: unknown): WikiRunOrchestrationResult 
 export async function startWikiRun(
   input: StartWikiRunInput,
 ): Promise<WikiRunOrchestrationResult> {
-  if (input.abortSignal) {
-    bindRunAbortSignal(input.runId, input.abortSignal);
+  if (input.abortSignal?.aborted) {
+    return cancelledResult();
   }
+  let release: (() => void) | undefined;
   try {
-    if (input.abortSignal?.aborted) {
-      return {
-        status: "cancelled",
-        error: "cancelled",
-        summary: "Wiki Run cancelled",
-      };
-    }
-    const mastra = getMastra();
-    const workflow = mastra.getWorkflow(WIKI_RUN_WORKFLOW_ID);
-    const run = await workflow.createRun({ runId: input.runId });
-    const output = run.stream({
-      inputData: {
-        runId: input.runId,
-        workspace: input.workspace,
-        autoApprove: input.autoApprove,
-        skipPlanConfirm: input.skipPlanConfirm,
-        forcePlanConfirm: input.forcePlanConfirm,
-        plan: input.plan,
-      },
+    const handle = await openWikiRunWorkflow({
+      kind: "start",
+      runId: input.runId,
+      workspace: input.workspace,
+      autoApprove: input.autoApprove,
+      skipPlanConfirm: input.skipPlanConfirm,
+      forcePlanConfirm: input.forcePlanConfirm,
+      plan: input.plan,
+      abortSignal: input.abortSignal,
     });
-
-    const result = await consumeWorkflowStream(output, input.onEvent);
-    const mapped = mapTerminalWorkflowResult(result);
-    // Late product abort must not rewrite durable publish outcomes.
-    if (
-      input.abortSignal?.aborted &&
-      mapped.status !== "published" &&
-      mapped.status !== "publication_declined"
-    ) {
-      return {
-        status: "cancelled",
-        error: "cancelled",
-        summary: "Wiki Run cancelled",
-        pages: mapped.pages,
-        plan: mapped.plan,
-      };
-    }
-    return mapped;
+    release = handle.release;
+    const result = await consumeWorkflowStream(handle.output, input.onEvent);
+    return applyLateAbortStatus(
+      mapWorkflowResult(result),
+      Boolean(input.abortSignal?.aborted),
+    ) as WikiRunOrchestrationResult;
   } catch (error) {
     if (isCancelledError(error) || input.abortSignal?.aborted) {
-      return {
-        status: "cancelled",
-        error: "cancelled",
-        summary: "Wiki Run cancelled",
-      };
+      return cancelledResult();
     }
     return {
       status: "failed",
       error: redactErrorMessage(error),
     };
   } finally {
-    if (input.abortSignal) {
-      unbindRunAbortSignal(input.runId);
-    }
+    release?.();
   }
 }
 
@@ -274,66 +140,41 @@ export type ResumeWikiRunInput = {
 export async function resumeWikiRun(
   input: ResumeWikiRunInput,
 ): Promise<WikiRunOrchestrationResult> {
-  if (input.abortSignal) {
-    bindRunAbortSignal(input.runId, input.abortSignal);
+  if (input.abortSignal?.aborted) {
+    return cancelledResult();
   }
+  let release: (() => void) | undefined;
   try {
-    if (input.abortSignal?.aborted) {
-      return {
-        status: "cancelled",
-        error: "cancelled",
-        summary: "Wiki Run cancelled",
-      };
-    }
-    const mastra = getMastra();
-    const workflow = mastra.getWorkflow(WIKI_RUN_WORKFLOW_ID);
-    const run = await workflow.createRun({ runId: input.runId });
-
     const resumeData =
       input.gate === "plan"
         ? { action: input.action, plan: input.plan }
         : { action: input.action };
 
-    const step = input.gate === "plan" ? "plan-gate" : "publish-gate";
-    const output = run.resumeStream({
-      step,
+    const handle = await openWikiRunWorkflow({
+      kind: "resume",
+      runId: input.runId,
+      step: stepIdForGate(input.gate),
       resumeData,
+      abortSignal: input.abortSignal,
     });
-
-    const result = await consumeWorkflowStream(output, input.onEvent);
-    const mapped = mapTerminalWorkflowResult(result);
-    // Late product abort must not rewrite durable publish outcomes.
-    if (
-      input.abortSignal?.aborted &&
-      mapped.status !== "published" &&
-      mapped.status !== "publication_declined"
-    ) {
-      return {
-        status: "cancelled",
-        error: "cancelled",
-        summary: "Wiki Run cancelled",
-        pages: mapped.pages,
-        plan: mapped.plan,
-      };
-    }
-    return mapped;
+    release = handle.release;
+    const result = await consumeWorkflowStream(handle.output, input.onEvent);
+    return applyLateAbortStatus(
+      mapWorkflowResult(result),
+      Boolean(input.abortSignal?.aborted),
+    ) as WikiRunOrchestrationResult;
   } catch (error) {
     if (isCancelledError(error) || input.abortSignal?.aborted) {
-      return {
-        status: "cancelled",
-        error: "cancelled",
-        summary: "Wiki Run cancelled",
-      };
+      return cancelledResult();
     }
     return {
       status: "failed",
       error: redactErrorMessage(error),
     };
   } finally {
-    if (input.abortSignal) {
-      unbindRunAbortSignal(input.runId);
-    }
+    release?.();
   }
 }
 
 export type { WikiWorkflowJobEvent };
+export type { WikiWorkflowTerminal };

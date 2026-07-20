@@ -9,7 +9,6 @@ import {
   WikiRunPlanSchema,
   WorkspaceConfigSchema,
   type WikiRunPlan,
-  type WikiRunRecordStatus,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
 import { publishStagingToPublication } from "@okf-wiki/core";
@@ -273,12 +272,5 @@ export const wikiRunWorkflow = createWorkflow({
   .then(writeStep)
   .then(publishGateStep)
   .commit();
-
-/** Map a successful workflow terminal result to a product status. */
-export function workflowOutputToStatus(
-  output: WikiRunWorkflowOutput,
-): WikiRunRecordStatus {
-  return output.status;
-}
 
 export type { WikiRunPlan };

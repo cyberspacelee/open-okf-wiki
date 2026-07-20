@@ -2,7 +2,8 @@
 
 **Status:** accepted  
 **Date:** 2026-07-20  
-**Related:** ADR 0020 (Mastra + Web), ADR 0023 (stream parts), ADR 0024 (Session as conversational workspace)
+**Related:** ADR 0020 (Mastra + Web), ADR 0023 (stream parts; Session transport superseded here), ADR 0024 (Session as conversational workspace)  
+**Index:** [docs/adr/README.md](README.md)
 
 ## Context
 

@@ -71,7 +71,7 @@ export const zh: MessageTree = {
     emptyTitle: "还没有工作区",
     emptyDescription: "使用绝对根路径创建工作区，再添加本地 Git 检出作为源码。",
     checklistModels: "配置模型：",
-    checklistSources: "添加本地 Git 检出路径（可不克隆 / 不存凭证）",
+    checklistSources: "添加源码：关联本地 Git 检出，或克隆到工作区",
     checklistRun: "生成 Wiki 并人工确认发布",
     colName: "名称",
     colRoot: "根路径",

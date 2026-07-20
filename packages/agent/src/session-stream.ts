@@ -19,9 +19,35 @@ import type {
   WikiRunPlan,
   WorkspaceConfig,
 } from "@okf-wiki/contract";
-import type { WikiRunWorkflowOutput } from "./wiki-workflow.js";
+import {
+  helpTextForSessionTurn,
+  normalizeSessionUserText,
+  resolveSessionTurnMode,
+} from "@okf-wiki/contract";
 import { redactErrorMessage } from "./run.js";
+import { uiMessagesToSessionMessages } from "./session-messages.js";
+import {
+  extractSuspendGate,
+  isDurableRunStatus,
+  mapWorkflowResult,
+  sessionViewFromTerminal,
+} from "./workflow-result.js";
 import { openWikiWorkflowUiStream } from "./workflow-ui-stream.js";
+
+// Re-export shared policy + message bridge for existing agent imports.
+export {
+  helpTextForSessionTurn,
+  isKickoff,
+  isKickoffPhrase,
+  normalizeSessionUserText,
+  resolveSessionTurnMode,
+  type SessionTurnHelpReason,
+  type SessionTurnModeResult,
+} from "@okf-wiki/contract";
+export {
+  sessionMessagesToUIMessages,
+  uiMessagesToSessionMessages,
+} from "./session-messages.js";
 
 export type SessionStreamSideEffects = {
   /** Register / update product run record after workflow progress. */
@@ -161,155 +187,6 @@ function lastUserText(messages: UIMessage[]): string {
   return "";
 }
 
-/** Why a turn stayed in help mode (contextual assistant copy). */
-export type SessionTurnHelpReason =
-  | "no_sources"
-  | "pending_gate"
-  | "running"
-  | "not_kickoff";
-
-export type SessionTurnModeResult = {
-  mode: "start" | "resume" | "help";
-  helpReason?: SessionTurnHelpReason;
-};
-
-/** Generate-ish user text (phase-agnostic). Free-chat must not auto-start. */
-export function isKickoffPhrase(text: string): boolean {
-  const t = text.trim();
-  if (!t) {
-    return false;
-  }
-  // Slash kickoff: /generate, /run, /wiki [args…]
-  if (/^\/(generate|run|wiki|plan)(?:\s|$)/i.test(t)) {
-    return true;
-  }
-  // Keep broad enough for e2e / kickoff ("generate a wiki plan") and help copy ("generate").
-  return /generate|wiki|plan|开始|生成|写|run/i.test(t);
-}
-
-/**
- * Normalize slash approve/deny into plain resume tokens for mode resolution.
- * Client usually expands these; server still accepts raw slash.
- */
-export function normalizeSessionUserText(text: string): string {
-  const t = text.trim();
-  if (/^\/approve(?:\s|$)/i.test(t)) {
-    return "approve";
-  }
-  if (/^\/(deny|reject)(?:\s|$)/i.test(t)) {
-    return "deny";
-  }
-  if (/^\/(generate|run|wiki|plan)(?:\s|$)/i.test(t)) {
-    // Empty args → canonical kickoff phrase; keep free-form args as kickoff text.
-    const rest = t.replace(/^\/(generate|run|wiki|plan)\s*/i, "").trim();
-    return rest || "generate a wiki plan";
-  }
-  return t;
-}
-
-/**
- * True when user text should start a new Wiki Run.
- * Only on idle/done (never while a gate or run is mid-flight), and only for
- * generate-ish phrases — idle free-chat must not auto-start a run.
- */
-export function isKickoff(text: string, phase: string | undefined): boolean {
-  if (phase !== "idle" && phase !== undefined && phase !== "done") {
-    return false;
-  }
-  return isKickoffPhrase(text);
-}
-
-/**
- * Pure turn-mode resolution for Operator Session chat.
- * Product rule: only generate-ish kickoff on idle/done starts a run; free-chat never does.
- */
-export function resolveSessionTurnMode(input: {
-  userText: string;
-  phase: string | undefined;
-  status: OperatorSession["status"] | string;
-  hasSources: boolean;
-  resumeData?: { action: "approve" | "deny"; plan?: WikiRunPlan };
-  existingRunId?: string;
-}): SessionTurnModeResult {
-  const { userText, phase, status, hasSources, resumeData, existingRunId } =
-    input;
-  const phaseNorm = phase ?? "idle";
-  const atGate =
-    phaseNorm === "awaiting_plan" || phaseNorm === "awaiting_publish";
-
-  // Resume wins when we have both payload and a linked run.
-  if (resumeData && existingRunId) {
-    return { mode: "resume" };
-  }
-
-  // Soft guard: avoid stacking a second start while a run is mid-flight.
-  // Cover both session.status and workflow phases set during start/write.
-  if (
-    status === "running" ||
-    phaseNorm === "planning" ||
-    phaseNorm === "writing"
-  ) {
-    return { mode: "help", helpReason: "running" };
-  }
-
-  // Start only on generate-ish kickoff at idle/done with sources present.
-  if (isKickoff(userText, phase) && !resumeData && hasSources) {
-    return { mode: "start" };
-  }
-
-  // Pending plan/publish gate without a valid resume payload.
-  if (atGate) {
-    return { mode: "help", helpReason: "pending_gate" };
-  }
-
-  // Any non-resume turn without sources — do not suggest generate first.
-  if (!hasSources) {
-    return { mode: "help", helpReason: "no_sources" };
-  }
-
-  return { mode: "help", helpReason: "not_kickoff" };
-}
-
-/** Contextual help copy for non-start/resume turns. */
-export function helpTextForSessionTurn(input: {
-  helpReason: SessionTurnHelpReason;
-  phase?: string;
-  userText?: string;
-}): string {
-  const phase = input.phase ?? "idle";
-  switch (input.helpReason) {
-    case "no_sources":
-      return "Add at least one Git source under **Sources** before starting a Wiki Run.";
-    case "pending_gate": {
-      // Kickoff-like text at a gate: do not pretend "generate" will start a run.
-      if (isKickoffPhrase(input.userText ?? "")) {
-        if (phase === "awaiting_publish") {
-          return "A publication decision is still pending. Complete or deny the publish gate (use the decision options above) before starting a new Wiki Run with **generate**.";
-        }
-        return "A plan decision is still pending. Complete or deny the plan gate (use the decision options above) before starting a new Wiki Run with **generate**.";
-      }
-      if (phase === "awaiting_publish") {
-        return "A publication decision is waiting. Pick **approve** or **deny** above to continue — free-text chat will not advance this gate.";
-      }
-      return "A plan decision is waiting. Pick **approve** or **deny** above to continue — free-text chat will not advance this gate.";
-    }
-    case "running":
-      return "A Wiki Run is already in progress. Wait for it to finish, or use **Stop** to cancel it.";
-    case "not_kickoff":
-    default:
-      return [
-        "Continue the wiki session with a kickoff phrase or slash command:",
-        "",
-        "- **generate** or `/generate` — start a Wiki Run",
-        "- `/approve` / `/deny` — answer a plan or publish gate",
-        "- `/reset` — clear a stuck gate (operator command)",
-        "- `/help` — list commands",
-        "",
-        "Or pick a decision option above when chips are shown.",
-      ].join("\n");
-  }
-}
-
 function optionsForPlan(plan: WikiRunPlan): InteractionOption[] {
   return [
     {
@@ -387,142 +264,7 @@ function decisionFromSuspend(payload: {
   return null;
 }
 
-function extractSuspendPayload(result: {
-  status?: string;
-  suspendPayload?: unknown;
-  steps?: Record<string, { status?: string; suspendPayload?: unknown }>;
-}): { gate?: string; plan?: WikiRunPlan; pages?: string[]; summary?: string } | null {
-  if (result.status !== "suspended") {
-    return null;
-  }
-  const steps = result.steps ?? {};
-  for (const step of Object.values(steps)) {
-    if (step?.status !== "suspended") {
-      continue;
-    }
-    const p = step.suspendPayload as
-      | { gate?: string; plan?: WikiRunPlan; pages?: string[]; summary?: string }
-      | undefined;
-    if (p?.gate) {
-      return p;
-    }
-  }
-  // Nested by step id: { 'plan-gate': { gate, plan } }
-  const top = result.suspendPayload;
-  if (top && typeof top === "object") {
-    for (const v of Object.values(top as Record<string, unknown>)) {
-      if (v && typeof v === "object" && "gate" in (v as object)) {
-        return v as {
-          gate?: string;
-          plan?: WikiRunPlan;
-          pages?: string[];
-          summary?: string;
-        };
-      }
-    }
-  }
-  return null;
-}
 
-function mapTerminalStatus(result: {
-  status?: string;
-  result?: WikiRunWorkflowOutput;
-}): {
-  status: OperatorSession["status"];
-  workflowPhase: SessionWorkflowState["phase"];
-  pages?: string[];
-  plan?: WikiRunPlan;
-  summary?: string;
-  runStatus?: string;
-} {
-  if (result.status === "success" && result.result) {
-    const out = result.result;
-    if (out.status === "published") {
-      return {
-        status: "completed",
-        workflowPhase: "done",
-        pages: out.pages,
-        plan: out.plan,
-        summary: out.summary,
-        runStatus: "published",
-      };
-    }
-    if (out.status === "publication_declined") {
-      return {
-        status: "active",
-        workflowPhase: "idle",
-        pages: out.pages,
-        plan: out.plan,
-        summary: out.summary,
-        runStatus: "publication_declined",
-      };
-    }
-    if (out.status === "cancelled") {
-      return {
-        status: "active",
-        workflowPhase: "idle",
-        summary: out.summary,
-        runStatus: "cancelled",
-      };
-    }
-    return {
-      status: "failed",
-      workflowPhase: "idle",
-      summary: out.summary,
-      runStatus: out.status,
-    };
-  }
-  if (result.status === "failed") {
-    return { status: "failed", workflowPhase: "idle", runStatus: "failed" };
-  }
-  return { status: "active", workflowPhase: "idle" };
-}
-
-/** Convert durable SessionMessage rows to AI SDK UIMessage shape. */
-export function sessionMessagesToUIMessages(
-  messages: SessionMessage[],
-): UIMessage[] {
-  return messages.map((m) => ({
-    id: m.id,
-    role: m.role,
-    parts: (m.parts ?? []).map((p) => {
-      if (p.type === "text" && "text" in p) {
-        return { type: "text" as const, text: p.text };
-      }
-      if (typeof p.type === "string" && p.type.startsWith("tool-")) {
-        const tool = p as {
-          type: string;
-          toolCallId?: string;
-          toolName?: string;
-          state?: string;
-          input?: unknown;
-          output?: unknown;
-          errorText?: string;
-        };
-        return {
-          type: tool.type as `tool-${string}`,
-          toolCallId: tool.toolCallId ?? tool.type,
-          state: (tool.state as "output-available") ?? "output-available",
-          input: tool.input,
-          output: tool.output,
-          errorText: tool.errorText,
-        } as UIMessage["parts"][number];
-      }
-      if (typeof p.type === "string" && p.type.startsWith("data-")) {
-        const dataPart = p as { type: string; id?: string; data?: unknown };
-        return {
-          type: dataPart.type as `data-${string}`,
-          id: dataPart.id,
-          data: dataPart.data,
-        } as UIMessage["parts"][number];
-      }
-      if (p.type === "step-start") {
-        return { type: "step-start" as const };
-      }
-      return { type: "text" as const, text: JSON.stringify(p) };
-    }),
-  }));
-}
 
 /**
  * Stream one Session turn: start or resume the wiki-run workflow via official AI SDK bridge.
@@ -683,7 +425,8 @@ export async function createSessionWorkflowStream(input: {
       };
 
       const applyWorkflowResult = async (result: unknown) => {
-        const suspend = extractSuspendPayload(result as never);
+        const product = mapWorkflowResult(result);
+        const suspend = extractSuspendGate(result);
         if (suspend) {
           const decision = decisionFromSuspend(suspend);
           if (decision) {
@@ -703,27 +446,19 @@ export async function createSessionWorkflowStream(input: {
                 data: decision.plan,
               });
             }
+            const view = sessionViewFromTerminal(product);
             workflow = {
-              phase:
-                suspend.gate === "publication"
-                  ? "awaiting_publish"
-                  : "awaiting_plan",
+              phase: view.workflowPhase,
               plan: decision.plan ?? input.session.workflow.plan,
               linkedRunId: runId,
             };
             sideEffects = {
               upsertRun: {
                 runId,
-                status:
-                  suspend.gate === "plan"
-                    ? "awaiting_plan"
-                    : "awaiting_publication",
-                pages: suspend.pages,
+                status: view.runStatus ?? product.status,
+                pages: suspend.pages ?? product.pages,
                 plan: decision.plan ?? suspend.plan ?? input.session.workflow.plan,
-                summary:
-                  suspend.gate === "plan"
-                    ? "Awaiting plan confirmation"
-                    : suspend.summary,
+                summary: product.summary,
                 sessionId: input.session.id,
               },
             };
@@ -731,7 +466,7 @@ export async function createSessionWorkflowStream(input: {
           }
         }
 
-        const terminal = mapTerminalStatus(result as never);
+        const terminal = sessionViewFromTerminal(product);
         status = terminal.status;
         workflow = {
           phase: terminal.workflowPhase,
@@ -805,8 +540,7 @@ export async function createSessionWorkflowStream(input: {
         if (!abortSignal?.aborted) {
           return;
         }
-        const runStatus = sideEffects?.upsertRun?.status;
-        if (runStatus === "published" || runStatus === "publication_declined") {
+        if (isDurableRunStatus(sideEffects?.upsertRun?.status)) {
           return;
         }
         await markCancelled();
@@ -891,10 +625,7 @@ export async function createSessionWorkflowStream(input: {
             }
           }
         }
-        const durable =
-          sideEffects?.upsertRun?.status === "published" ||
-          sideEffects?.upsertRun?.status === "publication_declined";
-        if (durable) {
+        if (isDurableRunStatus(sideEffects?.upsertRun?.status)) {
           // Outcome already applied; do not rewrite as cancelled/failed.
           return;
         }
@@ -978,58 +709,4 @@ export async function createSessionWorkflowStream(input: {
       };
     },
   };
-}
-
-/** Convert AI SDK UI messages to durable SessionMessage rows (lossy-safe, UIMessage-shaped). */
-export function uiMessagesToSessionMessages(
-  messages: UIMessage[],
-): SessionMessage[] {
-  return messages.map((m) => {
-    const parts: SessionMessage["parts"] = [];
-    for (const p of m.parts ?? []) {
-      if (p.type === "text") {
-        parts.push({ type: "text", text: p.text });
-        continue;
-      }
-      if (p.type === "step-start") {
-        parts.push({ type: "step-start" });
-        continue;
-      }
-      if (typeof p.type === "string" && p.type.startsWith("tool-")) {
-        parts.push({
-          type: p.type,
-          toolCallId: "toolCallId" in p ? String(p.toolCallId ?? "") : "",
-          toolName:
-            "toolName" in p
-              ? String(p.toolName ?? p.type.slice(5))
-              : p.type.slice(5),
-          state:
-            "state" in p
-              ? (p.state as SessionMessage["parts"][0] extends never
-                  ? never
-                  : string)
-              : "output-available",
-          input: "input" in p ? p.input : undefined,
-          output: "output" in p ? p.output : undefined,
-        } as SessionMessage["parts"][number]);
-        continue;
-      }
-      if (typeof p.type === "string" && p.type.startsWith("data-")) {
-        parts.push({
-          type: p.type,
-          id: "id" in p && typeof p.id === "string" ? p.id : undefined,
-          data: "data" in p ? p.data : undefined,
-        } as SessionMessage["parts"][number]);
-      }
-    }
-    if (parts.length === 0) {
-      parts.push({ type: "text", text: "(empty)" });
-    }
-    return {
-      id: m.id,
-      role: m.role as SessionMessage["role"],
-      parts,
-      createdAt: new Date().toISOString(),
-    };
-  });
 }

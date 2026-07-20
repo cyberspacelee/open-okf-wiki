@@ -12,7 +12,7 @@ import {
   assertContainedPathSafe,
   resolveContainedPath,
   toPosixRelative,
-} from "./path-policy.js";
+} from "@okf-wiki/core";
 import { redactErrorMessage } from "./run.js";
 
 const root = path.resolve("/tmp/okf-wiki-path-policy-root");

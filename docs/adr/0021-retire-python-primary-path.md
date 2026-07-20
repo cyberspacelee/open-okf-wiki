@@ -1,8 +1,8 @@
 # Retire Python as the primary product path
 
-**Status:** accepted
-**Date:** 2026-07-19
-**Supersedes:** Remaining “Python is the thin harness / primary product layer” language in [ADR 0006](0006-keep-python-as-a-thin-harness.md). Completes the transition begun in [ADR 0020](0020-typescript-mastra-web-workspace.md).
+**Status:** accepted (implemented — Python tree removed)  
+**Date:** 2026-07-19  
+**Supersedes:** Remaining “Python is the thin harness / primary product layer” language in [ADR 0006](0006-keep-python-as-a-thin-harness.md). Completes the transition begun in [ADR 0020](0020-typescript-mastra-web-workspace.md).  
 **Does not supersede:** Portable filesystem publication ([ADR 0017](0017-portable-host-filesystem-and-directory-rename-publication.md)); Run Boundary naming ([ADR 0019](0019-prefer-run-boundary-over-host.md)); separation of operator UI from Wiki Visualization ([ADR 0016](0016-separate-run-operator-ui-from-wiki-visualization.md)); product vocabulary in CONTEXT.md.
 
 ## Context
