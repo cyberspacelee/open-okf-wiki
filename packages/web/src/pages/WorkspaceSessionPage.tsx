@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
@@ -54,11 +61,13 @@ import {
 } from "../api";
 import { useI18n } from "../i18n";
 import {
+  clampSlashHighlight,
   filterSessionCommands,
   isSlashMenuOpenQuery,
   parseSessionSlashInput,
   SESSION_COMMANDS,
   sessionSlashHelpMarkdown,
+  tabCompleteSlashInput,
   type SessionCommandDef,
 } from "../lib/session-commands";
 import { workspaceHref } from "../lib/workspace-path";
@@ -684,6 +693,16 @@ function SessionChatPanel({
     () => filterSessionCommands(slashQuery),
     [slashQuery],
   );
+  /** Keyboard highlight index inside the open slash palette (Tab / ↑↓). */
+  const [slashHighlight, setSlashHighlight] = useState(0);
+
+  useEffect(() => {
+    if (!slashMenuOpen) {
+      setSlashHighlight(0);
+      return;
+    }
+    setSlashHighlight((i) => clampSlashHighlight(i, slashCommands.length));
+  }, [slashMenuOpen, slashCommands]);
 
   /** Single-flight send: blocks double-click / double-kickoff races. */
   const sendTurn = useCallback(
@@ -935,9 +954,10 @@ function SessionChatPanel({
       if (!text || readOnly || isBusy || choiceOnly || sendInFlight.current) {
         return;
       }
-      // If slash palette is open, Enter picks first match instead of raw submit.
-      if (isSlashMenuOpenQuery(text) && slashCommands[0]) {
-        applyCommandDef(slashCommands[0]!);
+      // If slash palette is open, Enter runs the highlighted match.
+      if (isSlashMenuOpenQuery(text) && slashCommands.length > 0) {
+        const idx = clampSlashHighlight(slashHighlight, slashCommands.length);
+        applyCommandDef(slashCommands[idx]!);
         return;
       }
       dispatchComposerText(text);
@@ -948,9 +968,52 @@ function SessionChatPanel({
       isBusy,
       readOnly,
       slashCommands,
+      slashHighlight,
       applyCommandDef,
       dispatchComposerText,
     ],
+  );
+
+  const handleComposerKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (!slashMenuOpen || slashCommands.length === 0) {
+        return;
+      }
+      if (e.key === "Tab") {
+        e.preventDefault();
+        e.stopPropagation();
+        const { nextInput, nextHighlight } = tabCompleteSlashInput(
+          e.currentTarget.value,
+          slashCommands,
+          slashHighlight,
+        );
+        setInput(nextInput);
+        setSlashHighlight(nextHighlight);
+        return;
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        e.stopPropagation();
+        setSlashHighlight((i) =>
+          clampSlashHighlight(i + 1, slashCommands.length),
+        );
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        e.stopPropagation();
+        setSlashHighlight((i) =>
+          clampSlashHighlight(i - 1, slashCommands.length),
+        );
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setInput("");
+        setSlashHighlight(0);
+      }
+    },
+    [slashMenuOpen, slashCommands, slashHighlight],
   );
 
   /**
@@ -1154,21 +1217,34 @@ function SessionChatPanel({
                       {t.session.slashEmpty}
                     </PromptInputCommandEmpty>
                     <PromptInputCommandGroup heading={t.session.slashHeading}>
-                      {slashCommands.map((cmd) => (
-                        <PromptInputCommandItem
-                          key={cmd.id}
-                          value={cmd.command}
-                          onSelect={() => applyCommandDef(cmd)}
-                          data-testid={`session-slash-${cmd.id}`}
-                        >
-                          <div className="flex min-w-0 flex-col gap-0.5">
-                            <span className="font-medium">{cmd.command}</span>
-                            <span className="truncate text-xs text-muted-foreground">
-                              {cmd.description}
-                            </span>
-                          </div>
-                        </PromptInputCommandItem>
-                      ))}
+                      {slashCommands.map((cmd, index) => {
+                        const active =
+                          index ===
+                          clampSlashHighlight(
+                            slashHighlight,
+                            slashCommands.length,
+                          );
+                        return (
+                          <PromptInputCommandItem
+                            key={cmd.id}
+                            value={cmd.command}
+                            onSelect={() => applyCommandDef(cmd)}
+                            data-testid={`session-slash-${cmd.id}`}
+                            data-highlighted={active ? "true" : undefined}
+                            className={cn(
+                              active && "bg-accent text-accent-foreground",
+                            )}
+                            onMouseEnter={() => setSlashHighlight(index)}
+                          >
+                            <div className="flex min-w-0 flex-col gap-0.5">
+                              <span className="font-medium">{cmd.command}</span>
+                              <span className="truncate text-xs text-muted-foreground">
+                                {cmd.description}
+                              </span>
+                            </div>
+                          </PromptInputCommandItem>
+                        );
+                      })}
                     </PromptInputCommandGroup>
                   </PromptInputCommandList>
                 </PromptInputCommand>
@@ -1183,6 +1259,7 @@ function SessionChatPanel({
                 <PromptInputTextarea
                   value={input}
                   onChange={(e) => setInput(e.currentTarget.value)}
+                  onKeyDown={handleComposerKeyDown}
                   disabled={composerDisabled || !canType}
                   placeholder={
                     readOnly

@@ -242,7 +242,7 @@ export const en = {
       "Select an option above to continue (free text is disabled for this step).",
     placeholderNoSources: "Add a source first (Sources tab)",
     placeholderChoice: "Select an option above…",
-    placeholderDefault: "Message the wiki agent… (/ for commands)",
+    placeholderDefault: "Message… (/ commands, Tab complete, ↑↓ select)",
     sessions: "Sessions",
     switchSession: "Switch session",
     newSession: "New session",
@@ -255,7 +255,7 @@ export const en = {
     deletingSession: "Deleting…",
     slashHeading: "Commands",
     slashEmpty: "No matching command",
-    slashTooltip: "Slash commands",
+    slashTooltip: "Slash commands (Tab to complete)",
   },
   runs: {
     breadcrumbWorkspaces: "Workspaces",

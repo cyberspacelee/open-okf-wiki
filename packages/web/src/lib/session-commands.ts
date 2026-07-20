@@ -155,6 +155,44 @@ export function isSlashMenuOpenQuery(text: string): boolean {
   return true;
 }
 
+/**
+ * Tab completion for the open slash menu.
+ * - Incomplete query → fill with the highlighted command (e.g. `/gen` → `/generate`)
+ * - Already exact match → cycle to the next filtered command
+ */
+export function tabCompleteSlashInput(
+  input: string,
+  commands: SessionCommandDef[],
+  highlightIndex: number,
+): { nextInput: string; nextHighlight: number } {
+  if (commands.length === 0) {
+    return { nextInput: input, nextHighlight: 0 };
+  }
+  const idx =
+    ((highlightIndex % commands.length) + commands.length) % commands.length;
+  const selected = commands[idx]!;
+  const exact =
+    input === selected.command || input === `${selected.command} `;
+  if (exact && commands.length > 1) {
+    const next = (idx + 1) % commands.length;
+    return {
+      nextInput: commands[next]!.command,
+      nextHighlight: next,
+    };
+  }
+  return { nextInput: selected.command, nextHighlight: idx };
+}
+
+export function clampSlashHighlight(
+  index: number,
+  commandCount: number,
+): number {
+  if (commandCount <= 0) {
+    return 0;
+  }
+  return ((index % commandCount) + commandCount) % commandCount;
+}
+
 export function sessionSlashHelpMarkdown(): string {
   const lines = [
     "### Session slash commands",

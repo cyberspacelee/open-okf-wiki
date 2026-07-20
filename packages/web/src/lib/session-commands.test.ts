@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  clampSlashHighlight,
   filterSessionCommands,
   isSlashMenuOpenQuery,
   parseSessionSlashInput,
+  tabCompleteSlashInput,
 } from "./session-commands.ts";
 
 test("parseSessionSlashInput expands chat slash commands", () => {
@@ -62,4 +64,22 @@ test("filterSessionCommands and menu open query", () => {
   assert.equal(isSlashMenuOpenQuery("/gen"), true);
   assert.equal(isSlashMenuOpenQuery("/generate "), false);
   assert.equal(isSlashMenuOpenQuery("hello"), false);
+});
+
+test("tabCompleteSlashInput completes and cycles", () => {
+  const gen = filterSessionCommands("/gen");
+  assert.ok(gen.length >= 1);
+  const filled = tabCompleteSlashInput("/gen", gen, 0);
+  assert.equal(filled.nextInput, "/generate");
+  assert.equal(filled.nextHighlight, 0);
+
+  const all = filterSessionCommands("/");
+  const first = tabCompleteSlashInput("/", all, 0);
+  assert.equal(first.nextInput, all[0]!.command);
+  const cycled = tabCompleteSlashInput(first.nextInput, all, first.nextHighlight);
+  assert.equal(cycled.nextInput, all[1]!.command);
+  assert.equal(cycled.nextHighlight, 1);
+
+  assert.equal(clampSlashHighlight(-1, 3), 2);
+  assert.equal(clampSlashHighlight(3, 3), 0);
 });
