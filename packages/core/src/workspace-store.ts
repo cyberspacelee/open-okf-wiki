@@ -121,6 +121,7 @@ export async function createWorkspace(options: CreateWorkspaceOptions): Promise<
     limits: WorkspaceLimitsSchema.parse({}),
     adaptive: false,
     reviewer: false,
+    planConfirm: false,
     createdAt: now,
     lastOpenedAt: now,
   };
@@ -188,6 +189,8 @@ export type AddSourceInput = {
   path: string;
   applyDefaultIgnores?: boolean;
   ignore?: string[];
+  /** How the source was attached; defaults to path-linked. */
+  origin?: WorkspaceSource["origin"];
 };
 
 export type AddSourceOptions = {
@@ -232,6 +235,7 @@ export async function addSource(
     path: sourcePath,
     applyDefaultIgnores: input.applyDefaultIgnores,
     ignore: input.ignore,
+    ...(input.origin ? { origin: input.origin } : { origin: { type: "path" as const } }),
   });
 
   return {

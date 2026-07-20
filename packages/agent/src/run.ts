@@ -4,34 +4,62 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { Agent } from "@mastra/core/agent";
 import type { MastraModelConfig } from "@mastra/core/llm";
 import { createCodeMode } from "@mastra/core/tools";
-import { LocalSandbox } from "@mastra/core/workspace";
-import type { WorkspaceConfig, WikiRunRecordStatus } from "@okf-wiki/contract";
+import { LocalFilesystem, LocalSandbox, Workspace } from "@mastra/core/workspace";
+import type {
+  WikiRunPlan,
+  WikiRunRecordStatus,
+  WorkspaceConfig,
+} from "@okf-wiki/contract";
 import {
   WORKSPACE_DIR_NAME,
   hasProviderCredentials,
   loadProviderConfig,
   resolveProviderRuntime,
+  writeAnalysisReceipt,
 } from "@okf-wiki/core";
+import { ADAPTIVE_RUN_LIMITS, adaptiveLimitsInstruction } from "./limits.js";
 import { listMarkdownPages, writeFileContained } from "./fs-ops.js";
 import { resolveSkillPath } from "./skill-path.js";
+import {
+  fixtureStreamParts,
+  projectMastraChunk,
+  type WikiStreamPart,
+} from "./stream-parts.js";
+import { createSubagents, subagentsAsAgentsMap } from "./subagents.js";
 import { createWikiRunTools } from "./tools.js";
+
+export type WikiRunAgentPhase = "plan" | "write";
 
 export type WikiRunAgentInput = {
   runId: string;
   workspace: WorkspaceConfig;
   autoApprove?: boolean;
+  /**
+   * plan: propose page set and stop for operator confirmation.
+   * write: produce wiki pages (optionally guided by confirmed plan).
+   */
+  phase?: WikiRunAgentPhase;
+  /** Confirmed plan from plan-confirm HITL (write phase). */
+  plan?: WikiRunPlan;
   /** Best-effort cancellation; fixture checks periodically, live passes to Mastra. */
   abortSignal?: AbortSignal;
+  /** Operator-safe stream parts for Session UI (SSE projection). */
+  onPart?: (part: WikiStreamPart) => void;
 };
 
 export type WikiRunAgentResult = {
   status: Extract<
     WikiRunRecordStatus,
-    "awaiting_publication" | "published" | "failed" | "cancelled"
+    | "awaiting_publication"
+    | "awaiting_plan"
+    | "published"
+    | "failed"
+    | "cancelled"
   >;
   pages?: string[];
   summary?: string;
   error?: string;
+  plan?: WikiRunPlan;
 };
 
 function isAbortError(error: unknown): boolean {
@@ -138,6 +166,20 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+function buildFixturePlan(input: WikiRunAgentInput): WikiRunPlan {
+  const title = input.workspace.name || "Repository overview";
+  return {
+    summary: `Fixture plan for ${title}: one overview page grounded in registered sources.`,
+    pages: [
+      {
+        path: "overview.md",
+        purpose: `Explain ${title} purpose, sources, and where to continue.`,
+      },
+    ],
+    ...(input.plan?.notes ? { notes: input.plan.notes } : {}),
+  };
+}
+
 async function runFixture(input: WikiRunAgentInput, wikiRoot: string): Promise<WikiRunAgentResult> {
   throwIfAborted(input.abortSignal);
 
@@ -158,8 +200,45 @@ async function runFixture(input: WikiRunAgentInput, wikiRoot: string): Promise<W
 
   throwIfAborted(input.abortSignal);
 
+  const phase: WikiRunAgentPhase = input.phase ?? "write";
+
+  if (phase === "plan") {
+    const plan = buildFixturePlan(input);
+    input.onPart?.({
+      type: "text",
+      partType: "text",
+      text: `## Proposed plan\n\n${plan.summary}\n\nPages:\n${plan.pages
+        .map((p) => `- \`${p.path}\`: ${p.purpose}`)
+        .join("\n")}\n`,
+      nodeId: "root",
+    });
+    input.onPart?.({
+      type: "part",
+      partType: "data-plan",
+      message: plan.summary,
+      text: JSON.stringify(plan),
+      nodeId: "root",
+    });
+    return {
+      status: "awaiting_plan",
+      plan,
+      summary: "Awaiting operator plan confirmation",
+    };
+  }
+
+  // Emit synthetic AI-SDK-style parts for Session UI / e2e (write phase).
+  for (const part of fixtureStreamParts(input.runId)) {
+    throwIfAborted(input.abortSignal);
+    input.onPart?.(part);
+    // Small yield so SSE clients can interleave when delay is zero.
+    await sleep(0, input.abortSignal);
+  }
+
   const sourceIds = input.workspace.sources.map((s) => s.id).join(", ");
   const title = input.workspace.name || "Repository overview";
+  const planNote = input.plan
+    ? `\n\nConfirmed plan: ${input.plan.summary}\n`
+    : "";
   const content = [
     "---",
     `title: ${JSON.stringify(title)}`,
@@ -172,19 +251,21 @@ async function runFixture(input: WikiRunAgentInput, wikiRoot: string): Promise<W
     `- Workspace: \`${input.workspace.id}\``,
     `- Sources: ${sourceIds || "(none)"}`,
     `- Run: \`${input.runId}\``,
-    "",
+    planNote,
     "Replace fixture mode with a live model by setting `OPENAI_API_KEY` and/or",
     "`OPENAI_BASE_URL`, or force live with `OKF_WIKI_AGENT_MODE=live`.",
     "",
   ].join("\n");
 
-  await writeFileContained(wikiRoot, "overview.md", content);
+  const pagePath = input.plan?.pages[0]?.path ?? "overview.md";
+  await writeFileContained(wikiRoot, pagePath, content);
   throwIfAborted(input.abortSignal);
   const pages = await listMarkdownPages(wikiRoot);
   return {
     status: successStatus(input.autoApprove),
     pages,
     summary: "Fixture Wiki Run wrote overview.md",
+    plan: input.plan,
   };
 }
 
@@ -197,16 +278,18 @@ function buildInstructions(workspace: WorkspaceConfig): string {
     "Follow the producer skill strictly.",
     "",
     "## Run instructions",
-    "1. Read skill file SKILL.md via read_skill, then any needed references/templates.",
-    "2. Explore sources with list_source / read_source (read-only).",
+    "1. Activate/load the Producer Skill (Mastra skill tools and/or read_skill). Start with SKILL.md, then references/templates as needed.",
+    "2. Explore sources with list_source / read_source only (read-only, multi-root by sourceId).",
+    "   Source paths may live outside the workspace root; never assume sources are under cwd.",
     "3. Write final Markdown pages under the wiki staging area with write_wiki.",
     "4. Every page MUST start with YAML frontmatter containing a non-empty `title`.",
     "5. Prefer a small coherent page set (e.g. overview.md plus architecture/module as needed).",
     "6. When finished, reply with a short plain-text summary listing the wiki-relative page paths you wrote.",
     "",
-    "Do not attempt shell access. Use only the provided tools.",
+    "Do not use shell/git clone/fetch. Use only the provided tools.",
     "Do not invent source citations without reading the cited files.",
     "",
+    `Workspace root (agent cwd): ${workspace.rootPath}`,
     `Workspace: ${workspace.name} (${workspace.id})`,
     "Sources:",
     sourceList || "- (none)",
@@ -262,22 +345,52 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
     wikiRoot,
   });
 
+  // Mastra Workspace: product workspace root as agent cwd + Producer Skill discovery.
+  // Sources stay multi-root via product tools (may live outside rootPath).
+  // No unrestricted shell for clone/fetch — CodeMode sandbox has no free shell tools.
+  const mastraWorkspace = new Workspace({
+    id: `okf-wiki-run-${input.runId}`,
+    name: input.workspace.name,
+    filesystem: new LocalFilesystem({
+      basePath: input.workspace.rootPath,
+    }),
+    skills: [skillRoot],
+  });
+  await mastraWorkspace.init();
+
   // Optional Mastra Code Mode (live only): orchestration TS runs in LocalSandbox;
   // external_* calls still hit the same contained tools above.
   const { tool: execute_typescript, instructions: codeModeInstructions } = createCodeMode({
     tools,
     sandbox: new LocalSandbox({
       isolation: "none",
-      workingDirectory: wikiRoot,
+      workingDirectory: input.workspace.rootPath,
     }),
   });
 
   const model = await resolveModelConfig(input.workspace);
+  const subagents = createSubagents({
+    model,
+    tools,
+    adaptive: Boolean(input.workspace.adaptive),
+    reviewer: Boolean(input.workspace.reviewer),
+  });
+  const childAgents = subagentsAsAgentsMap(subagents);
+
+  const adaptiveHint = input.workspace.adaptive
+    ? `\nAdaptive mode: you may delegate domainResearcher / leafResearcher for large scopes; reduce their receipts yourself. You alone write wiki pages.\n${adaptiveLimitsInstruction()}`
+    : "";
+
   const agent = new Agent({
     id: "okf-wiki-root",
     name: "OKF Wiki Root",
-    instructions: [buildInstructions(input.workspace), codeModeInstructions],
+    instructions: [
+      buildInstructions(input.workspace) + adaptiveHint,
+      codeModeInstructions,
+    ],
     model,
+    workspace: mastraWorkspace,
+    ...(Object.keys(childAgents).length > 0 ? { agents: childAgents } : {}),
     tools: {
       ...tools,
       execute_typescript,
@@ -287,25 +400,112 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
   throwIfAborted(input.abortSignal);
 
   const maxSteps = input.workspace.limits?.maxSteps ?? 24;
-  const result = await agent.generate(
-    [
+  const phase: WikiRunAgentPhase = input.phase ?? "write";
+  const planHint = input.plan
+    ? `\nConfirmed page plan (follow it):\n${JSON.stringify(input.plan, null, 2)}\n`
+    : "";
+  const userMessage =
+    phase === "plan"
+      ? "Plan a source-grounded Wiki for this workspace. " +
+        "Load the producer skill, briefly inspect sources, then reply with a Markdown plan listing " +
+        "intended pages (path + purpose). Do NOT call write_wiki yet."
+      : "Produce a source-grounded Wiki for this workspace. " +
+        "Load the producer skill first, inspect sources, write markdown pages with write_wiki, then summarize." +
+        planHint;
+
+  // Prefer stream for Session visibility; fall back to generate if stream fails to start.
+  let text = "";
+  try {
+    const stream = await agent.stream(
+      [{ role: "user", content: userMessage }],
       {
-        role: "user",
-        content:
-          "Produce a source-grounded Wiki for this workspace. " +
-          "Read SKILL.md first, inspect sources, write markdown pages with write_wiki, then summarize.",
+        maxSteps,
+        ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       },
-    ],
-    {
-      maxSteps,
-      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
-    },
-  );
+    );
+
+    const fullStream = stream.fullStream;
+    if (fullStream && typeof fullStream[Symbol.asyncIterator] === "function") {
+      for await (const chunk of fullStream) {
+        throwIfAborted(input.abortSignal);
+        for (const part of projectMastraChunk(chunk)) {
+          input.onPart?.(part);
+        }
+      }
+    } else if (stream.textStream && typeof stream.textStream[Symbol.asyncIterator] === "function") {
+      for await (const delta of stream.textStream) {
+        throwIfAborted(input.abortSignal);
+        if (typeof delta === "string" && delta) {
+          input.onPart?.({
+            type: "text",
+            partType: "text",
+            text: delta,
+            nodeId: "root",
+          });
+        }
+      }
+    }
+
+    text = (await stream.text) ?? "";
+    if (stream.error) {
+      throw stream.error;
+    }
+  } catch (streamError) {
+    if (isAbortError(streamError) || input.abortSignal?.aborted) {
+      throw streamError;
+    }
+    // Fallback: non-streaming generate (still works for providers without fullStream).
+    input.onPart?.({
+      type: "log",
+      message: "stream unavailable; falling back to generate",
+    });
+    const result = await agent.generate(
+      [{ role: "user", content: userMessage }],
+      {
+        maxSteps,
+        ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+      },
+    );
+    if (result.error) {
+      throw result.error;
+    }
+    text = result.text ?? "";
+    if (text) {
+      input.onPart?.({
+        type: "text",
+        partType: "text",
+        text: text.slice(0, 4000),
+        nodeId: "root",
+      });
+    }
+  }
 
   throwIfAborted(input.abortSignal);
 
-  if (result.error) {
-    throw result.error;
+  if (phase === "plan") {
+    const plan: WikiRunPlan = input.plan ?? {
+      summary:
+        text?.trim().slice(0, 1500) ||
+        `Proposed wiki plan for ${input.workspace.name}`,
+      pages: [
+        {
+          path: "overview.md",
+          purpose: "Repository purpose, audience, and navigation",
+        },
+      ],
+    };
+    input.onPart?.({
+      type: "part",
+      partType: "data-plan",
+      message: plan.summary,
+      text: JSON.stringify(plan),
+      nodeId: "root",
+    });
+    return {
+      status: "awaiting_plan",
+      plan,
+      summary: "Awaiting operator plan confirmation",
+    };
   }
 
   const pages = await listMarkdownPages(wikiRoot);
@@ -313,14 +513,105 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
     return {
       status: "failed",
       error: "agent finished without writing any wiki pages",
-      summary: result.text?.slice(0, 400) || undefined,
+      summary: text?.slice(0, 400) || undefined,
     };
+  }
+
+  // Optional independent reviewer pass (read-only); Root remains responsible for repairs.
+  if (input.workspace.reviewer && subagents.reviewer && phase === "write") {
+    try {
+      input.onPart?.({
+        type: "tool",
+        partType: "tool-reviewer",
+        toolName: "reviewer",
+        toolCallId: `review-${input.runId}`,
+        toolState: "input-available",
+        inputSummary: `pages=${pages.length}`,
+        nodeId: "reviewer",
+      });
+      const review = await subagents.reviewer.generate(
+        [
+          {
+            role: "user",
+            content:
+              `Review staged wiki pages: ${pages.join(", ")}. ` +
+              "List defects only (severity, issue, path). If clean, say NO_DEFECTS.",
+          },
+        ],
+        {
+          maxSteps: ADAPTIVE_RUN_LIMITS.reviewerMaxSteps,
+          ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+        },
+      );
+      const reviewText = (review.text ?? "").slice(0, 2000);
+      const clean = /NO_DEFECTS/i.test(reviewText);
+      try {
+        const receiptPath = await writeAnalysisReceipt(input.workspace.rootPath, {
+          version: 1,
+          runId: input.runId,
+          nodeId: "reviewer",
+          parentId: "root",
+          attempt: 1,
+          status: "complete",
+          scope: `staged pages: ${pages.join(", ")}`,
+          summary: clean ? "NO_DEFECTS" : reviewText.slice(0, 500),
+          findings: clean
+            ? ["NO_DEFECTS"]
+            : reviewText
+                .split("\n")
+                .map((l) => l.trim())
+                .filter(Boolean)
+                .slice(0, 40),
+          evidence: [],
+          childReceipts: [],
+          openQuestions: [],
+        });
+        input.onPart?.({
+          type: "log",
+          message: `reviewer receipt: ${receiptPath}`,
+          nodeId: "reviewer",
+        });
+      } catch {
+        // Receipt persistence is best-effort; do not fail the run.
+      }
+      input.onPart?.({
+        type: "tool_result",
+        partType: "tool-reviewer",
+        toolName: "reviewer",
+        toolCallId: `review-${input.runId}`,
+        toolState: "output-available",
+        outputSummary: reviewText.slice(0, 400) || "review complete",
+        nodeId: "reviewer",
+      });
+      if (reviewText && !clean) {
+        input.onPart?.({
+          type: "text",
+          partType: "text",
+          text: `\n### Reviewer defects\n\n${reviewText}\n`,
+          nodeId: "reviewer",
+        });
+      }
+    } catch (reviewError) {
+      if (isAbortError(reviewError) || input.abortSignal?.aborted) {
+        throw reviewError;
+      }
+      input.onPart?.({
+        type: "tool_result",
+        partType: "tool-reviewer",
+        toolName: "reviewer",
+        toolCallId: `review-${input.runId}`,
+        toolState: "output-error",
+        outputSummary: redactErrorMessage(reviewError),
+        nodeId: "reviewer",
+      });
+    }
   }
 
   return {
     status: successStatus(input.autoApprove),
     pages,
-    summary: (result.text?.trim() || `Wrote ${pages.length} page(s)`).slice(0, 1000),
+    summary: (text?.trim() || `Wrote ${pages.length} page(s)`).slice(0, 1000),
+    plan: input.plan,
   };
 }
 

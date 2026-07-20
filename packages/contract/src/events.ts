@@ -30,15 +30,52 @@ export const RunEventSchema = z.object({
 export type RunEvent = z.infer<typeof RunEventSchema>;
 
 /**
- * Lightweight SSE progress event for the Run console.
- * Distinct from {@link RunEvent} (audit trail) — this is the live operator stream.
+ * AI-SDK-aligned tool part states (subset used by Session UI).
+ * @see AI SDK UIMessage ToolUIPart states
+ */
+export const ToolPartStateSchema = z.enum([
+  "input-streaming",
+  "input-available",
+  "output-available",
+  "output-error",
+]);
+
+export type ToolPartState = z.infer<typeof ToolPartStateSchema>;
+
+/**
+ * Live operator stream event for the Session / Run console.
+ * Includes coarse status events and AI-SDK-style parts (text / tool / subagent).
  */
 export const RunSseEventSchema = z.object({
-  type: z.enum(["status", "log", "error", "done"]),
+  type: z.enum([
+    "status",
+    "log",
+    "error",
+    "done",
+    "text",
+    "tool",
+    "tool_result",
+    "part",
+  ]),
   runId: z.string().min(1),
   sequence: z.number().int().nonnegative(),
   status: WikiRunRecordStatusSchema.optional(),
   message: z.string().optional(),
+  /**
+   * UIMessage-like part type, e.g. `text`, `tool-read_source`, `tool-delegate_domain`.
+   */
+  partType: z.string().max(128).optional(),
+  /** Markdown/plain text for text parts (truncated). */
+  text: z.string().max(8000).optional(),
+  toolName: z.string().max(128).optional(),
+  toolCallId: z.string().max(128).optional(),
+  toolState: ToolPartStateSchema.optional(),
+  /** Safe short summary of tool input (paths only, redacted). */
+  inputSummary: z.string().max(500).optional(),
+  /** Safe short summary of tool output. */
+  outputSummary: z.string().max(500).optional(),
+  /** Agent node: root | domain | leaf | reviewer */
+  nodeId: z.string().max(64).optional(),
 });
 
 export type RunSseEvent = z.infer<typeof RunSseEventSchema>;
@@ -47,6 +84,7 @@ export type RunSseEvent = z.infer<typeof RunSseEventSchema>;
 export const TERMINAL_RUN_STATUSES = [
   "published",
   "failed",
+  "awaiting_plan",
   "awaiting_publication",
   "publication_declined",
   "cancelled",

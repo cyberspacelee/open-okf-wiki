@@ -1,21 +1,28 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
+  approvePlan,
   approvePublication,
   cancelRun,
   createRun,
+  denyPlan,
   denyPublication,
   getWorkspace,
   listRuns,
+  retryRun,
   runEventsUrl,
   type RunSseEvent,
   type StoredRunRecord,
   type WorkspaceConfig,
 } from "../api";
+import { PlanConfirmCard } from "../components/session/PlanConfirmCard";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
 import { RunStatusBadge } from "../components/RunStatusBadge";
+import { SessionTimeline } from "../components/session/SessionTimeline";
+import { reduceSseToTimeline } from "../components/session/timeline-from-sse";
+import type { SessionTimelineItem } from "../components/session/types";
 import { WorkspaceSubnav } from "../components/WorkspaceSubnav";
 import { workspaceHref } from "../lib/workspace-path";
 import { Button } from "@/components/ui/button";
@@ -37,8 +44,6 @@ function formatTime(iso: string): string {
   }
 }
 
-const MAX_EVENT_LOG = 12;
-
 export function WorkspaceRunPage() {
   const { id = "" } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
@@ -47,13 +52,16 @@ export function WorkspaceRunPage() {
   const [runs, setRuns] = useState<StoredRunRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState<unknown>(null);
-  const [eventLog, setEventLog] = useState<string[]>([]);
+  const [timeline, setTimeline] = useState<SessionTimelineItem[]>([]);
   /** When true, fall back to poll only (SSE failed or unavailable). */
   const [usePollFallback, setUsePollFallback] = useState(false);
   const sseRef = useRef<EventSource | null>(null);
+  /** One SSE replay per runId+terminal status (plan / publish gates). */
+  const sseReplayKeysRef = useRef<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     if (!id) {
@@ -82,27 +90,42 @@ export function WorkspaceRunPage() {
   const latestStatus = runs[0]?.status;
   const latestRunId = runs[0]?.runId;
 
-  const appendEventLog = useCallback((line: string) => {
-    setEventLog((prev) => {
-      const next = [...prev, line];
-      return next.length > MAX_EVENT_LOG ? next.slice(-MAX_EVENT_LOG) : next;
-    });
-  }, []);
-
   const applyRunPatch = useCallback((runId: string, patch: Partial<StoredRunRecord>) => {
     setRuns((prev) =>
       prev.map((r) => (r.runId === runId ? { ...r, ...patch, updatedAt: new Date().toISOString() } : r)),
     );
   }, []);
 
-  // Prefer EventSource while latest run is running; fall back to poll on error.
+  const appendTimelineEvent = useCallback((event: RunSseEvent) => {
+    setTimeline((prev) => reduceSseToTimeline(prev, event));
+  }, []);
+
+  // Prefer EventSource while running. For HITL gates, replay the ring buffer once
+  // per runId+status so late clients still see text/tools after a fast fixture finish.
   useEffect(() => {
-    if (!id || !workspace || latestStatus !== "running" || !latestRunId) {
+    if (!id || !workspace || !latestRunId || !latestStatus) {
       if (sseRef.current) {
         sseRef.current.close();
         sseRef.current = null;
       }
       return;
+    }
+    const replayKey = `${latestRunId}:${latestStatus}`;
+    const needsTerminalReplay =
+      (latestStatus === "awaiting_plan" || latestStatus === "awaiting_publication") &&
+      !sseReplayKeysRef.current.has(replayKey);
+    const shouldAttach = latestStatus === "running" || needsTerminalReplay;
+    if (!shouldAttach) {
+      if (sseRef.current) {
+        sseRef.current.close();
+        sseRef.current = null;
+      }
+      return;
+    }
+    if (needsTerminalReplay) {
+      sseReplayKeysRef.current.add(replayKey);
+      // Rebuild timeline from the full ring buffer for this gate (includes write-phase tools).
+      setTimeline([]);
     }
 
     const root = workspace.rootPath ?? rootPathHint;
@@ -127,7 +150,11 @@ export function WorkspaceRunPage() {
       }, 750);
     };
 
-    if (usePollFallback || typeof EventSource === "undefined") {
+    // Poll only while still running; terminal HITL states rely on SSE replay.
+    if (
+      (usePollFallback || typeof EventSource === "undefined") &&
+      latestStatus === "running"
+    ) {
       startPoll();
       return () => {
         cancelled = true;
@@ -135,6 +162,9 @@ export function WorkspaceRunPage() {
           clearInterval(pollTimer);
         }
       };
+    }
+    if (usePollFallback && latestStatus !== "running") {
+      return;
     }
 
     const url = runEventsUrl(id, latestRunId, root);
@@ -154,15 +184,7 @@ export function WorkspaceRunPage() {
         return;
       }
 
-      if (event.message) {
-        appendEventLog(
-          event.type === "log"
-            ? event.message
-            : `[${event.type}] ${event.message}`,
-        );
-      } else if (event.status) {
-        appendEventLog(`[${event.type}] ${event.status}`);
-      }
+      appendTimelineEvent(event);
 
       const terminal =
         event.type === "done" ||
@@ -213,7 +235,12 @@ export function WorkspaceRunPage() {
       sseRef.current = null;
       if (!cancelled) {
         setUsePollFallback(true);
-        appendEventLog("SSE error — falling back to poll");
+        appendTimelineEvent({
+          type: "log",
+          runId: latestRunId,
+          sequence: Date.now(),
+          message: "SSE error — falling back to poll",
+        });
         startPoll();
       }
     };
@@ -235,14 +262,21 @@ export function WorkspaceRunPage() {
     latestStatus,
     latestRunId,
     usePollFallback,
-    appendEventLog,
+    appendTimelineEvent,
     applyRunPatch,
   ]);
 
   const lastRun = runs[0];
   const canStart = Boolean(workspace && workspace.sources.length > 0);
   const awaitingPublication = lastRun?.status === "awaiting_publication";
-  const canCancel = lastRun?.status === "running";
+  const awaitingPlan = lastRun?.status === "awaiting_plan";
+  const canCancel =
+    lastRun?.status === "running" || lastRun?.status === "awaiting_plan";
+  const canRetry =
+    Boolean(lastRun) &&
+    canStart &&
+    lastRun!.status !== "running" &&
+    lastRun!.status !== "awaiting_plan";
 
   async function handleStart() {
     if (!id) {
@@ -250,8 +284,9 @@ export function WorkspaceRunPage() {
     }
     setStarting(true);
     setError(null);
-    setEventLog([]);
+    setTimeline([]);
     setUsePollFallback(false);
+    sseReplayKeysRef.current = new Set();
     try {
       const result = await createRun(
         id,
@@ -259,11 +294,52 @@ export function WorkspaceRunPage() {
         workspace?.rootPath ?? rootPathHint,
       );
       setRuns((prev) => [result.run, ...prev.filter((r) => r.runId !== result.run.runId)]);
-      appendEventLog("run created");
+      setTimeline([
+        {
+          kind: "status",
+          id: `${result.run.runId}-created`,
+          message: "run created",
+          status: result.run.status,
+        },
+      ]);
     } catch (err) {
       setError(err);
     } finally {
       setStarting(false);
+    }
+  }
+
+  async function handleRetry() {
+    if (!id || !lastRun) {
+      return;
+    }
+    setRetrying(true);
+    setError(null);
+    setTimeline([]);
+    setUsePollFallback(false);
+    sseReplayKeysRef.current = new Set();
+    try {
+      const result = await retryRun(
+        id,
+        lastRun.runId,
+        workspace?.rootPath ?? rootPathHint,
+      );
+      setRuns((prev) => [
+        result.run,
+        ...prev.filter((r) => r.runId !== result.run.runId),
+      ]);
+      setTimeline([
+        {
+          kind: "status",
+          id: `${result.run.runId}-retry`,
+          message: `manual retry from ${result.retriedFrom} (skill digest frozen)`,
+          status: result.run.status,
+        },
+      ]);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setRetrying(false);
     }
   }
 
@@ -282,11 +358,74 @@ export function WorkspaceRunPage() {
       setRuns((prev) =>
         prev.map((r) => (r.runId === result.run.runId ? result.run : r)),
       );
-      appendEventLog("cancel requested");
+      setTimeline((prev) => [
+        ...prev,
+        {
+          kind: "status",
+          id: `${result.run.runId}-cancel`,
+          message: "cancel requested",
+          status: result.run.status,
+        },
+      ]);
     } catch (err) {
       setError(err);
     } finally {
       setCancelling(false);
+    }
+  }
+
+  async function handleApprovePlan() {
+    if (!id || !lastRun) {
+      return;
+    }
+    setPublishing(true);
+    setError(null);
+    try {
+      const result = await approvePlan(
+        id,
+        lastRun.runId,
+        {},
+        workspace?.rootPath ?? rootPathHint,
+      );
+      setRuns((prev) =>
+        prev.map((r) => (r.runId === result.run.runId ? result.run : r)),
+      );
+      setUsePollFallback(false);
+      setTimeline((prev) => [
+        ...prev,
+        {
+          kind: "status",
+          id: `${result.run.runId}-plan-approved`,
+          message: "plan approved — write phase starting",
+          status: result.run.status,
+        },
+      ]);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setPublishing(false);
+    }
+  }
+
+  async function handleDenyPlan() {
+    if (!id || !lastRun) {
+      return;
+    }
+    setPublishing(true);
+    setError(null);
+    try {
+      const result = await denyPlan(
+        id,
+        lastRun.runId,
+        workspace?.rootPath ?? rootPathHint,
+      );
+      setRuns((prev) =>
+        prev.map((r) => (r.runId === result.run.runId ? result.run : r)),
+      );
+    } catch (err) {
+      setError(err);
+    } finally {
+      setPublishing(false);
     }
   }
 
@@ -352,12 +491,13 @@ export function WorkspaceRunPage() {
               {workspace?.name ?? id}
             </Link>
             <span aria-hidden="true"> / </span>
-            <span>Run</span>
+            <span>Session</span>
           </p>
-          <h1>Run console</h1>
+          <h1>Session</h1>
           <p>
-            Start a Wiki Run for this workspace. Generation runs in the background; when staging
-            pages are ready you can approve or decline publication to the Published Wiki.
+            Operator session for this workspace: start a Wiki Run, watch markdown / tool / subagent
+            output live, then approve or decline publication. A Wiki Run is a bounded job — not a
+            resumable chat transcript.
           </p>
         </header>
 
@@ -365,12 +505,12 @@ export function WorkspaceRunPage() {
         <ErrorBanner error={error} onDismiss={() => setError(null)} />
 
         {loading ? (
-          <LoadingState label="Loading run console…" />
+          <LoadingState label="Loading session…" />
         ) : workspace ? (
           <>
             <Card>
               <CardHeader className="row-between items-center">
-                <CardTitle>Generate</CardTitle>
+                <CardTitle>Generate wiki</CardTitle>
                 <div className="row-actions">
                   {canCancel ? (
                     <Button
@@ -381,6 +521,17 @@ export function WorkspaceRunPage() {
                       data-testid="run-cancel"
                     >
                       {cancelling ? "Cancelling…" : "Cancel run"}
+                    </Button>
+                  ) : null}
+                  {canRetry ? (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={() => void handleRetry()}
+                      disabled={retrying || starting}
+                      data-testid="run-retry"
+                    >
+                      {retrying ? "Retrying…" : "Manual retry"}
                     </Button>
                   ) : null}
                   <Button
@@ -444,15 +595,24 @@ export function WorkspaceRunPage() {
                       </div>
                     </dl>
 
-                    {eventLog.length > 0 ? (
-                      <div className="run-event-log" data-testid="run-event-log">
-                        <h3 className="panel-subtitle">Live events</h3>
-                        <ul className="event-log mono small">
-                          {eventLog.map((line, i) => (
-                            <li key={`${i}-${line.slice(0, 24)}`}>{line}</li>
-                          ))}
-                        </ul>
-                      </div>
+                    <div className="run-session-timeline" data-testid="run-event-log">
+                      <h3 className="panel-subtitle">Live session timeline</h3>
+                      <SessionTimeline items={timeline} />
+                    </div>
+
+                    {lastRun.skillDigest ? (
+                      <p className="muted small mono" data-testid="run-skill-digest">
+                        skill digest: {lastRun.skillDigest.slice(0, 16)}…
+                      </p>
+                    ) : null}
+
+                    {awaitingPlan && lastRun.plan ? (
+                      <PlanConfirmCard
+                        plan={lastRun.plan}
+                        busy={publishing}
+                        onApprove={() => void handleApprovePlan()}
+                        onDeny={() => void handleDenyPlan()}
+                      />
                     ) : null}
 
                     {awaitingPublication ? (

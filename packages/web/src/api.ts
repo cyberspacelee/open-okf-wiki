@@ -26,11 +26,16 @@ export type WorkspaceSummary = {
   sourceCount: number;
 };
 
+export type SourceOrigin =
+  | { type: "path" }
+  | { type: "clone"; remoteUrl: string; ref?: string; clonedAt: string };
+
 export type WorkspaceSource = {
   id: string;
   path: string;
   applyDefaultIgnores: boolean;
   ignore: string[];
+  origin?: SourceOrigin;
 };
 
 export type WorkspaceConfig = {
@@ -51,9 +56,30 @@ export type WorkspaceConfig = {
   };
   adaptive: boolean;
   reviewer: boolean;
+  planConfirm?: boolean;
   skillPath?: string;
   createdAt: string;
   lastOpenedAt?: string;
+};
+
+export type SkillInfo = {
+  path: string;
+  kind: "bundled" | "fork";
+  digest: string;
+  name?: string;
+  description?: string;
+  files: string[];
+};
+
+export type SkillFileEntry = {
+  path: string;
+  kind: "file" | "directory";
+};
+
+export type SkillFileContent = {
+  path: string;
+  content: string;
+  bytes: number;
 };
 
 export type HealthResponse = {
@@ -160,11 +186,20 @@ export type PatchWorkspaceInput = {
   publicationPath?: string;
   adaptive?: boolean;
   reviewer?: boolean;
+  planConfirm?: boolean;
+  skillPath?: string | null;
 };
 
 export type AddSourceInput = {
   path: string;
   id?: string;
+};
+
+export type CloneSourceInput = {
+  remoteUrl: string;
+  id?: string;
+  relativeDir?: string;
+  ref?: string;
 };
 
 export type WikiRunRecordStatus =
@@ -173,8 +208,15 @@ export type WikiRunRecordStatus =
   | "needs_input"
   | "failed"
   | "cancelled"
+  | "awaiting_plan"
   | "awaiting_publication"
   | "publication_declined";
+
+export type WikiRunPlan = {
+  summary: string;
+  pages: Array<{ path: string; purpose: string }>;
+  notes?: string;
+};
 
 export type StoredRunRecord = {
   runId: string;
@@ -182,6 +224,9 @@ export type StoredRunRecord = {
   status: WikiRunRecordStatus;
   error?: string;
   autoApprove?: boolean;
+  skillPath?: string;
+  skillDigest?: string;
+  plan?: WikiRunPlan;
   pages?: string[];
   summary?: string;
   createdAt: string;
@@ -397,6 +442,120 @@ export function addSource(
   );
 }
 
+/** Clone a remote git repo into the workspace and register it as a source. */
+export function cloneSource(
+  workspaceId: string,
+  input: CloneSourceInput,
+  rootPath?: string,
+): Promise<{
+  workspace: WorkspaceConfig;
+  source: WorkspaceSource;
+  probe: GitProbe;
+}> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/sources/clone`,
+      rootPath,
+    ),
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export function getWorkspaceSkill(
+  workspaceId: string,
+  rootPath?: string,
+): Promise<{ skill: SkillInfo }> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/skill`,
+      rootPath,
+    ),
+  );
+}
+
+export function createWorkspaceSkillFork(
+  workspaceId: string,
+  rootPath?: string,
+): Promise<{ workspace: WorkspaceConfig; skill: SkillInfo }> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/skill/fork`,
+      rootPath,
+    ),
+    { method: "POST", body: JSON.stringify({}) },
+  );
+}
+
+export function resetWorkspaceSkill(
+  workspaceId: string,
+  rootPath?: string,
+): Promise<{ workspace: WorkspaceConfig; skill: SkillInfo }> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/skill/reset`,
+      rootPath,
+    ),
+    { method: "POST", body: JSON.stringify({}) },
+  );
+}
+
+export function listWorkspaceSkillFiles(
+  workspaceId: string,
+  dirPath?: string,
+  rootPath?: string,
+): Promise<{
+  skillPath: string;
+  path: string;
+  entries: SkillFileEntry[];
+  writable: boolean;
+}> {
+  const base = withRootPathQuery(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/skill/files`,
+    rootPath,
+  );
+  const sep = base.includes("?") ? "&" : "?";
+  const url =
+    dirPath && dirPath.trim()
+      ? `${base}${sep}path=${encodeURIComponent(dirPath.trim())}`
+      : base;
+  return request(url);
+}
+
+export function readWorkspaceSkillFile(
+  workspaceId: string,
+  filePath: string,
+  rootPath?: string,
+): Promise<{ file: SkillFileContent; writable: boolean }> {
+  const base = withRootPathQuery(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/skill/file`,
+    rootPath,
+  );
+  const sep = base.includes("?") ? "&" : "?";
+  return request(
+    `${base}${sep}path=${encodeURIComponent(filePath)}`,
+  );
+}
+
+export function writeWorkspaceSkillFile(
+  workspaceId: string,
+  input: { path: string; content: string },
+  rootPath?: string,
+): Promise<{ file: SkillFileContent; skill: SkillInfo }> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/skill/files`,
+      rootPath,
+    ),
+    {
+      method: "PUT",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
 export function deleteSource(
   workspaceId: string,
   sourceId: string,
@@ -453,6 +612,54 @@ export function createRun(
   );
 }
 
+/**
+ * Manual Retry: new run reusing frozen skillPath/skillDigest from a terminal run.
+ */
+export function retryRun(
+  workspaceId: string,
+  runId: string,
+  rootPath?: string,
+): Promise<{ run: StoredRunRecord; retriedFrom: string; skillDigest?: string }> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/retry`,
+      rootPath,
+    ),
+    { method: "POST", body: JSON.stringify({}) },
+  );
+}
+
+/** HITL: approve proposed plan and continue write phase. */
+export function approvePlan(
+  workspaceId: string,
+  runId: string,
+  input?: { notes?: string; plan?: WikiRunPlan },
+  rootPath?: string,
+): Promise<{ run: StoredRunRecord }> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/approve-plan`,
+      rootPath,
+    ),
+    { method: "POST", body: JSON.stringify(input ?? {}) },
+  );
+}
+
+/** HITL: decline plan; run becomes cancelled. */
+export function denyPlan(
+  workspaceId: string,
+  runId: string,
+  rootPath?: string,
+): Promise<{ run: StoredRunRecord }> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/deny-plan`,
+      rootPath,
+    ),
+    { method: "POST", body: JSON.stringify({}) },
+  );
+}
+
 /** HITL: approve publication of a run that is awaiting_publication. */
 export function approvePublication(
   workspaceId: string,
@@ -498,12 +705,26 @@ export function cancelRun(
   );
 }
 
+export type ToolPartState =
+  | "input-streaming"
+  | "input-available"
+  | "output-available"
+  | "output-error";
+
 export type RunSseEvent = {
-  type: "status" | "log" | "error" | "done";
+  type: "status" | "log" | "error" | "done" | "text" | "tool" | "tool_result" | "part";
   runId: string;
   sequence: number;
   status?: WikiRunRecordStatus;
   message?: string;
+  partType?: string;
+  text?: string;
+  toolName?: string;
+  toolCallId?: string;
+  toolState?: ToolPartState;
+  inputSummary?: string;
+  outputSummary?: string;
+  nodeId?: string;
 };
 
 /** Absolute EventSource URL for run progress SSE. */

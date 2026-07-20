@@ -8,6 +8,7 @@ const LABELS: Record<WikiRunRecordStatus, string> = {
   needs_input: "Needs input",
   failed: "Failed",
   cancelled: "Cancelled",
+  awaiting_plan: "Awaiting plan",
   awaiting_publication: "Awaiting publication",
   publication_declined: "Publication declined",
 };
@@ -18,6 +19,7 @@ const TONES: Record<WikiRunRecordStatus, RunStatusTone> = {
   needs_input: "warning",
   failed: "danger",
   cancelled: "muted",
+  awaiting_plan: "warning",
   awaiting_publication: "warning",
   publication_declined: "muted",
 };

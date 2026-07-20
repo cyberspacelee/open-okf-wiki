@@ -31,6 +31,8 @@ async function atomicWriteJson(filePath: string, value: unknown): Promise<void> 
 
 export type CreateRunOptions = {
   autoApprove?: boolean;
+  skillPath?: string;
+  skillDigest?: string;
 };
 
 /**
@@ -60,6 +62,12 @@ export async function createRun(
   if (typeof options?.autoApprove === "boolean") {
     record.autoApprove = options.autoApprove;
   }
+  if (typeof options?.skillPath === "string" && options.skillPath.trim()) {
+    record.skillPath = options.skillPath.trim();
+  }
+  if (typeof options?.skillDigest === "string" && options.skillDigest.trim()) {
+    record.skillDigest = options.skillDigest.trim();
+  }
 
   const parsed = StoredRunRecordSchema.parse(record);
   await atomicWriteJson(runRecordPath(resolvedRoot, runId), parsed);
@@ -72,6 +80,9 @@ export type RunRecordPatch = {
   pages?: string[] | null;
   summary?: string | null;
   autoApprove?: boolean;
+  skillPath?: string | null;
+  skillDigest?: string | null;
+  plan?: StoredRunRecord["plan"] | null;
 };
 
 /** Thrown when a status transition conflicts with the current record (e.g. cancel after finish). */
@@ -112,10 +123,11 @@ export async function updateRunRecord(
     return existing;
   }
 
-  // Cancel only while still running (idempotent if already cancelled).
+  // Cancel while running or waiting on operator (plan HITL); idempotent if already cancelled.
   if (
     patch.status === "cancelled" &&
     existing.status !== "running" &&
+    existing.status !== "awaiting_plan" &&
     existing.status !== "cancelled"
   ) {
     throw new RunStatusConflictError(
@@ -150,10 +162,26 @@ export async function updateRunRecord(
   } else if (typeof patch.summary === "string") {
     next.summary = patch.summary;
   }
+  if (patch.skillPath === null) {
+    delete next.skillPath;
+  } else if (typeof patch.skillPath === "string") {
+    next.skillPath = patch.skillPath;
+  }
+  if (patch.skillDigest === null) {
+    delete next.skillDigest;
+  } else if (typeof patch.skillDigest === "string") {
+    next.skillDigest = patch.skillDigest;
+  }
+  if (patch.plan === null) {
+    delete next.plan;
+  } else if (patch.plan !== undefined) {
+    next.plan = patch.plan;
+  }
 
   // Clear stale error when transitioning to a successful terminal status.
   if (
     patch.status === "awaiting_publication" ||
+    patch.status === "awaiting_plan" ||
     patch.status === "published"
   ) {
     delete next.error;

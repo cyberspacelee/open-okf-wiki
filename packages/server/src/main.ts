@@ -1,16 +1,25 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { redactErrorMessage, runWikiAgent, stagingDirForRun } from "@okf-wiki/agent";
+import {
+  redactErrorMessage,
+  resolveSkillPath,
+  runWikiAgent,
+  stagingDirForRun,
+} from "@okf-wiki/agent";
 import {
   addSource,
+  cloneIntoWorkspace,
   createModelProfile,
+  createSkillFork,
   createWorkspace,
   deleteModelProfile,
   deleteWorkspaceMeta,
   getModelProfile,
+  getSkillInfo,
   hasProviderCredentials,
   listPublishedWikiPages,
+  listSkillDir,
   listWorkspaceSummaries,
   loadProviderConfig,
   loadWorkspaceById,
@@ -18,24 +27,30 @@ import {
   PublishedWikiError,
   publishStagingToPublication,
   readPublishedWikiPage,
+  readSkillFile,
   registerWorkspaceInAppIndex,
   removeSource,
   removeWorkspaceFromAppIndex,
   resolveProviderRuntime,
   saveWorkspace,
   setDefaultModelProfile,
+  skillDigest,
+  skillForkDir,
   slugFromPath,
   testProviderConnection,
   toProviderPublic,
   uniqueSourceId,
   updateModelProfile,
+  writeSkillFile,
 } from "@okf-wiki/core";
 import {
   isTerminalRunStatus,
   ModelProfileWriteSchema,
   ProviderApiShapeSchema,
+  WikiRunPlanSchema,
   WorkspaceLimitsSchema,
   type RunSseEvent,
+  type WikiRunPlan,
   type WikiRunRecordStatus,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
@@ -56,6 +71,7 @@ import {
   emitRunEvent,
   emitRunStatus,
   registerRunAbortController,
+  getRecentRunEvents,
   subscribeRunEvents,
 } from "./run-events.ts";
 import {
@@ -563,6 +579,14 @@ async function handlePatchWorkspace(
     }
   }
 
+  if (body.planConfirm !== undefined) {
+    if (typeof body.planConfirm !== "boolean") {
+      sendError(res, 400, "planConfirm must be a boolean");
+      return;
+    }
+    next.planConfirm = body.planConfirm;
+  }
+
   // rootPath and id are immutable via PATCH
   await saveWorkspace(next);
   await registerWorkspaceInAppIndex(next.rootPath);
@@ -756,6 +780,7 @@ async function finalizeRunStatus(
     error?: string | null;
     pages?: string[] | null;
     summary?: string | null;
+    plan?: WikiRunPlan | null;
   },
 ): Promise<void> {
   const existing = await loadRun(rootPath, runId);
@@ -770,6 +795,7 @@ async function finalizeRunStatus(
     error: patch.error,
     pages: patch.pages,
     summary: patch.summary,
+    ...(patch.plan !== undefined ? { plan: patch.plan } : {}),
   });
 
   // TOCTOU: cancel may have landed between load and write; registry returns the
@@ -790,6 +816,79 @@ async function finalizeRunStatus(
   }
 }
 
+type ProcessRunOptions = {
+  autoApprove?: boolean;
+  phase?: "plan" | "write";
+  plan?: WikiRunPlan;
+};
+
+function projectAgentPart(runId: string, part: {
+  type: string;
+  partType?: string;
+  text?: string;
+  toolName?: string;
+  toolCallId?: string;
+  toolState?: "input-streaming" | "input-available" | "output-available" | "output-error";
+  inputSummary?: string;
+  outputSummary?: string;
+  nodeId?: string;
+  message?: string;
+}): void {
+  if (part.type === "log") {
+    emitRunEvent(runId, {
+      type: "log",
+      message: part.message ?? "log",
+      nodeId: part.nodeId,
+    });
+    return;
+  }
+  if (part.type === "text") {
+    emitRunEvent(runId, {
+      type: "text",
+      partType: part.partType ?? "text",
+      text: part.text,
+      message: part.text,
+      nodeId: part.nodeId ?? "root",
+    });
+    return;
+  }
+  if (part.type === "tool") {
+    emitRunEvent(runId, {
+      type: "tool",
+      partType: part.partType,
+      toolName: part.toolName,
+      toolCallId: part.toolCallId,
+      toolState: part.toolState,
+      inputSummary: part.inputSummary,
+      message: part.toolName
+        ? `${part.toolName}${part.inputSummary ? ` (${part.inputSummary})` : ""}`
+        : part.inputSummary,
+      nodeId: part.nodeId ?? "root",
+    });
+    return;
+  }
+  if (part.type === "tool_result") {
+    emitRunEvent(runId, {
+      type: "tool_result",
+      partType: part.partType,
+      toolName: part.toolName,
+      toolCallId: part.toolCallId,
+      toolState: part.toolState,
+      outputSummary: part.outputSummary,
+      message: part.outputSummary ?? part.toolName,
+      nodeId: part.nodeId ?? "root",
+    });
+    return;
+  }
+  emitRunEvent(runId, {
+    type: "part",
+    partType: part.partType,
+    text: part.text,
+    message: part.message,
+    nodeId: part.nodeId,
+  });
+}
+
 /**
  * Background agent work for a run. Errors are written onto the run record.
  * When the agent reaches `awaiting_publication` and `autoApprove` is true,
@@ -798,12 +897,24 @@ async function finalizeRunStatus(
 function processRunInBackground(
   workspace: WorkspaceConfig,
   runId: string,
-  autoApprove: boolean | undefined,
+  options: ProcessRunOptions = {},
 ): void {
+  const autoApprove = options.autoApprove;
+  const phase =
+    options.phase ??
+    (workspace.planConfirm && autoApprove !== true ? "plan" : "write");
+
   void (async () => {
     const abortSignal = registerRunAbortController(runId);
-    emitRunStatus(runId, "running", "Wiki Run started");
-    emitRunEvent(runId, { type: "log", message: "agent started" });
+    emitRunStatus(
+      runId,
+      "running",
+      phase === "plan" ? "Wiki Run plan phase started" : "Wiki Run started",
+    );
+    emitRunEvent(runId, {
+      type: "log",
+      message: phase === "plan" ? "agent plan phase started" : "agent started",
+    });
 
     try {
       // If cancel raced ahead of agent start, honor it immediately.
@@ -820,7 +931,10 @@ function processRunInBackground(
         runId,
         workspace,
         autoApprove,
+        phase,
+        plan: options.plan,
         abortSignal,
+        onPart: (part) => projectAgentPart(runId, part),
       });
 
       // Prefer cancelled if abort fired while agent was finishing.
@@ -830,6 +944,23 @@ function processRunInBackground(
           error: "cancelled",
           pages: result.pages ?? null,
           summary: result.summary ?? "Wiki Run cancelled",
+        });
+        return;
+      }
+
+      if (result.status === "awaiting_plan") {
+        await finalizeRunStatus(workspace.rootPath, runId, {
+          status: "awaiting_plan",
+          error: null,
+          pages: result.pages ?? null,
+          summary: result.summary ?? "Awaiting plan confirmation",
+          plan: result.plan ?? null,
+        });
+        emitRunEvent(runId, {
+          type: "part",
+          partType: "data-plan",
+          message: result.plan?.summary ?? "plan ready",
+          text: result.plan ? JSON.stringify(result.plan) : undefined,
         });
         return;
       }
@@ -960,11 +1091,509 @@ async function handleCreateRun(
   const autoApprove =
     typeof body.autoApprove === "boolean" ? body.autoApprove : undefined;
 
+  // Freeze Producer Skill path + content digest for this run (Manual Retry input).
+  let frozenSkillPath: string;
+  let frozenSkillDigest: string;
+  try {
+    frozenSkillPath = await resolveSkillPath(workspace.skillPath);
+    frozenSkillDigest = await skillDigest(frozenSkillPath);
+  } catch (error) {
+    sendError(
+      res,
+      400,
+      error instanceof Error ? error.message : "failed to freeze producer skill",
+    );
+    return;
+  }
+
   const run = await createRun(workspace.rootPath, workspace.id, {
     autoApprove,
+    skillPath: frozenSkillPath,
+    skillDigest: frozenSkillDigest,
   });
-  processRunInBackground(workspace, run.runId, autoApprove);
+  processRunInBackground(workspace, run.runId, { autoApprove });
   sendJson(res, 201, { run });
+}
+
+/**
+ * Manual Retry: new Wiki Run reusing the earlier run's frozen skill path/digest
+ * (and autoApprove). Does not resume Semantic Workflow history.
+ */
+async function handleRetryRun(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  runId: string,
+  url: URL,
+): Promise<void> {
+  const rootPath = url.searchParams.get("rootPath") ?? undefined;
+  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
+  if (!workspace) {
+    sendError(res, 404, `workspace not found: ${id}`);
+    return;
+  }
+  if (!workspace.sources || workspace.sources.length === 0) {
+    sendError(res, 400, "workspace must have at least one source before retrying a run");
+    return;
+  }
+
+  const previous = await loadRun(workspace.rootPath, runId);
+  if (!previous || previous.workspaceId !== workspace.id) {
+    sendError(res, 404, `run not found: ${runId}`);
+    return;
+  }
+  if (previous.status === "running" || previous.status === "awaiting_plan") {
+    sendError(
+      res,
+      409,
+      `cannot retry an in-progress run (status: ${previous.status})`,
+    );
+    return;
+  }
+
+  // Dirty-tree gate (same as create).
+  for (const source of workspace.sources) {
+    const probe = await probeLocalGit(source.path);
+    if (!probe.isGit) {
+      sendError(
+        res,
+        400,
+        `source "${source.id}" is not a git working tree: ${source.path}`,
+        { sourceId: source.id, probe },
+      );
+      return;
+    }
+    if (probe.dirty) {
+      sendError(
+        res,
+        400,
+        `source "${source.id}" has a dirty git working tree; commit or stash before retry: ${source.path}`,
+        { sourceId: source.id, probe },
+      );
+      return;
+    }
+  }
+
+  let frozenSkillPath = previous.skillPath;
+  let frozenSkillDigest = previous.skillDigest;
+  try {
+    if (!frozenSkillPath) {
+      frozenSkillPath = await resolveSkillPath(workspace.skillPath);
+    }
+    if (!frozenSkillDigest) {
+      frozenSkillDigest = await skillDigest(frozenSkillPath);
+    } else {
+      // Verify frozen path still has SKILL.md; digest is trusted from record.
+      await resolveSkillPath(frozenSkillPath);
+    }
+  } catch (error) {
+    sendError(
+      res,
+      400,
+      error instanceof Error ? error.message : "failed to resolve frozen skill for retry",
+    );
+    return;
+  }
+
+  const run = await createRun(workspace.rootPath, workspace.id, {
+    autoApprove: previous.autoApprove,
+    skillPath: frozenSkillPath,
+    skillDigest: frozenSkillDigest,
+  });
+  processRunInBackground(workspace, run.runId, {
+    autoApprove: previous.autoApprove,
+  });
+  sendJson(res, 201, {
+    run,
+    retriedFrom: previous.runId,
+    skillDigest: frozenSkillDigest,
+  });
+}
+
+/**
+ * HITL: approve a proposed plan and continue the write phase.
+ * Headless/autoApprove never lands in awaiting_plan.
+ */
+async function handleApprovePlan(
+  req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  runId: string,
+  url: URL,
+): Promise<void> {
+  const rootPath = url.searchParams.get("rootPath") ?? undefined;
+  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
+  if (!workspace) {
+    sendError(res, 404, `workspace not found: ${id}`);
+    return;
+  }
+
+  const existing = await loadRun(workspace.rootPath, runId);
+  if (!existing) {
+    sendError(res, 404, `run not found: ${runId}`);
+    return;
+  }
+  if (existing.status !== "awaiting_plan") {
+    sendError(res, 409, `run is not awaiting plan (status: ${existing.status})`);
+    return;
+  }
+
+  const body = (await readJsonBody(req)) as { notes?: unknown; plan?: unknown };
+  let plan = existing.plan;
+  if (body.plan !== undefined) {
+    try {
+      plan = WikiRunPlanSchema.parse(body.plan);
+    } catch (error) {
+      sendError(
+        res,
+        400,
+        "invalid plan",
+        error instanceof Error ? error.message : String(error),
+      );
+      return;
+    }
+  }
+  if (!plan) {
+    sendError(res, 400, "no plan available to approve");
+    return;
+  }
+  if (typeof body.notes === "string" && body.notes.trim()) {
+    plan = { ...plan, notes: body.notes.trim() };
+  }
+
+  try {
+    const updated = await updateRunRecord(workspace.rootPath, runId, {
+      status: "running",
+      plan,
+      summary: "Plan approved; write phase starting",
+      error: null,
+    });
+    processRunInBackground(workspace, runId, {
+      autoApprove: existing.autoApprove,
+      phase: "write",
+      plan,
+    });
+    sendJson(res, 200, { run: updated });
+  } catch (error) {
+    if (error instanceof RunStatusConflictError) {
+      sendError(res, 409, error.message);
+      return;
+    }
+    sendError(res, 400, error instanceof Error ? error.message : String(error));
+  }
+}
+
+/** HITL: decline plan — cancel the run without writing wiki pages. */
+async function handleDenyPlan(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  runId: string,
+  url: URL,
+): Promise<void> {
+  const rootPath = url.searchParams.get("rootPath") ?? undefined;
+  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
+  if (!workspace) {
+    sendError(res, 404, `workspace not found: ${id}`);
+    return;
+  }
+
+  const existing = await loadRun(workspace.rootPath, runId);
+  if (!existing) {
+    sendError(res, 404, `run not found: ${runId}`);
+    return;
+  }
+  if (existing.status !== "awaiting_plan") {
+    sendError(res, 409, `run is not awaiting plan (status: ${existing.status})`);
+    return;
+  }
+
+  try {
+    const updated = await updateRunRecord(workspace.rootPath, runId, {
+      status: "cancelled",
+      error: "plan declined",
+      summary: "Plan declined by operator",
+    });
+    emitRunDone(runId, "cancelled", "Plan declined by operator");
+    sendJson(res, 200, { run: updated });
+  } catch (error) {
+    if (error instanceof RunStatusConflictError) {
+      sendError(res, 409, error.message);
+      return;
+    }
+    sendError(res, 400, error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function handleCloneSource(
+  req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  url: URL,
+): Promise<void> {
+  const rootPath = url.searchParams.get("rootPath") ?? undefined;
+  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
+  if (!workspace) {
+    sendError(res, 404, `workspace not found: ${id}`);
+    return;
+  }
+
+  const body = (await readJsonBody(req)) as {
+    remoteUrl?: unknown;
+    id?: unknown;
+    relativeDir?: unknown;
+    ref?: unknown;
+    applyDefaultIgnores?: unknown;
+    ignore?: unknown;
+  };
+
+  if (typeof body.remoteUrl !== "string" || !body.remoteUrl.trim()) {
+    sendError(res, 400, "remoteUrl is required");
+    return;
+  }
+
+  const remoteUrl = body.remoteUrl.trim();
+  const desiredId =
+    typeof body.id === "string" && body.id.trim()
+      ? body.id.trim()
+      : slugFromPath(remoteUrl.replace(/\.git$/i, ""));
+  const sourceId = uniqueSourceId(desiredId, workspace.sources);
+  const relativeDir =
+    typeof body.relativeDir === "string" && body.relativeDir.trim()
+      ? body.relativeDir.trim()
+      : undefined;
+  const ref =
+    typeof body.ref === "string" && body.ref.trim() ? body.ref.trim() : undefined;
+
+  try {
+    const cloned = await cloneIntoWorkspace({
+      workspaceRoot: workspace.rootPath,
+      remoteUrl,
+      sourceId,
+      relativeDir,
+      ref,
+    });
+    const result = await addSource(
+      workspace,
+      {
+        id: sourceId,
+        path: cloned.path,
+        applyDefaultIgnores:
+          typeof body.applyDefaultIgnores === "boolean"
+            ? body.applyDefaultIgnores
+            : undefined,
+        ignore: Array.isArray(body.ignore) ? (body.ignore as string[]) : undefined,
+        origin: {
+          type: "clone",
+          remoteUrl,
+          ...(ref ? { ref } : {}),
+          clonedAt: new Date().toISOString(),
+        },
+      },
+      { requireClean: false },
+    );
+    await saveWorkspace(result.config);
+    sendJson(res, 201, {
+      workspace: result.config,
+      source: result.source,
+      probe: result.probe,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/already (exists|registered)/i.test(message)) {
+      sendError(res, 409, message);
+      return;
+    }
+    sendError(res, 400, message);
+  }
+}
+
+async function handleGetSkill(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  url: URL,
+): Promise<void> {
+  const rootPath = url.searchParams.get("rootPath") ?? undefined;
+  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
+  if (!workspace) {
+    sendError(res, 404, `workspace not found: ${id}`);
+    return;
+  }
+  try {
+    const bundled = await resolveSkillPath();
+    const skill = await getSkillInfo({
+      workspaceRoot: workspace.rootPath,
+      skillPath: workspace.skillPath,
+      bundledSkillPath: bundled,
+    });
+    sendJson(res, 200, { skill });
+  } catch (error) {
+    sendError(res, 400, error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function handleCreateSkillFork(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  url: URL,
+): Promise<void> {
+  const rootPath = url.searchParams.get("rootPath") ?? undefined;
+  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
+  if (!workspace) {
+    sendError(res, 404, `workspace not found: ${id}`);
+    return;
+  }
+  try {
+    const bundled = await resolveSkillPath();
+    const forkPath = await createSkillFork({
+      workspaceRoot: workspace.rootPath,
+      bundledSkillPath: bundled,
+    });
+    const next = { ...workspace, skillPath: forkPath };
+    await saveWorkspace(next);
+    const skill = await getSkillInfo({
+      workspaceRoot: next.rootPath,
+      skillPath: next.skillPath,
+      bundledSkillPath: bundled,
+    });
+    sendJson(res, 201, { workspace: next, skill });
+  } catch (error) {
+    sendError(res, 400, error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function handleResetSkill(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  url: URL,
+): Promise<void> {
+  const rootPath = url.searchParams.get("rootPath") ?? undefined;
+  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
+  if (!workspace) {
+    sendError(res, 404, `workspace not found: ${id}`);
+    return;
+  }
+  const next = { ...workspace };
+  delete next.skillPath;
+  await saveWorkspace(next);
+  try {
+    const bundled = await resolveSkillPath();
+    const skill = await getSkillInfo({
+      workspaceRoot: next.rootPath,
+      bundledSkillPath: bundled,
+    });
+    sendJson(res, 200, { workspace: next, skill });
+  } catch (error) {
+    sendError(res, 400, error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function handleListSkillFiles(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  url: URL,
+): Promise<void> {
+  const rootPath = url.searchParams.get("rootPath") ?? undefined;
+  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
+  if (!workspace) {
+    sendError(res, 404, `workspace not found: ${id}`);
+    return;
+  }
+  const dir = url.searchParams.get("path") ?? "";
+  try {
+    const skillRoot = await resolveSkillPath(workspace.skillPath);
+    // Only allow writing later for forks; listing is OK for bundled too.
+    const entries = await listSkillDir(skillRoot, dir);
+    sendJson(res, 200, {
+      skillPath: skillRoot,
+      path: dir,
+      entries,
+      writable: Boolean(workspace.skillPath),
+    });
+  } catch (error) {
+    sendError(res, 400, error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function handleReadSkillFile(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  url: URL,
+): Promise<void> {
+  const rootPath = url.searchParams.get("rootPath") ?? undefined;
+  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
+  if (!workspace) {
+    sendError(res, 404, `workspace not found: ${id}`);
+    return;
+  }
+  const filePath = url.searchParams.get("path") ?? "";
+  if (!filePath.trim()) {
+    sendError(res, 400, "path query is required");
+    return;
+  }
+  try {
+    const skillRoot = await resolveSkillPath(workspace.skillPath);
+    const file = await readSkillFile(skillRoot, filePath);
+    sendJson(res, 200, {
+      file,
+      writable: Boolean(workspace.skillPath),
+    });
+  } catch (error) {
+    sendError(res, 400, error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function handleWriteSkillFile(
+  req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  url: URL,
+): Promise<void> {
+  const rootPath = url.searchParams.get("rootPath") ?? undefined;
+  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
+  if (!workspace) {
+    sendError(res, 404, `workspace not found: ${id}`);
+    return;
+  }
+  if (!workspace.skillPath) {
+    sendError(res, 400, "create a skill fork before editing skill files");
+    return;
+  }
+  const body = (await readJsonBody(req)) as { path?: unknown; content?: unknown };
+  if (typeof body.path !== "string" || !body.path.trim()) {
+    sendError(res, 400, "path is required");
+    return;
+  }
+  if (typeof body.content !== "string") {
+    sendError(res, 400, "content must be a string");
+    return;
+  }
+  try {
+    // Only write under the workspace skill fork path, never the bundled package.
+    const forkPath = path.resolve(workspace.skillPath);
+    const expectedFork = skillForkDir(workspace.rootPath);
+    // Allow skillPath override only if it is still under workspace root meta or explicit fork.
+    // For safety, require SKILL.md and refuse writing when path equals bundled.
+    const bundled = await resolveSkillPath();
+    if (path.resolve(forkPath) === path.resolve(bundled)) {
+      sendError(res, 400, "refusing to write into the bundled producer skill");
+      return;
+    }
+    const file = await writeSkillFile(forkPath, body.path.trim(), body.content);
+    const skill = await getSkillInfo({
+      workspaceRoot: workspace.rootPath,
+      skillPath: workspace.skillPath,
+      bundledSkillPath: bundled,
+    });
+    sendJson(res, 200, { file, skill, expectedFork });
+  } catch (error) {
+    sendError(res, 400, error instanceof Error ? error.message : String(error));
+  }
 }
 
 async function handleListRuns(
@@ -1107,8 +1736,8 @@ async function handleDenyPublication(
 }
 
 /**
- * Cancel a run that is still `running`. Best-effort: aborts the agent signal
- * and marks the record cancelled; in-flight model work may finish shortly after.
+ * Cancel a run that is still `running` or `awaiting_plan`.
+ * Best-effort: aborts the agent signal and marks the record cancelled.
  */
 async function handleCancelRun(
   _req: IncomingMessage,
@@ -1129,8 +1758,8 @@ async function handleCancelRun(
     sendError(res, 404, `run not found: ${runId}`);
     return;
   }
-  if (run.status !== "running") {
-    sendError(res, 409, `run is not running (status: ${run.status})`);
+  if (run.status !== "running" && run.status !== "awaiting_plan") {
+    sendError(res, 409, `run is not cancellable (status: ${run.status})`);
     return;
   }
 
@@ -1320,19 +1949,36 @@ async function handleRunEvents(
     res.write(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`);
   };
 
-  // Initial snapshot so the client does not need a separate GET.
-  const snapshot: RunSseEvent = {
-    type: isTerminalRunStatus(run.status) ? "done" : "status",
-    runId: run.runId,
-    sequence: 0,
-    status: run.status,
-    message: run.error ?? run.summary ?? run.status,
-  };
-  writeEvent(snapshot);
+  // Replay buffered stream parts so late subscribers still see text/tools
+  // (fixture runs often finish before EventSource connects).
+  const recent = getRecentRunEvents(runId);
+  for (const event of recent) {
+    writeEvent(event);
+  }
 
+  // Terminal snapshot last when the run already finished.
   if (isTerminalRunStatus(run.status)) {
+    const snapshot: RunSseEvent = {
+      type: "done",
+      runId: run.runId,
+      sequence: (recent[recent.length - 1]?.sequence ?? 0) + 1,
+      status: run.status,
+      message: run.error ?? run.summary ?? run.status,
+    };
+    writeEvent(snapshot);
     res.end();
     return;
+  }
+
+  // Live run: status snapshot if buffer was empty.
+  if (recent.length === 0) {
+    writeEvent({
+      type: "status",
+      runId: run.runId,
+      sequence: 0,
+      status: run.status,
+      message: run.error ?? run.summary ?? run.status,
+    });
   }
 
   let closed = false;
@@ -1344,7 +1990,12 @@ async function handleRunEvents(
     res.write(`: heartbeat ${Date.now()}\n\n`);
   }, 15_000);
 
+  // Skip replaying sequences already sent from the ring buffer.
+  const lastReplayed = recent[recent.length - 1]?.sequence ?? -1;
   const unsubscribe = subscribeRunEvents(runId, (event) => {
+    if (event.sequence <= lastReplayed) {
+      return;
+    }
     writeEvent(event);
     if (event.type === "done" || (event.status && isTerminalRunStatus(event.status))) {
       cleanup();
@@ -1375,7 +2026,7 @@ async function handleRunEvents(
     writeEvent({
       type: "done",
       runId: latest.runId,
-      sequence: snapshot.sequence + 1,
+      sequence: lastReplayed + 1,
       status: latest.status,
       message: latest.error ?? latest.summary ?? latest.status,
     });
@@ -1459,6 +2110,13 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
       }
     }
     {
+      const params = matchRoute(pathname, "/api/workspaces/:id/sources/clone");
+      if (params && method === "POST") {
+        await handleCloneSource(req, res, params.id!, url);
+        return;
+      }
+    }
+    {
       const params = matchRoute(pathname, "/api/workspaces/:id/sources/:sourceId");
       if (params && method === "DELETE") {
         await handleDeleteSource(req, res, params.id!, params.sourceId!, url);
@@ -1469,6 +2127,75 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
       const params = matchRoute(pathname, "/api/workspaces/:id/sources");
       if (params && method === "POST") {
         await handleAddSource(req, res, params.id!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(pathname, "/api/workspaces/:id/skill/fork");
+      if (params && method === "POST") {
+        await handleCreateSkillFork(req, res, params.id!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(pathname, "/api/workspaces/:id/skill/reset");
+      if (params && method === "POST") {
+        await handleResetSkill(req, res, params.id!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(pathname, "/api/workspaces/:id/skill/files");
+      if (params && method === "GET") {
+        await handleListSkillFiles(req, res, params.id!, url);
+        return;
+      }
+      if (params && method === "PUT") {
+        await handleWriteSkillFile(req, res, params.id!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(pathname, "/api/workspaces/:id/skill/file");
+      if (params && method === "GET") {
+        await handleReadSkillFile(req, res, params.id!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(pathname, "/api/workspaces/:id/skill");
+      if (params && method === "GET") {
+        await handleGetSkill(req, res, params.id!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(
+        pathname,
+        "/api/workspaces/:id/runs/:runId/retry",
+      );
+      if (params && method === "POST") {
+        await handleRetryRun(req, res, params.id!, params.runId!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(
+        pathname,
+        "/api/workspaces/:id/runs/:runId/approve-plan",
+      );
+      if (params && method === "POST") {
+        await handleApprovePlan(req, res, params.id!, params.runId!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(
+        pathname,
+        "/api/workspaces/:id/runs/:runId/deny-plan",
+      );
+      if (params && method === "POST") {
+        await handleDenyPlan(req, res, params.id!, params.runId!, url);
         return;
       }
     }

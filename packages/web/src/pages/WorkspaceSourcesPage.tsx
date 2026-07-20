@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   addSource,
+  cloneSource,
   deleteSource,
   getWorkspace,
   probeSources,
@@ -51,7 +52,11 @@ export function WorkspaceSourcesPage() {
   const [error, setError] = useState<unknown>(null);
   const [path, setPath] = useState("");
   const [sourceId, setSourceId] = useState("");
+  const [remoteUrl, setRemoteUrl] = useState("");
+  const [cloneId, setCloneId] = useState("");
+  const [cloneRef, setCloneRef] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [cloning, setCloning] = useState(false);
   const [probing, setProbing] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [probes, setProbes] = useState<Record<string, GitProbe>>({});
@@ -101,6 +106,35 @@ export function WorkspaceSourcesPage() {
       setError(err);
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handleClone(event: FormEvent) {
+    event.preventDefault();
+    if (!id || !remoteUrl.trim()) {
+      return;
+    }
+    setCloning(true);
+    setError(null);
+    try {
+      const result = await cloneSource(
+        id,
+        {
+          remoteUrl: remoteUrl.trim(),
+          id: cloneId.trim() || undefined,
+          ref: cloneRef.trim() || undefined,
+        },
+        workspace?.rootPath ?? rootPathHint,
+      );
+      setWorkspace(result.workspace);
+      setProbes((prev) => ({ ...prev, [result.source.id]: result.probe }));
+      setRemoteUrl("");
+      setCloneId("");
+      setCloneRef("");
+    } catch (err) {
+      setError(err);
+    } finally {
+      setCloning(false);
     }
   }
 
@@ -164,8 +198,10 @@ export function WorkspaceSourcesPage() {
           </p>
           <h1>Sources</h1>
           <p>
-            Local Git working trees only. The product never clones or fetches; each path must already
-            exist on disk (for example <code className="mono">D:/src/repo</code>).
+            Link an existing local Git checkout (absolute path, may be outside the workspace root)
+            or clone a remote into this workspace under{" "}
+            <code className="mono">sources/&lt;id&gt;</code>. Clone uses host git credentials; tokens
+            are never stored in workspace config.
           </p>
         </header>
 
@@ -201,6 +237,7 @@ export function WorkspaceSourcesPage() {
                     <TableHeader>
                       <TableRow>
                         <TableHead>ID</TableHead>
+                        <TableHead>Origin</TableHead>
                         <TableHead>Path</TableHead>
                         <TableHead>Probe</TableHead>
                         <TableHead>
@@ -212,6 +249,11 @@ export function WorkspaceSourcesPage() {
                       {workspace.sources.map((source) => (
                         <TableRow key={source.id} data-source-id={source.id}>
                           <TableCell className="mono">{source.id}</TableCell>
+                          <TableCell className="muted small">
+                            {source.origin?.type === "clone"
+                              ? `clone · ${source.origin.remoteUrl}`
+                              : "path"}
+                          </TableCell>
                           <TableCell className="mono whitespace-normal">{source.path}</TableCell>
                           <TableCell className="muted small whitespace-normal">
                             {probeLabel(probes[source.id])}
@@ -237,7 +279,7 @@ export function WorkspaceSourcesPage() {
 
             <Card>
               <CardHeader>
-                <CardTitle>Add source</CardTitle>
+                <CardTitle>Link existing path</CardTitle>
               </CardHeader>
               <CardContent>
                 <form className="form" onSubmit={(e) => void handleAdd(e)}>
@@ -279,6 +321,75 @@ export function WorkspaceSourcesPage() {
                       data-testid="source-add-submit"
                     >
                       {submitting ? "Adding…" : "Add source"}
+                    </Button>
+                  </div>
+                </form>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Clone into workspace</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="muted small mb-4">
+                  Clones into{" "}
+                  <code className="mono">
+                    {workspace.rootPath}/sources/&lt;id&gt;
+                  </code>{" "}
+                  using the host <code className="mono">git</code> binary. Auth uses your local
+                  credential helper or SSH agent.
+                </p>
+                <form className="form" onSubmit={(e) => void handleClone(e)}>
+                  <div className="field">
+                    <Label htmlFor="source-remote">Remote URL</Label>
+                    <Input
+                      id="source-remote"
+                      type="text"
+                      value={remoteUrl}
+                      onChange={(e) => setRemoteUrl(e.target.value)}
+                      placeholder="https://github.com/org/repo.git"
+                      required
+                      className="font-mono"
+                      data-testid="source-remote-input"
+                    />
+                  </div>
+                  <div className="field">
+                    <Label htmlFor="source-clone-id">
+                      Source id <span className="muted font-normal">(optional)</span>
+                    </Label>
+                    <Input
+                      id="source-clone-id"
+                      type="text"
+                      value={cloneId}
+                      onChange={(e) => setCloneId(e.target.value)}
+                      placeholder="repo"
+                      pattern="[a-z][a-z0-9-]{0,62}"
+                      className="font-mono"
+                      data-testid="source-clone-id-input"
+                    />
+                  </div>
+                  <div className="field">
+                    <Label htmlFor="source-clone-ref">
+                      Ref <span className="muted font-normal">(optional branch/tag)</span>
+                    </Label>
+                    <Input
+                      id="source-clone-ref"
+                      type="text"
+                      value={cloneRef}
+                      onChange={(e) => setCloneRef(e.target.value)}
+                      placeholder="main"
+                      className="font-mono"
+                      data-testid="source-clone-ref-input"
+                    />
+                  </div>
+                  <div className="form-actions">
+                    <Button
+                      type="submit"
+                      disabled={cloning || !remoteUrl.trim()}
+                      data-testid="source-clone-submit"
+                    >
+                      {cloning ? "Cloning…" : "Clone source"}
                     </Button>
                   </div>
                 </form>

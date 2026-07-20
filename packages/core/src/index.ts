@@ -1,9 +1,37 @@
-export { probeLocalGit } from "./git.js";
+export {
+  probeLocalGit,
+  cloneIntoWorkspace,
+  WORKSPACE_SOURCES_DIR_NAME,
+  type CloneIntoWorkspaceInput,
+  type CloneIntoWorkspaceResult,
+} from "./git.js";
 export {
   assertAbsolutePath,
   assertNoSymlinkComponents,
   resolveExistingDir,
 } from "./paths.js";
+export {
+  skillDigest,
+  listSkillFiles,
+  readSkillFrontmatter,
+  SKILL_DIGEST_MAX_FILE_BYTES,
+  SKILL_DIGEST_MAX_FILES,
+} from "./skill-digest.js";
+export {
+  SKILL_FORK_DIR_NAME,
+  skillForkDir,
+  resolveActiveSkillRoot,
+  getSkillInfo,
+  createSkillFork,
+  listSkillDir,
+  readSkillFile,
+  writeSkillFile,
+  normalizeSkillRelative,
+} from "./skill-fork.js";
+export {
+  analysisScratchDir,
+  writeAnalysisReceipt,
+} from "./analysis-scratch.js";
 export {
   countMarkdownFiles,
   publishStagingToPublication,

@@ -514,7 +514,99 @@ code.mono {
   @apply my-3 border-l-2 border-border pl-3 text-muted-foreground;
 }
 
+/* Session timeline (AI SDK–style parts) */
+.session-timeline {
+  @apply flex flex-col gap-3 max-h-[28rem] overflow-y-auto rounded-md border p-3;
+}
+
+.session-timeline__item {
+  @apply min-w-0;
+}
+
+.session-markdown {
+  @apply text-sm leading-relaxed;
+}
+
+.session-markdown h1,
+.session-markdown h2,
+.session-markdown h3 {
+  @apply font-semibold mt-2 mb-1;
+}
+
+.session-markdown p {
+  @apply mb-2;
+}
+
+.session-markdown code {
+  @apply font-mono text-xs rounded bg-muted px-1;
+}
+
+.session-markdown pre {
+  @apply overflow-x-auto rounded bg-muted p-2 text-xs mb-2;
+}
+
+.session-tool-card {
+  @apply rounded-md border bg-card px-3 py-2 flex flex-col gap-1;
+}
+
+.session-tool-card--subagent {
+  @apply border-l-2 border-l-primary;
+}
+
+.session-tool-card__header {
+  @apply flex flex-wrap items-center gap-2;
+}
+
+.session-tool-card__name {
+  @apply font-medium text-sm;
+}
+
+.session-tool-card__row {
+  @apply break-all;
+}
+
+.session-tool-card__id {
+  @apply truncate opacity-70;
+}
+
+.run-session-timeline {
+  @apply mt-3;
+}
+
+/* Skill settings editor: keep fork tooling usable on narrow layouts */
+#settings-skill-file-editor,
+[data-testid="settings-skill-file-editor"] {
+  @apply max-w-full;
+}
+
+.session-plan-card {
+  @apply mt-3 rounded-md border border-amber-500/40 bg-card p-4 flex flex-col gap-2;
+}
+
+.session-plan-pages {
+  @apply list-disc pl-5 space-y-1;
+}
+
+.run-publish-actions {
+  @apply mt-2;
+}
+
 @media (max-width: 720px) {
+  /* Session header actions + publish HITL: full-width stack on narrow screens */
+  .run-page .row-actions,
+  [data-testid="run-page"] .row-actions {
+    @apply w-full;
+  }
+
+  .run-publish-actions .row-actions {
+    @apply w-full flex-col items-stretch;
+  }
+
+  .run-publish-actions .row-actions > button,
+  [data-testid="run-publish-actions"] button {
+    @apply w-full min-h-9;
+  }
+
   .app-shell {
     @apply flex-col;
   }

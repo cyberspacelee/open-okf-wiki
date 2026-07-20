@@ -21,15 +21,37 @@ export const SourceIdSchema = z
   .regex(/^[a-z][a-z0-9-]{0,62}$/, "source id must be a lowercase slug");
 
 /**
+ * How a source was attached to the Workspace.
+ * - path: operator linked an existing local checkout (may be outside rootPath)
+ * - clone: product cloned a remote into the Workspace (under rootPath/sources/…)
+ */
+export const SourceOriginSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("path"),
+  }),
+  z.object({
+    type: z.literal("clone"),
+    remoteUrl: z.string().trim().min(1).max(2000),
+    /** Optional ref requested at clone time (branch/tag/commit). */
+    ref: z.string().trim().min(1).max(200).optional(),
+    clonedAt: z.string().datetime(),
+  }),
+]);
+
+export type SourceOrigin = z.infer<typeof SourceOriginSchema>;
+
+/**
  * One local Git working tree used as a Wiki source.
- * Product never clones/fetches; path must already exist on disk.
+ * Path is always absolute after registration. May live inside or outside Workspace rootPath.
  */
 export const WorkspaceSourceSchema = z.object({
   id: SourceIdSchema,
-  /** Absolute filesystem path to an existing local Git checkout. */
+  /** Absolute filesystem path to a local Git checkout. */
   path: z.string().trim().min(1),
   applyDefaultIgnores: z.boolean().default(true),
   ignore: z.array(IgnorePatternSchema).default([]),
+  /** Omitted on legacy records; treat as path-linked. */
+  origin: SourceOriginSchema.optional(),
 });
 
 export type WorkspaceSource = z.infer<typeof WorkspaceSourceSchema>;
@@ -81,6 +103,11 @@ export const WorkspaceConfigSchema = z.object({
   limits: WorkspaceLimitsSchema.default(() => WorkspaceLimitsSchema.parse({})),
   adaptive: z.boolean().default(false),
   reviewer: z.boolean().default(false),
+  /**
+   * When true, interactive Wiki Runs pause for operator plan confirmation
+   * before writing pages. Headless/autoApprove skips this gate.
+   */
+  planConfirm: z.boolean().default(false),
   /** Optional path to a Skill fork directory; omit for bundled skill. */
   skillPath: z.string().trim().min(1).optional(),
   createdAt: z.string().datetime(),

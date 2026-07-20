@@ -10,7 +10,7 @@ type RunBus = {
 };
 
 const buses = new Map<string, RunBus>();
-const MAX_RECENT = 64;
+const MAX_RECENT = 256;
 
 function getOrCreateBus(runId: string): RunBus {
   let bus = buses.get(runId);
@@ -37,6 +37,14 @@ export function emitRunEvent(
     sequence: partial.sequence ?? bus.sequence,
     ...(partial.status !== undefined ? { status: partial.status } : {}),
     ...(partial.message !== undefined ? { message: partial.message } : {}),
+    ...(partial.partType !== undefined ? { partType: partial.partType } : {}),
+    ...(partial.text !== undefined ? { text: partial.text } : {}),
+    ...(partial.toolName !== undefined ? { toolName: partial.toolName } : {}),
+    ...(partial.toolCallId !== undefined ? { toolCallId: partial.toolCallId } : {}),
+    ...(partial.toolState !== undefined ? { toolState: partial.toolState } : {}),
+    ...(partial.inputSummary !== undefined ? { inputSummary: partial.inputSummary } : {}),
+    ...(partial.outputSummary !== undefined ? { outputSummary: partial.outputSummary } : {}),
+    ...(partial.nodeId !== undefined ? { nodeId: partial.nodeId } : {}),
   };
   bus.recent.push(event);
   if (bus.recent.length > MAX_RECENT) {
@@ -79,8 +87,21 @@ export function emitRunDone(
 }
 
 /**
+ * Snapshot of recent events for late SSE subscribers (ring buffer).
+ * Empty when the bus was never created or already GC'd.
+ */
+export function getRecentRunEvents(runId: string): RunSseEvent[] {
+  const bus = buses.get(runId);
+  if (!bus) {
+    return [];
+  }
+  return bus.recent.slice();
+}
+
+/**
  * Subscribe to subsequent events for `runId`.
  * Returns an unsubscribe function.
+ * Does not replay history — callers should use {@link getRecentRunEvents} first.
  */
 export function subscribeRunEvents(
   runId: string,

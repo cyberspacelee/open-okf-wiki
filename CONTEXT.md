@@ -18,6 +18,18 @@ _Avoid_: Live checkout, mutable branch
 The non-empty collection of named Repository Snapshots used together by one Wiki Run.
 _Avoid_: Workspace, implicit repository list
 
+**Workspace rootPath**:
+The operator project home and agent working directory for one Workspace. Product meta (`.okf-wiki/`), optional skill fork, session state, and default clone destinations live under this root. Configured sources may live **inside or outside** rootPath.
+_Avoid_: Mastra Workspace (framework FS/skills host), single-source assumption
+
+**Mastra Workspace** (implementation term only):
+Framework object (`@mastra/core/workspace`) bound per Wiki Run with `basePath = product rootPath` and Producer Skill paths for skill discovery. Not the product Workspace entity; never mounts unrestricted multi-source trees.
+_Avoid_: product Workspace, Workspace rootPath synonym
+
+**Source origin**:
+How a source was attached: `path` (link existing absolute checkout) or `clone` (product-initiated `git clone` into the Workspace). Clone is operator-initiated only; the Semantic Workflow never clones.
+_Avoid_: agent shell git, silent network fetch
+
 **Run Boundary**:
 The trusted execution boundary for one Wiki Run: freeze Snapshot Set and Skill, mount permissions, credentials and budgets, mechanical validation, staging, and atomic publication. Product implementation: `@okf-wiki/core`. Not the Operator Session and not the Semantic Workflow. (Pre-0019 ADRs may still say “Host” for this role.)
 _Avoid_: host OS, Agent Host, host agent, HTTP host, harness, product web app
