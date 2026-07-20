@@ -5,6 +5,7 @@ import {
   helpTextForSessionTurn,
   isKickoff,
   isKickoffPhrase,
+  normalizeSessionUserText,
   resolveSessionTurnMode,
   sessionMessagesToUIMessages,
   uiMessagesToSessionMessages,
@@ -27,6 +28,16 @@ test("isKickoffPhrase is phase-agnostic", () => {
   assert.equal(isKickoffPhrase("generate"), true);
   assert.equal(isKickoffPhrase("hello"), false);
   assert.equal(isKickoffPhrase(""), false);
+  assert.equal(isKickoffPhrase("/generate"), true);
+  assert.equal(isKickoffPhrase("/run"), true);
+});
+
+test("normalizeSessionUserText expands slash commands", () => {
+  assert.equal(normalizeSessionUserText("/generate"), "generate a wiki plan");
+  assert.equal(normalizeSessionUserText("/approve"), "approve");
+  assert.equal(normalizeSessionUserText("/deny"), "deny");
+  assert.equal(normalizeSessionUserText("/reject"), "deny");
+  assert.equal(normalizeSessionUserText("hello"), "hello");
 });
 
 test("resolveSessionTurnMode: resume when resumeData + existingRunId", () => {
@@ -230,6 +241,10 @@ test("helpTextForSessionTurn is contextual", () => {
   assert.match(
     helpTextForSessionTurn({ helpReason: "not_kickoff" }),
     /generate/,
+  );
+  assert.match(
+    helpTextForSessionTurn({ helpReason: "not_kickoff" }),
+    /\/generate/,
   );
 });
 

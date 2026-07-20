@@ -88,6 +88,11 @@ test.describe("UI layout smoke — Session / Settings skill / Sources", () => {
     await expect(page.getByTestId("session-list")).toBeVisible();
     await expectVisibleBox(page.getByTestId("session-select"), { minWidth: 80 });
     await expectVisibleBox(page.getByTestId("session-new"), { minWidth: 40 });
+    await expect(page.getByTestId("session-delete")).toBeVisible();
+    await expect(page.getByTestId("session-slash-open")).toBeVisible();
+    // Slash palette opens when typing /
+    await page.getByTestId("session-input").fill("/");
+    await expect(page.getByTestId("session-slash-menu")).toBeVisible();
     // New session → history switcher has 2 entries; older is read-only
     await page.getByTestId("session-new").click();
     await expect(page.getByTestId("session-chat-page")).toBeVisible();

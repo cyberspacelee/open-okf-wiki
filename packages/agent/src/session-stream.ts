@@ -179,8 +179,32 @@ export function isKickoffPhrase(text: string): boolean {
   if (!t) {
     return false;
   }
+  // Slash kickoff: /generate, /run, /wiki [args…]
+  if (/^\/(generate|run|wiki|plan)(?:\s|$)/i.test(t)) {
+    return true;
+  }
   // Keep broad enough for e2e / kickoff ("generate a wiki plan") and help copy ("generate").
   return /generate|wiki|plan|开始|生成|写|run/i.test(t);
+}
+
+/**
+ * Normalize slash approve/deny into plain resume tokens for mode resolution.
+ * Client usually expands these; server still accepts raw slash.
+ */
+export function normalizeSessionUserText(text: string): string {
+  const t = text.trim();
+  if (/^\/approve(?:\s|$)/i.test(t)) {
+    return "approve";
+  }
+  if (/^\/(deny|reject)(?:\s|$)/i.test(t)) {
+    return "deny";
+  }
+  if (/^\/(generate|run|wiki|plan)(?:\s|$)/i.test(t)) {
+    // Empty args → canonical kickoff phrase; keep free-form args as kickoff text.
+    const rest = t.replace(/^\/(generate|run|wiki|plan)\s*/i, "").trim();
+    return rest || "generate a wiki plan";
+  }
+  return t;
 }
 
 /**
@@ -273,7 +297,16 @@ export function helpTextForSessionTurn(input: {
       return "A Wiki Run is already in progress. Wait for it to finish, or use **Stop** to cancel it.";
     case "not_kickoff":
     default:
-      return "Continue the wiki session: say **generate** to start a Wiki Run, or pick a decision option above.";
+      return [
+        "Continue the wiki session with a kickoff phrase or slash command:",
+        "",
+        "- **generate** or `/generate` — start a Wiki Run",
+        "- `/approve` / `/deny` — answer a plan or publish gate",
+        "- `/reset` — clear a stuck gate (operator command)",
+        "- `/help` — list commands",
+        "",
+        "Or pick a decision option above when chips are shown.",
+      ].join("\n");
   }
 }
 
@@ -522,7 +555,8 @@ export async function createSessionWorkflowStream(input: {
   let finishedMessages: UIMessage[] | null = null;
 
   const phase = input.session.workflow.phase ?? "idle";
-  const userText = lastUserText(input.messages);
+  const rawUserText = lastUserText(input.messages);
+  const userText = normalizeSessionUserText(rawUserText);
   const existingRunId =
     input.body?.runId ?? input.session.workflow.linkedRunId ?? undefined;
 

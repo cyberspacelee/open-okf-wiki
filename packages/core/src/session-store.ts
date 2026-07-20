@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  readdir,
+  readFile,
+  rename,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import {
   OperatorSessionSchema,
@@ -174,4 +181,106 @@ export async function replaceSessionMessages(
     updatedAt: new Date().toISOString(),
   };
   return saveOperatorSession(workspaceRoot, next);
+}
+
+/**
+ * Strip actionable HITL chips so history does not re-offer approve/deny after
+ * cancel or operator reset.
+ */
+export function neutralizeSessionDecisionParts(
+  messages: SessionMessage[],
+): SessionMessage[] {
+  return messages.map((m) => {
+    if (m.role !== "assistant") {
+      return m;
+    }
+    return {
+      ...m,
+      parts: m.parts.map((p) => {
+        if (
+          typeof p.type === "string" &&
+          p.type === "tool-request_user_decision" &&
+          "state" in p &&
+          p.state === "input-available"
+        ) {
+          return {
+            ...p,
+            // Schema-valid terminal state; extractPending only acts on input-available.
+            state: "output-available" as const,
+            output: { cancelled: true },
+          };
+        }
+        if (typeof p.type === "string" && p.type === "data-choice") {
+          const data =
+            p && typeof p === "object" && "data" in p
+              ? (p.data as Record<string, unknown>)
+              : {};
+          return {
+            ...p,
+            data: {
+              ...data,
+              cancelled: true,
+              options: [],
+              mode: "input_only",
+            },
+          };
+        }
+        return p;
+      }),
+    };
+  });
+}
+
+/**
+ * Clear pending gate so a new kickoff can start (keeps transcript + linked run id).
+ */
+export async function resetOperatorSessionWorkflow(
+  workspaceRoot: string,
+  sessionId: string,
+): Promise<OperatorSession> {
+  const existing = await loadOperatorSession(workspaceRoot, sessionId);
+  if (!existing) {
+    throw new Error(`session not found: ${sessionId}`);
+  }
+  const messages = neutralizeSessionDecisionParts(existing.messages);
+  return saveOperatorSession(workspaceRoot, {
+    ...existing,
+    messages,
+    status: "active",
+    pending: null,
+    workflow: {
+      ...existing.workflow,
+      phase: "idle",
+    },
+  });
+}
+
+/** Delete a session file. Returns false when missing / invalid id. */
+export async function deleteOperatorSession(
+  workspaceRoot: string,
+  sessionId: string,
+): Promise<boolean> {
+  if (
+    !sessionId ||
+    sessionId.includes("..") ||
+    sessionId.includes("/") ||
+    sessionId.includes("\\")
+  ) {
+    return false;
+  }
+  const root = path.resolve(workspaceRoot);
+  const file = sessionPath(root, sessionId);
+  if (!isPathInside(root, file)) {
+    throw new Error("session path escapes workspace root");
+  }
+  try {
+    await unlink(file);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
 }

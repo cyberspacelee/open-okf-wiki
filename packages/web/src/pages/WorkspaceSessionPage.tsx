@@ -15,12 +15,22 @@ import {
 import {
   PromptInput,
   PromptInputBody,
+  PromptInputButton,
+  PromptInputCommand,
+  PromptInputCommandEmpty,
+  PromptInputCommandGroup,
+  PromptInputCommandItem,
+  PromptInputCommandList,
   PromptInputFooter,
   PromptInputSubmit,
   PromptInputTextarea,
   PromptInputTools,
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input";
+import {
+  Suggestion,
+  Suggestions,
+} from "@/components/ai-elements/suggestion";
 import { MessageParts } from "../components/session/MessageParts";
 import { extractPendingFromMessages } from "../components/session/decision-types";
 import { ErrorBanner } from "../components/ErrorBanner";
@@ -30,17 +40,27 @@ import { WorkspaceSubnav } from "../components/WorkspaceSubnav";
 import {
   cancelRun,
   createSession,
+  deleteSession,
   getOrCreateSession,
   getSession,
   getWorkspace,
   listRuns,
   listSessions,
+  resetSession,
   type OperatorSessionDto,
   type OperatorSessionSummary,
   type WikiRunPlan,
   type WorkspaceConfig,
 } from "../api";
 import { useI18n } from "../i18n";
+import {
+  filterSessionCommands,
+  isSlashMenuOpenQuery,
+  parseSessionSlashInput,
+  SESSION_COMMANDS,
+  sessionSlashHelpMarkdown,
+  type SessionCommandDef,
+} from "../lib/session-commands";
 import { workspaceHref } from "../lib/workspace-path";
 import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button";
@@ -52,7 +72,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { MessageSquareIcon, PlusIcon } from "lucide-react";
+import { MessageSquareIcon, PlusIcon, SlashIcon, Trash2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 function sessionMessagesToUI(
@@ -228,6 +248,9 @@ export function WorkspaceSessionPage() {
   const [loading, setLoading] = useState(true);
   const [switching, setSwitching] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  /** Bump to remount chat panel after reset/delete without id change races. */
+  const [panelEpoch, setPanelEpoch] = useState(0);
 
   const rootPath = workspace?.rootPath ?? rootPathHint;
 
@@ -320,12 +343,57 @@ export function WorkspaceSessionPage() {
       setSessionList((prev) =>
         upsertSessionSummary(prev, summaryFromSession(session)),
       );
+      setPanelEpoch((n) => n + 1);
     } catch (err) {
       setBootError(err);
     } finally {
       setCreating(false);
     }
   }, [id, creating, rootPath]);
+
+  const handleDeleteSession = useCallback(async () => {
+    if (!id || !sessionMeta || deleting) {
+      return;
+    }
+    setDeleting(true);
+    setBootError(null);
+    try {
+      const deletedId = sessionMeta.id;
+      await deleteSession(id, deletedId, rootPath);
+      const remaining = sessionList.filter((s) => s.id !== deletedId);
+      setSessionList(remaining);
+      if (remaining[0]) {
+        const { session } = await getSession(id, remaining[0].id, rootPath);
+        setSessionMeta(session);
+      } else {
+        const { session } = await createSession(id, undefined, rootPath);
+        setSessionMeta(session);
+        setSessionList([summaryFromSession(session)]);
+      }
+      setPanelEpoch((n) => n + 1);
+    } catch (err) {
+      setBootError(err);
+    } finally {
+      setDeleting(false);
+    }
+  }, [id, sessionMeta, deleting, rootPath, sessionList]);
+
+  const handleResetSession = useCallback(async () => {
+    if (!id || !sessionMeta) {
+      return;
+    }
+    setBootError(null);
+    try {
+      const { session } = await resetSession(id, sessionMeta.id, rootPath);
+      setSessionMeta(session);
+      setSessionList((prev) =>
+        upsertSessionSummary(prev, summaryFromSession(session)),
+      );
+      setPanelEpoch((n) => n + 1);
+    } catch (err) {
+      setBootError(err);
+    }
+  }, [id, sessionMeta, rootPath]);
 
   const handleSwitchToLatest = useCallback(() => {
     if (newestSessionId) {
@@ -401,12 +469,28 @@ export function WorkspaceSessionPage() {
                   variant="outline"
                   size="sm"
                   onClick={() => void handleNewSession()}
-                  disabled={creating || loading || switching}
+                  disabled={creating || loading || switching || deleting}
                   data-testid="session-new"
                 >
                   <PlusIcon className="size-3.5" aria-hidden />
                   {creating ? t.session.creatingSession : t.session.newSession}
                 </Button>
+                {sessionMeta ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => void handleDeleteSession()}
+                    disabled={deleting || loading || switching || creating}
+                    data-testid="session-delete"
+                    title={t.session.deleteSession}
+                  >
+                    <Trash2Icon className="size-3.5" aria-hidden />
+                    <span className="sr-only sm:not-sr-only">
+                      {deleting ? t.session.deletingSession : t.session.deleteSession}
+                    </span>
+                  </Button>
+                ) : null}
               </div>
               {sessionMeta ? (
                 <Badge variant="secondary" data-testid="session-status">
@@ -446,7 +530,7 @@ export function WorkspaceSessionPage() {
           <LoadingState label={t.session.loading} />
         ) : (
           <SessionChatPanel
-            key={sessionMeta.id}
+            key={`${sessionMeta.id}:${panelEpoch}`}
             workspaceId={id}
             workspace={workspace}
             session={sessionMeta}
@@ -456,6 +540,8 @@ export function WorkspaceSessionPage() {
             onSessionMetaChange={handleSessionMetaChange}
             onNewSession={() => void handleNewSession()}
             onSwitchToLatest={handleSwitchToLatest}
+            onResetSession={() => void handleResetSession()}
+            onDeleteSession={() => void handleDeleteSession()}
           />
         )}
       </div>
@@ -473,6 +559,8 @@ function SessionChatPanel({
   onSessionMetaChange,
   onNewSession,
   onSwitchToLatest,
+  onResetSession,
+  onDeleteSession,
 }: {
   workspaceId: string;
   workspace: WorkspaceConfig;
@@ -483,6 +571,8 @@ function SessionChatPanel({
   onSessionMetaChange?: (session: OperatorSessionDto) => void;
   onNewSession?: () => void;
   onSwitchToLatest?: () => void;
+  onResetSession?: () => void;
+  onDeleteSession?: () => void;
 }) {
   const { t } = useI18n();
   const [input, setInput] = useState("");
@@ -580,13 +670,20 @@ function SessionChatPanel({
     ],
   );
 
-  const { messages, sendMessage, status, stop, error, clearError } = useChat({
-    id: session.id,
-    transport,
-    messages: bootMessagesRef.current,
-  });
+  const { messages, sendMessage, setMessages, status, stop, error, clearError } =
+    useChat({
+      id: session.id,
+      transport,
+      messages: bootMessagesRef.current,
+    });
 
   const isBusy = status === "submitted" || status === "streaming";
+  const slashMenuOpen = !readOnly && isSlashMenuOpenQuery(input);
+  const slashQuery = slashMenuOpen ? input : "";
+  const slashCommands = useMemo(
+    () => filterSessionCommands(slashQuery),
+    [slashQuery],
+  );
 
   /** Single-flight send: blocks double-click / double-kickoff races. */
   const sendTurn = useCallback(
@@ -601,6 +698,79 @@ function SessionChatPanel({
       });
     },
     [isBusy, readOnly, sendMessage],
+  );
+
+  const showLocalHelp = useCallback(() => {
+    const id = `local-help-${Date.now()}`;
+    setMessages((prev) => [
+      ...prev,
+      {
+        id,
+        role: "assistant",
+        parts: [{ type: "text", text: sessionSlashHelpMarkdown() }],
+      },
+    ]);
+  }, [setMessages]);
+
+  const runLocalCommand = useCallback(
+    (action: "help" | "new" | "delete" | "reset" | "stop") => {
+      switch (action) {
+        case "help":
+          showLocalHelp();
+          break;
+        case "new":
+          onNewSession?.();
+          break;
+        case "delete":
+          onDeleteSession?.();
+          break;
+        case "reset":
+          onResetSession?.();
+          break;
+        case "stop":
+          if (isBusy) {
+            handleStopRef.current?.();
+          }
+          break;
+        default:
+          break;
+      }
+    },
+    [showLocalHelp, onNewSession, onDeleteSession, onResetSession, isBusy],
+  );
+
+  /** Filled after handleStop is defined (slash /stop). */
+  const handleStopRef = useRef<(() => void) | null>(null);
+
+  const applyCommandDef = useCallback(
+    (cmd: SessionCommandDef) => {
+      setInput("");
+      if (cmd.local) {
+        runLocalCommand(cmd.local);
+        return;
+      }
+      if (cmd.sendText) {
+        sendTurn(cmd.sendText);
+      }
+    },
+    [runLocalCommand, sendTurn],
+  );
+
+  const dispatchComposerText = useCallback(
+    (raw: string) => {
+      const parsed = parseSessionSlashInput(raw);
+      if (parsed.kind === "local") {
+        runLocalCommand(parsed.action);
+        return;
+      }
+      if (parsed.kind === "send") {
+        // Chat kickoff/resume still requires sources for start; server also guards.
+        sendTurn(parsed.text);
+        return;
+      }
+      sendTurn(raw);
+    },
+    [runLocalCommand, sendTurn],
   );
 
   const pending = useMemo(() => {
@@ -726,7 +896,8 @@ function SessionChatPanel({
   const inputOnly = pending?.mode === "input_only";
   const canType = !readOnly && !choiceOnly;
   const hasSources = (workspace.sources?.length ?? 0) > 0;
-  const composerDisabled = readOnly || isBusy || choiceOnly || !hasSources;
+  // Allow typing without sources so slash commands (/help, /new, …) still work.
+  const composerDisabled = readOnly || isBusy || choiceOnly;
 
   const latestAssistantId = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -764,10 +935,22 @@ function SessionChatPanel({
       if (!text || readOnly || isBusy || choiceOnly || sendInFlight.current) {
         return;
       }
-      sendTurn(text);
+      // If slash palette is open, Enter picks first match instead of raw submit.
+      if (isSlashMenuOpenQuery(text) && slashCommands[0]) {
+        applyCommandDef(slashCommands[0]!);
+        return;
+      }
+      dispatchComposerText(text);
       setInput("");
     },
-    [choiceOnly, isBusy, readOnly, sendTurn],
+    [
+      choiceOnly,
+      isBusy,
+      readOnly,
+      slashCommands,
+      applyCommandDef,
+      dispatchComposerText,
+    ],
   );
 
   /**
@@ -821,6 +1004,15 @@ function SessionChatPanel({
     workspace.rootPath,
     rootPathHint,
   ]);
+
+  handleStopRef.current = handleStop;
+
+  const suggestionChips = useMemo(() => {
+    if (readOnly || !hasSources) {
+      return [] as string[];
+    }
+    return ["/generate", "/help", "/reset"];
+  }, [readOnly, hasSources]);
 
   return (
     <>
@@ -928,46 +1120,118 @@ function SessionChatPanel({
                 : ""}
             </p>
           ) : null}
-          <PromptInput
-            onSubmit={handleSubmit}
-            className="w-full"
-            data-testid="session-prompt"
-          >
-            <PromptInputBody>
-              <PromptInputTextarea
-                value={input}
-                onChange={(e) => setInput(e.currentTarget.value)}
-                disabled={composerDisabled || !canType}
-                placeholder={
-                  readOnly
-                    ? t.session.placeholderReadOnly
-                    : !hasSources
-                      ? t.session.placeholderNoSources
-                      : choiceOnly
-                        ? t.session.placeholderChoice
-                        : (pending?.inputPlaceholder ??
-                          t.session.placeholderDefault)
-                }
-                data-testid="session-input"
-              />
-            </PromptInputBody>
-            <PromptInputFooter>
-              <PromptInputTools />
-              <PromptInputSubmit
-                status={isBusy ? "streaming" : "ready"}
-                disabled={
-                  readOnly ||
-                  isBusy ||
-                  choiceOnly ||
-                  !canType ||
-                  !input.trim() ||
-                  !hasSources
-                }
-                data-testid="session-send"
-                onStop={() => handleStop()}
-              />
-            </PromptInputFooter>
-          </PromptInput>
+          {!readOnly && !choiceOnly && suggestionChips.length > 0 ? (
+            <Suggestions className="mb-2 px-0.5" data-testid="session-suggestions">
+              {suggestionChips.map((s) => (
+                <Suggestion
+                  key={s}
+                  suggestion={s}
+                  onClick={(value) => {
+                    if (value.startsWith("/")) {
+                      const def = SESSION_COMMANDS.find((c) => c.command === value);
+                      if (def) {
+                        applyCommandDef(def);
+                        return;
+                      }
+                      dispatchComposerText(value);
+                      return;
+                    }
+                    dispatchComposerText(value);
+                  }}
+                />
+              ))}
+            </Suggestions>
+          ) : null}
+          <div className="relative">
+            {slashMenuOpen ? (
+              <div
+                className="absolute inset-x-0 bottom-full z-20 mb-1 overflow-hidden rounded-lg border bg-popover shadow-md"
+                data-testid="session-slash-menu"
+              >
+                <PromptInputCommand shouldFilter={false} className="max-h-56">
+                  <PromptInputCommandList>
+                    <PromptInputCommandEmpty className="p-3 text-sm text-muted-foreground">
+                      {t.session.slashEmpty}
+                    </PromptInputCommandEmpty>
+                    <PromptInputCommandGroup heading={t.session.slashHeading}>
+                      {slashCommands.map((cmd) => (
+                        <PromptInputCommandItem
+                          key={cmd.id}
+                          value={cmd.command}
+                          onSelect={() => applyCommandDef(cmd)}
+                          data-testid={`session-slash-${cmd.id}`}
+                        >
+                          <div className="flex min-w-0 flex-col gap-0.5">
+                            <span className="font-medium">{cmd.command}</span>
+                            <span className="truncate text-xs text-muted-foreground">
+                              {cmd.description}
+                            </span>
+                          </div>
+                        </PromptInputCommandItem>
+                      ))}
+                    </PromptInputCommandGroup>
+                  </PromptInputCommandList>
+                </PromptInputCommand>
+              </div>
+            ) : null}
+            <PromptInput
+              onSubmit={handleSubmit}
+              className="w-full"
+              data-testid="session-prompt"
+            >
+              <PromptInputBody>
+                <PromptInputTextarea
+                  value={input}
+                  onChange={(e) => setInput(e.currentTarget.value)}
+                  disabled={composerDisabled || !canType}
+                  placeholder={
+                    readOnly
+                      ? t.session.placeholderReadOnly
+                      : !hasSources
+                        ? t.session.placeholderNoSources
+                        : choiceOnly
+                          ? t.session.placeholderChoice
+                          : (pending?.inputPlaceholder ??
+                            t.session.placeholderDefault)
+                  }
+                  data-testid="session-input"
+                />
+              </PromptInputBody>
+              <PromptInputFooter>
+                <PromptInputTools>
+                  <PromptInputButton
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    disabled={readOnly || choiceOnly || isBusy}
+                    tooltip={t.session.slashTooltip}
+                    onClick={() => {
+                      if (readOnly || choiceOnly) {
+                        return;
+                      }
+                      setInput((prev) => (prev.startsWith("/") ? prev : "/"));
+                    }}
+                    data-testid="session-slash-open"
+                  >
+                    <SlashIcon className="size-4" />
+                  </PromptInputButton>
+                </PromptInputTools>
+                <PromptInputSubmit
+                  status={isBusy ? "streaming" : "ready"}
+                  disabled={
+                    readOnly ||
+                    isBusy ||
+                    choiceOnly ||
+                    !canType ||
+                    !input.trim() ||
+                    (!hasSources && !input.trim().startsWith("/"))
+                  }
+                  data-testid="session-send"
+                  onStop={() => handleStop()}
+                />
+              </PromptInputFooter>
+            </PromptInput>
+          </div>
         </div>
       </div>
     </>

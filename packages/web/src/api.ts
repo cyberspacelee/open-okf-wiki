@@ -655,6 +655,36 @@ export function getSession(
   );
 }
 
+/** Clear stuck plan/publish gate; keeps transcript. */
+export function resetSession(
+  workspaceId: string,
+  sessionId: string,
+  rootPath?: string,
+): Promise<{ session: OperatorSessionDto }> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}/reset`,
+      rootPath,
+    ),
+    { method: "POST", body: JSON.stringify({}) },
+  );
+}
+
+/** Delete a session thread permanently. */
+export function deleteSession(
+  workspaceId: string,
+  sessionId: string,
+  rootPath?: string,
+): Promise<{ deleted: boolean; sessionId: string }> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}`,
+      rootPath,
+    ),
+    { method: "DELETE" },
+  );
+}
+
 /**
  * Manual Retry: new run reusing frozen skillPath/skillDigest from a terminal run.
  */

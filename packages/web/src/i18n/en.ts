@@ -237,12 +237,12 @@ export const en = {
     stop: "Stop",
     emptyTitle: "Start a wiki conversation",
     emptyDescription:
-      "Try “generate a wiki plan” — then choose a dynamic option or type revision notes.",
+      "Try “generate a wiki plan” or `/generate` — then choose a dynamic option or type revision notes.",
     choiceOnly:
       "Select an option above to continue (free text is disabled for this step).",
     placeholderNoSources: "Add a source first (Sources tab)",
     placeholderChoice: "Select an option above…",
-    placeholderDefault: "Message the wiki agent…",
+    placeholderDefault: "Message the wiki agent… (/ for commands)",
     sessions: "Sessions",
     switchSession: "Switch session",
     newSession: "New session",
@@ -251,6 +251,11 @@ export const en = {
       "This is an older session (read-only). Switch to the latest or start a new session to continue chatting.",
     switchToLatest: "Switch to latest",
     placeholderReadOnly: "History is read-only",
+    deleteSession: "Delete",
+    deletingSession: "Deleting…",
+    slashHeading: "Commands",
+    slashEmpty: "No matching command",
+    slashTooltip: "Slash commands",
   },
   runs: {
     breadcrumbWorkspaces: "Workspaces",

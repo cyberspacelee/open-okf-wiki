@@ -43,6 +43,9 @@ export {
   listOperatorSessions,
   appendSessionMessages,
   replaceSessionMessages,
+  neutralizeSessionDecisionParts,
+  resetOperatorSessionWorkflow,
+  deleteOperatorSession,
 } from "./session-store.js";
 export {
   countMarkdownFiles,

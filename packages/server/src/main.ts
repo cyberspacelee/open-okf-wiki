@@ -20,6 +20,7 @@ import {
   createWorkspace,
   DEFAULT_SOURCE_IGNORES,
   deleteModelProfile,
+  deleteOperatorSession,
   deleteWorkspaceMeta,
   getModelProfile,
   getSkillInfo,
@@ -39,6 +40,7 @@ import {
   removeSource,
   removeWorkspaceFromAppIndex,
   replaceSessionMessages,
+  resetOperatorSessionWorkflow,
   resolveProviderRuntime,
   saveWorkspace,
   setDefaultModelProfile,
@@ -2273,6 +2275,71 @@ async function handleGetSession(
   sendJson(res, 200, { session });
 }
 
+async function handleDeleteSession(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  sessionId: string,
+  url: URL,
+): Promise<void> {
+  const rootPath = url.searchParams.get("rootPath") ?? undefined;
+  const workspace = await loadWorkspaceById(id, {
+    rootPath: rootPath ?? undefined,
+  });
+  if (!workspace) {
+    sendError(res, 404, `workspace not found: ${id}`);
+    return;
+  }
+  const existing = await loadOperatorSession(workspace.rootPath, sessionId);
+  if (!existing || existing.workspaceId !== workspace.id) {
+    sendError(res, 404, `session not found: ${sessionId}`);
+    return;
+  }
+  const ok = await deleteOperatorSession(workspace.rootPath, sessionId);
+  if (!ok) {
+    sendError(res, 404, `session not found: ${sessionId}`);
+    return;
+  }
+  sendJson(res, 200, { deleted: true, sessionId });
+}
+
+/** Clear pending gate / stuck phase so kickoff can run again. */
+async function handleResetSession(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  sessionId: string,
+  url: URL,
+): Promise<void> {
+  const rootPath = url.searchParams.get("rootPath") ?? undefined;
+  const workspace = await loadWorkspaceById(id, {
+    rootPath: rootPath ?? undefined,
+  });
+  if (!workspace) {
+    sendError(res, 404, `workspace not found: ${id}`);
+    return;
+  }
+  const existing = await loadOperatorSession(workspace.rootPath, sessionId);
+  if (!existing || existing.workspaceId !== workspace.id) {
+    sendError(res, 404, `session not found: ${sessionId}`);
+    return;
+  }
+  try {
+    const session = await resetOperatorSessionWorkflow(
+      workspace.rootPath,
+      sessionId,
+    );
+    sendJson(res, 200, { session });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith("session not found")) {
+      sendError(res, 404, message);
+      return;
+    }
+    sendError(res, 400, message);
+  }
+}
+
 /**
  * In-process lock so rapid double-submit cannot start two Wiki Runs before
  * the first turn finalizes session messages. Keyed by workspace root + session.
@@ -3004,10 +3071,24 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
     {
       const params = matchRoute(
         pathname,
+        "/api/workspaces/:id/sessions/:sessionId/reset",
+      );
+      if (params && method === "POST") {
+        await handleResetSession(req, res, params.id!, params.sessionId!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(
+        pathname,
         "/api/workspaces/:id/sessions/:sessionId",
       );
       if (params && method === "GET") {
         await handleGetSession(req, res, params.id!, params.sessionId!, url);
+        return;
+      }
+      if (params && method === "DELETE") {
+        await handleDeleteSession(req, res, params.id!, params.sessionId!, url);
         return;
       }
     }
