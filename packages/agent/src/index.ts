@@ -28,6 +28,7 @@ export { ADAPTIVE_RUN_LIMITS, adaptiveLimitsInstruction } from "./limits.js";
 export {
   createSessionWorkflowStream,
   uiMessagesToSessionMessages,
+  sessionMessagesToUIMessages,
   type SessionStreamResult,
   type SessionStreamBody,
   type SessionStreamSideEffects,
@@ -53,3 +54,10 @@ export {
 
 export { openWikiWorkflowUiStream } from "./workflow-ui-stream.js";
 export { mapWorkflowStreamEvent } from "./workflow-events.js";
+
+export {
+  bindRunAbortSignal,
+  unbindRunAbortSignal,
+  getRunAbortSignal,
+  combineAbortSignals,
+} from "./run-abort.js";

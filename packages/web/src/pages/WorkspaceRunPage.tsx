@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   approvePlan,
   approvePublication,
@@ -43,6 +43,7 @@ function formatTime(iso: string): string {
 
 export function WorkspaceRunPage() {
   const { id = "" } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const rootPathHint = searchParams.get("rootPath") ?? undefined;
   const [workspace, setWorkspace] = useState<WorkspaceConfig | null>(null);
@@ -281,14 +282,29 @@ export function WorkspaceRunPage() {
   const awaitingPublication = lastRun?.status === "awaiting_publication";
   const awaitingPlan = lastRun?.status === "awaiting_plan";
   const canCancel =
-    lastRun?.status === "running" || lastRun?.status === "awaiting_plan";
+    lastRun?.status === "running" ||
+    lastRun?.status === "awaiting_plan" ||
+    lastRun?.status === "awaiting_publication";
+  // Retry starts a new run with frozen skill; only after the prior run has left
+  // in-progress / HITL states (not while plan or publication gates are open).
   const canRetry =
     Boolean(lastRun) &&
     canStart &&
     lastRun!.status !== "running" &&
-    lastRun!.status !== "awaiting_plan";
+    lastRun!.status !== "awaiting_plan" &&
+    lastRun!.status !== "awaiting_publication" &&
+    lastRun!.status !== "needs_input";
 
-  async function handleStart() {
+  /** Session-first interactive generate (plan negotiation + HITL in chat). */
+  function handleStartInSession() {
+    if (!id) {
+      return;
+    }
+    navigate(workspaceHref(id, "/session", rootPathHint, { kickoff: "1" }));
+  }
+
+  /** Headless job start (no Session chat UI). Kept for audit / e2e / auto paths. */
+  async function handleStartHeadless() {
     if (!id) {
       return;
     }
@@ -480,8 +496,8 @@ export function WorkspaceRunPage() {
           </p>
           <h1>Runs</h1>
           <p>
-            Job console for Wiki Runs: start headless generate, cancel, approve or decline
-            publication. For conversational planning and dynamic decisions, use{" "}
+            Job audit for Wiki Runs: list status, cancel, approve or decline publication.
+            Interactive generate and plan negotiation live on{" "}
             <Link to={workspaceHref(id, "/session", rootPathHint)}>Session</Link>.
           </p>
         </header>
@@ -521,11 +537,21 @@ export function WorkspaceRunPage() {
                   ) : null}
                   <Button
                     type="button"
-                    onClick={() => void handleStart()}
+                    variant="outline"
+                    onClick={() => void handleStartHeadless()}
                     disabled={starting || !canStart || canCancel}
                     data-testid="run-start"
+                    title="Headless job without Session chat (API / audit path)"
                   >
-                    {starting ? "Starting…" : "Start generate"}
+                    {starting ? "Starting…" : "Start headless"}
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={() => handleStartInSession()}
+                    disabled={!canStart || canCancel}
+                    data-testid="run-start-session"
+                  >
+                    Generate in Session
                   </Button>
                 </div>
               </CardHeader>

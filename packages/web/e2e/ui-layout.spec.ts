@@ -74,7 +74,9 @@ test.describe("UI layout smoke — Session / Settings skill / Sources", () => {
     await expectVisibleBox(page.getByTestId("run-event-log"), { minWidth: 120 });
     await expectVisibleBox(page.getByTestId("run-publish-actions"));
     await expectVisibleBox(page.getByTestId("run-approve"));
-    await expectVisibleBox(page.getByTestId("run-retry"));
+    // Retry is only for terminal outcomes — not while publication HITL is open.
+    await expect(page.getByTestId("run-retry")).toHaveCount(0);
+    await expectVisibleBox(page.getByTestId("run-cancel"));
 
     // --- Session chatbot layout (AI Elements) ---
     await page.getByTestId("workspace-subnav-session").click();

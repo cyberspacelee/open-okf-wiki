@@ -121,3 +121,36 @@ test("startWikiRun suspends for plan when planConfirm", async () => {
     resetMastraForTests();
   }
 });
+
+test("startWikiRun hard-stops when product abortSignal fires mid-fixture", async () => {
+  process.env.OKF_WIKI_AGENT_MODE = "fixture";
+  process.env.OKF_WIKI_MASTRA_STORAGE = "memory";
+  process.env.OKF_WIKI_FIXTURE_DELAY_MS = "400";
+  resetMastraForTests();
+
+  const root = await mkdtemp(path.join(tmpdir(), "okf-wiki-abort-"));
+  try {
+    const workspace = await makeWorkspace(root);
+    const runId = randomUUID();
+    const controller = new AbortController();
+    const started = startWikiRun({
+      runId,
+      workspace,
+      autoApprove: true,
+      skipPlanConfirm: true,
+      abortSignal: controller.signal,
+    });
+    // Abort while fixture delay is still slicing (50ms steps).
+    await new Promise((r) => setTimeout(r, 80));
+    controller.abort();
+    const result = await started;
+    assert.equal(result.status, "cancelled");
+    assert.equal(result.error, "cancelled");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    delete process.env.OKF_WIKI_AGENT_MODE;
+    delete process.env.OKF_WIKI_MASTRA_STORAGE;
+    delete process.env.OKF_WIKI_FIXTURE_DELAY_MS;
+    resetMastraForTests();
+  }
+});

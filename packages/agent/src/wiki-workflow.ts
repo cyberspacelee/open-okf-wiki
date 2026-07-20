@@ -14,7 +14,19 @@ import {
 } from "@okf-wiki/contract";
 import { publishStagingToPublication } from "@okf-wiki/core";
 import { z } from "zod";
+import {
+  combineAbortSignals,
+  getRunAbortSignal,
+} from "./run-abort.js";
 import { runWikiAgent, stagingDirForRun } from "./run.js";
+
+/** Merge Mastra step abort with product cancel (Stop / cancel API). */
+function stepAbortSignal(
+  runId: string,
+  mastraSignal?: AbortSignal,
+): AbortSignal | undefined {
+  return combineAbortSignals(mastraSignal, getRunAbortSignal(runId));
+}
 
 export const WIKI_RUN_WORKFLOW_ID = "wikiRunWorkflow";
 
@@ -110,7 +122,7 @@ const planGateStep = createStep({
   outputSchema: AfterPlanSchema,
   resumeSchema: PlanResumeSchema,
   suspendSchema: PlanSuspendSchema,
-  execute: async ({ inputData, resumeData, suspend }) => {
+  execute: async ({ inputData, resumeData, suspend, abortSignal }) => {
     if (resumeData?.action === "deny") {
       // Surface cancellation via thrown error mapped by runner.
       const err = new Error("plan declined");
@@ -132,12 +144,14 @@ const planGateStep = createStep({
     }
 
     // Generate plan via the shared agent entry (fixture or live).
+    // Product Stop/cancel is bound by runId; combine with Mastra step signal.
     const result = await runWikiAgent({
       runId: inputData.runId,
       workspace: inputData.workspace,
       autoApprove: inputData.autoApprove,
       phase: "plan",
       plan: inputData.plan,
+      abortSignal: stepAbortSignal(inputData.runId, abortSignal),
     });
 
     if (result.status === "cancelled") {
@@ -165,13 +179,14 @@ const writeStep = createStep({
   id: "write",
   inputSchema: AfterPlanSchema,
   outputSchema: AfterWriteSchema,
-  execute: async ({ inputData }) => {
+  execute: async ({ inputData, abortSignal }) => {
     const result = await runWikiAgent({
       runId: inputData.runId,
       workspace: inputData.workspace,
       autoApprove: inputData.autoApprove,
       phase: "write",
       plan: inputData.plan,
+      abortSignal: stepAbortSignal(inputData.runId, abortSignal),
     });
 
     if (result.status === "cancelled") {

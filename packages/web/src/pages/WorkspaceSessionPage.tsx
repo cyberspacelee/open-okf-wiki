@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
@@ -26,9 +26,13 @@ import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
 import { WorkspaceSubnav } from "../components/WorkspaceSubnav";
 import {
+  cancelRun,
   getOrCreateSession,
+  getSession,
   getWorkspace,
+  listRuns,
   type OperatorSessionDto,
+  type WikiRunPlan,
   type WorkspaceConfig,
 } from "../api";
 import { workspaceHref } from "../lib/workspace-path";
@@ -79,10 +83,100 @@ function sessionMessagesToUI(
   }));
 }
 
+/**
+ * Linked run id: prefer latest structured data-run part (live stream),
+ * then durable session.workflow (refreshed after stream).
+ * Never parse run ids from assistant markdown.
+ */
+function extractLinkedRunId(
+  session: OperatorSessionDto,
+  messages: UIMessage[],
+): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.role !== "assistant") {
+      continue;
+    }
+    for (let j = (m.parts ?? []).length - 1; j >= 0; j--) {
+      const p = m.parts![j]!;
+      if (p.type === "data-run" && p.data && typeof p.data === "object") {
+        const runId = (p.data as { runId?: unknown }).runId;
+        if (typeof runId === "string" && runId.length > 0) {
+          return runId;
+        }
+      }
+    }
+  }
+  return session.workflow?.linkedRunId;
+}
+
+/** Gate step from session.workflow.phase or structured data-choice (no transcript regex). */
+function extractGateStep(
+  session: OperatorSessionDto,
+  messages: UIMessage[],
+): "plan-gate" | "publish-gate" {
+  if (session.workflow?.phase === "awaiting_publish") {
+    return "publish-gate";
+  }
+  if (session.workflow?.phase === "awaiting_plan") {
+    return "plan-gate";
+  }
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.role !== "assistant") {
+      continue;
+    }
+    for (const p of m.parts ?? []) {
+      if (
+        p.type === "data-choice" &&
+        p.data &&
+        typeof p.data === "object" &&
+        "question" in (p.data as object)
+      ) {
+        const q = String((p.data as { question?: string }).question ?? "");
+        if (/publish/i.test(q)) {
+          return "publish-gate";
+        }
+        if (/plan/i.test(q)) {
+          return "plan-gate";
+        }
+      }
+    }
+  }
+  return "plan-gate";
+}
+
+/** Plan from durable session meta or structured data-plan stream parts. */
+function extractResumePlan(
+  session: OperatorSessionDto,
+  messages: UIMessage[],
+): WikiRunPlan | undefined {
+  if (session.workflow?.plan) {
+    return session.workflow.plan;
+  }
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.role !== "assistant") {
+      continue;
+    }
+    for (let j = (m.parts ?? []).length - 1; j >= 0; j--) {
+      const p = m.parts![j]!;
+      if (p.type === "data-plan" && p.data && typeof p.data === "object") {
+        const plan = p.data as WikiRunPlan;
+        if (plan && Array.isArray(plan.pages)) {
+          return plan;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
 export function WorkspaceSessionPage() {
   const { id = "" } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
   const rootPathHint = searchParams.get("rootPath") ?? undefined;
+  const kickoff = searchParams.get("kickoff") === "1";
 
   const [workspace, setWorkspace] = useState<WorkspaceConfig | null>(null);
   const [sessionMeta, setSessionMeta] = useState<OperatorSessionDto | null>(
@@ -159,6 +253,11 @@ export function WorkspaceSessionPage() {
                   {sessionMeta.status}
                 </Badge>
               ) : null}
+              {sessionMeta?.workflow?.linkedRunId ? (
+                <Badge variant="outline" data-testid="session-linked-run">
+                  run {sessionMeta.workflow.linkedRunId.slice(0, 8)}…
+                </Badge>
+              ) : null}
               <Link
                 to={workspaceHref(id, "/run", rootPathHint)}
                 className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
@@ -186,6 +285,8 @@ export function WorkspaceSessionPage() {
             workspace={workspace}
             session={sessionMeta}
             rootPathHint={rootPathHint}
+            kickoff={kickoff}
+            onSessionMetaChange={setSessionMeta}
           />
         )}
       </div>
@@ -198,13 +299,18 @@ function SessionChatPanel({
   workspace,
   session,
   rootPathHint,
+  kickoff,
+  onSessionMetaChange,
 }: {
   workspaceId: string;
   workspace: WorkspaceConfig;
   session: OperatorSessionDto;
   rootPathHint?: string;
+  kickoff?: boolean;
+  onSessionMetaChange?: (session: OperatorSessionDto) => void;
 }) {
   const [input, setInput] = useState("");
+  // Structured workflow state — never parse runId from assistant text.
   const [linkedRunId, setLinkedRunId] = useState(
     session.workflow?.linkedRunId as string | undefined,
   );
@@ -214,6 +320,23 @@ function SessionChatPanel({
       : "plan-gate",
   );
   const [resumePlan, setResumePlan] = useState(session.workflow?.plan);
+  /**
+   * After explicit Stop, hide decision chips until the next user turn.
+   * Mid-stream cancel may leave tool/data-choice parts in local messages;
+   * durable finalize also neutralizes them for refresh.
+   */
+  const [suppressDecisions, setSuppressDecisions] = useState(false);
+  const kickoffSent = useRef(false);
+  /** Sync guard against rapid double-send before useChat status flips to busy. */
+  const sendInFlight = useRef(false);
+  /** Tracks prior useChat status so we refresh meta only after a stream ends. */
+  const prevChatStatus = useRef<string>("ready");
+  const refreshingMeta = useRef(false);
+  /** Boot-time messages only — avoid resetting useChat when parent meta refreshes. */
+  const bootMessagesRef = useRef<UIMessage[] | null>(null);
+  if (bootMessagesRef.current === null) {
+    bootMessagesRef.current = sessionMessagesToUI(session);
+  }
 
   const chatApi = useMemo(() => {
     const base = `/api/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(session.id)}/chat`;
@@ -228,9 +351,12 @@ function SessionChatPanel({
     () =>
       new DefaultChatTransport({
         api: chatApi,
-        prepareSendMessagesRequest: ({ messages: msgs }) => {
+        prepareSendMessagesRequest: ({ messages: msgs, id }) => {
+          // AI SDK persistence: only the last message; server loads history.
           const last = msgs[msgs.length - 1];
-          let resumeData: { action: "approve" | "deny"; plan?: typeof resumePlan } | undefined;
+          let resumeData:
+            | { action: "approve" | "deny"; plan?: typeof resumePlan }
+            | undefined;
           if (last?.role === "user") {
             for (const p of last.parts ?? []) {
               if (
@@ -238,46 +364,15 @@ function SessionChatPanel({
                 typeof p.text === "string" &&
                 (p.text === "approve" || p.text === "deny")
               ) {
+                // Free-text fallback only; primary HITL is structured chips.
                 resumeData = { action: p.text };
               }
             }
           }
 
-          // Prefer live state; fall back to parsing assistant transcript for run id / gate.
-          let runId = linkedRunId;
-          let step = gateStep;
-          const plan = resumePlan;
-          for (const m of msgs) {
-            if (m.role !== "assistant") {
-              continue;
-            }
-            for (const p of m.parts ?? []) {
-              if (p.type === "text" && typeof p.text === "string") {
-                const runMatch = p.text.match(/Wiki Run\s+`([0-9a-f-]{8,})`/i);
-                if (runMatch?.[1]) {
-                  runId = runMatch[1];
-                }
-                if (/Publish the staged wiki/i.test(p.text)) {
-                  step = "publish-gate";
-                } else if (/Proposed wiki plan/i.test(p.text)) {
-                  step = "plan-gate";
-                }
-              }
-              if (
-                p.type === "data-choice" &&
-                p.data &&
-                typeof p.data === "object" &&
-                "question" in (p.data as object)
-              ) {
-                const q = String((p.data as { question?: string }).question ?? "");
-                if (/publish/i.test(q)) {
-                  step = "publish-gate";
-                } else if (/plan/i.test(q)) {
-                  step = "plan-gate";
-                }
-              }
-            }
-          }
+          const runId = linkedRunId ?? session.workflow?.linkedRunId;
+          const step = gateStep;
+          const plan = resumePlan ?? session.workflow?.plan;
 
           if (resumeData && step === "plan-gate" && plan) {
             resumeData = { ...resumeData, plan };
@@ -285,7 +380,8 @@ function SessionChatPanel({
 
           return {
             body: {
-              messages: msgs,
+              message: last,
+              id: id ?? session.id,
               ...(resumeData && runId
                 ? {
                     resumeData,
@@ -297,67 +393,162 @@ function SessionChatPanel({
           };
         },
       }),
-    [chatApi, linkedRunId, gateStep, resumePlan],
-  );
-
-  const initialMessages = useMemo(
-    () => sessionMessagesToUI(session),
-    [session],
+    [
+      chatApi,
+      linkedRunId,
+      gateStep,
+      resumePlan,
+      session.id,
+      session.workflow?.linkedRunId,
+      session.workflow?.plan,
+    ],
   );
 
   const { messages, sendMessage, status, stop, error, clearError } = useChat({
     id: session.id,
     transport,
-    messages: initialMessages,
+    messages: bootMessagesRef.current,
   });
 
-  const pending = useMemo(
-    () => extractPendingFromMessages(messages),
-    [messages],
+  const isBusy = status === "submitted" || status === "streaming";
+
+  /** Single-flight send: blocks double-click / double-kickoff races. */
+  const sendTurn = useCallback(
+    (text: string) => {
+      if (sendInFlight.current || isBusy) {
+        return;
+      }
+      sendInFlight.current = true;
+      setSuppressDecisions(false);
+      void Promise.resolve(sendMessage({ text })).finally(() => {
+        sendInFlight.current = false;
+      });
+    },
+    [isBusy, sendMessage],
   );
 
-  // Track workflow run id / gate from streamed assistant text + decisions.
+  const pending = useMemo(() => {
+    if (suppressDecisions) {
+      return null;
+    }
+    return extractPendingFromMessages(messages);
+  }, [messages, suppressDecisions]);
+
+  // Track linkedRunId / gate / plan from structured session state + data parts.
   useEffect(() => {
-    for (const m of messages) {
-      if (m.role !== "assistant") {
-        continue;
-      }
-      for (const p of m.parts ?? []) {
-        if (p.type === "text" && typeof p.text === "string") {
-          const runMatch = p.text.match(/Wiki Run\s+`([0-9a-f-]{8,})`/i);
-          if (runMatch?.[1]) {
-            setLinkedRunId(runMatch[1]);
+    const fromStructured = extractLinkedRunId(session, messages);
+    if (fromStructured) {
+      setLinkedRunId(fromStructured);
+    }
+    setGateStep(extractGateStep(session, messages));
+    const plan = extractResumePlan(session, messages);
+    if (plan) {
+      setResumePlan(plan);
+    }
+  }, [messages, session]);
+
+  // After a stream finishes, re-fetch session meta so plan / linkedRunId / phase
+  // match the server (resume works without a full page reload).
+  useEffect(() => {
+    const prev = prevChatStatus.current;
+    prevChatStatus.current = status;
+    const wasBusy = prev === "submitted" || prev === "streaming";
+    const nowIdle = status === "ready" || status === "error";
+    if (!wasBusy || !nowIdle || refreshingMeta.current) {
+      return;
+    }
+    let cancelled = false;
+    refreshingMeta.current = true;
+    void (async () => {
+      try {
+        // Server finalizes on stream flush before response ends; still retry
+        // briefly in case of disconnect-fallback finalize on "close".
+        let fresh: OperatorSessionDto | null = null;
+        for (let attempt = 0; attempt < 4; attempt++) {
+          if (attempt > 0) {
+            await new Promise((r) => setTimeout(r, 100 * attempt));
           }
-          if (/Publish the staged wiki/i.test(p.text)) {
-            setGateStep("publish-gate");
+          if (cancelled) {
+            return;
           }
-          if (/Proposed wiki plan/i.test(p.text)) {
-            setGateStep("plan-gate");
+          try {
+            const res = await getSession(
+              workspaceId,
+              session.id,
+              workspace.rootPath ?? rootPathHint,
+            );
+            fresh = res.session;
+            if (
+              fresh.workflow?.linkedRunId ||
+              fresh.workflow?.phase === "awaiting_plan" ||
+              fresh.workflow?.phase === "awaiting_publish" ||
+              fresh.workflow?.phase === "done"
+            ) {
+              break;
+            }
+          } catch {
+            // retry
           }
         }
-        if (
-          p.type === "data-choice" &&
-          p.data &&
-          typeof p.data === "object" &&
-          "options" in (p.data as object)
-        ) {
-          const q = (p.data as { question?: string }).question ?? "";
-          if (/publish/i.test(q)) {
-            setGateStep("publish-gate");
-          } else if (/plan/i.test(q)) {
-            setGateStep("plan-gate");
-          }
+        if (cancelled || !fresh) {
+          return;
         }
+        onSessionMetaChange?.(fresh);
+        if (fresh.workflow?.linkedRunId) {
+          setLinkedRunId(fresh.workflow.linkedRunId);
+        }
+        if (fresh.workflow?.plan) {
+          setResumePlan(fresh.workflow.plan);
+        }
+        if (fresh.workflow?.phase === "awaiting_publish") {
+          setGateStep("publish-gate");
+        } else if (fresh.workflow?.phase === "awaiting_plan") {
+          setGateStep("plan-gate");
+        }
+        // suppressDecisions is only set by explicit Stop (and cleared on sendTurn).
+        // Do not toggle it from meta — finalize races would hide legitimate plan chips.
+      } catch {
+        // Non-fatal: data-run / data-plan parts still drive live resume.
+      } finally {
+        refreshingMeta.current = false;
       }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    status,
+    workspaceId,
+    session.id,
+    workspace.rootPath,
+    rootPathHint,
+    onSessionMetaChange,
+  ]);
+
+  // Session-first kickoff from Runs page (?kickoff=1).
+  useEffect(() => {
+    if (!kickoff || kickoffSent.current) {
+      return;
     }
-    if (session.workflow?.plan) {
-      setResumePlan(session.workflow.plan);
+    const hasSources = (workspace.sources?.length ?? 0) > 0;
+    if (!hasSources) {
+      return;
     }
-  }, [messages, session.workflow?.plan]);
+    // Only auto-kick when there is no in-flight workflow.
+    const phase = session.workflow?.phase ?? "idle";
+    if (phase !== "idle" && phase !== "done") {
+      return;
+    }
+    if (status === "submitted" || status === "streaming" || sendInFlight.current) {
+      return;
+    }
+    kickoffSent.current = true;
+    sendTurn("generate a wiki plan");
+  }, [kickoff, workspace.sources, session.workflow?.phase, status, sendTurn]);
+
   const choiceOnly = pending?.mode === "choice_only";
   const inputOnly = pending?.mode === "input_only";
   const canType = !choiceOnly;
-  const isBusy = status === "submitted" || status === "streaming";
   const hasSources = (workspace.sources?.length ?? 0) > 0;
 
   const latestAssistantId = useMemo(() => {
@@ -371,7 +562,7 @@ function SessionChatPanel({
 
   const handleChoice = useCallback(
     (optionId: string) => {
-      if (isBusy) {
+      if (isBusy || sendInFlight.current) {
         return;
       }
       // Option ids are workflow resume actions: approve | deny (and aliases).
@@ -385,28 +576,85 @@ function SessionChatPanel({
               optionId === "keep_staging"
             ? "deny"
             : optionId;
-      void sendMessage({ text: action });
+      sendTurn(action);
     },
-    [isBusy, sendMessage],
+    [isBusy, sendTurn],
   );
 
   const handleSubmit = useCallback(
     (message: PromptInputMessage) => {
       const text = message.text.trim();
-      if (!text || isBusy || choiceOnly) {
+      if (!text || isBusy || choiceOnly || sendInFlight.current) {
         return;
       }
-      void sendMessage({ text });
+      sendTurn(text);
       setInput("");
     },
-    [choiceOnly, isBusy, sendMessage],
+    [choiceOnly, isBusy, sendTurn],
   );
+
+  /**
+   * Explicit Stop: abort the client chat stream AND cancel the linked Wiki Run.
+   * HTTP disconnect alone must not cancel (server tees + drains for durability).
+   * Immediately hide decision chips so the user is not stuck approving a cancelled run.
+   *
+   * Run id may be missing/stale before the first data-run chunk (new kickoff while
+   * session.workflow still points at a prior terminal run). Fall back to listing
+   * cancellable runs owned by this session (eager server register sets sessionId).
+   */
+  const handleStop = useCallback(() => {
+    setSuppressDecisions(true);
+    stop();
+    const hinted = linkedRunId ?? session.workflow?.linkedRunId;
+    const root = workspace.rootPath ?? rootPathHint;
+    void (async () => {
+      const tryCancel = async (runId: string): Promise<boolean> => {
+        try {
+          await cancelRun(workspaceId, runId, root);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      if (hinted && (await tryCancel(hinted))) {
+        return;
+      }
+      try {
+        const { runs } = await listRuns(workspaceId, root);
+        const active = runs.find(
+          (r) =>
+            r.sessionId === session.id &&
+            (r.status === "running" ||
+              r.status === "awaiting_plan" ||
+              r.status === "awaiting_publication"),
+        );
+        if (active) {
+          await tryCancel(active.runId);
+        }
+      } catch {
+        // Best-effort: run may not be registered yet or already terminal.
+      }
+    })();
+  }, [
+    stop,
+    linkedRunId,
+    session.workflow?.linkedRunId,
+    session.id,
+    workspaceId,
+    workspace.rootPath,
+    rootPathHint,
+  ]);
 
   return (
     <>
       <ErrorBanner error={error} onDismiss={() => clearError()} />
       <div className="flex min-h-0 flex-1 flex-col rounded-lg border bg-card">
         <div className="flex items-center justify-end gap-2 border-b px-3 py-2">
+          {linkedRunId ? (
+            <Badge variant="outline" data-testid="session-chat-run-id">
+              {linkedRunId.slice(0, 8)}…
+            </Badge>
+          ) : null}
           <Badge variant="secondary" data-testid="session-chat-status">
             {status}
           </Badge>
@@ -415,7 +663,7 @@ function SessionChatPanel({
               type="button"
               variant="destructive"
               size="sm"
-              onClick={() => stop()}
+              onClick={() => handleStop()}
               data-testid="session-stop"
             >
               Stop
@@ -436,7 +684,9 @@ function SessionChatPanel({
                   <MessageContent>
                     <MessageParts
                       message={message}
-                      isLatestAssistant={message.id === latestAssistantId}
+                      isLatestAssistant={
+                        message.id === latestAssistantId && !suppressDecisions
+                      }
                       onChoice={handleChoice}
                     />
                   </MessageContent>
@@ -491,7 +741,7 @@ function SessionChatPanel({
                 isBusy || choiceOnly || !canType || !input.trim() || !hasSources
               }
               data-testid="session-send"
-              onStop={() => stop()}
+              onStop={() => handleStop()}
             />
           </PromptInput>
         </div>

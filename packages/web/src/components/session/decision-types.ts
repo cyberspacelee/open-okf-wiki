@@ -35,7 +35,7 @@ export function extractPendingFromMessages(
     for (const part of m.parts) {
       if (part.type === "tool-request_user_decision" && part.state === "input-available") {
         const d = part.input as PendingInteraction | undefined;
-        if (d?.question) {
+        if (d?.question && (d.options?.length ?? 0) > 0) {
           return {
             type: d.type ?? "choice",
             question: d.question,
@@ -48,7 +48,11 @@ export function extractPendingFromMessages(
         }
       }
       if (part.type === "data-choice" && part.data) {
-        const d = part.data as PendingInteraction;
+        const d = part.data as PendingInteraction & { cancelled?: boolean };
+        // Cancel-wins finalize may neutralize options / set cancelled.
+        if (d?.cancelled || (d.options?.length ?? 0) === 0) {
+          continue;
+        }
         if (d?.question) {
           return {
             type: d.type ?? "choice",

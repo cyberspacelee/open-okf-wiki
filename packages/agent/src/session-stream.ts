@@ -1,5 +1,6 @@
 /**
  * Operator Session turn streaming via Mastra Workflow + @mastra/ai-sdk toAISdkStream.
+ * AI SDK persistence: server owns history; client sends last message only.
  * No Session-local Staging materialize; no hand-rolled Mastra→SSE projection.
  */
 
@@ -30,13 +31,23 @@ export type SessionStreamSideEffects = {
     pages?: string[];
     plan?: WikiRunPlan;
     summary?: string;
+    /** Link run record back to the Operator Session that started it. */
+    sessionId?: string;
   };
-  /** Resume already registered; publish handled inside workflow. */
 };
 
 export type SessionStreamResult = {
   stream: ReadableStream<UIMessageChunk>;
+  /**
+   * Turn mode after body/session inspection. Server uses `start` to eagerly
+   * register a run record so explicit Stop/cancel can target it mid-stream.
+   */
+  mode: "start" | "resume" | "help";
+  /** Linked Wiki Run id for start/resume turns (undefined for help). */
+  runId?: string;
   finalize: () => Promise<{
+    /** Full UIMessage-compatible history after this turn (server source of truth). */
+    messages: SessionMessage[];
     assistantMessage: SessionMessage;
     status: OperatorSession["status"];
     pending: PendingInteraction | null;
@@ -46,12 +57,94 @@ export type SessionStreamResult = {
 };
 
 export type SessionStreamBody = {
+  /** Preferred: last user message only (AI SDK chat persistence). */
+  message?: UIMessage;
+  /** Full message list (server-assembled or legacy client). */
   messages?: UIMessage[];
+  /** Chat / session id from DefaultChatTransport. */
+  id?: string;
   /** Workflow resume payload (plan/publication gate). */
   resumeData?: { action: "approve" | "deny"; plan?: WikiRunPlan };
   runId?: string;
   step?: string;
 };
+
+/**
+ * Pipe another UI stream into the turn writer (awaited for ordering).
+ * Skip nested start/finish — the outer createUIMessageStream owns message framing
+ * (with originalMessages) so we do not open a second assistant bubble.
+ * When `abortSignal` fires, cancel the reader so we stop merging chunks ASAP.
+ */
+async function pipeUiStream(
+  writer: { write: (part: UIMessageChunk) => void },
+  stream: ReadableStream<UIMessageChunk>,
+  abortSignal?: AbortSignal,
+): Promise<void> {
+  const reader = stream.getReader();
+  const onAbort = () => {
+    void reader.cancel().catch(() => undefined);
+  };
+  if (abortSignal?.aborted) {
+    await reader.cancel().catch(() => undefined);
+    return;
+  }
+  abortSignal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    for (;;) {
+      if (abortSignal?.aborted) {
+        break;
+      }
+      let done: boolean;
+      let value: UIMessageChunk | undefined;
+      try {
+        ({ done, value } = await reader.read());
+      } catch {
+        // reader.cancel() from product abort rejects a pending read — treat as
+        // clean stop so the caller can still await workflow result() (durable
+        // publish must not be lost to a stream cancel error).
+        break;
+      }
+      if (done) {
+        break;
+      }
+      if (!value) {
+        continue;
+      }
+      if (value.type === "start" || value.type === "finish") {
+        continue;
+      }
+      // Drop further writes once product cancel wins mid-pipe.
+      if (abortSignal?.aborted) {
+        break;
+      }
+      writer.write(value);
+    }
+  } finally {
+    abortSignal?.removeEventListener("abort", onAbort);
+    // Ensure the underlying workflow stream is not left locked if we broke early.
+    try {
+      await reader.cancel();
+    } catch {
+      // already cancelled / closed
+    }
+  }
+}
+
+function isCancelError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const name = (error as { name?: string }).name;
+  if (
+    name === "AbortError" ||
+    name === "TimeoutError" ||
+    name === "WikiRunCancelled"
+  ) {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return /aborted|AbortError|cancelled|plan declined/i.test(message);
+}
 
 function lastUserText(messages: UIMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -68,14 +161,21 @@ function lastUserText(messages: UIMessage[]): string {
   return "";
 }
 
-function isKickoff(text: string, phase: string | undefined): boolean {
-  if (phase === "idle" || phase === undefined || phase === "done") {
-    return true;
+/**
+ * True when user text should start a new Wiki Run.
+ * Only on idle/done (never while a gate or run is mid-flight), and only for
+ * generate-ish phrases — idle free-chat must not auto-start a run.
+ */
+export function isKickoff(text: string, phase: string | undefined): boolean {
+  if (phase !== "idle" && phase !== undefined && phase !== "done") {
+    return false;
   }
-  if (!text) {
-    return true;
+  const t = text.trim();
+  if (!t) {
+    return false;
   }
-  return /generate|wiki|plan|开始|生成|写|run/i.test(text);
+  // Keep broad enough for e2e / kickoff ("generate a wiki plan") and help copy ("generate").
+  return /generate|wiki|plan|开始|生成|写|run/i.test(t);
 }
 
 function optionsForPlan(plan: WikiRunPlan): InteractionOption[] {
@@ -246,14 +346,67 @@ function mapTerminalStatus(result: {
   return { status: "active", workflowPhase: "idle" };
 }
 
+/** Convert durable SessionMessage rows to AI SDK UIMessage shape. */
+export function sessionMessagesToUIMessages(
+  messages: SessionMessage[],
+): UIMessage[] {
+  return messages.map((m) => ({
+    id: m.id,
+    role: m.role,
+    parts: (m.parts ?? []).map((p) => {
+      if (p.type === "text" && "text" in p) {
+        return { type: "text" as const, text: p.text };
+      }
+      if (typeof p.type === "string" && p.type.startsWith("tool-")) {
+        const tool = p as {
+          type: string;
+          toolCallId?: string;
+          toolName?: string;
+          state?: string;
+          input?: unknown;
+          output?: unknown;
+          errorText?: string;
+        };
+        return {
+          type: tool.type as `tool-${string}`,
+          toolCallId: tool.toolCallId ?? tool.type,
+          state: (tool.state as "output-available") ?? "output-available",
+          input: tool.input,
+          output: tool.output,
+          errorText: tool.errorText,
+        } as UIMessage["parts"][number];
+      }
+      if (typeof p.type === "string" && p.type.startsWith("data-")) {
+        const dataPart = p as { type: string; id?: string; data?: unknown };
+        return {
+          type: dataPart.type as `data-${string}`,
+          id: dataPart.id,
+          data: dataPart.data,
+        } as UIMessage["parts"][number];
+      }
+      if (p.type === "step-start") {
+        return { type: "step-start" as const };
+      }
+      return { type: "text" as const, text: JSON.stringify(p) };
+    }),
+  }));
+}
+
 /**
  * Stream one Session turn: start or resume the wiki-run workflow via official AI SDK bridge.
+ * Caller must pass full `messages` (server history + new user message).
  */
 export async function createSessionWorkflowStream(input: {
   session: OperatorSession;
   workspace: WorkspaceConfig;
+  /** Full UI message list for this turn (previous + new user). */
   messages: UIMessage[];
   body?: SessionStreamBody;
+  /**
+   * Register product cancel AbortController for this run (server abortRun).
+   * Called synchronously once mode/runId are known so Stop can abort mid-stream.
+   */
+  abortSignalForRun?: (runId: string) => AbortSignal;
 }): Promise<SessionStreamResult> {
   const assistantId = randomUUID();
   const textId = randomUUID();
@@ -265,6 +418,9 @@ export async function createSessionWorkflowStream(input: {
   };
   let sideEffects: SessionStreamSideEffects | undefined;
   const toolParts: SessionMessage["parts"] = [];
+  /** Structured data parts written during the turn (fallback if onFinish is late). */
+  const dataParts: SessionMessage["parts"] = [];
+  let finishedMessages: UIMessage[] | null = null;
 
   const phase = input.session.workflow.phase ?? "idle";
   const userText = lastUserText(input.messages);
@@ -278,12 +434,24 @@ export async function createSessionWorkflowStream(input: {
     existingRunId &&
     (userText === "approve" || userText === "deny")
   ) {
-    resumeData = {
-      action: userText,
-      ...(phase === "awaiting_plan" && input.session.workflow.plan
-        ? { plan: input.session.workflow.plan }
-        : {}),
-    };
+    resumeData = { action: userText };
+  }
+
+  // Plan gate approve requires a plan payload. Client may omit it (stale meta);
+  // always fill from durable session workflow when missing.
+  if (
+    resumeData?.action === "approve" &&
+    !resumeData.plan &&
+    input.session.workflow.plan
+  ) {
+    const stepHint = input.body?.step ?? "";
+    const atPlanGate =
+      phase === "awaiting_plan" ||
+      stepHint === "plan-gate" ||
+      (!stepHint && phase !== "awaiting_publish");
+    if (atPlanGate) {
+      resumeData = { ...resumeData, plan: input.session.workflow.plan };
+    }
   }
 
   let mode: "start" | "resume" | "help" = "help";
@@ -300,12 +468,34 @@ export async function createSessionWorkflowStream(input: {
           ? "publish-gate"
           : "plan-gate";
     }
-  } else if (isKickoff(userText, phase) && !resumeData) {
+  } else if (
+    isKickoff(userText, phase) &&
+    !resumeData &&
+    // Soft guard: avoid stacking a second start while status is still running
+    // (client double-send before finalize). Server also holds an in-flight lock.
+    input.session.status !== "running" &&
+    // No run id / registry until sources exist (execute also guards; keeps eager
+    // server register from creating orphan running records).
+    (input.workspace.sources?.length ?? 0) > 0
+  ) {
     mode = "start";
     runId = randomUUID();
   }
 
+  // Register product cancel early (before stream execute) so Stop/cancel can
+  // abort while the first chunks are still in flight.
+  const abortSignal =
+    mode !== "help" && input.abortSignalForRun
+      ? input.abortSignalForRun(runId)
+      : undefined;
+
   const stream = createUIMessageStream({
+    // Persistence mode: stable assistant id + merge workflow parts into one bubble.
+    originalMessages: input.messages,
+    generateId: () => assistantId,
+    onFinish: ({ messages }) => {
+      finishedMessages = messages;
+    },
     execute: async ({ writer }) => {
       const writeText = async (text: string) => {
         finalText += (finalText ? "\n\n" : "") + text;
@@ -350,6 +540,17 @@ export async function createSessionWorkflowStream(input: {
         status = "waiting";
       };
 
+      const writeRunLink = (id: string, runStatus: string) => {
+        const partId = randomUUID();
+        const data = { runId: id, status: runStatus };
+        writer.write({
+          type: "data-run",
+          id: partId,
+          data,
+        } as UIMessageChunk);
+        dataParts.push({ type: "data-run", id: partId, data });
+      };
+
       const applyWorkflowResult = async (result: unknown) => {
         const suspend = extractSuspendPayload(result as never);
         if (suspend) {
@@ -357,6 +558,20 @@ export async function createSessionWorkflowStream(input: {
           if (decision) {
             await writeText(decision.text);
             writeDecision(decision.pending);
+            // Structured plan for clients (no need to parse markdown).
+            if (decision.plan) {
+              const planPartId = randomUUID();
+              writer.write({
+                type: "data-plan",
+                id: planPartId,
+                data: decision.plan,
+              } as UIMessageChunk);
+              dataParts.push({
+                type: "data-plan",
+                id: planPartId,
+                data: decision.plan,
+              });
+            }
             workflow = {
               phase:
                 suspend.gate === "publication"
@@ -378,6 +593,7 @@ export async function createSessionWorkflowStream(input: {
                   suspend.gate === "plan"
                     ? "Awaiting plan confirmation"
                     : suspend.summary,
+                sessionId: input.session.id,
               },
             };
             return;
@@ -403,6 +619,7 @@ export async function createSessionWorkflowStream(input: {
             pages: terminal.pages,
             plan: terminal.plan ?? input.session.workflow.plan,
             summary: terminal.summary,
+            sessionId: input.session.id,
           },
         };
       };
@@ -423,42 +640,82 @@ export async function createSessionWorkflowStream(input: {
         return;
       }
 
+      const markCancelled = async (summary = "Wiki Run cancelled") => {
+        pending = null;
+        status = "active";
+        workflow = {
+          phase: "idle",
+          linkedRunId: runId,
+          plan: input.session.workflow.plan,
+        };
+        await writeText(summary);
+        sideEffects = {
+          upsertRun: {
+            runId,
+            status: "cancelled",
+            summary,
+            sessionId: input.session.id,
+          },
+        };
+      };
+
+      // Hold ui so catch can settle result() and unbind product abort signal.
+      let ui:
+        | Awaited<ReturnType<typeof openWikiWorkflowUiStream>>
+        | undefined;
+      /** Cancel wins over gates/errors, but not over durable publish outcomes. */
+      const cancelUnlessDurableSuccess = async () => {
+        if (!abortSignal?.aborted) {
+          return;
+        }
+        const runStatus = sideEffects?.upsertRun?.status;
+        if (runStatus === "published" || runStatus === "publication_declined") {
+          return;
+        }
+        await markCancelled();
+      };
+
       try {
         status = "running";
+        if (abortSignal?.aborted) {
+          await markCancelled();
+          return;
+        }
+
         if (mode === "start") {
+          // Emit run id before text so Session Stop can target cancel ASAP.
+          writeRunLink(runId, "starting");
           await writeText(
             `Starting **Wiki Run** \`${runId}\` for **${input.workspace.name}**…`,
           );
           workflow = { phase: "awaiting_plan", linkedRunId: runId };
-          const ui = await openWikiWorkflowUiStream({
+          ui = await openWikiWorkflowUiStream({
             kind: "start",
             runId,
             workspace: input.workspace,
             autoApprove: false,
             skipPlanConfirm: false,
             forcePlanConfirm: true,
+            abortSignal,
           });
-          // Pipe official workflow UI parts into this turn's stream.
-          const reader = ui.stream.getReader();
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (done) {
-              break;
-            }
-            if (value) {
-              writer.write(value);
-            }
-          }
+          // Merge workflow UI parts into this turn's assistant message
+          // (originalMessages keeps a single bubble). Await pipe so decision
+          // text is ordered after workflow chunks.
+          await pipeUiStream(writer, ui.stream, abortSignal);
+          // Always settle result (unbind + real outcome). Late abort must not
+          // rewrite published/publication_declined after the workflow finished.
           await applyWorkflowResult(await ui.result());
+          await cancelUnlessDurableSuccess();
           return;
         }
 
+        writeRunLink(runId, "resuming");
         await writeText(
           resumeData?.action === "approve"
             ? "Resuming Wiki Run…"
             : "Declining and closing the suspended gate…",
         );
-        const ui = await openWikiWorkflowUiStream({
+        ui = await openWikiWorkflowUiStream({
           kind: "resume",
           runId,
           step: resumeStep ?? "plan-gate",
@@ -466,26 +723,64 @@ export async function createSessionWorkflowStream(input: {
             action: resumeData!.action,
             ...(resumeData!.plan ? { plan: resumeData!.plan } : {}),
           },
+          abortSignal,
         });
-        const reader = ui.stream.getReader();
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) {
-            break;
-          }
-          if (value) {
-            writer.write(value);
+        await pipeUiStream(writer, ui.stream, abortSignal);
+        await applyWorkflowResult(await ui.result());
+        await cancelUnlessDurableSuccess();
+      } catch (error) {
+        // Prefer durable workflow outcome over cancel/stream errors. pipeUiStream
+        // or a late abort must not clobber published / publication_declined after
+        // the workflow has already finished; always settle result() to unbind.
+        let failCause: unknown = error;
+        if (ui) {
+          try {
+            await applyWorkflowResult(await ui.result());
+            await cancelUnlessDurableSuccess();
+            return;
+          } catch (resultError) {
+            // Prefer cancel classification when either the pipe or result aborted.
+            if (
+              abortSignal?.aborted ||
+              isCancelError(error) ||
+              isCancelError(resultError)
+            ) {
+              failCause =
+                isCancelError(resultError) || abortSignal?.aborted
+                  ? resultError
+                  : error;
+            } else {
+              failCause = resultError;
+            }
           }
         }
-        await applyWorkflowResult(await ui.result());
-      } catch (error) {
+        const durable =
+          sideEffects?.upsertRun?.status === "published" ||
+          sideEffects?.upsertRun?.status === "publication_declined";
+        if (durable) {
+          // Outcome already applied; do not rewrite as cancelled/failed.
+          return;
+        }
+        if (abortSignal?.aborted || isCancelError(failCause) || isCancelError(error)) {
+          await markCancelled();
+          return;
+        }
         status = "failed";
-        await writeText(`Wiki Run failed: ${redactErrorMessage(error)}`);
+        // Do not leave phase stuck at awaiting_plan (set optimistically on start)
+        // or a prior gate — failed turns must return to idle so kickoff works again.
+        pending = null;
+        workflow = {
+          phase: "idle",
+          linkedRunId: runId,
+          plan: input.session.workflow.plan,
+        };
+        await writeText(`Wiki Run failed: ${redactErrorMessage(failCause)}`);
         sideEffects = {
           upsertRun: {
             runId,
             status: "failed",
-            summary: redactErrorMessage(error),
+            summary: redactErrorMessage(failCause),
+            sessionId: input.session.id,
           },
         };
       }
@@ -494,21 +789,51 @@ export async function createSessionWorkflowStream(input: {
 
   return {
     stream,
+    mode,
+    runId: mode === "help" ? undefined : runId,
     finalize: async () => {
+      // onFinish runs in handleUIMessageStreamFinish flush while the stream is
+      // still being drained. A few microtasks cover late assignment if finalize
+      // is invoked on the same tick the readable closes.
+      for (let i = 0; i < 5 && !finishedMessages; i += 1) {
+        await Promise.resolve();
+      }
+      // Prefer full stream-assembled messages (tool/data parts included).
+      if (finishedMessages && finishedMessages.length > 0) {
+        const asSession = uiMessagesToSessionMessages(finishedMessages);
+        const assistantMessage =
+          [...asSession].reverse().find((m) => m.role === "assistant") ??
+          asSession[asSession.length - 1]!;
+        return {
+          messages: asSession,
+          assistantMessage,
+          status,
+          pending,
+          workflow,
+          sideEffects,
+        };
+      }
+
       const parts: SessionMessage["parts"] = [
         { type: "text", text: finalText || "(empty)", state: "done" },
         ...toolParts,
+        ...dataParts,
       ];
       if (pending) {
         parts.push({ type: "data-choice", data: pending });
       }
+      const assistantMessage: SessionMessage = {
+        id: assistantId,
+        role: "assistant",
+        parts,
+        createdAt: new Date().toISOString(),
+      };
       return {
-        assistantMessage: {
-          id: assistantId,
-          role: "assistant",
-          parts,
-          createdAt: new Date().toISOString(),
-        },
+        messages: [
+          ...uiMessagesToSessionMessages(input.messages),
+          assistantMessage,
+        ],
+        assistantMessage,
         status,
         pending,
         workflow,
@@ -518,7 +843,7 @@ export async function createSessionWorkflowStream(input: {
   };
 }
 
-/** Convert AI SDK UI messages to durable SessionMessage rows. */
+/** Convert AI SDK UI messages to durable SessionMessage rows (lossy-safe, UIMessage-shaped). */
 export function uiMessagesToSessionMessages(
   messages: UIMessage[],
 ): SessionMessage[] {
@@ -529,6 +854,10 @@ export function uiMessagesToSessionMessages(
         parts.push({ type: "text", text: p.text });
         continue;
       }
+      if (p.type === "step-start") {
+        parts.push({ type: "step-start" });
+        continue;
+      }
       if (typeof p.type === "string" && p.type.startsWith("tool-")) {
         parts.push({
           type: p.type,
@@ -537,7 +866,12 @@ export function uiMessagesToSessionMessages(
             "toolName" in p
               ? String(p.toolName ?? p.type.slice(5))
               : p.type.slice(5),
-          state: "state" in p ? (p.state as SessionMessage["parts"][0] extends never ? never : string) : "output-available",
+          state:
+            "state" in p
+              ? (p.state as SessionMessage["parts"][0] extends never
+                  ? never
+                  : string)
+              : "output-available",
           input: "input" in p ? p.input : undefined,
           output: "output" in p ? p.output : undefined,
         } as SessionMessage["parts"][number]);
@@ -546,9 +880,13 @@ export function uiMessagesToSessionMessages(
       if (typeof p.type === "string" && p.type.startsWith("data-")) {
         parts.push({
           type: p.type,
+          id: "id" in p && typeof p.id === "string" ? p.id : undefined,
           data: "data" in p ? p.data : undefined,
         } as SessionMessage["parts"][number]);
       }
+    }
+    if (parts.length === 0) {
+      parts.push({ type: "text", text: "(empty)" });
     }
     return {
       id: m.id,

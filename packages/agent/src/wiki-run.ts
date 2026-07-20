@@ -10,6 +10,10 @@ import type {
 } from "@okf-wiki/contract";
 import { getMastra } from "./mastra-instance.js";
 import {
+  bindRunAbortSignal,
+  unbindRunAbortSignal,
+} from "./run-abort.js";
+import {
   WIKI_RUN_WORKFLOW_ID,
   type WikiRunWorkflowOutput,
 } from "./wiki-workflow.js";
@@ -30,6 +34,11 @@ export type StartWikiRunInput = {
   plan?: WikiRunPlan;
   /** Job timeline callback (Run console SSE). */
   onEvent?: (event: WikiWorkflowJobEvent) => void;
+  /**
+   * Product cancel signal (server registerRunAbortController / abortRun).
+   * Bound for workflow steps so runWikiAgent stops mid-phase.
+   */
+  abortSignal?: AbortSignal;
 };
 
 export type WikiRunOrchestrationResult = {
@@ -187,7 +196,17 @@ function mapTerminalWorkflowResult(result: unknown): WikiRunOrchestrationResult 
 export async function startWikiRun(
   input: StartWikiRunInput,
 ): Promise<WikiRunOrchestrationResult> {
+  if (input.abortSignal) {
+    bindRunAbortSignal(input.runId, input.abortSignal);
+  }
   try {
+    if (input.abortSignal?.aborted) {
+      return {
+        status: "cancelled",
+        error: "cancelled",
+        summary: "Wiki Run cancelled",
+      };
+    }
     const mastra = getMastra();
     const workflow = mastra.getWorkflow(WIKI_RUN_WORKFLOW_ID);
     const run = await workflow.createRun({ runId: input.runId });
@@ -203,9 +222,24 @@ export async function startWikiRun(
     });
 
     const result = await consumeWorkflowStream(output, input.onEvent);
-    return mapTerminalWorkflowResult(result);
+    const mapped = mapTerminalWorkflowResult(result);
+    // Late product abort must not rewrite durable publish outcomes.
+    if (
+      input.abortSignal?.aborted &&
+      mapped.status !== "published" &&
+      mapped.status !== "publication_declined"
+    ) {
+      return {
+        status: "cancelled",
+        error: "cancelled",
+        summary: "Wiki Run cancelled",
+        pages: mapped.pages,
+        plan: mapped.plan,
+      };
+    }
+    return mapped;
   } catch (error) {
-    if (isCancelledError(error)) {
+    if (isCancelledError(error) || input.abortSignal?.aborted) {
       return {
         status: "cancelled",
         error: "cancelled",
@@ -216,6 +250,10 @@ export async function startWikiRun(
       status: "failed",
       error: redactErrorMessage(error),
     };
+  } finally {
+    if (input.abortSignal) {
+      unbindRunAbortSignal(input.runId);
+    }
   }
 }
 
@@ -226,6 +264,8 @@ export type ResumeWikiRunInput = {
   action: "approve" | "deny";
   plan?: WikiRunPlan;
   onEvent?: (event: WikiWorkflowJobEvent) => void;
+  /** Product cancel signal (server abortRun). */
+  abortSignal?: AbortSignal;
 };
 
 /**
@@ -234,7 +274,17 @@ export type ResumeWikiRunInput = {
 export async function resumeWikiRun(
   input: ResumeWikiRunInput,
 ): Promise<WikiRunOrchestrationResult> {
+  if (input.abortSignal) {
+    bindRunAbortSignal(input.runId, input.abortSignal);
+  }
   try {
+    if (input.abortSignal?.aborted) {
+      return {
+        status: "cancelled",
+        error: "cancelled",
+        summary: "Wiki Run cancelled",
+      };
+    }
     const mastra = getMastra();
     const workflow = mastra.getWorkflow(WIKI_RUN_WORKFLOW_ID);
     const run = await workflow.createRun({ runId: input.runId });
@@ -251,9 +301,24 @@ export async function resumeWikiRun(
     });
 
     const result = await consumeWorkflowStream(output, input.onEvent);
-    return mapTerminalWorkflowResult(result);
+    const mapped = mapTerminalWorkflowResult(result);
+    // Late product abort must not rewrite durable publish outcomes.
+    if (
+      input.abortSignal?.aborted &&
+      mapped.status !== "published" &&
+      mapped.status !== "publication_declined"
+    ) {
+      return {
+        status: "cancelled",
+        error: "cancelled",
+        summary: "Wiki Run cancelled",
+        pages: mapped.pages,
+        plan: mapped.plan,
+      };
+    }
+    return mapped;
   } catch (error) {
-    if (isCancelledError(error)) {
+    if (isCancelledError(error) || input.abortSignal?.aborted) {
       return {
         status: "cancelled",
         error: "cancelled",
@@ -264,6 +329,10 @@ export async function resumeWikiRun(
       status: "failed",
       error: redactErrorMessage(error),
     };
+  } finally {
+    if (input.abortSignal) {
+      unbindRunAbortSignal(input.runId);
+    }
   }
 }
 

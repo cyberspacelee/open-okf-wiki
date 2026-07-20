@@ -83,6 +83,11 @@ export const StoredRunRecordSchema = z.object({
   pages: z.array(z.string().min(1)).optional(),
   /** Short operator-facing summary of the run outcome. */
   summary: z.string().optional(),
+  /**
+   * Operator Session that started or owns this run (Session-first linkage).
+   * Headless / autoApprove API starts may omit this.
+   */
+  sessionId: z.string().min(1).optional(),
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),
 });

@@ -6,6 +6,7 @@ import {
   redactErrorMessage,
   resolveSkillPath,
   resumeWikiRun,
+  sessionMessagesToUIMessages,
   startWikiRun,
   uiMessagesToSessionMessages,
   type SessionStreamBody,
@@ -49,7 +50,12 @@ import {
   updateModelProfile,
   writeSkillFile,
 } from "@okf-wiki/core";
-import { pipeUIMessageStreamToResponse, type UIMessage } from "ai";
+import {
+  consumeStream,
+  createUIMessageStream,
+  pipeUIMessageStreamToResponse,
+  type UIMessage,
+} from "ai";
 import {
   isTerminalRunStatus,
   ModelProfileWriteSchema,
@@ -860,6 +866,7 @@ function processRunInBackground(
         autoApprove,
         skipPlanConfirm,
         plan: options.plan,
+        abortSignal,
         onEvent: (event) => {
           if (event.type === "part") {
             emitRunEvent(runId, {
@@ -879,7 +886,14 @@ function processRunInBackground(
         },
       });
 
-      if (abortSignal.aborted || result.status === "cancelled") {
+      // Late abort must not rewrite durable publish outcomes.
+      const durableSuccess =
+        result.status === "published" ||
+        result.status === "publication_declined";
+      if (
+        result.status === "cancelled" ||
+        (abortSignal.aborted && !durableSuccess)
+      ) {
         await finalizeRunStatus(workspace.rootPath, runId, {
           status: "cancelled",
           error: "cancelled",
@@ -972,6 +986,7 @@ function resumeRunInBackground(
         gate,
         action,
         plan,
+        abortSignal,
         onEvent: (event) => {
           emitRunEvent(runId, {
             type: "log",
@@ -981,7 +996,14 @@ function resumeRunInBackground(
         },
       });
 
-      if (abortSignal.aborted || result.status === "cancelled") {
+      // Late abort must not rewrite durable publish outcomes.
+      const durableSuccess =
+        result.status === "published" ||
+        result.status === "publication_declined";
+      if (
+        result.status === "cancelled" ||
+        (abortSignal.aborted && !durableSuccess)
+      ) {
         await finalizeRunStatus(workspace.rootPath, runId, {
           status: "cancelled",
           error: "cancelled",
@@ -1023,10 +1045,19 @@ function resumeRunInBackground(
       process.stderr.write(
         `run ${runId} resume failed: ${redactErrorMessage(error)}\n`,
       );
-      await finalizeRunStatus(workspace.rootPath, runId, {
-        status: "failed",
-        error: redactErrorMessage(error),
-      }).catch(() => undefined);
+      try {
+        const status: WikiRunRecordStatus = abortSignal.aborted
+          ? "cancelled"
+          : "failed";
+        await finalizeRunStatus(workspace.rootPath, runId, {
+          status,
+          error:
+            status === "cancelled" ? "cancelled" : redactErrorMessage(error),
+          summary: status === "cancelled" ? "Wiki Run cancelled" : undefined,
+        });
+      } catch {
+        // best-effort status write
+      }
     } finally {
       clearRunAbortController(runId);
     }
@@ -1130,7 +1161,12 @@ async function handleRetryRun(
     sendError(res, 404, `run not found: ${runId}`);
     return;
   }
-  if (previous.status === "running" || previous.status === "awaiting_plan") {
+  if (
+    previous.status === "running" ||
+    previous.status === "awaiting_plan" ||
+    previous.status === "awaiting_publication" ||
+    previous.status === "needs_input"
+  ) {
     sendError(
       res,
       409,
@@ -1729,8 +1765,11 @@ async function handleDenyPublication(
 }
 
 /**
- * Cancel a run that is still `running` or `awaiting_plan`.
- * Best-effort: aborts the agent signal and marks the record cancelled.
+ * Cancel a run that is still `running` or suspended on operator HITL
+ * (`awaiting_plan` / `awaiting_publication`).
+ * Best-effort: aborts the agent signal, marks the record cancelled, and
+ * resets any linked Operator Session so Stop at a gate does not leave
+ * durable approve/deny chips for a cancelled run.
  */
 async function handleCancelRun(
   _req: IncomingMessage,
@@ -1751,7 +1790,11 @@ async function handleCancelRun(
     sendError(res, 404, `run not found: ${runId}`);
     return;
   }
-  if (run.status !== "running" && run.status !== "awaiting_plan") {
+  if (
+    run.status !== "running" &&
+    run.status !== "awaiting_plan" &&
+    run.status !== "awaiting_publication"
+  ) {
     sendError(res, 409, `run is not cancellable (status: ${run.status})`);
     return;
   }
@@ -1783,6 +1826,52 @@ async function handleCancelRun(
     throw error;
   }
   emitRunDone(runId, "cancelled", "Wiki Run cancelled");
+
+  // Session-first: cancel after a stream has already finalized at a gate must
+  // still clear durable HITL so refresh does not re-offer approve/deny.
+  // Mid-stream cancel also races finalizeOnce; neutralize is idempotent.
+  // Do not clobber a concurrent finalize that already persisted a durable
+  // publish outcome (phase done / completed) while cancel won the run record.
+  const linkedSessionId = updated.sessionId;
+  if (linkedSessionId) {
+    try {
+      const linked = await loadOperatorSession(
+        workspace.rootPath,
+        linkedSessionId,
+      );
+      const phase = linked?.workflow?.phase;
+      const durableSessionDone =
+        phase === "done" || linked?.status === "completed";
+      if (
+        linked &&
+        linked.workspaceId === workspace.id &&
+        !durableSessionDone &&
+        (linked.workflow?.linkedRunId === runId ||
+          !linked.workflow?.linkedRunId)
+      ) {
+        const messages = neutralizeSessionDecisionParts(linked.messages);
+        await replaceSessionMessages(
+          workspace.rootPath,
+          linkedSessionId,
+          messages,
+          {
+            status: "active",
+            pending: null,
+            workflow: {
+              ...linked.workflow,
+              phase: "idle",
+              linkedRunId: runId,
+            },
+          },
+        );
+      }
+    } catch (error) {
+      process.stderr.write(
+        `session cancel cleanup failed: ${redactErrorMessage(error)}\n`,
+      );
+    }
+  }
+
   sendJson(res, 200, { run: updated });
 }
 
@@ -2103,8 +2192,66 @@ async function handleGetSession(
 }
 
 /**
+ * In-process lock so rapid double-submit cannot start two Wiki Runs before
+ * the first turn finalizes session messages. Keyed by workspace root + session.
+ */
+const sessionChatInFlight = new Set<string>();
+
+function sessionChatLockKey(rootPath: string, sessionId: string): string {
+  return `${path.resolve(rootPath)}::${sessionId}`;
+}
+
+/**
+ * After product cancel, strip actionable HITL chips from durable history so a
+ * refresh does not re-offer approve/deny on a cancelled run.
+ */
+function neutralizeSessionDecisionParts<
+  T extends { role: string; parts: Array<Record<string, unknown> & { type: string }> },
+>(messages: T[]): T[] {
+  return messages.map((m) => {
+    if (m.role !== "assistant") {
+      return m;
+    }
+    return {
+      ...m,
+      parts: m.parts.map((p) => {
+        if (
+          typeof p.type === "string" &&
+          p.type === "tool-request_user_decision" &&
+          p.state === "input-available"
+        ) {
+          return {
+            ...p,
+            state: "output-denied",
+            output: { cancelled: true },
+          };
+        }
+        if (p.type === "data-choice" && p.data && typeof p.data === "object") {
+          const data = p.data as Record<string, unknown>;
+          return {
+            ...p,
+            data: {
+              ...data,
+              cancelled: true,
+              options: [],
+              mode: "input_only",
+            },
+          };
+        }
+        return p;
+      }),
+    };
+  });
+}
+
+/**
  * AI SDK UI message stream for conversational Session.
- * Body: { messages, resumeData?, runId?, step? } — production via Mastra wiki workflow + toAISdkStream.
+ *
+ * Body (preferred): { message (last only), id?, resumeData?, runId?, step? }
+ * Body (legacy):    { messages (full client history), resumeData?, runId?, step? }
+ *
+ * Server loads prior session messages, appends the new user message, streams,
+ * then onFinish saves the full UIMessage-compatible history.
  */
 async function handleSessionChat(
   req: IncomingMessage,
@@ -2125,18 +2272,202 @@ async function handleSessionChat(
     return;
   }
 
-  const body = (await readJsonBody(req)) as SessionStreamBody;
-  const messages = (Array.isArray(body.messages) ? body.messages : []) as UIMessage[];
+  let body: SessionStreamBody;
+  try {
+    body = (await readJsonBody(req)) as SessionStreamBody;
+  } catch (error) {
+    if (error instanceof InvalidJsonError) {
+      sendError(res, 400, "invalid JSON body");
+      return;
+    }
+    if (error instanceof BodyTooLargeError) {
+      sendError(res, 413, "request body too large");
+      return;
+    }
+    throw error;
+  }
 
-  const asSessionMessages = uiMessagesToSessionMessages(messages);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    sendError(res, 400, "chat body must be a JSON object");
+    return;
+  }
+
+  // Server is source of truth: load history, append only the new last message.
+  // Preferred: body.message (last only). Legacy: last entry of body.messages[].
+  const previousUI = sessionMessagesToUIMessages(session.messages);
+  let lastFromClient: UIMessage | undefined;
+  if (body.message && typeof body.message === "object") {
+    lastFromClient = body.message as UIMessage;
+  } else if (Array.isArray(body.messages) && body.messages.length > 0) {
+    // Multi-message fallback for older clients: take only the trailing user turn.
+    lastFromClient = body.messages[body.messages.length - 1] as UIMessage;
+  }
+
+  if (
+    !lastFromClient ||
+    typeof lastFromClient !== "object" ||
+    lastFromClient.role !== "user"
+  ) {
+    sendError(
+      res,
+      400,
+      "chat body must include a user message (message or messages[])",
+    );
+    return;
+  }
+  if (typeof lastFromClient.id !== "string" || !lastFromClient.id.trim()) {
+    sendError(res, 400, "user message must include a non-empty id");
+    return;
+  }
+  if (!Array.isArray(lastFromClient.parts)) {
+    // Normalize missing parts so conversion never throws.
+    lastFromClient = { ...lastFromClient, parts: [] };
+  }
+
+  // Dedup by id if client re-sent a message already persisted.
+  const alreadyStored = previousUI.some((m) => m.id === lastFromClient!.id);
+  if (alreadyStored) {
+    // Idempotent retry: do not re-run the workflow turn.
+    pipeUIMessageStreamToResponse({
+      response: res,
+      stream: createUIMessageStream({
+        originalMessages: previousUI,
+        execute: async () => {
+          /* no-op — history already contains this user turn */
+        },
+      }),
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "no-cache, no-transform",
+      },
+    });
+    return;
+  }
+
+  // Refuse resume against a cancelled/terminal run (Stop-at-gate race or stale chips).
+  // Free-text approve/deny and structured resumeData both need a live suspend.
+  const candidateRunId =
+    (typeof body.runId === "string" && body.runId.trim()
+      ? body.runId.trim()
+      : undefined) ?? session.workflow?.linkedRunId;
+  const lastText = (() => {
+    for (const p of lastFromClient.parts ?? []) {
+      if (
+        p &&
+        typeof p === "object" &&
+        "type" in p &&
+        (p as { type?: string }).type === "text" &&
+        "text" in p &&
+        typeof (p as { text?: unknown }).text === "string"
+      ) {
+        return (p as { text: string }).text.trim();
+      }
+    }
+    return "";
+  })();
+  const looksLikeResume =
+    Boolean(body.resumeData) ||
+    lastText === "approve" ||
+    lastText === "deny";
+  if (looksLikeResume && candidateRunId) {
+    const linkedRun = await loadRun(workspace.rootPath, candidateRunId);
+    if (
+      linkedRun &&
+      linkedRun.status !== "awaiting_plan" &&
+      linkedRun.status !== "awaiting_publication" &&
+      linkedRun.status !== "running" &&
+      linkedRun.status !== "needs_input"
+    ) {
+      // Reset session gate so the next turn can kick off cleanly.
+      try {
+        const cleaned = neutralizeSessionDecisionParts(session.messages);
+        await replaceSessionMessages(
+          workspace.rootPath,
+          sessionId,
+          cleaned,
+          {
+            status: "active",
+            pending: null,
+            workflow: {
+              ...session.workflow,
+              phase: "idle",
+              linkedRunId: candidateRunId,
+            },
+          },
+        );
+      } catch {
+        // best-effort
+      }
+      sendError(
+        res,
+        409,
+        `cannot resume run (status: ${linkedRun.status}); start a new Wiki Run`,
+      );
+      return;
+    }
+  }
+
+  const messages: UIMessage[] = [...previousUI, lastFromClient];
+
+  // Reject concurrent turns for the same session (double-submit before finalize).
+  const lockKey = sessionChatLockKey(workspace.rootPath, sessionId);
+  if (sessionChatInFlight.has(lockKey)) {
+    sendError(res, 409, "session chat turn already in progress");
+    return;
+  }
+  sessionChatInFlight.add(lockKey);
+
+  // Once the server drain task is scheduled, only finalizeOnce may release the lock.
+  let serverDrainOwnsLock = false;
+  // Track abort registration so setup failures before drain can clear the map.
+  let registeredAbortRunId: string | undefined;
 
   try {
+    // abortSignalForRun registers AbortController when mode/runId are known
+    // (sync, before stream execute) so Stop → abortRun can hard-stop mid-step.
     const chat = await createSessionWorkflowStream({
-      session: { ...session, messages: asSessionMessages },
+      session: {
+        ...session,
+        messages: uiMessagesToSessionMessages(messages),
+      },
       workspace,
       messages,
       body,
+      abortSignalForRun: (runId) => {
+        registeredAbortRunId = runId;
+        return registerRunAbortController(runId);
+      },
     });
+
+    // Eager run registry on start so explicit Session Stop → cancel can target
+    // the job while the first stream is still open (before finalize upsert).
+    if (chat.mode === "start" && chat.runId) {
+      try {
+        const existing = await loadRun(workspace.rootPath, chat.runId);
+        if (!existing) {
+          let frozenSkillPath: string | undefined;
+          let frozenSkillDigest: string | undefined;
+          try {
+            frozenSkillPath = await resolveSkillPath(workspace.skillPath);
+            frozenSkillDigest = await skillDigest(frozenSkillPath);
+          } catch {
+            // optional freeze
+          }
+          await registerRunRecord(workspace.rootPath, workspace.id, {
+            runId: chat.runId,
+            status: "running",
+            summary: "Session Wiki Run started",
+            skillPath: frozenSkillPath,
+            skillDigest: frozenSkillDigest,
+            sessionId,
+          });
+        }
+      } catch (error) {
+        process.stderr.write(
+          `session eager run register failed: ${redactErrorMessage(error)}\n`,
+        );
+      }
+    }
 
     let finalized = false;
     const finalizeOnce = async () => {
@@ -2147,6 +2478,8 @@ async function handleSessionChat(
       try {
         const result = await chat.finalize();
         let workflow = { ...result.workflow };
+        let sessionStatus = result.status;
+        let sessionPending = result.pending;
 
         if (result.sideEffects?.upsertRun) {
           const u = result.sideEffects.upsertRun;
@@ -2160,7 +2493,48 @@ async function handleSessionChat(
               // optional freeze
             }
             const existing = await loadRun(workspace.rootPath, u.runId);
-            if (!existing) {
+            // Late abort / cancel must not rewrite durable publish outcomes
+            // (same rule as processRunInBackground / cancelUnlessDurableSuccess).
+            const durableSuccess =
+              u.status === "published" || u.status === "publication_declined";
+            const cancelledWin =
+              !durableSuccess &&
+              (existing?.status === "cancelled" || u.status === "cancelled");
+            // Explicit Stop/cancel may mark the run cancelled while the stream
+            // still drains. Cancel wins on the record; reset session gate state.
+            if (cancelledWin) {
+              workflow = {
+                ...workflow,
+                linkedRunId: u.runId,
+                phase: "idle",
+              };
+              sessionStatus = "active";
+              sessionPending = null;
+              // Neutralize any mid-stream decision chips so durable history
+              // does not leave actionable HITL after cancel.
+              result.messages = neutralizeSessionDecisionParts(result.messages);
+              if (!existing) {
+                await registerRunRecord(workspace.rootPath, workspace.id, {
+                  runId: u.runId,
+                  status: "cancelled",
+                  pages: u.pages,
+                  summary: u.summary ?? "Wiki Run cancelled",
+                  skillPath: frozenSkillPath,
+                  skillDigest: frozenSkillDigest,
+                  sessionId: u.sessionId ?? sessionId,
+                });
+              } else if (existing.status !== "cancelled") {
+                await updateRunRecord(workspace.rootPath, u.runId, {
+                  status: "cancelled",
+                  pages: u.pages ?? null,
+                  summary: u.summary ?? "Wiki Run cancelled",
+                  error: "cancelled",
+                  ...(u.sessionId || sessionId
+                    ? { sessionId: u.sessionId ?? sessionId }
+                    : {}),
+                }).catch(() => undefined);
+              }
+            } else if (!existing) {
               await registerRunRecord(workspace.rootPath, workspace.id, {
                 runId: u.runId,
                 status: (u.status as WikiRunRecordStatus) ?? "running",
@@ -2168,20 +2542,30 @@ async function handleSessionChat(
                 summary: u.summary,
                 skillPath: frozenSkillPath,
                 skillDigest: frozenSkillDigest,
+                sessionId: u.sessionId ?? sessionId,
               });
+              workflow = {
+                ...workflow,
+                linkedRunId: u.runId,
+              };
             } else {
+              // Registry cancel-wins: if cancel already landed, updateRunRecord
+              // keeps cancelled; session still reflects durableSuccess above.
               await updateRunRecord(workspace.rootPath, u.runId, {
                 status: u.status as WikiRunRecordStatus,
                 pages: u.pages ?? null,
                 summary: u.summary ?? null,
                 ...(u.plan ? { plan: u.plan } : {}),
+                ...(u.sessionId || sessionId
+                  ? { sessionId: u.sessionId ?? sessionId }
+                  : {}),
                 error: null,
               }).catch(() => undefined);
+              workflow = {
+                ...workflow,
+                linkedRunId: u.runId,
+              };
             }
-            workflow = {
-              ...workflow,
-              linkedRunId: u.runId,
-            };
           } catch (error) {
             process.stderr.write(
               `session run upsert failed: ${redactErrorMessage(error)}\n`,
@@ -2189,39 +2573,148 @@ async function handleSessionChat(
           }
         }
 
+        // Cancel-vs-finalize TOCTOU: handleCancelRun may mark the run cancelled
+        // after our loadRun snapshot (or after we wrote awaiting_*), then clean
+        // the session. Re-read before replaceSessionMessages so a late finalize
+        // cannot restore gate HITL over cancel cleanup.
+        // Do not apply when the turn already produced a durable publish outcome.
+        const linkedRunId =
+          result.sideEffects?.upsertRun?.runId ?? chat.runId ?? undefined;
+        const upsertStatus = result.sideEffects?.upsertRun?.status;
+        const turnDurableSuccess =
+          upsertStatus === "published" ||
+          upsertStatus === "publication_declined";
+        if (linkedRunId && !turnDurableSuccess) {
+          try {
+            const latest = await loadRun(workspace.rootPath, linkedRunId);
+            if (latest?.status === "cancelled") {
+              workflow = {
+                ...workflow,
+                linkedRunId,
+                phase: "idle",
+              };
+              sessionStatus = "active";
+              sessionPending = null;
+              result.messages = neutralizeSessionDecisionParts(result.messages);
+            }
+          } catch {
+            // best-effort; prefer writing stream outcome over blocking finalize
+          }
+        }
+
+        // Persist full UIMessage timeline (text + tool + data parts), not only finalText.
         await replaceSessionMessages(
           workspace.rootPath,
           sessionId,
-          [...asSessionMessages, result.assistantMessage],
+          result.messages,
           {
-            status: result.status,
-            pending: result.pending,
+            status: sessionStatus,
+            pending: sessionPending,
             workflow,
           },
         );
+
+        // Post-write cancel barrier: cancel may land between the re-read above
+        // and replaceSessionMessages, restoring gate HITL over cancel cleanup.
+        // Skip when this turn already produced a durable publish outcome so a
+        // cancel-wins run record cannot clobber session phase done/completed.
+        if (linkedRunId && !turnDurableSuccess) {
+          try {
+            const after = await loadRun(workspace.rootPath, linkedRunId);
+            if (after?.status === "cancelled") {
+              const current = await loadOperatorSession(
+                workspace.rootPath,
+                sessionId,
+              );
+              if (
+                current &&
+                current.workflow?.phase !== "done" &&
+                current.status !== "completed" &&
+                (current.workflow?.phase === "awaiting_plan" ||
+                  current.workflow?.phase === "awaiting_publish" ||
+                  current.pending != null ||
+                  current.status === "waiting")
+              ) {
+                await replaceSessionMessages(
+                  workspace.rootPath,
+                  sessionId,
+                  neutralizeSessionDecisionParts(current.messages),
+                  {
+                    status: "active",
+                    pending: null,
+                    workflow: {
+                      ...current.workflow,
+                      linkedRunId,
+                      phase: "idle",
+                    },
+                  },
+                );
+              }
+            }
+          } catch {
+            // best-effort second pass
+          }
+        }
       } catch (error) {
         process.stderr.write(
           `session chat finalize failed: ${redactErrorMessage(error)}\n`,
         );
+      } finally {
+        sessionChatInFlight.delete(lockKey);
       }
     };
 
-    res.on("finish", () => {
-      void finalizeOnce();
-    });
-    res.on("close", () => {
-      void finalizeOnce();
-    });
+    // Disconnect durability (AI SDK consumeStream pattern):
+    // tee the UI stream so the server fully drains one branch and always
+    // finalizes/saves after execute + onFinish, even if the client aborts.
+    // HTTP close cancels only the client tee branch (avoids backpressure stall)
+    // and must NOT abort the underlying wiki run — explicit product cancel is
+    // POST .../runs/:runId/cancel (Session Stop button calls that separately).
+    const [clientStream, serverStream] = chat.stream.tee();
+
+    serverDrainOwnsLock = true;
+    void (async () => {
+      try {
+        await consumeStream({
+          stream: serverStream,
+          onError: (error) => {
+            process.stderr.write(
+              `session chat stream drain error: ${redactErrorMessage(error)}\n`,
+            );
+          },
+        });
+      } finally {
+        // Drain completion means createUIMessageStream onFinish has run
+        // (handleUIMessageStreamFinish flush), so finalize sees full messages.
+        await finalizeOnce();
+        if (chat.runId) {
+          clearRunAbortController(chat.runId);
+        }
+      }
+    })();
+
+    const cancelClientBranch = () => {
+      void clientStream.cancel().catch(() => undefined);
+    };
+    res.on("close", cancelClientBranch);
 
     pipeUIMessageStreamToResponse({
       response: res,
-      stream: chat.stream,
+      stream: clientStream,
       headers: {
         "Access-Control-Allow-Origin": "*",
         "Cache-Control": "no-cache, no-transform",
       },
     });
   } catch (error) {
+    // Drain task (if started) finalizes, clears abort controller, and releases the lock.
+    // If setup failed before drain ownership, release lock + abort map here.
+    if (!serverDrainOwnsLock) {
+      sessionChatInFlight.delete(lockKey);
+      if (registeredAbortRunId) {
+        clearRunAbortController(registeredAbortRunId);
+      }
+    }
     if (!res.headersSent) {
       sendError(
         res,

@@ -33,6 +33,8 @@ export type CreateRunOptions = {
   autoApprove?: boolean;
   skillPath?: string;
   skillDigest?: string;
+  /** Operator Session that started this run (when Session-first). */
+  sessionId?: string;
 };
 
 /** Create a run record with a known id (e.g. Session materialize). */
@@ -89,6 +91,9 @@ export async function registerRunRecord(
   if (typeof options.summary === "string") {
     record.summary = options.summary;
   }
+  if (typeof options.sessionId === "string" && options.sessionId.trim()) {
+    record.sessionId = options.sessionId.trim();
+  }
 
   const parsed = StoredRunRecordSchema.parse(record);
   await atomicWriteJson(runRecordPath(resolvedRoot, options.runId), parsed);
@@ -128,6 +133,9 @@ export async function createRun(
   if (typeof options?.skillDigest === "string" && options.skillDigest.trim()) {
     record.skillDigest = options.skillDigest.trim();
   }
+  if (typeof options?.sessionId === "string" && options.sessionId.trim()) {
+    record.sessionId = options.sessionId.trim();
+  }
 
   const parsed = StoredRunRecordSchema.parse(record);
   await atomicWriteJson(runRecordPath(resolvedRoot, runId), parsed);
@@ -143,6 +151,7 @@ export type RunRecordPatch = {
   skillPath?: string | null;
   skillDigest?: string | null;
   plan?: StoredRunRecord["plan"] | null;
+  sessionId?: string | null;
 };
 
 /** Thrown when a status transition conflicts with the current record (e.g. cancel after finish). */
@@ -183,11 +192,13 @@ export async function updateRunRecord(
     return existing;
   }
 
-  // Cancel while running or waiting on operator (plan HITL); idempotent if already cancelled.
+  // Cancel while running or waiting on operator (plan / publish HITL);
+  // idempotent if already cancelled.
   if (
     patch.status === "cancelled" &&
     existing.status !== "running" &&
     existing.status !== "awaiting_plan" &&
+    existing.status !== "awaiting_publication" &&
     existing.status !== "cancelled"
   ) {
     throw new RunStatusConflictError(
@@ -236,6 +247,11 @@ export async function updateRunRecord(
     delete next.plan;
   } else if (patch.plan !== undefined) {
     next.plan = patch.plan;
+  }
+  if (patch.sessionId === null) {
+    delete next.sessionId;
+  } else if (typeof patch.sessionId === "string" && patch.sessionId.trim()) {
+    next.sessionId = patch.sessionId.trim();
   }
 
   // Clear stale error when transitioning to a successful terminal status.
