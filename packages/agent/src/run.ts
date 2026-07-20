@@ -414,7 +414,7 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
         planHint;
 
   // Prefer stream for Session visibility; fall back to generate if stream fails to start.
-  let text = "";
+  let text: string;
   try {
     const stream = await agent.stream(
       [{ role: "user", content: userMessage }],

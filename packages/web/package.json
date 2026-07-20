@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
+    "lint": "eslint . --max-warnings 0",
     "test": "node -e \"process.exit(0)\"",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui"

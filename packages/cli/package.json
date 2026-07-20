@@ -10,6 +10,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node --experimental-strip-types src/main.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src --max-warnings 0",
     "test": "node -e \"process.exit(0)\""
   },
   "dependencies": {

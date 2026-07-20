@@ -12,6 +12,10 @@
     "build:libs": "pnpm --filter @okf-wiki/agent... build",
     "test": "pnpm -r run test",
     "typecheck": "pnpm -r run typecheck",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "check": "pnpm run typecheck && pnpm run lint",
+    "test:e2e": "pnpm --filter @okf-wiki/web test:e2e",
     "dev": "pnpm run build:libs && pnpm run dev:stack",
     "dev:stack": "concurrently -k -n contract,core,agent,server,web -c blue,cyan,magenta,green,yellow \"pnpm --filter @okf-wiki/contract dev\" \"pnpm --filter @okf-wiki/core dev\" \"pnpm --filter @okf-wiki/agent dev\" \"pnpm --filter @okf-wiki/server dev\" \"pnpm --filter @okf-wiki/web dev\"",
     "dev:web": "pnpm --filter @okf-wiki/web dev",
@@ -19,7 +23,13 @@
     "cli": "pnpm --filter @okf-wiki/cli start"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "concurrently": "^9.2.4",
-    "typescript": "^5.9.3"
+    "eslint": "^10.7.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.3",
+    "globals": "^17.7.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.64.0"
   }
 }

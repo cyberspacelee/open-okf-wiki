@@ -391,7 +391,7 @@ export async function createSessionChatStream(input: {
             { sources: input.workspace.sources.map((s) => s.id) },
             { ok: true },
           );
-          let pages: string[] = [];
+          let pages: string[];
           try {
             pages = await materializeStagingPages(runId, plan);
             sideEffects = {

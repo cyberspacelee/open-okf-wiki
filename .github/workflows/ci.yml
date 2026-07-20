@@ -17,11 +17,15 @@ jobs:
           node-version: "22"
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @okf-wiki/contract test
-      - run: pnpm --filter @okf-wiki/core test
-      - run: pnpm --filter @okf-wiki/agent test
-      - run: pnpm --filter @okf-wiki/server typecheck
-      - run: pnpm --filter @okf-wiki/web typecheck
+      - name: Unit tests (contract / core / agent)
+        run: |
+          pnpm --filter @okf-wiki/contract test
+          pnpm --filter @okf-wiki/core test
+          pnpm --filter @okf-wiki/agent test
+      - name: Typecheck all packages
+        run: pnpm typecheck
+      - name: ESLint
+        run: pnpm lint
 
   web-e2e:
     runs-on: ubuntu-latest
@@ -36,6 +40,6 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @okf-wiki/web exec playwright install chromium --with-deps
-      - run: pnpm --filter @okf-wiki/web test:e2e
+      - run: pnpm test:e2e
         env:
           CI: "true"

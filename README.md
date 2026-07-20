@@ -73,27 +73,40 @@ Open the Web UI, create a Workspace pointing at local Git repository paths, pick
 
 Model identity stays provider-prefixed (for example `openai:<served-model-name>`) even on third-party gateways.
 
-### Development checks (TypeScript)
+### Development checks
+
+| Command | What it does | When |
+|---|---|---|
+| `pnpm typecheck` | `tsc --noEmit` across packages | Local before PR; **CI gate** |
+| `pnpm lint` | ESLint flat config (TS + React hooks) | Local; staged via pre-commit; **CI gate** |
+| `pnpm check` | `typecheck` + `lint` | Convenient local full static check |
+| `pnpm test` | Package unit tests (`node:test` where present) | Local; **CI gate** |
+| `pnpm test:e2e` | Playwright Web e2e | Local optional; **CI job** (not pre-commit) |
 
 ```bash
 pnpm install
-pnpm --filter @okf-wiki/contract test
-pnpm --filter @okf-wiki/core test
-pnpm --filter @okf-wiki/agent test
-pnpm typecheck
-# Optional Web e2e (Playwright; install browsers first):
-# pnpm exec playwright install chromium
-# pnpm --filter @okf-wiki/web test:e2e
+pnpm test
+pnpm check          # typecheck + eslint
 ```
 
-Or run the workspace test script: `pnpm test`.
+**Pre-commit hooks** (optional but recommended):
+
+```bash
+# once per clone (requires pre-commit: https://pre-commit.com/)
+pre-commit install
+pre-commit run -a   # full tree
+```
+
+Hooks stay **fast**: trailing whitespace / YAML hygiene + ESLint on **staged** `*.{ts,tsx,js,jsx}` only. Full typecheck and Playwright stay in CI so commits are not blocked by multi-minute runs (community default for 2025–2026 monorepos).
 
 Web UI end-to-end (Playwright):
 
 ```bash
 pnpm --filter @okf-wiki/web exec playwright install chromium
-pnpm --filter @okf-wiki/web test:e2e
+pnpm test:e2e
 ```
+
+E2e covers operator flows (workspace create, settings, session chat, plan confirm, publish). Keep it in CI; run locally when changing Web/server contracts.
 
 ## Manual verification
 

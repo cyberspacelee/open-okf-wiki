@@ -1,6 +1,11 @@
-# Generic repo hygiene hooks (no Python / uv).
-# Install: pre-commit install
+# Repo hygiene + fast staged lint. Install: pre-commit install
 # Run all:  pre-commit run -a
+#
+# Policy (aligned with 2025–2026 monorepo practice):
+# - pre-commit stays fast: whitespace + ESLint on staged TS/JS only.
+# - Full typecheck and unit tests run in CI (`pnpm check` / `pnpm test`).
+# - Playwright e2e runs in the CI web-e2e job (optional locally).
+# - Do NOT put full-repo typecheck or e2e here — slow hooks get --no-verify'd.
 
 fail_fast: false
 
@@ -18,3 +23,14 @@ repos:
       - id: check-toml
       - id: check-added-large-files
         args: ["--maxkb=500"]
+
+  - repo: local
+    hooks:
+      - id: eslint
+        name: eslint (staged)
+        entry: pnpm exec eslint --max-warnings 0
+        language: system
+        types_or: [javascript, jsx, ts, tsx]
+        # Root config ignores refs/dist/ui kits; filenames are still passed.
+        pass_filenames: true
+        exclude: ^(refs/|\.scratch/)

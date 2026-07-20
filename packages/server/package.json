@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "node --experimental-strip-types --watch src/main.ts",
     "start": "node --experimental-strip-types src/main.ts",
-    "typecheck": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src --max-warnings 0",
     "build": "tsc -p tsconfig.json",
     "test": "node -e \"process.exit(0)\""
   },
