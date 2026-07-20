@@ -13,6 +13,7 @@ import {
   loadWorkspace,
   registerWorkspaceInAppIndex,
   saveWorkspace,
+  updateSource,
   workspaceConfigPath,
 } from "./workspace-store.js";
 
@@ -259,6 +260,29 @@ test("createWorkspace treats only ENOENT as missing config", async () => {
     () => createWorkspace({ name: "Again", rootPath: root }),
     /already exists/,
   );
+});
+
+test("updateSource updates ignore policy", async () => {
+  const root = await tempDir("okf-wiki-update-src-");
+  const sourceRoot = await tempDir("okf-wiki-src-");
+  await initGitRepo(sourceRoot);
+
+  let ws = await createWorkspace({ name: "UpdateSrc", rootPath: root });
+  const added = await addSource(
+    ws,
+    { id: "app", path: sourceRoot },
+    { requireClean: false },
+  );
+  ws = added.config;
+  assert.equal(ws.sources[0]!.applyDefaultIgnores, true);
+  assert.deepEqual(ws.sources[0]!.ignore, []);
+
+  ws = updateSource(ws, "app", {
+    applyDefaultIgnores: false,
+    ignore: ["src/test/**", "**/*Test.java"],
+  });
+  assert.equal(ws.sources[0]!.applyDefaultIgnores, false);
+  assert.deepEqual(ws.sources[0]!.ignore, ["src/test/**", "**/*Test.java"]);
 });
 
 test("addSource rejects relative path", async () => {

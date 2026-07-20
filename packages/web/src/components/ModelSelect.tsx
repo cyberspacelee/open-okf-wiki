@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import type { ModelProfilePublic } from "../api";
+import { useI18n } from "../i18n";
 import { Label } from "@/components/ui/label";
 
 type Props = {
@@ -26,18 +27,21 @@ export function ModelSelect({
   disabled,
   "data-testid": testId = "model-profile-select",
   allowEmpty,
-  emptyLabel = "Select a model…",
+  emptyLabel,
 }: Props) {
+  const { t } = useI18n();
+  const placeholder = emptyLabel ?? t.modelSelect.selectPlaceholder;
+
   if (models.length === 0) {
     return (
       <div className="field" data-testid="model-select-empty">
-        <Label htmlFor={id}>Model</Label>
+        <Label htmlFor={id}>{t.modelSelect.label}</Label>
         <p className="muted small">
-          No models configured.{" "}
+          {t.modelSelect.emptyBefore}
           <Link to="/settings" className="inline-link ml-0">
-            Add a model in Settings
-          </Link>{" "}
-          first.
+            {t.modelSelect.emptyLink}
+          </Link>
+          {t.modelSelect.emptyAfter}
         </p>
       </div>
     );
@@ -45,7 +49,7 @@ export function ModelSelect({
 
   return (
     <div className="field">
-      <Label htmlFor={id}>Model</Label>
+      <Label htmlFor={id}>{t.modelSelect.label}</Label>
       <select
         id={id}
         className="model-select"
@@ -55,19 +59,20 @@ export function ModelSelect({
         disabled={disabled}
         data-testid={testId}
       >
-        {allowEmpty ? <option value="">{emptyLabel}</option> : null}
+        {allowEmpty ? <option value="">{placeholder}</option> : null}
         {models.map((m) => (
           <option key={m.id} value={m.id}>
             {m.name}
-            {defaultModelProfileId === m.id ? " (default)" : ""}
+            {defaultModelProfileId === m.id ? ` ${t.modelSelect.defaultSuffix}` : ""}
             {" - "}
             {m.modelId}
           </option>
         ))}
       </select>
       <span className="field-hint">
-        Models are managed in{" "}
-        <Link to="/settings">Settings</Link>. Base URL and API key are not set per workspace.
+        {t.modelSelect.hintBefore}
+        <Link to="/settings">{t.modelSelect.hintLink}</Link>
+        {t.modelSelect.hintAfter}
       </span>
     </div>
   );

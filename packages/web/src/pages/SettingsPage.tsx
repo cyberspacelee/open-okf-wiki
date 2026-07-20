@@ -19,6 +19,7 @@ import {
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
+import { useI18n } from "../i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -45,6 +46,7 @@ const emptyForm = {
 };
 
 export function SettingsPage() {
+  const { t } = useI18n();
   const [doctor, setDoctor] = useState<DoctorResponse | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [provider, setProvider] = useState<ProviderPublic | null>(null);
@@ -221,11 +223,8 @@ export function SettingsPage() {
       <div data-testid="global-settings-page" className="flex flex-col gap-5">
         <header className="page-header row-between">
           <div>
-            <h1>Settings</h1>
-            <p>
-              Configure OpenAI-compatible models here. Workspaces only pick a model from this list —
-              base URL and API keys are never stored in workspace.json.
-            </p>
+            <h1>{t.globalSettings.title}</h1>
+            <p>{t.globalSettings.description}</p>
           </div>
           <div className="row-actions">
             <Button type="button" variant="outline" onClick={() => void loadAll()} disabled={loading}>

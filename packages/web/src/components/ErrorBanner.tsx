@@ -1,4 +1,5 @@
 import type { ApiError } from "../api";
+import { useI18n } from "../i18n";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 
@@ -7,9 +8,9 @@ type Props = {
   onDismiss?: () => void;
 };
 
-export function formatError(error: unknown): string {
+export function formatError(error: unknown, unknownLabel = "Unknown error"): string {
   if (!error) {
-    return "Unknown error";
+    return unknownLabel;
   }
   if (typeof error === "string") {
     return error;
@@ -25,11 +26,12 @@ export function formatError(error: unknown): string {
 }
 
 export function ErrorBanner({ error, onDismiss }: Props) {
+  const { t } = useI18n();
   if (!error) {
     return null;
   }
 
-  const message = formatError(error);
+  const message = formatError(error, t.errorBanner.unknown);
   const status =
     error && typeof error === "object" && "status" in error
       ? (error as ApiError).status
@@ -38,7 +40,10 @@ export function ErrorBanner({ error, onDismiss }: Props) {
   return (
     <Alert variant="destructive" data-testid="error-banner">
       <div>
-        <AlertTitle>Request failed{status ? ` (${status})` : ""}</AlertTitle>
+        <AlertTitle>
+          {t.errorBanner.title}
+          {status ? ` (${status})` : ""}
+        </AlertTitle>
         <AlertDescription>
           <p className="whitespace-pre-wrap break-words">{message}</p>
         </AlertDescription>
@@ -46,7 +51,7 @@ export function ErrorBanner({ error, onDismiss }: Props) {
       {onDismiss ? (
         <AlertAction>
           <Button type="button" variant="ghost" size="sm" onClick={onDismiss}>
-            Dismiss
+            {t.errorBanner.dismiss}
           </Button>
         </AlertAction>
       ) : null}

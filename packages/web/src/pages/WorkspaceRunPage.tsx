@@ -21,6 +21,7 @@ import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
 import { RunStatusBadge } from "../components/RunStatusBadge";
 import { WorkspaceSubnav } from "../components/WorkspaceSubnav";
+import { useI18n } from "../i18n";
 import { workspaceHref } from "../lib/workspace-path";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -42,6 +43,7 @@ function formatTime(iso: string): string {
 }
 
 export function WorkspaceRunPage() {
+  const { t } = useI18n();
   const { id = "" } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -486,19 +488,21 @@ export function WorkspaceRunPage() {
       <div data-testid="run-page" className="flex flex-col gap-5">
         <header className="page-header">
           <p className="breadcrumb">
-            <Link to="/workspaces">Workspaces</Link>
+            <Link to="/workspaces">{t.runs.breadcrumbWorkspaces}</Link>
             <span aria-hidden="true"> / </span>
             <Link to={workspaceHref(id, "", rootPathHint)}>
               {workspace?.name ?? id}
             </Link>
             <span aria-hidden="true"> / </span>
-            <span>Runs</span>
+            <span>{t.runs.breadcrumb}</span>
           </p>
-          <h1>Runs</h1>
+          <h1>{t.runs.title}</h1>
           <p>
-            Job audit for Wiki Runs: list status, cancel, approve or decline publication.
-            Interactive generate and plan negotiation live on{" "}
-            <Link to={workspaceHref(id, "/session", rootPathHint)}>Session</Link>.
+            {t.runs.descriptionBefore}
+            <Link to={workspaceHref(id, "/session", rootPathHint)}>
+              {t.runs.descriptionLink}
+            </Link>
+            {t.runs.descriptionAfter}
           </p>
         </header>
 
@@ -506,12 +510,12 @@ export function WorkspaceRunPage() {
         <ErrorBanner error={error} onDismiss={() => setError(null)} />
 
         {loading ? (
-          <LoadingState label="Loading session…" />
+          <LoadingState label={t.runs.loading} />
         ) : workspace ? (
           <>
             <Card>
               <CardHeader className="row-between items-center">
-                <CardTitle>Generate wiki</CardTitle>
+                <CardTitle>{t.runs.generateTitle}</CardTitle>
                 <div className="row-actions">
                   {canCancel ? (
                     <Button
@@ -521,7 +525,7 @@ export function WorkspaceRunPage() {
                       disabled={cancelling}
                       data-testid="run-cancel"
                     >
-                      {cancelling ? "Cancelling…" : "Cancel run"}
+                      {cancelling ? t.runs.cancelling : t.runs.cancel}
                     </Button>
                   ) : null}
                   {canRetry ? (
@@ -532,7 +536,7 @@ export function WorkspaceRunPage() {
                       disabled={retrying || starting}
                       data-testid="run-retry"
                     >
-                      {retrying ? "Retrying…" : "Manual retry"}
+                      {retrying ? t.runs.retrying : t.runs.retry}
                     </Button>
                   ) : null}
                   <Button
@@ -541,9 +545,9 @@ export function WorkspaceRunPage() {
                     onClick={() => void handleStartHeadless()}
                     disabled={starting || !canStart || canCancel}
                     data-testid="run-start"
-                    title="Headless job without Session chat (API / audit path)"
+                    title={t.runs.startHeadlessTitle}
                   >
-                    {starting ? "Starting…" : "Start headless"}
+                    {starting ? t.runs.starting : t.runs.startHeadless}
                   </Button>
                   <Button
                     type="button"
@@ -551,15 +555,17 @@ export function WorkspaceRunPage() {
                     disabled={!canStart || canCancel}
                     data-testid="run-start-session"
                   >
-                    Generate in Session
+                    {t.runs.generateInSession}
                   </Button>
                 </div>
               </CardHeader>
               <CardContent className="flex flex-col gap-4">
                 {!canStart ? (
                   <p className="muted">
-                    Add at least one source before starting a run.{" "}
-                    <Link to={workspaceHref(id, "/sources", rootPathHint)}>Open Sources</Link>
+                    {t.runs.needSource}{" "}
+                    <Link to={workspaceHref(id, "/sources", rootPathHint)}>
+                      {t.runs.openSources}
+                    </Link>
                   </p>
                 ) : null}
 
@@ -567,26 +573,26 @@ export function WorkspaceRunPage() {
                   <div className="run-last" data-testid="run-last">
                     <dl className="kv">
                       <div>
-                        <dt>Last run status</dt>
+                        <dt>{t.runs.lastStatus}</dt>
                         <dd data-testid="run-last-status" data-status={lastRun.status}>
                           <RunStatusBadge status={lastRun.status} />
                         </dd>
                       </div>
                       {lastRun.error ? (
                         <div>
-                          <dt>Error</dt>
+                          <dt>{t.runs.error}</dt>
                           <dd data-testid="run-last-error">{lastRun.error}</dd>
                         </div>
                       ) : null}
                       {lastRun.summary ? (
                         <div>
-                          <dt>Summary</dt>
+                          <dt>{t.runs.summary}</dt>
                           <dd data-testid="run-last-summary">{lastRun.summary}</dd>
                         </div>
                       ) : null}
                       {lastRun.pages && lastRun.pages.length > 0 ? (
                         <div>
-                          <dt>Pages</dt>
+                          <dt>{t.runs.pages}</dt>
                           <dd data-testid="run-last-pages" className="mono small">
                             <ul className="page-list" data-testid="run-pages-list">
                               {lastRun.pages.map((page) => (
@@ -597,24 +603,26 @@ export function WorkspaceRunPage() {
                         </div>
                       ) : null}
                       <div>
-                        <dt>Run id</dt>
+                        <dt>{t.runs.runId}</dt>
                         <dd className="mono muted">{lastRun.runId}</dd>
                       </div>
                       <div>
-                        <dt>Created</dt>
+                        <dt>{t.runs.created}</dt>
                         <dd className="muted">{formatTime(lastRun.createdAt)}</dd>
                       </div>
                     </dl>
 
                     <div className="run-event-log mono small" data-testid="run-event-log">
-                      <h3 className="panel-subtitle">Job events</h3>
+                      <h3 className="panel-subtitle">{t.runs.jobEvents}</h3>
                       <p className="muted small mb-2">
-                        Status and wiki-run workflow steps (same workflow as Session). Detailed
-                        tool/token streams appear on the{" "}
-                        <Link to={workspaceHref(id, "/session", rootPathHint)}>Session</Link> page.
+                        {t.runs.jobEventsHintBefore}
+                        <Link to={workspaceHref(id, "/session", rootPathHint)}>
+                          {t.runs.jobEventsHintLink}
+                        </Link>
+                        {t.runs.jobEventsHintAfter}
                       </p>
                       {eventLog.length === 0 ? (
-                        <p className="muted">No events yet.</p>
+                        <p className="muted">{t.runs.noEvents}</p>
                       ) : (
                         <ul className="event-log" data-testid="run-event-list">
                           {eventLog.map((line, i) => (
@@ -626,7 +634,7 @@ export function WorkspaceRunPage() {
 
                     {lastRun.skillDigest ? (
                       <p className="muted small mono" data-testid="run-skill-digest">
-                        skill digest: {lastRun.skillDigest.slice(0, 16)}…
+                        {t.runs.skillDigest}: {lastRun.skillDigest.slice(0, 16)}…
                       </p>
                     ) : null}
 
@@ -642,9 +650,9 @@ export function WorkspaceRunPage() {
                     {awaitingPublication ? (
                       <div className="run-publish-actions" data-testid="run-publish-actions">
                         <p className="muted">
-                          Staging is ready for review. Approve to publish to{" "}
-                          <code className="mono small">{workspace.publicationPath}</code>, or decline
-                          to keep staging without changing the Published Wiki.
+                          {t.runs.publishReadyBefore}
+                          <code className="mono small">{workspace.publicationPath}</code>
+                          {t.runs.publishReadyAfter}
                         </p>
                         <div className="row-actions">
                           <Button
@@ -653,7 +661,7 @@ export function WorkspaceRunPage() {
                             disabled={publishing}
                             data-testid="run-approve"
                           >
-                            {publishing ? "Working…" : "Approve publish"}
+                            {publishing ? t.runs.working : t.runs.approvePublish}
                           </Button>
                           <Button
                             type="button"
@@ -662,35 +670,35 @@ export function WorkspaceRunPage() {
                             disabled={publishing}
                             data-testid="run-deny"
                           >
-                            Decline
+                            {t.runs.decline}
                           </Button>
                         </div>
                       </div>
                     ) : null}
                   </div>
                 ) : (
-                  <p className="muted">No runs yet for this workspace.</p>
+                  <p className="muted">{t.runs.noRuns}</p>
                 )}
               </CardContent>
             </Card>
 
             <Card>
               <CardHeader>
-                <CardTitle>Recent runs</CardTitle>
+                <CardTitle>{t.runs.recentTitle}</CardTitle>
               </CardHeader>
               <CardContent>
                 {runs.length === 0 ? (
                   <div className="empty-inline">
-                    <p className="muted">Runs you start will appear here.</p>
+                    <p className="muted">{t.runs.recentEmpty}</p>
                   </div>
                 ) : (
                   <Table data-testid="run-list">
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Run id</TableHead>
-                        <TableHead>Status</TableHead>
-                        <TableHead>Error</TableHead>
-                        <TableHead>Created</TableHead>
+                        <TableHead>{t.runs.colRunId}</TableHead>
+                        <TableHead>{t.runs.colStatus}</TableHead>
+                        <TableHead>{t.runs.colError}</TableHead>
+                        <TableHead>{t.runs.colCreated}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>

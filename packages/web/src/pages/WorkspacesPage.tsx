@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   createWorkspace,
+  deleteWorkspace,
   getProvider,
   listWorkspaces,
   type ModelProfilePublic,
@@ -11,6 +12,7 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
 import { ModelSelect } from "../components/ModelSelect";
+import { formatMessage, useI18n } from "../i18n";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -37,6 +39,7 @@ import {
 } from "@/components/ui/table";
 
 export function WorkspacesPage() {
+  const { t } = useI18n();
   const navigate = useNavigate();
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [models, setModels] = useState<ModelProfilePublic[]>([]);
@@ -48,6 +51,9 @@ export function WorkspacesPage() {
   const [rootPath, setRootPath] = useState("");
   const [modelProfileId, setModelProfileId] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<WorkspaceSummary | null>(null);
+  const [deleteMeta, setDeleteMeta] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -62,7 +68,6 @@ export function WorkspacesPage() {
       const catalogModels = catalog?.models ?? [];
       setModels(catalogModels);
       setDefaultModelProfileId(catalog?.defaultModelProfileId);
-      // Prefer default, else first model.
       const preferred =
         catalog?.defaultModelProfileId &&
         catalogModels.some((m) => m.id === catalog.defaultModelProfileId)
@@ -101,16 +106,37 @@ export function WorkspacesPage() {
     }
   }
 
+  async function handleDeleteConfirm() {
+    if (!deleteTarget) {
+      return;
+    }
+    setDeletingId(deleteTarget.id);
+    setError(null);
+    try {
+      await deleteWorkspace(deleteTarget.id, {
+        rootPath: deleteTarget.rootPath,
+        deleteFiles: deleteMeta,
+      });
+      setDeleteTarget(null);
+      setDeleteMeta(false);
+      await load();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   return (
     <Layout>
       <div data-testid="workspaces-page" className="flex flex-col gap-5">
         <header className="page-header row-between">
           <div>
-            <h1>Workspaces</h1>
+            <h1>{t.workspaces.title}</h1>
             <p>
-              A Workspace is a local project: Git sources, selected model, and wiki output path.
-              Models and credentials are managed in{" "}
-              <Link to="/settings">Settings</Link>.
+              {t.workspaces.descriptionBefore}
+              <Link to="/settings">{t.workspaces.settingsLink}</Link>
+              {t.workspaces.descriptionAfter}
             </p>
           </div>
           <Button
@@ -121,27 +147,74 @@ export function WorkspacesPage() {
               setError(null);
             }}
           >
-            {showForm ? "Cancel" : "Create"}
+            {showForm ? t.workspaces.cancel : t.workspaces.create}
           </Button>
         </header>
 
         <ErrorBanner error={error} onDismiss={() => setError(null)} />
 
+        {deleteTarget ? (
+          <Card data-testid="workspace-delete-dialog">
+            <CardHeader>
+              <CardTitle>{t.workspaces.deleteConfirmTitle}</CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-4">
+              <p className="muted">
+                {formatMessage(t.workspaces.deleteConfirmBody, {
+                  name: deleteTarget.name,
+                })}
+              </p>
+              <label className="field checkbox-field">
+                <input
+                  type="checkbox"
+                  checked={deleteMeta}
+                  onChange={(e) => setDeleteMeta(e.target.checked)}
+                  data-testid="workspace-delete-meta"
+                />
+                <span>{t.workspaces.deleteMetaLabel}</span>
+              </label>
+              <div className="form-actions">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setDeleteTarget(null);
+                    setDeleteMeta(false);
+                  }}
+                >
+                  {t.common.cancel}
+                </Button>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  disabled={deletingId === deleteTarget.id}
+                  onClick={() => void handleDeleteConfirm()}
+                  data-testid="workspace-delete-confirm"
+                >
+                  {deletingId === deleteTarget.id
+                    ? t.workspaces.deleting
+                    : t.workspaces.deleteSubmit}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        ) : null}
+
         {showForm ? (
           <Card data-testid="workspace-create-form">
             <CardHeader>
-              <CardTitle>Create workspace</CardTitle>
+              <CardTitle>{t.workspaces.createTitle}</CardTitle>
             </CardHeader>
             <CardContent>
               <form className="form" onSubmit={(e) => void handleCreate(e)}>
                 <div className="field">
-                  <Label htmlFor="workspace-name">Name</Label>
+                  <Label htmlFor="workspace-name">{t.workspaces.nameLabel}</Label>
                   <Input
                     id="workspace-name"
                     type="text"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
-                    placeholder="My project"
+                    placeholder={t.workspaces.namePlaceholder}
                     required
                     maxLength={120}
                     autoFocus
@@ -149,21 +222,18 @@ export function WorkspacesPage() {
                   />
                 </div>
                 <div className="field">
-                  <Label htmlFor="workspace-root">Root path (absolute)</Label>
+                  <Label htmlFor="workspace-root">{t.workspaces.rootLabel}</Label>
                   <Input
                     id="workspace-root"
                     type="text"
                     value={rootPath}
                     onChange={(e) => setRootPath(e.target.value)}
-                    placeholder="D:/src/app"
+                    placeholder={t.workspaces.rootPlaceholder}
                     required
                     className="font-mono"
                     data-testid="workspace-root-input"
                   />
-                  <span className="field-hint">
-                    Absolute path on this machine. The server creates the directory and{" "}
-                    <code>.okf-wiki/</code> if needed.
-                  </span>
+                  <span className="field-hint">{t.workspaces.rootHint}</span>
                 </div>
                 <ModelSelect
                   models={models}
@@ -184,7 +254,7 @@ export function WorkspacesPage() {
                     }
                     data-testid="workspace-create-submit"
                   >
-                    {submitting ? "Creating…" : "Create workspace"}
+                    {submitting ? t.workspaces.creating : t.workspaces.createSubmit}
                   </Button>
                 </div>
               </form>
@@ -193,29 +263,27 @@ export function WorkspacesPage() {
         ) : null}
 
         {loading ? (
-          <LoadingState label="Loading workspaces…" />
+          <LoadingState label={t.workspaces.loading} />
         ) : workspaces.length === 0 ? (
           <Card data-testid="workspaces-empty">
             <CardContent className="pt-0">
               <Empty className="border-0 p-6">
                 <EmptyHeader>
-                  <EmptyTitle className="text-base">No workspaces yet</EmptyTitle>
-                  <EmptyDescription>
-                    Create a workspace with an absolute root path (for example{" "}
-                    <code className="mono">D:/src/app</code>). Then add local Git checkouts as sources.
-                  </EmptyDescription>
+                  <EmptyTitle className="text-base">{t.workspaces.emptyTitle}</EmptyTitle>
+                  <EmptyDescription>{t.workspaces.emptyDescription}</EmptyDescription>
                 </EmptyHeader>
                 <EmptyContent>
                   <ul className="checklist text-left">
                     <li>
-                      Configure models in <Link to="/settings">Settings</Link>
+                      {t.workspaces.checklistModels}{" "}
+                      <Link to="/settings">{t.workspaces.settingsLink}</Link>
                     </li>
-                    <li>Add local Git checkout paths (no clone / no credentials)</li>
-                    <li>Run Wiki generation with HITL publish</li>
+                    <li>{t.workspaces.checklistSources}</li>
+                    <li>{t.workspaces.checklistRun}</li>
                   </ul>
                   {!showForm ? (
                     <Button type="button" onClick={() => setShowForm(true)}>
-                      Create workspace
+                      {t.workspaces.createSubmit}
                     </Button>
                   ) : null}
                 </EmptyContent>
@@ -228,10 +296,13 @@ export function WorkspacesPage() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Name</TableHead>
-                    <TableHead>Root path</TableHead>
-                    <TableHead>Sources</TableHead>
-                    <TableHead>Last opened</TableHead>
+                    <TableHead>{t.workspaces.colName}</TableHead>
+                    <TableHead>{t.workspaces.colRoot}</TableHead>
+                    <TableHead>{t.workspaces.colSources}</TableHead>
+                    <TableHead>{t.workspaces.colLastOpened}</TableHead>
+                    <TableHead>
+                      <span className="sr-only">{t.workspaces.colActions}</span>
+                    </TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -264,12 +335,30 @@ export function WorkspacesPage() {
                             {ws.name}
                           </Link>
                         </TableCell>
-                        <TableCell className="mono muted whitespace-normal">{ws.rootPath}</TableCell>
+                        <TableCell className="mono muted whitespace-normal">
+                          {ws.rootPath}
+                        </TableCell>
                         <TableCell>{ws.sourceCount}</TableCell>
                         <TableCell className="muted">
                           {ws.lastOpenedAt
                             ? new Date(ws.lastOpenedAt).toLocaleString()
                             : "—"}
+                        </TableCell>
+                        <TableCell className="actions-cell">
+                          <Button
+                            type="button"
+                            variant="destructive"
+                            size="sm"
+                            data-testid="workspace-delete"
+                            disabled={deletingId === ws.id}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setDeleteTarget(ws);
+                              setDeleteMeta(false);
+                            }}
+                          >
+                            {t.workspaces.delete}
+                          </Button>
                         </TableCell>
                       </TableRow>
                     );

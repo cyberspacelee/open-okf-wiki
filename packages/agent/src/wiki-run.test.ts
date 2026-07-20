@@ -48,6 +48,7 @@ async function makeWorkspace(root: string): Promise<WorkspaceConfig> {
     adaptive: false,
     reviewer: false,
     planConfirm: false,
+    wikiLanguage: "en",
     createdAt: new Date().toISOString(),
   };
 }

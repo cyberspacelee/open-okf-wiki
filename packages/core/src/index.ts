@@ -82,6 +82,7 @@ export {
   saveWorkspace,
   addSource,
   removeSource,
+  updateSource,
   registerWorkspaceInAppIndex,
   removeWorkspaceFromAppIndex,
   listRecentWorkspaces,
@@ -94,8 +95,19 @@ export {
   type CreateWorkspaceOptions,
   type AddSourceInput,
   type AddSourceOptions,
+  type UpdateSourceInput,
   type WorkspaceSummary,
 } from "./workspace-store.js";
+export {
+  DEFAULT_SOURCE_IGNORES,
+  IGNORE_PRESETS,
+  effectiveSourceIgnores,
+  effectiveIgnoresForSource,
+  pathMatchesIgnore,
+  entryMatchesIgnore,
+  resolveIgnorePreset,
+  type IgnorePresetId,
+} from "./source-ignores.js";
 export {
   PROVIDER_FILE_NAME,
   defaultProviderPath,

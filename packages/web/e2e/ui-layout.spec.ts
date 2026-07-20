@@ -18,7 +18,8 @@ test.describe("UI layout smoke — Session / Settings skill / Sources", () => {
     // --- Sources layout ---
     await expect(page.getByTestId("sources-page")).toBeVisible();
     await expectVisibleBox(page.getByTestId("source-list"), { minWidth: 200, minHeight: 40 });
-    await expect(page.getByTestId("source-list").getByRole("columnheader")).toHaveCount(5);
+    // ID, Origin, Path, Probe, Ignores, Actions
+    await expect(page.getByTestId("source-list").getByRole("columnheader")).toHaveCount(6);
     // Link + clone forms both present with usable controls
     await expectVisibleBox(page.getByTestId("source-path-input"), { minWidth: 120, minHeight: 24 });
     await expectVisibleBox(page.getByTestId("source-remote-input"), {

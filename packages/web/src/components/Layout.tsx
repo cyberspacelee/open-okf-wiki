@@ -4,13 +4,9 @@ import { FolderKanban, PanelLeftClose, PanelLeftOpen, Settings } from "lucide-re
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
+import { useI18n, type Locale } from "../i18n";
 
 const STORAGE_KEY = "okf-wiki.sidebar-collapsed";
-
-const nav = [
-  { to: "/workspaces", label: "Workspaces", end: false, icon: FolderKanban, testId: "nav-workspaces" },
-  { to: "/settings", label: "Settings", end: true, icon: Settings, testId: "nav-settings" },
-] as const;
 
 function readCollapsed(): boolean {
   try {
@@ -21,7 +17,25 @@ function readCollapsed(): boolean {
 }
 
 export function Layout({ children }: { children: ReactNode }) {
+  const { t, locale, setLocale } = useI18n();
   const [collapsed, setCollapsed] = useState(false);
+
+  const nav = [
+    {
+      to: "/workspaces",
+      label: t.nav.workspaces,
+      end: false,
+      icon: FolderKanban,
+      testId: "nav-workspaces",
+    },
+    {
+      to: "/settings",
+      label: t.nav.settings,
+      end: true,
+      icon: Settings,
+      testId: "nav-settings",
+    },
+  ] as const;
 
   useEffect(() => {
     setCollapsed(readCollapsed());
@@ -42,7 +56,6 @@ export function Layout({ children }: { children: ReactNode }) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "b") {
-        // Avoid stealing when typing in inputs.
         const target = event.target as HTMLElement | null;
         const tag = target?.tagName;
         if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) {
@@ -56,18 +69,23 @@ export function Layout({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [toggle]);
 
+  function cycleLocale() {
+    const next: Locale = locale === "en" ? "zh" : "en";
+    setLocale(next);
+  }
+
   return (
     <div className={cn("app-shell", collapsed && "sidebar-collapsed")}>
       <aside
         className={cn("sidebar", collapsed && "is-collapsed")}
-        aria-label="Primary"
+        aria-label={t.app.sidebarAria}
         data-collapsed={collapsed ? "true" : "false"}
         data-testid="app-sidebar"
       >
         <div className={cn("brand", collapsed && "brand-collapsed")}>
-          <strong className="text-sm tracking-tight">okf-wiki</strong>
+          <strong className="text-sm tracking-tight">{t.app.brand}</strong>
           {!collapsed ? (
-            <span className="text-xs text-muted-foreground">Operator</span>
+            <span className="text-xs text-muted-foreground">{t.app.operator}</span>
           ) : null}
         </div>
         <Separator />
@@ -86,7 +104,9 @@ export function Layout({ children }: { children: ReactNode }) {
                 title={item.label}
               >
                 <Icon className="size-4 shrink-0" aria-hidden />
-                {!collapsed ? <span>{item.label}</span> : (
+                {!collapsed ? (
+                  <span>{item.label}</span>
+                ) : (
                   <span className="sr-only">{item.label}</span>
                 )}
               </NavLink>
@@ -95,24 +115,45 @@ export function Layout({ children }: { children: ReactNode }) {
         </nav>
 
         <div className={cn("sidebar-bottom", collapsed && "sidebar-bottom-collapsed")}>
+          <Button
+            type="button"
+            variant="outline"
+            size={collapsed ? "icon-sm" : "sm"}
+            onClick={cycleLocale}
+            aria-label={t.locale.switchTo}
+            title={`${t.locale.label}: ${locale === "en" ? t.locale.en : t.locale.zh}`}
+            data-testid="locale-switch"
+            className={cn(!collapsed && "w-full justify-start gap-2")}
+          >
+            <span className="text-xs font-medium tabular-nums">
+              {locale === "en" ? "EN" : "中"}
+            </span>
+            {!collapsed ? (
+              <span className="truncate">
+                {locale === "en" ? t.locale.en : t.locale.zh}
+              </span>
+            ) : null}
+          </Button>
           {!collapsed ? (
-            <p className="sidebar-foot">
-              Local Web operator UI. Provider secrets stay on this machine, not in workspace.json.
-            </p>
+            <p className="sidebar-foot">{t.app.sidebarFoot}</p>
           ) : null}
           <Button
             type="button"
             variant="ghost"
             size={collapsed ? "icon-sm" : "sm"}
             onClick={toggle}
-            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-label={collapsed ? t.app.expandSidebar : t.app.collapseSidebar}
             aria-expanded={!collapsed}
-            title={collapsed ? "Expand sidebar (Ctrl+B)" : "Collapse sidebar (Ctrl+B)"}
+            title={
+              collapsed
+                ? `${t.app.expandSidebar} (Ctrl+B)`
+                : `${t.app.collapseSidebar} (Ctrl+B)`
+            }
             data-testid="sidebar-toggle"
             className={cn("sidebar-toggle", !collapsed && "w-full justify-start gap-2")}
           >
             {collapsed ? <PanelLeftOpen /> : <PanelLeftClose />}
-            {!collapsed ? <span>Collapse</span> : null}
+            {!collapsed ? <span>{t.app.collapse}</span> : null}
           </Button>
         </div>
       </aside>

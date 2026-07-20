@@ -1,10 +1,16 @@
 import { createTool } from "@mastra/core/tools";
+import {
+  entryMatchesIgnore,
+  pathMatchesIgnore,
+} from "@okf-wiki/core";
 import { z } from "zod";
 import { listDirContained, readFileContained, writeFileContained } from "./fs-ops.js";
 
 export type WikiRunToolRoots = {
   /** source id → absolute path */
   sources: Map<string, string>;
+  /** source id → effective ignore globs (defaults + user) */
+  sourceIgnores: Map<string, readonly string[]>;
   skillRoot: string;
   wikiRoot: string;
 };
@@ -34,36 +40,58 @@ function resolveSourceRoot(
   );
 }
 
+function ignoresFor(
+  roots: WikiRunToolRoots,
+  sourceId: string,
+): readonly string[] {
+  return roots.sourceIgnores.get(sourceId) ?? [];
+}
+
 /**
  * Path-policy tools for a Wiki Run: source/skill read-only, wiki staging write.
+ * Source tools honor Effective Source Ignores (defaults + user patterns).
  */
 export function createWikiRunTools(roots: WikiRunToolRoots) {
   const list_source = createTool({
     id: "list_source",
     description:
       "List files/directories under a source repository. Paths are relative to the source root. " +
-      "When multiple sources exist, pass sourceId.",
+      "When multiple sources exist, pass sourceId. Entries matching Effective Source Ignores are omitted.",
     inputSchema: z.object({
       path: z.string().default("").describe("Relative directory path under the source"),
       sourceId: z.string().optional().describe("Source id when multiple sources are configured"),
     }),
     execute: async (input) => {
       const { id, root } = resolveSourceRoot(roots.sources, input.sourceId);
-      const entries = await listDirContained(root, input.path ?? "");
-      return { sourceId: id, entries };
+      const rel = input.path ?? "";
+      // Refuse listing under an ignored path.
+      if (rel.trim() && pathMatchesIgnore(rel, ignoresFor(roots, id))) {
+        return { sourceId: id, entries: [] };
+      }
+      const entries = await listDirContained(root, rel);
+      const patterns = ignoresFor(roots, id);
+      const filtered = entries.filter((entry) => {
+        const isDir = entry.type === "directory";
+        return !entryMatchesIgnore(rel, entry.name, isDir, patterns);
+      });
+      return { sourceId: id, entries: filtered };
     },
   });
 
   const read_source = createTool({
     id: "read_source",
     description:
-      "Read a text file from a source repository. Paths are relative to the source root.",
+      "Read a text file from a source repository. Paths are relative to the source root. " +
+      "Paths matching Effective Source Ignores are not readable.",
     inputSchema: z.object({
       path: z.string().min(1).describe("Relative file path under the source"),
       sourceId: z.string().optional().describe("Source id when multiple sources are configured"),
     }),
     execute: async (input) => {
       const { id, root } = resolveSourceRoot(roots.sources, input.sourceId);
+      if (pathMatchesIgnore(input.path, ignoresFor(roots, id))) {
+        throw new Error(`path is excluded by source ignore rules: ${input.path}`);
+      }
       const file = await readFileContained(root, input.path);
       return { sourceId: id, ...file };
     },

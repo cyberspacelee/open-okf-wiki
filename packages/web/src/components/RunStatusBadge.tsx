@@ -1,6 +1,8 @@
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { runStatusLabel, runStatusTone } from "../lib/run-status";
+import { useI18n } from "../i18n";
+import { runStatusTone } from "../lib/run-status";
+import type { WikiRunRecordStatus } from "../api";
 
 type Props = {
   status: string;
@@ -9,8 +11,11 @@ type Props = {
 };
 
 export function RunStatusBadge({ status, className, ...rest }: Props) {
+  const { t } = useI18n();
   const tone = runStatusTone(status);
-  const label = runStatusLabel(status);
+  const labels = t.runStatus as Record<string, string>;
+  const label =
+    status in labels ? labels[status as WikiRunRecordStatus] : status;
 
   const variant =
     tone === "danger"

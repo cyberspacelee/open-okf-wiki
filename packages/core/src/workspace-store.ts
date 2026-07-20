@@ -117,6 +117,7 @@ export async function createWorkspace(options: CreateWorkspaceOptions): Promise<
     adaptive: false,
     reviewer: false,
     planConfirm: false,
+    wikiLanguage: "en",
     createdAt: now,
     lastOpenedAt: now,
   };
@@ -249,6 +250,36 @@ export function removeSource(config: WorkspaceConfig, sourceId: string): Workspa
   if (sources.length === config.sources.length) {
     throw new Error(`source not found: ${sourceId}`);
   }
+  return { ...config, sources };
+}
+
+export type UpdateSourceInput = {
+  applyDefaultIgnores?: boolean;
+  ignore?: string[];
+};
+
+/**
+ * Update ignore policy for an existing source. Path and id are immutable here.
+ */
+export function updateSource(
+  config: WorkspaceConfig,
+  sourceId: string,
+  input: UpdateSourceInput,
+): WorkspaceConfig {
+  const index = config.sources.findIndex((source) => source.id === sourceId);
+  if (index < 0) {
+    throw new Error(`source not found: ${sourceId}`);
+  }
+  const current = config.sources[index]!;
+  const nextSource = WorkspaceSourceSchema.parse({
+    ...current,
+    ...(input.applyDefaultIgnores !== undefined
+      ? { applyDefaultIgnores: input.applyDefaultIgnores }
+      : {}),
+    ...(input.ignore !== undefined ? { ignore: input.ignore } : {}),
+  });
+  const sources = [...config.sources];
+  sources[index] = nextSource;
   return { ...config, sources };
 }
 

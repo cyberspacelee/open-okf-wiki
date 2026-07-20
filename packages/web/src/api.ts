@@ -17,6 +17,7 @@ import type {
   SkillInfo,
   StoredRunRecord,
   ToolPartState,
+  WikiLanguage,
   WikiRunPlan,
   WikiRunRecordStatus,
   WorkspaceConfig,
@@ -37,6 +38,7 @@ export type {
   SkillInfo,
   StoredRunRecord,
   ToolPartState,
+  WikiLanguage,
   WikiRunPlan,
   WikiRunRecordStatus,
   WorkspaceConfig,
@@ -132,7 +134,18 @@ export type PatchWorkspaceInput = {
   adaptive?: boolean;
   reviewer?: boolean;
   planConfirm?: boolean;
+  wikiLanguage?: WikiLanguage;
   skillPath?: string | null;
+};
+
+export type UpdateSourceInput = {
+  applyDefaultIgnores?: boolean;
+  ignore?: string[];
+};
+
+export type IgnoreCatalog = {
+  defaultSourceIgnores: string[];
+  presets: Record<string, { label: string; patterns: string[] }>;
 };
 
 export type AddSourceInput = {
@@ -336,6 +349,51 @@ export function patchWorkspace(
       body: JSON.stringify(input),
     },
   );
+}
+
+/**
+ * Remove workspace from the app index.
+ * When deleteFiles is true, also removes `<root>/.okf-wiki` (not the whole project tree).
+ */
+export function deleteWorkspace(
+  id: string,
+  options?: { rootPath?: string; deleteFiles?: boolean },
+): Promise<{
+  ok: boolean;
+  id: string;
+  removedFromIndex: boolean;
+  deletedMeta: boolean;
+  rootPath: string;
+}> {
+  const base = withRootPathQuery(
+    `/api/workspaces/${encodeURIComponent(id)}`,
+    options?.rootPath,
+  );
+  const sep = base.includes("?") ? "&" : "?";
+  const url = options?.deleteFiles ? `${base}${sep}deleteFiles=true` : base;
+  return request(url, { method: "DELETE" });
+}
+
+export function updateSource(
+  workspaceId: string,
+  sourceId: string,
+  input: UpdateSourceInput,
+  rootPath?: string,
+): Promise<{ workspace: WorkspaceConfig; source: WorkspaceSource }> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/sources/${encodeURIComponent(sourceId)}`,
+      rootPath,
+    ),
+    {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export function getIgnoreCatalog(): Promise<IgnoreCatalog> {
+  return request<IgnoreCatalog>("/api/ignore-catalog");
 }
 
 export function addSource(

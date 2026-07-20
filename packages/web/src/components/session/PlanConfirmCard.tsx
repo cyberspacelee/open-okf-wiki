@@ -1,4 +1,5 @@
 import type { WikiRunPlan } from "../../api";
+import { useI18n } from "../../i18n";
 import { Button } from "@/components/ui/button";
 
 export type PlanConfirmCardProps = {
@@ -14,9 +15,10 @@ export function PlanConfirmCard({
   onApprove,
   onDeny,
 }: PlanConfirmCardProps) {
+  const { t } = useI18n();
   return (
     <div className="session-plan-card" data-testid="session-plan-card">
-      <h3 className="panel-subtitle">Proposed page plan</h3>
+      <h3 className="panel-subtitle">{t.planConfirm.title}</h3>
       <p className="text-sm">{plan.summary}</p>
       <ul className="session-plan-pages mono small">
         {plan.pages.map((page) => (
@@ -25,7 +27,11 @@ export function PlanConfirmCard({
           </li>
         ))}
       </ul>
-      {plan.notes ? <p className="muted small">Notes: {plan.notes}</p> : null}
+      {plan.notes ? (
+        <p className="muted small">
+          {t.planConfirm.notes}: {plan.notes}
+        </p>
+      ) : null}
       <div className="row-actions mt-2">
         <Button
           type="button"
@@ -33,7 +39,7 @@ export function PlanConfirmCard({
           disabled={busy}
           data-testid="run-approve-plan"
         >
-          {busy ? "Working…" : "Approve plan & write"}
+          {busy ? t.planConfirm.working : t.planConfirm.approve}
         </Button>
         <Button
           type="button"
@@ -42,7 +48,7 @@ export function PlanConfirmCard({
           disabled={busy}
           data-testid="run-deny-plan"
         >
-          Decline plan
+          {t.planConfirm.decline}
         </Button>
       </div>
     </div>

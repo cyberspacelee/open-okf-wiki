@@ -18,6 +18,7 @@ import {
   createOperatorSession,
   createSkillFork,
   createWorkspace,
+  DEFAULT_SOURCE_IGNORES,
   deleteModelProfile,
   deleteWorkspaceMeta,
   getModelProfile,
@@ -48,6 +49,7 @@ import {
   toProviderPublic,
   uniqueSourceId,
   updateModelProfile,
+  updateSource,
   writeSkillFile,
 } from "@okf-wiki/core";
 import {
@@ -57,9 +59,11 @@ import {
   type UIMessage,
 } from "ai";
 import {
+  IGNORE_PRESETS,
   isTerminalRunStatus,
   ModelProfileWriteSchema,
   ProviderApiShapeSchema,
+  WikiLanguageSchema,
   WikiRunPlanSchema,
   WorkspaceLimitsSchema,
   type RunSseEvent,
@@ -601,6 +605,15 @@ async function handlePatchWorkspace(
     next.planConfirm = body.planConfirm;
   }
 
+  if (body.wikiLanguage !== undefined) {
+    const parsed = WikiLanguageSchema.safeParse(body.wikiLanguage);
+    if (!parsed.success) {
+      sendError(res, 400, "wikiLanguage must be 'en' or 'zh'");
+      return;
+    }
+    next.wikiLanguage = parsed.data;
+  }
+
   // rootPath and id are immutable via PATCH
   await saveWorkspace(next);
   await registerWorkspaceInAppIndex(next.rootPath);
@@ -740,6 +753,75 @@ async function handleDeleteSource(
     }
     sendError(res, 400, message);
   }
+}
+
+async function handleUpdateSource(
+  req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  sourceId: string,
+  url: URL,
+): Promise<void> {
+  const rootPath = url.searchParams.get("rootPath") ?? undefined;
+  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
+  if (!workspace) {
+    sendError(res, 404, `workspace not found: ${id}`);
+    return;
+  }
+
+  const body = (await readJsonBody(req)) as {
+    applyDefaultIgnores?: unknown;
+    ignore?: unknown;
+  };
+
+  const patch: { applyDefaultIgnores?: boolean; ignore?: string[] } = {};
+  if (body.applyDefaultIgnores !== undefined) {
+    if (typeof body.applyDefaultIgnores !== "boolean") {
+      sendError(res, 400, "applyDefaultIgnores must be a boolean");
+      return;
+    }
+    patch.applyDefaultIgnores = body.applyDefaultIgnores;
+  }
+  if (body.ignore !== undefined) {
+    if (!Array.isArray(body.ignore) || !body.ignore.every((p) => typeof p === "string")) {
+      sendError(res, 400, "ignore must be an array of strings");
+      return;
+    }
+    patch.ignore = body.ignore as string[];
+  }
+  if (patch.applyDefaultIgnores === undefined && patch.ignore === undefined) {
+    sendError(res, 400, "provide applyDefaultIgnores and/or ignore");
+    return;
+  }
+
+  try {
+    const next = updateSource(workspace, sourceId, patch);
+    await saveWorkspace(next);
+    const source = next.sources.find((s) => s.id === sourceId);
+    sendJson(res, 200, { workspace: next, source });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/source not found/i.test(message)) {
+      sendError(res, 404, message);
+      return;
+    }
+    sendError(res, 400, message);
+  }
+}
+
+async function handleIgnoreCatalog(
+  _req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  sendJson(res, 200, {
+    defaultSourceIgnores: [...DEFAULT_SOURCE_IGNORES],
+    presets: Object.fromEntries(
+      Object.entries(IGNORE_PRESETS).map(([id, meta]) => [
+        id,
+        { label: meta.label, patterns: [...meta.patterns] },
+      ]),
+    ),
+  });
 }
 
 async function handleProbeSources(
@@ -2781,6 +2863,10 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
       await handleDoctor(req, res);
       return;
     }
+    if (method === "GET" && pathname === "/api/ignore-catalog") {
+      await handleIgnoreCatalog(req, res);
+      return;
+    }
     if (method === "GET" && pathname === "/api/provider") {
       await handleGetProvider(req, res);
       return;
@@ -2842,6 +2928,10 @@ async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void
       const params = matchRoute(pathname, "/api/workspaces/:id/sources/:sourceId");
       if (params && method === "DELETE") {
         await handleDeleteSource(req, res, params.id!, params.sourceId!, url);
+        return;
+      }
+      if (params && method === "PATCH") {
+        await handleUpdateSource(req, res, params.id!, params.sourceId!, url);
         return;
       }
     }

@@ -12,6 +12,7 @@ import type {
 } from "@okf-wiki/contract";
 import {
   WORKSPACE_DIR_NAME,
+  effectiveIgnoresForSource,
   hasProviderCredentials,
   loadProviderConfig,
   resolveProviderRuntime,
@@ -239,9 +240,34 @@ async function runFixture(input: WikiRunAgentInput, wikiRoot: string): Promise<W
   };
 }
 
+function wikiLanguageInstruction(workspace: WorkspaceConfig): string {
+  const lang = workspace.wikiLanguage ?? "en";
+  if (lang === "zh") {
+    return [
+      "## Output language",
+      "Write all Wiki page content in Simplified Chinese (简体中文).",
+      "Frontmatter `title` values and body prose must be Chinese.",
+      "Keep Source Citations, file paths, code identifiers, and relative `.md` links unchanged (do not translate paths).",
+    ].join("\n");
+  }
+  return [
+    "## Output language",
+    "Write all Wiki page content in English.",
+    "Frontmatter `title` values and body prose must be English.",
+    "Keep Source Citations, file paths, code identifiers, and relative `.md` links unchanged.",
+  ].join("\n");
+}
+
 function buildInstructions(workspace: WorkspaceConfig): string {
   const sourceList = workspace.sources
-    .map((s) => `- ${s.id}: ${s.path}`)
+    .map((s) => {
+      const ignores = effectiveIgnoresForSource(s);
+      const ignoreNote =
+        ignores.length > 0
+          ? ` (effective ignores: ${ignores.slice(0, 6).join(", ")}${ignores.length > 6 ? ", …" : ""})`
+          : "";
+      return `- ${s.id}: ${s.path}${ignoreNote}`;
+    })
     .join("\n");
   return [
     "You are the OKF Wiki Root Agent for a single Wiki Run.",
@@ -251,16 +277,20 @@ function buildInstructions(workspace: WorkspaceConfig): string {
     "1. Activate/load the Producer Skill (Mastra skill tools and/or read_skill). Start with SKILL.md, then references/templates as needed.",
     "2. Explore sources with list_source / read_source only (read-only, multi-root by sourceId).",
     "   Source paths may live outside the workspace root; never assume sources are under cwd.",
+    "   The Run Boundary already filters Effective Source Ignores; do not invent a second exclusion policy.",
     "3. Write final Markdown pages under the wiki staging area with write_wiki.",
     "4. Every page MUST start with YAML frontmatter containing a non-empty `title`.",
     "5. Prefer a small coherent page set (e.g. overview.md plus architecture/module as needed).",
     "6. When finished, reply with a short plain-text summary listing the wiki-relative page paths you wrote.",
+    "",
+    wikiLanguageInstruction(workspace),
     "",
     "Do not use shell/git clone/fetch. Use only the provided tools.",
     "Do not invent source citations without reading the cited files.",
     "",
     `Workspace root (agent cwd): ${workspace.rootPath}`,
     `Workspace: ${workspace.name} (${workspace.id})`,
+    `Wiki language: ${workspace.wikiLanguage ?? "en"}`,
     "Sources:",
     sourceList || "- (none)",
   ].join("\n");
@@ -307,10 +337,15 @@ export async function resolveModelConfig(
 
 async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: string): Promise<WikiRunAgentResult> {
   const sources = buildSourceMap(input.workspace);
+  const sourceIgnores = new Map<string, readonly string[]>();
+  for (const source of input.workspace.sources) {
+    sourceIgnores.set(source.id, effectiveIgnoresForSource(source));
+  }
   // Discrete path-policy tools always registered; CodeMode only orchestrates them
   // via host-side RPC (validation/tracing/path containment stay on the host).
   const tools = createWikiRunTools({
     sources,
+    sourceIgnores,
     skillRoot,
     wikiRoot,
   });

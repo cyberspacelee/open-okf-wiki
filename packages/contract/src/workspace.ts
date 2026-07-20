@@ -86,6 +86,58 @@ export const WorkspaceLimitsSchema = z.object({
 export type WorkspaceLimits = z.infer<typeof WorkspaceLimitsSchema>;
 
 /**
+ * Language for generated Wiki page content (not the operator UI locale).
+ * Default English; Chinese is Simplified Chinese prose.
+ */
+export const WikiLanguageSchema = z.enum(["en", "zh"]);
+
+export type WikiLanguage = z.infer<typeof WikiLanguageSchema>;
+
+/**
+ * Optional operator ignore presets (never applied automatically).
+ * Host expands these into additive user `ignore` patterns when selected in the UI.
+ */
+export const IGNORE_PRESETS: Readonly<
+  Record<string, { label: string; patterns: readonly string[] }>
+> = Object.freeze({
+  "java-tests": Object.freeze({
+    label: "Java tests",
+    patterns: Object.freeze([
+      "src/test/**",
+      "**/src/test/**",
+      "**/*Test.java",
+      "**/*Tests.java",
+      "**/*IT.java",
+      "**/*ITCase.java",
+    ]),
+  }),
+  "js-tests": Object.freeze({
+    label: "JS/TS tests",
+    patterns: Object.freeze([
+      "**/*.test.ts",
+      "**/*.test.tsx",
+      "**/*.test.js",
+      "**/*.spec.ts",
+      "**/*.spec.tsx",
+      "**/*.spec.js",
+      "**/__tests__/**",
+      "**/__mocks__/**",
+    ]),
+  }),
+  "python-tests": Object.freeze({
+    label: "Python tests",
+    patterns: Object.freeze([
+      "tests/**",
+      "**/tests/**",
+      "test/**",
+      "**/test/**",
+      "**/test_*.py",
+      "**/*_test.py",
+    ]),
+  }),
+});
+
+/**
  * Operator project (Workspace). Distinct from run-local analysis scratch.
  * Secrets must never appear in this document.
  */
@@ -108,6 +160,11 @@ export const WorkspaceConfigSchema = z.object({
    * before writing pages. Headless/autoApprove skips this gate.
    */
   planConfirm: z.boolean().default(false),
+  /**
+   * Output language for Wiki page body and titles produced by Wiki Runs.
+   * Independent of the operator UI locale.
+   */
+  wikiLanguage: WikiLanguageSchema.default("en"),
   /** Optional path to a Skill fork directory; omit for bundled skill. */
   skillPath: z.string().trim().min(1).optional(),
   createdAt: z.string().datetime(),

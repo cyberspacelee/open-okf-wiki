@@ -14,6 +14,7 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
 import { WorkspaceSubnav } from "../components/WorkspaceSubnav";
+import { useI18n } from "../i18n";
 import { workspaceHref } from "../lib/workspace-path";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -92,6 +93,7 @@ function defaultPage(pages: string[]): string | undefined {
 }
 
 export function WorkspaceWikiPage() {
+  const { t } = useI18n();
   const { id = "", "*": splat = "" } = useParams<{ id: string; "*": string }>();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -267,42 +269,37 @@ export function WorkspaceWikiPage() {
       <div data-testid="wiki-page" className="flex flex-col gap-5">
         <header className="page-header">
           <p className="breadcrumb">
-            <Link to="/workspaces">Workspaces</Link>
+            <Link to="/workspaces">{t.wiki.breadcrumbWorkspaces}</Link>
             <span aria-hidden="true"> / </span>
             <Link to={workspaceHref(id, "", rootPathHint)}>
               {workspace?.name ?? id}
             </Link>
             <span aria-hidden="true"> / </span>
-            <span>Wiki</span>
+            <span>{t.wiki.breadcrumb}</span>
           </p>
-          <h1>Published Wiki</h1>
-          <p>
-            Read-only browse of pages under the workspace publication path.
-          </p>
+          <h1>{t.wiki.title}</h1>
+          <p>{t.wiki.description}</p>
         </header>
 
         {id ? <WorkspaceSubnav workspaceId={id} /> : null}
         <ErrorBanner error={error} onDismiss={() => setError(null)} />
 
         {loading ? (
-          <LoadingState label="Loading published wiki…" />
+          <LoadingState label={t.wiki.loading} />
         ) : empty ? (
           <Card data-testid="wiki-empty">
             <CardContent className="pt-0">
               <Empty className="border-0 p-6">
                 <EmptyHeader>
-                  <EmptyTitle className="text-base">Not published yet</EmptyTitle>
-                  <EmptyDescription>
-                    No markdown pages were found under the publication path. Start a Wiki Run
-                    and approve publication to populate this view.
-                  </EmptyDescription>
+                  <EmptyTitle className="text-base">{t.wiki.emptyTitle}</EmptyTitle>
+                  <EmptyDescription>{t.wiki.emptyDescription}</EmptyDescription>
                 </EmptyHeader>
                 <EmptyContent>
                   <Link
                     to={workspaceHref(id, "/run", rootPathHint)}
                     className={cn(buttonVariants())}
                   >
-                    Go to Run
+                    {t.wiki.goToRun}
                   </Link>
                 </EmptyContent>
               </Empty>
@@ -310,9 +307,9 @@ export function WorkspaceWikiPage() {
           </Card>
         ) : (
           <div className="wiki-layout">
-            <Card className="h-fit" aria-label="Wiki pages">
+            <Card className="h-fit" aria-label={t.wiki.pagesAria}>
               <CardHeader>
-                <CardTitle>Pages</CardTitle>
+                <CardTitle>{t.wiki.pages}</CardTitle>
               </CardHeader>
               <CardContent>
                 <ScrollArea className="max-h-[28rem]">
@@ -342,7 +339,7 @@ export function WorkspaceWikiPage() {
             <Card data-testid="wiki-page-content">
               <CardContent>
                 {pageLoading && !page ? (
-                  <LoadingState label="Loading page…" />
+                  <LoadingState label={t.wiki.loadingPage} />
                 ) : page ? (
                   <>
                     {page.title ? (
@@ -360,7 +357,7 @@ export function WorkspaceWikiPage() {
                     </div>
                   </>
                 ) : (
-                  <p className="muted">Select a page from the list.</p>
+                  <p className="muted">{t.wiki.selectPage}</p>
                 )}
               </CardContent>
             </Card>

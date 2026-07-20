@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   createWorkspaceSkillFork,
+  deleteWorkspace,
   getProvider,
   getWorkspace,
   getWorkspaceSkill,
@@ -12,6 +13,7 @@ import {
   writeWorkspaceSkillFile,
   type ModelProfilePublic,
   type SkillInfo,
+  type WikiLanguage,
   type WorkspaceConfig,
 } from "../api";
 import { ErrorBanner } from "../components/ErrorBanner";
@@ -19,6 +21,7 @@ import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
 import { ModelSelect } from "../components/ModelSelect";
 import { WorkspaceSubnav } from "../components/WorkspaceSubnav";
+import { formatMessage, useI18n } from "../i18n";
 import { workspaceHref } from "../lib/workspace-path";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -26,6 +29,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 export function WorkspaceSettingsPage() {
+  const { t } = useI18n();
+  const navigate = useNavigate();
   const { id = "" } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
   const rootPathHint = searchParams.get("rootPath") ?? undefined;
@@ -36,6 +41,8 @@ export function WorkspaceSettingsPage() {
   const [error, setError] = useState<unknown>(null);
   const [saved, setSaved] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteMeta, setDeleteMeta] = useState(false);
 
   const [name, setName] = useState("");
   const [modelProfileId, setModelProfileId] = useState("");
@@ -43,6 +50,7 @@ export function WorkspaceSettingsPage() {
   const [adaptive, setAdaptive] = useState(false);
   const [reviewer, setReviewer] = useState(false);
   const [planConfirm, setPlanConfirm] = useState(false);
+  const [wikiLanguage, setWikiLanguage] = useState<WikiLanguage>("en");
   const [skill, setSkill] = useState<SkillInfo | null>(null);
   const [skillBusy, setSkillBusy] = useState(false);
   const [skillFilePath, setSkillFilePath] = useState("SKILL.md");
@@ -57,6 +65,7 @@ export function WorkspaceSettingsPage() {
       setAdaptive(ws.adaptive);
       setReviewer(ws.reviewer);
       setPlanConfirm(Boolean(ws.planConfirm));
+      setWikiLanguage(ws.wikiLanguage ?? "en");
 
       // Prefer profileId; else match denormalized model id; else keep empty.
       if (ws.model.profileId && catalog.some((m) => m.id === ws.model.profileId)) {
@@ -144,6 +153,7 @@ export function WorkspaceSettingsPage() {
           adaptive,
           reviewer,
           planConfirm,
+          wikiLanguage,
         },
         workspace?.rootPath ?? rootPathHint,
       );
@@ -165,23 +175,49 @@ export function WorkspaceSettingsPage() {
       ? workspace.model.id
       : null;
 
+  async function handleDeleteWorkspace() {
+    if (!id || !workspace) {
+      return;
+    }
+    const ok = window.confirm(
+      formatMessage(t.settings.deleteConfirm, { name: workspace.name }),
+    );
+    if (!ok) {
+      return;
+    }
+    setDeleting(true);
+    setError(null);
+    try {
+      await deleteWorkspace(id, {
+        rootPath: workspace.rootPath ?? rootPathHint,
+        deleteFiles: deleteMeta,
+      });
+      navigate("/workspaces");
+    } catch (err) {
+      setError(err);
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   return (
     <Layout>
       <div data-testid="settings-page" className="flex flex-col gap-5">
         <header className="page-header">
           <p className="breadcrumb">
-            <Link to="/workspaces">Workspaces</Link>
+            <Link to="/workspaces">{t.settings.breadcrumbWorkspaces}</Link>
             <span aria-hidden="true"> / </span>
             <Link to={workspaceHref(id, "", rootPathHint)}>
               {workspace?.name ?? id}
             </Link>
             <span aria-hidden="true"> / </span>
-            <span>Settings</span>
+            <span>{t.settings.breadcrumbSettings}</span>
           </p>
-          <h1>Workspace settings</h1>
+          <h1>{t.settings.title}</h1>
           <p>
-            Project options for this workspace. Models and credentials are configured only under{" "}
-            <Link to="/settings">Settings</Link>.
+            {t.settings.descriptionPrefix}{" "}
+            <Link to="/settings">{t.settings.descriptionLink}</Link>
+            {t.settings.descriptionSuffix}
           </p>
         </header>
 
@@ -189,13 +225,13 @@ export function WorkspaceSettingsPage() {
         <ErrorBanner error={error} onDismiss={() => setError(null)} />
 
         {loading ? (
-          <LoadingState label="Loading settings…" />
+          <LoadingState label={t.settings.loading} />
         ) : workspace ? (
           <Card>
             <CardContent className="flex flex-col gap-6">
               <form className="form" onSubmit={(e) => void handleSubmit(e)}>
                 <div className="field">
-                  <Label htmlFor="settings-name">Name</Label>
+                  <Label htmlFor="settings-name">{t.settings.name}</Label>
                   <Input
                     id="settings-name"
                     type="text"
@@ -236,7 +272,7 @@ export function WorkspaceSettingsPage() {
                 ) : null}
 
                 <div className="field">
-                  <Label htmlFor="settings-publication">Publication path (absolute)</Label>
+                  <Label htmlFor="settings-publication">{t.settings.publicationPath}</Label>
                   <Input
                     id="settings-publication"
                     type="text"
@@ -250,6 +286,23 @@ export function WorkspaceSettingsPage() {
                     className="font-mono"
                   />
                 </div>
+                <div className="field">
+                  <Label htmlFor="settings-wiki-language">{t.settings.wikiLanguage}</Label>
+                  <select
+                    id="settings-wiki-language"
+                    className="flex h-9 w-full max-w-xs rounded-md border bg-background px-3 text-sm"
+                    value={wikiLanguage}
+                    onChange={(e) => {
+                      setWikiLanguage(e.target.value as WikiLanguage);
+                      setSaved(false);
+                    }}
+                    data-testid="settings-wiki-language"
+                  >
+                    <option value="en">{t.settings.langEn}</option>
+                    <option value="zh">{t.settings.langZh}</option>
+                  </select>
+                  <span className="field-hint">{t.settings.wikiLanguageHint}</span>
+                </div>
                 <label className="field checkbox-field">
                   <input
                     type="checkbox"
@@ -260,10 +313,8 @@ export function WorkspaceSettingsPage() {
                     }}
                   />
                   <span>
-                    <strong>Adaptive</strong>
-                    <span className="field-hint">
-                      Enable adaptive orchestration for this workspace.
-                    </span>
+                    <strong>{t.settings.adaptive}</strong>
+                    <span className="field-hint">{t.settings.adaptiveHint}</span>
                   </span>
                 </label>
                 <label className="field checkbox-field">
@@ -276,10 +327,8 @@ export function WorkspaceSettingsPage() {
                     }}
                   />
                   <span>
-                    <strong>Reviewer</strong>
-                    <span className="field-hint">
-                      Enable wiki reviewer inspection before publication.
-                    </span>
+                    <strong>{t.settings.reviewer}</strong>
+                    <span className="field-hint">{t.settings.reviewerHint}</span>
                   </span>
                 </label>
                 <label className="field checkbox-field">
@@ -293,10 +342,8 @@ export function WorkspaceSettingsPage() {
                     data-testid="settings-plan-confirm"
                   />
                   <span>
-                    <strong>Plan confirm</strong>
-                    <span className="field-hint">
-                      Pause interactive runs for operator approval of the intended page set.
-                    </span>
+                    <strong>{t.settings.planConfirm}</strong>
+                    <span className="field-hint">{t.settings.planConfirmHint}</span>
                   </span>
                 </label>
 
@@ -311,47 +358,44 @@ export function WorkspaceSettingsPage() {
                     }
                     data-testid="settings-save"
                   >
-                    {submitting ? "Saving…" : "Save changes"}
+                    {submitting ? t.settings.saving : t.settings.save}
                   </Button>
                   {saved ? (
                     <span className="success-text" role="status">
-                      Saved
+                      {t.settings.saved}
                     </span>
                   ) : null}
                 </div>
               </form>
 
               <section className="flex flex-col gap-3" data-testid="settings-skill-panel">
-                <h2 className="text-base font-semibold">Producer Skill</h2>
-                <p className="muted small">
-                  Global method package for wiki generation. Create a workspace fork to customize
-                  templates and guidance; each Wiki Run freezes the skill content digest.
-                </p>
+                <h2 className="text-base font-semibold">{t.settings.skillTitle}</h2>
+                <p className="muted small">{t.settings.skillDescription}</p>
                 {skill ? (
                   <dl className="kv">
                     <div>
-                      <dt>Kind</dt>
+                      <dt>{t.settings.skillKind}</dt>
                       <dd data-testid="settings-skill-kind">{skill.kind}</dd>
                     </div>
                     <div>
-                      <dt>Digest</dt>
+                      <dt>{t.settings.skillDigest}</dt>
                       <dd className="mono small" data-testid="settings-skill-digest">
                         {skill.digest.slice(0, 16)}…
                       </dd>
                     </div>
                     <div>
-                      <dt>Path</dt>
+                      <dt>{t.settings.skillPath}</dt>
                       <dd className="mono small whitespace-normal">{skill.path}</dd>
                     </div>
                     {skill.name ? (
                       <div>
-                        <dt>Name</dt>
+                        <dt>{t.settings.skillName}</dt>
                         <dd>{skill.name}</dd>
                       </div>
                     ) : null}
                   </dl>
                 ) : (
-                  <p className="muted small">Skill info unavailable.</p>
+                  <p className="muted small">{t.settings.skillUnavailable}</p>
                 )}
                 <div className="row-actions">
                   <Button
@@ -389,7 +433,7 @@ export function WorkspaceSettingsPage() {
                       })();
                     }}
                   >
-                    {skillBusy ? "Working…" : "Create / refresh fork"}
+                    {skillBusy ? t.settings.skillWorking : t.settings.skillFork}
                   </Button>
                   <Button
                     type="button"
@@ -420,7 +464,7 @@ export function WorkspaceSettingsPage() {
                       })();
                     }}
                   >
-                    Use bundled
+                    {t.settings.skillBundled}
                   </Button>
                   <Button
                     type="button"
@@ -450,7 +494,7 @@ export function WorkspaceSettingsPage() {
                       })();
                     }}
                   >
-                    Load file
+                    {t.settings.skillLoadFile}
                   </Button>
                   <Button
                     type="button"
@@ -484,12 +528,12 @@ export function WorkspaceSettingsPage() {
                       })();
                     }}
                   >
-                    Save file
+                    {t.settings.skillSaveFile}
                   </Button>
                 </div>
                 {skill?.kind === "fork" ? (
                   <div className="flex flex-col gap-2">
-                    <Label htmlFor="settings-skill-file-path">Skill file (fork editor)</Label>
+                    <Label htmlFor="settings-skill-file-path">{t.settings.skillFileLabel}</Label>
                     <Input
                       id="settings-skill-file-path"
                       className="font-mono"
@@ -535,7 +579,7 @@ export function WorkspaceSettingsPage() {
                           })();
                         }}
                       >
-                        list root
+                        {t.settings.skillListRoot}
                       </button>
                       {skill.files.length > 0
                         ? ` · ${skill.files.slice(0, 8).join(", ")}${skill.files.length > 8 ? "…" : ""}`
@@ -547,24 +591,54 @@ export function WorkspaceSettingsPage() {
 
               <dl className="kv muted-block">
                 <div>
-                  <dt>Root path</dt>
+                  <dt>{t.settings.rootPath}</dt>
                   <dd className="mono">{workspace.rootPath}</dd>
                 </div>
                 <div>
-                  <dt>ID</dt>
+                  <dt>{t.common.id}</dt>
                   <dd className="mono">{workspace.id}</dd>
                 </div>
                 <div>
-                  <dt>Selected model id</dt>
+                  <dt>{t.settings.selectedModelId}</dt>
                   <dd className="mono">{workspace.model.id}</dd>
                 </div>
                 {workspace.model.profileId ? (
                   <div>
-                    <dt>Model profile</dt>
+                    <dt>{t.settings.modelProfile}</dt>
                     <dd className="mono">{workspace.model.profileId}</dd>
                   </div>
                 ) : null}
               </dl>
+
+              <section
+                className="flex flex-col gap-3 rounded-md border border-destructive/30 p-4"
+                data-testid="settings-danger-zone"
+              >
+                <h2 className="text-base font-semibold text-destructive">
+                  {t.settings.dangerTitle}
+                </h2>
+                <p className="muted small">{t.settings.dangerDescription}</p>
+                <label className="field checkbox-field">
+                  <input
+                    type="checkbox"
+                    checked={deleteMeta}
+                    onChange={(e) => setDeleteMeta(e.target.checked)}
+                    data-testid="settings-delete-meta"
+                  />
+                  <span>{t.settings.deleteMeta}</span>
+                </label>
+                <div className="form-actions">
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    disabled={deleting}
+                    onClick={() => void handleDeleteWorkspace()}
+                    data-testid="settings-delete-workspace"
+                  >
+                    {deleting ? t.common.deleting : t.settings.deleteWorkspace}
+                  </Button>
+                </div>
+              </section>
             </CardContent>
           </Card>
         ) : null}

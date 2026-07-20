@@ -38,6 +38,21 @@ test("WorkspaceConfigSchema rejects secrets-shaped extra keys only via strict pa
   assert.equal(ws.adaptive, false);
   assert.equal(ws.planConfirm, false);
   assert.equal(ws.version, 1);
+  assert.equal(ws.wikiLanguage, "en");
+});
+
+test("WorkspaceConfigSchema accepts wikiLanguage zh", () => {
+  const ws = WorkspaceConfigSchema.parse({
+    id: "ws_1",
+    name: "Demo",
+    rootPath: "D:/ws/demo",
+    sources: [],
+    model: { id: "openai/corp-model" },
+    publicationPath: "D:/ws/demo/wiki",
+    wikiLanguage: "zh",
+    createdAt: new Date().toISOString(),
+  });
+  assert.equal(ws.wikiLanguage, "zh");
 });
 
 test("exit codes map publication gate statuses", () => {

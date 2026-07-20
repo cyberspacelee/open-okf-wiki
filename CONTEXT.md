@@ -22,6 +22,10 @@ _Avoid_: Workspace, implicit repository list
 The operator project home and agent working directory for one Workspace. Product meta (`.okf-wiki/`), optional skill fork, session state, and default clone destinations live under this root. Configured sources may live **inside or outside** rootPath.
 _Avoid_: Mastra Workspace (framework FS/skills host), single-source assumption
 
+**Wiki language**:
+Workspace setting (`wikiLanguage`: `en` | `zh`) that directs the Semantic Workflow to write Wiki page titles and body prose in English or Simplified Chinese. Independent of the operator UI locale. Paths, code identifiers, and Source Citations stay untranslated.
+_Avoid_: UI locale, provider model language default alone
+
 **Mastra Workspace** (implementation term only):
 Framework object (`@mastra/core/workspace`) bound per Wiki Run with `basePath = product rootPath` and Producer Skill paths for skill discovery. Not the product Workspace entity; never mounts unrestricted multi-source trees.
 _Avoid_: product Workspace, Workspace rootPath synonym
