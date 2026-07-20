@@ -103,6 +103,7 @@ export {
   IGNORE_PRESETS,
   effectiveSourceIgnores,
   effectiveIgnoresForSource,
+  buildSourceIgnoreMap,
   pathMatchesIgnore,
   entryMatchesIgnore,
   resolveIgnorePreset,

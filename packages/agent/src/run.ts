@@ -12,6 +12,7 @@ import type {
 } from "@okf-wiki/contract";
 import {
   WORKSPACE_DIR_NAME,
+  buildSourceIgnoreMap,
   effectiveIgnoresForSource,
   hasProviderCredentials,
   loadProviderConfig,
@@ -258,16 +259,34 @@ function wikiLanguageInstruction(workspace: WorkspaceConfig): string {
   ].join("\n");
 }
 
+function formatEffectiveIgnoresSection(workspace: WorkspaceConfig): string {
+  if (workspace.sources.length === 0) {
+    return "## Effective Source Ignores\n(no sources)";
+  }
+  const blocks = workspace.sources.map((s) => {
+    const ignores = effectiveIgnoresForSource(s);
+    const flag =
+      s.applyDefaultIgnores === false
+        ? "applyDefaultIgnores=false (user patterns only)"
+        : "applyDefaultIgnores=true (defaults + user)";
+    const list =
+      ignores.length === 0
+        ? "  (none)"
+        : ignores.map((p) => `  - ${p}`).join("\n");
+    return [`### source \`${s.id}\` (${flag})`, list].join("\n");
+  });
+  return [
+    "## Effective Source Ignores (host-enforced)",
+    "These patterns are applied by the Run Boundary on every list_source and read_source call.",
+    "Ignored paths are omitted from listings and cannot be read. Do not invent a second exclusion policy.",
+    "Do not use shell, raw filesystem APIs, or CodeMode to bypass these filters.",
+    ...blocks,
+  ].join("\n");
+}
+
 function buildInstructions(workspace: WorkspaceConfig): string {
   const sourceList = workspace.sources
-    .map((s) => {
-      const ignores = effectiveIgnoresForSource(s);
-      const ignoreNote =
-        ignores.length > 0
-          ? ` (effective ignores: ${ignores.slice(0, 6).join(", ")}${ignores.length > 6 ? ", …" : ""})`
-          : "";
-      return `- ${s.id}: ${s.path}${ignoreNote}`;
-    })
+    .map((s) => `- ${s.id}: ${s.path}`)
     .join("\n");
   return [
     "You are the OKF Wiki Root Agent for a single Wiki Run.",
@@ -277,7 +296,7 @@ function buildInstructions(workspace: WorkspaceConfig): string {
     "1. Activate/load the Producer Skill (Mastra skill tools and/or read_skill). Start with SKILL.md, then references/templates as needed.",
     "2. Explore sources with list_source / read_source only (read-only, multi-root by sourceId).",
     "   Source paths may live outside the workspace root; never assume sources are under cwd.",
-    "   The Run Boundary already filters Effective Source Ignores; do not invent a second exclusion policy.",
+    "   Effective Source Ignores are host-enforced on those tools (see section below).",
     "3. Write final Markdown pages under the wiki staging area with write_wiki.",
     "4. Every page MUST start with YAML frontmatter containing a non-empty `title`.",
     "5. Prefer a small coherent page set (e.g. overview.md plus architecture/module as needed).",
@@ -285,8 +304,11 @@ function buildInstructions(workspace: WorkspaceConfig): string {
     "",
     wikiLanguageInstruction(workspace),
     "",
+    formatEffectiveIgnoresSection(workspace),
+    "",
     "Do not use shell/git clone/fetch. Use only the provided tools.",
     "Do not invent source citations without reading the cited files.",
+    "Do not cite or describe paths that list_source never returned or that read_source rejected as ignored.",
     "",
     `Workspace root (agent cwd): ${workspace.rootPath}`,
     `Workspace: ${workspace.name} (${workspace.id})`,
@@ -337,10 +359,9 @@ export async function resolveModelConfig(
 
 async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: string): Promise<WikiRunAgentResult> {
   const sources = buildSourceMap(input.workspace);
-  const sourceIgnores = new Map<string, readonly string[]>();
-  for (const source of input.workspace.sources) {
-    sourceIgnores.set(source.id, effectiveIgnoresForSource(source));
-  }
+  // Freeze Effective Source Ignores at run start (defaults + per-source user ignore).
+  // list_source / read_source enforce this map for the whole Wiki generation loop.
+  const sourceIgnores = buildSourceIgnoreMap(input.workspace.sources);
   // Discrete path-policy tools always registered; CodeMode only orchestrates them
   // via host-side RPC (validation/tracing/path containment stay on the host).
   const tools = createWikiRunTools({

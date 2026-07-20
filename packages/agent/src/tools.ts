@@ -9,7 +9,10 @@ import { listDirContained, readFileContained, writeFileContained } from "./fs-op
 export type WikiRunToolRoots = {
   /** source id → absolute path */
   sources: Map<string, string>;
-  /** source id → effective ignore globs (defaults + user) */
+  /**
+   * source id → effective ignore globs (defaults + user), frozen at Wiki Run start.
+   * Host-enforced on every list_source / read_source during generation.
+   */
   sourceIgnores: Map<string, readonly string[]>;
   skillRoot: string;
   wikiRoot: string;
@@ -44,32 +47,44 @@ function ignoresFor(
   roots: WikiRunToolRoots,
   sourceId: string,
 ): readonly string[] {
+  // Missing map entry → empty (caller should always populate via buildSourceIgnoreMap).
   return roots.sourceIgnores.get(sourceId) ?? [];
+}
+
+/** Normalize tool-relative paths before ignore matching. */
+function normalizeToolPath(relativePath: string): string {
+  return relativePath
+    .replace(/\\/g, "/")
+    .replace(/^\.\/+/, "")
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "");
 }
 
 /**
  * Path-policy tools for a Wiki Run: source/skill read-only, wiki staging write.
- * Source tools honor Effective Source Ignores (defaults + user patterns).
+ * Source tools honor Effective Source Ignores (defaults + user patterns) so
+ * ignored paths are never listed or readable during wiki generation.
  */
 export function createWikiRunTools(roots: WikiRunToolRoots) {
   const list_source = createTool({
     id: "list_source",
     description:
       "List files/directories under a source repository. Paths are relative to the source root. " +
-      "When multiple sources exist, pass sourceId. Entries matching Effective Source Ignores are omitted.",
+      "When multiple sources exist, pass sourceId. " +
+      "Entries matching Effective Source Ignores (workspace defaults + per-source ignore rules) are omitted by the host — do not try to re-list them.",
     inputSchema: z.object({
       path: z.string().default("").describe("Relative directory path under the source"),
       sourceId: z.string().optional().describe("Source id when multiple sources are configured"),
     }),
     execute: async (input) => {
       const { id, root } = resolveSourceRoot(roots.sources, input.sourceId);
-      const rel = input.path ?? "";
-      // Refuse listing under an ignored path.
-      if (rel.trim() && pathMatchesIgnore(rel, ignoresFor(roots, id))) {
-        return { sourceId: id, entries: [] };
+      const rel = normalizeToolPath(input.path ?? "");
+      const patterns = ignoresFor(roots, id);
+      // Refuse listing under an ignored path (empty result, not a leak).
+      if (rel && pathMatchesIgnore(rel, patterns)) {
+        return { sourceId: id, entries: [], ignored: true as const };
       }
       const entries = await listDirContained(root, rel);
-      const patterns = ignoresFor(roots, id);
       const filtered = entries.filter((entry) => {
         const isDir = entry.type === "directory";
         return !entryMatchesIgnore(rel, entry.name, isDir, patterns);
@@ -82,17 +97,21 @@ export function createWikiRunTools(roots: WikiRunToolRoots) {
     id: "read_source",
     description:
       "Read a text file from a source repository. Paths are relative to the source root. " +
-      "Paths matching Effective Source Ignores are not readable.",
+      "Paths matching Effective Source Ignores are rejected by the host and cannot be read.",
     inputSchema: z.object({
       path: z.string().min(1).describe("Relative file path under the source"),
       sourceId: z.string().optional().describe("Source id when multiple sources are configured"),
     }),
     execute: async (input) => {
       const { id, root } = resolveSourceRoot(roots.sources, input.sourceId);
-      if (pathMatchesIgnore(input.path, ignoresFor(roots, id))) {
-        throw new Error(`path is excluded by source ignore rules: ${input.path}`);
+      const rel = normalizeToolPath(input.path);
+      const patterns = ignoresFor(roots, id);
+      if (pathMatchesIgnore(rel, patterns)) {
+        throw new Error(
+          `path is excluded by Effective Source Ignores (workspace ignore rules): ${rel}`,
+        );
       }
-      const file = await readFileContained(root, input.path);
+      const file = await readFileContained(root, rel);
       return { sourceId: id, ...file };
     },
   });

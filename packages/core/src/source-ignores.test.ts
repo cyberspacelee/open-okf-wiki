@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   DEFAULT_SOURCE_IGNORES,
+  buildSourceIgnoreMap,
   effectiveSourceIgnores,
   entryMatchesIgnore,
   pathMatchesIgnore,
@@ -15,7 +16,6 @@ test("effectiveSourceIgnores unions defaults with user ignore", () => {
   });
   assert.ok(patterns.includes("node_modules/**"));
   assert.ok(patterns.includes("src/test/**"));
-  // de-dupe user overlapping default
   assert.equal(patterns.filter((p) => p === "node_modules/**").length, 1);
 });
 
@@ -36,6 +36,15 @@ test("pathMatchesIgnore matches ** and directory forms", () => {
   assert.equal(pathMatchesIgnore("src/Foo.java", ["**/*Test.java"]), false);
 });
 
+test("pathMatchesIgnore hides files under **/src/test/**", () => {
+  const patterns = ["**/src/test/**", "**/*Test.java"];
+  assert.equal(pathMatchesIgnore("src/test", patterns), true);
+  assert.equal(pathMatchesIgnore("src/test/java/Foo.java", patterns), true);
+  assert.equal(pathMatchesIgnore("module/src/test/java/Bar.java", patterns), true);
+  assert.equal(pathMatchesIgnore("src/main/java/App.java", patterns), false);
+  assert.equal(pathMatchesIgnore("src/main/java/AppTest.java", patterns), true);
+});
+
 test("entryMatchesIgnore hides nested noise directories", () => {
   assert.equal(
     entryMatchesIgnore("", "node_modules", true, DEFAULT_SOURCE_IGNORES),
@@ -48,8 +57,30 @@ test("entryMatchesIgnore hides nested noise directories", () => {
   );
 });
 
+test("entryMatchesIgnore hides src/test directory for java preset", () => {
+  const patterns = resolveIgnorePreset("java-tests")!;
+  assert.equal(entryMatchesIgnore("src", "test", true, patterns), true);
+  assert.equal(entryMatchesIgnore("src/main/java", "App.java", false, patterns), false);
+  assert.equal(
+    entryMatchesIgnore("src/main/java", "AppTest.java", false, patterns),
+    true,
+  );
+});
+
 test("java-tests preset resolves", () => {
   const list = resolveIgnorePreset("java-tests");
   assert.ok(list);
   assert.ok(list!.some((p) => p.includes("Test.java")));
+});
+
+test("buildSourceIgnoreMap freezes per-source effective patterns", () => {
+  const map = buildSourceIgnoreMap([
+    {
+      id: "app",
+      path: "/tmp/app",
+      applyDefaultIgnores: false,
+      ignore: ["src/test/**"],
+    },
+  ]);
+  assert.deepEqual(map.get("app"), ["src/test/**"]);
 });
