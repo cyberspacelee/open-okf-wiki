@@ -1,8 +1,8 @@
 /**
- * Session message bridge: durable SessionMessage ↔ AI SDK UIMessage.
- * Round-trips text / reasoning / tool / data / step-start (ADR 0026).
- * Tool parts are operator-projected (truncated) so historical sessions
- * with full write/read payloads do not re-inflate the UI.
+ * Session message adapter: durable schemaVersion-2 SessionMessage ↔ AI SDK UIMessage.
+ * Rows are already UIMessage-shaped (id/role/parts); this path applies operator
+ * tool projection (truncate) so full write/read payloads do not re-inflate the UI.
+ * No legacy part migrate (ADR 0027).
  */
 
 import type { UIMessage } from "ai";

@@ -13,7 +13,8 @@ what is persisted on `OperatorSession.messages` is shaped by
 | `list_source` / `list_skill` / `list_wiki` | Cap `entries` at 200; set `entryCount`, `truncated` when capped |
 | unknown | JSON-bounded + secret redaction |
 
-Historical sessions are re-projected on load via `sessionMessagesToUIMessages`.
+Server chat turns project tool parts via `sessionMessagesToUIMessages` / `projectSessionToolPart` before streaming.
+On-disk sessions require `schemaVersion: 2` (unsupported versions are rejected — no migrate).
 
 ## Product data parts
 

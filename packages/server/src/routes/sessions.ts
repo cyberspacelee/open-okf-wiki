@@ -13,14 +13,18 @@ import {
   deleteOperatorSession,
   listOperatorSessions,
   loadOperatorSession,
+  loadRun,
   loadWorkspaceById,
   isSessionTurnLocked,
   midTurnPhaseForChat,
   neutralizeSessionDecisionParts,
   reconcileSessionWithRun,
+  registerRunRecord,
   replaceSessionMessages,
   resetOperatorSessionWorkflow,
+  SessionSchemaVersionError,
   skillDigest,
+  updateRunRecord,
 } from "@okf-wiki/core";
 import {
   consumeStream,
@@ -41,11 +45,6 @@ import {
   clearRunAbortController,
   registerRunAbortController,
 } from "../run-events.ts";
-import {
-  loadRun,
-  registerRunRecord,
-  updateRunRecord,
-} from "../run-registry.ts";
 
 /**
  * Align durable session gate UI with the linked run (refresh / re-open).
@@ -55,6 +54,7 @@ async function loadSessionReconciled(
   rootPath: string,
   sessionId: string,
 ): Promise<OperatorSession | null> {
+  // SessionSchemaVersionError propagates — callers map to HTTP 410.
   const session = await loadOperatorSession(rootPath, sessionId);
   if (!session) {
     return null;
@@ -116,7 +116,16 @@ export async function handleListSessions(
     sendError(res, 404, `workspace not found: ${id}`);
     return;
   }
-  const sessions = await listOperatorSessions(workspace.rootPath);
+  let sessions: OperatorSession[];
+  try {
+    sessions = await listOperatorSessions(workspace.rootPath);
+  } catch (error) {
+    if (error instanceof SessionSchemaVersionError) {
+      sendError(res, 410, error.message);
+      return;
+    }
+    throw error;
+  }
   sendJson(res, 200, {
     sessions: sessions.map((s) => ({
       id: s.id,
@@ -168,7 +177,16 @@ export async function handleGetSession(
     sendError(res, 404, `workspace not found: ${id}`);
     return;
   }
-  const session = await loadSessionReconciled(workspace.rootPath, sessionId);
+  let session: OperatorSession | null;
+  try {
+    session = await loadSessionReconciled(workspace.rootPath, sessionId);
+  } catch (error) {
+    if (error instanceof SessionSchemaVersionError) {
+      sendError(res, 410, error.message);
+      return;
+    }
+    throw error;
+  }
   if (!session || session.workspaceId !== workspace.id) {
     sendError(res, 404, `session not found: ${sessionId}`);
     return;
@@ -191,10 +209,17 @@ export async function handleDeleteSession(
     sendError(res, 404, `workspace not found: ${id}`);
     return;
   }
-  const existing = await loadOperatorSession(workspace.rootPath, sessionId);
-  if (!existing || existing.workspaceId !== workspace.id) {
-    sendError(res, 404, `session not found: ${sessionId}`);
-    return;
+  // Allow deleting unsupported-schema sessions (wipe recovery path).
+  try {
+    const existing = await loadOperatorSession(workspace.rootPath, sessionId);
+    if (existing && existing.workspaceId !== workspace.id) {
+      sendError(res, 404, `session not found: ${sessionId}`);
+      return;
+    }
+  } catch (error) {
+    if (!(error instanceof SessionSchemaVersionError)) {
+      throw error;
+    }
   }
   const ok = await deleteOperatorSession(workspace.rootPath, sessionId);
   if (!ok) {
@@ -254,9 +279,7 @@ export function sessionChatLockKey(rootPath: string, sessionId: string): string 
 /**
  * AI SDK UI message stream for conversational Session.
  *
- * Body (preferred): { message (last only), id?, resumeData?, runId?, step? }
- * Body (legacy):    { messages (full client history), resumeData?, runId?, step? }
- *
+ * Body: { message (last user only), id?, intent?, resumeData?, runId?, step? }
  * Server loads prior session messages, appends the new user message, streams,
  * then onFinish saves the full UIMessage-compatible history.
  */
@@ -275,7 +298,16 @@ export async function handleSessionChat(
   }
   // Reconcile with linked run first so refresh mid-write does not treat a
   // stale awaiting_plan phase as a live gate for resumeData reconstruction.
-  const session = await loadSessionReconciled(workspace.rootPath, sessionId);
+  let session: OperatorSession | null;
+  try {
+    session = await loadSessionReconciled(workspace.rootPath, sessionId);
+  } catch (error) {
+    if (error instanceof SessionSchemaVersionError) {
+      sendError(res, 410, error.message);
+      return;
+    }
+    throw error;
+  }
   if (!session || session.workspaceId !== workspace.id) {
     sendError(res, 404, `session not found: ${sessionId}`);
     return;
@@ -301,15 +333,11 @@ export async function handleSessionChat(
     return;
   }
 
-  // Server is source of truth: load history, append only the new last message.
-  // Preferred: body.message (last only). Legacy: last entry of body.messages[].
+  // Server is source of truth: load history, append only body.message (last only).
   const previousUI = sessionMessagesToUIMessages(session.messages);
   let lastFromClient: UIMessage | undefined;
   if (body.message && typeof body.message === "object") {
     lastFromClient = body.message as UIMessage;
-  } else if (Array.isArray(body.messages) && body.messages.length > 0) {
-    // Multi-message fallback for older clients: take only the trailing user turn.
-    lastFromClient = body.messages[body.messages.length - 1] as UIMessage;
   }
 
   if (
@@ -320,7 +348,7 @@ export async function handleSessionChat(
     sendError(
       res,
       400,
-      "chat body must include a user message (message or messages[])",
+      "chat body must include a user message (body.message)",
     );
     return;
   }
@@ -354,7 +382,7 @@ export async function handleSessionChat(
   }
 
   // Refuse resume against a cancelled/terminal run (Stop-at-gate race or stale chips).
-  // Free-text approve/deny and structured resumeData both need a live suspend.
+  // Structured resume only: intent=resume and/or resumeData (no free-text gate).
   const candidateRunId =
     (typeof body.runId === "string" && body.runId.trim()
       ? body.runId.trim()
@@ -374,17 +402,8 @@ export async function handleSessionChat(
     }
     return "";
   })();
-  const phase = session.workflow?.phase ?? "idle";
   const looksLikeResume =
-    body.intent === "resume" ||
-    Boolean(body.resumeData) ||
-    // Free-text revise at plan gate still posts intent=resume from the client;
-    // keep a phase-based safety net for mid-migration clients.
-    (phase === "awaiting_plan" &&
-      lastText.length > 0 &&
-      lastText !== "revise" &&
-      lastText !== "approve" &&
-      lastText !== "deny");
+    body.intent === "resume" || Boolean(body.resumeData);
   if (looksLikeResume && candidateRunId) {
     const linkedRun = await loadRun(workspace.rootPath, candidateRunId);
     if (

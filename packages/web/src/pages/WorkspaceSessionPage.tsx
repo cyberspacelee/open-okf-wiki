@@ -88,78 +88,15 @@ import { Spinner } from "@/components/ui/spinner";
 import { MessageSquareIcon, PlusIcon, SlashIcon, Trash2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-function sessionMessagesToUI(
-  session: OperatorSessionDto,
-): UIMessage[] {
+/**
+ * Server persists schemaVersion 2 SessionMessage rows in AI SDK UIMessage shape.
+ * Thin cast only — no local part rewrite (ADR 0027).
+ */
+function sessionMessagesToUI(session: OperatorSessionDto): UIMessage[] {
   return session.messages.map((m) => ({
     id: m.id,
     role: m.role as UIMessage["role"],
-    parts: (m.parts ?? []).map((p) => {
-      if (p.type === "text" && "text" in p) {
-        return { type: "text" as const, text: String(p.text ?? "") };
-      }
-      if (p.type === "reasoning" && "text" in p) {
-        return {
-          type: "reasoning" as const,
-          text: String(p.text ?? ""),
-        } as UIMessage["parts"][number];
-      }
-      if (p.type === "dynamic-tool") {
-        const tool = p as {
-          type: string;
-          toolCallId?: string;
-          toolName?: string;
-          state?: string;
-          input?: unknown;
-          output?: unknown;
-          errorText?: string;
-        };
-        return {
-          type: "dynamic-tool" as const,
-          toolCallId: tool.toolCallId ?? "dynamic",
-          toolName: tool.toolName ?? "tool",
-          state: (tool.state as "output-available") ?? "output-available",
-          input: tool.input,
-          output: tool.output,
-          errorText: tool.errorText,
-        } as UIMessage["parts"][number];
-      }
-      if (typeof p.type === "string" && p.type.startsWith("tool-")) {
-        const tool = p as {
-          type: string;
-          toolCallId?: string;
-          toolName?: string;
-          state?: string;
-          input?: unknown;
-          output?: unknown;
-          errorText?: string;
-        };
-        const toolName =
-          tool.toolName ??
-          (tool.type.startsWith("tool-") ? tool.type.slice(5) : "tool");
-        return {
-          type: tool.type as `tool-${string}`,
-          toolCallId: tool.toolCallId ?? tool.type,
-          toolName,
-          state: (tool.state as "output-available") ?? "output-available",
-          input: tool.input,
-          output: tool.output,
-          ...(tool.errorText ? { errorText: tool.errorText } : {}),
-        } as unknown as UIMessage["parts"][number];
-      }
-      if (typeof p.type === "string" && p.type.startsWith("data-")) {
-        const dataPart = p as { type: string; id?: string; data?: unknown };
-        return {
-          type: dataPart.type as `data-${string}`,
-          id: dataPart.id,
-          data: dataPart.data,
-        } as UIMessage["parts"][number];
-      }
-      if (p.type === "step-start") {
-        return { type: "step-start" as const };
-      }
-      return { type: "text" as const, text: JSON.stringify(p) };
-    }),
+    parts: (m.parts ?? []) as UIMessage["parts"],
   }));
 }
 

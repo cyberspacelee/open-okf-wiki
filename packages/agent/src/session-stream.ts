@@ -141,14 +141,12 @@ export type SessionStreamResult = {
 };
 
 export type SessionStreamBody = {
-  /** Preferred: last user message only (AI SDK chat persistence). */
+  /** Last user message only (AI SDK chat persistence). Server loads prior history. */
   message?: UIMessage;
-  /** Full message list (server-assembled or legacy client). */
-  messages?: UIMessage[];
   /** Chat / session id from DefaultChatTransport. */
   id?: string;
   /**
-   * Explicit turn intent (preferred). Avoids guessing resume/start from user text.
+   * Explicit turn intent. Avoids guessing resume/start from user text.
    * - start: kick off a Wiki Run
    * - resume: answer plan/publish gate with resumeData
    * - chat: help / non-run (default when omitted and no resumeData)
