@@ -965,6 +965,7 @@ function SessionChatPanel({
         return;
       }
       sendInFlight.current = true;
+      // Default to no envelope only when callers forget; prefer explicit intent.
       pendingSendRef.current = envelope ?? { intent: "chat" };
       setSuppressDecisions(false);
       setAwaitingPlanRevise(false);
@@ -1017,20 +1018,6 @@ function SessionChatPanel({
   /** Filled after handleStop is defined (slash /stop). */
   const handleStopRef = useRef<(() => void) | null>(null);
 
-  const applyCommandDef = useCallback(
-    (cmd: SessionCommandDef) => {
-      setInput("");
-      if (cmd.local) {
-        runLocalCommand(cmd.local);
-        return;
-      }
-      if (cmd.sendText) {
-        sendTurn(cmd.sendText);
-      }
-    },
-    [runLocalCommand, sendTurn],
-  );
-
   const dispatchComposerText = useCallback(
     (raw: string) => {
       const parsed = parseSessionSlashInput(raw);
@@ -1058,7 +1045,8 @@ function SessionChatPanel({
             return;
           }
         }
-        // Kickoff phrases → explicit start.
+        // Kickoff phrases (/generate → "generate a wiki plan") → explicit start.
+        // Must send intent:"start" — intent:"chat" never starts a Wiki Run.
         if (/generate|wiki|plan|开始|生成|写|run/i.test(text)) {
           const phase = session.workflow?.phase ?? "idle";
           if (phase === "idle" || phase === "done") {
@@ -1081,6 +1069,37 @@ function SessionChatPanel({
       sendTurn(raw, { intent: "chat" });
     },
     [runLocalCommand, sendTurn, session, messages, linkedRunId, resumePlan],
+  );
+
+  const applyCommandDef = useCallback(
+    (cmd: SessionCommandDef) => {
+      setInput("");
+      if (cmd.local) {
+        runLocalCommand(cmd.local);
+        return;
+      }
+      // Route through dispatch so /generate gets intent:"start" (not bare chat).
+      // Palette/Tab/suggestion previously called sendTurn(sendText) with no envelope,
+      // which defaulted to intent:"chat" and never kicked off a Wiki Run.
+      if (cmd.sendText) {
+        if (
+          cmd.id === "generate" ||
+          cmd.command === "/generate" ||
+          cmd.command === "/run" ||
+          cmd.command === "/wiki" ||
+          cmd.command === "/plan"
+        ) {
+          dispatchComposerText(cmd.command);
+          return;
+        }
+        if (cmd.id === "approve" || cmd.id === "deny") {
+          dispatchComposerText(cmd.command);
+          return;
+        }
+        dispatchComposerText(cmd.sendText);
+      }
+    },
+    [runLocalCommand, dispatchComposerText],
   );
 
   const pending = useMemo(() => {
