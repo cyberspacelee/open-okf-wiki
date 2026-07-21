@@ -752,7 +752,7 @@ export function WorkspaceRunPage() {
               </CardHeader>
               <CardContent>
                 {runs.length === 0 ? (
-                  <div className="empty-inline">
+                  <div className="py-1">
                     <p className="muted">{t.runs.recentEmpty}</p>
                   </div>
                 ) : (

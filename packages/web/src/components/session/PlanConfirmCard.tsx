@@ -26,10 +26,13 @@ export function PlanConfirmCard({
   const [feedback, setFeedback] = useState("");
 
   return (
-    <div className="session-plan-card space-y-3" data-testid="session-plan-confirm">
+    <div
+      className="session-plan-card flex flex-col gap-3"
+      data-testid="session-plan-confirm"
+    >
       <PlanViewer plan={plan} />
       {revising && onRevise ? (
-        <div className="space-y-2" data-testid="run-revise-form">
+        <div className="flex flex-col gap-2" data-testid="run-revise-form">
           <p className="text-xs text-muted-foreground">{t.planConfirm.reviseHint}</p>
           <Textarea
             value={feedback}

@@ -214,60 +214,16 @@
   @apply max-w-2xl;
 }
 
-.radio-row {
-  @apply mt-1 flex flex-col gap-2;
-}
-
-.radio-option {
-  @apply flex cursor-pointer items-start gap-2.5 rounded-lg border border-border px-3 py-2.5 text-sm transition-colors hover:bg-muted/50;
-}
-
-.radio-option:has(input:checked) {
-  @apply border-ring bg-muted/60;
-}
-
-.radio-option input[type="radio"] {
-  @apply mt-1 size-4 accent-primary;
-}
-
-.radio-option > span {
-  @apply flex flex-col gap-0.5;
-}
-
 .provider-test-result {
   @apply mt-1 flex flex-wrap items-center gap-2 rounded-lg border border-border px-3 py-2;
 }
 
 .provider-test-result.ok {
-  @apply border-emerald-500/30 bg-emerald-500/5;
+  @apply border-primary/30 bg-primary/5;
 }
 
 .provider-test-result.fail {
   @apply border-destructive/30 bg-destructive/5;
-}
-
-.model-select {
-  @apply flex h-8 w-full rounded-lg border border-input bg-background px-2.5 text-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50;
-}
-
-.field {
-  @apply flex flex-col gap-1.5 text-sm;
-}
-
-.field-hint {
-  @apply text-xs leading-relaxed text-muted-foreground;
-}
-
-.checkbox-field {
-  @apply flex-row items-start gap-2.5;
-}
-
-.checkbox-field input[type="checkbox"] {
-  @apply mt-0.5 size-4 accent-primary;
-}
-
-.checkbox-field > span {
-  @apply flex flex-col gap-0.5;
 }
 
 .form-actions {
@@ -338,10 +294,6 @@ code.mono {
   @apply text-right whitespace-nowrap;
 }
 
-.empty-inline {
-  @apply py-1;
-}
-
 .checklist {
   @apply mt-4 flex list-disc flex-col gap-1.5 pl-5 text-sm text-muted-foreground;
 }
@@ -360,10 +312,6 @@ code.mono {
 
 .event-log {
   @apply m-0 max-h-40 list-disc overflow-auto pl-4 text-muted-foreground;
-}
-
-.success-text {
-  @apply text-sm font-medium text-emerald-600 dark:text-emerald-400;
 }
 
 .wiki-layout {
@@ -529,7 +477,7 @@ code.mono {
 }
 
 .session-plan-pages {
-  @apply list-disc pl-5 space-y-1;
+  @apply flex list-disc flex-col gap-1 pl-5;
 }
 
 .run-publish-actions {

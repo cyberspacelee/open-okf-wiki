@@ -328,7 +328,7 @@ export function WorkspaceSourcesPage() {
               </CardHeader>
               <CardContent>
                 {workspace.sources.length === 0 ? (
-                  <div className="empty-inline">
+                  <div className="py-1">
                     <p className="muted">{t.sources.empty}</p>
                   </div>
                 ) : (

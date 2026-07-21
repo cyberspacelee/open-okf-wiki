@@ -12,6 +12,30 @@ React + TypeScript UI for open-okf-wiki (Vite). Talks to `@okf-wiki/server` over
 | `pnpm --filter @okf-wiki/web test:e2e` | Playwright e2e suite |
 | `pnpm --filter @okf-wiki/web test:e2e:ui` | Playwright UI mode |
 
+## UI architecture
+
+- **shadcn** (`base-nova`, base primitives, Tailwind v4, lucide) under `src/components/ui/`
+- **App shell:** `Layout` → `SidebarProvider` + `AppSidebar` + `SidebarInset` (`src/components/Layout.tsx`, `app-sidebar.tsx`)
+- **Workspace chrome:** `WorkspaceShell` (Breadcrumb + title + `WorkspaceSubnav` + error slot). Prefer this over hand-rolled headers on every page.
+- **Forms:** `FieldGroup` / `Field` / `FieldLabel` / `FieldDescription` + shadcn controls (`Select`, `Switch`, `Checkbox`, `RadioGroup`, `Textarea`)
+- **Destructive actions:** `ConfirmDialog` (AlertDialog) — do not use `window.confirm`
+- **Toasts:** `sonner` via `<Toaster />` in `main.tsx`
+- **Session chat:** AI Elements under `src/components/ai-elements/` + `session/*` (do not rewrite transport for pure UI polish)
+- **Operator CSS leftovers** in `src/index.css` (`.form`, `.kv`, wiki prose, subnav). Prefer utilities / shadcn components for new UI.
+
+### Adding a workspace page
+
+1. Route in `App.tsx`
+2. Wrap with `WorkspaceShell` (`workspaceId`, `title`, `breadcrumbLabel`, `testId`)
+3. Keep `workspace-subnav-*` navigation via existing `WorkspaceSubnav`
+4. Preserve stable `data-testid`s listed below
+
+### Product paths
+
+- **Primary generate path:** Session (`/workspaces/:id/session`)
+- **Runs:** audit + headless (`run-start` testid) under Advanced; prefer `run-start-session` for operators
+- **Wiki empty CTA:** Session, not Runs
+
 ## End-to-end tests
 
 Playwright specs live in `e2e/`. The config starts API + Vite via `scripts/e2e-dev.mjs`:
@@ -28,7 +52,10 @@ pnpm exec playwright install chromium
 pnpm --filter @okf-wiki/web test:e2e
 ```
 
-Shared helpers live in `e2e/helpers.ts` (`createWorkspaceViaUi`, `addSourceViaUi`, plus dual-mode control helpers `chooseOption`, `setChecked`, `confirmDestructive` for native ↔ shadcn migrations).
+Shared helpers live in `e2e/helpers.ts`:
+
+- `createWorkspaceViaUi`, `addSourceViaUi`, `expectVisibleBox`
+- Dual-mode control helpers: `chooseOption`, `setChecked`, `confirmDestructive` (native ↔ shadcn)
 
 ### E2E anchors
 
@@ -40,12 +67,15 @@ Key contract surface:
 | --- | --- |
 | Shell | `app-sidebar`, `sidebar-toggle`, `locale-switch`, `nav-workspaces`, `nav-settings` |
 | Workspaces | `workspaces-page`, `workspace-create-form`, `workspace-name-input`, `workspace-root-input`, `workspace-create-submit`, `workspace-list`, `workspace-row`, `workspace-delete`, `workspace-delete-dialog`, `workspace-delete-meta`, `workspace-delete-confirm` |
-| Workspace chrome | `workspace-detail`, `workspace-subnav-{overview,sources,session,run,wiki,settings}` |
+| Workspace chrome | `workspace-detail`, `workspace-breadcrumb`, `workspace-subnav-{overview,sources,session,run,wiki,settings}` |
 | Sources | `sources-page`, `source-list`, `source-path-input`, `source-id-input`, `source-add-submit`, `source-remote-input`, `source-clone-submit`, `source-ignore-editor`, `source-ignore-text`, `source-ignore-save`, `source-edit-ignores-*`, `preset-*` |
 | Session | `session-chat-page`, `session-conversation`, `session-input`, `session-send`, `session-prompt`, `session-list`, `session-select`, `session-new`, `session-delete`, `session-slash-*`, `session-decision`, `session-choice-*`, `session-plan-*`, `session-composer-locked` |
 | Run | `run-page`, `run-start`, `run-start-session`, `run-last-status` (`data-status`), `run-list`, `run-event-log`, `run-publish-actions`, `run-approve`, `run-deny`, `run-cancel`, `run-retry` |
 | Wiki | `wiki-page`, `wiki-empty`, `wiki-page-list`, `wiki-page-link`, `wiki-page-content`, `wiki-page-title`, `wiki-markdown` |
-| Settings | `settings-page`, `settings-*`, `global-settings-page`, `model-*`, `doctor-*`, `health-*`, `home-skills-panel`, `provider-panel`, `models-table`, `settings-status` |
+| Workspace settings | `settings-page`, `settings-tab-{general,skill,danger}`, `settings-*`, skill panel / danger zone |
+| Global settings | `global-settings-page`, `settings-tab-{models,app,diagnostics}`, `model-*`, `doctor-*`, `health-*`, `home-skills-panel`, `provider-panel`, `models-table`, `settings-status` |
 | Shared | `error-banner` |
 
 When remediating UI (shadcn Field/Select/Checkbox/AlertDialog/Sidebar), put the existing testid on the interactive element e2e already targets (input, trigger, dialog content, confirm button) rather than inventing new anchors.
+
+**Note:** Global/workspace settings use Tabs. Default tabs keep primary e2e paths mounted (`models` / `general`). Diagnostics and Skill require clicking `settings-tab-diagnostics` / `settings-tab-skill` first.

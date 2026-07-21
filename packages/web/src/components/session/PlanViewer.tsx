@@ -40,7 +40,7 @@ export function PlanViewer({ plan }: PlanViewerProps) {
     <>
       <Plan defaultOpen data-testid="session-plan-card">
         <PlanHeader>
-          <div className="min-w-0 flex-1 space-y-1">
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
             <PlanTitle>{t.planConfirm.title}</PlanTitle>
             <PlanDescription className="line-clamp-2">
               {plan.summary}

@@ -415,7 +415,10 @@ export function WorkspaceSettingsPage() {
                       {submitting ? t.settings.saving : t.settings.save}
                     </Button>
                     {saved ? (
-                      <span className="success-text" role="status">
+                      <span
+                        className="text-sm font-medium text-primary"
+                        role="status"
+                      >
                         {t.settings.saved}
                       </span>
                     ) : null}

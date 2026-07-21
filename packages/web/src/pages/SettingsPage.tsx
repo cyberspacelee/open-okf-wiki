@@ -291,7 +291,11 @@ export function SettingsPage() {
 
         <ErrorBanner error={error} onDismiss={() => setError(null)} />
         {statusMsg ? (
-          <p className="success-text" role="status" data-testid="settings-status">
+          <p
+            className="text-sm font-medium text-primary"
+            role="status"
+            data-testid="settings-status"
+          >
             {statusMsg}
           </p>
         ) : null}
