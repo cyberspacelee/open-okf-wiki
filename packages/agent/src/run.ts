@@ -27,6 +27,14 @@ import { createWikiRunTools } from "./tools.js";
 
 export type WikiRunAgentPhase = "plan" | "write";
 
+/**
+ * Mastra workflow step writer — chunks become workflow-step-output and are
+ * converted by toAISdkStream({ from: "workflow" }) for Session UI (ADR 0026).
+ */
+export type WikiRunStreamWriter = {
+  write: (chunk: unknown) => Promise<void>;
+};
+
 export type WikiRunAgentInput = {
   runId: string;
   workspace: WorkspaceConfig;
@@ -40,6 +48,11 @@ export type WikiRunAgentInput = {
   plan?: WikiRunPlan;
   /** Best-effort cancellation; fixture checks periodically, live passes to Mastra. */
   abortSignal?: AbortSignal;
+  /**
+   * When set (Session / workflow step), forward agent fullStream chunks so
+   * operators see text / tools / reasoning live. Never discard without writer.
+   */
+  writer?: WikiRunStreamWriter;
 };
 
 export type WikiRunAgentResult = {
@@ -316,6 +329,67 @@ export function parsePlanFromAgentText(
   };
 }
 
+/**
+ * Emit Mastra-shaped stream chunks for fixture mode so Session e2e can assert
+ * tool + text parts without a live model (same seam as live fullStream).
+ */
+async function emitFixtureTrajectory(
+  writer: WikiRunStreamWriter | undefined,
+  phase: WikiRunAgentPhase,
+  abortSignal?: AbortSignal,
+): Promise<void> {
+  if (!writer) {
+    return;
+  }
+  const textId = `fixture-text-${phase}`;
+  const toolCallId = `fixture-tool-${phase}`;
+  const toolName = phase === "plan" ? "list_source" : "write_wiki";
+  const chunks: unknown[] = [
+    { type: "text-start", payload: { id: textId } },
+    {
+      type: "text-delta",
+      payload: {
+        id: textId,
+        text:
+          phase === "plan"
+            ? "Inspecting sources and drafting a wiki plan…"
+            : "Writing staged wiki pages…",
+      },
+    },
+    { type: "text-end", payload: { id: textId } },
+    {
+      type: "tool-call",
+      payload: {
+        toolCallId,
+        toolName,
+        args:
+          phase === "plan"
+            ? { sourceId: "fixture", path: "." }
+            : { path: "overview.md" },
+      },
+    },
+    {
+      type: "tool-result",
+      payload: {
+        toolCallId,
+        toolName,
+        args:
+          phase === "plan"
+            ? { sourceId: "fixture", path: "." }
+            : { path: "overview.md" },
+        result:
+          phase === "plan"
+            ? { entries: ["README.md", "src/"] }
+            : { written: true, path: "overview.md" },
+      },
+    },
+  ];
+  for (const chunk of chunks) {
+    throwIfAborted(abortSignal);
+    await writer.write(chunk);
+  }
+}
+
 async function runFixture(input: WikiRunAgentInput, wikiRoot: string): Promise<WikiRunAgentResult> {
   throwIfAborted(input.abortSignal);
 
@@ -337,6 +411,7 @@ async function runFixture(input: WikiRunAgentInput, wikiRoot: string): Promise<W
   throwIfAborted(input.abortSignal);
 
   const phase: WikiRunAgentPhase = input.phase ?? "write";
+  await emitFixtureTrajectory(input.writer, phase, input.abortSignal);
 
   if (phase === "plan") {
     const plan = buildFixturePlan(input);
@@ -589,7 +664,7 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
         "Load the producer skill first, inspect sources, write markdown pages with write_wiki, then summarize." +
         planHint;
 
-// Stream when available so tool side-effects (write_wiki) run; fall back to generate.
+// Stream so tool side-effects run; forward fullStream to workflow writer for Session UI.
   let text: string;
   try {
     const stream = await agent.stream(
@@ -602,15 +677,31 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
 
     const fullStream = stream.fullStream;
     if (fullStream && typeof fullStream[Symbol.asyncIterator] === "function") {
-      for await (const _chunk of fullStream) {
+      for await (const chunk of fullStream) {
         throwIfAborted(input.abortSignal);
+        if (input.writer) {
+          await input.writer.write(chunk);
+        }
       }
     } else if (
       stream.textStream &&
       typeof stream.textStream[Symbol.asyncIterator] === "function"
     ) {
-      for await (const _delta of stream.textStream) {
+      const textId = `agent-text-${input.runId}`;
+      if (input.writer) {
+        await input.writer.write({ type: "text-start", payload: { id: textId } });
+      }
+      for await (const delta of stream.textStream) {
         throwIfAborted(input.abortSignal);
+        if (input.writer && typeof delta === "string" && delta) {
+          await input.writer.write({
+            type: "text-delta",
+            payload: { id: textId, text: delta },
+          });
+        }
+      }
+      if (input.writer) {
+        await input.writer.write({ type: "text-end", payload: { id: textId } });
       }
     }
 

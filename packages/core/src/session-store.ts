@@ -205,8 +205,8 @@ export function neutralizeSessionDecisionParts(
         ) {
           return {
             ...p,
-            // Schema-valid terminal state; extractPending only acts on input-available.
-            state: "output-available" as const,
+            // AI SDK terminal deny; extractPending only acts on input-available.
+            state: "output-denied" as const,
             output: { cancelled: true },
           };
         }

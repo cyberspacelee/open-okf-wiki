@@ -417,6 +417,11 @@ export const zh: MessageTree = {
     approvePublish: "批准发布",
     working: "处理中…",
     decline: "拒绝",
+    gateOnSessionPlan:
+      "此运行等待计划确认。请在会话中批准、修订或拒绝。",
+    gateOnSessionPublish:
+      "暂存已就绪。请在会话中发布或保留暂存。",
+    openSessionToDecide: "打开会话进行决策",
     noRuns: "此工作区还没有运行记录。",
     recentTitle: "最近运行",
     recentEmpty: "你启动的运行会出现在这里。",

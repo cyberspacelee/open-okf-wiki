@@ -1,9 +1,9 @@
 # Operator Session stream parts and plan-confirm gate
 
-**Status:** accepted (partially superseded for Session transport)  
+**Status:** accepted (partially superseded for Session transport and operate center)  
 **Date:** 2026-07-19  
 **Related:** ADR 0018 (HITL publication), ADR 0020 (Mastra + Web), ADR 0022 (source clone)  
-**Superseded (partial) by:** [ADR 0024](0024-session-as-conversational-workspace.md) (Session as conversational workspace), [ADR 0025](0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) (Session stream = AI SDK UIMessage + `toAISdkStream`; single write path)
+**Superseded (partial) by:** [ADR 0024](0024-session-as-conversational-workspace.md) (Session as conversational workspace), [ADR 0025](0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) (Session stream = AI SDK UIMessage + `toAISdkStream`; single write path), [ADR 0026](0026-session-centric-agent-workspace.md) (Session sole operate/observe surface; Run read-mostly for humans)
 
 ## Context
 

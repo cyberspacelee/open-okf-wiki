@@ -95,6 +95,32 @@ function sessionMessagesToUI(
       if (p.type === "text" && "text" in p) {
         return { type: "text" as const, text: p.text };
       }
+      if (p.type === "reasoning" && "text" in p) {
+        return {
+          type: "reasoning" as const,
+          text: p.text,
+        } as UIMessage["parts"][number];
+      }
+      if (p.type === "dynamic-tool") {
+        const tool = p as {
+          type: string;
+          toolCallId?: string;
+          toolName?: string;
+          state?: string;
+          input?: unknown;
+          output?: unknown;
+          errorText?: string;
+        };
+        return {
+          type: "dynamic-tool" as const,
+          toolCallId: tool.toolCallId ?? "dynamic",
+          toolName: tool.toolName ?? "tool",
+          state: (tool.state as "output-available") ?? "output-available",
+          input: tool.input,
+          output: tool.output,
+          errorText: tool.errorText,
+        } as UIMessage["parts"][number];
+      }
       if (p.type.startsWith("tool-")) {
         const tool = p as {
           type: string;
@@ -120,6 +146,9 @@ function sessionMessagesToUI(
           id: dataPart.id,
           data: dataPart.data,
         } as UIMessage["parts"][number];
+      }
+      if (p.type === "step-start") {
+        return { type: "step-start" as const };
       }
       return { type: "text" as const, text: JSON.stringify(p) };
     }),
@@ -324,7 +353,7 @@ function formatSessionLabel(session: OperatorSessionSummary): string {
 export function WorkspaceSessionPage() {
   const { t } = useI18n();
   const { id = "" } = useParams<{ id: string }>();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const rootPathHint = searchParams.get("rootPath") ?? undefined;
   const kickoff = searchParams.get("kickoff") === "1";
 
@@ -344,12 +373,30 @@ export function WorkspaceSessionPage() {
 
   const rootPath = workspace?.rootPath ?? rootPathHint;
 
-  // Boot workspace + current session + history list
+  const syncSessionIdInUrl = useCallback(
+    (sessionId: string) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.set("sessionId", sessionId);
+          // One-shot kickoff should not re-fire after navigation.
+          next.delete("kickoff");
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
+  // Boot workspace + session (url id or latest) + history list.
+  // Intentionally does not re-run when we write sessionId into the URL after boot.
   useEffect(() => {
     if (!id) {
       return;
     }
     let cancelled = false;
+    const bootSessionId = searchParams.get("sessionId") ?? undefined;
     void (async () => {
       setLoading(true);
       setBootError(null);
@@ -360,10 +407,24 @@ export function WorkspaceSessionPage() {
         }
         setWorkspace(ws.workspace);
         const root = ws.workspace.rootPath ?? rootPathHint;
-        const [{ session }, listRes] = await Promise.all([
-          getOrCreateSession(id, root),
-          listSessions(id, root),
-        ]);
+        const listRes = await listSessions(id, root);
+        if (cancelled) {
+          return;
+        }
+        let session: OperatorSessionDto;
+        if (bootSessionId) {
+          try {
+            const res = await getSession(id, bootSessionId, root);
+            session = res.session;
+          } catch {
+            // Missing id → fall back to latest / create.
+            const res = await getOrCreateSession(id, root);
+            session = res.session;
+          }
+        } else {
+          const res = await getOrCreateSession(id, root);
+          session = res.session;
+        }
         if (cancelled) {
           return;
         }
@@ -371,6 +432,10 @@ export function WorkspaceSessionPage() {
         setSessionList(
           upsertSessionSummary(listRes.sessions, summaryFromSession(session)),
         );
+        // Ensure URL always carries sessionId for refresh restore.
+        if (bootSessionId !== session.id) {
+          syncSessionIdInUrl(session.id);
+        }
       } catch (err) {
         if (!cancelled) {
           setBootError(err);
@@ -384,6 +449,7 @@ export function WorkspaceSessionPage() {
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- boot once per workspace; switcher owns later loads
   }, [id, rootPathHint]);
 
   const newestSessionId = sessionList[0]?.id;
@@ -412,13 +478,15 @@ export function WorkspaceSessionPage() {
         setSessionList((prev) =>
           upsertSessionSummary(prev, summaryFromSession(session)),
         );
+        setPanelEpoch((n) => n + 1);
+        syncSessionIdInUrl(session.id);
       } catch (err) {
         setBootError(err);
       } finally {
         setSwitching(false);
       }
     },
-    [id, rootPath, sessionMeta?.id, switching],
+    [id, rootPath, sessionMeta?.id, switching, syncSessionIdInUrl],
   );
 
   const handleNewSession = useCallback(async () => {
@@ -434,12 +502,13 @@ export function WorkspaceSessionPage() {
         upsertSessionSummary(prev, summaryFromSession(session)),
       );
       setPanelEpoch((n) => n + 1);
+      syncSessionIdInUrl(session.id);
     } catch (err) {
       setBootError(err);
     } finally {
       setCreating(false);
     }
-  }, [id, creating, rootPath]);
+  }, [id, creating, rootPath, syncSessionIdInUrl]);
 
   const requestDeleteSession = useCallback(() => {
     if (!id || !sessionMeta || deleting) {
@@ -459,21 +528,24 @@ export function WorkspaceSessionPage() {
       await deleteSession(id, deletedId, rootPath);
       const remaining = sessionList.filter((s) => s.id !== deletedId);
       setSessionList(remaining);
+      let next: OperatorSessionDto;
       if (remaining[0]) {
-        const { session } = await getSession(id, remaining[0].id, rootPath);
-        setSessionMeta(session);
+        const res = await getSession(id, remaining[0].id, rootPath);
+        next = res.session;
       } else {
-        const { session } = await createSession(id, undefined, rootPath);
-        setSessionMeta(session);
-        setSessionList([summaryFromSession(session)]);
+        const res = await createSession(id, undefined, rootPath);
+        next = res.session;
+        setSessionList([summaryFromSession(next)]);
       }
+      setSessionMeta(next);
       setPanelEpoch((n) => n + 1);
+      syncSessionIdInUrl(next.id);
     } catch (err) {
       setBootError(err);
     } finally {
       setDeleting(false);
     }
-  }, [id, sessionMeta, deleting, rootPath, sessionList]);
+  }, [id, sessionMeta, deleting, rootPath, sessionList, syncSessionIdInUrl]);
 
   const handleResetSession = useCallback(async () => {
     if (!id || !sessionMeta) {

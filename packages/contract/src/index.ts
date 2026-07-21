@@ -62,6 +62,7 @@ export {
   PendingInteractionSchema,
   InteractionResumeSchema,
   SessionWorkflowStateSchema,
+  SessionToolPartStateSchema,
   SessionMessagePartSchema,
   SessionMessageSchema,
   OperatorSessionSchema,

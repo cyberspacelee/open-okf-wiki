@@ -430,6 +430,12 @@ export const en = {
     approvePublish: "Approve publish",
     working: "Working…",
     decline: "Decline",
+    /** Run console is read-mostly; HITL lives on Session (ADR 0026). */
+    gateOnSessionPlan:
+      "This run is waiting for a plan decision. Approve, revise, or deny in Session.",
+    gateOnSessionPublish:
+      "Staging is ready. Publish or keep staging from the Session conversation.",
+    openSessionToDecide: "Open Session to decide",
     noRuns: "No runs yet for this workspace.",
     recentTitle: "Recent runs",
     recentEmpty: "Runs you start will appear here.",

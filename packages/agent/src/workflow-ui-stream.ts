@@ -69,8 +69,12 @@ export async function openWikiWorkflowUiStream(
   const handle = await openWikiRunWorkflow(openParams);
 
   // Raw AI SDK chunks — no nested createUIMessageStream (avoids duplicate assistant ids).
+  // includeTextStreamParts + sendReasoning: forward nested agent text/tools/reasoning
+  // written via step writer (runWikiAgent fullStream pipe) — ADR 0026.
   const stream = toAISdkStream(handle.output as never, {
     from: "workflow",
+    includeTextStreamParts: true,
+    sendReasoning: true,
   }) as unknown as ReadableStream<UIMessageChunk>;
 
   // Unbind after the workflow result settles (success, suspend, or error).

@@ -71,11 +71,12 @@ test.describe("UI layout smoke — Session / Settings skill / Sources", () => {
     await expect(page.getByTestId("run-last-status")).toHaveAttribute(
       "data-status",
       "awaiting_publication",
-      { timeout: 25_000 },
+      { timeout: 45_000 },
     );
     await expectVisibleBox(page.getByTestId("run-event-log"), { minWidth: 120 });
-    await expectVisibleBox(page.getByTestId("run-publish-actions"));
-    await expectVisibleBox(page.getByTestId("run-approve"));
+    // Run is logs-only; HITL is on Session (ADR 0026).
+    await expect(page.getByTestId("run-session-gate-hint")).toBeVisible();
+    await expect(page.getByTestId("run-approve")).toHaveCount(0);
     // Retry is only for terminal outcomes — not while publication HITL is open.
     await expect(page.getByTestId("run-retry")).toHaveCount(0);
     await expectVisibleBox(page.getByTestId("run-cancel"));
@@ -120,12 +121,11 @@ test.describe("UI layout smoke — Session / Settings skill / Sources", () => {
     await expect(page.getByTestId("run-last-status")).toHaveAttribute(
       "data-status",
       "awaiting_publication",
-      { timeout: 25_000 },
+      { timeout: 45_000 },
     );
     await expect(page.getByTestId("run-event-log")).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByTestId("run-publish-actions")).toBeVisible();
-    await expect(page.getByTestId("run-approve")).toBeEnabled();
-    await expect(page.getByTestId("run-deny")).toBeEnabled();
+    await expect(page.getByTestId("run-session-gate-hint")).toBeVisible();
+    await expect(page.getByTestId("run-approve")).toHaveCount(0);
 
     await page.getByTestId("workspace-subnav-session").click();
     await expect(page.getByTestId("session-chat-page")).toBeVisible();

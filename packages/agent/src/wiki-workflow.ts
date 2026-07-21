@@ -123,7 +123,7 @@ const planGateStep = createStep({
   outputSchema: AfterPlanSchema,
   resumeSchema: PlanResumeSchema,
   suspendSchema: PlanSuspendSchema,
-  execute: async ({ inputData, resumeData, suspend, abortSignal, bail }) => {
+  execute: async ({ inputData, resumeData, suspend, abortSignal, bail, writer }) => {
     if (resumeData?.action === "deny") {
       // Clean operator rejection (Mastra bail), not a failed/aborted error path.
       return bail({
@@ -177,6 +177,7 @@ const planGateStep = createStep({
         phase: "plan",
         plan: seedPlan,
         abortSignal: stepAbortSignal(inputData.runId, abortSignal),
+        writer,
       });
 
       if (revised.status === "cancelled") {
@@ -202,6 +203,7 @@ const planGateStep = createStep({
 
     // Generate plan via the shared agent entry (fixture or live).
     // Product Stop/cancel is bound by runId; combine with Mastra step signal.
+    // writer pipes agent fullStream → Session via toAISdkStream (ADR 0026).
     const result = await runWikiAgent({
       runId: inputData.runId,
       workspace: inputData.workspace,
@@ -209,6 +211,7 @@ const planGateStep = createStep({
       phase: "plan",
       plan: inputData.plan,
       abortSignal: stepAbortSignal(inputData.runId, abortSignal),
+      writer,
     });
 
     if (result.status === "cancelled") {
@@ -236,7 +239,7 @@ const writeStep = createStep({
   id: "write",
   inputSchema: AfterPlanSchema,
   outputSchema: AfterWriteSchema,
-  execute: async ({ inputData, abortSignal }) => {
+  execute: async ({ inputData, abortSignal, writer }) => {
     const result = await runWikiAgent({
       runId: inputData.runId,
       workspace: inputData.workspace,
@@ -244,6 +247,7 @@ const writeStep = createStep({
       phase: "write",
       plan: inputData.plan,
       abortSignal: stepAbortSignal(inputData.runId, abortSignal),
+      writer,
     });
 
     if (result.status === "cancelled") {

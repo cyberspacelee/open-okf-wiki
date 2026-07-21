@@ -67,16 +67,16 @@ The current objective, completion gates, evidence gaps, and delegated-scope stat
 _Avoid_: Todo transcript, Operator Session history, durable checkpoint of the Semantic Workflow
 
 **Operator Session**:
-The operator-facing **Conversational Workspace** for one project: AI SDK message history (`parts`), pending user decisions (dynamic options / free text by mode), workflow view (plan, linked runs), and zero or more Wiki Runs started from that context. Primary UI is the Session chatbot page (AI Elements + `useChat`), not a one-shot job request.
-_Avoid_: Wiki Run, chat session as a resumable Semantic Workflow graph, Production Run, model transcript as the Wiki, Run console as the only operator surface
+The operator-facing **sole truth surface** for one project thread (Session-centric agent, ADR 0026): durable AI SDK message history (`parts`), tool/progress visibility, pending decisions, workflow view (plan, linked runs), and zero or more Wiki Runs owned by that thread. Foreground or background execution still appends to this timeline. Primary UI is the Session chatbot page (AI Elements + `useChat`).
+_Avoid_: Wiki Run as the main UI, chat as only a job form, Run console as the default human operate surface, discarding timeline because it is “not a graph checkpoint”
 
 **Wiki Reviewer**:
 An independent, bounded agent role that inspects the Staging Wiki against the Repository Snapshot Set and Producer Skill review guidance, producing a defects receipt for the operator and Root; it does not write Wiki pages or publish.
 _Avoid_: Run Boundary mechanical validation, Skill self-review alone, multi-model voting panel, publisher
 
 **Wiki Run**:
-One attempt to derive and publish a Wiki from a Repository Snapshot Set using one exact Skill Version or Skill Fork revision; it may be started from an Operator Session but is not the Session itself.
-_Avoid_: Agent turn, Operator Session, Production Run
+One bounded attempt to derive and publish a Wiki from a Repository Snapshot Set using one exact Skill Version or Skill Fork revision; **owned by / linked from an Operator Session**. Execution mode may be interactive or background; observable trajectory still belongs on the Session. Not the operator’s home UI.
+_Avoid_: Agent turn synonym, Session synonym, Production Run, second HITL center parallel to Session
 
 **Wiki Run Record**:
 An immutable, secret-free terminal record of one Wiki Run's frozen inputs, outcome, usage, and publication status, used for audit and to create a Manual Retry Run. Terminal statuses distinguish published success, needs input, failure, cancellation, awaiting operator publication approval, and operator-declined publication with Staging retained.

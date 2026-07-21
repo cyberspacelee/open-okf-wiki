@@ -6,6 +6,9 @@ import {
   startWikiRun,
 } from "@okf-wiki/agent";
 import {
+  appendSessionMessages,
+  createOperatorSession,
+  listOperatorSessions,
   loadWorkspaceById,
   probeLocalGit,
   replaceSessionMessages,
@@ -16,10 +19,13 @@ import {
 import {
   isTerminalRunStatus,
   WikiRunPlanSchema,
+  type OperatorSession,
+  type SessionWorkflowState,
   type WikiRunPlan,
   type WikiRunRecordStatus,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
+import { randomUUID } from "node:crypto";
 import type { RunSseEvent } from "@okf-wiki/contract";
 import {
   readJsonBody,
@@ -43,6 +49,146 @@ import {
   RunStatusConflictError,
   updateRunRecord,
 } from "../run-registry.ts";
+
+/** Map run status → Session workflow phase (ADR 0026 observe path). */
+function sessionPhaseForRunStatus(
+  status: WikiRunRecordStatus,
+): SessionWorkflowState["phase"] {
+  switch (status) {
+    case "awaiting_plan":
+      return "awaiting_plan";
+    case "awaiting_publication":
+      return "awaiting_publish";
+    case "published":
+    case "publication_declined":
+      return "done";
+    case "running":
+      return "writing";
+    case "cancelled":
+    case "failed":
+    default:
+      return "idle";
+  }
+}
+
+/**
+ * Append a high-level trajectory message to the Session linked to this run.
+ * Background/headless jobs must still appear on Session (ADR 0026 I3).
+ */
+export async function projectRunStatusToSession(
+  rootPath: string,
+  runId: string,
+  patch: {
+    status: WikiRunRecordStatus;
+    summary?: string | null;
+    plan?: WikiRunPlan | null;
+    pages?: string[] | null;
+  },
+): Promise<void> {
+  const run = await loadRun(rootPath, runId);
+  const sessionId = run?.sessionId;
+  if (!sessionId) {
+    return;
+  }
+  const session = await loadOperatorSession(rootPath, sessionId);
+  if (!session) {
+    return;
+  }
+
+  const phase = sessionPhaseForRunStatus(patch.status);
+  const summary =
+    patch.summary?.trim() ||
+    run?.summary?.trim() ||
+    `Wiki Run ${patch.status}`;
+  const plan = patch.plan ?? run?.plan ?? session.workflow?.plan;
+  const pages = patch.pages ?? run?.pages ?? undefined;
+
+  const parts: OperatorSession["messages"][number]["parts"] = [
+    {
+      type: "data-run",
+      id: randomUUID(),
+      data: { runId, status: patch.status },
+    },
+    { type: "text", text: summary, state: "done" },
+  ];
+  if (plan && Array.isArray(plan.pages)) {
+    parts.push({ type: "data-plan", id: randomUUID(), data: plan });
+  }
+  if (pages && pages.length > 0) {
+    parts.push({
+      type: "data-run-pages",
+      id: randomUUID(),
+      data: { pages },
+    });
+  }
+
+  const pending =
+    patch.status === "awaiting_plan" || patch.status === "awaiting_publication"
+      ? session.pending
+      : null;
+
+  try {
+    await appendSessionMessages(
+      rootPath,
+      sessionId,
+      [
+        {
+          id: randomUUID(),
+          role: "assistant",
+          parts,
+          createdAt: new Date().toISOString(),
+        },
+      ],
+      {
+        status:
+          patch.status === "awaiting_plan" ||
+          patch.status === "awaiting_publication"
+            ? "waiting"
+            : patch.status === "running"
+              ? "running"
+              : patch.status === "published" ||
+                  patch.status === "publication_declined"
+                ? "completed"
+                : patch.status === "failed"
+                  ? "failed"
+                  : "active",
+        pending:
+          patch.status === "awaiting_plan" ||
+          patch.status === "awaiting_publication"
+            ? pending
+            : null,
+        workflow: {
+          ...session.workflow,
+          linkedRunId: runId,
+          phase,
+          ...(plan ? { plan } : {}),
+        },
+      },
+    );
+  } catch (error) {
+    process.stderr.write(
+      `session trajectory append failed: ${redactErrorMessage(error)}\n`,
+    );
+  }
+}
+
+/** Prefer existing latest session; otherwise create one for headless runs. */
+export async function ensureWorkspaceSessionId(
+  workspace: WorkspaceConfig,
+): Promise<string> {
+  const existing = await listOperatorSessions(workspace.rootPath);
+  const match =
+    existing.find((s) => s.workspaceId === workspace.id) ?? existing[0];
+  if (match) {
+    return match.id;
+  }
+  const created = await createOperatorSession({
+    workspaceRoot: workspace.rootPath,
+    workspaceId: workspace.id,
+    title: `Wiki Session · ${workspace.name}`,
+  });
+  return created.id;
+}
 
 export async function finalizeRunStatus(
   rootPath: string,
@@ -74,6 +220,10 @@ export async function finalizeRunStatus(
   // cancelled record unchanged when a non-cancel patch loses the race.
   if (updated.status === "cancelled" && patch.status !== "cancelled") {
     emitRunDone(runId, "cancelled", updated.summary ?? "Wiki Run cancelled");
+    await projectRunStatusToSession(rootPath, runId, {
+      status: "cancelled",
+      summary: updated.summary ?? "Wiki Run cancelled",
+    });
     return;
   }
 
@@ -86,6 +236,14 @@ export async function finalizeRunStatus(
   } else {
     emitRunStatus(runId, updated.status, updated.summary ?? updated.status);
   }
+
+  // ADR 0026 I3: background trajectory still lands on the linked Session.
+  await projectRunStatusToSession(rootPath, runId, {
+    status: updated.status,
+    summary: updated.summary ?? patch.summary,
+    plan: patch.plan ?? updated.plan,
+    pages: patch.pages ?? updated.pages,
+  });
 }
 
 type ProcessRunOptions = {
@@ -406,10 +564,13 @@ export async function handleCreateRun(
     return;
   }
 
+  // Bind headless job to a Session so trajectory is observable (ADR 0026).
+  const sessionId = await ensureWorkspaceSessionId(workspace);
   const run = await createRun(workspace.rootPath, workspace.id, {
     autoApprove,
     skillPath: frozenSkillPath,
     skillDigest: frozenSkillDigest,
+    sessionId,
   });
   processRunInBackground(workspace, run.runId, { autoApprove });
   sendJson(res, 201, { run });
@@ -503,10 +664,13 @@ export async function handleRetryRun(
     return;
   }
 
+  const sessionId =
+    previous.sessionId ?? (await ensureWorkspaceSessionId(workspace));
   const run = await createRun(workspace.rootPath, workspace.id, {
     autoApprove: previous.autoApprove,
     skillPath: frozenSkillPath,
     skillDigest: frozenSkillDigest,
+    sessionId,
   });
   processRunInBackground(workspace, run.runId, {
     autoApprove: previous.autoApprove,

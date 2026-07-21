@@ -114,7 +114,7 @@ test("resetOperatorSessionWorkflow clears gate and neutralizes chips", async () 
   const tool = reset.messages[0]!.parts.find(
     (p) => p.type === "tool-request_user_decision",
   ) as { state?: string } | undefined;
-  assert.equal(tool?.state, "output-available");
+  assert.equal(tool?.state, "output-denied");
   const choice = reset.messages[0]!.parts.find((p) => p.type === "data-choice") as
     | { data?: { cancelled?: boolean; options?: unknown[] } }
     | undefined;

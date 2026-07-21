@@ -21,6 +21,18 @@ import {
   Suggestion,
   Suggestions,
 } from "@/components/ai-elements/suggestion";
+import {
+  Reasoning,
+  ReasoningContent,
+  ReasoningTrigger,
+} from "@/components/ai-elements/reasoning";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import { Badge } from "@/components/ui/badge";
+import { ChevronDownIcon } from "lucide-react";
 import { useI18n } from "../../i18n";
 import type { PendingInteraction } from "./decision-types";
 import { PlanViewer } from "./PlanViewer";
@@ -148,6 +160,30 @@ function planFromWorkflowDataPart(data: unknown): PlanLike | null {
   return null;
 }
 
+function workflowProgressLabel(data: unknown, partType: string): string {
+  if (!data || typeof data !== "object") {
+    return partType.replace(/^data-/, "");
+  }
+  const d = data as Record<string, unknown>;
+  const status = typeof d.status === "string" ? d.status : undefined;
+  const name =
+    (typeof d.name === "string" && d.name) ||
+    (d.step && typeof d.step === "object" && typeof (d.step as { name?: string }).name === "string"
+      ? (d.step as { name: string }).name
+      : undefined) ||
+    (typeof d.runId === "string" ? d.runId.slice(0, 8) : undefined);
+  if (name && status) {
+    return `${name}: ${status}`;
+  }
+  if (status) {
+    return status;
+  }
+  if (name) {
+    return name;
+  }
+  return partType.replace(/^data-/, "");
+}
+
 function localizeDecisionOption(
   opt: PendingInteraction["options"][number],
   t: ReturnType<typeof useI18n>["t"],
@@ -190,13 +226,142 @@ function localizeDecisionOption(
   }
 }
 
+function renderToolPart(
+  key: string,
+  part: UIMessage["parts"][number],
+  toolName: string,
+  isLatestAssistant: boolean | undefined,
+  onChoice: MessagePartsProps["onChoice"],
+  onApproval: MessagePartsProps["onApproval"],
+) {
+  const decision =
+    toolName === "request_user_decision" ? asDecision(
+      "input" in part ? part.input : undefined,
+    ) : null;
+  const state =
+    "state" in part && typeof part.state === "string"
+      ? part.state
+      : "output-available";
+
+  if (
+    state === "approval-requested" &&
+    "approval" in part &&
+    part.approval &&
+    onApproval
+  ) {
+    const approval = part.approval as { id: string };
+    return (
+      <Confirmation
+        key={key}
+        approval={part.approval as never}
+        state={state as never}
+      >
+        <ConfirmationTitle>Tool approval required</ConfirmationTitle>
+        <ConfirmationRequest>
+          Approve running <code>{toolName}</code>?
+        </ConfirmationRequest>
+        <ConfirmationActions>
+          <ConfirmationAction
+            variant="outline"
+            onClick={() => onApproval(false, approval.id)}
+          >
+            Reject
+          </ConfirmationAction>
+          <ConfirmationAction onClick={() => onApproval(true, approval.id)}>
+            Approve
+          </ConfirmationAction>
+        </ConfirmationActions>
+      </Confirmation>
+    );
+  }
+
+  const header =
+    part.type === "dynamic-tool" ? (
+      <ToolHeader
+        type="dynamic-tool"
+        state={state as never}
+        toolName={toolName}
+        title={toolName}
+      />
+    ) : (
+      <ToolHeader
+        type={part.type as `tool-${string}`}
+        state={state as never}
+        title={toolName}
+      />
+    );
+
+  return (
+    <div key={key} className="flex flex-col gap-2" data-testid="session-tool-part">
+      <Tool defaultOpen={state !== "output-available"}>
+        {header}
+        <ToolContent>
+          {"input" in part && part.input !== undefined ? (
+            <ToolInput input={redactUnknown(part.input) as object} />
+          ) : null}
+          <ToolOutput
+            output={
+              "output" in part && part.output !== undefined
+                ? redactUnknown(part.output)
+                : undefined
+            }
+            errorText={"errorText" in part ? (part.errorText as string | undefined) : undefined}
+          />
+        </ToolContent>
+      </Tool>
+
+      {decision &&
+      isLatestAssistant &&
+      state === "input-available" &&
+      onChoice &&
+      decision.mode !== "input_only" ? (
+        <DecisionChips decision={decision} onChoice={onChoice} />
+      ) : null}
+
+      {decision && isLatestAssistant && decision.mode === "input_only" ? (
+        <p className="text-sm text-muted-foreground" data-testid="session-input-only-hint">
+          {decision.question}
+          {decision.inputPlaceholder ? ` — ${decision.inputPlaceholder}` : ""}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function DecisionChips({
+  decision,
+  onChoice,
+}: {
+  decision: PendingInteraction;
+  onChoice: (id: string) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="flex flex-col gap-2" data-testid="session-decision">
+      <p className="text-sm text-muted-foreground">{decision.question}</p>
+      <Suggestions>
+        {decision.options.map((opt) => {
+          const localized = localizeDecisionOption(opt, t);
+          return (
+            <Suggestion
+              key={opt.id}
+              suggestion={localized.label}
+              onClick={() => onChoice(opt.id)}
+              data-testid={`session-choice-${opt.id}`}
+            />
+          );
+        })}
+      </Suggestions>
+    </div>
+  );
+}
+
 export function MessageParts({
   message,
   isLatestAssistant,
   onChoice,
   onApproval,
 }: MessagePartsProps) {
-  const { t } = useI18n();
   // Prefer tool-request_user_decision over data-choice to avoid double chips.
   const hasDecisionTool = message.parts.some(
     (p) =>
@@ -220,110 +385,48 @@ export function MessageParts({
           );
         }
 
+        if (part.type === "reasoning") {
+          const text = "text" in part ? String(part.text ?? "") : "";
+          const streaming =
+            "state" in part && part.state === "streaming";
+          if (!text && !streaming) {
+            return null;
+          }
+          return (
+            <Reasoning key={key} isStreaming={Boolean(streaming)} defaultOpen={streaming}>
+              <ReasoningTrigger />
+              <ReasoningContent>{text}</ReasoningContent>
+            </Reasoning>
+          );
+        }
+
+        if (part.type === "dynamic-tool") {
+          const toolName =
+            "toolName" in part && typeof part.toolName === "string"
+              ? part.toolName
+              : "tool";
+          return renderToolPart(
+            key,
+            part,
+            toolName,
+            isLatestAssistant,
+            onChoice,
+            onApproval,
+          );
+        }
+
         if (isToolUIPart(part)) {
           const toolName =
             "toolName" in part && typeof part.toolName === "string"
               ? part.toolName
               : part.type.replace(/^tool-/, "");
-          const decision =
-            toolName === "request_user_decision"
-              ? asDecision(part.input)
-              : null;
-
-          // Approval UI for tools that use AI SDK approval state
-          if (
-            part.state === "approval-requested" &&
-            "approval" in part &&
-            part.approval &&
-            onApproval
-          ) {
-            const approval = part.approval as { id: string };
-            return (
-              <Confirmation
-                key={key}
-                approval={part.approval as never}
-                state={part.state}
-              >
-                <ConfirmationTitle>Tool approval required</ConfirmationTitle>
-                <ConfirmationRequest>
-                  Approve running <code>{toolName}</code>?
-                </ConfirmationRequest>
-                <ConfirmationActions>
-                  <ConfirmationAction
-                    variant="outline"
-                    onClick={() => onApproval(false, approval.id)}
-                  >
-                    Reject
-                  </ConfirmationAction>
-                  <ConfirmationAction
-                    onClick={() => onApproval(true, approval.id)}
-                  >
-                    Approve
-                  </ConfirmationAction>
-                </ConfirmationActions>
-              </Confirmation>
-            );
-          }
-
-          return (
-            <div key={key} className="flex flex-col gap-2">
-              <Tool defaultOpen={part.state !== "output-available"}>
-                <ToolHeader
-                  type={part.type as `tool-${string}`}
-                  state={part.state}
-                  title={toolName}
-                />
-                <ToolContent>
-                  {"input" in part && part.input !== undefined ? (
-                    <ToolInput input={redactUnknown(part.input) as object} />
-                  ) : null}
-                  <ToolOutput
-                    output={
-                      "output" in part && part.output !== undefined
-                        ? redactUnknown(part.output)
-                        : undefined
-                    }
-                    errorText={
-                      "errorText" in part ? part.errorText : undefined
-                    }
-                  />
-                </ToolContent>
-              </Tool>
-
-              {decision &&
-              isLatestAssistant &&
-              part.state === "input-available" &&
-              onChoice &&
-              decision.mode !== "input_only" ? (
-                <div className="flex flex-col gap-2" data-testid="session-decision">
-                  <p className="text-sm text-muted-foreground">{decision.question}</p>
-                  <Suggestions>
-                    {decision.options.map((opt) => {
-                      const localized = localizeDecisionOption(opt, t);
-                      return (
-                        <Suggestion
-                          key={opt.id}
-                          suggestion={localized.label}
-                          onClick={() => onChoice(opt.id)}
-                          data-testid={`session-choice-${opt.id}`}
-                        />
-                      );
-                    })}
-                  </Suggestions>
-                </div>
-              ) : null}
-
-              {decision &&
-              isLatestAssistant &&
-              decision.mode === "input_only" ? (
-                <p className="text-sm text-muted-foreground" data-testid="session-input-only-hint">
-                  {decision.question}
-                  {decision.inputPlaceholder
-                    ? ` — ${decision.inputPlaceholder}`
-                    : ""}
-                </p>
-              ) : null}
-            </div>
+          return renderToolPart(
+            key,
+            part,
+            toolName,
+            isLatestAssistant,
+            onChoice,
+            onApproval,
           );
         }
 
@@ -338,25 +441,9 @@ export function MessageParts({
             decision.mode !== "input_only"
           ) {
             return (
-              <div key={key} className="flex flex-col gap-2" data-testid="session-decision">
-                <p className="text-sm text-muted-foreground">{decision.question}</p>
-                <Suggestions>
-                  {decision.options.map((opt) => {
-                    const localized = localizeDecisionOption(opt, t);
-                    return (
-                      <Suggestion
-                        key={opt.id}
-                        suggestion={localized.label}
-                        onClick={() => onChoice(opt.id)}
-                        data-testid={`session-choice-${opt.id}`}
-                      />
-                    );
-                  })}
-                </Suggestions>
-              </div>
+              <DecisionChips key={key} decision={decision} onChoice={onChoice} />
             );
           }
-          // Structured plan (data-plan) — Markdown + fullscreen reader
           if (part.type === "data-plan") {
             const plan = asPlanLike(data);
             if (plan) {
@@ -367,28 +454,50 @@ export function MessageParts({
               );
             }
           }
-          // Official Mastra AI SDK part: recover plan when product data-plan is missing.
+          if (part.type === "data-run") {
+            const runId =
+              data && typeof data === "object" && "runId" in data
+                ? String((data as { runId?: unknown }).runId ?? "")
+                : "";
+            const status =
+              data && typeof data === "object" && "status" in data
+                ? String((data as { status?: unknown }).status ?? "")
+                : "";
+            if (runId) {
+              return (
+                <div key={key} className="mb-2" data-testid="session-data-run">
+                  <Badge variant="outline" className="font-mono text-xs">
+                    run {runId.slice(0, 8)}…{status ? ` · ${status}` : ""}
+                  </Badge>
+                </div>
+              );
+            }
+          }
           if (
-            (part.type === "data-workflow" ||
-              part.type === "data-workflow-step") &&
-            !hasDataPlan
+            part.type === "data-workflow" ||
+            part.type === "data-workflow-step" ||
+            part.type === "data-tool-agent" ||
+            part.type === "data-tool-workflow"
           ) {
             const plan =
-              planFromWorkflowDataPart(data) ||
-              (part.type === "data-workflow-step" &&
-              data &&
-              typeof data === "object"
-                ? asPlanLike(
-                    (
-                      (data as { step?: { suspendPayload?: { plan?: unknown } } })
-                        .step?.suspendPayload as { plan?: unknown } | undefined
-                    )?.plan,
-                  ) ||
-                  asPlanLike(
-                    (data as { suspendPayload?: { plan?: unknown } })
-                      .suspendPayload?.plan,
-                  )
-                : null);
+              !hasDataPlan &&
+              (part.type === "data-workflow" || part.type === "data-workflow-step")
+                ? planFromWorkflowDataPart(data) ||
+                  (part.type === "data-workflow-step" &&
+                  data &&
+                  typeof data === "object"
+                    ? asPlanLike(
+                        (
+                          (data as { step?: { suspendPayload?: { plan?: unknown } } })
+                            .step?.suspendPayload as { plan?: unknown } | undefined
+                        )?.plan,
+                      ) ||
+                      asPlanLike(
+                        (data as { suspendPayload?: { plan?: unknown } })
+                          .suspendPayload?.plan,
+                      )
+                    : null)
+                : null;
             if (plan) {
               return (
                 <div key={key} data-testid="session-plan-from-workflow">
@@ -396,7 +505,47 @@ export function MessageParts({
                 </div>
               );
             }
+            const label = workflowProgressLabel(data, part.type);
+            return (
+              <Collapsible
+                key={key}
+                className="mb-2 rounded-md border border-dashed"
+                data-testid="session-workflow-progress"
+              >
+                <CollapsibleTrigger className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted/40">
+                  <span className="flex-1 truncate">{label}</span>
+                  <ChevronDownIcon className="size-3.5 shrink-0" />
+                </CollapsibleTrigger>
+                <CollapsibleContent className="border-t border-dashed px-3 py-2">
+                  <pre className="max-h-40 overflow-auto text-[10px] leading-snug text-muted-foreground">
+                    {JSON.stringify(redactUnknown(data), null, 2)}
+                  </pre>
+                </CollapsibleContent>
+              </Collapsible>
+            );
           }
+          // Other data-* parts: collapsible dump (never silent null).
+          return (
+            <Collapsible
+              key={key}
+              className="mb-2 rounded-md border border-dashed"
+              data-testid="session-data-part"
+            >
+              <CollapsibleTrigger className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted/40">
+                <span className="flex-1 truncate">{part.type}</span>
+                <ChevronDownIcon className="size-3.5 shrink-0" />
+              </CollapsibleTrigger>
+              <CollapsibleContent className="border-t border-dashed px-3 py-2">
+                <pre className="max-h-40 overflow-auto text-[10px] leading-snug text-muted-foreground">
+                  {JSON.stringify(redactUnknown(data), null, 2)}
+                </pre>
+              </CollapsibleContent>
+            </Collapsible>
+          );
+        }
+
+        if (part.type === "step-start") {
+          return null;
         }
 
         return null;

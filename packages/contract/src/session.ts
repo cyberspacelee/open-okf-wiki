@@ -77,8 +77,19 @@ export type SessionWorkflowState = z.infer<typeof SessionWorkflowStateSchema>;
 
 /**
  * One conversation message in AI SDK UIMessage-compatible shape.
- * `parts` is the source of truth for rendering (text / tool / data).
+ * `parts` is the source of truth for rendering (text / reasoning / tool / data).
+ * Aligned with AI SDK UI parts + Session-centric trajectory (ADR 0026).
  */
+export const SessionToolPartStateSchema = z.enum([
+  "input-streaming",
+  "input-available",
+  "output-available",
+  "output-error",
+  "output-denied",
+  "approval-requested",
+  "approval-responded",
+]);
+
 export const SessionMessagePartSchema = z.union([
   z.object({
     type: z.literal("text"),
@@ -86,19 +97,25 @@ export const SessionMessagePartSchema = z.union([
     state: z.enum(["streaming", "done"]).optional(),
   }),
   z.object({
+    type: z.literal("reasoning"),
+    text: z.string(),
+    state: z.enum(["streaming", "done"]).optional(),
+    providerMetadata: z.unknown().optional(),
+  }),
+  z.object({
     type: z.string().regex(/^tool-/),
     toolCallId: z.string().optional(),
     toolName: z.string().optional(),
-    state: z
-      .enum([
-        "input-streaming",
-        "input-available",
-        "output-available",
-        "output-error",
-        "approval-requested",
-        "approval-responded",
-      ])
-      .optional(),
+    state: SessionToolPartStateSchema.optional(),
+    input: z.unknown().optional(),
+    output: z.unknown().optional(),
+    errorText: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("dynamic-tool"),
+    toolCallId: z.string().optional(),
+    toolName: z.string().optional(),
+    state: SessionToolPartStateSchema.optional(),
     input: z.unknown().optional(),
     output: z.unknown().optional(),
     errorText: z.string().optional(),
@@ -111,6 +128,18 @@ export const SessionMessagePartSchema = z.union([
   z.object({
     type: z.literal("step-start"),
   }),
+  z.object({
+    type: z.literal("source-url"),
+    sourceId: z.string().optional(),
+    url: z.string().optional(),
+    title: z.string().optional(),
+  }).passthrough(),
+  z.object({
+    type: z.literal("file"),
+    mediaType: z.string().optional(),
+    url: z.string().optional(),
+    filename: z.string().optional(),
+  }).passthrough(),
 ]);
 
 export type SessionMessagePart = z.infer<typeof SessionMessagePartSchema>;

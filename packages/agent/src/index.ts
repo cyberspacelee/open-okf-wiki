@@ -12,6 +12,7 @@ export {
   parsePlanFromAgentText,
   type WikiRunAgentInput,
   type WikiRunAgentResult,
+  type WikiRunStreamWriter,
 } from "./run.js";
 
 export {

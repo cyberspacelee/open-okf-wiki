@@ -11,6 +11,7 @@ Domain vocabulary: [CONTEXT.md](../../CONTEXT.md). Package map: [packages/README
 | [0022](0022-source-clone-into-workspace.md) | Operator-initiated clone; Semantic Workflow never clones |
 | [0024](0024-session-as-conversational-workspace.md) | Operator Session = conversational workspace (`useChat` + parts) |
 | [0025](0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) | **Single** wiki-run write path; Session uses `toAISdkStream`; no dual materialize / hand-rolled Session SSE |
+| [0026](0026-session-centric-agent-workspace.md) | **Session-centric agent**: sole operate/observe surface; Run = Session-owned job (fg/bg); Run UI read-mostly |
 
 Still load-bearing domain/ops decisions (map Host → Run Boundary when reading pre-0019 text):
 
@@ -37,12 +38,12 @@ Still load-bearing domain/ops decisions (map Host → Run Boundary when reading 
 | [0006](0006-keep-python-as-a-thin-harness.md) | **Superseded** by 0020/0021 |
 | [0010](0010-use-dynamic-workflow-for-bounded-leaf-coordination.md) | Historical DynamicWorkflow wording; leaf coordination still optional/adaptive |
 | [0014](0014-use-planning-and-bounded-recursive-subagents.md) | Planning/subagents idea remains; stack is Mastra |
-| [0023](0023-operator-session-stream-and-plan-confirm.md) | Plan-confirm + HITL still valid; **Session SSE transport superseded** by 0024/0025 |
+| [0023](0023-operator-session-stream-and-plan-confirm.md) | Plan-confirm + HITL still valid; **Session SSE transport superseded** by 0024/0025; **Run-as-primary HITL superseded** by 0026 |
 
 ## Reading rules for agents
 
 1. Prefer **CONTEXT.md** for domain terms.
-2. Prefer **0020 + 0021 + 0022 + 0024 + 0025** for “how the product is built today.”
+2. Prefer **0020 + 0021 + 0022 + 0024 + 0025 + 0026** for “how the product is built today” (0026 wins on Session vs Run center).
 3. Pre-0019 ADRs may say **Host** / **Host Instructions** → map to **Run Boundary** / **Run Instructions**.
 4. Pre-0021 ADRs may assume **Python** harness → map duties to `@okf-wiki/core` + `@okf-wiki/agent`.
 5. Do **not** reintroduce: dual Staging writers, Session-local materialize, `__choice__:` HITL, hand-rolled Session Mastra→SSE, Mastra dependency inside core.

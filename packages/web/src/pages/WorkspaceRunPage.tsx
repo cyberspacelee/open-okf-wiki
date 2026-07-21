@@ -1,22 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
-  approvePlan,
-  approvePublication,
   cancelRun,
   createRun,
-  denyPlan,
-  denyPublication,
   getWorkspace,
   listRuns,
   retryRun,
-  revisePlan,
   runEventsUrl,
   type RunSseEvent,
   type StoredRunRecord,
   type WorkspaceConfig,
 } from "../api";
-import { PlanConfirmCard } from "../components/session/PlanConfirmCard";
 import { LoadingState } from "../components/LoadingState";
 import { RunStatusBadge } from "../components/RunStatusBadge";
 import { WorkspaceShell } from "../components/WorkspaceShell";
@@ -58,7 +52,6 @@ export function WorkspaceRunPage() {
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [retrying, setRetrying] = useState(false);
-  const [publishing, setPublishing] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState<unknown>(null);
   /** Simple job event lines (not the conversational Session UI). */
@@ -387,135 +380,6 @@ export function WorkspaceRunPage() {
     }
   }
 
-  async function handleApprovePlan() {
-    if (!id || !lastRun) {
-      return;
-    }
-    setPublishing(true);
-    setError(null);
-    try {
-      const result = await approvePlan(
-        id,
-        lastRun.runId,
-        {},
-        workspace?.rootPath ?? rootPathHint,
-      );
-      setRuns((prev) =>
-        prev.map((r) => (r.runId === result.run.runId ? result.run : r)),
-      );
-      setUsePollFallback(false);
-      setEventLog((prev) => [
-        ...prev,
-        "[status] plan approved — write phase starting",
-      ]);
-    } catch (err) {
-      setError(err);
-    } finally {
-      setPublishing(false);
-    }
-  }
-
-  async function handleDenyPlan() {
-    if (!id || !lastRun) {
-      return;
-    }
-    setPublishing(true);
-    setError(null);
-    try {
-      const result = await denyPlan(
-        id,
-        lastRun.runId,
-        workspace?.rootPath ?? rootPathHint,
-      );
-      setRuns((prev) =>
-        prev.map((r) => (r.runId === result.run.runId ? result.run : r)),
-      );
-    } catch (err) {
-      setError(err);
-    } finally {
-      setPublishing(false);
-    }
-  }
-
-  async function handleRevisePlan(feedback: string) {
-    if (!id || !lastRun) {
-      return;
-    }
-    setPublishing(true);
-    setError(null);
-    try {
-      const result = await revisePlan(
-        id,
-        lastRun.runId,
-        feedback,
-        workspace?.rootPath ?? rootPathHint,
-      );
-      setRuns((prev) =>
-        prev.map((r) => (r.runId === result.run.runId ? result.run : r)),
-      );
-      setUsePollFallback(false);
-      setEventLog((prev) => [
-        ...prev,
-        "[status] plan revision requested — replan starting",
-      ]);
-    } catch (err) {
-      setError(err);
-    } finally {
-      setPublishing(false);
-    }
-  }
-
-  async function handleApprove() {
-    if (!id || !lastRun) {
-      return;
-    }
-    setPublishing(true);
-    setError(null);
-    try {
-      const result = await approvePublication(
-        id,
-        lastRun.runId,
-        workspace?.rootPath ?? rootPathHint,
-      );
-      setRuns((prev) =>
-        prev.map((r) => (r.runId === result.run.runId ? result.run : r)),
-      );
-    } catch (err) {
-      setError(err);
-      // Refresh so a failed publish status (if persisted) is visible.
-      try {
-        const runData = await listRuns(id, workspace?.rootPath ?? rootPathHint);
-        setRuns(runData.runs);
-      } catch {
-        // ignore secondary load errors
-      }
-    } finally {
-      setPublishing(false);
-    }
-  }
-
-  async function handleDeny() {
-    if (!id || !lastRun) {
-      return;
-    }
-    setPublishing(true);
-    setError(null);
-    try {
-      const result = await denyPublication(
-        id,
-        lastRun.runId,
-        workspace?.rootPath ?? rootPathHint,
-      );
-      setRuns((prev) =>
-        prev.map((r) => (r.runId === result.run.runId ? result.run : r)),
-      );
-    } catch (err) {
-      setError(err);
-    } finally {
-      setPublishing(false);
-    }
-  }
-
   return (
     <WorkspaceShell
       workspaceId={id}
@@ -701,41 +565,28 @@ export function WorkspaceRunPage() {
                       </p>
                     ) : null}
 
-                    {awaitingPlan && lastRun.plan ? (
-                      <PlanConfirmCard
-                        plan={lastRun.plan}
-                        busy={publishing}
-                        onApprove={() => void handleApprovePlan()}
-                        onDeny={() => void handleDenyPlan()}
-                        onRevise={(feedback) => void handleRevisePlan(feedback)}
-                      />
-                    ) : null}
-
-                    {awaitingPublication ? (
-                      <div className="run-publish-actions" data-testid="run-publish-actions">
-                        <p className="muted">
-                          {t.runs.publishReadyBefore}
-                          <code className="mono small">{workspace.publicationPath}</code>
-                          {t.runs.publishReadyAfter}
+                    {awaitingPlan || awaitingPublication ? (
+                      <div
+                        className="rounded-lg border border-dashed bg-muted/30 px-3 py-3"
+                        data-testid="run-session-gate-hint"
+                      >
+                        <p className="text-sm text-muted-foreground">
+                          {awaitingPlan
+                            ? t.runs.gateOnSessionPlan
+                            : t.runs.gateOnSessionPublish}
                         </p>
-                        <div className="row-actions">
-                          <Button
-                            type="button"
-                            onClick={() => void handleApprove()}
-                            disabled={publishing}
-                            data-testid="run-approve"
+                        <div className="mt-2">
+                          <Link
+                            to={workspaceHref(id, "/session", rootPathHint, {
+                              ...(lastRun.sessionId
+                                ? { sessionId: lastRun.sessionId }
+                                : {}),
+                            })}
+                            className="text-sm font-medium text-primary underline-offset-4 hover:underline"
+                            data-testid="run-open-session-gate"
                           >
-                            {publishing ? t.runs.working : t.runs.approvePublish}
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="destructive"
-                            onClick={() => void handleDeny()}
-                            disabled={publishing}
-                            data-testid="run-deny"
-                          >
-                            {t.runs.decline}
-                          </Button>
+                            {t.runs.openSessionToDecide}
+                          </Link>
                         </div>
                       </div>
                     ) : null}

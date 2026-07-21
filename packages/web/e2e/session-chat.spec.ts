@@ -26,6 +26,10 @@ test.describe("Session chatbot (AI Elements)", () => {
     await page.getByTestId("session-input").fill("generate a wiki plan");
     await page.getByTestId("session-send").click();
 
+    // Fixture agent trajectory: tool card + text stream before/at plan gate (ADR 0026)
+    await expect(page.getByTestId("session-tool-part").first()).toBeVisible({
+      timeout: 45_000,
+    });
     // Short plan prompt (full body is data-plan card, not duplex markdown)
     await expect(page.getByText(/wiki plan/i).first()).toBeVisible({
       timeout: 45_000,

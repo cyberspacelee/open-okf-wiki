@@ -14,6 +14,7 @@ import {
   listOperatorSessions,
   loadOperatorSession,
   loadWorkspaceById,
+  neutralizeSessionDecisionParts,
   replaceSessionMessages,
   resetOperatorSessionWorkflow,
   skillDigest,
@@ -187,49 +188,6 @@ const sessionChatInFlight = new Set<string>();
 
 export function sessionChatLockKey(rootPath: string, sessionId: string): string {
   return `${path.resolve(rootPath)}::${sessionId}`;
-}
-
-/**
- * After product cancel, strip actionable HITL chips from durable history so a
- * refresh does not re-offer approve/deny on a cancelled run.
- */
-export function neutralizeSessionDecisionParts<
-  T extends { role: string; parts: Array<Record<string, unknown> & { type: string }> },
->(messages: T[]): T[] {
-  return messages.map((m) => {
-    if (m.role !== "assistant") {
-      return m;
-    }
-    return {
-      ...m,
-      parts: m.parts.map((p) => {
-        if (
-          typeof p.type === "string" &&
-          p.type === "tool-request_user_decision" &&
-          p.state === "input-available"
-        ) {
-          return {
-            ...p,
-            state: "output-denied",
-            output: { cancelled: true },
-          };
-        }
-        if (p.type === "data-choice" && p.data && typeof p.data === "object") {
-          const data = p.data as Record<string, unknown>;
-          return {
-            ...p,
-            data: {
-              ...data,
-              cancelled: true,
-              options: [],
-              mode: "input_only",
-            },
-          };
-        }
-        return p;
-      }),
-    };
-  });
 }
 
 /**
@@ -655,9 +613,48 @@ export async function handleSessionChat(
           }
         }
       } catch (error) {
+        // Do not silently drop timeline — log and attempt to keep prior history
+        // while recording a durable assistant error so refresh is not empty.
         process.stderr.write(
           `session chat finalize failed: ${redactErrorMessage(error)}\n`,
         );
+        try {
+          const prior = await loadOperatorSession(workspace.rootPath, sessionId);
+          if (prior) {
+            const errMsg = {
+              id: `finalize-error-${Date.now()}`,
+              role: "assistant" as const,
+              parts: [
+                {
+                  type: "text" as const,
+                  text: `Session save failed: ${redactErrorMessage(error)}. Prior history retained; retry or start a new turn.`,
+                },
+              ],
+              createdAt: new Date().toISOString(),
+            };
+            // Only append error if the user turn was already in prior; else full messages may be incomplete.
+            const hasUser = prior.messages.some((m) => m.id === lastFromClient.id);
+            await replaceSessionMessages(
+              workspace.rootPath,
+              sessionId,
+              hasUser
+                ? [...prior.messages, errMsg]
+                : [
+                    ...prior.messages,
+                    ...uiMessagesToSessionMessages([lastFromClient]),
+                    errMsg,
+                  ],
+              {
+                status: "failed",
+                pending: null,
+              },
+            );
+          }
+        } catch (secondary) {
+          process.stderr.write(
+            `session chat finalize recovery failed: ${redactErrorMessage(secondary)}\n`,
+          );
+        }
       } finally {
         sessionChatInFlight.delete(lockKey);
       }
