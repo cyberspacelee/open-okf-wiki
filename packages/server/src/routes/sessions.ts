@@ -474,6 +474,8 @@ export async function handleSessionChat(
   let serverDrainOwnsLock = false;
   // Track abort registration so setup failures before drain can clear the map.
   let registeredAbortRunId: string | undefined;
+  /** Mid-stream checkpoints must stop once finalize owns the journal. */
+  let allowCheckpoint = true;
 
   try {
     // abortSignalForRun registers AbortController when mode/runId are known
@@ -511,6 +513,28 @@ export async function handleSessionChat(
           }
         } catch {
           // best-effort
+        }
+      },
+      // Mid-stream journal so refresh mid-turn can render progress + keep catching up.
+      onCheckpoint: async (snapshot) => {
+        if (!allowCheckpoint) {
+          return;
+        }
+        try {
+          await replaceSessionMessages(
+            workspace.rootPath,
+            sessionId,
+            snapshot.messages,
+            {
+              status: snapshot.status,
+              pending: snapshot.pending,
+              workflow: snapshot.workflow,
+            },
+          );
+        } catch (error) {
+          process.stderr.write(
+            `session mid-stream checkpoint failed: ${redactErrorMessage(error)}\n`,
+          );
         }
       },
     });
@@ -593,6 +617,7 @@ export async function handleSessionChat(
         return;
       }
       finalized = true;
+      allowCheckpoint = false;
       try {
         const result = await chat.finalize();
         let workflow = { ...result.workflow };

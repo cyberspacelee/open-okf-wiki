@@ -106,16 +106,115 @@ export type SessionStreamBody = {
   step?: string;
 };
 
+/** Accumulator for mid-stream durable checkpoints (refresh mid-flight). */
+type StreamPartAcc = {
+  textById: Map<string, string>;
+  toolParts: Map<string, SessionMessage["parts"][number]>;
+  dataParts: SessionMessage["parts"];
+};
+
+function createStreamPartAcc(): StreamPartAcc {
+  return {
+    textById: new Map(),
+    toolParts: new Map(),
+    dataParts: [],
+  };
+}
+
+function applyChunkToAcc(acc: StreamPartAcc, value: UIMessageChunk): void {
+  const v = value as UIMessageChunk & Record<string, unknown>;
+  switch (v.type) {
+    case "text-delta": {
+      const id = String(v.id ?? "text");
+      const delta = typeof v.delta === "string" ? v.delta : "";
+      acc.textById.set(id, (acc.textById.get(id) ?? "") + delta);
+      break;
+    }
+    case "tool-input-available": {
+      const toolCallId = String(v.toolCallId ?? "tool");
+      const toolName = String(v.toolName ?? "tool");
+      acc.toolParts.set(toolCallId, {
+        type: `tool-${toolName}`,
+        toolCallId,
+        toolName,
+        state: "input-available",
+        input: v.input,
+      } as SessionMessage["parts"][number]);
+      break;
+    }
+    case "tool-output-available": {
+      const toolCallId = String(v.toolCallId ?? "tool");
+      const prev = acc.toolParts.get(toolCallId) as
+        | {
+            type: string;
+            toolCallId?: string;
+            toolName?: string;
+            input?: unknown;
+          }
+        | undefined;
+      const toolName =
+        prev?.toolName ??
+        (prev?.type?.startsWith("tool-") ? prev.type.slice(5) : "tool");
+      acc.toolParts.set(toolCallId, {
+        type: `tool-${toolName}`,
+        toolCallId,
+        toolName,
+        state: "output-available",
+        input: prev?.input,
+        output: v.output,
+      } as SessionMessage["parts"][number]);
+      break;
+    }
+    default: {
+      if (typeof v.type === "string" && v.type.startsWith("data-")) {
+        acc.dataParts.push({
+          type: v.type,
+          id: typeof v.id === "string" ? v.id : undefined,
+          data: v.data,
+        } as SessionMessage["parts"][number]);
+      }
+      break;
+    }
+  }
+}
+
+function partsFromAcc(
+  productText: string,
+  productData: SessionMessage["parts"],
+  productTools: SessionMessage["parts"],
+  acc: StreamPartAcc,
+): SessionMessage["parts"] {
+  const parts: SessionMessage["parts"] = [];
+  const streamedText = [...acc.textById.values()].join("");
+  const text = [productText, streamedText].filter(Boolean).join("\n\n");
+  if (text) {
+    parts.push({ type: "text", text, state: "streaming" });
+  } else {
+    parts.push({
+      type: "text",
+      text: "Wiki Run in progress… (refresh will update as work continues)",
+      state: "streaming",
+    });
+  }
+  parts.push(...productData);
+  parts.push(...productTools);
+  parts.push(...acc.dataParts);
+  parts.push(...acc.toolParts.values());
+  return parts;
+}
+
 /**
  * Pipe another UI stream into the turn writer (awaited for ordering).
  * Skip nested start/finish — the outer createUIMessageStream owns message framing
  * (with originalMessages) so we do not open a second assistant bubble.
  * When `abortSignal` fires, cancel the reader so we stop merging chunks ASAP.
+ * Optional `onChunk` supports durable mid-stream checkpoints for refresh.
  */
 async function pipeUiStream(
   writer: { write: (part: UIMessageChunk) => void },
   stream: ReadableStream<UIMessageChunk>,
   abortSignal?: AbortSignal,
+  onChunk?: (chunk: UIMessageChunk) => void | Promise<void>,
 ): Promise<void> {
   const reader = stream.getReader();
   const onAbort = () => {
@@ -155,6 +254,11 @@ async function pipeUiStream(
         break;
       }
       writer.write(value);
+      try {
+        await onChunk?.(value);
+      } catch {
+        // checkpoint must never break the live stream
+      }
     }
   } finally {
     abortSignal?.removeEventListener("abort", onAbort);
@@ -318,6 +422,16 @@ export async function createSessionWorkflowStream(input: {
    * leaves the run at awaiting_* for gate recovery.
    */
   onWorkflowLive?: (runId: string) => void | Promise<void>;
+  /**
+   * Durable mid-stream journal: server persists partial assistant timeline so a
+   * page refresh mid-turn can render progress and keep catching up.
+   */
+  onCheckpoint?: (snapshot: {
+    messages: SessionMessage[];
+    status: OperatorSession["status"];
+    pending: PendingInteraction | null;
+    workflow: Partial<SessionWorkflowState>;
+  }) => void | Promise<void>;
 }): Promise<SessionStreamResult> {
   const assistantId = randomUUID();
   const textId = randomUUID();
@@ -332,6 +446,8 @@ export async function createSessionWorkflowStream(input: {
   /** Structured data parts written during the turn (fallback if onFinish is late). */
   const dataParts: SessionMessage["parts"] = [];
   let finishedMessages: UIMessage[] | null = null;
+  const streamAcc = createStreamPartAcc();
+  let lastCheckpointAt = 0;
 
   const phase = input.session.workflow.phase ?? "idle";
   const rawUserText = lastUserText(input.messages);
@@ -415,6 +531,41 @@ export async function createSessionWorkflowStream(input: {
       finishedMessages = messages;
     },
     execute: async ({ writer }) => {
+      const checkpoint = async (force = false) => {
+        if (!input.onCheckpoint) {
+          return;
+        }
+        const now = Date.now();
+        // Throttle hard — concurrent disk writes corrupt session JSON without a lock,
+        // and even with a lock we avoid flooding the journal.
+        if (!force && now - lastCheckpointAt < 2500) {
+          return;
+        }
+        lastCheckpointAt = now;
+        const parts = partsFromAcc(finalText, dataParts, toolParts, streamAcc);
+        try {
+          await input.onCheckpoint({
+            messages: [
+              ...uiMessagesToSessionMessages(input.messages),
+              {
+                id: assistantId,
+                role: "assistant",
+                parts,
+                createdAt: new Date().toISOString(),
+              },
+            ],
+            status: status === "active" ? "running" : status,
+            pending,
+            workflow: {
+              ...workflow,
+              linkedRunId: runId,
+            },
+          });
+        } catch {
+          // never break the live stream
+        }
+      };
+
       const writeText = async (text: string) => {
         finalText += (finalText ? "\n\n" : "") + text;
         writer.write({ type: "text-start", id: textId });
@@ -427,6 +578,7 @@ export async function createSessionWorkflowStream(input: {
           });
         }
         writer.write({ type: "text-end", id: textId });
+        await checkpoint(true);
       };
 
       /**
@@ -455,6 +607,7 @@ export async function createSessionWorkflowStream(input: {
         } as SessionMessage["parts"][number]);
         pending = { ...interaction };
         status = "waiting";
+        void checkpoint(true);
       };
 
       const writeRunLink = (id: string, runStatus: string) => {
@@ -466,6 +619,12 @@ export async function createSessionWorkflowStream(input: {
           data,
         } as UIMessageChunk);
         dataParts.push({ type: "data-run", id: partId, data });
+        void checkpoint(true);
+      };
+
+      const onPipedChunk = async (chunk: UIMessageChunk) => {
+        applyChunkToAcc(streamAcc, chunk);
+        await checkpoint(false);
       };
 
       const applyWorkflowResult = async (result: unknown) => {
@@ -617,14 +776,16 @@ export async function createSessionWorkflowStream(input: {
             abortSignal,
           });
           await input.onWorkflowLive?.(runId);
+          await checkpoint(true);
           // Merge workflow UI parts into this turn's assistant message
           // (originalMessages keeps a single bubble). Await pipe so decision
           // text is ordered after workflow chunks.
-          await pipeUiStream(writer, ui.stream, abortSignal);
+          await pipeUiStream(writer, ui.stream, abortSignal, onPipedChunk);
           // Always settle result (unbind + real outcome). Late abort must not
           // rewrite published/publication_declined after the workflow finished.
           await applyWorkflowResult(await ui.result());
           await cancelUnlessDurableSuccess();
+          await checkpoint(true);
           return;
         }
 
@@ -651,9 +812,11 @@ export async function createSessionWorkflowStream(input: {
           abortSignal,
         });
         await input.onWorkflowLive?.(runId);
-        await pipeUiStream(writer, ui.stream, abortSignal);
+        await checkpoint(true);
+        await pipeUiStream(writer, ui.stream, abortSignal, onPipedChunk);
         await applyWorkflowResult(await ui.result());
         await cancelUnlessDurableSuccess();
+        await checkpoint(true);
       } catch (error) {
         // Prefer durable workflow outcome over cancel/stream errors. pipeUiStream
         // or a late abort must not clobber published / publication_declined after

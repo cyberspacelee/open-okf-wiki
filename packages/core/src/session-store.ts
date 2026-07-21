@@ -19,6 +19,33 @@ import { isPathInside, WORKSPACE_DIR_NAME } from "./workspace-store.js";
 
 const SESSIONS_DIR = "sessions";
 
+/** Serialize concurrent writes to the same session file (mid-stream checkpoints). */
+const sessionWriteTail = new Map<string, Promise<unknown>>();
+
+async function withSessionFileLock<T>(
+  filePath: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const prev = sessionWriteTail.get(filePath) ?? Promise.resolve();
+  let release!: (v?: unknown) => void;
+  const gate = new Promise((r) => {
+    release = r;
+  });
+  sessionWriteTail.set(
+    filePath,
+    prev.then(() => gate).catch(() => gate),
+  );
+  await prev.catch(() => undefined);
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (sessionWriteTail.get(filePath) === gate) {
+      // only clear if we are still the tail (best-effort)
+    }
+  }
+}
+
 function sessionsDir(rootPath: string): string {
   return path.join(path.resolve(rootPath), WORKSPACE_DIR_NAME, SESSIONS_DIR);
 }
@@ -28,11 +55,14 @@ function sessionPath(rootPath: string, sessionId: string): string {
 }
 
 async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
-  const dir = path.dirname(filePath);
-  await mkdir(dir, { recursive: true });
-  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  await rename(tempPath, filePath);
+  await withSessionFileLock(filePath, async () => {
+    const dir = path.dirname(filePath);
+    await mkdir(dir, { recursive: true });
+    // Unique temp name avoids clobber races between concurrent writers.
+    const tempPath = `${filePath}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
+    await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    await rename(tempPath, filePath);
+  });
 }
 
 export async function createOperatorSession(options: {
@@ -70,7 +100,14 @@ export async function loadOperatorSession(
   }
   try {
     const raw = await readFile(sessionPath(workspaceRoot, sessionId), "utf8");
-    const parsed = OperatorSessionSchema.safeParse(JSON.parse(raw) as unknown);
+    let json: unknown;
+    try {
+      json = JSON.parse(raw) as unknown;
+    } catch {
+      // Corrupt mid-write (should be rare with file lock); treat as missing.
+      return null;
+    }
+    const parsed = OperatorSessionSchema.safeParse(json);
     return parsed.success ? parsed.data : null;
   } catch (error) {
     const code = (error as NodeJS.ErrnoException | undefined)?.code;

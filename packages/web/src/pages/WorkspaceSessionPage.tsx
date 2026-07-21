@@ -92,15 +92,15 @@ function sessionMessagesToUI(
 ): UIMessage[] {
   return session.messages.map((m) => ({
     id: m.id,
-    role: m.role,
-    parts: m.parts.map((p) => {
+    role: m.role as UIMessage["role"],
+    parts: (m.parts ?? []).map((p) => {
       if (p.type === "text" && "text" in p) {
-        return { type: "text" as const, text: p.text };
+        return { type: "text" as const, text: String(p.text ?? "") };
       }
       if (p.type === "reasoning" && "text" in p) {
         return {
           type: "reasoning" as const,
-          text: p.text,
+          text: String(p.text ?? ""),
         } as UIMessage["parts"][number];
       }
       if (p.type === "dynamic-tool") {
@@ -123,25 +123,30 @@ function sessionMessagesToUI(
           errorText: tool.errorText,
         } as UIMessage["parts"][number];
       }
-      if (p.type.startsWith("tool-")) {
+      if (typeof p.type === "string" && p.type.startsWith("tool-")) {
         const tool = p as {
           type: string;
           toolCallId?: string;
+          toolName?: string;
           state?: string;
           input?: unknown;
           output?: unknown;
           errorText?: string;
         };
+        const toolName =
+          tool.toolName ??
+          (tool.type.startsWith("tool-") ? tool.type.slice(5) : "tool");
         return {
           type: tool.type as `tool-${string}`,
           toolCallId: tool.toolCallId ?? tool.type,
+          toolName,
           state: (tool.state as "output-available") ?? "output-available",
           input: tool.input,
           output: tool.output,
-          errorText: tool.errorText,
-        } as UIMessage["parts"][number];
+          ...(tool.errorText ? { errorText: tool.errorText } : {}),
+        } as unknown as UIMessage["parts"][number];
       }
-      if (p.type.startsWith("data-")) {
+      if (typeof p.type === "string" && p.type.startsWith("data-")) {
         const dataPart = p as { type: string; id?: string; data?: unknown };
         return {
           type: dataPart.type as `data-${string}`,
@@ -792,6 +797,8 @@ function SessionChatPanel({
   if (bootMessagesRef.current === null) {
     bootMessagesRef.current = sessionMessagesToUI(session);
   }
+  /** After mount, re-fetch session so refresh mid-flight gets latest journal. */
+  const bootResyncDone = useRef(false);
 
   const chatApi = useMemo(() => {
     const base = `/api/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(session.id)}/chat`;
@@ -1152,12 +1159,57 @@ function SessionChatPanel({
       }
       // Catch-up timeline when server journal advanced (refresh / mid-flight).
       const next = sessionMessagesToUI(fresh);
-      if (next.length > 0) {
-        setMessages(next);
-      }
+      setMessages((prev) => {
+        if (next.length === 0) {
+          return prev;
+        }
+        // Prefer the longer durable timeline; never shrink mid-flight to empty.
+        if (next.length < prev.length) {
+          const mid =
+            fresh.status === "running" ||
+            fresh.workflow?.phase === "planning" ||
+            fresh.workflow?.phase === "writing";
+          if (mid) {
+            return prev;
+          }
+        }
+        return next;
+      });
     },
     [onSessionMetaChange, setMessages],
   );
+
+  // Always re-sync from server once on mount (covers hard refresh mid-turn).
+  useEffect(() => {
+    if (bootResyncDone.current) {
+      return;
+    }
+    bootResyncDone.current = true;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await getSession(
+          workspaceId,
+          session.id,
+          workspace.rootPath ?? rootPathHint,
+        );
+        if (!cancelled) {
+          applyFreshSession(res.session);
+        }
+      } catch {
+        // keep boot messages
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    workspaceId,
+    session.id,
+    workspace.rootPath,
+    rootPathHint,
+    applyFreshSession,
+  ]);
 
   // After a stream finishes, re-fetch session meta so plan / linkedRunId / phase
   // match the server (resume works without a full page reload).
@@ -1251,7 +1303,8 @@ function SessionChatPanel({
       }
     };
     void tick();
-    const pollId = window.setInterval(() => void tick(), 1500);
+    // Faster poll while mid-flight so refresh catches progressive checkpoints.
+    const pollId = window.setInterval(() => void tick(), 800);
 
     const runId = linkedRunId ?? session.workflow?.linkedRunId;
     let es: EventSource | null = null;
@@ -1639,6 +1692,18 @@ function SessionChatPanel({
         </Conversation>
 
         <div className="shrink-0 border-t bg-card/80 p-3 backdrop-blur-sm supports-backdrop-filter:bg-card/70">
+          {(session.status === "running" ||
+            session.workflow?.phase === "planning" ||
+            session.workflow?.phase === "writing") &&
+          !isBusy ? (
+            <p
+              className="mb-2 text-xs text-muted-foreground"
+              data-testid="session-midflight-banner"
+            >
+              Wiki Run in progress — timeline updates automatically. Use{" "}
+              <strong>Stop</strong> to cancel.
+            </p>
+          ) : null}
           {choiceOnly ? (
             <p
               className="mb-2 text-xs text-muted-foreground"
