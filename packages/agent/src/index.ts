@@ -122,6 +122,10 @@ export {
   type WikiWorkflowUiStart,
   type WikiWorkflowUiResume,
 } from "./workflow-ui-stream.js";
+export {
+  openWikiRunAuditStream,
+  minimalWorkflowStateForAudit,
+} from "./workflow-audit-stream.js";
 export { mapWorkflowStreamEvent } from "./workflow-events.js";
 
 export {
