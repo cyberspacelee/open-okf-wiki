@@ -61,7 +61,7 @@ export type WikiWorkflowUiHandle = {
 
 /**
  * Open wiki-run as a framework UI chunk stream + result() for Session finalize.
- * Preferred name for the P1 shell; openWikiWorkflowUiStream is an alias.
+ * P1 shell name; sole Mastra→UI conversion call site for Session.
  */
 export async function openWikiRunUiProjection(
   params: WikiWorkflowUiParams,
@@ -104,9 +104,3 @@ export async function openWikiRunUiProjection(
 
   return { stream, result };
 }
-
-/**
- * @deprecated Prefer openWikiRunUiProjection (same function). Kept for a short
- * compile-stable export name; not a second converter.
- */
-export const openWikiWorkflowUiStream = openWikiRunUiProjection;

@@ -107,7 +107,6 @@ export {
 
 export {
   openWikiRunUiProjection,
-  openWikiWorkflowUiStream,
   type WikiWorkflowUiParams,
   type WikiWorkflowUiHandle,
   type WikiWorkflowUiStart,

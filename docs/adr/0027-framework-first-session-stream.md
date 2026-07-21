@@ -56,7 +56,7 @@ Later phases (not all required in the same change as this ADR) may:
 - Free-text gate inference (`"approve"` in chat, `__choice__:` prefixes).
 - **`@mastra/*` inside `@okf-wiki/core`**.
 - `handleChatStream` as the wiki production main path (wiki production is **workflow**, ADR 0025).
-- Long-term parallel `openWikiWorkflowUiStream` **semantics** as a second converter story (name may remain as the thin shell export until callers rename).
+- Parallel `openWikiWorkflowUiStream` **semantics** as a second converter story (use `openWikiRunUiProjection` only).
 
 ## Consequences
 
