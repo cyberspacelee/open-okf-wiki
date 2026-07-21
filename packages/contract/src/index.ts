@@ -78,6 +78,15 @@ export {
 } from "./session.js";
 
 export {
+  mapSuspendToGateUi,
+  mapRunGateToGateUi,
+  optionsForPlanGate,
+  optionsForPublishGate,
+  type SuspendPayloadForGate,
+  type GateUiMap,
+} from "./gate-ui.js";
+
+export {
   StreamFragmentSchema,
   RunEventPayloadSchema,
   RunEventSchema,

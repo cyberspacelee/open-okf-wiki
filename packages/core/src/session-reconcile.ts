@@ -19,6 +19,7 @@ import type {
   WikiRunPlan,
   WikiRunRecordStatus,
 } from "@okf-wiki/contract";
+import { mapRunGateToGateUi } from "@okf-wiki/contract";
 import { neutralizeSessionDecisionParts } from "./session-store.js";
 
 export type SessionRunSnapshot = {
@@ -128,59 +129,10 @@ function hasActionableGateParts(messages: SessionMessage[]): boolean {
   );
 }
 
-function planGateInteraction(plan: WikiRunPlan): PendingInteraction {
-  return {
-    type: "approval",
-    question:
-      "How do you want to proceed with this plan? You can also type free-text revision feedback.",
-    mode: "choice_or_input",
-    selectionMode: "single",
-    options: [
-      {
-        id: "approve",
-        label: `Write ${plan.pages.length} page(s)`,
-        description: plan.pages.map((p) => p.path).join(", "),
-      },
-      {
-        id: "revise",
-        label: "Request changes",
-        description: "Type modification feedback to replan",
-      },
-      {
-        id: "deny",
-        label: "Reject this plan",
-        description: "Cancel this Wiki Run",
-      },
-    ],
-    inputPlaceholder:
-      "Describe plan changes (e.g. add concepts.md, drop architecture.md)…",
-  };
-}
-
-function publishGateInteraction(_pages: string[]): PendingInteraction {
-  return {
-    type: "confirmation",
-    question: "Publish the staged wiki?",
-    mode: "choice_only",
-    selectionMode: "single",
-    options: [
-      {
-        id: "approve",
-        label: "Publish staged wiki",
-        description: "Atomic publication via product gate",
-      },
-      {
-        id: "deny",
-        label: "Keep staging only",
-        description: "Do not change Published Wiki",
-      },
-    ],
-  };
-}
-
 /**
  * Ensure a live data-gate part exists for the current run gate (old sessions /
  * orphan recovery). Appends a small assistant message when needed.
+ * Options come only from mapRunGateToGateUi (shared with session-stream).
  */
 export function ensureGateMessage(
   messages: SessionMessage[],
@@ -190,19 +142,27 @@ export function ensureGateMessage(
     pages?: string[] | null;
   },
 ): { messages: SessionMessage[]; pending: PendingInteraction; changed: boolean } {
+  const gateUi = mapRunGateToGateUi({
+    gate: input.gate,
+    plan: input.plan,
+    pages: input.pages,
+  });
+  // Fallback pending when plan is missing at plan-gate (should be rare).
+  const pending: PendingInteraction = gateUi?.pending ?? {
+    type: input.gate === "plan" ? "approval" : "confirmation",
+    question:
+      input.gate === "plan"
+        ? "How do you want to proceed with this plan?"
+        : "Publish the staged wiki?",
+    mode: input.gate === "plan" ? "choice_or_input" : "choice_only",
+    selectionMode: "single",
+    options: [],
+  };
+
   if (hasActionableGateParts(messages)) {
-    // Prefer existing live chips; still try to surface pending for meta.
-    const pending =
-      input.gate === "plan" && input.plan
-        ? planGateInteraction(input.plan)
-        : publishGateInteraction(input.pages ?? []);
+    // Prefer existing live chips; still surface pending meta from the single map.
     return { messages, pending, changed: false };
   }
-
-  const pending =
-    input.gate === "plan" && input.plan
-      ? planGateInteraction(input.plan)
-      : publishGateInteraction(input.pages ?? []);
 
   const parts: SessionMessage["parts"] = [
     {

@@ -4,8 +4,8 @@
  * Framework-first: workflow open + toAISdkStream live in the thin UI projection
  * shell (openWikiRunUiProjection). This module assembles turn params, owns outer
  * createUIMessageStream framing, mid-stream checkpoints, and finalize → product
- * Session/Run state via mapWorkflowResult. Do not invent new stream part types
- * here (Phase 2 will drop legacy data-gate accumulation in favor of framework parts).
+ * Session/Run state via mapWorkflowResult. Gate chips use mapSuspendToGateUi once;
+ * plan-progress is preferred from step writer.custom (session layer is fallback only).
  *
  * AI SDK persistence: server owns history; client sends last message only.
  * No Session-local Staging materialize; no hand-rolled Mastra→SSE projection.
@@ -18,7 +18,6 @@ import {
   type UIMessageChunk,
 } from "ai";
 import type {
-  InteractionOption,
   OperatorSession,
   PendingInteraction,
   SessionMessage,
@@ -28,6 +27,7 @@ import type {
 } from "@okf-wiki/contract";
 import {
   helpTextForSessionTurn,
+  mapSuspendToGateUi,
   normalizeSessionUserText,
   resolveSessionTurnMode,
 } from "@okf-wiki/contract";
@@ -438,26 +438,6 @@ function lastUserText(messages: UIMessage[]): string {
   return "";
 }
 
-function optionsForPlan(plan: WikiRunPlan): InteractionOption[] {
-  return [
-    {
-      id: "approve",
-      label: `Write ${plan.pages.length} page(s)`,
-      description: plan.pages.map((p) => p.path).join(", "),
-    },
-    {
-      id: "revise",
-      label: "Request changes",
-      description: "Type modification feedback to replan",
-    },
-    {
-      id: "deny",
-      label: "Reject this plan",
-      description: "Cancel this Wiki Run",
-    },
-  ];
-}
-
 /** Render a WikiRunPlan as operator-facing Markdown (fullscreen / transcript). */
 export function planToMarkdown(plan: WikiRunPlan): string {
   const lines = [
@@ -472,66 +452,6 @@ export function planToMarkdown(plan: WikiRunPlan): string {
     lines.push("", "### Notes", "", plan.notes.trim());
   }
   return lines.join("\n");
-}
-
-function optionsForPublish(): InteractionOption[] {
-  return [
-    {
-      id: "approve",
-      label: "Publish staged wiki",
-      description: "Atomic publication via product gate",
-    },
-    {
-      id: "deny",
-      label: "Keep staging only",
-      description: "Do not change Published Wiki",
-    },
-  ];
-}
-
-function decisionFromSuspend(payload: {
-  gate?: string;
-  plan?: WikiRunPlan;
-  pages?: string[];
-  summary?: string;
-}): { pending: PendingInteraction; text: string; plan?: WikiRunPlan } | null {
-  if (payload.gate === "plan" && payload.plan) {
-    const plan = payload.plan;
-    // Short prompt only — full plan lives in data-plan (PlanViewer), avoid duplex markdown.
-    return {
-      plan,
-      text:
-        `A **wiki plan** with **${plan.pages.length}** page(s) is ready for review. ` +
-        "Open the plan card (or fullscreen) below, then approve, request changes, or type revision feedback.",
-      pending: {
-        type: "approval",
-        question:
-          "How do you want to proceed with this plan? You can also type free-text revision feedback.",
-        mode: "choice_or_input",
-        selectionMode: "single",
-        options: optionsForPlan(plan),
-        inputPlaceholder:
-          "Describe plan changes (e.g. add concepts.md, drop architecture.md)…",
-      },
-    };
-  }
-  if (payload.gate === "publication") {
-    const pages = payload.pages ?? [];
-    return {
-      text:
-        `Staged **${pages.length}** page(s)` +
-        (pages.length ? `:\n\n${pages.map((p) => `- \`${p}\``).join("\n")}` : "") +
-        "\n\nChoose how to proceed:",
-      pending: {
-        type: "confirmation",
-        question: "Publish the staged wiki?",
-        mode: "choice_only",
-        selectionMode: "single",
-        options: optionsForPublish(),
-      },
-    };
-  }
-  return null;
 }
 
 
@@ -811,8 +731,20 @@ export async function createSessionWorkflowStream(input: {
         } as SessionMessage["parts"][number]);
       };
 
-      /** Plan page checklist progress (written vs pending). */
-      const writePlanProgress = () => {
+      /**
+       * Plan checklist fallback when step writer did not emit data-plan-progress.
+       * Prefer framework/step writer.custom as the source of truth (Phase 2).
+       */
+      const writePlanProgressFallback = () => {
+        const alreadyFromStep = streamAcc.dataParts.some(
+          (p) => p.type === "data-plan-progress",
+        );
+        const alreadyInProduct = dataParts.some(
+          (p) => p.type === "data-plan-progress",
+        );
+        if (alreadyFromStep || alreadyInProduct) {
+          return;
+        }
         const plan = workflow.plan ?? input.session.workflow.plan;
         if (!plan?.pages?.length && streamAcc.writtenPaths.size === 0) {
           return;
@@ -829,12 +761,7 @@ export async function createSessionWorkflowStream(input: {
           id: partId,
           data,
         } as UIMessageChunk);
-        // Keep a single latest progress part in durable product dataParts.
-        const filtered = dataParts.filter(
-          (p) => p.type !== "data-plan-progress",
-        );
-        dataParts.length = 0;
-        dataParts.push(...filtered, {
+        dataParts.push({
           type: "data-plan-progress",
           id: partId,
           data,
@@ -842,12 +769,9 @@ export async function createSessionWorkflowStream(input: {
       };
 
       const onPipedChunk = async (chunk: UIMessageChunk) => {
-        const beforeWrites = streamAcc.writtenPaths.size;
         applyChunkToAcc(streamAcc, chunk);
-        // Emit plan progress when a new write_wiki completes.
-        if (streamAcc.writtenPaths.size > beforeWrites) {
-          writePlanProgress();
-        }
+        // data-plan-progress from step writer.custom lands via data-* acc path.
+        // Do not re-synthesize chips here (single emission path).
         await checkpoint(false);
       };
 
@@ -855,12 +779,11 @@ export async function createSessionWorkflowStream(input: {
         const product = mapWorkflowResult(result);
         const suspend = extractSuspendGate(result);
         if (suspend) {
-          const decision = decisionFromSuspend(suspend);
+          // Single product map for chips (shared with session-reconcile).
+          const decision = mapSuspendToGateUi(suspend);
           if (decision) {
             await writeText(decision.text);
-            const gateKind =
-              suspend.gate === "publication" ? "publication" : "plan";
-            writeGate(decision.pending, gateKind);
+            writeGate(decision.pending, decision.gate);
             // Structured plan for clients (no need to parse markdown).
             if (decision.plan) {
               const planPartId = randomUUID();
@@ -883,10 +806,12 @@ export async function createSessionWorkflowStream(input: {
             };
             writePhaseProgress(
               view.workflowPhase,
-              gateKind === "plan" ? "Awaiting plan confirmation" : "Awaiting publication",
+              decision.gate === "plan"
+                ? "Awaiting plan confirmation"
+                : "Awaiting publication",
             );
             if (decision.plan || workflow.plan) {
-              writePlanProgress();
+              writePlanProgressFallback();
             }
             sideEffects = {
               upsertRun: {
@@ -920,7 +845,7 @@ export async function createSessionWorkflowStream(input: {
           { failed },
         );
         if (streamAcc.writtenPaths.size > 0 || workflow.plan) {
-          writePlanProgress();
+          writePlanProgressFallback();
         }
         if (terminal.runStatus === "published") {
           // Stable operator copy for e2e + UI (prefer over fixture-specific summary alone).

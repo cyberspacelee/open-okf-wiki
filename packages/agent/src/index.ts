@@ -96,6 +96,16 @@ export {
   type SuspendGatePayload,
 } from "./workflow-result.js";
 
+/** Re-export single gate UI map (also on @okf-wiki/contract). */
+export {
+  mapSuspendToGateUi,
+  mapRunGateToGateUi,
+  optionsForPlanGate,
+  optionsForPublishGate,
+  type SuspendPayloadForGate,
+  type GateUiMap,
+} from "@okf-wiki/contract";
+
 export {
   openWikiRunWorkflow,
   stepIdForGate,
