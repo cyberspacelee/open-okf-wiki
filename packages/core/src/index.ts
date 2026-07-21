@@ -147,6 +147,15 @@ export {
   applyLateAbortStatus,
 } from "./run-status-policy.js";
 export {
+  transition,
+  sessionProjectionForRunStatus,
+  sessionViewFromRunStatus,
+  type SessionRunState,
+  type SessionRunEvent,
+  type SessionRunPatches,
+  type SessionRunAppendHint,
+} from "./session-run-transition.js";
+export {
   createRun,
   registerRunRecord,
   updateRunRecord,

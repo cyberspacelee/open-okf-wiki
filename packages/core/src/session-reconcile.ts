@@ -21,6 +21,7 @@ import type {
 } from "@okf-wiki/contract";
 import { mapRunGateToGateUi } from "@okf-wiki/contract";
 import { neutralizeSessionDecisionParts } from "./session-store.js";
+import { sessionProjectionForRunStatus } from "./session-run-transition.js";
 
 export type SessionRunSnapshot = {
   status: WikiRunRecordStatus;
@@ -53,48 +54,6 @@ export function isSessionTurnLocked(
     return true;
   }
   return nowMs - updated < SESSION_TURN_LOCK_MAX_AGE_MS;
-}
-
-function sessionPhaseForRunStatus(
-  status: WikiRunRecordStatus,
-): SessionWorkflowState["phase"] {
-  switch (status) {
-    case "awaiting_plan":
-      return "awaiting_plan";
-    case "awaiting_publication":
-      return "awaiting_publish";
-    case "published":
-    case "publication_declined":
-      return "done";
-    case "running":
-      return "writing";
-    case "cancelled":
-    case "failed":
-    case "needs_input":
-    default:
-      return "idle";
-  }
-}
-
-function sessionStatusForRunStatus(
-  status: WikiRunRecordStatus,
-): OperatorSession["status"] {
-  switch (status) {
-    case "awaiting_plan":
-    case "awaiting_publication":
-      return "waiting";
-    case "running":
-      return "running";
-    case "published":
-      return "completed";
-    case "failed":
-      return "failed";
-    case "publication_declined":
-    case "cancelled":
-    case "needs_input":
-    default:
-      return "active";
-  }
 }
 
 function isGatePhase(phase: string | undefined): boolean {
@@ -314,8 +273,10 @@ export function reconcileSessionWithRun(
     return { changed: false };
   }
 
-  const runPhase = sessionPhaseForRunStatus(run.status);
-  const runSessionStatus = sessionStatusForRunStatus(run.status);
+  // Single P2 map for run status → session status/phase (no local phase copies).
+  const projection = sessionProjectionForRunStatus(run.status);
+  const runPhase = projection.workflowPhase;
+  const runSessionStatus = projection.sessionStatus;
   const linkedRunId = session.workflow?.linkedRunId;
   const nextWorkflow: SessionWorkflowState = {
     ...session.workflow,
