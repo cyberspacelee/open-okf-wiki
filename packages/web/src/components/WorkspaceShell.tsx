@@ -61,7 +61,8 @@ export function WorkspaceShell({
         data-testid={testId}
         className={cn(
           compact
-            ? "relative flex min-h-0 flex-1 flex-col gap-3 overflow-hidden h-[calc(100vh-3rem)] max-h-[960px]"
+            ? // Immersive: fill SidebarInset scrollport via flex chain (no max-h cap).
+              "relative flex min-h-0 flex-1 flex-col gap-3 overflow-hidden"
             : "flex flex-col gap-5",
           className,
         )}

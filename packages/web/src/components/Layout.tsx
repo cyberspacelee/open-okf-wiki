@@ -36,15 +36,24 @@ export function Layout({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <SidebarProvider open={open} onOpenChange={handleOpenChange}>
+    <SidebarProvider
+      open={open}
+      onOpenChange={handleOpenChange}
+      className="h-svh overflow-hidden"
+    >
       <AppSidebar />
-      <SidebarInset>
+      <SidebarInset className="min-h-0 overflow-hidden">
         {/* Mobile: open the offcanvas Sheet (desktop uses icon collapse + footer toggle). */}
         <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4 md:hidden">
           <SidebarTrigger />
           <span className="text-sm font-medium tracking-tight">{t.app.brand}</span>
         </header>
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-5 p-4 md:p-6 lg:p-8">
+        {/*
+          Viewport-height flex chain: Provider h-svh → Inset min-h-0 flex-1 →
+          this scrollport. Session compact mode uses flex-1 min-h-0 to fill;
+          other pages grow and scroll here.
+        */}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-5 overflow-y-auto p-4 md:p-6 lg:p-8">
           {children}
         </div>
       </SidebarInset>

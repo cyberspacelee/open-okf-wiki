@@ -272,6 +272,19 @@ export const zh: MessageTree = {
     slashHeading: "命令",
     slashEmpty: "无匹配命令",
     slashTooltip: "斜杠命令（Tab 补全）",
+    lifecycle: {
+      active: "进行中",
+      waiting: "等待中",
+      running: "运行中",
+      completed: "已完成",
+      failed: "失败",
+    },
+    chatStatus: {
+      ready: "就绪",
+      submitted: "发送中…",
+      streaming: "生成中…",
+      error: "错误",
+    },
   },
   runs: {
     breadcrumbWorkspaces: "工作区",

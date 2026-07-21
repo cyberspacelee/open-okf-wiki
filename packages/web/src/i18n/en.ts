@@ -281,6 +281,21 @@ export const en = {
     slashHeading: "Commands",
     slashEmpty: "No matching command",
     slashTooltip: "Slash commands (Tab to complete)",
+    /** Durable operator-session lifecycle (sessionMeta.status). */
+    lifecycle: {
+      active: "Active",
+      waiting: "Waiting",
+      running: "Running",
+      completed: "Completed",
+      failed: "Failed",
+    },
+    /** useChat transport status shown near the composer. */
+    chatStatus: {
+      ready: "Ready",
+      submitted: "Sending…",
+      streaming: "Generating…",
+      error: "Error",
+    },
   },
   runs: {
     breadcrumbWorkspaces: "Workspaces",

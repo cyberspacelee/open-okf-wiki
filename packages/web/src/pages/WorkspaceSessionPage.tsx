@@ -578,8 +578,13 @@ export function WorkspaceSessionPage() {
         ) : null}
       </div>
       {sessionMeta ? (
-        <Badge variant="secondary" data-testid="session-status">
-          {sessionMeta.status}
+        <Badge
+          variant="secondary"
+          data-testid="session-status"
+          data-status={sessionMeta.status}
+        >
+          {(t.session.lifecycle as Record<string, string>)[sessionMeta.status] ??
+            sessionMeta.status}
         </Badge>
       ) : null}
       {sessionMeta?.workflow?.linkedRunId ? (
@@ -1226,6 +1231,9 @@ function SessionChatPanel({
     return ["/generate", "/help", "/reset"];
   }, [readOnly, hasSources]);
 
+  const chatStatusLabel =
+    (t.session.chatStatus as Record<string, string>)[status] ?? status;
+
   return (
     <>
       <ErrorBanner error={error} onDismiss={() => clearError()} />
@@ -1233,27 +1241,10 @@ function SessionChatPanel({
         className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border bg-card"
         data-testid="session-chat-shell"
       >
-        <div className="flex shrink-0 items-center justify-end gap-2 border-b px-3 py-2">
-          {linkedRunId ? (
-            <Badge variant="outline" data-testid="session-chat-run-id">
-              {linkedRunId.slice(0, 8)}…
-            </Badge>
-          ) : null}
-          <Badge variant="secondary" data-testid="session-chat-status">
-            {status}
-          </Badge>
-          {isBusy && !readOnly ? (
-            <Button
-              type="button"
-              variant="destructive"
-              size="sm"
-              onClick={() => handleStop()}
-              data-testid="session-stop"
-            >
-              {t.session.stop}
-            </Button>
-          ) : null}
-        </div>
+        {/*
+          Immersive chat: no top status bar. Stop lives on PromptInputSubmit;
+          one Badge near the composer tools. Linked-run id stays in page actions.
+        */}
         <Conversation
           className="min-h-0 flex-1"
           data-testid="session-conversation"
@@ -1439,6 +1430,23 @@ function SessionChatPanel({
               </PromptInputBody>
               <PromptInputFooter>
                 <PromptInputTools>
+                  <Badge
+                    variant="secondary"
+                    data-testid="session-chat-status"
+                    data-status={status}
+                    className="font-normal"
+                  >
+                    {chatStatusLabel}
+                  </Badge>
+                  {linkedRunId ? (
+                    <Badge
+                      variant="outline"
+                      data-testid="session-chat-run-id"
+                      className="font-normal"
+                    >
+                      {linkedRunId.slice(0, 8)}…
+                    </Badge>
+                  ) : null}
                   <PromptInputButton
                     type="button"
                     variant="ghost"
@@ -1453,7 +1461,7 @@ function SessionChatPanel({
                     }}
                     data-testid="session-slash-open"
                   >
-                    <SlashIcon className="size-4" />
+                    <SlashIcon data-icon="inline-start" aria-hidden />
                   </PromptInputButton>
                 </PromptInputTools>
                 <PromptInputSubmit
