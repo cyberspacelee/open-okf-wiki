@@ -56,12 +56,12 @@ export {
   neutralizeSessionDecisionParts,
   resetOperatorSessionWorkflow,
   deleteOperatorSession,
+  SessionSchemaVersionError,
 } from "./session-store.js";
 export {
   reconcileSessionWithRun,
   midTurnPhaseForChat,
   isSessionTurnLocked,
-  migrateLegacyGateParts,
   ensureGateMessage,
   SESSION_TURN_LOCK_MAX_AGE_MS,
   type SessionRunSnapshot,

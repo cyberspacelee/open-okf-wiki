@@ -166,81 +166,11 @@ export function ensureGateMessage(
 }
 
 /**
- * Migrate legacy decision tool / data-choice into data-gate when at a real gate.
- */
-export function migrateLegacyGateParts(
-  messages: SessionMessage[],
-  gate: "plan" | "publication",
-  plan?: WikiRunPlan,
-  pages?: string[] | null,
-): { messages: SessionMessage[]; changed: boolean } {
-  let changed = false;
-  const next = messages.map((m) => {
-    if (m.role !== "assistant") {
-      return m;
-    }
-    let msgChanged = false;
-    const parts = m.parts.flatMap((p) => {
-      if (
-        p.type === "tool-request_user_decision" &&
-        "state" in p &&
-        p.state === "input-available" &&
-        "input" in p &&
-        p.input
-      ) {
-        msgChanged = true;
-        changed = true;
-        const input = p.input as PendingInteraction;
-        return [
-          {
-            type: "data-gate",
-            id: randomUUID(),
-            data: {
-              ...input,
-              gate,
-              cancelled: false,
-            },
-          } as SessionMessage["parts"][number],
-        ];
-      }
-      if (p.type === "data-choice" && "data" in p && p.data) {
-        const d = p.data as PendingInteraction & { cancelled?: boolean };
-        if (!d.cancelled && (d.options?.length ?? 0) > 0) {
-          msgChanged = true;
-          changed = true;
-          return [
-            {
-              type: "data-gate",
-              id: randomUUID(),
-              data: {
-                ...d,
-                gate,
-                cancelled: false,
-              },
-            } as SessionMessage["parts"][number],
-          ];
-        }
-      }
-      return [p];
-    });
-    return msgChanged ? { ...m, parts } : m;
-  });
-
-  if (hasActionableGateParts(next)) {
-    return { messages: next, changed };
-  }
-
-  // No live gate parts at all — rehydrate from run plan/pages.
-  const ensured = ensureGateMessage(next, { gate, plan, pages });
-  return {
-    messages: ensured.messages,
-    changed: changed || ensured.changed,
-  };
-}
-
-/**
  * Pure reconcile: align session status/phase/pending/chips with linked run.
  * Returns `{ changed: false }` when no durable rewrite is needed.
+ *
+ * Legacy gate parts (tool-request_user_decision / data-choice) are not migrated.
+ * schemaVersion < 2 sessions are rejected on load; v2 stores data-gate only.
  */
 export function reconcileSessionWithRun(
   session: OperatorSession,
@@ -316,6 +246,7 @@ export function reconcileSessionWithRun(
   if (run.status === "awaiting_plan" || run.status === "awaiting_publication") {
     const gate: "plan" | "publication" =
       run.status === "awaiting_publication" ? "publication" : "plan";
+    const plan = run.plan ?? session.workflow?.plan;
 
     // Orphan recovery: session thinks mid-flight but run never left the gate
     // (crash after eager session write, before onWorkflowLive).
@@ -323,17 +254,10 @@ export function reconcileSessionWithRun(
       session.status === "running" ||
       isMidFlightPhase(session.workflow?.phase)
     ) {
-      const migrated = migrateLegacyGateParts(
+      const ensured = ensureGateMessage(
         neutralizeSessionDecisionParts(session.messages),
-        gate,
-        run.plan ?? session.workflow?.plan,
-        run.pages,
+        { gate, plan, pages: run.pages },
       );
-      const ensured = ensureGateMessage(migrated.messages, {
-        gate,
-        plan: run.plan ?? session.workflow?.plan,
-        pages: run.pages,
-      });
       return {
         changed: true,
         status: "waiting",
@@ -345,18 +269,12 @@ export function reconcileSessionWithRun(
 
     const phaseOk = session.workflow?.phase === runPhase;
     const statusOk = session.status === "waiting";
-    const migrated = migrateLegacyGateParts(
-      session.messages,
+    const ensured = ensureGateMessage(session.messages, {
       gate,
-      run.plan ?? session.workflow?.plan,
-      run.pages,
-    );
-    if (!phaseOk || !statusOk || migrated.changed) {
-      const ensured = ensureGateMessage(migrated.messages, {
-        gate,
-        plan: run.plan ?? session.workflow?.plan,
-        pages: run.pages,
-      });
+      plan,
+      pages: run.pages,
+    });
+    if (!phaseOk || !statusOk || ensured.changed) {
       return {
         changed: true,
         status: "waiting",
@@ -365,6 +283,7 @@ export function reconcileSessionWithRun(
         messages: ensured.messages,
       };
     }
+    // Aligned phase/status with live chips — still refresh pending from single map.
     return { changed: false };
   }
 

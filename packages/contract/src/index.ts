@@ -56,6 +56,7 @@ export {
 } from "./session-policy.js";
 
 export {
+  SESSION_SCHEMA_VERSION,
   OperatorSessionStatusSchema,
   InteractionOptionSchema,
   InteractionModeSchema,

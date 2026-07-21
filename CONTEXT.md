@@ -67,7 +67,7 @@ The current objective, completion gates, evidence gaps, and delegated-scope stat
 _Avoid_: Todo transcript, Operator Session history, durable checkpoint of the Semantic Workflow
 
 **Operator Session**:
-The operator-facing **sole truth surface** for one project thread (Session-centric agent, ADR 0026): durable AI SDK message history (`parts`), tool/progress visibility, pending decisions, workflow view (plan, linked runs), and zero or more Wiki Runs owned by that thread. Foreground or background execution still appends to this timeline. Primary UI is the Session chatbot page (AI Elements + `useChat`). Stream/HITL conversion is framework-first (Mastra + AI SDK, ADR 0027).
+The operator-facing **sole truth surface** for one project thread (Session-centric agent, ADR 0026): durable AI SDK message history (`parts`, on-disk `schemaVersion: 2`), tool/progress visibility, pending decisions, workflow view (plan, linked runs), and zero or more Wiki Runs owned by that thread. Foreground or background execution still appends to this timeline. Primary UI is the Session chatbot page (AI Elements + `useChat`). Stream/HITL conversion is framework-first (Mastra + AI SDK, ADR 0027). Unsupported older session files are rejected — wipe `.okf-wiki/sessions/*.json` and start a new session (no migrator; see ADR 0027).
 _Avoid_: Wiki Run as the main UI, chat as only a job form, Run console as the default human operate surface, discarding timeline because it is “not a graph checkpoint”
 
 **Wiki Reviewer**:

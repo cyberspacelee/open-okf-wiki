@@ -11,6 +11,7 @@ function baseSession(
   overrides: Partial<OperatorSession> = {},
 ): OperatorSession {
   return {
+    schemaVersion: 2,
     id: "sess-1",
     workspaceId: "ws-1",
     title: "T",
@@ -126,13 +127,15 @@ test("reconcile: stuck running status at real plan gate → waiting", () => {
 test("reconcile: no change when already aligned at gate", () => {
   const session = baseSession();
   const patch = reconcileSessionWithRun(session, { status: "awaiting_plan" });
-  // may change if migrate/ensure runs — still waiting at plan
+  // may change if ensureGate rewrites pending — still waiting at plan
   if (patch.changed) {
     assert.equal(patch.status ?? session.status, "waiting");
     assert.equal(
       patch.workflow?.phase ?? session.workflow.phase,
       "awaiting_plan",
     );
+  } else {
+    assert.equal(patch.changed, false);
   }
 });
 

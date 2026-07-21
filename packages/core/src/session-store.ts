@@ -10,6 +10,7 @@ import {
 import path from "node:path";
 import {
   OperatorSessionSchema,
+  SESSION_SCHEMA_VERSION,
   type OperatorSession,
   type SessionMessage,
   type PendingInteraction,
@@ -18,6 +19,26 @@ import {
 import { isPathInside, WORKSPACE_DIR_NAME } from "./workspace-store.js";
 
 const SESSIONS_DIR = "sessions";
+
+/**
+ * On-disk session uses an unsupported schemaVersion (missing / pre-v2).
+ * Product does not migrate — wipe sessions and start new (ADR 0027).
+ */
+export class SessionSchemaVersionError extends Error {
+  readonly sessionId: string;
+  readonly found: unknown;
+
+  constructor(sessionId: string, found: unknown) {
+    super(
+      `Session ${sessionId} uses unsupported schemaVersion ${String(found ?? "missing")} ` +
+        `(need ${SESSION_SCHEMA_VERSION}). Delete .okf-wiki/sessions/*.json under the ` +
+        `workspace root and start a new session — no automatic migration.`,
+    );
+    this.name = "SessionSchemaVersionError";
+    this.sessionId = sessionId;
+    this.found = found;
+  }
+}
 
 /** Serialize concurrent writes to the same session file (mid-stream checkpoints). */
 const sessionWriteTail = new Map<string, Promise<unknown>>();
@@ -77,6 +98,7 @@ export async function createOperatorSession(options: {
   }
   const now = new Date().toISOString();
   const session = OperatorSessionSchema.parse({
+    schemaVersion: SESSION_SCHEMA_VERSION,
     id: randomUUID(),
     workspaceId: options.workspaceId,
     title: options.title?.trim() || "Wiki Session",
@@ -107,9 +129,25 @@ export async function loadOperatorSession(
       // Corrupt mid-write (should be rare with file lock); treat as missing.
       return null;
     }
+    // Reject pre-v2 / wrong version before full schema parse (clear operator error).
+    if (
+      !json ||
+      typeof json !== "object" ||
+      Array.isArray(json) ||
+      (json as { schemaVersion?: unknown }).schemaVersion !== SESSION_SCHEMA_VERSION
+    ) {
+      const found =
+        json && typeof json === "object" && !Array.isArray(json)
+          ? (json as { schemaVersion?: unknown }).schemaVersion
+          : undefined;
+      throw new SessionSchemaVersionError(sessionId, found);
+    }
     const parsed = OperatorSessionSchema.safeParse(json);
     return parsed.success ? parsed.data : null;
   } catch (error) {
+    if (error instanceof SessionSchemaVersionError) {
+      throw error;
+    }
     const code = (error as NodeJS.ErrnoException | undefined)?.code;
     if (code === "ENOENT") {
       return null;

@@ -39,14 +39,23 @@ A **minimal fork** of that path is allowed: product abort bind + `closeOnSuspend
 | **P2 Session–Run transition** (core, pure) | Align product Session status/phase + Run Record with workflow terminal/suspend events | Mastra snapshot internals; UI part invention |
 | **P3 Run Boundary** (core) | publish, paths, ignores, validate, stores, skill freeze under boundary | Mastra workflow/agent runtime |
 
-### 3. Destructive API / schema direction (forward-looking)
+### 3. Destructive API / schema (landed)
 
-Later phases (not all required in the same change as this ADR) may:
-
-- Persist Session history as **`UIMessage[]`** (product `schemaVersion` bump; reject old on-disk sessions — no migrate-from-v1).
-- Require structured **`resumeData`** (+ `runId` + `step`) aligned with Mastra `resumeSchema`; delete free-text approve/deny and `body.messages[]` legacy.
-- Drop web-local `sessionMessagesToUI` bridges once the server returns AI SDK messages directly.
+- Persist Session history as **AI SDK UIMessage-compatible** `SessionMessage[]` with product **`schemaVersion: 2`**.
+- **Reject** on-disk sessions with missing or non-2 `schemaVersion` — **no migrate-from-v1**.
+- Structured **`resumeData`** (+ `runId` + `step`) only for gates; no free-text approve/deny inference; no `body.messages[]` legacy.
+- Web loads session messages with a thin cast (no local part-rewrite bridge).
 - Headless runs share the same shell and force `sessionId` so trajectory lands on the Session timeline.
+
+#### Operator wipe guidance
+
+When loading or listing sessions fails with unsupported `schemaVersion`:
+
+1. Under the workspace root, delete `.okf-wiki/sessions/*.json` (or the specific session file named in the error).
+2. Create a **new** Operator Session from the UI (or `POST .../sessions`).
+3. Do **not** hand-edit old JSON to set `schemaVersion: 2` — message/part contracts are not migrated.
+
+HTTP APIs surface this as **410** with the wipe path in the message. Delete of a legacy session file is still allowed so operators can recover without shell access.
 
 ### 4. Ban list
 

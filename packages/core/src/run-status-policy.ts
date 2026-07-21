@@ -1,6 +1,6 @@
 /**
  * Pure Wiki Run status transition rules (Run Boundary).
- * No I/O — used by run-registry and agent finalize paths.
+ * No I/O — used by run-store and agent finalize paths.
  */
 
 import type { WikiRunRecordStatus } from "@okf-wiki/contract";

@@ -153,11 +153,24 @@ export const SessionMessageSchema = z.object({
 
 export type SessionMessage = z.infer<typeof SessionMessageSchema>;
 
+/**
+ * On-disk Operator Session schema version (AI SDK UIMessage-compatible parts).
+ * v1 (pre-schemaVersion field / pre-framework-first) is rejected on load — no migrator.
+ * Operators: delete `.okf-wiki/sessions/*.json` under the workspace and start a new session.
+ */
+export const SESSION_SCHEMA_VERSION = 2 as const;
+
 export const OperatorSessionSchema = z.object({
+  /** Product disk contract; must be 2. Missing or other values are rejected (no migrate). */
+  schemaVersion: z.literal(SESSION_SCHEMA_VERSION),
   id: z.string().min(1),
   workspaceId: z.string().min(1),
   title: z.string().min(1).max(200).default("Wiki Session"),
   status: OperatorSessionStatusSchema.default("active"),
+  /**
+   * AI SDK UIMessage-compatible history (`id` / `role` / `parts`).
+   * Same shape as UIMessage for chat persistence (ADR 0027).
+   */
   messages: z.array(SessionMessageSchema).default([]),
   workflow: SessionWorkflowStateSchema.default(() =>
     SessionWorkflowStateSchema.parse({}),

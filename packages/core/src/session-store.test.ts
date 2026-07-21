@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -10,6 +10,7 @@ import {
   loadOperatorSession,
   listOperatorSessions,
   resetOperatorSessionWorkflow,
+  SessionSchemaVersionError,
 } from "./session-store.js";
 
 test("create/load/list operator sessions", async () => {
@@ -20,10 +21,43 @@ test("create/load/list operator sessions", async () => {
     title: "T",
   });
   assert.equal(s.workspaceId, "ws1");
+  assert.equal(s.schemaVersion, 2);
   const loaded = await loadOperatorSession(root, s.id);
   assert.equal(loaded?.id, s.id);
+  assert.equal(loaded?.schemaVersion, 2);
   const list = await listOperatorSessions(root);
   assert.equal(list.length, 1);
+});
+
+test("loadOperatorSession rejects schemaVersion < 2 (no migrate)", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-sess-v1-"));
+  const dir = path.join(root, ".okf-wiki", "sessions");
+  await mkdir(dir, { recursive: true });
+  const id = "legacy-sess";
+  await writeFile(
+    path.join(dir, `${id}.json`),
+    `${JSON.stringify({
+      id,
+      workspaceId: "ws1",
+      title: "Old",
+      status: "active",
+      messages: [],
+      workflow: { phase: "idle" },
+      pending: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    }, null, 2)}\n`,
+    "utf8",
+  );
+  await assert.rejects(
+    () => loadOperatorSession(root, id),
+    (err: unknown) => {
+      assert.ok(err instanceof SessionSchemaVersionError);
+      assert.match(String(err), /unsupported schemaVersion/);
+      assert.match(String(err), /\.okf-wiki\/sessions/);
+      return true;
+    },
+  );
 });
 
 test("appendSessionMessages updates pending and workflow", async () => {
