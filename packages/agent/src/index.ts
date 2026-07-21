@@ -28,6 +28,23 @@ export {
 export { sanitizeSummary } from "./stream-parts.js";
 
 export {
+  projectToolInput,
+  projectToolOutput,
+  projectUiMessageChunk,
+  projectSessionToolPart,
+  projectSessionMessages,
+  buildPlanProgressData,
+  buildPhaseProgressData,
+  writePathFromToolFields,
+  UI_READ_CONTENT_MAX,
+  UI_WRITE_PREVIEW_MAX,
+  UI_LIST_ENTRIES_MAX,
+  type PlanProgressData,
+  type PhaseProgressData,
+  type PlanPageStatus,
+} from "./ui-projection.js";
+
+export {
   createSubagents,
   subagentsAsAgentsMap,
   type SubagentBundle,

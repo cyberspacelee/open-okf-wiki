@@ -31,6 +31,14 @@ test.describe("Session chatbot (AI Elements)", () => {
     await expect(page.getByTestId("session-tool-part").first()).toBeVisible({
       timeout: 45_000,
     });
+    // Specialized tool card (list_source in plan phase)
+    await expect(
+      page.locator('[data-testid="session-tool-part"][data-tool-name]').first(),
+    ).toBeVisible({ timeout: 10_000 });
+    // Product phase progress (data-progress), not only raw workflow JSON
+    await expect(page.getByTestId("session-phase-progress").first()).toBeVisible({
+      timeout: 45_000,
+    });
     // Short plan prompt (full body is data-plan card, not duplex markdown)
     await expect(page.getByText(/wiki plan/i).first()).toBeVisible({
       timeout: 45_000,
@@ -39,10 +47,12 @@ test.describe("Session chatbot (AI Elements)", () => {
       timeout: 10_000,
     });
 
-    // Structured plan card + fullscreen markdown reader
+    // Structured plan card + page checklist + fullscreen markdown reader
     await expect(page.getByTestId("session-plan-card").first()).toBeVisible({
       timeout: 15_000,
     });
+    await expect(page.getByTestId("session-plan-pages").first()).toBeVisible();
+    await expect(page.getByTestId("session-plan-pages-count").first()).toBeVisible();
     await expect(page.getByTestId("session-plan-markdown").first()).toBeVisible();
     await page.getByTestId("session-plan-fullscreen").first().click();
     await expect(page.getByTestId("session-plan-fullscreen-dialog")).toBeVisible();

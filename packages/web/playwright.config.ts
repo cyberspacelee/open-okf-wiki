@@ -35,15 +35,18 @@ export default defineConfig({
   webServer: {
     command: "node packages/web/scripts/e2e-dev.mjs",
     url: "http://127.0.0.1:5173",
-    reuseExistingServer: !process.env.CI,
+    // Do not reuse a host-started server (may be live/API mode without fixture).
+    reuseExistingServer: false,
     cwd: monorepoRoot,
-    timeout: 120_000,
+    timeout: 180_000,
     env: {
       ...process.env,
       OKF_WIKI_PORT: "8787",
       OKF_WIKI_HOST: "127.0.0.1",
       OKF_WIKI_HOME: pwHome,
       VITE_PORT: "5173",
+      // Always fixture for e2e (override host env that may enable live models).
+      OKF_WIKI_AGENT_MODE: "fixture",
     },
   },
 });

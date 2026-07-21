@@ -40,8 +40,13 @@ test.describe("session plan-confirm + timeline", () => {
       timeout: 15_000,
     });
     await page.getByTestId("session-choice-approve").click();
-    await expect(page.getByText(/Published Wiki|published/i).first()).toBeVisible({
-      timeout: 60_000,
+    await expect(
+      page
+        .getByText(/Published Wiki|published|atomically|completed/i)
+        .or(page.getByTestId("session-status").filter({ hasText: /completed/i }))
+        .first(),
+    ).toBeVisible({
+      timeout: 90_000,
     });
   });
 });

@@ -21,6 +21,12 @@ React + TypeScript UI for open-okf-wiki (Vite). Talks to `@okf-wiki/server` over
 - **Destructive actions:** `ConfirmDialog` (AlertDialog) — do not use `window.confirm`
 - **Toasts:** `sonner` via `<Toaster />` in `main.tsx`
 - **Session chat:** AI Elements under `src/components/ai-elements/` + `session/*` (do not rewrite transport for pure UI polish)
+  - **Session timeline architecture:** AI Elements for text primitives (`MessageResponse`, `Reasoning`, `Suggestion`); **`SessionCard`** is the single chrome for tools / workflow / phase / batch / subagent (`session/SessionCard.tsx` + `session-card-styles.ts`).
+  - Tool bodies: registry in `session/tool-bodies.tsx` (`TOOL_BODY_REGISTRY`); never default JSON wall for known wiki tools / CodeMode.
+  - Backend projects operator payloads via `@okf-wiki/agent` `ui-projection` (model loop keeps full fidelity). See `packages/agent/docs/ui-projection.md`.
+  - **data-\* whitelist** in `MessageParts` only: gate, plan, plan-progress, progress, run, workflow*, tool-agent. Unknown data parts are not rendered.
+  - Plan: `PlanViewer` + page checklist; HITL only from `data-gate` / `data-plan`.
+  - **Not in product:** web `sources` / `web-preview` / external search; do not install AI Elements `all.json`.
 - **Operator CSS leftovers** in `src/index.css` (`.form`, `.kv`, wiki prose, subnav). Prefer utilities / shadcn components for new UI.
 
 ### Adding a workspace page
@@ -69,7 +75,7 @@ Key contract surface:
 | Workspaces | `workspaces-page`, `workspace-create-form`, `workspace-name-input`, `workspace-root-input`, `workspace-create-submit`, `workspace-list`, `workspace-row`, `workspace-delete`, `workspace-delete-dialog`, `workspace-delete-meta`, `workspace-delete-confirm` |
 | Workspace chrome | `workspace-detail`, `workspace-breadcrumb`, `workspace-subnav-{overview,sources,session,run,wiki,settings}` |
 | Sources | `sources-page`, `source-list`, `source-path-input`, `source-id-input`, `source-add-submit`, `source-remote-input`, `source-clone-submit`, `source-ignore-editor`, `source-ignore-text`, `source-ignore-save`, `source-edit-ignores-*`, `preset-*` |
-| Session | `session-chat-page`, `session-conversation`, `session-input`, `session-send`, `session-prompt`, `session-list`, `session-select`, `session-new`, `session-delete`, `session-slash-*`, `session-decision`, `session-choice-*`, `session-plan-*`, `session-composer-locked` |
+| Session | `session-chat-page`, `session-conversation`, `session-input`, `session-send`, `session-prompt`, `session-list`, `session-select`, `session-new`, `session-delete`, `session-slash-*`, `session-decision`, `session-choice-*`, `session-plan-*`, `session-plan-pages`, `session-plan-pages-count`, `session-plan-progress`, `session-phase-progress`, `session-tool-part`, `session-tool-batch`, `session-subagent-part`, `session-workflow-progress`, `session-composer-locked` |
 | Run | `run-page`, `run-start`, `run-start-session`, `run-last-status` (`data-status`), `run-list`, `run-event-log`, `run-publish-actions`, `run-approve`, `run-deny`, `run-cancel`, `run-retry` |
 | Wiki | `wiki-page`, `wiki-empty`, `wiki-page-list`, `wiki-page-link`, `wiki-page-content`, `wiki-page-title`, `wiki-markdown` |
 | Workspace settings | `settings-page`, `settings-tab-{general,skill,danger}`, `settings-*`, skill panel / danger zone |

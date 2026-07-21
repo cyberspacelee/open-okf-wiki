@@ -1,22 +1,17 @@
+/**
+ * Product Session timeline part dispatcher.
+ *
+ * Architecture (skill-aligned, product-specific):
+ * - AI Elements: MessageResponse, Reasoning, Suggestion (text primitives)
+ * - SessionCard: single chrome for tools / workflow / phase / batch / subagent
+ * - data-* whitelist only — unknown data parts are not rendered
+ * - tool bodies via TOOL_BODY_REGISTRY (tool-bodies.tsx)
+ */
+
+import type { ReactNode } from "react";
 import type { UIMessage } from "ai";
 import { isToolUIPart } from "ai";
-import {
-  MessageResponse,
-} from "@/components/ai-elements/message";
-import {
-  Tool,
-  ToolContent,
-  ToolHeader,
-  ToolInput,
-  ToolOutput,
-} from "@/components/ai-elements/tool";
-import {
-  Confirmation,
-  ConfirmationAction,
-  ConfirmationActions,
-  ConfirmationRequest,
-  ConfirmationTitle,
-} from "@/components/ai-elements/confirmation";
+import { MessageResponse } from "@/components/ai-elements/message";
 import {
   Suggestion,
   Suggestions,
@@ -26,17 +21,47 @@ import {
   ReasoningContent,
   ReasoningTrigger,
 } from "@/components/ai-elements/reasoning";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
-import { ChevronDownIcon } from "lucide-react";
+import {
+  CheckCircle2Icon,
+  CircleIcon,
+  LoaderIcon,
+  XCircleIcon,
+} from "lucide-react";
 import { useI18n } from "../../i18n";
 import type { PendingInteraction } from "./decision-types";
 import { PlanViewer } from "./PlanViewer";
 import type { PlanLike } from "./plan-markdown";
+import { renderSessionToolPart } from "./tool-render";
+import { SubagentCard } from "./SubagentCard";
+import { ToolBatch } from "./ToolBatch";
+import { PhaseProgress } from "./PhaseProgress";
+import {
+  SessionCard,
+  SessionCardAdvanced,
+  SessionCardMono,
+  type SessionCardStatus,
+} from "./SessionCard";
+import { sessionCardMeta } from "./session-card-styles";
+import {
+  groupPartsForRender,
+  isAgentToolName,
+  toolNameFromPart,
+  writtenPathsFromMessages,
+} from "./session-tool-utils";
+
+/** Product data-* parts that may appear on the operator timeline. */
+const DATA_PART_WHITELIST = new Set([
+  "data-gate",
+  "data-plan",
+  "data-plan-progress",
+  "data-progress",
+  "data-run",
+  "data-workflow",
+  "data-workflow-step",
+  "data-tool-workflow",
+  "data-tool-agent",
+]);
 
 function redactUnknown(value: unknown): unknown {
   if (value === null || value === undefined) {
@@ -50,7 +75,10 @@ function redactUnknown(value: unknown): unknown {
       const s = JSON.stringify(value);
       if (s.length > 800) {
         return JSON.parse(
-          s.replace(/"content"\s*:\s*"(?:\\.|[^"\\]){20,}"/g, '"content":"[omitted]"'),
+          s.replace(
+            /"content"\s*:\s*"(?:\\.|[^"\\]){20,}"/g,
+            '"content":"[omitted]"',
+          ),
         );
       }
       return value;
@@ -63,10 +91,10 @@ function redactUnknown(value: unknown): unknown {
 
 export type MessagePartsProps = {
   message: UIMessage;
-  /** When this is the latest assistant message, surface decision chips. */
   isLatestAssistant?: boolean;
   onChoice?: (optionId: string) => void;
   onApproval?: (approved: boolean, approvalId: string) => void;
+  writtenPaths?: ReadonlySet<string> | readonly string[];
 };
 
 function asDecision(input: unknown): PendingInteraction | null {
@@ -128,10 +156,6 @@ function asPlanLike(value: unknown): PlanLike | null {
   };
 }
 
-/**
- * Prefer product data-plan; fall back to Mastra data-workflow suspendPayload.plan
- * (official AI SDK / Mastra part shape).
- */
 function planFromWorkflowDataPart(data: unknown): PlanLike | null {
   if (!data || typeof data !== "object") {
     return null;
@@ -149,8 +173,7 @@ function planFromWorkflowDataPart(data: unknown): PlanLike | null {
     if (status !== "suspended" || !payload || typeof payload !== "object") {
       continue;
     }
-    const gate = (payload as { gate?: unknown }).gate;
-    if (gate === "plan") {
+    if ((payload as { gate?: unknown }).gate === "plan") {
       const plan = asPlanLike((payload as { plan?: unknown }).plan);
       if (plan) {
         return plan;
@@ -168,20 +191,53 @@ function workflowProgressLabel(data: unknown, partType: string): string {
   const status = typeof d.status === "string" ? d.status : undefined;
   const name =
     (typeof d.name === "string" && d.name) ||
-    (d.step && typeof d.step === "object" && typeof (d.step as { name?: string }).name === "string"
+    (d.step &&
+    typeof d.step === "object" &&
+    typeof (d.step as { name?: string }).name === "string"
       ? (d.step as { name: string }).name
       : undefined) ||
     (typeof d.runId === "string" ? d.runId.slice(0, 8) : undefined);
   if (name && status) {
     return `${name}: ${status}`;
   }
-  if (status) {
-    return status;
+  return status || name || partType.replace(/^data-/, "");
+}
+
+function workflowErrorFromData(data: unknown): string | undefined {
+  if (!data || typeof data !== "object") {
+    return undefined;
   }
-  if (name) {
-    return name;
+  const d = data as Record<string, unknown>;
+  if (typeof d.error === "string" && d.error.trim()) {
+    return d.error.trim();
   }
-  return partType.replace(/^data-/, "");
+  if (d.steps && typeof d.steps === "object") {
+    for (const [id, step] of Object.entries(
+      d.steps as Record<string, unknown>,
+    )) {
+      if (!step || typeof step !== "object") {
+        continue;
+      }
+      const s = step as Record<string, unknown>;
+      if (s.status === "failed" || s.status === "error") {
+        if (typeof s.error === "string" && s.error.trim()) {
+          return `${id}: ${s.error.trim()}`;
+        }
+        return `${id} failed`;
+      }
+    }
+  }
+  return undefined;
+}
+
+function isNoisyWorkflowPart(data: unknown): boolean {
+  if (!data || typeof data !== "object") {
+    return false;
+  }
+  const status = String(
+    (data as { status?: unknown }).status ?? "",
+  ).toLowerCase();
+  return status === "running" || status === "waiting" || status === "pending";
 }
 
 function localizeDecisionOption(
@@ -226,90 +282,82 @@ function localizeDecisionOption(
   }
 }
 
-function renderToolPart(
-  key: string,
-  part: UIMessage["parts"][number],
-  toolName: string,
-  _isLatestAssistant: boolean | undefined,
-  _onChoice: MessagePartsProps["onChoice"],
-  onApproval: MessagePartsProps["onApproval"],
-) {
-  // HITL chips come from data-gate only — never from fake tool parts.
-  if (toolName === "request_user_decision") {
-    return null;
+function workflowCardStatus(status: string, failed: boolean): SessionCardStatus {
+  if (failed) {
+    return "failed";
   }
-  const state =
-    "state" in part && typeof part.state === "string"
-      ? part.state
-      : "output-available";
-
-  if (
-    state === "approval-requested" &&
-    "approval" in part &&
-    part.approval &&
-    onApproval
-  ) {
-    const approval = part.approval as { id: string };
-    return (
-      <Confirmation
-        key={key}
-        approval={part.approval as never}
-        state={state as never}
-      >
-        <ConfirmationTitle>Tool approval required</ConfirmationTitle>
-        <ConfirmationRequest>
-          Approve running <code>{toolName}</code>?
-        </ConfirmationRequest>
-        <ConfirmationActions>
-          <ConfirmationAction
-            variant="outline"
-            onClick={() => onApproval(false, approval.id)}
-          >
-            Reject
-          </ConfirmationAction>
-          <ConfirmationAction onClick={() => onApproval(true, approval.id)}>
-            Approve
-          </ConfirmationAction>
-        </ConfirmationActions>
-      </Confirmation>
-    );
+  if (/success|complete|done|finish/i.test(status)) {
+    return "completed";
   }
+  if (/run|stream|active|start|suspend/i.test(status)) {
+    return "running";
+  }
+  return "idle";
+}
 
-  const header =
-    part.type === "dynamic-tool" ? (
-      <ToolHeader
-        type="dynamic-tool"
-        state={state as never}
-        toolName={toolName}
-        title={toolName}
-      />
-    ) : (
-      <ToolHeader
-        type={part.type as `tool-${string}`}
-        state={state as never}
-        title={toolName}
-      />
-    );
+function WorkflowStepCard({
+  label,
+  data,
+  partType,
+}: {
+  label: string;
+  data: unknown;
+  partType: string;
+}) {
+  const { t } = useI18n();
+  const status =
+    data && typeof data === "object" && "status" in data
+      ? String((data as { status?: unknown }).status ?? "")
+      : "";
+  const err = workflowErrorFromData(data);
+  const failed = /fail|error/i.test(status) || Boolean(err);
+  const cardStatus = workflowCardStatus(status, failed);
+  const Icon =
+    cardStatus === "failed"
+      ? XCircleIcon
+      : cardStatus === "completed"
+        ? CheckCircle2Icon
+        : cardStatus === "running"
+          ? LoaderIcon
+          : CircleIcon;
 
   return (
-    <div key={key} className="flex flex-col gap-2" data-testid="session-tool-part">
-      <Tool defaultOpen={state !== "output-available"}>
-        {header}
-        <ToolContent>
-          {"input" in part && part.input !== undefined ? (
-            <ToolInput input={redactUnknown(part.input) as object} />
-          ) : null}
-          <ToolOutput
-            output={
-              "output" in part && part.output !== undefined
-                ? redactUnknown(part.output)
-                : undefined
-            }
-            errorText={"errorText" in part ? (part.errorText as string | undefined) : undefined}
-          />
-        </ToolContent>
-      </Tool>
-    </div>
+    <SessionCard
+      title={label}
+      icon={
+        <Icon
+          className={
+            cardStatus === "running"
+              ? "size-4 animate-spin"
+              : cardStatus === "failed"
+                ? "size-4 text-destructive"
+                : cardStatus === "completed"
+                  ? "size-4 text-green-600"
+                  : "size-4"
+          }
+        />
+      }
+      status={cardStatus}
+      failed={failed}
+      defaultOpen={failed}
+      data-testid="session-workflow-progress"
+      dataAttrs={{ "part-type": partType, status: status || undefined }}
+    >
+      {err ? (
+        <p className="whitespace-pre-wrap break-words text-xs text-destructive">
+          {err}
+        </p>
+      ) : (
+        <p className={sessionCardMeta}>
+          {status || partType.replace(/^data-/, "")}
+        </p>
+      )}
+      <SessionCardAdvanced label={t.session.tools.advancedRaw}>
+        <SessionCardMono>
+          {JSON.stringify(redactUnknown(data), null, 2)}
+        </SessionCardMono>
+      </SessionCardAdvanced>
+    </SessionCard>
   );
 }
 
@@ -341,228 +389,326 @@ function DecisionChips({
   );
 }
 
+function PlanProgressBadge({
+  written,
+  total,
+}: {
+  written: number;
+  total: number;
+}) {
+  const { t } = useI18n();
+  const text = t.session.tools.pagesWritten
+    .replace("{written}", String(written))
+    .replace("{total}", String(total));
+  return (
+    <p className={`mb-2 ${sessionCardMeta}`} data-testid="session-plan-progress">
+      {text}
+    </p>
+  );
+}
+
+function renderToolOrAgent(
+  key: string,
+  part: UIMessage["parts"][number],
+  onApproval: MessagePartsProps["onApproval"],
+) {
+  const toolName = toolNameFromPart(part) ?? "tool";
+  if (isAgentToolName(toolName) || part.type === "data-tool-agent") {
+    return (
+      <SubagentCard key={key} part={part} toolName={toolName} partKey={key} />
+    );
+  }
+  return renderSessionToolPart({
+    key,
+    part,
+    toolName,
+    onApproval,
+  });
+}
+
+function renderSinglePart(
+  key: string,
+  part: UIMessage["parts"][number],
+  opts: {
+    isLatestAssistant?: boolean;
+    onChoice?: MessagePartsProps["onChoice"];
+    onApproval?: MessagePartsProps["onApproval"];
+    writtenPaths: ReadonlySet<string> | readonly string[];
+    hasDataPlan: boolean;
+  },
+): ReactNode {
+  const { isLatestAssistant, onChoice, onApproval, writtenPaths, hasDataPlan } =
+    opts;
+
+  if (part.type === "text") {
+    return (
+      <div key={key} data-testid="session-message-text">
+        <MessageResponse>{part.text}</MessageResponse>
+      </div>
+    );
+  }
+
+  if (part.type === "reasoning") {
+    const text = "text" in part ? String(part.text ?? "") : "";
+    const streaming = "state" in part && part.state === "streaming";
+    if (!text && !streaming) {
+      return null;
+    }
+    return (
+      <Reasoning
+        key={key}
+        isStreaming={Boolean(streaming)}
+        defaultOpen={streaming}
+      >
+        <ReasoningTrigger />
+        <ReasoningContent>{text}</ReasoningContent>
+      </Reasoning>
+    );
+  }
+
+  if (part.type === "dynamic-tool" || isToolUIPart(part)) {
+    return renderToolOrAgent(key, part, onApproval);
+  }
+
+  if (part.type === "step-start") {
+    return null;
+  }
+
+  if (typeof part.type === "string" && part.type.startsWith("data-")) {
+    // Whitelist only — no dashed JSON dump for unknown product parts.
+    if (!DATA_PART_WHITELIST.has(part.type)) {
+      return null;
+    }
+
+    const data = "data" in part ? part.data : undefined;
+
+    if (part.type === "data-gate") {
+      const decision = asDecision(data);
+      const cancelled =
+        data &&
+        typeof data === "object" &&
+        "cancelled" in data &&
+        Boolean((data as { cancelled?: unknown }).cancelled);
+      if (
+        decision &&
+        !cancelled &&
+        isLatestAssistant &&
+        onChoice &&
+        decision.mode !== "input_only"
+      ) {
+        return (
+          <DecisionChips key={key} decision={decision} onChoice={onChoice} />
+        );
+      }
+      if (
+        decision &&
+        !cancelled &&
+        isLatestAssistant &&
+        decision.mode === "input_only"
+      ) {
+        return (
+          <p
+            key={key}
+            className="text-sm text-muted-foreground"
+            data-testid="session-input-only-hint"
+          >
+            {decision.question}
+            {decision.inputPlaceholder
+              ? ` — ${decision.inputPlaceholder}`
+              : ""}
+          </p>
+        );
+      }
+      return null;
+    }
+
+    if (part.type === "data-plan") {
+      const plan = asPlanLike(data);
+      if (plan) {
+        return (
+          <div key={key}>
+            <PlanViewer plan={plan} writtenPaths={writtenPaths} />
+          </div>
+        );
+      }
+      return null;
+    }
+
+    if (part.type === "data-run") {
+      const runId =
+        data && typeof data === "object" && "runId" in data
+          ? String((data as { runId?: unknown }).runId ?? "")
+          : "";
+      const status =
+        data && typeof data === "object" && "status" in data
+          ? String((data as { status?: unknown }).status ?? "")
+          : "";
+      if (!runId) {
+        return null;
+      }
+      return (
+        <div key={key} className="mb-2" data-testid="session-data-run">
+          <Badge variant="outline" className="font-mono text-xs">
+            run {runId.slice(0, 8)}…{status ? ` · ${status}` : ""}
+          </Badge>
+        </div>
+      );
+    }
+
+    if (part.type === "data-progress") {
+      if (data && typeof data === "object" && "phase" in data) {
+        const d = data as {
+          phase?: unknown;
+          label?: unknown;
+          runId?: unknown;
+          failed?: unknown;
+        };
+        const phase = String(d.phase ?? "");
+        if (!phase) {
+          return null;
+        }
+        return (
+          <PhaseProgress
+            key={key}
+            phase={phase}
+            label={typeof d.label === "string" ? d.label : undefined}
+            runId={typeof d.runId === "string" ? d.runId : undefined}
+            failed={Boolean(d.failed)}
+          />
+        );
+      }
+      return null;
+    }
+
+    if (part.type === "data-plan-progress") {
+      if (
+        data &&
+        typeof data === "object" &&
+        Array.isArray((data as { pages?: unknown }).pages)
+      ) {
+        const pages = (data as { pages: Array<{ status?: string }> }).pages;
+        const written = pages.filter((p) => p.status === "written").length;
+        return (
+          <PlanProgressBadge key={key} written={written} total={pages.length} />
+        );
+      }
+      return null;
+    }
+
+    if (part.type === "data-tool-agent") {
+      const toolName =
+        data && typeof data === "object" && "name" in data
+          ? String((data as { name?: unknown }).name ?? "agent")
+          : "agent";
+      return (
+        <SubagentCard
+          key={key}
+          part={
+            {
+              type: "dynamic-tool",
+              toolCallId: key,
+              toolName,
+              state: "output-available",
+              input: data,
+              output:
+                data && typeof data === "object" && "result" in data
+                  ? (data as { result?: unknown }).result
+                  : data,
+            } as UIMessage["parts"][number]
+          }
+          toolName={toolName}
+          partKey={key}
+        />
+      );
+    }
+
+    if (
+      part.type === "data-workflow" ||
+      part.type === "data-workflow-step" ||
+      part.type === "data-tool-workflow"
+    ) {
+      const plan =
+        !hasDataPlan &&
+        (part.type === "data-workflow" || part.type === "data-workflow-step")
+          ? planFromWorkflowDataPart(data) ||
+            (part.type === "data-workflow-step" &&
+            data &&
+            typeof data === "object"
+              ? asPlanLike(
+                  (
+                    (
+                      data as {
+                        step?: { suspendPayload?: { plan?: unknown } };
+                      }
+                    ).step?.suspendPayload as { plan?: unknown } | undefined
+                  )?.plan,
+                ) ||
+                asPlanLike(
+                  (data as { suspendPayload?: { plan?: unknown } })
+                    .suspendPayload?.plan,
+                )
+              : null)
+          : null;
+      if (plan) {
+        return (
+          <div key={key} data-testid="session-plan-from-workflow">
+            <PlanViewer plan={plan} writtenPaths={writtenPaths} />
+          </div>
+        );
+      }
+      if (isNoisyWorkflowPart(data) && !workflowErrorFromData(data)) {
+        return null;
+      }
+      return (
+        <WorkflowStepCard
+          key={key}
+          label={workflowProgressLabel(data, part.type)}
+          data={data}
+          partType={part.type}
+        />
+      );
+    }
+
+    return null;
+  }
+
+  return null;
+}
+
 export function MessageParts({
   message,
   isLatestAssistant,
   onChoice,
   onApproval,
+  writtenPaths: writtenPathsProp,
 }: MessagePartsProps) {
-  // Prefer explicit data-plan; otherwise recover from official data-workflow.
   const hasDataPlan = message.parts.some((p) => p.type === "data-plan");
+  const writtenPaths =
+    writtenPathsProp ?? writtenPathsFromMessages(message);
+  const items = groupPartsForRender(message.parts ?? []);
 
   return (
     <>
-      {message.parts.map((part, index) => {
-        const key = `${message.id}-${index}`;
-
-        if (part.type === "text") {
+      {items.map((item) => {
+        if (item.kind === "batch") {
           return (
-            <div key={key} data-testid="session-message-text">
-              <MessageResponse>{part.text}</MessageResponse>
-            </div>
+            <ToolBatch
+              key={`${message.id}-batch-${item.start}`}
+              messageId={message.id}
+              toolName={item.toolName}
+              parts={item.parts}
+              startIndex={item.start}
+              onApproval={onApproval}
+            />
           );
         }
-
-        if (part.type === "reasoning") {
-          const text = "text" in part ? String(part.text ?? "") : "";
-          const streaming =
-            "state" in part && part.state === "streaming";
-          if (!text && !streaming) {
-            return null;
-          }
-          return (
-            <Reasoning key={key} isStreaming={Boolean(streaming)} defaultOpen={streaming}>
-              <ReasoningTrigger />
-              <ReasoningContent>{text}</ReasoningContent>
-            </Reasoning>
-          );
-        }
-
-        if (part.type === "dynamic-tool") {
-          const toolName =
-            "toolName" in part && typeof part.toolName === "string"
-              ? part.toolName
-              : "tool";
-          return renderToolPart(
-            key,
-            part,
-            toolName,
-            isLatestAssistant,
-            onChoice,
-            onApproval,
-          );
-        }
-
-        if (isToolUIPart(part)) {
-          const toolName =
-            "toolName" in part && typeof part.toolName === "string"
-              ? part.toolName
-              : part.type.replace(/^tool-/, "");
-          return renderToolPart(
-            key,
-            part,
-            toolName,
-            isLatestAssistant,
-            onChoice,
-            onApproval,
-          );
-        }
-
-        if (typeof part.type === "string" && part.type.startsWith("data-")) {
-          const data = "data" in part ? part.data : undefined;
-          // Product HITL: data-gate only (not data-choice / fake tools).
-          if (part.type === "data-gate") {
-            const decision = asDecision(data);
-            const cancelled =
-              data &&
-              typeof data === "object" &&
-              "cancelled" in data &&
-              Boolean((data as { cancelled?: unknown }).cancelled);
-            if (
-              decision &&
-              !cancelled &&
-              isLatestAssistant &&
-              onChoice &&
-              decision.mode !== "input_only"
-            ) {
-              return (
-                <DecisionChips
-                  key={key}
-                  decision={decision}
-                  onChoice={onChoice}
-                />
-              );
-            }
-            if (
-              decision &&
-              !cancelled &&
-              isLatestAssistant &&
-              decision.mode === "input_only"
-            ) {
-              return (
-                <p
-                  key={key}
-                  className="text-sm text-muted-foreground"
-                  data-testid="session-input-only-hint"
-                >
-                  {decision.question}
-                  {decision.inputPlaceholder
-                    ? ` — ${decision.inputPlaceholder}`
-                    : ""}
-                </p>
-              );
-            }
-            return null;
-          }
-          if (part.type === "data-choice") {
-            // Legacy part type — ignore for chips (protocol replaced by data-gate).
-            return null;
-          }
-          if (part.type === "data-plan") {
-            const plan = asPlanLike(data);
-            if (plan) {
-              return (
-                <div key={key}>
-                  <PlanViewer plan={plan} />
-                </div>
-              );
-            }
-          }
-          if (part.type === "data-run") {
-            const runId =
-              data && typeof data === "object" && "runId" in data
-                ? String((data as { runId?: unknown }).runId ?? "")
-                : "";
-            const status =
-              data && typeof data === "object" && "status" in data
-                ? String((data as { status?: unknown }).status ?? "")
-                : "";
-            if (runId) {
-              return (
-                <div key={key} className="mb-2" data-testid="session-data-run">
-                  <Badge variant="outline" className="font-mono text-xs">
-                    run {runId.slice(0, 8)}…{status ? ` · ${status}` : ""}
-                  </Badge>
-                </div>
-              );
-            }
-          }
-          if (
-            part.type === "data-workflow" ||
-            part.type === "data-workflow-step" ||
-            part.type === "data-tool-agent" ||
-            part.type === "data-tool-workflow"
-          ) {
-            const plan =
-              !hasDataPlan &&
-              (part.type === "data-workflow" || part.type === "data-workflow-step")
-                ? planFromWorkflowDataPart(data) ||
-                  (part.type === "data-workflow-step" &&
-                  data &&
-                  typeof data === "object"
-                    ? asPlanLike(
-                        (
-                          (data as { step?: { suspendPayload?: { plan?: unknown } } })
-                            .step?.suspendPayload as { plan?: unknown } | undefined
-                        )?.plan,
-                      ) ||
-                      asPlanLike(
-                        (data as { suspendPayload?: { plan?: unknown } })
-                          .suspendPayload?.plan,
-                      )
-                    : null)
-                : null;
-            if (plan) {
-              return (
-                <div key={key} data-testid="session-plan-from-workflow">
-                  <PlanViewer plan={plan} />
-                </div>
-              );
-            }
-            const label = workflowProgressLabel(data, part.type);
-            return (
-              <Collapsible
-                key={key}
-                className="mb-2 rounded-md border border-dashed"
-                data-testid="session-workflow-progress"
-              >
-                <CollapsibleTrigger className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted/40">
-                  <span className="flex-1 truncate">{label}</span>
-                  <ChevronDownIcon className="size-3.5 shrink-0" />
-                </CollapsibleTrigger>
-                <CollapsibleContent className="border-t border-dashed px-3 py-2">
-                  <pre className="max-h-40 overflow-auto text-[10px] leading-snug text-muted-foreground">
-                    {JSON.stringify(redactUnknown(data), null, 2)}
-                  </pre>
-                </CollapsibleContent>
-              </Collapsible>
-            );
-          }
-          // Other data-* parts: collapsible dump (never silent null).
-          return (
-            <Collapsible
-              key={key}
-              className="mb-2 rounded-md border border-dashed"
-              data-testid="session-data-part"
-            >
-              <CollapsibleTrigger className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted/40">
-                <span className="flex-1 truncate">{part.type}</span>
-                <ChevronDownIcon className="size-3.5 shrink-0" />
-              </CollapsibleTrigger>
-              <CollapsibleContent className="border-t border-dashed px-3 py-2">
-                <pre className="max-h-40 overflow-auto text-[10px] leading-snug text-muted-foreground">
-                  {JSON.stringify(redactUnknown(data), null, 2)}
-                </pre>
-              </CollapsibleContent>
-            </Collapsible>
-          );
-        }
-
-        if (part.type === "step-start") {
-          return null;
-        }
-
-        return null;
+        return renderSinglePart(`${message.id}-${item.index}`, item.part, {
+          isLatestAssistant,
+          onChoice,
+          onApproval,
+          writtenPaths,
+          hasDataPlan,
+        });
       })}
     </>
   );

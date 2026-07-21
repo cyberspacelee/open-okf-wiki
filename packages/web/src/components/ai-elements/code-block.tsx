@@ -309,7 +309,8 @@ export const CodeBlockContainer = ({
 }: HTMLAttributes<HTMLDivElement> & { language: string }) => (
   <div
     className={cn(
-      "group relative w-full overflow-hidden rounded-md border bg-background text-foreground",
+      // min-w-0: participate in flex shrink; overflow-hidden clips long lines to scroll child
+      "group relative w-full min-w-0 max-w-full overflow-hidden rounded-md border bg-background text-foreground",
       className
     )}
     data-language={language}
@@ -419,7 +420,8 @@ export const CodeBlockContent = ({
   const tokenized = asyncTokens ?? syncTokens;
 
   return (
-    <div className="relative overflow-auto">
+    // Bounded scrollport: long lines scroll inside; parent must have min-w-0.
+    <div className="relative min-w-0 max-w-full overflow-x-auto overflow-y-auto">
       <CodeBlockBody showLineNumbers={showLineNumbers} tokenized={tokenized} />
     </div>
   );

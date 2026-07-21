@@ -1,5 +1,9 @@
 import { useState } from "react";
-import { Maximize2Icon } from "lucide-react";
+import {
+  CheckCircle2Icon,
+  CircleIcon,
+  Maximize2Icon,
+} from "lucide-react";
 import { MessageResponse } from "@/components/ai-elements/message";
 import {
   Plan,
@@ -20,21 +24,37 @@ import {
 } from "@/components/ui/dialog";
 import { useI18n } from "../../i18n";
 import { planToMarkdown, type PlanLike } from "./plan-markdown";
+import { cn } from "@/lib/utils";
 
 export type { PlanLike };
 
 export type PlanViewerProps = {
   plan: PlanLike;
+  /**
+   * Paths already written via write_wiki (normalized). Used for page checklist
+   * progress on the plan card (Claude Code–style todo / queue).
+   */
+  writtenPaths?: ReadonlySet<string> | readonly string[];
 };
 
+function normalizePath(path: string): string {
+  return path.replace(/^\.\/+/, "").replace(/^\/+/, "");
+}
+
 /**
- * Structured wiki plan card with Markdown body and a fullscreen reader.
- * Prefer this over raw list markup so long plans remain readable in Session.
+ * Structured wiki plan card with page checklist, Markdown body, and fullscreen.
  */
-export function PlanViewer({ plan }: PlanViewerProps) {
+export function PlanViewer({ plan, writtenPaths }: PlanViewerProps) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const markdown = planToMarkdown(plan);
+
+  const written = new Set(
+    [...(writtenPaths ?? [])].map((p) => normalizePath(String(p))),
+  );
+  const writtenCount = plan.pages.filter((p) =>
+    written.has(normalizePath(p.path)),
+  ).length;
 
   return (
     <>
@@ -62,6 +82,49 @@ export function PlanViewer({ plan }: PlanViewerProps) {
           </PlanAction>
         </PlanHeader>
         <PlanContent>
+          <div
+            className="mb-3 space-y-1.5"
+            data-testid="session-plan-pages"
+          >
+            <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+              <span>{t.planConfirm.pagesLabel}</span>
+              <span data-testid="session-plan-pages-count">
+                {writtenCount}/{plan.pages.length}
+              </span>
+            </div>
+            <ul className="max-h-40 space-y-1 overflow-y-auto rounded-md border bg-muted/20 p-2">
+              {plan.pages.map((page) => {
+                const done = written.has(normalizePath(page.path));
+                return (
+                  <li
+                    key={page.path}
+                    className="flex items-start gap-2 text-xs"
+                    data-testid={`session-plan-page-${page.path}`}
+                    data-status={done ? "written" : "pending"}
+                  >
+                    {done ? (
+                      <CheckCircle2Icon className="mt-0.5 size-3.5 shrink-0 text-green-600" />
+                    ) : (
+                      <CircleIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div
+                        className={cn(
+                          "font-mono font-medium",
+                          done && "text-muted-foreground line-through",
+                        )}
+                      >
+                        {page.path}
+                      </div>
+                      <div className="text-[11px] text-muted-foreground line-clamp-2">
+                        {page.purpose}
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
           <div
             className="max-h-80 overflow-y-auto pr-1"
             data-testid="session-plan-markdown"

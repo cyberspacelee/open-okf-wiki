@@ -39,6 +39,7 @@ import {
   Suggestions,
 } from "@/components/ai-elements/suggestion";
 import { MessageParts } from "../components/session/MessageParts";
+import { writtenPathsFromMessages } from "../components/session/session-tool-utils";
 import { extractPendingFromMessages } from "../components/session/decision-types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ErrorBanner } from "../components/ErrorBanner";
@@ -1440,6 +1441,12 @@ function SessionChatPanel({
     return null;
   }, [messages]);
 
+  /** Plan page checklist progress across the full Session timeline. */
+  const sessionWrittenPaths = useMemo(
+    () => writtenPathsFromMessages(messages),
+    [messages],
+  );
+
   const handleChoice = useCallback(
     (optionId: string) => {
       if (isBusy || sendInFlight.current) {
@@ -1674,6 +1681,7 @@ function SessionChatPanel({
                   <MessageContent>
                     <MessageParts
                       message={message}
+                      writtenPaths={sessionWrittenPaths}
                       isLatestAssistant={
                         message.id === latestAssistantId &&
                         !suppressDecisions &&

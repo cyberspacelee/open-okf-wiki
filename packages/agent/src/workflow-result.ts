@@ -159,6 +159,42 @@ function mapSuccessResult(result: MastraLikeResult): WikiWorkflowTerminal {
 }
 
 /**
+ * Pull a short human error from a failed Mastra result.
+ * Prefer step-level error/message; never stringify entire step graphs (workspace dumps).
+ */
+export function extractWorkflowFailureMessage(result: MastraLikeResult): string {
+  if (result.error !== undefined && result.error !== null) {
+    const msg = redactErrorMessage(result.error);
+    if (msg && msg !== "[object Object]") {
+      return msg;
+    }
+  }
+  const steps = result.steps ?? {};
+  for (const [stepId, step] of Object.entries(steps)) {
+    if (!step || typeof step !== "object") {
+      continue;
+    }
+    const s = step as Record<string, unknown>;
+    if (s.status !== "failed" && s.status !== "error") {
+      continue;
+    }
+    const candidate =
+      s.error ??
+      s.err ??
+      (isRecord(s.output) ? s.output.error ?? s.output.message : undefined) ??
+      s.message;
+    if (candidate !== undefined && candidate !== null) {
+      const msg = redactErrorMessage(candidate);
+      if (msg && msg !== "[object Object]") {
+        return `${stepId}: ${msg}`;
+      }
+    }
+    return `${stepId} failed`;
+  }
+  return "Wiki Run failed";
+}
+
+/**
  * Map a settled Mastra workflow run result into product Wiki Run terminal status.
  * Callers: job orchestration (`wiki-run`) and Session stream finalize.
  */
@@ -171,10 +207,9 @@ export function mapWorkflowResult(raw: unknown): WikiWorkflowTerminal {
   }
 
   if (result.status === "failed") {
-    const err = result.error ?? result.steps;
     return {
       status: "failed",
-      error: redactErrorMessage(err ?? "workflow failed"),
+      error: extractWorkflowFailureMessage(result),
     };
   }
 
@@ -303,15 +338,26 @@ export function sessionViewFromTerminal(
     case "failed":
       return {
         status: "failed",
+        // Keep phase distinct from idle so Session does not show a green "Idle" chip.
         workflowPhase: "idle",
-        summary: terminal.summary ?? terminal.error,
+        summary:
+          typeof terminal.error === "string" && terminal.error
+            ? `Wiki Run failed: ${terminal.error}`
+            : typeof terminal.summary === "string" && terminal.summary
+              ? terminal.summary
+              : "Wiki Run failed",
         runStatus: "failed",
       };
     default:
       return {
         status: "failed",
         workflowPhase: "idle",
-        summary: terminal.summary ?? terminal.error,
+        summary:
+          typeof terminal.error === "string" && terminal.error
+            ? `Wiki Run failed: ${terminal.error}`
+            : typeof terminal.summary === "string"
+              ? terminal.summary
+              : `Wiki Run ended: ${terminal.status}`,
         runStatus: terminal.status,
       };
   }

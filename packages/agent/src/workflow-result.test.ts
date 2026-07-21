@@ -142,6 +142,43 @@ test("mapWorkflowResult: failed redacts keys", () => {
   assert.doesNotMatch(terminal.error!, /sk-proj-/);
 });
 
+test("mapWorkflowResult: failed object error is not [object Object]", () => {
+  const terminal = mapWorkflowResult({
+    status: "failed",
+    error: { message: "model timeout after 120s", code: "ETIMEDOUT" },
+  });
+  assert.equal(terminal.status, "failed");
+  assert.match(terminal.error ?? "", /model timeout/);
+  assert.doesNotMatch(terminal.error ?? "", /\[object Object\]/);
+});
+
+test("mapWorkflowResult: failed step without top-level error", () => {
+  const terminal = mapWorkflowResult({
+    status: "failed",
+    steps: {
+      "plan-gate": {
+        name: "plan-gate",
+        status: "failed",
+        error: { message: "Agent plan phase aborted" },
+      },
+    },
+  });
+  assert.equal(terminal.status, "failed");
+  assert.match(terminal.error ?? "", /plan-gate/);
+  assert.match(terminal.error ?? "", /aborted|Agent plan/);
+  assert.doesNotMatch(terminal.error ?? "", /\[object Object\]/);
+});
+
+test("sessionViewFromTerminal failed summary is human string", () => {
+  const view = sessionViewFromTerminal({
+    status: "failed",
+    error: "plan-gate: Agent plan phase aborted",
+  });
+  assert.equal(view.status, "failed");
+  assert.match(view.summary ?? "", /Wiki Run failed/);
+  assert.doesNotMatch(view.summary ?? "", /\[object Object\]/);
+});
+
 test("mapWorkflowResult: success without result → failed", () => {
   const terminal = mapWorkflowResult({ status: "success" });
   assert.equal(terminal.status, "failed");

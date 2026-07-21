@@ -117,3 +117,12 @@ test("redactErrorMessage redacts sk- keys including hyphens", () => {
   assert.match(msg, /\[redacted-key\]/);
   assert.match(msg, /Bearer \[redacted\]/);
 });
+
+test("redactErrorMessage never returns [object Object]", () => {
+  assert.doesNotMatch(
+    redactErrorMessage({ message: "timeout" }),
+    /\[object Object\]/,
+  );
+  assert.match(redactErrorMessage({ message: "timeout" }), /timeout/);
+  assert.doesNotMatch(redactErrorMessage({ nested: true }), /\[object Object\]/);
+});

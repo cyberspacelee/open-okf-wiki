@@ -1,10 +1,13 @@
 /**
  * Session message bridge: durable SessionMessage ↔ AI SDK UIMessage.
  * Round-trips text / reasoning / tool / data / step-start (ADR 0026).
+ * Tool parts are operator-projected (truncated) so historical sessions
+ * with full write/read payloads do not re-inflate the UI.
  */
 
 import type { UIMessage } from "ai";
 import type { SessionMessage } from "@okf-wiki/contract";
+import { projectSessionToolPart } from "./ui-projection.js";
 
 /** Convert durable SessionMessage rows to AI SDK UIMessage shape. */
 export function sessionMessagesToUIMessages(
@@ -13,7 +16,8 @@ export function sessionMessagesToUIMessages(
   return messages.map((m) => ({
     id: m.id,
     role: m.role,
-    parts: (m.parts ?? []).map((p) => {
+    parts: (m.parts ?? []).map((raw) => {
+      const p = projectSessionToolPart(raw);
       if (p.type === "text" && "text" in p) {
         return {
           type: "text" as const,
@@ -118,35 +122,39 @@ export function uiMessagesToSessionMessages(
         continue;
       }
       if (p.type === "dynamic-tool") {
-        parts.push({
-          type: "dynamic-tool",
-          toolCallId: "toolCallId" in p ? String(p.toolCallId ?? "") : "",
-          toolName: "toolName" in p ? String(p.toolName ?? "tool") : "tool",
-          state:
-            "state" in p ? (p.state as string) : "output-available",
-          input: "input" in p ? p.input : undefined,
-          output: "output" in p ? p.output : undefined,
-          errorText: "errorText" in p ? (p.errorText as string | undefined) : undefined,
-        } as SessionMessage["parts"][number]);
+        parts.push(
+          projectSessionToolPart({
+            type: "dynamic-tool",
+            toolCallId: "toolCallId" in p ? String(p.toolCallId ?? "") : "",
+            toolName: "toolName" in p ? String(p.toolName ?? "tool") : "tool",
+            state:
+              "state" in p ? (p.state as string) : "output-available",
+            input: "input" in p ? p.input : undefined,
+            output: "output" in p ? p.output : undefined,
+            errorText: "errorText" in p ? (p.errorText as string | undefined) : undefined,
+          } as SessionMessage["parts"][number]),
+        );
         continue;
       }
       if (typeof p.type === "string" && p.type.startsWith("tool-")) {
-        parts.push({
-          type: p.type,
-          toolCallId: "toolCallId" in p ? String(p.toolCallId ?? "") : "",
-          toolName:
-            "toolName" in p
-              ? String(p.toolName ?? p.type.slice(5))
-              : p.type.slice(5),
-          state:
-            "state" in p
-              ? (p.state as string)
-              : "output-available",
-          input: "input" in p ? p.input : undefined,
-          output: "output" in p ? p.output : undefined,
-          errorText:
-            "errorText" in p ? (p.errorText as string | undefined) : undefined,
-        } as SessionMessage["parts"][number]);
+        parts.push(
+          projectSessionToolPart({
+            type: p.type,
+            toolCallId: "toolCallId" in p ? String(p.toolCallId ?? "") : "",
+            toolName:
+              "toolName" in p
+                ? String(p.toolName ?? p.type.slice(5))
+                : p.type.slice(5),
+            state:
+              "state" in p
+                ? (p.state as string)
+                : "output-available",
+            input: "input" in p ? p.input : undefined,
+            output: "output" in p ? p.output : undefined,
+            errorText:
+              "errorText" in p ? (p.errorText as string | undefined) : undefined,
+          } as SessionMessage["parts"][number]),
+        );
         continue;
       }
       if (typeof p.type === "string" && p.type.startsWith("data-")) {
