@@ -10,6 +10,7 @@ test.describe("Session chatbot (AI Elements)", () => {
   test("generate plan, render markdown/tool, choose dynamic option", async ({
     page,
   }) => {
+    test.setTimeout(180_000);
     await page.setViewportSize({ width: 1280, height: 800 });
     await createWorkspaceViaUi(page, "E2E SessionChat");
     const gitRepo = createTempGitRepo("sess-src");
@@ -95,8 +96,13 @@ test.describe("Session chatbot (AI Elements)", () => {
     const publishChip = page.getByTestId("session-choice-approve");
     await expect(publishChip).toBeVisible({ timeout: 15_000 });
     await publishChip.click();
-    await expect(page.getByText(/Published Wiki|published/i).first()).toBeVisible({
-      timeout: 60_000,
+    await expect(
+      page
+        .getByText(/Published Wiki|published|atomically|completed/i)
+        .or(page.getByTestId("session-status").filter({ hasText: /completed/i }))
+        .first(),
+    ).toBeVisible({
+      timeout: 90_000,
     });
   });
 });

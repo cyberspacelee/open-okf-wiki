@@ -54,6 +54,7 @@ import {
   listRuns,
   listSessions,
   resetSession,
+  runEventsUrl,
   type OperatorSessionDto,
   type OperatorSessionSummary,
   type WikiRunPlan,
@@ -1201,7 +1202,8 @@ function SessionChatPanel({
     applyFreshSession,
   ]);
 
-  // Mid-flight catch-up after refresh / while write runs in the background.
+  // Mid-flight catch-up after refresh / while write runs in the background:
+  // poll session journal + optional run SSE for live log lines.
   useEffect(() => {
     const phase = session.workflow?.phase;
     const midFlight =
@@ -1212,13 +1214,10 @@ function SessionChatPanel({
       return;
     }
     let cancelled = false;
+    const root = workspace.rootPath ?? rootPathHint;
     const tick = async () => {
       try {
-        const res = await getSession(
-          workspaceId,
-          session.id,
-          workspace.rootPath ?? rootPathHint,
-        );
+        const res = await getSession(workspaceId, session.id, root);
         if (cancelled) {
           return;
         }
@@ -1228,20 +1227,95 @@ function SessionChatPanel({
       }
     };
     void tick();
-    const id = window.setInterval(() => void tick(), 1500);
+    const pollId = window.setInterval(() => void tick(), 1500);
+
+    const runId = linkedRunId ?? session.workflow?.linkedRunId;
+    let es: EventSource | null = null;
+    if (runId && typeof EventSource !== "undefined") {
+      try {
+        es = new EventSource(runEventsUrl(workspaceId, runId, root));
+        es.onmessage = (msg) => {
+          if (cancelled) {
+            return;
+          }
+          try {
+            const event = JSON.parse(msg.data) as {
+              type?: string;
+              message?: string;
+              status?: string;
+              text?: string;
+            };
+            const line =
+              event.message ||
+              event.text ||
+              (event.status ? `status: ${event.status}` : "");
+            if (!line || event.type === "done") {
+              if (event.type === "done" || event.status) {
+                void tick();
+              }
+              return;
+            }
+            // Append a lightweight progress bubble (not persisted until poll).
+            setMessages((prev) => {
+              const id = `run-live-${Date.now()}`;
+              const last = prev[prev.length - 1];
+              if (
+                last?.role === "assistant" &&
+                last.id.startsWith("run-live-") &&
+                last.parts.some(
+                  (p) =>
+                    p.type === "text" &&
+                    "text" in p &&
+                    String(p.text).endsWith(line),
+                )
+              ) {
+                return prev;
+              }
+              return [
+                ...prev,
+                {
+                  id,
+                  role: "assistant" as const,
+                  parts: [{ type: "text" as const, text: line }],
+                },
+              ];
+            });
+            if (
+              event.type === "done" ||
+              event.status === "awaiting_plan" ||
+              event.status === "awaiting_publication" ||
+              event.status === "published" ||
+              event.status === "failed" ||
+              event.status === "cancelled"
+            ) {
+              void tick();
+            }
+          } catch {
+            // ignore malformed SSE
+          }
+        };
+      } catch {
+        // SSE optional
+      }
+    }
+
     return () => {
       cancelled = true;
-      window.clearInterval(id);
+      window.clearInterval(pollId);
+      es?.close();
     };
   }, [
     session.status,
     session.workflow?.phase,
+    session.workflow?.linkedRunId,
     session.id,
+    linkedRunId,
     isBusy,
     workspaceId,
     workspace.rootPath,
     rootPathHint,
     applyFreshSession,
+    setMessages,
   ]);
 
   // Session-first kickoff from Runs page (?kickoff=1).

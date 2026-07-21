@@ -60,6 +60,10 @@ export {
 export {
   reconcileSessionWithRun,
   midTurnPhaseForChat,
+  isSessionTurnLocked,
+  migrateLegacyGateParts,
+  ensureGateMessage,
+  SESSION_TURN_LOCK_MAX_AGE_MS,
   type SessionRunSnapshot,
   type SessionReconcilePatch,
 } from "./session-reconcile.js";

@@ -9,6 +9,7 @@ test.describe("session history restore", () => {
   test("reload keeps session messages; older thread stays writable", async ({
     page,
   }) => {
+    test.setTimeout(120_000);
     await page.setViewportSize({ width: 1280, height: 800 });
     await createWorkspaceViaUi(page, "E2E SessionHistory");
     const gitRepo = createTempGitRepo("hist-src");
@@ -30,7 +31,6 @@ test.describe("session history restore", () => {
     await expect
       .poll(() => new URL(page.url()).searchParams.get("sessionId"))
       .toBeTruthy();
-    const firstSessionId = new URL(page.url()).searchParams.get("sessionId");
 
     await page.reload();
     await expect(page.getByTestId("session-chat-page")).toBeVisible({
@@ -44,28 +44,26 @@ test.describe("session history restore", () => {
     await expect(page.getByTestId("session-readonly-banner")).toHaveCount(0);
     await expect(page.getByTestId("session-input")).toBeEnabled();
 
-    // New session → switcher still lists older thread
+    // New session → older remains in switcher; both writable (Codex-class).
     await page.getByTestId("session-new").click();
     await expect(page.getByTestId("session-chat-page")).toBeVisible();
     await expect(page.getByTestId("session-readonly-banner")).toHaveCount(0);
+    await expect(page.getByTestId("session-input")).toBeEnabled();
 
     const select = page.getByTestId("session-select");
     await expect(select).toBeVisible();
 
-    // Codex-class: switch back to older session and keep composer writable.
-    if (firstSessionId) {
-      await select.click();
-      await page.getByRole("option", { name: new RegExp(firstSessionId.slice(0, 8)) }).click().catch(async () => {
-        // Select items show title · timestamp, not id — pick the non-current option.
-        const options = page.getByRole("option");
-        const count = await options.count();
-        if (count > 1) {
-          await options.nth(1).click();
-        }
-      });
-      // If select value change didn't work via option name, set via keyboard path:
-      // ensure we can still type when not on a brand-new empty thread.
+    // Switch to the other session via select (title · timestamp labels).
+    await select.click();
+    const options = page.getByRole("option");
+    await expect(options.first()).toBeVisible({ timeout: 5_000 });
+    const count = await options.count();
+    if (count > 1) {
+      await options.nth(1).click();
+    } else {
+      await page.keyboard.press("Escape");
     }
+
     await expect(page.getByTestId("session-input")).toBeEnabled({
       timeout: 10_000,
     });

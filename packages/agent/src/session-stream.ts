@@ -311,6 +311,13 @@ export async function createSessionWorkflowStream(input: {
    * Called synchronously once mode/runId are known so Stop can abort mid-stream.
    */
   abortSignalForRun?: (runId: string) => AbortSignal;
+  /**
+   * Called after the Mastra workflow stream is successfully opened (start or
+   * resume). Server uses this to mark the run record `running` only once the
+   * workflow is live — not at eager session mid-flight — so a crash before open
+   * leaves the run at awaiting_* for gate recovery.
+   */
+  onWorkflowLive?: (runId: string) => void | Promise<void>;
 }): Promise<SessionStreamResult> {
   const assistantId = randomUUID();
   const textId = randomUUID();
@@ -609,6 +616,7 @@ export async function createSessionWorkflowStream(input: {
             forcePlanConfirm: true,
             abortSignal,
           });
+          await input.onWorkflowLive?.(runId);
           // Merge workflow UI parts into this turn's assistant message
           // (originalMessages keeps a single bubble). Await pipe so decision
           // text is ordered after workflow chunks.
@@ -642,6 +650,7 @@ export async function createSessionWorkflowStream(input: {
           },
           abortSignal,
         });
+        await input.onWorkflowLive?.(runId);
         await pipeUiStream(writer, ui.stream, abortSignal);
         await applyWorkflowResult(await ui.result());
         await cancelUnlessDurableSuccess();

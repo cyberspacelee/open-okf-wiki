@@ -14,6 +14,7 @@ import {
   listOperatorSessions,
   loadOperatorSession,
   loadWorkspaceById,
+  isSessionTurnLocked,
   midTurnPhaseForChat,
   neutralizeSessionDecisionParts,
   reconcileSessionWithRun,
@@ -431,11 +432,19 @@ export async function handleSessionChat(
     : previousUI;
   const messages: UIMessage[] = [...historyForTurn, lastFromClient];
 
-  // Reject concurrent turns for the same session (double-submit before finalize).
-  // Return a help UI stream (not hard 409) so refresh + re-approve surfaces a
-  // clear "already in progress" assistant message instead of a transport error.
+  // Concurrent turn lock:
+  // 1) in-process Set — double-submit before eager persist
+  // 2) durable session.status=running (TTL) — second request after restart/tab
+  //    while a turn is mid-flight (refresh re-approve during write)
   const lockKey = sessionChatLockKey(workspace.rootPath, sessionId);
-  if (sessionChatInFlight.has(lockKey)) {
+  const wouldRunWorkflow =
+    body.intent === "start" ||
+    body.intent === "resume" ||
+    Boolean(body.resumeData);
+  if (
+    sessionChatInFlight.has(lockKey) ||
+    (wouldRunWorkflow && isSessionTurnLocked(session))
+  ) {
     const help = helpTextForSessionTurn({
       helpReason: "running",
       phase: session.workflow?.phase,
@@ -481,6 +490,29 @@ export async function handleSessionChat(
         registeredAbortRunId = runId;
         return registerRunAbortController(runId);
       },
+      // Mark run running only once Mastra stream is open (crash-safe vs eager).
+      onWorkflowLive: async (liveRunId) => {
+        try {
+          const existing = await loadRun(workspace.rootPath, liveRunId);
+          if (!existing) {
+            return;
+          }
+          if (
+            existing.status === "awaiting_plan" ||
+            existing.status === "awaiting_publication" ||
+            existing.status === "running"
+          ) {
+            await updateRunRecord(workspace.rootPath, liveRunId, {
+              status: "running",
+              summary: "Wiki Run in progress",
+              error: null,
+              sessionId,
+            }).catch(() => undefined);
+          }
+        } catch {
+          // best-effort
+        }
+      },
     });
 
     // Eager run registry on start so explicit Session Stop → cancel can target
@@ -522,10 +554,9 @@ export async function handleSessionChat(
     // while write work is still in flight.
     if (chat.mode === "start" || chat.mode === "resume") {
       try {
-        const resumeAction = body.resumeData?.action;
         const midPhase = midTurnPhaseForChat({
           mode: chat.mode,
-          resumeAction,
+          resumeAction: body.resumeData?.action,
           gateStep: body.step,
           previousPhase: session.workflow?.phase,
         });
@@ -537,6 +568,9 @@ export async function handleSessionChat(
           ...neutralizeSessionDecisionParts(session.messages),
           ...uiMessagesToSessionMessages([lastFromClient]),
         ];
+        // Session only: do NOT flip run off awaiting_* here. Run becomes
+        // running in onWorkflowLive after Mastra open succeeds. If we crash
+        // before that, reconcile restores the gate from the run record.
         await replaceSessionMessages(workspace.rootPath, sessionId, withUser, {
           status: "running",
           pending: null,
@@ -546,27 +580,6 @@ export async function handleSessionChat(
             phase: midPhase,
           },
         });
-        // Keep run record in sync so refresh reconcile sees "running" not the gate.
-        if (chat.mode === "resume" && linked) {
-          const existing = await loadRun(workspace.rootPath, linked);
-          if (
-            existing &&
-            (existing.status === "awaiting_plan" ||
-              existing.status === "awaiting_publication")
-          ) {
-            await updateRunRecord(workspace.rootPath, linked, {
-              status: "running",
-              summary:
-                resumeAction === "revise"
-                  ? "Revising plan from operator feedback"
-                  : resumeAction === "deny"
-                    ? "Closing gate after operator deny"
-                    : "Resuming after operator decision",
-              error: null,
-              ...(sessionId ? { sessionId } : {}),
-            }).catch(() => undefined);
-          }
-        }
       } catch (error) {
         process.stderr.write(
           `session eager mid-turn persist failed: ${redactErrorMessage(error)}\n`,
