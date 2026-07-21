@@ -28,7 +28,11 @@ export type WikiRunResumeParams = {
   runId: string;
   /** Mastra step id, e.g. plan-gate | publish-gate */
   step: string;
-  resumeData: { action: "approve" | "deny"; plan?: WikiRunPlan };
+  resumeData: {
+    action: "approve" | "deny" | "revise";
+    plan?: WikiRunPlan;
+    feedback?: string;
+  };
   abortSignal?: AbortSignal;
 };
 

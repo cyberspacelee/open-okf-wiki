@@ -53,6 +53,7 @@ import {
   handleGetRun,
   handleListRuns,
   handleRetryRun,
+  handleRevisePlan,
   handleRunEvents,
 } from "./routes/runs.ts";
 import {
@@ -296,6 +297,16 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
       );
       if (params && method === "POST") {
         await handleDenyPlan(req, res, params.id!, params.runId!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(
+        pathname,
+        "/api/workspaces/:id/runs/:runId/revise-plan",
+      );
+      if (params && method === "POST") {
+        await handleRevisePlan(req, res, params.id!, params.runId!, url);
         return;
       }
     }

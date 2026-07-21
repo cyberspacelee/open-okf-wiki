@@ -12,13 +12,15 @@ export type PendingInteraction = {
 
 /** Structured resume for workflow plan/publication gates (no string protocol). */
 export type SessionResumePayload = {
-  action: "approve" | "deny";
-  /** Optional plan when approving plan-gate. */
+  action: "approve" | "deny" | "revise";
+  /** Optional plan when approving / revising plan-gate. */
   plan?: {
     summary: string;
     pages: Array<{ path: string; purpose: string }>;
     notes?: string;
   };
+  /** Free-text revision feedback when action is revise. */
+  feedback?: string;
 };
 
 export function extractPendingFromMessages(

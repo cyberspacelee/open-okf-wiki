@@ -353,10 +353,15 @@ export async function handleSessionChat(
     }
     return "";
   })();
+  const phase = session.workflow?.phase ?? "idle";
   const looksLikeResume =
     Boolean(body.resumeData) ||
     lastText === "approve" ||
-    lastText === "deny";
+    lastText === "deny" ||
+    // Free-text at plan gate is revision feedback (structured resume).
+    (phase === "awaiting_plan" &&
+      lastText.length > 0 &&
+      lastText !== "revise");
   if (looksLikeResume && candidateRunId) {
     const linkedRun = await loadRun(workspace.rootPath, candidateRunId);
     if (

@@ -27,7 +27,11 @@ export type WikiWorkflowUiResume = {
   kind: "resume";
   runId: string;
   step: string;
-  resumeData: { action: "approve" | "deny"; plan?: WikiRunPlan };
+  resumeData: {
+    action: "approve" | "deny" | "revise";
+    plan?: WikiRunPlan;
+    feedback?: string;
+  };
   /** Product cancel signal (server abortRun). Bound for workflow steps. */
   abortSignal?: AbortSignal;
 };

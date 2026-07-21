@@ -250,8 +250,12 @@ export const en = {
       "Try “generate a wiki plan” or `/generate` — then choose a dynamic option or type revision notes.",
     choiceOnly:
       "Select an option above to continue (free text is disabled for this step).",
+    planReviseHint:
+      "Type modification feedback for the plan, or pick approve / deny above.",
     placeholderNoSources: "Add a source first (Sources tab)",
     placeholderChoice: "Select an option above…",
+    placeholderPlanRevise:
+      "Describe plan changes (e.g. add concepts.md)…",
     placeholderDefault: "Message… (/ commands, Tab complete, ↑↓ select)",
     sessions: "Sessions",
     switchSession: "Switch session",
@@ -335,6 +339,17 @@ export const en = {
     approve: "Approve plan & write",
     working: "Working…",
     decline: "Decline plan",
+    revise: "Request changes",
+    reviseHint: "Describe how the page plan should change.",
+    revisePlaceholder: "e.g. add concepts.md, drop architecture.md",
+    reviseSubmit: "Submit revision",
+    fullscreen: "View plan fullscreen",
+    /** Session decision chip labels (ids: approve | revise | deny). */
+    chipWrite: "Write {n} page(s)",
+    chipRevise: "Request changes",
+    chipDeny: "Reject this plan",
+    chipPublish: "Publish staged wiki",
+    chipKeepStaging: "Keep staging only",
   },
   modelSelect: {
     label: "Model",

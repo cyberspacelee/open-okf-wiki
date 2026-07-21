@@ -21,6 +21,7 @@ import type {
 } from "@okf-wiki/contract";
 import {
   helpTextForSessionTurn,
+  isKickoffPhrase,
   normalizeSessionUserText,
   resolveSessionTurnMode,
 } from "@okf-wiki/contract";
@@ -90,7 +91,11 @@ export type SessionStreamBody = {
   /** Chat / session id from DefaultChatTransport. */
   id?: string;
   /** Workflow resume payload (plan/publication gate). */
-  resumeData?: { action: "approve" | "deny"; plan?: WikiRunPlan };
+  resumeData?: {
+    action: "approve" | "deny" | "revise";
+    plan?: WikiRunPlan;
+    feedback?: string;
+  };
   runId?: string;
   step?: string;
 };
@@ -195,11 +200,32 @@ function optionsForPlan(plan: WikiRunPlan): InteractionOption[] {
       description: plan.pages.map((p) => p.path).join(", "),
     },
     {
+      id: "revise",
+      label: "Request changes",
+      description: "Type modification feedback to replan",
+    },
+    {
       id: "deny",
       label: "Reject this plan",
       description: "Cancel this Wiki Run",
     },
   ];
+}
+
+/** Render a WikiRunPlan as operator-facing Markdown (fullscreen / transcript). */
+export function planToMarkdown(plan: WikiRunPlan): string {
+  const lines = [
+    "## Proposed wiki plan",
+    "",
+    plan.summary,
+    "",
+    "### Pages",
+    ...plan.pages.map((p) => `- \`${p.path}\` — ${p.purpose}`),
+  ];
+  if (plan.notes?.trim()) {
+    lines.push("", "### Notes", "", plan.notes.trim());
+  }
+  return lines.join("\n");
 }
 
 function optionsForPublish(): InteractionOption[] {
@@ -225,23 +251,21 @@ function decisionFromSuspend(payload: {
 }): { pending: PendingInteraction; text: string; plan?: WikiRunPlan } | null {
   if (payload.gate === "plan" && payload.plan) {
     const plan = payload.plan;
-    const lines = [
-      "## Proposed wiki plan",
-      "",
-      plan.summary,
-      "",
-      "### Pages",
-      ...plan.pages.map((p) => `- \`${p.path}\` — ${p.purpose}`),
-    ];
+    // Short prompt only — full plan lives in data-plan (PlanViewer), avoid duplex markdown.
     return {
       plan,
-      text: lines.join("\n"),
+      text:
+        `A **wiki plan** with **${plan.pages.length}** page(s) is ready for review. ` +
+        "Open the plan card (or fullscreen) below, then approve, request changes, or type revision feedback.",
       pending: {
         type: "approval",
-        question: "How do you want to proceed with this plan?",
-        mode: "choice_only",
+        question:
+          "How do you want to proceed with this plan? You can also type free-text revision feedback.",
+        mode: "choice_or_input",
         selectionMode: "single",
         options: optionsForPlan(plan),
+        inputPlaceholder:
+          "Describe plan changes (e.g. add concepts.md, drop architecture.md)…",
       },
     };
   }
@@ -302,20 +326,28 @@ export async function createSessionWorkflowStream(input: {
   const existingRunId =
     input.body?.runId ?? input.session.workflow.linkedRunId ?? undefined;
 
-  // Prefer explicit body; else map plain "approve"/"deny" user text when a run is linked.
+  // Prefer explicit body; else map plain approve/deny/revise or free-text revise.
   let resumeData = input.body?.resumeData;
-  if (
-    !resumeData &&
-    existingRunId &&
-    (userText === "approve" || userText === "deny")
-  ) {
-    resumeData = { action: userText };
+  if (!resumeData && existingRunId) {
+    if (userText === "approve" || userText === "deny") {
+      resumeData = { action: userText };
+    } else if (
+      phase === "awaiting_plan" &&
+      userText &&
+      userText.toLowerCase() !== "revise" &&
+      !isKickoffPhrase(userText)
+    ) {
+      // Free-text at the plan gate is revision feedback (not free-chat).
+      resumeData = { action: "revise", feedback: userText };
+    } else if (userText.toLowerCase() === "revise") {
+      // Bare revise chip without feedback — surface help, do not resume.
+      resumeData = { action: "revise" };
+    }
   }
 
-  // Plan gate approve requires a plan payload. Client may omit it (stale meta);
-  // always fill from durable session workflow when missing.
+  // Plan gate approve/revise may need the durable plan payload.
   if (
-    resumeData?.action === "approve" &&
+    (resumeData?.action === "approve" || resumeData?.action === "revise") &&
     !resumeData.plan &&
     input.session.workflow.plan
   ) {
@@ -327,6 +359,18 @@ export async function createSessionWorkflowStream(input: {
     if (atPlanGate) {
       resumeData = { ...resumeData, plan: input.session.workflow.plan };
     }
+  }
+
+  // Normalize revise feedback from user text when client only sent action.
+  if (
+    resumeData?.action === "revise" &&
+    !resumeData.feedback?.trim() &&
+    userText &&
+    userText.toLowerCase() !== "revise" &&
+    userText !== "approve" &&
+    userText !== "deny"
+  ) {
+    resumeData = { ...resumeData, feedback: userText };
   }
 
   const hasSources = (input.workspace.sources?.length ?? 0) > 0;
@@ -581,10 +625,13 @@ export async function createSessionWorkflowStream(input: {
         }
 
         writeRunLink(runId, "resuming");
+        const resumeAction = resumeData?.action;
         await writeText(
-          resumeData?.action === "approve"
+          resumeAction === "approve"
             ? "Resuming Wiki Run…"
-            : "Declining and closing the suspended gate…",
+            : resumeAction === "revise"
+              ? "Revising the wiki plan with your feedback…"
+              : "Declining and closing the suspended gate…",
         );
         ui = await openWikiWorkflowUiStream({
           kind: "resume",
@@ -593,6 +640,9 @@ export async function createSessionWorkflowStream(input: {
           resumeData: {
             action: resumeData!.action,
             ...(resumeData!.plan ? { plan: resumeData!.plan } : {}),
+            ...(resumeData!.feedback
+              ? { feedback: resumeData!.feedback }
+              : {}),
           },
           abortSignal,
         });

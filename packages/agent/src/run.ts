@@ -163,15 +163,156 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 function buildFixturePlan(input: WikiRunAgentInput): WikiRunPlan {
   const title = input.workspace.name || "Repository overview";
+  const notes = input.plan?.notes?.trim();
+  const revised = Boolean(notes && /operator revision feedback/i.test(notes));
   return {
-    summary: `Fixture plan for ${title}: one overview page grounded in registered sources.`,
+    summary: revised
+      ? `Revised fixture plan for ${title} after operator feedback.`
+      : `Fixture plan for ${title}: one overview page grounded in registered sources.`,
     pages: [
       {
         path: "overview.md",
         purpose: `Explain ${title} purpose, sources, and where to continue.`,
       },
+      ...(revised
+        ? [
+            {
+              path: "concepts.md",
+              purpose: "Key concepts requested via plan revision feedback.",
+            },
+          ]
+        : []),
     ],
-    ...(input.plan?.notes ? { notes: input.plan.notes } : {}),
+    ...(notes ? { notes } : {}),
+  };
+}
+
+/**
+ * Parse a model Markdown plan into structured WikiRunPlan pages.
+ * Accepts common list forms:
+ * - `path.md` — purpose
+ * - path.md: purpose
+ * - path.md - purpose
+ * Falls back to prior plan pages or a single overview page.
+ */
+export function parsePlanFromAgentText(
+  text: string,
+  options: {
+    workspaceName: string;
+    prior?: WikiRunPlan;
+  },
+): WikiRunPlan {
+  const raw = text?.trim() ?? "";
+  const pages: Array<{ path: string; purpose: string }> = [];
+  const seen = new Set<string>();
+
+  // Prefer fenced JSON { summary, pages: [{path,purpose}] } when present.
+  const jsonFence = /```(?:json)?\s*([\s\S]*?)```/i.exec(raw);
+  if (jsonFence?.[1]) {
+    try {
+      const parsed = JSON.parse(jsonFence[1]!) as {
+        summary?: unknown;
+        pages?: unknown;
+        notes?: unknown;
+      };
+      if (Array.isArray(parsed.pages)) {
+        for (const item of parsed.pages) {
+          if (!item || typeof item !== "object") {
+            continue;
+          }
+          const pathVal = String(
+            (item as { path?: unknown }).path ?? "",
+          ).trim();
+          const purposeVal = String(
+            (item as { purpose?: unknown }).purpose ?? "",
+          ).trim();
+          if (!pathVal || !purposeVal || seen.has(pathVal)) {
+            continue;
+          }
+          seen.add(pathVal);
+          pages.push({
+            path: pathVal.slice(0, 200),
+            purpose: purposeVal.slice(0, 500),
+          });
+        }
+      }
+      if (pages.length > 0) {
+        const summary =
+          (typeof parsed.summary === "string" && parsed.summary.trim()) ||
+          raw.split("\n").find((l) => l.trim() && !l.trim().startsWith("```"))?.trim() ||
+          `Proposed wiki plan for ${options.workspaceName}`;
+        return {
+          summary: summary.slice(0, 1500),
+          pages,
+          ...(options.prior?.notes
+            ? { notes: options.prior.notes }
+            : typeof parsed.notes === "string" && parsed.notes.trim()
+              ? { notes: parsed.notes.trim().slice(0, 4000) }
+              : {}),
+        };
+      }
+    } catch {
+      // fall through to list parsing
+    }
+  }
+
+  const lineRe =
+    /^[\s>*-]*\**`?([A-Za-z0-9_./-]+\.md)`?\**\s*[-—:–]\s+(.+?)\s*$/gm;
+  let match: RegExpExecArray | null;
+  while ((match = lineRe.exec(raw)) !== null) {
+    const pathVal = match[1]!.trim();
+    const purposeVal = match[2]!.replace(/\*\*/g, "").trim();
+    if (!pathVal || !purposeVal || seen.has(pathVal)) {
+      continue;
+    }
+    seen.add(pathVal);
+    pages.push({
+      path: pathVal.slice(0, 200),
+      purpose: purposeVal.slice(0, 500),
+    });
+  }
+
+  // Summary: first non-empty non-list line, or first heading body.
+  let summary = "";
+  for (const line of raw.split("\n")) {
+    const t = line.trim();
+    if (!t || t.startsWith("```") || t.startsWith("#")) {
+      if (t.startsWith("#")) {
+        const heading = t.replace(/^#+\s*/, "").trim();
+        if (heading && !summary) {
+          summary = heading;
+        }
+      }
+      continue;
+    }
+    if (/^[-*+]\s+/.test(t) || /^\d+\.\s+/.test(t)) {
+      continue;
+    }
+    summary = t;
+    break;
+  }
+  if (!summary) {
+    summary =
+      options.prior?.summary ||
+      `Proposed wiki plan for ${options.workspaceName}`;
+  }
+
+  const resolvedPages =
+    pages.length > 0
+      ? pages
+      : options.prior?.pages?.length
+        ? options.prior.pages
+        : [
+            {
+              path: "overview.md",
+              purpose: "Repository purpose, audience, and navigation",
+            },
+          ];
+
+  return {
+    summary: summary.slice(0, 1500),
+    pages: resolvedPages,
+    ...(options.prior?.notes ? { notes: options.prior.notes } : {}),
   };
 }
 
@@ -430,11 +571,20 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
   const planHint = input.plan
     ? `\nConfirmed page plan (follow it):\n${JSON.stringify(input.plan, null, 2)}\n`
     : "";
+  const revisionHint =
+    phase === "plan" && input.plan?.notes
+      ? `\nOperator revision notes (must incorporate):\n${input.plan.notes}\n` +
+        (input.plan.pages?.length
+          ? `Previous proposed pages:\n${JSON.stringify(input.plan.pages, null, 2)}\n`
+          : "")
+      : "";
   const userMessage =
     phase === "plan"
       ? "Plan a source-grounded Wiki for this workspace. " +
-        "Load the producer skill, briefly inspect sources, then reply with a Markdown plan listing " +
-        "intended pages (path + purpose). Do NOT call write_wiki yet."
+        "Load the producer skill, briefly inspect sources, then reply with a short summary and a Markdown bullet list of " +
+        "intended pages using exactly: `- \\`path.md\\` — purpose` (one page per line). " +
+        "Do NOT call write_wiki yet." +
+        revisionHint
       : "Produce a source-grounded Wiki for this workspace. " +
         "Load the producer skill first, inspect sources, write markdown pages with write_wiki, then summarize." +
         planHint;
@@ -488,17 +638,10 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
   throwIfAborted(input.abortSignal);
 
   if (phase === "plan") {
-    const plan: WikiRunPlan = input.plan ?? {
-      summary:
-        text?.trim().slice(0, 1500) ||
-        `Proposed wiki plan for ${input.workspace.name}`,
-      pages: [
-        {
-          path: "overview.md",
-          purpose: "Repository purpose, audience, and navigation",
-        },
-      ],
-    };
+    const plan = parsePlanFromAgentText(text ?? "", {
+      workspaceName: input.workspace.name,
+      prior: input.plan,
+    });
     return {
       status: "awaiting_plan",
       plan,

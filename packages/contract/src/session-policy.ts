@@ -44,6 +44,9 @@ export function expandChatSlash(
     case "deny":
     case "reject":
       return "deny";
+    case "revise":
+      // Bare /revise is not enough — free-text feedback is required.
+      return rest || "revise";
     default:
       return null;
   }
@@ -93,12 +96,20 @@ export function isKickoff(text: string, phase: string | undefined): boolean {
  * Pure turn-mode resolution for Operator Session chat.
  * Only generate-ish kickoff on idle/done starts a run; free-chat never does.
  */
+/** Workflow resume payload for plan/publication gates. */
+export type SessionGateResumeData = {
+  action: "approve" | "deny" | "revise";
+  plan?: WikiRunPlan;
+  /** Free-text revision feedback when action is revise. */
+  feedback?: string;
+};
+
 export function resolveSessionTurnMode(input: {
   userText: string;
   phase: string | undefined;
   status: OperatorSession["status"] | string;
   hasSources: boolean;
-  resumeData?: { action: "approve" | "deny"; plan?: WikiRunPlan };
+  resumeData?: SessionGateResumeData;
   existingRunId?: string;
 }): SessionTurnModeResult {
   const { userText, phase, status, hasSources, resumeData, existingRunId } =
@@ -108,6 +119,13 @@ export function resolveSessionTurnMode(input: {
     phaseNorm === "awaiting_plan" || phaseNorm === "awaiting_publish";
 
   if (resumeData && existingRunId) {
+    // Bare revise without feedback is not a valid resume.
+    if (
+      resumeData.action === "revise" &&
+      !resumeData.feedback?.trim()
+    ) {
+      return { mode: "help", helpReason: "pending_gate" };
+    }
     return { mode: "resume" };
   }
 
@@ -154,7 +172,10 @@ export function helpTextForSessionTurn(input: {
       if (phase === "awaiting_publish") {
         return "A publication decision is waiting. Pick **approve** or **deny** above to continue — free-text chat will not advance this gate.";
       }
-      return "A plan decision is waiting. Pick **approve** or **deny** above to continue — free-text chat will not advance this gate.";
+      if ((input.userText ?? "").trim().toLowerCase() === "revise") {
+        return "To revise the plan, type your modification feedback in the composer (for example: add a concepts page, drop architecture.md) and send.";
+      }
+      return "A plan decision is waiting. Pick **approve**, **deny**, or **request changes** — or type free-text revision feedback to replan.";
     }
     case "running":
       return "A Wiki Run is already in progress. Wait for it to finish, or use **Stop** to cancel it.";
@@ -165,6 +186,7 @@ export function helpTextForSessionTurn(input: {
         "",
         "- **generate** or `/generate` — start a Wiki Run",
         "- `/approve` / `/deny` — answer a plan or publish gate",
+        "- Free-text at the plan gate — request changes and replan",
         "- `/reset` — clear a stuck gate (operator command)",
         "- `/help` — list commands",
         "",

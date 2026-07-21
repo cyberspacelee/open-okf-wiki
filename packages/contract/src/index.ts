@@ -52,6 +52,7 @@ export {
   helpTextForSessionTurn,
   type SessionTurnHelpReason,
   type SessionTurnModeResult,
+  type SessionGateResumeData,
 } from "./session-policy.js";
 
 export {

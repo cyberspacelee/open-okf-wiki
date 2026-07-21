@@ -178,6 +178,22 @@ export function mapWorkflowResult(raw: unknown): WikiWorkflowTerminal {
     };
   }
 
+  // Operator plan deny (and similar clean exits) use Mastra bail — not failed.
+  if (result.status === "bailed" || result.status === "canceled") {
+    const output = result.result;
+    return {
+      status: "cancelled",
+      plan: output?.plan,
+      pages: output?.pages,
+      summary:
+        output?.summary ??
+        (result.status === "bailed"
+          ? "Plan declined by operator"
+          : "Wiki Run cancelled"),
+      error: output?.error ?? "plan declined",
+    };
+  }
+
   // success / completed / unknown with result payload
   if (result.result || result.status === "success") {
     return mapSuccessResult(result);

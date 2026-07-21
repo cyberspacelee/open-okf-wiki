@@ -235,16 +235,19 @@ export function resumeRunInBackground(
   workspace: WorkspaceConfig,
   runId: string,
   gate: "plan" | "publication",
-  action: "approve" | "deny",
+  action: "approve" | "deny" | "revise",
   plan?: WikiRunPlan,
+  feedback?: string,
 ): void {
   void (async () => {
     const abortSignal = registerRunAbortController(runId);
-    emitRunStatus(
-      runId,
-      "running",
-      gate === "plan" ? "Resuming after plan decision" : "Resuming after publication decision",
-    );
+    const statusMessage =
+      gate === "plan"
+        ? action === "revise"
+          ? "Revising plan from operator feedback"
+          : "Resuming after plan decision"
+        : "Resuming after publication decision";
+    emitRunStatus(runId, "running", statusMessage);
     try {
       if (abortSignal.aborted) {
         await finalizeRunStatus(workspace.rootPath, runId, {
@@ -260,6 +263,7 @@ export function resumeRunInBackground(
         gate,
         action,
         plan,
+        feedback,
         abortSignal,
         onEvent: (event) => {
           emitRunEvent(runId, {
@@ -615,9 +619,80 @@ export async function handleDenyPlan(
       error: "plan declined",
       summary: "Plan declined by operator",
     });
-    // Best-effort: close suspended workflow snapshot.
+    // Best-effort: close suspended workflow snapshot (bail path).
     resumeRunInBackground(workspace, runId, "plan", "deny", existing.plan);
     emitRunDone(runId, "cancelled", "Plan declined by operator");
+    sendJson(res, 200, { run: updated });
+  } catch (error) {
+    if (error instanceof RunStatusConflictError) {
+      sendError(res, 409, error.message);
+      return;
+    }
+    sendError(res, 400, error instanceof Error ? error.message : String(error));
+  }
+}
+
+/**
+ * HITL: revise plan with free-text feedback, re-run plan phase, re-suspend.
+ * Run stays linked to the same Mastra runId (not a Manual Retry).
+ */
+export async function handleRevisePlan(
+  req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  runId: string,
+  url: URL,
+): Promise<void> {
+  const rootPath = url.searchParams.get("rootPath") ?? undefined;
+  const workspace = await loadWorkspaceById(id, {
+    rootPath: rootPath ?? undefined,
+  });
+  if (!workspace) {
+    sendError(res, 404, `workspace not found: ${id}`);
+    return;
+  }
+
+  const existing = await loadRun(workspace.rootPath, runId);
+  if (!existing) {
+    sendError(res, 404, `run not found: ${runId}`);
+    return;
+  }
+  if (existing.status !== "awaiting_plan") {
+    sendError(
+      res,
+      409,
+      `run is not awaiting plan (status: ${existing.status})`,
+    );
+    return;
+  }
+
+  const body = (await readJsonBody(req)) as { feedback?: unknown };
+  const feedback =
+    typeof body.feedback === "string" ? body.feedback.trim() : "";
+  if (!feedback) {
+    sendError(res, 400, "feedback is required to revise the plan");
+    return;
+  }
+  if (feedback.length > 4000) {
+    sendError(res, 400, "feedback must be at most 4000 characters");
+    return;
+  }
+
+  try {
+    const updated = await updateRunRecord(workspace.rootPath, runId, {
+      status: "running",
+      summary: "Revising plan from operator feedback",
+      error: null,
+      plan: existing.plan ?? null,
+    });
+    resumeRunInBackground(
+      workspace,
+      runId,
+      "plan",
+      "revise",
+      existing.plan,
+      feedback,
+    );
     sendJson(res, 200, { run: updated });
   } catch (error) {
     if (error instanceof RunStatusConflictError) {

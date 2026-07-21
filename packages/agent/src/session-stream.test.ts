@@ -220,7 +220,15 @@ test("helpTextForSessionTurn is contextual", () => {
       phase: "awaiting_plan",
       userText: "hello",
     }),
-    /approve/,
+    /request changes|free-text revision/i,
+  );
+  assert.match(
+    helpTextForSessionTurn({
+      helpReason: "pending_gate",
+      phase: "awaiting_plan",
+      userText: "revise",
+    }),
+    /modification feedback/i,
   );
   // Kickoff-like at gate: do not pretend generate will start
   const gateKickoff = helpTextForSessionTurn({

@@ -10,6 +10,7 @@ import {
   getWorkspace,
   listRuns,
   retryRun,
+  revisePlan,
   runEventsUrl,
   type RunSseEvent,
   type StoredRunRecord,
@@ -432,6 +433,34 @@ export function WorkspaceRunPage() {
     }
   }
 
+  async function handleRevisePlan(feedback: string) {
+    if (!id || !lastRun) {
+      return;
+    }
+    setPublishing(true);
+    setError(null);
+    try {
+      const result = await revisePlan(
+        id,
+        lastRun.runId,
+        feedback,
+        workspace?.rootPath ?? rootPathHint,
+      );
+      setRuns((prev) =>
+        prev.map((r) => (r.runId === result.run.runId ? result.run : r)),
+      );
+      setUsePollFallback(false);
+      setEventLog((prev) => [
+        ...prev,
+        "[status] plan revision requested — replan starting",
+      ]);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setPublishing(false);
+    }
+  }
+
   async function handleApprove() {
     if (!id || !lastRun) {
       return;
@@ -644,6 +673,7 @@ export function WorkspaceRunPage() {
                         busy={publishing}
                         onApprove={() => void handleApprovePlan()}
                         onDeny={() => void handleDenyPlan()}
+                        onRevise={(feedback) => void handleRevisePlan(feedback)}
                       />
                     ) : null}
 

@@ -157,38 +157,65 @@ function extractGateStep(
   session: OperatorSessionDto,
   messages: UIMessage[],
 ): "plan-gate" | "publish-gate" {
-  if (session.workflow?.phase === "awaiting_publish") {
-    return "publish-gate";
-  }
-  if (session.workflow?.phase === "awaiting_plan") {
-    return "plan-gate";
-  }
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i]!;
-    if (m.role !== "assistant") {
-      continue;
-    }
-    for (const p of m.parts ?? []) {
-      if (
-        p.type === "data-choice" &&
-        p.data &&
-        typeof p.data === "object" &&
-        "question" in (p.data as object)
-      ) {
-        const q = String((p.data as { question?: string }).question ?? "");
-        if (/publish/i.test(q)) {
-          return "publish-gate";
-        }
-        if (/plan/i.test(q)) {
-          return "plan-gate";
-        }
-      }
-    }
+  const live = resolveLiveGate(session, messages);
+  if (live.active) {
+    return live.step;
   }
   return "plan-gate";
 }
 
-/** Plan from durable session meta or structured data-plan stream parts. */
+/**
+ * Live HITL gate for resumeData attachment.
+ * Prefer durable phase; fall back to latest decision/data-plan parts when meta lags.
+ */
+function resolveLiveGate(
+  session: OperatorSessionDto,
+  messages: UIMessage[],
+  linkedRunIdHint?: string,
+  resumePlanHint?: WikiRunPlan,
+): {
+  active: boolean;
+  step: "plan-gate" | "publish-gate";
+  runId?: string;
+  plan?: WikiRunPlan;
+} {
+  const runId =
+    linkedRunIdHint ||
+    extractLinkedRunId(session, messages) ||
+    session.workflow?.linkedRunId;
+  const plan =
+    resumePlanHint || extractResumePlan(session, messages) || undefined;
+  const phase = session.workflow?.phase;
+
+  if (phase === "awaiting_publish" && runId) {
+    return { active: true, step: "publish-gate", runId, plan };
+  }
+  if (phase === "awaiting_plan" && runId) {
+    return { active: true, step: "plan-gate", runId, plan };
+  }
+
+  // Meta lag: chips / data-plan already on the latest assistant message.
+  const pending = extractPendingFromMessages(messages);
+  if (pending && runId) {
+    if (pending.options.some((o) => o.id === "revise")) {
+      return { active: true, step: "plan-gate", runId, plan };
+    }
+    if (/publish|staging/i.test(pending.question)) {
+      return { active: true, step: "publish-gate", runId, plan };
+    }
+    if (/plan/i.test(pending.question)) {
+      return { active: true, step: "plan-gate", runId, plan };
+    }
+    // Generic approve/deny without revise → publish-style gate.
+    if (pending.options.some((o) => o.id === "approve" || o.id === "deny")) {
+      return { active: true, step: "publish-gate", runId, plan };
+    }
+  }
+
+  return { active: false, step: "plan-gate", runId, plan };
+}
+
+/** Plan from durable session meta, data-plan, or Mastra data-workflow suspendPayload. */
 function extractResumePlan(
   session: OperatorSessionDto,
   messages: UIMessage[],
@@ -209,9 +236,61 @@ function extractResumePlan(
           return plan;
         }
       }
+      if (
+        (p.type === "data-workflow" || p.type === "data-workflow-step") &&
+        p.data &&
+        typeof p.data === "object"
+      ) {
+        const fromWorkflow = planFromDataWorkflow(p.data);
+        if (fromWorkflow) {
+          return fromWorkflow;
+        }
+      }
     }
   }
   return undefined;
+}
+
+function planFromDataWorkflow(data: unknown): WikiRunPlan | undefined {
+  if (!data || typeof data !== "object") {
+    return undefined;
+  }
+  const tryPlan = (raw: unknown): WikiRunPlan | undefined => {
+    if (!raw || typeof raw !== "object") {
+      return undefined;
+    }
+    const plan = raw as WikiRunPlan;
+    if (typeof plan.summary === "string" && Array.isArray(plan.pages)) {
+      return plan;
+    }
+    return undefined;
+  };
+  const steps = (data as { steps?: Record<string, unknown> }).steps;
+  if (steps && typeof steps === "object") {
+    for (const step of Object.values(steps)) {
+      if (!step || typeof step !== "object") {
+        continue;
+      }
+      const payload = (step as { suspendPayload?: unknown }).suspendPayload;
+      if (payload && typeof payload === "object") {
+        const gate = (payload as { gate?: unknown }).gate;
+        if (gate === "plan") {
+          const plan = tryPlan((payload as { plan?: unknown }).plan);
+          if (plan) {
+            return plan;
+          }
+        }
+      }
+    }
+  }
+  const stepPayload = (data as { step?: { suspendPayload?: unknown } }).step
+    ?.suspendPayload;
+  if (stepPayload && typeof stepPayload === "object") {
+    return tryPlan((stepPayload as { plan?: unknown }).plan);
+  }
+  return tryPlan(
+    (data as { suspendPayload?: { plan?: unknown } }).suspendPayload?.plan,
+  );
 }
 
 function summaryFromSession(session: OperatorSessionDto): OperatorSessionSummary {
@@ -601,6 +680,11 @@ function SessionChatPanel({
    * durable finalize also neutralizes them for refresh.
    */
   const [suppressDecisions, setSuppressDecisions] = useState(false);
+  /**
+   * After the user picks "Request changes", focus free-text revision feedback
+   * instead of immediately resuming the workflow.
+   */
+  const [awaitingPlanRevise, setAwaitingPlanRevise] = useState(false);
   const kickoffSent = useRef(false);
   /** Sync guard against rapid double-send before useChat status flips to busy. */
   const sendInFlight = useRef(false);
@@ -622,6 +706,16 @@ function SessionChatPanel({
     return base;
   }, [workspaceId, session.id, workspace.rootPath, rootPathHint]);
 
+  // Refs so prepareSendMessagesRequest sees latest gate without recreating transport.
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
+  const linkedRunIdRef = useRef(linkedRunId);
+  linkedRunIdRef.current = linkedRunId;
+  const resumePlanRef = useRef(resumePlan);
+  resumePlanRef.current = resumePlan;
+  const gateStepRef = useRef(gateStep);
+  gateStepRef.current = gateStep;
+
   const transport = useMemo(
     () =>
       new DefaultChatTransport({
@@ -630,34 +724,59 @@ function SessionChatPanel({
           // AI SDK persistence: only the last message; server loads history.
           const last = msgs[msgs.length - 1];
           let resumeData:
-            | { action: "approve" | "deny"; plan?: typeof resumePlan }
+            | {
+                action: "approve" | "deny" | "revise";
+                plan?: WikiRunPlan;
+                feedback?: string;
+              }
             | undefined;
-          if (last?.role === "user") {
+
+          // Resolve from durable phase OR message parts (meta may lag after stream).
+          const gate = resolveLiveGate(
+            sessionRef.current,
+            msgs,
+            linkedRunIdRef.current,
+            resumePlanRef.current,
+          );
+          const atLivePlanGate = gate.active && gate.step === "plan-gate";
+          const atLiveGate = gate.active;
+
+          if (last?.role === "user" && atLiveGate) {
             for (const p of last.parts ?? []) {
-              if (
-                p.type === "text" &&
-                typeof p.text === "string" &&
-                (p.text === "approve" || p.text === "deny")
-              ) {
-                // Free-text fallback only; primary HITL is structured chips.
-                resumeData = { action: p.text };
+              if (p.type === "text" && typeof p.text === "string") {
+                const text = p.text.trim();
+                if (text === "approve" || text === "deny") {
+                  resumeData = { action: text };
+                } else if (
+                  text &&
+                  text.toLowerCase() !== "revise" &&
+                  atLivePlanGate
+                ) {
+                  // Free-text only at a live plan gate = revision feedback.
+                  resumeData = { action: "revise", feedback: text };
+                }
               }
             }
           }
 
-          const runId = linkedRunId ?? session.workflow?.linkedRunId;
-          const step = gateStep;
-          const plan = resumePlan ?? session.workflow?.plan;
+          const runId = gate.runId ?? linkedRunIdRef.current;
+          const step = atLiveGate ? gate.step : gateStepRef.current;
+          const plan = gate.plan ?? resumePlanRef.current;
 
-          if (resumeData && step === "plan-gate" && plan) {
+          if (
+            resumeData &&
+            step === "plan-gate" &&
+            plan &&
+            (resumeData.action === "approve" || resumeData.action === "revise")
+          ) {
             resumeData = { ...resumeData, plan };
           }
 
           return {
             body: {
               message: last,
-              id: id ?? session.id,
-              ...(resumeData && runId
+              id: id ?? sessionRef.current.id,
+              ...(resumeData && runId && atLiveGate
                 ? {
                     resumeData,
                     runId,
@@ -668,15 +787,7 @@ function SessionChatPanel({
           };
         },
       }),
-    [
-      chatApi,
-      linkedRunId,
-      gateStep,
-      resumePlan,
-      session.id,
-      session.workflow?.linkedRunId,
-      session.workflow?.plan,
-    ],
+    [chatApi],
   );
 
   const { messages, sendMessage, setMessages, status, stop, error, clearError } =
@@ -712,6 +823,7 @@ function SessionChatPanel({
       }
       sendInFlight.current = true;
       setSuppressDecisions(false);
+      setAwaitingPlanRevise(false);
       void Promise.resolve(sendMessage({ text })).finally(() => {
         sendInFlight.current = false;
       });
@@ -809,6 +921,10 @@ function SessionChatPanel({
     const plan = extractResumePlan(session, messages);
     if (plan) {
       setResumePlan(plan);
+    }
+    // Drop revise-composer mode once we leave the plan gate.
+    if (session.workflow?.phase !== "awaiting_plan") {
+      setAwaitingPlanRevise(false);
     }
   }, [messages, session]);
 
@@ -913,6 +1029,14 @@ function SessionChatPanel({
 
   const choiceOnly = pending?.mode === "choice_only";
   const inputOnly = pending?.mode === "input_only";
+  const liveGate = useMemo(
+    () => resolveLiveGate(session, messages, linkedRunId, resumePlan),
+    [session, messages, linkedRunId, resumePlan],
+  );
+  const atPlanGate = liveGate.active && liveGate.step === "plan-gate";
+  const planReviseMode =
+    awaitingPlanRevise ||
+    (atPlanGate && pending?.mode === "choice_or_input");
   const canType = !readOnly && !choiceOnly;
   const hasSources = (workspace.sources?.length ?? 0) > 0;
   // Allow typing without sources so slash commands (/help, /new, …) still work.
@@ -930,6 +1054,22 @@ function SessionChatPanel({
   const handleChoice = useCallback(
     (optionId: string) => {
       if (readOnly || isBusy || sendInFlight.current) {
+        return;
+      }
+      // Request changes: unlock composer for free-text feedback (do not resume yet).
+      if (
+        optionId === "revise" ||
+        optionId === "request_changes" ||
+        optionId === "request-changes"
+      ) {
+        setAwaitingPlanRevise(true);
+        // Focus composer so the operator can type feedback immediately.
+        requestAnimationFrame(() => {
+          const el = document.querySelector<HTMLTextAreaElement>(
+            '[data-testid="session-input"]',
+          );
+          el?.focus();
+        });
         return;
       }
       // Option ids are workflow resume actions: approve | deny (and aliases).
@@ -1175,6 +1315,14 @@ function SessionChatPanel({
               {t.session.choiceOnly}
             </p>
           ) : null}
+          {planReviseMode && !choiceOnly ? (
+            <p
+              className="mb-2 text-xs text-muted-foreground"
+              data-testid="session-plan-revise-hint"
+            >
+              {t.session.planReviseHint}
+            </p>
+          ) : null}
           {inputOnly && pending ? (
             <p className="mb-2 text-xs text-muted-foreground">
               {pending.question}
@@ -1271,8 +1419,11 @@ function SessionChatPanel({
                         ? t.session.placeholderNoSources
                         : choiceOnly
                           ? t.session.placeholderChoice
-                          : (pending?.inputPlaceholder ??
-                            t.session.placeholderDefault)
+                          : planReviseMode
+                            ? (pending?.inputPlaceholder ??
+                              t.session.placeholderPlanRevise)
+                            : (pending?.inputPlaceholder ??
+                              t.session.placeholderDefault)
                   }
                   data-testid="session-input"
                 />

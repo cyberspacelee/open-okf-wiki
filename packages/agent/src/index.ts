@@ -9,6 +9,7 @@ export {
   redactErrorMessage,
   shouldUseFixtureMode,
   resolveModelConfig,
+  parsePlanFromAgentText,
   type WikiRunAgentInput,
   type WikiRunAgentResult,
 } from "./run.js";

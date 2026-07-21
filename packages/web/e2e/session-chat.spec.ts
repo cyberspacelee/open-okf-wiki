@@ -26,30 +26,56 @@ test.describe("Session chatbot (AI Elements)", () => {
     await page.getByTestId("session-input").fill("generate a wiki plan");
     await page.getByTestId("session-send").click();
 
-    // Assistant plan text + decision chips (workflow suspend → data-choice)
-    await expect(page.getByText(/proposed wiki plan/i).first()).toBeVisible({
+    // Short plan prompt (full body is data-plan card, not duplex markdown)
+    await expect(page.getByText(/wiki plan/i).first()).toBeVisible({
       timeout: 45_000,
     });
     await expect(page.getByTestId("session-message-text").first()).toBeVisible({
       timeout: 10_000,
     });
 
-    // Dynamic decision chips (approve | deny)
+    // Structured plan card + fullscreen markdown reader
+    await expect(page.getByTestId("session-plan-card").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByTestId("session-plan-markdown").first()).toBeVisible();
+    await page.getByTestId("session-plan-fullscreen").first().click();
+    await expect(page.getByTestId("session-plan-fullscreen-dialog")).toBeVisible();
+    await page.keyboard.press("Escape");
+
+    // Dynamic decision chips (approve | request changes | deny)
     await expect(page.getByTestId("session-decision").first()).toBeVisible({
       timeout: 15_000,
     });
     const chips = page.getByTestId("session-decision").first().locator("button");
     await expect(chips.first()).toBeVisible();
-    expect(await chips.count()).toBeGreaterThanOrEqual(2);
+    expect(await chips.count()).toBeGreaterThanOrEqual(3);
+    await expect(page.getByTestId("session-choice-revise")).toBeVisible();
+    // Plan gate allows free-text revision (not locked like publish)
+    await expect(page.getByTestId("session-input")).toBeEnabled();
+    await expect(page.getByTestId("session-plan-revise-hint")).toBeVisible();
+
+    // Third path: request changes → free-text revise → new plan with concepts.md
+    await page.getByTestId("session-choice-revise").click();
+    await expect(page.getByTestId("session-plan-revise-hint")).toBeVisible();
+    await page.getByTestId("session-input").fill("add a concepts page");
+    await page.getByTestId("session-send").click();
+
+    await expect(page.getByText(/revising the wiki plan|wiki plan/i).first()).toBeVisible({
+      timeout: 45_000,
+    });
+    // Fixture revise adds concepts.md to the structured plan card
+    await expect(
+      page.getByTestId("session-plan-markdown").filter({ hasText: /concepts\.md/i }).first(),
+    ).toBeVisible({ timeout: 45_000 });
+    await expect(page.getByTestId("session-choice-approve")).toBeVisible({
+      timeout: 15_000,
+    });
 
     const writeChip = page.getByTestId("session-choice-approve");
-    if ((await writeChip.count()) > 0) {
-      await writeChip.click();
-    } else {
-      await chips.filter({ hasText: /write/i }).first().click();
-    }
+    await writeChip.click();
 
-    // After plan approve: write then publication gate (not the plan "page(s)" copy)
+    // After plan approve: write then publication gate
     await expect(page.getByText(/Publish the staged wiki/i).first()).toBeVisible({
       timeout: 90_000,
     });

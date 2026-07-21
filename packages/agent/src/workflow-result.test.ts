@@ -31,6 +31,20 @@ test("mapWorkflowResult: plan gate from top-level suspendPayload", () => {
   assert.equal(terminal.summary, "Awaiting plan confirmation");
 });
 
+test("mapWorkflowResult: bailed plan deny maps to cancelled", () => {
+  const terminal = mapWorkflowResult({
+    status: "bailed",
+    result: {
+      status: "cancelled",
+      summary: "Plan declined by operator",
+      plan: samplePlan,
+    },
+  });
+  assert.equal(terminal.status, "cancelled");
+  assert.match(terminal.summary ?? "", /declined|Plan/i);
+  assert.deepEqual(terminal.plan, samplePlan);
+});
+
 test("mapWorkflowResult: plan gate from suspended step only", () => {
   const terminal = mapWorkflowResult({
     status: "suspended",

@@ -18,17 +18,13 @@ import {
   ConfirmationTitle,
 } from "@/components/ai-elements/confirmation";
 import {
-  Plan,
-  PlanContent,
-  PlanDescription,
-  PlanHeader,
-  PlanTitle,
-} from "@/components/ai-elements/plan";
-import {
   Suggestion,
   Suggestions,
 } from "@/components/ai-elements/suggestion";
+import { useI18n } from "../../i18n";
 import type { PendingInteraction } from "./decision-types";
+import { PlanViewer } from "./PlanViewer";
+import type { PlanLike } from "./plan-markdown";
 
 function redactUnknown(value: unknown): unknown {
   if (value === null || value === undefined) {
@@ -91,12 +87,116 @@ function asDecision(input: unknown): PendingInteraction | null {
   };
 }
 
+function asPlanLike(value: unknown): PlanLike | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const o = value as Record<string, unknown>;
+  if (typeof o.summary !== "string" || !Array.isArray(o.pages)) {
+    return null;
+  }
+  const pages = o.pages
+    .filter(
+      (p): p is { path: string; purpose: string } =>
+        Boolean(
+          p &&
+            typeof p === "object" &&
+            typeof (p as { path?: unknown }).path === "string" &&
+            typeof (p as { purpose?: unknown }).purpose === "string",
+        ),
+    )
+    .map((p) => ({ path: p.path, purpose: p.purpose }));
+  if (pages.length === 0) {
+    return null;
+  }
+  return {
+    summary: o.summary,
+    pages,
+    notes: typeof o.notes === "string" ? o.notes : undefined,
+  };
+}
+
+/**
+ * Prefer product data-plan; fall back to Mastra data-workflow suspendPayload.plan
+ * (official AI SDK / Mastra part shape).
+ */
+function planFromWorkflowDataPart(data: unknown): PlanLike | null {
+  if (!data || typeof data !== "object") {
+    return null;
+  }
+  const steps = (data as { steps?: unknown }).steps;
+  if (!steps || typeof steps !== "object") {
+    return null;
+  }
+  for (const step of Object.values(steps as Record<string, unknown>)) {
+    if (!step || typeof step !== "object") {
+      continue;
+    }
+    const status = (step as { status?: unknown }).status;
+    const payload = (step as { suspendPayload?: unknown }).suspendPayload;
+    if (status !== "suspended" || !payload || typeof payload !== "object") {
+      continue;
+    }
+    const gate = (payload as { gate?: unknown }).gate;
+    if (gate === "plan") {
+      const plan = asPlanLike((payload as { plan?: unknown }).plan);
+      if (plan) {
+        return plan;
+      }
+    }
+  }
+  return null;
+}
+
+function localizeDecisionOption(
+  opt: PendingInteraction["options"][number],
+  t: ReturnType<typeof useI18n>["t"],
+): PendingInteraction["options"][number] {
+  const blob = `${opt.label} ${opt.description ?? ""}`;
+  switch (opt.id) {
+    case "publish_now":
+      return { ...opt, label: t.planConfirm.chipPublish };
+    case "keep_staging":
+      return { ...opt, label: t.planConfirm.chipKeepStaging };
+    case "revise":
+    case "request_changes":
+    case "request-changes":
+      return { ...opt, label: t.planConfirm.chipRevise };
+    case "approve":
+    case "approve_write": {
+      if (/publish/i.test(blob)) {
+        return { ...opt, label: t.planConfirm.chipPublish };
+      }
+      const n =
+        Number(/(\d+)/.exec(opt.label)?.[1]) ||
+        (opt.description
+          ? opt.description.split(",").map((s) => s.trim()).filter(Boolean)
+              .length
+          : 0) ||
+        1;
+      return {
+        ...opt,
+        label: t.planConfirm.chipWrite.replace("{n}", String(n)),
+      };
+    }
+    case "deny":
+    case "reject_plan":
+      if (/staging|keep/i.test(blob)) {
+        return { ...opt, label: t.planConfirm.chipKeepStaging };
+      }
+      return { ...opt, label: t.planConfirm.chipDeny };
+    default:
+      return opt;
+  }
+}
+
 export function MessageParts({
   message,
   isLatestAssistant,
   onChoice,
   onApproval,
 }: MessagePartsProps) {
+  const { t } = useI18n();
   // Prefer tool-request_user_decision over data-choice to avoid double chips.
   const hasDecisionTool = message.parts.some(
     (p) =>
@@ -104,6 +204,8 @@ export function MessageParts({
       (p.type === "tool-request_user_decision" ||
         ("toolName" in p && p.toolName === "request_user_decision")),
   );
+  // Prefer explicit data-plan; otherwise recover from official data-workflow.
+  const hasDataPlan = message.parts.some((p) => p.type === "data-plan");
 
   return (
     <>
@@ -196,14 +298,17 @@ export function MessageParts({
                 <div className="flex flex-col gap-2" data-testid="session-decision">
                   <p className="text-sm text-muted-foreground">{decision.question}</p>
                   <Suggestions>
-                    {decision.options.map((opt) => (
-                      <Suggestion
-                        key={opt.id}
-                        suggestion={opt.label}
-                        onClick={() => onChoice(opt.id)}
-                        data-testid={`session-choice-${opt.id}`}
-                      />
-                    ))}
+                    {decision.options.map((opt) => {
+                      const localized = localizeDecisionOption(opt, t);
+                      return (
+                        <Suggestion
+                          key={opt.id}
+                          suggestion={localized.label}
+                          onClick={() => onChoice(opt.id)}
+                          data-testid={`session-choice-${opt.id}`}
+                        />
+                      );
+                    })}
                   </Suggestions>
                 </div>
               ) : null}
@@ -236,46 +341,61 @@ export function MessageParts({
               <div key={key} className="flex flex-col gap-2" data-testid="session-decision">
                 <p className="text-sm text-muted-foreground">{decision.question}</p>
                 <Suggestions>
-                  {decision.options.map((opt) => (
-                    <Suggestion
-                      key={opt.id}
-                      suggestion={opt.label}
-                      onClick={() => onChoice(opt.id)}
-                      data-testid={`session-choice-${opt.id}`}
-                    />
-                  ))}
+                  {decision.options.map((opt) => {
+                    const localized = localizeDecisionOption(opt, t);
+                    return (
+                      <Suggestion
+                        key={opt.id}
+                        suggestion={localized.label}
+                        onClick={() => onChoice(opt.id)}
+                        data-testid={`session-choice-${opt.id}`}
+                      />
+                    );
+                  })}
                 </Suggestions>
               </div>
             );
           }
-          // Optional plan-shaped data
+          // Structured plan (data-plan) — Markdown + fullscreen reader
+          if (part.type === "data-plan") {
+            const plan = asPlanLike(data);
+            if (plan) {
+              return (
+                <div key={key}>
+                  <PlanViewer plan={plan} />
+                </div>
+              );
+            }
+          }
+          // Official Mastra AI SDK part: recover plan when product data-plan is missing.
           if (
-            data &&
-            typeof data === "object" &&
-            "pages" in (data as object) &&
-            "summary" in (data as object)
+            (part.type === "data-workflow" ||
+              part.type === "data-workflow-step") &&
+            !hasDataPlan
           ) {
-            const plan = data as {
-              summary: string;
-              pages: Array<{ path: string; purpose: string }>;
-            };
-            return (
-              <Plan key={key} defaultOpen>
-                <PlanHeader>
-                  <PlanTitle>Wiki plan</PlanTitle>
-                  <PlanDescription>{plan.summary}</PlanDescription>
-                </PlanHeader>
-                <PlanContent>
-                  <ul className="list-disc pl-5 text-sm">
-                    {plan.pages.map((p) => (
-                      <li key={p.path}>
-                        <code>{p.path}</code> — {p.purpose}
-                      </li>
-                    ))}
-                  </ul>
-                </PlanContent>
-              </Plan>
-            );
+            const plan =
+              planFromWorkflowDataPart(data) ||
+              (part.type === "data-workflow-step" &&
+              data &&
+              typeof data === "object"
+                ? asPlanLike(
+                    (
+                      (data as { step?: { suspendPayload?: { plan?: unknown } } })
+                        .step?.suspendPayload as { plan?: unknown } | undefined
+                    )?.plan,
+                  ) ||
+                  asPlanLike(
+                    (data as { suspendPayload?: { plan?: unknown } })
+                      .suspendPayload?.plan,
+                  )
+                : null);
+            if (plan) {
+              return (
+                <div key={key} data-testid="session-plan-from-workflow">
+                  <PlanViewer plan={plan} />
+                </div>
+              );
+            }
           }
         }
 

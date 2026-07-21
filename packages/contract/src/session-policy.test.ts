@@ -65,6 +65,29 @@ test("resolveSessionTurnMode", () => {
     }),
     { mode: "help", helpReason: "not_kickoff" },
   );
+  // Plan revise with feedback resumes; bare revise without feedback does not.
+  assert.deepEqual(
+    resolveSessionTurnMode({
+      userText: "add a concepts page",
+      phase: "awaiting_plan",
+      status: "waiting",
+      hasSources: true,
+      resumeData: { action: "revise", feedback: "add a concepts page" },
+      existingRunId: "run-1",
+    }),
+    { mode: "resume" },
+  );
+  assert.deepEqual(
+    resolveSessionTurnMode({
+      userText: "revise",
+      phase: "awaiting_plan",
+      status: "waiting",
+      hasSources: true,
+      resumeData: { action: "revise" },
+      existingRunId: "run-1",
+    }),
+    { mode: "help", helpReason: "pending_gate" },
+  );
 });
 
 test("helpTextForSessionTurn no_sources", () => {

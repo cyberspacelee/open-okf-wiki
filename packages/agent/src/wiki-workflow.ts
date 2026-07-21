@@ -77,8 +77,10 @@ const WikiRunWorkflowOutputSchema = z.object({
 export type WikiRunWorkflowOutput = z.infer<typeof WikiRunWorkflowOutputSchema>;
 
 const PlanResumeSchema = z.object({
-  action: z.enum(["approve", "deny"]),
+  action: z.enum(["approve", "deny", "revise"]),
   plan: WikiRunPlanSchema.optional(),
+  /** Operator free-text feedback when action is revise. */
+  feedback: z.string().max(4000).optional(),
 });
 
 const PlanSuspendSchema = z.object({
@@ -121,12 +123,14 @@ const planGateStep = createStep({
   outputSchema: AfterPlanSchema,
   resumeSchema: PlanResumeSchema,
   suspendSchema: PlanSuspendSchema,
-  execute: async ({ inputData, resumeData, suspend, abortSignal }) => {
+  execute: async ({ inputData, resumeData, suspend, abortSignal, bail }) => {
     if (resumeData?.action === "deny") {
-      // Surface cancellation via thrown error mapped by runner.
-      const err = new Error("plan declined");
-      err.name = "WikiRunCancelled";
-      throw err;
+      // Clean operator rejection (Mastra bail), not a failed/aborted error path.
+      return bail({
+        status: "cancelled" as const,
+        summary: "Plan declined by operator",
+        plan: resumeData.plan ?? inputData.plan,
+      });
     }
 
     if (resumeData?.action === "approve") {
@@ -135,6 +139,60 @@ const planGateStep = createStep({
         throw new Error("plan approval requires a plan payload");
       }
       return { ...inputData, plan, skipPlanConfirm: true };
+    }
+
+    // Operator revision: re-run plan with free-text feedback, then re-suspend.
+    if (resumeData?.action === "revise") {
+      const feedback = resumeData.feedback?.trim();
+      if (!feedback) {
+        throw new Error("plan revision requires feedback text");
+      }
+      const prior = resumeData.plan ?? inputData.plan;
+      const seedPlan: WikiRunPlan | undefined = prior
+        ? {
+            ...prior,
+            notes: [
+              prior.notes?.trim(),
+              `Operator revision feedback:\n${feedback}`,
+            ]
+              .filter(Boolean)
+              .join("\n\n")
+              .slice(0, 4000),
+          }
+        : {
+            summary: "Revised wiki plan",
+            pages: [
+              {
+                path: "overview.md",
+                purpose: "Repository purpose, audience, and navigation",
+              },
+            ],
+            notes: `Operator revision feedback:\n${feedback}`.slice(0, 4000),
+          };
+
+      const revised = await runWikiAgent({
+        runId: inputData.runId,
+        workspace: inputData.workspace,
+        autoApprove: inputData.autoApprove,
+        phase: "plan",
+        plan: seedPlan,
+        abortSignal: stepAbortSignal(inputData.runId, abortSignal),
+      });
+
+      if (revised.status === "cancelled") {
+        const err = new Error("cancelled");
+        err.name = "WikiRunCancelled";
+        throw err;
+      }
+      if (revised.status === "failed" || !revised.plan) {
+        throw new Error(revised.error ?? "plan revision failed");
+      }
+
+      // Always re-suspend so the operator can approve the revised plan.
+      return await suspend({
+        gate: "plan",
+        plan: revised.plan,
+      });
     }
 
     // Already have a plan and no confirm gate — pass through to write.

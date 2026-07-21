@@ -49,7 +49,8 @@ function isCancelledError(error: unknown): boolean {
     return true;
   }
   const message = error instanceof Error ? error.message : String(error);
-  return /plan declined|cancelled|aborted/i.test(message);
+  // bail() should not throw; keep string match for older runners / nested errors.
+  return /plan declined|cancelled|aborted|bailed/i.test(message);
 }
 
 async function consumeWorkflowStream(
@@ -127,8 +128,9 @@ export type ResumeWikiRunInput = {
   runId: string;
   /** plan-gate or publish-gate */
   gate: "plan" | "publication";
-  action: "approve" | "deny";
+  action: "approve" | "deny" | "revise";
   plan?: WikiRunPlan;
+  feedback?: string;
   onEvent?: (event: WikiWorkflowJobEvent) => void;
   /** Product cancel signal (server abortRun). */
   abortSignal?: AbortSignal;
@@ -145,10 +147,17 @@ export async function resumeWikiRun(
   }
   let release: (() => void) | undefined;
   try {
+    if (input.gate === "publication" && input.action === "revise") {
+      throw new Error("publication gate does not support revise");
+    }
     const resumeData =
       input.gate === "plan"
-        ? { action: input.action, plan: input.plan }
-        : { action: input.action };
+        ? {
+            action: input.action,
+            ...(input.plan ? { plan: input.plan } : {}),
+            ...(input.feedback ? { feedback: input.feedback } : {}),
+          }
+        : { action: input.action as "approve" | "deny" };
 
     const handle = await openWikiRunWorkflow({
       kind: "resume",

@@ -755,6 +755,22 @@ export function denyPlan(
   );
 }
 
+/** HITL: revise plan with free-text feedback and re-suspend. */
+export function revisePlan(
+  workspaceId: string,
+  runId: string,
+  feedback: string,
+  rootPath?: string,
+): Promise<{ run: StoredRunRecord }> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/revise-plan`,
+      rootPath,
+    ),
+    { method: "POST", body: JSON.stringify({ feedback }) },
+  );
+}
+
 /** HITL: approve publication of a run that is awaiting_publication. */
 export function approvePublication(
   workspaceId: string,
