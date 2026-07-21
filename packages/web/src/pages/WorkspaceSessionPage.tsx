@@ -1137,7 +1137,7 @@ function SessionChatPanel({
           <ConversationScrollButton />
         </Conversation>
 
-        <div className="shrink-0 border-t p-3">
+        <div className="shrink-0 border-t bg-card/80 p-3 backdrop-blur-sm supports-backdrop-filter:bg-card/70">
           {readOnly ? (
             <div
               className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-dashed bg-muted/40 px-3 py-2"
@@ -1211,8 +1211,11 @@ function SessionChatPanel({
                 className="absolute inset-x-0 bottom-full z-20 mb-1 overflow-hidden rounded-lg border bg-popover shadow-md"
                 data-testid="session-slash-menu"
               >
-                <PromptInputCommand shouldFilter={false} className="max-h-56">
-                  <PromptInputCommandList>
+                <PromptInputCommand
+                  shouldFilter={false}
+                  className="h-auto max-h-56 w-full"
+                >
+                  <PromptInputCommandList className="max-h-56">
                     <PromptInputCommandEmpty className="p-3 text-sm text-muted-foreground">
                       {t.session.slashEmpty}
                     </PromptInputCommandEmpty>
@@ -1252,7 +1255,7 @@ function SessionChatPanel({
             ) : null}
             <PromptInput
               onSubmit={handleSubmit}
-              className="w-full"
+              className="w-full [&_[data-slot=input-group]]:shadow-xs"
               data-testid="session-prompt"
             >
               <PromptInputBody>
