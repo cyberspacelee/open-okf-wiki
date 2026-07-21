@@ -52,7 +52,11 @@ export function expandChatSlash(
   }
 }
 
-/** Generate-ish user text (phase-agnostic). Free-chat must not auto-start. */
+/**
+ * Generate-ish user text (phase-agnostic).
+ * Intentionally narrow: free-chat must not auto-start on incidental words
+ * like "plan" or "run" mid-sentence.
+ */
 export function isKickoffPhrase(text: string): boolean {
   const t = text.trim();
   if (!t) {
@@ -61,7 +65,25 @@ export function isKickoffPhrase(text: string): boolean {
   if (/^\/(generate|run|wiki|plan)(?:\s|$)/i.test(t)) {
     return true;
   }
-  return /generate|wiki|plan|开始|生成|写|run/i.test(t);
+  if (t.toLowerCase() === DEFAULT_KICKOFF_TEXT.toLowerCase()) {
+    return true;
+  }
+  // Bare kickoff tokens (composer shortcuts)
+  if (/^(generate|start)$/i.test(t)) {
+    return true;
+  }
+  // Start-anchored English kickoffs
+  if (/^generate(\s+a)?\s+wiki(\s+plan)?\b/i.test(t)) {
+    return true;
+  }
+  if (/^(start|run)\s+(a\s+)?(wiki\s+)?(plan|generate)\b/i.test(t)) {
+    return true;
+  }
+  // Start-anchored Chinese kickoffs
+  if (/^(生成|开始生成|开始写)\b/.test(t)) {
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -168,6 +190,12 @@ export function resolveSessionTurnMode(input: {
     return { mode: "start" };
   }
 
+  // intent "chat" or omitted: still allow kickoff phrase when idle (safety net
+  // for clients that mislabel start as chat).
+  if (isKickoff(userText, phase) && !resumeData && hasSources) {
+    return { mode: "start" };
+  }
+
   if (intent === "chat") {
     if (!hasSources && !userText) {
       return { mode: "help", helpReason: "no_sources" };
@@ -179,11 +207,6 @@ export function resolveSessionTurnMode(input: {
       return { mode: "help", helpReason: "no_sources" };
     }
     return { mode: "help", helpReason: "not_kickoff" };
-  }
-
-  // No explicit intent: kickoff phrase may still start (composer / slash).
-  if (isKickoff(userText, phase) && !resumeData && hasSources) {
-    return { mode: "start" };
   }
 
   if (atGate) {
@@ -210,9 +233,17 @@ export function helpTextForSessionTurn(input: {
     case "pending_gate": {
       if (isKickoffPhrase(input.userText ?? "")) {
         if (phase === "awaiting_publish") {
-          return "A publication decision is still pending. Complete or deny the publish gate (use the decision options above) before starting a new Wiki Run with **generate**.";
+          return (
+            "A publication decision is still pending. " +
+            "Complete or deny the publish gate above, or use **/reset** to clear a stuck gate, " +
+            "before starting a new Wiki Run with **/generate**."
+          );
         }
-        return "A plan decision is still pending. Complete or deny the plan gate (use the decision options above) before starting a new Wiki Run with **generate**.";
+        return (
+          "A plan decision is still pending. " +
+          "Complete or deny the plan gate above, or use **/reset** to clear a stuck gate, " +
+          "before starting a new Wiki Run with **/generate**."
+        );
       }
       if (phase === "awaiting_publish") {
         return "A publication decision is waiting. Pick **approve** or **deny** above to continue — free-text chat will not advance this gate.";
@@ -220,10 +251,13 @@ export function helpTextForSessionTurn(input: {
       if ((input.userText ?? "").trim().toLowerCase() === "revise") {
         return "To revise the plan, type your modification feedback in the composer (for example: add a concepts page, drop architecture.md) and send.";
       }
-      return "A plan decision is waiting. Pick **approve**, **deny**, or **request changes** — or type free-text revision feedback to replan.";
+      return "A plan decision is waiting. Pick **approve**, **deny**, or **request changes** — or type free-text revision feedback to replan. Use **/reset** if chips are missing or the gate is stuck.";
     }
     case "running":
-      return "A Wiki Run is already in progress. Wait for it to finish, or use **Stop** to cancel it.";
+      return (
+        "A Wiki Run is already in progress. Wait for it to finish, use **Stop** to cancel it, " +
+        "or **/reset** if the session is stuck mid-flight with no live stream."
+      );
     case "not_kickoff":
     default:
       return [

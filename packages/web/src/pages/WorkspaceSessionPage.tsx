@@ -61,6 +61,7 @@ import {
   type WorkspaceConfig,
 } from "../api";
 import { useI18n } from "../i18n";
+import { isKickoffPhrase } from "@okf-wiki/contract";
 import {
   clampSlashHighlight,
   filterSessionCommands,
@@ -909,11 +910,13 @@ function SessionChatPanel({
             }
           }
 
+          // No forced intent:"chat" — omit intent so the server can still
+          // treat kickoff phrases as start (safety net for mislabeled sends).
           return {
             body: {
               message: last,
               id: id ?? sessionRef.current.id,
-              intent: pending?.intent ?? "chat",
+              ...(pending?.intent ? { intent: pending.intent } : {}),
             },
           };
         },
@@ -965,8 +968,9 @@ function SessionChatPanel({
         return;
       }
       sendInFlight.current = true;
-      // Default to no envelope only when callers forget; prefer explicit intent.
-      pendingSendRef.current = envelope ?? { intent: "chat" };
+      // Never default to intent:"chat" — missing envelope leaves intent unset so
+      // the server can still kick off on isKickoffPhrase (defense in depth).
+      pendingSendRef.current = envelope ?? null;
       setSuppressDecisions(false);
       setAwaitingPlanRevise(false);
       void Promise.resolve(sendMessage({ text })).finally(() => {
@@ -1025,9 +1029,12 @@ function SessionChatPanel({
         runLocalCommand(parsed.action);
         return;
       }
+      const phase = session.workflow?.phase ?? "idle";
+      const canStart = phase === "idle" || phase === "done";
+
       if (parsed.kind === "send") {
         const text = parsed.text;
-        // Slash /approve /deny → structured resume when a gate is live.
+        // Slash /approve /deny → structured resume when a gate is live or phase is gate.
         if (text === "approve" || text === "deny") {
           const gate = resolveLiveGate(
             session,
@@ -1035,38 +1042,49 @@ function SessionChatPanel({
             linkedRunId,
             resumePlan,
           );
-          if (gate.active && gate.runId) {
+          const runId =
+            gate.runId ?? linkedRunId ?? session.workflow?.linkedRunId;
+          const atGatePhase =
+            phase === "awaiting_plan" || phase === "awaiting_publish";
+          const pendingLive = extractPendingFromMessages(messages);
+          if (runId && (gate.active || atGatePhase || pendingLive)) {
+            const step =
+              gate.active
+                ? gate.step
+                : phase === "awaiting_publish"
+                  ? "publish-gate"
+                  : "plan-gate";
             sendTurn(text, {
               intent: "resume",
               resumeData: { action: text },
-              step: gate.step,
-              runId: gate.runId,
+              step,
+              runId,
             });
             return;
           }
+          // No gate — let server return pending_gate / not_kickoff help.
+          sendTurn(text);
+          return;
         }
         // Kickoff phrases (/generate → "generate a wiki plan") → explicit start.
-        // Must send intent:"start" — intent:"chat" never starts a Wiki Run.
-        if (/generate|wiki|plan|开始|生成|写|run/i.test(text)) {
-          const phase = session.workflow?.phase ?? "idle";
-          if (phase === "idle" || phase === "done") {
+        if (isKickoffPhrase(text) || isKickoffPhrase(raw)) {
+          if (canStart) {
             sendTurn(text, { intent: "start" });
             return;
           }
+          // Stuck gate / mid-flight: still send so server returns clear /reset help.
+          sendTurn(text, { intent: "start" });
+          return;
         }
-        sendTurn(text, { intent: "chat" });
+        sendTurn(text);
         return;
       }
-      // Free-text: start if kickoff on idle; else chat (plan-gate revise handled in transport).
-      const phase = session.workflow?.phase ?? "idle";
-      if (
-        (phase === "idle" || phase === "done") &&
-        /generate|wiki|plan|开始|生成|写|run/i.test(raw)
-      ) {
+      // Free-text: start if kickoff on idle; else bare send (revise via transport).
+      if (isKickoffPhrase(raw)) {
         sendTurn(raw, { intent: "start" });
         return;
       }
-      sendTurn(raw, { intent: "chat" });
+      sendTurn(raw);
     },
     [runLocalCommand, sendTurn, session, messages, linkedRunId, resumePlan],
   );
@@ -1078,25 +1096,12 @@ function SessionChatPanel({
         runLocalCommand(cmd.local);
         return;
       }
-      // Route through dispatch so /generate gets intent:"start" (not bare chat).
-      // Palette/Tab/suggestion previously called sendTurn(sendText) with no envelope,
-      // which defaulted to intent:"chat" and never kicked off a Wiki Run.
+      // Always go through dispatch so intent mapping stays in one place
+      // (palette / Tab / suggestions / Enter on slash menu).
       if (cmd.sendText) {
-        if (
-          cmd.id === "generate" ||
-          cmd.command === "/generate" ||
-          cmd.command === "/run" ||
-          cmd.command === "/wiki" ||
-          cmd.command === "/plan"
-        ) {
-          dispatchComposerText(cmd.command);
-          return;
-        }
-        if (cmd.id === "approve" || cmd.id === "deny") {
-          dispatchComposerText(cmd.command);
-          return;
-        }
-        dispatchComposerText(cmd.sendText);
+        dispatchComposerText(
+          cmd.command.startsWith("/") ? cmd.command : cmd.sendText,
+        );
       }
     },
     [runLocalCommand, dispatchComposerText],
@@ -1415,10 +1420,11 @@ function SessionChatPanel({
             ? "deny"
             : optionId;
       if (action !== "approve" && action !== "deny") {
-        // Unknown chip: send as chat help rather than a silent no-op.
-        sendTurn(optionId, { intent: "chat" });
+        sendTurn(optionId);
         return;
       }
+      // Chips visible ⇒ treat as resume when we have a run id, even if phase
+      // meta lags (do not require gate.active — that caused silent chat no-ops).
       const gate = resolveLiveGate(
         session,
         messages,
@@ -1426,14 +1432,30 @@ function SessionChatPanel({
         resumePlan,
       );
       const runId = gate.runId ?? linkedRunId ?? session.workflow?.linkedRunId;
-      if (!runId || !gate.active) {
-        sendTurn(action, { intent: "chat" });
+      const phase = session.workflow?.phase ?? "idle";
+      const atGatePhase =
+        phase === "awaiting_plan" || phase === "awaiting_publish";
+      const pendingLive = extractPendingFromMessages(messages);
+      if (!runId) {
+        sendTurn(action);
         return;
       }
+      if (!gate.active && !atGatePhase && !pendingLive) {
+        sendTurn(action);
+        return;
+      }
+      const step =
+        gate.active
+          ? gate.step
+          : phase === "awaiting_publish"
+            ? "publish-gate"
+            : pendingLive?.gate === "publication"
+              ? "publish-gate"
+              : "plan-gate";
       sendTurn(action, {
         intent: "resume",
         resumeData: { action },
-        step: gate.step,
+        step,
         runId,
       });
     },

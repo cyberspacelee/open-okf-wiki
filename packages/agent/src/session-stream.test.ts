@@ -21,7 +21,9 @@ test("isKickoff requires generate-ish phrase on idle/done only", () => {
   assert.equal(isKickoff("generate", "planning"), false);
   // undefined phase treated like idle (fresh session)
   assert.equal(isKickoff("generate", undefined), true);
-  assert.equal(isKickoff("please run", "idle"), true);
+  // incidental "run" / "plan" mid-sentence must not kick off
+  assert.equal(isKickoff("please run tests", "idle"), false);
+  assert.equal(isKickoff("review the plan carefully", "idle"), false);
 });
 
 test("isKickoffPhrase is phase-agnostic", () => {

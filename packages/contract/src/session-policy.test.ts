@@ -22,10 +22,27 @@ test("expandChatSlash chat-bound names", () => {
 
 test("isKickoff / isKickoffPhrase", () => {
   assert.equal(isKickoff("generate a wiki plan", "idle"), true);
+  assert.equal(isKickoff("generate", "idle"), true);
   assert.equal(isKickoff("hello", "idle"), false);
   assert.equal(isKickoff("generate", "awaiting_plan"), false);
   assert.equal(isKickoffPhrase("/generate"), true);
   assert.equal(isKickoffPhrase("hello"), false);
+  // Must not treat incidental words as kickoff
+  assert.equal(isKickoffPhrase("please review the plan carefully"), false);
+  assert.equal(isKickoffPhrase("we should run tests first"), false);
+});
+
+test("resolveSessionTurnMode: chat intent still starts on kickoff phrase", () => {
+  assert.deepEqual(
+    resolveSessionTurnMode({
+      userText: "generate a wiki plan",
+      phase: "idle",
+      status: "active",
+      hasSources: true,
+      intent: "chat",
+    }),
+    { mode: "start" },
+  );
 });
 
 test("normalizeSessionUserText", () => {
