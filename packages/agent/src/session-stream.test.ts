@@ -191,7 +191,7 @@ test("resolveSessionTurnMode: running blocks start", () => {
   );
 });
 
-test("resolveSessionTurnMode: resume still wins while running", () => {
+test("resolveSessionTurnMode: resume still wins while status running at gate", () => {
   assert.deepEqual(
     resolveSessionTurnMode({
       userText: "approve",
@@ -202,6 +202,31 @@ test("resolveSessionTurnMode: resume still wins while running", () => {
       existingRunId: "run-1",
     }),
     { mode: "resume" },
+  );
+});
+
+test("resolveSessionTurnMode: stale approve after eager gate-exit is running help", () => {
+  assert.deepEqual(
+    resolveSessionTurnMode({
+      userText: "approve",
+      phase: "writing",
+      status: "running",
+      hasSources: true,
+      resumeData: { action: "approve" },
+      existingRunId: "run-1",
+    }),
+    { mode: "help", helpReason: "running" },
+  );
+  assert.deepEqual(
+    resolveSessionTurnMode({
+      userText: "approve",
+      phase: "planning",
+      status: "running",
+      hasSources: true,
+      resumeData: { action: "approve" },
+      existingRunId: "run-1",
+    }),
+    { mode: "help", helpReason: "running" },
   );
 });
 

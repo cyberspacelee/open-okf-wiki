@@ -44,8 +44,19 @@ test("resolveSessionTurnMode", () => {
       hasSources: true,
       resumeData: { action: "approve" },
       existingRunId: "run-1",
+      intent: "resume",
     }),
     { mode: "resume" },
+  );
+  assert.deepEqual(
+    resolveSessionTurnMode({
+      userText: "generate a wiki plan",
+      phase: "idle",
+      status: "active",
+      hasSources: true,
+      intent: "start",
+    }),
+    { mode: "start" },
   );
   assert.deepEqual(
     resolveSessionTurnMode({

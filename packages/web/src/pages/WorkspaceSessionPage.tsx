@@ -182,7 +182,7 @@ function extractLinkedRunId(
   return session.workflow?.linkedRunId;
 }
 
-/** Gate step from session.workflow.phase or structured data-choice (no transcript regex). */
+/** Gate step from session.workflow.phase or structured data-gate (no transcript regex). */
 function extractGateStep(
   session: OperatorSessionDto,
   messages: UIMessage[],
@@ -217,6 +217,13 @@ function resolveLiveGate(
     resumePlanHint || extractResumePlan(session, messages) || undefined;
   const phase = session.workflow?.phase;
 
+  // Eager gate-exit persists phase as planning/writing while work is in flight.
+  // Do not treat status===running alone as mid-flight: stuck "running" at a real
+  // gate must still resume after refresh until reconcile rewrites status.
+  if (phase === "planning" || phase === "writing") {
+    return { active: false, step: "plan-gate", runId, plan };
+  }
+
   if (phase === "awaiting_publish" && runId) {
     return { active: true, step: "publish-gate", runId, plan };
   }
@@ -224,21 +231,23 @@ function resolveLiveGate(
     return { active: true, step: "plan-gate", runId, plan };
   }
 
-  // Meta lag: chips / data-plan already on the latest assistant message.
+  // Meta lag: data-gate already on the latest assistant message.
   const pending = extractPendingFromMessages(messages);
   if (pending && runId) {
+    if (pending.gate === "publication") {
+      return { active: true, step: "publish-gate", runId, plan };
+    }
+    if (pending.gate === "plan") {
+      return { active: true, step: "plan-gate", runId, plan };
+    }
     if (pending.options.some((o) => o.id === "revise")) {
       return { active: true, step: "plan-gate", runId, plan };
     }
     if (/publish|staging/i.test(pending.question)) {
       return { active: true, step: "publish-gate", runId, plan };
     }
-    if (/plan/i.test(pending.question)) {
-      return { active: true, step: "plan-gate", runId, plan };
-    }
-    // Generic approve/deny without revise → publish-style gate.
     if (pending.options.some((o) => o.id === "approve" || o.id === "deny")) {
-      return { active: true, step: "publish-gate", runId, plan };
+      return { active: true, step: "plan-gate", runId, plan };
     }
   }
 
@@ -452,12 +461,6 @@ export function WorkspaceSessionPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- boot once per workspace; switcher owns later loads
   }, [id, rootPathHint]);
 
-  const newestSessionId = sessionList[0]?.id;
-  const readOnly =
-    sessionMeta != null &&
-    newestSessionId != null &&
-    sessionMeta.id !== newestSessionId;
-
   const handleSessionMetaChange = useCallback((session: OperatorSessionDto) => {
     setSessionMeta(session);
     setSessionList((prev) =>
@@ -563,12 +566,6 @@ export function WorkspaceSessionPage() {
       setBootError(err);
     }
   }, [id, sessionMeta, rootPath]);
-
-  const handleSwitchToLatest = useCallback(() => {
-    if (newestSessionId) {
-      void handleSwitchSession(newestSessionId);
-    }
-  }, [newestSessionId, handleSwitchSession]);
 
   const sessionSelectItems = useMemo(
     () =>
@@ -713,11 +710,9 @@ export function WorkspaceSessionPage() {
           workspace={workspace}
           session={sessionMeta}
           rootPathHint={rootPathHint}
-          kickoff={kickoff && !readOnly}
-          readOnly={readOnly}
+          kickoff={kickoff}
           onSessionMetaChange={handleSessionMetaChange}
           onNewSession={() => void handleNewSession()}
-          onSwitchToLatest={handleSwitchToLatest}
           onResetSession={() => void handleResetSession()}
           onDeleteSession={requestDeleteSession}
         />
@@ -732,10 +727,8 @@ function SessionChatPanel({
   session,
   rootPathHint,
   kickoff,
-  readOnly = false,
   onSessionMetaChange,
   onNewSession,
-  onSwitchToLatest,
   onResetSession,
   onDeleteSession,
 }: {
@@ -744,10 +737,8 @@ function SessionChatPanel({
   session: OperatorSessionDto;
   rootPathHint?: string;
   kickoff?: boolean;
-  readOnly?: boolean;
   onSessionMetaChange?: (session: OperatorSessionDto) => void;
   onNewSession?: () => void;
-  onSwitchToLatest?: () => void;
   onResetSession?: () => void;
   onDeleteSession?: () => void;
 }) {
@@ -765,7 +756,7 @@ function SessionChatPanel({
   const [resumePlan, setResumePlan] = useState(session.workflow?.plan);
   /**
    * After explicit Stop, hide decision chips until the next user turn.
-   * Mid-stream cancel may leave tool/data-choice parts in local messages;
+   * Mid-stream cancel may leave gate parts in local messages;
    * durable finalize also neutralizes them for refresh.
    */
   const [suppressDecisions, setSuppressDecisions] = useState(false);
@@ -777,6 +768,20 @@ function SessionChatPanel({
   const kickoffSent = useRef(false);
   /** Sync guard against rapid double-send before useChat status flips to busy. */
   const sendInFlight = useRef(false);
+  /**
+   * Structured send envelope for the next transport POST (intent + resume).
+   * Cleared in prepareSendMessagesRequest so free-text cannot accidentally resume.
+   */
+  const pendingSendRef = useRef<{
+    intent: "start" | "resume" | "chat";
+    resumeData?: {
+      action: "approve" | "deny" | "revise";
+      plan?: WikiRunPlan;
+      feedback?: string;
+    };
+    step?: "plan-gate" | "publish-gate";
+    runId?: string;
+  } | null>(null);
   /** Tracks prior useChat status so we refresh meta only after a stream ends. */
   const prevChatStatus = useRef<string>("ready");
   const refreshingMeta = useRef(false);
@@ -812,66 +817,102 @@ function SessionChatPanel({
         prepareSendMessagesRequest: ({ messages: msgs, id }) => {
           // AI SDK persistence: only the last message; server loads history.
           const last = msgs[msgs.length - 1];
-          let resumeData:
-            | {
-                action: "approve" | "deny" | "revise";
-                plan?: WikiRunPlan;
-                feedback?: string;
-              }
-            | undefined;
+          const pending = pendingSendRef.current;
+          pendingSendRef.current = null;
 
-          // Resolve from durable phase OR message parts (meta may lag after stream).
           const gate = resolveLiveGate(
             sessionRef.current,
             msgs,
             linkedRunIdRef.current,
             resumePlanRef.current,
           );
-          const atLivePlanGate = gate.active && gate.step === "plan-gate";
-          const atLiveGate = gate.active;
+          const plan = gate.plan ?? resumePlanRef.current;
+          const runId =
+            pending?.runId ??
+            gate.runId ??
+            linkedRunIdRef.current ??
+            sessionRef.current.workflow?.linkedRunId;
 
-          if (last?.role === "user" && atLiveGate) {
+          // Prefer explicit pending envelope (chips / kickoff / revise form).
+          if (pending?.intent === "resume" && pending.resumeData && runId) {
+            let resumeData = pending.resumeData;
+            const step =
+              pending.step ??
+              (gate.active ? gate.step : gateStepRef.current) ??
+              "plan-gate";
+            if (
+              step === "plan-gate" &&
+              plan &&
+              (resumeData.action === "approve" || resumeData.action === "revise")
+            ) {
+              resumeData = { ...resumeData, plan };
+            }
+            return {
+              body: {
+                message: last,
+                id: id ?? sessionRef.current.id,
+                intent: "resume",
+                resumeData,
+                runId,
+                step,
+              },
+            };
+          }
+
+          if (pending?.intent === "start") {
+            return {
+              body: {
+                message: last,
+                id: id ?? sessionRef.current.id,
+                intent: "start",
+              },
+            };
+          }
+
+          // Free-text at a live plan gate → structured revise (no bare "approve" guess).
+          if (
+            last?.role === "user" &&
+            gate.active &&
+            gate.step === "plan-gate" &&
+            runId
+          ) {
             for (const p of last.parts ?? []) {
               if (p.type === "text" && typeof p.text === "string") {
                 const text = p.text.trim();
-                if (text === "approve" || text === "deny") {
-                  resumeData = { action: text };
-                } else if (
+                if (
                   text &&
-                  text.toLowerCase() !== "revise" &&
-                  atLivePlanGate
+                  text !== "approve" &&
+                  text !== "deny" &&
+                  text.toLowerCase() !== "revise"
                 ) {
-                  // Free-text only at a live plan gate = revision feedback.
-                  resumeData = { action: "revise", feedback: text };
+                  let resumeData: {
+                    action: "revise";
+                    feedback: string;
+                    plan?: WikiRunPlan;
+                  } = { action: "revise", feedback: text };
+                  if (plan) {
+                    resumeData = { ...resumeData, plan };
+                  }
+                  return {
+                    body: {
+                      message: last,
+                      id: id ?? sessionRef.current.id,
+                      intent: "resume",
+                      resumeData,
+                      runId,
+                      step: "plan-gate",
+                    },
+                  };
                 }
               }
             }
-          }
-
-          const runId = gate.runId ?? linkedRunIdRef.current;
-          const step = atLiveGate ? gate.step : gateStepRef.current;
-          const plan = gate.plan ?? resumePlanRef.current;
-
-          if (
-            resumeData &&
-            step === "plan-gate" &&
-            plan &&
-            (resumeData.action === "approve" || resumeData.action === "revise")
-          ) {
-            resumeData = { ...resumeData, plan };
           }
 
           return {
             body: {
               message: last,
               id: id ?? sessionRef.current.id,
-              ...(resumeData && runId && atLiveGate
-                ? {
-                    resumeData,
-                    runId,
-                    step,
-                  }
-                : {}),
+              intent: pending?.intent ?? "chat",
             },
           };
         },
@@ -887,7 +928,7 @@ function SessionChatPanel({
     });
 
   const isBusy = status === "submitted" || status === "streaming";
-  const slashMenuOpen = !readOnly && isSlashMenuOpenQuery(input);
+  const slashMenuOpen = isSlashMenuOpenQuery(input);
   const slashQuery = slashMenuOpen ? input : "";
   const slashCommands = useMemo(
     () => filterSessionCommands(slashQuery),
@@ -906,18 +947,31 @@ function SessionChatPanel({
 
   /** Single-flight send: blocks double-click / double-kickoff races. */
   const sendTurn = useCallback(
-    (text: string) => {
-      if (readOnly || sendInFlight.current || isBusy) {
+    (
+      text: string,
+      envelope?: {
+        intent: "start" | "resume" | "chat";
+        resumeData?: {
+          action: "approve" | "deny" | "revise";
+          plan?: WikiRunPlan;
+          feedback?: string;
+        };
+        step?: "plan-gate" | "publish-gate";
+        runId?: string;
+      },
+    ) => {
+      if (sendInFlight.current || isBusy) {
         return;
       }
       sendInFlight.current = true;
+      pendingSendRef.current = envelope ?? { intent: "chat" };
       setSuppressDecisions(false);
       setAwaitingPlanRevise(false);
       void Promise.resolve(sendMessage({ text })).finally(() => {
         sendInFlight.current = false;
       });
     },
-    [isBusy, readOnly, sendMessage],
+    [isBusy, sendMessage],
   );
 
   const showLocalHelp = useCallback(() => {
@@ -984,21 +1038,61 @@ function SessionChatPanel({
         return;
       }
       if (parsed.kind === "send") {
-        // Chat kickoff/resume still requires sources for start; server also guards.
-        sendTurn(parsed.text);
+        const text = parsed.text;
+        // Slash /approve /deny → structured resume when a gate is live.
+        if (text === "approve" || text === "deny") {
+          const gate = resolveLiveGate(
+            session,
+            messages,
+            linkedRunId,
+            resumePlan,
+          );
+          if (gate.active && gate.runId) {
+            sendTurn(text, {
+              intent: "resume",
+              resumeData: { action: text },
+              step: gate.step,
+              runId: gate.runId,
+            });
+            return;
+          }
+        }
+        // Kickoff phrases → explicit start.
+        if (/generate|wiki|plan|开始|生成|写|run/i.test(text)) {
+          const phase = session.workflow?.phase ?? "idle";
+          if (phase === "idle" || phase === "done") {
+            sendTurn(text, { intent: "start" });
+            return;
+          }
+        }
+        sendTurn(text, { intent: "chat" });
         return;
       }
-      sendTurn(raw);
+      // Free-text: start if kickoff on idle; else chat (plan-gate revise handled in transport).
+      const phase = session.workflow?.phase ?? "idle";
+      if (
+        (phase === "idle" || phase === "done") &&
+        /generate|wiki|plan|开始|生成|写|run/i.test(raw)
+      ) {
+        sendTurn(raw, { intent: "start" });
+        return;
+      }
+      sendTurn(raw, { intent: "chat" });
     },
-    [runLocalCommand, sendTurn],
+    [runLocalCommand, sendTurn, session, messages, linkedRunId, resumePlan],
   );
 
   const pending = useMemo(() => {
-    if (suppressDecisions || readOnly) {
+    if (suppressDecisions) {
+      return null;
+    }
+    // Mid-flight after approve (eager gate-exit writes planning/writing).
+    const phase = session.workflow?.phase;
+    if (phase === "planning" || phase === "writing") {
       return null;
     }
     return extractPendingFromMessages(messages);
-  }, [messages, suppressDecisions, readOnly]);
+  }, [messages, suppressDecisions, session.workflow?.phase]);
 
   // Track linkedRunId / gate / plan from structured session state + data parts.
   useEffect(() => {
@@ -1016,6 +1110,29 @@ function SessionChatPanel({
       setAwaitingPlanRevise(false);
     }
   }, [messages, session]);
+
+  const applyFreshSession = useCallback(
+    (fresh: OperatorSessionDto) => {
+      onSessionMetaChange?.(fresh);
+      if (fresh.workflow?.linkedRunId) {
+        setLinkedRunId(fresh.workflow.linkedRunId);
+      }
+      if (fresh.workflow?.plan) {
+        setResumePlan(fresh.workflow.plan);
+      }
+      if (fresh.workflow?.phase === "awaiting_publish") {
+        setGateStep("publish-gate");
+      } else if (fresh.workflow?.phase === "awaiting_plan") {
+        setGateStep("plan-gate");
+      }
+      // Catch-up timeline when server journal advanced (refresh / mid-flight).
+      const next = sessionMessagesToUI(fresh);
+      if (next.length > 0) {
+        setMessages(next);
+      }
+    },
+    [onSessionMetaChange, setMessages],
+  );
 
   // After a stream finishes, re-fetch session meta so plan / linkedRunId / phase
   // match the server (resume works without a full page reload).
@@ -1052,7 +1169,9 @@ function SessionChatPanel({
               fresh.workflow?.linkedRunId ||
               fresh.workflow?.phase === "awaiting_plan" ||
               fresh.workflow?.phase === "awaiting_publish" ||
-              fresh.workflow?.phase === "done"
+              fresh.workflow?.phase === "done" ||
+              fresh.workflow?.phase === "writing" ||
+              fresh.workflow?.phase === "planning"
             ) {
               break;
             }
@@ -1063,20 +1182,7 @@ function SessionChatPanel({
         if (cancelled || !fresh) {
           return;
         }
-        onSessionMetaChange?.(fresh);
-        if (fresh.workflow?.linkedRunId) {
-          setLinkedRunId(fresh.workflow.linkedRunId);
-        }
-        if (fresh.workflow?.plan) {
-          setResumePlan(fresh.workflow.plan);
-        }
-        if (fresh.workflow?.phase === "awaiting_publish") {
-          setGateStep("publish-gate");
-        } else if (fresh.workflow?.phase === "awaiting_plan") {
-          setGateStep("plan-gate");
-        }
-        // suppressDecisions is only set by explicit Stop (and cleared on sendTurn).
-        // Do not toggle it from meta — finalize races would hide legitimate plan chips.
+        applyFreshSession(fresh);
       } catch {
         // Non-fatal: data-run / data-plan parts still drive live resume.
       } finally {
@@ -1092,12 +1198,55 @@ function SessionChatPanel({
     session.id,
     workspace.rootPath,
     rootPathHint,
-    onSessionMetaChange,
+    applyFreshSession,
+  ]);
+
+  // Mid-flight catch-up after refresh / while write runs in the background.
+  useEffect(() => {
+    const phase = session.workflow?.phase;
+    const midFlight =
+      session.status === "running" ||
+      phase === "planning" ||
+      phase === "writing";
+    if (!midFlight || isBusy) {
+      return;
+    }
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const res = await getSession(
+          workspaceId,
+          session.id,
+          workspace.rootPath ?? rootPathHint,
+        );
+        if (cancelled) {
+          return;
+        }
+        applyFreshSession(res.session);
+      } catch {
+        // best-effort
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [
+    session.status,
+    session.workflow?.phase,
+    session.id,
+    isBusy,
+    workspaceId,
+    workspace.rootPath,
+    rootPathHint,
+    applyFreshSession,
   ]);
 
   // Session-first kickoff from Runs page (?kickoff=1).
   useEffect(() => {
-    if (readOnly || !kickoff || kickoffSent.current) {
+    if (!kickoff || kickoffSent.current) {
       return;
     }
     const hasSources = (workspace.sources?.length ?? 0) > 0;
@@ -1113,8 +1262,8 @@ function SessionChatPanel({
       return;
     }
     kickoffSent.current = true;
-    sendTurn("generate a wiki plan");
-  }, [kickoff, readOnly, workspace.sources, session.workflow?.phase, status, sendTurn]);
+    sendTurn("generate a wiki plan", { intent: "start" });
+  }, [kickoff, workspace.sources, session.workflow?.phase, status, sendTurn]);
 
   const choiceOnly = pending?.mode === "choice_only";
   const inputOnly = pending?.mode === "input_only";
@@ -1126,10 +1275,10 @@ function SessionChatPanel({
   const planReviseMode =
     awaitingPlanRevise ||
     (atPlanGate && pending?.mode === "choice_or_input");
-  const canType = !readOnly && !choiceOnly;
+  const canType = !choiceOnly;
   const hasSources = (workspace.sources?.length ?? 0) > 0;
   // Allow typing without sources so slash commands (/help, /new, …) still work.
-  const composerDisabled = readOnly || isBusy || choiceOnly;
+  const composerDisabled = isBusy || choiceOnly;
 
   const latestAssistantId = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -1142,7 +1291,7 @@ function SessionChatPanel({
 
   const handleChoice = useCallback(
     (optionId: string) => {
-      if (readOnly || isBusy || sendInFlight.current) {
+      if (isBusy || sendInFlight.current) {
         return;
       }
       // Request changes: unlock composer for free-text feedback (do not resume yet).
@@ -1172,15 +1321,36 @@ function SessionChatPanel({
               optionId === "keep_staging"
             ? "deny"
             : optionId;
-      sendTurn(action);
+      if (action !== "approve" && action !== "deny") {
+        // Unknown chip: send as chat help rather than a silent no-op.
+        sendTurn(optionId, { intent: "chat" });
+        return;
+      }
+      const gate = resolveLiveGate(
+        session,
+        messages,
+        linkedRunId,
+        resumePlan,
+      );
+      const runId = gate.runId ?? linkedRunId ?? session.workflow?.linkedRunId;
+      if (!runId || !gate.active) {
+        sendTurn(action, { intent: "chat" });
+        return;
+      }
+      sendTurn(action, {
+        intent: "resume",
+        resumeData: { action },
+        step: gate.step,
+        runId,
+      });
     },
-    [isBusy, readOnly, sendTurn],
+    [isBusy, sendTurn, session, messages, linkedRunId, resumePlan],
   );
 
   const handleSubmit = useCallback(
     (message: PromptInputMessage) => {
       const text = message.text.trim();
-      if (!text || readOnly || isBusy || choiceOnly || sendInFlight.current) {
+      if (!text || isBusy || choiceOnly || sendInFlight.current) {
         return;
       }
       // If slash palette is open, Enter runs the highlighted match.
@@ -1195,7 +1365,6 @@ function SessionChatPanel({
     [
       choiceOnly,
       isBusy,
-      readOnly,
       slashCommands,
       slashHighlight,
       applyCommandDef,
@@ -1300,11 +1469,11 @@ function SessionChatPanel({
   handleStopRef.current = handleStop;
 
   const suggestionChips = useMemo(() => {
-    if (readOnly || !hasSources) {
+    if (!hasSources) {
       return [] as string[];
     }
     return ["/generate", "/help", "/reset"];
-  }, [readOnly, hasSources]);
+  }, [hasSources]);
 
   const chatStatusLabel =
     (t.session.chatStatus as Record<string, string>)[status] ?? status;
@@ -1338,9 +1507,11 @@ function SessionChatPanel({
                     <MessageParts
                       message={message}
                       isLatestAssistant={
-                        !readOnly &&
                         message.id === latestAssistantId &&
-                        !suppressDecisions
+                        !suppressDecisions &&
+                        // Hide chips while write/plan is in flight (eager gate-exit).
+                        session.workflow?.phase !== "planning" &&
+                        session.workflow?.phase !== "writing"
                       }
                       onChoice={handleChoice}
                     />
@@ -1353,35 +1524,6 @@ function SessionChatPanel({
         </Conversation>
 
         <div className="shrink-0 border-t bg-card/80 p-3 backdrop-blur-sm supports-backdrop-filter:bg-card/70">
-          {readOnly ? (
-            <div
-              className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-dashed bg-muted/40 px-3 py-2"
-              data-testid="session-readonly-banner"
-            >
-              <p className="text-xs text-muted-foreground">
-                {t.session.readOnlyHistory}
-              </p>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={onSwitchToLatest}
-                  data-testid="session-switch-latest"
-                >
-                  {t.session.switchToLatest}
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={onNewSession}
-                  data-testid="session-readonly-new"
-                >
-                  {t.session.newSession}
-                </Button>
-              </div>
-            </div>
-          ) : null}
           {choiceOnly ? (
             <p
               className="mb-2 text-xs text-muted-foreground"
@@ -1406,7 +1548,7 @@ function SessionChatPanel({
                 : ""}
             </p>
           ) : null}
-          {!readOnly && !choiceOnly && suggestionChips.length > 0 ? (
+          {!choiceOnly && suggestionChips.length > 0 ? (
             <Suggestions className="mb-2 px-0.5" data-testid="session-suggestions">
               {suggestionChips.map((s) => (
                 <Suggestion
@@ -1488,17 +1630,15 @@ function SessionChatPanel({
                   onKeyDown={handleComposerKeyDown}
                   disabled={composerDisabled || !canType}
                   placeholder={
-                    readOnly
-                      ? t.session.placeholderReadOnly
-                      : !hasSources
-                        ? t.session.placeholderNoSources
-                        : choiceOnly
-                          ? t.session.placeholderChoice
-                          : planReviseMode
-                            ? (pending?.inputPlaceholder ??
-                              t.session.placeholderPlanRevise)
-                            : (pending?.inputPlaceholder ??
-                              t.session.placeholderDefault)
+                    !hasSources
+                      ? t.session.placeholderNoSources
+                      : choiceOnly
+                        ? t.session.placeholderChoice
+                        : planReviseMode
+                          ? (pending?.inputPlaceholder ??
+                            t.session.placeholderPlanRevise)
+                          : (pending?.inputPlaceholder ??
+                            t.session.placeholderDefault)
                   }
                   data-testid="session-input"
                 />
@@ -1526,10 +1666,10 @@ function SessionChatPanel({
                     type="button"
                     variant="ghost"
                     size="icon-sm"
-                    disabled={readOnly || choiceOnly || isBusy}
+                    disabled={choiceOnly || isBusy}
                     tooltip={t.session.slashTooltip}
                     onClick={() => {
-                      if (readOnly || choiceOnly) {
+                      if (choiceOnly) {
                         return;
                       }
                       setInput((prev) => (prev.startsWith("/") ? prev : "/"));
@@ -1542,7 +1682,6 @@ function SessionChatPanel({
                 <PromptInputSubmit
                   status={isBusy ? "streaming" : "ready"}
                   disabled={
-                    readOnly ||
                     isBusy ||
                     choiceOnly ||
                     !canType ||

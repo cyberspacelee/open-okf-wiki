@@ -58,6 +58,12 @@ export {
   deleteOperatorSession,
 } from "./session-store.js";
 export {
+  reconcileSessionWithRun,
+  midTurnPhaseForChat,
+  type SessionRunSnapshot,
+  type SessionReconcilePatch,
+} from "./session-reconcile.js";
+export {
   countMarkdownFiles,
   publishStagingToPublication,
   type PublishStagingInput,

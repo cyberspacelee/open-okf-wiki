@@ -12,7 +12,7 @@ The TypeScript product briefly had two Staging production paths (Session templat
 ## Decision
 
 1. **Single production path:** Mastra **wiki-run workflow** (`wikiRunWorkflow`) owns plan → write → publish gates. Write always goes through `runWikiAgent` tools (fixture or live). Session and Run console are entrypoints, not alternate writers.
-2. **HITL:** Plan and publication use workflow **suspend/resume**. Product REST approve/deny endpoints **resume** the same workflow run id. Session sends `resumeData` via AI SDK transport (no `__choice__:` protocol).
+2. **HITL:** Plan and publication use workflow **suspend/resume**. Product REST approve/deny endpoints **resume** the same workflow run id. Session sends explicit `{ intent, runId, step, resumeData }` via AI SDK transport (no `__choice__:` protocol, no text `"approve"` inference). Gate UI is projected as product **`data-gate`** (+ **`data-plan`**) parts—not fake `tool-request_user_decision` / `data-choice`.
 3. **Streaming:** Session UI uses `@mastra/ai-sdk` **`toAISdkStream`** over workflow `stream` / `resumeStream` (or equivalent projection into the same UIMessage timeline). Do not reintroduce hand-written Mastra chunk → product SSE projection for Session. **Single write path does not excuse an empty Session timeline** — agent/workflow activity must still project operator-useful parts into the Session ([ADR 0026](0026-session-centric-agent-workspace.md)).
 4. **Run Boundary** stays in `@okf-wiki/core` (path containment, validate, atomic publish, run/session records). Core must not depend on Mastra.
 5. **Path policy** primitives (`isPathInside`, `resolveContainedPath`, `assertContainedPathSafe`) live in core; agent re-exports for tools.

@@ -186,12 +186,28 @@ export async function replaceSessionMessages(
 /**
  * Strip actionable HITL chips so history does not re-offer approve/deny after
  * cancel or operator reset.
+ *
+ * When `keepLatestAssistant` is true, chips on the newest assistant message
+ * are preserved (current live gate). Older answered gates are always cleared.
  */
 export function neutralizeSessionDecisionParts(
   messages: SessionMessage[],
+  options?: { keepLatestAssistant?: boolean },
 ): SessionMessage[] {
-  return messages.map((m) => {
+  let keepIdx = -1;
+  if (options?.keepLatestAssistant) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]!.role === "assistant") {
+        keepIdx = i;
+        break;
+      }
+    }
+  }
+  return messages.map((m, index) => {
     if (m.role !== "assistant") {
+      return m;
+    }
+    if (index === keepIdx) {
       return m;
     }
     return {
@@ -205,12 +221,14 @@ export function neutralizeSessionDecisionParts(
         ) {
           return {
             ...p,
-            // AI SDK terminal deny; extractPending only acts on input-available.
             state: "output-denied" as const,
             output: { cancelled: true },
           };
         }
-        if (typeof p.type === "string" && p.type === "data-choice") {
+        if (
+          typeof p.type === "string" &&
+          (p.type === "data-choice" || p.type === "data-gate")
+        ) {
           const data =
             p && typeof p === "object" && "data" in p
               ? (p.data as Record<string, unknown>)

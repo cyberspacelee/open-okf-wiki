@@ -47,7 +47,7 @@ Industry pattern (Claude Code / Cursor Agents / Codex CLI·App, 2025–2026): **
 | **Tool calls** | Live cards: name, args (redacted), status, result snippet | Yes | Primary trust surface industry-wide |
 | **Subagents** | Nested card / panel: id, status, elapsed; open for child tool trail or parent-facing summary | Yes (at least spawn + summary; full child trail best-effort) | Claude/Cursor/Devin pattern: isolate context, still visible from parent |
 | Workflow / run steps | Progress on same timeline (not only Run log) | Yes | Run page remains secondary log |
-| HITL gates | Chips / plan cards on timeline | Yes | Human path only on Session |
+| HITL gates | Chips / plan cards from `data-gate` + `data-plan` on timeline | Yes | Human path only on Session; mid-flight uses `planning`/`writing` phase (no stale chips) |
 
 Progressive disclosure: dense by default in data model; UI collapses thinking and large tool payloads so the thread stays scannable.
 
@@ -56,11 +56,11 @@ Progressive disclosure: dense by default in data model; UI collapses thinking an
 | Event | Behavior |
 |-------|----------|
 | Enter Session with **no** `sessionId` | Open **most recently updated** Session for the workspace (`latest`) |
-| Enter / refresh with **`sessionId`** | Open that Session; restore full durable timeline + linked run/gate state |
-| User chooses another Session | Switcher / picker (list by updatedAt); non-latest may be read-only for chat if product keeps “only newest is writable” — still **fully viewable** |
-| New Session | Explicit action (`/new` or button); becomes latest |
+| Enter / refresh with **`sessionId`** | Open that Session; restore full durable timeline + linked run/gate state; **fully writable** (refresh is not “history-only”) |
+| User chooses another Session | Switcher / picker (list by updatedAt); **any** session remains writable (Codex/Grok-class). List order is navigation only; sending a message bumps `updatedAt` so the thread floats up |
+| New Session | Explicit action (`/new` or button); becomes latest by `updatedAt` |
 
-Codex-class pattern: `resume --last` + interactive history picker. Do **not** rely on “memory only while tab open.”
+Codex-class pattern: `resume --last` + interactive history picker; **continuing an older thread is allowed**. Do **not** rely on “memory only while tab open.” Do **not** lock non-latest sessions read-only.
 
 ### Background (product intent; phased impl OK)
 
@@ -91,4 +91,4 @@ Background Run still **belongs to a Session** and appends to its timeline; user 
 | I5 | Runs attach to Session; many runs per session allowed |
 | I6 | Refresh restores Session timeline + linked run/gate state |
 | I7 | Visibility: thinking (collapsible) + tools + subagents on Session timeline when available |
-| I8 | Default open = latest Session; explicit switcher + optional sessionId deep-link |
+| I8 | Default open = latest Session; explicit switcher + optional sessionId deep-link; any selected Session is writable |

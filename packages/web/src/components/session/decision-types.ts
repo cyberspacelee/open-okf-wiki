@@ -8,6 +8,8 @@ export type PendingInteraction = {
   options: Array<{ id: string; label: string; description?: string }>;
   inputPlaceholder?: string;
   toolCallId?: string;
+  /** Product gate kind when sourced from data-gate. */
+  gate?: "plan" | "publication";
 };
 
 /** Structured resume for workflow plan/publication gates (no string protocol). */
@@ -23,11 +25,50 @@ export type SessionResumePayload = {
   feedback?: string;
 };
 
+type MessageLike = {
+  role: string;
+  parts: Array<{
+    type: string;
+    input?: unknown;
+    data?: unknown;
+    state?: string;
+  }>;
+};
+
+function asPending(
+  raw: unknown,
+): PendingInteraction | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const d = raw as PendingInteraction & { cancelled?: boolean; gate?: string };
+  if (d.cancelled || (d.options?.length ?? 0) === 0) {
+    return null;
+  }
+  if (!d.question) {
+    return null;
+  }
+  return {
+    type: d.type ?? "choice",
+    question: d.question,
+    mode: d.mode ?? "choice_only",
+    selectionMode: d.selectionMode ?? "single",
+    options: d.options ?? [],
+    inputPlaceholder: d.inputPlaceholder,
+    toolCallId: d.toolCallId,
+    gate:
+      d.gate === "publication" || d.gate === "plan"
+        ? d.gate
+        : undefined,
+  };
+}
+
+/**
+ * Live HITL from the latest assistant message.
+ * Prefers product `data-gate` (current protocol). Does not use model tool fakes.
+ */
 export function extractPendingFromMessages(
-  messages: Array<{
-    role: string;
-    parts: Array<{ type: string; input?: unknown; data?: unknown; state?: string }>;
-  }>,
+  messages: MessageLike[],
 ): PendingInteraction | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]!;
@@ -35,39 +76,14 @@ export function extractPendingFromMessages(
       continue;
     }
     for (const part of m.parts) {
-      if (part.type === "tool-request_user_decision" && part.state === "input-available") {
-        const d = part.input as PendingInteraction | undefined;
-        if (d?.question && (d.options?.length ?? 0) > 0) {
-          return {
-            type: d.type ?? "choice",
-            question: d.question,
-            mode: d.mode ?? "choice_only",
-            selectionMode: d.selectionMode ?? "single",
-            options: d.options ?? [],
-            inputPlaceholder: d.inputPlaceholder,
-            toolCallId: d.toolCallId,
-          };
-        }
-      }
-      if (part.type === "data-choice" && part.data) {
-        const d = part.data as PendingInteraction & { cancelled?: boolean };
-        // Cancel-wins finalize may neutralize options / set cancelled.
-        if (d?.cancelled || (d.options?.length ?? 0) === 0) {
-          continue;
-        }
-        if (d?.question) {
-          return {
-            type: d.type ?? "choice",
-            question: d.question,
-            mode: d.mode ?? "choice_only",
-            selectionMode: d.selectionMode ?? "single",
-            options: d.options ?? [],
-            inputPlaceholder: d.inputPlaceholder,
-            toolCallId: d.toolCallId,
-          };
+      if (part.type === "data-gate" && part.data) {
+        const pending = asPending(part.data);
+        if (pending) {
+          return pending;
         }
       }
     }
+    // Latest assistant only — older gates are neutralized after answer.
     break;
   }
   return null;

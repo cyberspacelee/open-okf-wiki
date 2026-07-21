@@ -127,7 +127,36 @@ export async function projectRunStatusToSession(
       ? session.pending
       : null;
 
+  // Leaving a gate (or terminal): neutralize stale HITL chips in history.
+  const leaveGate =
+    patch.status !== "awaiting_plan" &&
+    patch.status !== "awaiting_publication";
+  const baseMessages = leaveGate
+    ? neutralizeSessionDecisionParts(session.messages)
+    : session.messages;
+
   try {
+    // Replace when neutralizing so old chips cannot reappear on refresh.
+    if (leaveGate) {
+      await replaceSessionMessages(rootPath, sessionId, baseMessages, {
+        status:
+          patch.status === "running"
+            ? "running"
+            : patch.status === "published" ||
+                patch.status === "publication_declined"
+              ? "completed"
+              : patch.status === "failed"
+                ? "failed"
+                : "active",
+        pending: null,
+        workflow: {
+          ...session.workflow,
+          linkedRunId: runId,
+          phase,
+          ...(plan ? { plan } : {}),
+        },
+      });
+    }
     await appendSessionMessages(
       rootPath,
       sessionId,

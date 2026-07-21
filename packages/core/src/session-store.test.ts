@@ -122,6 +122,89 @@ test("resetOperatorSessionWorkflow clears gate and neutralizes chips", async () 
   assert.deepEqual(choice?.data?.options, []);
 });
 
+test("neutralizeSessionDecisionParts clears data-gate options", async () => {
+  const { neutralizeSessionDecisionParts } = await import("./session-store.js");
+  const messages = [
+    {
+      id: "a1",
+      role: "assistant" as const,
+      parts: [
+        {
+          type: "data-gate",
+          data: {
+            gate: "plan",
+            question: "ok?",
+            mode: "choice_or_input",
+            options: [{ id: "approve", label: "Yes" }],
+            cancelled: false,
+          },
+        },
+      ],
+    },
+  ];
+  const out = neutralizeSessionDecisionParts(messages);
+  const gate = out[0]!.parts[0] as {
+    data?: { cancelled?: boolean; options?: unknown[] };
+  };
+  assert.equal(gate.data?.cancelled, true);
+  assert.deepEqual(gate.data?.options, []);
+});
+
+test("neutralizeSessionDecisionParts can keep latest assistant chips", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-sess-n-"));
+  const s = await createOperatorSession({
+    workspaceRoot: root,
+    workspaceId: "ws1",
+  });
+  const { neutralizeSessionDecisionParts } = await import("./session-store.js");
+  const messages = [
+    {
+      id: "a1",
+      role: "assistant" as const,
+      parts: [
+        {
+          type: "tool-request_user_decision",
+          toolCallId: "t1",
+          state: "input-available" as const,
+          input: {
+            question: "plan?",
+            options: [{ id: "approve", label: "Yes" }],
+          },
+        },
+      ],
+    },
+    {
+      id: "u1",
+      role: "user" as const,
+      parts: [{ type: "text" as const, text: "approve" }],
+    },
+    {
+      id: "a2",
+      role: "assistant" as const,
+      parts: [
+        {
+          type: "tool-request_user_decision",
+          toolCallId: "t2",
+          state: "input-available" as const,
+          input: {
+            question: "publish?",
+            options: [{ id: "approve", label: "Yes" }],
+          },
+        },
+      ],
+    },
+  ];
+  const kept = neutralizeSessionDecisionParts(messages, {
+    keepLatestAssistant: true,
+  });
+  const oldTool = kept[0]!.parts[0] as { state?: string };
+  const newTool = kept[2]!.parts[0] as { state?: string };
+  assert.equal(oldTool.state, "output-denied");
+  assert.equal(newTool.state, "input-available");
+  // silence unused root
+  assert.equal(s.workspaceId, "ws1");
+});
+
 test("deleteOperatorSession removes file", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-sess-d-"));
   const s = await createOperatorSession({

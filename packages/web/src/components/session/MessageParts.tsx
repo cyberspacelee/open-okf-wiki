@@ -230,14 +230,14 @@ function renderToolPart(
   key: string,
   part: UIMessage["parts"][number],
   toolName: string,
-  isLatestAssistant: boolean | undefined,
-  onChoice: MessagePartsProps["onChoice"],
+  _isLatestAssistant: boolean | undefined,
+  _onChoice: MessagePartsProps["onChoice"],
   onApproval: MessagePartsProps["onApproval"],
 ) {
-  const decision =
-    toolName === "request_user_decision" ? asDecision(
-      "input" in part ? part.input : undefined,
-    ) : null;
+  // HITL chips come from data-gate only — never from fake tool parts.
+  if (toolName === "request_user_decision") {
+    return null;
+  }
   const state =
     "state" in part && typeof part.state === "string"
       ? part.state
@@ -309,21 +309,6 @@ function renderToolPart(
           />
         </ToolContent>
       </Tool>
-
-      {decision &&
-      isLatestAssistant &&
-      state === "input-available" &&
-      onChoice &&
-      decision.mode !== "input_only" ? (
-        <DecisionChips decision={decision} onChoice={onChoice} />
-      ) : null}
-
-      {decision && isLatestAssistant && decision.mode === "input_only" ? (
-        <p className="text-sm text-muted-foreground" data-testid="session-input-only-hint">
-          {decision.question}
-          {decision.inputPlaceholder ? ` — ${decision.inputPlaceholder}` : ""}
-        </p>
-      ) : null}
     </div>
   );
 }
@@ -362,13 +347,6 @@ export function MessageParts({
   onChoice,
   onApproval,
 }: MessagePartsProps) {
-  // Prefer tool-request_user_decision over data-choice to avoid double chips.
-  const hasDecisionTool = message.parts.some(
-    (p) =>
-      isToolUIPart(p) &&
-      (p.type === "tool-request_user_decision" ||
-        ("toolName" in p && p.toolName === "request_user_decision")),
-  );
   // Prefer explicit data-plan; otherwise recover from official data-workflow.
   const hasDataPlan = message.parts.some((p) => p.type === "data-plan");
 
@@ -432,17 +410,53 @@ export function MessageParts({
 
         if (typeof part.type === "string" && part.type.startsWith("data-")) {
           const data = "data" in part ? part.data : undefined;
-          const decision = asDecision(data);
-          if (
-            decision &&
-            !hasDecisionTool &&
-            isLatestAssistant &&
-            onChoice &&
-            decision.mode !== "input_only"
-          ) {
-            return (
-              <DecisionChips key={key} decision={decision} onChoice={onChoice} />
-            );
+          // Product HITL: data-gate only (not data-choice / fake tools).
+          if (part.type === "data-gate") {
+            const decision = asDecision(data);
+            const cancelled =
+              data &&
+              typeof data === "object" &&
+              "cancelled" in data &&
+              Boolean((data as { cancelled?: unknown }).cancelled);
+            if (
+              decision &&
+              !cancelled &&
+              isLatestAssistant &&
+              onChoice &&
+              decision.mode !== "input_only"
+            ) {
+              return (
+                <DecisionChips
+                  key={key}
+                  decision={decision}
+                  onChoice={onChoice}
+                />
+              );
+            }
+            if (
+              decision &&
+              !cancelled &&
+              isLatestAssistant &&
+              decision.mode === "input_only"
+            ) {
+              return (
+                <p
+                  key={key}
+                  className="text-sm text-muted-foreground"
+                  data-testid="session-input-only-hint"
+                >
+                  {decision.question}
+                  {decision.inputPlaceholder
+                    ? ` — ${decision.inputPlaceholder}`
+                    : ""}
+                </p>
+              );
+            }
+            return null;
+          }
+          if (part.type === "data-choice") {
+            // Legacy part type — ignore for chips (protocol replaced by data-gate).
+            return null;
           }
           if (part.type === "data-plan") {
             const plan = asPlanLike(data);

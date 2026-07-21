@@ -360,12 +360,7 @@ export const en = {
     switchSession: "Switch session",
     newSession: "New session",
     creatingSession: "Creating…",
-    readOnlyHistory:
-      "This is an older session (read-only). Switch to the latest or start a new session to continue chatting.",
-    switchToLatest: "Switch to latest",
-    placeholderReadOnly: "History is read-only",
-    deleteSession: "Delete",
-    deletingSession: "Deleting…",
+    deleteSession: "Delete",    deletingSession: "Deleting…",
     deleteConfirmTitle: "Delete session?",
     deleteConfirmBody:
       "Delete this session and its conversation history? This cannot be undone.",

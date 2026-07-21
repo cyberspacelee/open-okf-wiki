@@ -111,22 +111,43 @@ export function resolveSessionTurnMode(input: {
   hasSources: boolean;
   resumeData?: SessionGateResumeData;
   existingRunId?: string;
+  /** Explicit client intent; preferred over text heuristics. */
+  intent?: "start" | "resume" | "chat";
 }): SessionTurnModeResult {
-  const { userText, phase, status, hasSources, resumeData, existingRunId } =
-    input;
+  const {
+    userText,
+    phase,
+    status,
+    hasSources,
+    resumeData,
+    existingRunId,
+    intent,
+  } = input;
   const phaseNorm = phase ?? "idle";
   const atGate =
     phaseNorm === "awaiting_plan" || phaseNorm === "awaiting_publish";
 
-  if (resumeData && existingRunId) {
-    // Bare revise without feedback is not a valid resume.
+  // Structured resume (intent or resumeData body).
+  if (
+    (intent === "resume" || resumeData) &&
+    resumeData &&
+    existingRunId
+  ) {
     if (
       resumeData.action === "revise" &&
       !resumeData.feedback?.trim()
     ) {
       return { mode: "help", helpReason: "pending_gate" };
     }
+    // Eager gate-exit persists phase as planning/writing while the run works.
+    if (phaseNorm === "planning" || phaseNorm === "writing") {
+      return { mode: "help", helpReason: "running" };
+    }
     return { mode: "resume" };
+  }
+
+  if (intent === "resume" && (!resumeData || !existingRunId)) {
+    return { mode: "help", helpReason: atGate ? "pending_gate" : "not_kickoff" };
   }
 
   if (
@@ -137,6 +158,30 @@ export function resolveSessionTurnMode(input: {
     return { mode: "help", helpReason: "running" };
   }
 
+  if (intent === "start") {
+    if (!hasSources) {
+      return { mode: "help", helpReason: "no_sources" };
+    }
+    if (phaseNorm !== "idle" && phaseNorm !== "done" && phaseNorm !== undefined) {
+      return { mode: "help", helpReason: atGate ? "pending_gate" : "running" };
+    }
+    return { mode: "start" };
+  }
+
+  if (intent === "chat") {
+    if (!hasSources && !userText) {
+      return { mode: "help", helpReason: "no_sources" };
+    }
+    if (atGate) {
+      return { mode: "help", helpReason: "pending_gate" };
+    }
+    if (!hasSources) {
+      return { mode: "help", helpReason: "no_sources" };
+    }
+    return { mode: "help", helpReason: "not_kickoff" };
+  }
+
+  // No explicit intent: kickoff phrase may still start (composer / slash).
   if (isKickoff(userText, phase) && !resumeData && hasSources) {
     return { mode: "start" };
   }

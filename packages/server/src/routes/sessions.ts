@@ -14,7 +14,9 @@ import {
   listOperatorSessions,
   loadOperatorSession,
   loadWorkspaceById,
+  midTurnPhaseForChat,
   neutralizeSessionDecisionParts,
+  reconcileSessionWithRun,
   replaceSessionMessages,
   resetOperatorSessionWorkflow,
   skillDigest,
@@ -25,7 +27,8 @@ import {
   pipeUIMessageStreamToResponse,
   type UIMessage,
 } from "ai";
-import type { WikiRunRecordStatus } from "@okf-wiki/contract";
+import type { OperatorSession, WikiRunRecordStatus } from "@okf-wiki/contract";
+import { helpTextForSessionTurn } from "@okf-wiki/contract";
 import {
   BodyTooLargeError,
   InvalidJsonError,
@@ -42,6 +45,63 @@ import {
   registerRunRecord,
   updateRunRecord,
 } from "../run-registry.ts";
+
+/**
+ * Align durable session gate UI with the linked run (refresh / re-open).
+ * Best-effort: never fails the GET when reconcile write fails.
+ */
+async function loadSessionReconciled(
+  rootPath: string,
+  sessionId: string,
+): Promise<OperatorSession | null> {
+  const session = await loadOperatorSession(rootPath, sessionId);
+  if (!session) {
+    return null;
+  }
+  const linkedRunId = session.workflow?.linkedRunId;
+  let runSnap: { status: WikiRunRecordStatus; plan?: OperatorSession["workflow"]["plan"] } | null =
+    null;
+  if (linkedRunId) {
+    try {
+      const run = await loadRun(rootPath, linkedRunId);
+      if (run) {
+        runSnap = {
+          status: run.status,
+          ...(run.plan ? { plan: run.plan } : {}),
+        };
+      }
+    } catch {
+      runSnap = null;
+    }
+  }
+  const patch = reconcileSessionWithRun(session, runSnap);
+  if (!patch.changed) {
+    return session;
+  }
+  try {
+    return await replaceSessionMessages(
+      rootPath,
+      sessionId,
+      patch.messages ?? session.messages,
+      {
+        ...(patch.status !== undefined ? { status: patch.status } : {}),
+        ...(patch.pending !== undefined ? { pending: patch.pending } : {}),
+        ...(patch.workflow ? { workflow: patch.workflow } : {}),
+      },
+    );
+  } catch {
+    // Return in-memory reconciled view even if disk write failed.
+    return {
+      ...session,
+      status: patch.status ?? session.status,
+      pending: patch.pending !== undefined ? patch.pending : session.pending,
+      workflow: patch.workflow
+        ? { ...session.workflow, ...patch.workflow }
+        : session.workflow,
+      messages: patch.messages ?? session.messages,
+    };
+  }
+}
 
 export async function handleListSessions(
   _req: IncomingMessage,
@@ -107,7 +167,7 @@ export async function handleGetSession(
     sendError(res, 404, `workspace not found: ${id}`);
     return;
   }
-  const session = await loadOperatorSession(workspace.rootPath, sessionId);
+  const session = await loadSessionReconciled(workspace.rootPath, sessionId);
   if (!session || session.workspaceId !== workspace.id) {
     sendError(res, 404, `session not found: ${sessionId}`);
     return;
@@ -212,7 +272,9 @@ export async function handleSessionChat(
     sendError(res, 404, `workspace not found: ${id}`);
     return;
   }
-  const session = await loadOperatorSession(workspace.rootPath, sessionId);
+  // Reconcile with linked run first so refresh mid-write does not treat a
+  // stale awaiting_plan phase as a live gate for resumeData reconstruction.
+  const session = await loadSessionReconciled(workspace.rootPath, sessionId);
   if (!session || session.workspaceId !== workspace.id) {
     sendError(res, 404, `session not found: ${sessionId}`);
     return;
@@ -313,13 +375,15 @@ export async function handleSessionChat(
   })();
   const phase = session.workflow?.phase ?? "idle";
   const looksLikeResume =
+    body.intent === "resume" ||
     Boolean(body.resumeData) ||
-    lastText === "approve" ||
-    lastText === "deny" ||
-    // Free-text at plan gate is revision feedback (structured resume).
+    // Free-text revise at plan gate still posts intent=resume from the client;
+    // keep a phase-based safety net for mid-migration clients.
     (phase === "awaiting_plan" &&
       lastText.length > 0 &&
-      lastText !== "revise");
+      lastText !== "revise" &&
+      lastText !== "approve" &&
+      lastText !== "deny");
   if (looksLikeResume && candidateRunId) {
     const linkedRun = await loadRun(workspace.rootPath, candidateRunId);
     if (
@@ -358,12 +422,41 @@ export async function handleSessionChat(
     }
   }
 
-  const messages: UIMessage[] = [...previousUI, lastFromClient];
+  // When answering a gate, drop prior actionable chips from the stream history so
+  // onFinish / finalize cannot re-persist a stale plan card after approve.
+  const historyForTurn = looksLikeResume
+    ? sessionMessagesToUIMessages(
+        neutralizeSessionDecisionParts(session.messages),
+      )
+    : previousUI;
+  const messages: UIMessage[] = [...historyForTurn, lastFromClient];
 
   // Reject concurrent turns for the same session (double-submit before finalize).
+  // Return a help UI stream (not hard 409) so refresh + re-approve surfaces a
+  // clear "already in progress" assistant message instead of a transport error.
   const lockKey = sessionChatLockKey(workspace.rootPath, sessionId);
   if (sessionChatInFlight.has(lockKey)) {
-    sendError(res, 409, "session chat turn already in progress");
+    const help = helpTextForSessionTurn({
+      helpReason: "running",
+      phase: session.workflow?.phase,
+      userText: lastText,
+    });
+    pipeUIMessageStreamToResponse({
+      response: res,
+      stream: createUIMessageStream({
+        originalMessages: previousUI,
+        execute: async ({ writer }) => {
+          const textId = `inflight-${Date.now()}`;
+          writer.write({ type: "text-start", id: textId });
+          writer.write({ type: "text-delta", id: textId, delta: help });
+          writer.write({ type: "text-end", id: textId });
+        },
+      }),
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "no-cache, no-transform",
+      },
+    });
     return;
   }
   sessionChatInFlight.add(lockKey);
@@ -419,6 +512,64 @@ export async function handleSessionChat(
       } catch (error) {
         process.stderr.write(
           `session eager run register failed: ${redactErrorMessage(error)}\n`,
+        );
+      }
+    }
+
+    // Eager gate-exit / mid-turn durability (ADR 0026 I6):
+    // Persist "running" + neutralize decision chips as soon as start/resume
+    // begins so a page refresh does not re-offer an already-answered plan gate
+    // while write work is still in flight.
+    if (chat.mode === "start" || chat.mode === "resume") {
+      try {
+        const resumeAction = body.resumeData?.action;
+        const midPhase = midTurnPhaseForChat({
+          mode: chat.mode,
+          resumeAction,
+          gateStep: body.step,
+          previousPhase: session.workflow?.phase,
+        });
+        const linked =
+          chat.runId ??
+          (typeof body.runId === "string" ? body.runId : undefined) ??
+          session.workflow?.linkedRunId;
+        const withUser = [
+          ...neutralizeSessionDecisionParts(session.messages),
+          ...uiMessagesToSessionMessages([lastFromClient]),
+        ];
+        await replaceSessionMessages(workspace.rootPath, sessionId, withUser, {
+          status: "running",
+          pending: null,
+          workflow: {
+            ...session.workflow,
+            ...(linked ? { linkedRunId: linked } : {}),
+            phase: midPhase,
+          },
+        });
+        // Keep run record in sync so refresh reconcile sees "running" not the gate.
+        if (chat.mode === "resume" && linked) {
+          const existing = await loadRun(workspace.rootPath, linked);
+          if (
+            existing &&
+            (existing.status === "awaiting_plan" ||
+              existing.status === "awaiting_publication")
+          ) {
+            await updateRunRecord(workspace.rootPath, linked, {
+              status: "running",
+              summary:
+                resumeAction === "revise"
+                  ? "Revising plan from operator feedback"
+                  : resumeAction === "deny"
+                    ? "Closing gate after operator deny"
+                    : "Resuming after operator decision",
+              error: null,
+              ...(sessionId ? { sessionId } : {}),
+            }).catch(() => undefined);
+          }
+        }
+      } catch (error) {
+        process.stderr.write(
+          `session eager mid-turn persist failed: ${redactErrorMessage(error)}\n`,
         );
       }
     }
@@ -560,10 +711,19 @@ export async function handleSessionChat(
         }
 
         // Persist full UIMessage timeline (text + tool + data parts), not only finalText.
+        // Always clear answered gates on older assistant turns so refresh cannot
+        // re-offer a plan chip after approve (finishedMessages may still carry them).
+        const durableMessages = neutralizeSessionDecisionParts(
+          result.messages,
+          {
+            // Keep chips only when this turn re-opened a gate (pending set).
+            keepLatestAssistant: sessionPending != null,
+          },
+        );
         await replaceSessionMessages(
           workspace.rootPath,
           sessionId,
-          result.messages,
+          durableMessages,
           {
             status: sessionStatus,
             pending: sessionPending,

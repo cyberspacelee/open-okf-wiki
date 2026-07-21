@@ -21,7 +21,6 @@ import type {
 } from "@okf-wiki/contract";
 import {
   helpTextForSessionTurn,
-  isKickoffPhrase,
   normalizeSessionUserText,
   resolveSessionTurnMode,
 } from "@okf-wiki/contract";
@@ -90,7 +89,14 @@ export type SessionStreamBody = {
   messages?: UIMessage[];
   /** Chat / session id from DefaultChatTransport. */
   id?: string;
-  /** Workflow resume payload (plan/publication gate). */
+  /**
+   * Explicit turn intent (preferred). Avoids guessing resume/start from user text.
+   * - start: kick off a Wiki Run
+   * - resume: answer plan/publish gate with resumeData
+   * - chat: help / non-run (default when omitted and no resumeData)
+   */
+  intent?: "start" | "resume" | "chat";
+  /** Workflow resume payload (plan/publication gate). Required when intent=resume. */
   resumeData?: {
     action: "approve" | "deny" | "revise";
     plan?: WikiRunPlan;
@@ -326,28 +332,15 @@ export async function createSessionWorkflowStream(input: {
   const existingRunId =
     input.body?.runId ?? input.session.workflow.linkedRunId ?? undefined;
 
-  // Prefer explicit body; else map plain approve/deny/revise or free-text revise.
+  // Explicit body only — do not reconstruct approve/deny/revise from free text.
+  // Client must send intent + resumeData for gates (Codex-class structured HITL).
   let resumeData = input.body?.resumeData;
-  if (!resumeData && existingRunId) {
-    if (userText === "approve" || userText === "deny") {
-      resumeData = { action: userText };
-    } else if (
-      phase === "awaiting_plan" &&
-      userText &&
-      userText.toLowerCase() !== "revise" &&
-      !isKickoffPhrase(userText)
-    ) {
-      // Free-text at the plan gate is revision feedback (not free-chat).
-      resumeData = { action: "revise", feedback: userText };
-    } else if (userText.toLowerCase() === "revise") {
-      // Bare revise chip without feedback — surface help, do not resume.
-      resumeData = { action: "revise" };
-    }
-  }
+  const bodyIntent = input.body?.intent;
 
   // Plan gate approve/revise may need the durable plan payload.
   if (
-    (resumeData?.action === "approve" || resumeData?.action === "revise") &&
+    resumeData &&
+    (resumeData.action === "approve" || resumeData.action === "revise") &&
     !resumeData.plan &&
     input.session.workflow.plan
   ) {
@@ -361,7 +354,7 @@ export async function createSessionWorkflowStream(input: {
     }
   }
 
-  // Normalize revise feedback from user text when client only sent action.
+  // Normalize revise feedback from user text when client sent action + free text.
   if (
     resumeData?.action === "revise" &&
     !resumeData.feedback?.trim() &&
@@ -381,6 +374,7 @@ export async function createSessionWorkflowStream(input: {
     hasSources,
     resumeData,
     existingRunId,
+    intent: bodyIntent,
   });
   const mode = turn.mode;
   let runId = existingRunId ?? randomUUID();
@@ -428,32 +422,31 @@ export async function createSessionWorkflowStream(input: {
         writer.write({ type: "text-end", id: textId });
       };
 
-      const writeDecision = (interaction: PendingInteraction) => {
-        const id = `${randomUUID()}-decision`;
+      /**
+       * Product HITL gate part (not a model tool).
+       * UI reads `data-gate` + `data-plan`; no tool-request_user_decision / data-choice.
+       */
+      const writeGate = (
+        interaction: PendingInteraction,
+        gate: "plan" | "publication",
+      ) => {
+        const partId = randomUUID();
+        const data = {
+          ...interaction,
+          gate,
+          cancelled: false as const,
+        };
         writer.write({
-          type: "tool-input-start",
-          toolCallId: id,
-          toolName: "request_user_decision",
-        });
-        writer.write({
-          type: "tool-input-available",
-          toolCallId: id,
-          toolName: "request_user_decision",
-          input: interaction,
-        });
-        toolParts.push({
-          type: "tool-request_user_decision",
-          toolCallId: id,
-          toolName: "request_user_decision",
-          state: "input-available",
-          input: interaction,
-        });
-        writer.write({
-          type: "data-choice",
-          id: randomUUID(),
-          data: interaction,
+          type: "data-gate",
+          id: partId,
+          data,
         } as UIMessageChunk);
-        pending = { ...interaction, toolCallId: id };
+        dataParts.push({
+          type: "data-gate",
+          id: partId,
+          data,
+        } as SessionMessage["parts"][number]);
+        pending = { ...interaction };
         status = "waiting";
       };
 
@@ -475,7 +468,9 @@ export async function createSessionWorkflowStream(input: {
           const decision = decisionFromSuspend(suspend);
           if (decision) {
             await writeText(decision.text);
-            writeDecision(decision.pending);
+            const gateKind =
+              suspend.gate === "publication" ? "publication" : "plan";
+            writeGate(decision.pending, gateKind);
             // Structured plan for clients (no need to parse markdown).
             if (decision.plan) {
               const planPartId = randomUUID();
@@ -603,7 +598,8 @@ export async function createSessionWorkflowStream(input: {
           await writeText(
             `Starting **Wiki Run** \`${runId}\` for **${input.workspace.name}**…`,
           );
-          workflow = { phase: "awaiting_plan", linkedRunId: runId };
+          // Mid-flight until suspend; do not pretent we are already at plan gate.
+          workflow = { phase: "planning", linkedRunId: runId };
           ui = await openWikiWorkflowUiStream({
             kind: "start",
             runId,
@@ -738,7 +734,15 @@ export async function createSessionWorkflowStream(input: {
         ...dataParts,
       ];
       if (pending) {
-        parts.push({ type: "data-choice", data: pending });
+        parts.push({
+          type: "data-gate",
+          data: {
+            ...pending,
+            gate:
+              workflow.phase === "awaiting_publish" ? "publication" : "plan",
+            cancelled: false,
+          },
+        } as SessionMessage["parts"][number]);
       }
       const assistantMessage: SessionMessage = {
         id: assistantId,
