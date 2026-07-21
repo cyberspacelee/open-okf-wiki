@@ -23,6 +23,7 @@ import { WorkspaceShell } from "../components/WorkspaceShell";
 import { formatMessage, useI18n } from "../i18n";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Field,
   FieldContent,
@@ -232,9 +233,22 @@ export function WorkspaceSettingsPage() {
         {loading ? (
           <LoadingState label={t.settings.loading} />
         ) : workspace ? (
-          <Card>
-            <CardContent className="flex flex-col gap-6">
-              <form className="form" onSubmit={(e) => void handleSubmit(e)}>
+          <Tabs defaultValue="general" className="w-full">
+            <TabsList variant="line" className="mb-2 w-full justify-start">
+              <TabsTrigger value="general" data-testid="settings-tab-general">
+                {t.settings.tabGeneral}
+              </TabsTrigger>
+              <TabsTrigger value="skill" data-testid="settings-tab-skill">
+                {t.settings.tabSkill}
+              </TabsTrigger>
+              <TabsTrigger value="danger" data-testid="settings-tab-danger">
+                {t.settings.tabDanger}
+              </TabsTrigger>
+            </TabsList>
+            <TabsContent value="general" className="flex flex-col gap-6 outline-none">
+              <Card>
+                <CardContent className="flex flex-col gap-6">
+                  <form className="form" onSubmit={(e) => void handleSubmit(e)}>
                 <FieldGroup>
                   <Field>
                     <FieldLabel htmlFor="settings-name">{t.settings.name}</FieldLabel>
@@ -408,8 +422,33 @@ export function WorkspaceSettingsPage() {
                   </div>
                 </FieldGroup>
               </form>
-
-              <section className="flex flex-col gap-3" data-testid="settings-skill-panel">
+                  <dl className="kv muted-block">
+                <div>
+                  <dt>{t.settings.rootPath}</dt>
+                  <dd className="mono">{workspace.rootPath}</dd>
+                </div>
+                <div>
+                  <dt>{t.common.id}</dt>
+                  <dd className="mono">{workspace.id}</dd>
+                </div>
+                <div>
+                  <dt>{t.settings.selectedModelId}</dt>
+                  <dd className="mono">{workspace.model.id}</dd>
+                </div>
+                {workspace.model.profileId ? (
+                  <div>
+                    <dt>{t.settings.modelProfile}</dt>
+                    <dd className="mono">{workspace.model.profileId}</dd>
+                  </div>
+                ) : null}
+              </dl>
+                </CardContent>
+              </Card>
+            </TabsContent>
+            <TabsContent value="skill" className="outline-none">
+              <Card>
+                <CardContent className="flex flex-col gap-6">
+                  <section className="flex flex-col gap-3" data-testid="settings-skill-panel">
                 <h2 className="text-base font-semibold">{t.settings.skillTitle}</h2>
                 <p className="muted small">{t.settings.skillDescription}</p>
                 {skill ? (
@@ -603,7 +642,7 @@ export function WorkspaceSettingsPage() {
                       />
                     </Field>
                     <p className="muted small">
-                      Files:{" "}
+                      {t.settings.skillFiles}{" "}
                       <button
                         type="button"
                         className="underline"
@@ -639,29 +678,13 @@ export function WorkspaceSettingsPage() {
                   </FieldGroup>
                 ) : null}
               </section>
-
-              <dl className="kv muted-block">
-                <div>
-                  <dt>{t.settings.rootPath}</dt>
-                  <dd className="mono">{workspace.rootPath}</dd>
-                </div>
-                <div>
-                  <dt>{t.common.id}</dt>
-                  <dd className="mono">{workspace.id}</dd>
-                </div>
-                <div>
-                  <dt>{t.settings.selectedModelId}</dt>
-                  <dd className="mono">{workspace.model.id}</dd>
-                </div>
-                {workspace.model.profileId ? (
-                  <div>
-                    <dt>{t.settings.modelProfile}</dt>
-                    <dd className="mono">{workspace.model.profileId}</dd>
-                  </div>
-                ) : null}
-              </dl>
-
-              <section
+                </CardContent>
+              </Card>
+            </TabsContent>
+            <TabsContent value="danger" className="outline-none">
+              <Card>
+                <CardContent className="flex flex-col gap-6">
+                  <section
                 className="flex flex-col gap-3 rounded-md border border-destructive/30 p-4"
                 data-testid="settings-danger-zone"
               >
@@ -685,39 +708,41 @@ export function WorkspaceSettingsPage() {
                   </Button>
                 </div>
               </section>
-
-              <ConfirmDialog
-                open={deleteDialogOpen}
-                onOpenChange={(open) => {
-                  setDeleteDialogOpen(open);
-                  if (!open) {
-                    setDeleteMeta(false);
-                  }
-                }}
-                title={t.settings.deleteConfirmTitle}
-                description={
-                  workspace
-                    ? formatMessage(t.settings.deleteConfirm, {
-                        name: workspace.name,
-                      })
-                    : undefined
-                }
-                confirmLabel={
-                  deleting ? t.common.deleting : t.settings.deleteWorkspace
-                }
-                cancelLabel={t.common.cancel}
-                onConfirm={() => void handleDeleteWorkspace()}
-                confirmDisabled={deleting}
-                data-testid="settings-delete-dialog"
-                confirmTestId="settings-delete-confirm"
-                metaChecked={deleteMeta}
-                onMetaCheckedChange={setDeleteMeta}
-                metaLabel={t.settings.deleteMeta}
-                metaTestId="settings-delete-meta"
-              />
-            </CardContent>
-          </Card>
+                </CardContent>
+              </Card>
+            </TabsContent>
+          </Tabs>
         ) : null}
+
+        <ConfirmDialog
+          open={deleteDialogOpen}
+          onOpenChange={(open) => {
+            setDeleteDialogOpen(open);
+            if (!open) {
+              setDeleteMeta(false);
+            }
+          }}
+          title={t.settings.deleteConfirmTitle}
+          description={
+            workspace
+              ? formatMessage(t.settings.deleteConfirm, {
+                  name: workspace.name,
+                })
+              : undefined
+          }
+          confirmLabel={
+            deleting ? t.common.deleting : t.settings.deleteWorkspace
+          }
+          cancelLabel={t.common.cancel}
+          onConfirm={() => void handleDeleteWorkspace()}
+          confirmDisabled={deleting}
+          data-testid="settings-delete-dialog"
+          confirmTestId="settings-delete-confirm"
+          metaChecked={deleteMeta}
+          onMetaCheckedChange={setDeleteMeta}
+          metaLabel={t.settings.deleteMeta}
+          metaTestId="settings-delete-meta"
+        />
     </WorkspaceShell>
   );
 }

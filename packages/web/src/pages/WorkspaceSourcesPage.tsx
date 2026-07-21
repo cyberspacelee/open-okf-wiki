@@ -27,6 +27,14 @@ import {
   FieldLabel,
 } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -389,23 +397,27 @@ export function WorkspaceSourcesPage() {
               </CardContent>
             </Card>
 
-            {editingSourceId ? (
-              <Card data-testid="source-ignore-editor">
-                <CardHeader className="row-between items-center">
-                  <CardTitle>
-                    {t.sources.ignoreTitle}: <code className="mono">{editingSourceId}</code>
-                  </CardTitle>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setEditingSourceId(null)}
-                  >
-                    {t.sources.closeEditor}
-                  </Button>
-                </CardHeader>
-                <CardContent className="flex flex-col gap-4">
-                  <p className="muted small">{t.sources.ignoreDescription}</p>
+            <Sheet
+              open={editingSourceId != null}
+              onOpenChange={(open) => {
+                if (!open) {
+                  setEditingSourceId(null);
+                }
+              }}
+            >
+              <SheetContent
+                side="right"
+                className="w-full sm:max-w-lg"
+                data-testid="source-ignore-editor"
+              >
+                <SheetHeader>
+                  <SheetTitle>
+                    {t.sources.ignoreTitle}:{" "}
+                    <code className="mono">{editingSourceId}</code>
+                  </SheetTitle>
+                  <SheetDescription>{t.sources.ignoreDescription}</SheetDescription>
+                </SheetHeader>
+                <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4">
                   <FieldGroup>
                     <Field orientation="horizontal">
                       <FieldContent>
@@ -465,19 +477,26 @@ export function WorkspaceSourcesPage() {
                       {t.sources.presetPython}
                     </Button>
                   </div>
-                  <div className="form-actions">
-                    <Button
-                      type="button"
-                      disabled={savingIgnores}
-                      onClick={() => void handleSaveIgnores()}
-                      data-testid="source-ignore-save"
-                    >
-                      {savingIgnores ? t.sources.savingIgnores : t.sources.saveIgnores}
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            ) : null}
+                </div>
+                <SheetFooter>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setEditingSourceId(null)}
+                  >
+                    {t.sources.closeEditor}
+                  </Button>
+                  <Button
+                    type="button"
+                    disabled={savingIgnores}
+                    onClick={() => void handleSaveIgnores()}
+                    data-testid="source-ignore-save"
+                  >
+                    {savingIgnores ? t.sources.savingIgnores : t.sources.saveIgnores}
+                  </Button>
+                </SheetFooter>
+              </SheetContent>
+            </Sheet>
 
             <Card>
               <CardHeader>

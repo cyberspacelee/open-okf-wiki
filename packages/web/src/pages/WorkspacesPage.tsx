@@ -18,9 +18,15 @@ import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
-  CardHeader,
-  CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Empty,
   EmptyContent,
@@ -92,6 +98,15 @@ export function WorkspacesPage() {
     void load();
   }, [load]);
 
+  function openCreateForm() {
+    setShowForm(true);
+    setError(null);
+  }
+
+  function closeCreateForm() {
+    setShowForm(false);
+  }
+
   async function handleCreate(event: FormEvent) {
     event.preventDefault();
     setSubmitting(true);
@@ -147,19 +162,101 @@ export function WorkspacesPage() {
               {t.workspaces.descriptionAfter}
             </p>
           </div>
-          <Button
-            type="button"
-            variant={showForm ? "outline" : "default"}
-            onClick={() => {
-              setShowForm((open) => !open);
-              setError(null);
-            }}
-          >
-            {showForm ? t.workspaces.cancel : t.workspaces.create}
+          <Button type="button" onClick={openCreateForm}>
+            {t.workspaces.create}
           </Button>
         </header>
 
         <ErrorBanner error={error} onDismiss={() => setError(null)} />
+
+        <Dialog
+          open={showForm}
+          onOpenChange={(open) => {
+            if (open) {
+              openCreateForm();
+            } else {
+              closeCreateForm();
+            }
+          }}
+        >
+          <DialogContent
+            className="sm:max-w-lg"
+            data-testid="workspace-create-form"
+          >
+            <DialogHeader>
+              <DialogTitle>{t.workspaces.createTitle}</DialogTitle>
+              <DialogDescription>{t.workspaces.rootHint}</DialogDescription>
+            </DialogHeader>
+            <form className="form" onSubmit={(e) => void handleCreate(e)}>
+              <FieldGroup>
+                <Field>
+                  <FieldLabel htmlFor="workspace-name">
+                    {t.workspaces.nameLabel}
+                  </FieldLabel>
+                  <Input
+                    id="workspace-name"
+                    type="text"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder={t.workspaces.namePlaceholder}
+                    required
+                    maxLength={120}
+                    autoFocus
+                    data-testid="workspace-name-input"
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="workspace-root">
+                    {t.workspaces.rootLabel}
+                  </FieldLabel>
+                  <Input
+                    id="workspace-root"
+                    type="text"
+                    value={rootPath}
+                    onChange={(e) => setRootPath(e.target.value)}
+                    placeholder={t.workspaces.rootPlaceholder}
+                    required
+                    className="font-mono"
+                    data-testid="workspace-root-input"
+                  />
+                  <FieldDescription>{t.workspaces.rootHint}</FieldDescription>
+                </Field>
+                <ModelSelect
+                  models={models}
+                  value={modelProfileId}
+                  onChange={setModelProfileId}
+                  defaultModelProfileId={defaultModelProfileId}
+                  required={models.length > 0}
+                  allowEmpty={models.length === 0}
+                />
+              </FieldGroup>
+              <DialogFooter className="mt-4 px-0 pb-0">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={closeCreateForm}
+                >
+                  {t.workspaces.cancel}
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={
+                    submitting ||
+                    !name.trim() ||
+                    !rootPath.trim() ||
+                    (models.length > 0 && !modelProfileId)
+                  }
+                  data-testid="workspace-create-submit"
+                >
+                  {submitting ? <Spinner data-icon="inline-start" /> : null}
+                  {submitting
+                    ? t.workspaces.creating
+                    : t.workspaces.createSubmit}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
 
         <ConfirmDialog
           open={deleteTarget != null}
@@ -191,77 +288,6 @@ export function WorkspacesPage() {
           metaTestId="workspace-delete-meta"
         />
 
-        {showForm ? (
-          <Card data-testid="workspace-create-form">
-            <CardHeader>
-              <CardTitle>{t.workspaces.createTitle}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <form className="form" onSubmit={(e) => void handleCreate(e)}>
-                <FieldGroup>
-                  <Field>
-                    <FieldLabel htmlFor="workspace-name">
-                      {t.workspaces.nameLabel}
-                    </FieldLabel>
-                    <Input
-                      id="workspace-name"
-                      type="text"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      placeholder={t.workspaces.namePlaceholder}
-                      required
-                      maxLength={120}
-                      autoFocus
-                      data-testid="workspace-name-input"
-                    />
-                  </Field>
-                  <Field>
-                    <FieldLabel htmlFor="workspace-root">
-                      {t.workspaces.rootLabel}
-                    </FieldLabel>
-                    <Input
-                      id="workspace-root"
-                      type="text"
-                      value={rootPath}
-                      onChange={(e) => setRootPath(e.target.value)}
-                      placeholder={t.workspaces.rootPlaceholder}
-                      required
-                      className="font-mono"
-                      data-testid="workspace-root-input"
-                    />
-                    <FieldDescription>{t.workspaces.rootHint}</FieldDescription>
-                  </Field>
-                  <ModelSelect
-                    models={models}
-                    value={modelProfileId}
-                    onChange={setModelProfileId}
-                    defaultModelProfileId={defaultModelProfileId}
-                    required={models.length > 0}
-                    allowEmpty={models.length === 0}
-                  />
-                  <div className="form-actions">
-                    <Button
-                      type="submit"
-                      disabled={
-                        submitting ||
-                        !name.trim() ||
-                        !rootPath.trim() ||
-                        (models.length > 0 && !modelProfileId)
-                      }
-                      data-testid="workspace-create-submit"
-                    >
-                      {submitting ? <Spinner data-icon="inline-start" /> : null}
-                      {submitting
-                        ? t.workspaces.creating
-                        : t.workspaces.createSubmit}
-                    </Button>
-                  </div>
-                </FieldGroup>
-              </form>
-            </CardContent>
-          </Card>
-        ) : null}
-
         {loading ? (
           <LoadingState label={t.workspaces.loading} />
         ) : workspaces.length === 0 ? (
@@ -281,11 +307,9 @@ export function WorkspacesPage() {
                     <li>{t.workspaces.checklistSources}</li>
                     <li>{t.workspaces.checklistRun}</li>
                   </ul>
-                  {!showForm ? (
-                    <Button type="button" onClick={() => setShowForm(true)}>
-                      {t.workspaces.createSubmit}
-                    </Button>
-                  ) : null}
+                  <Button type="button" onClick={openCreateForm}>
+                    {t.workspaces.createSubmit}
+                  </Button>
                 </EmptyContent>
               </Empty>
             </CardContent>

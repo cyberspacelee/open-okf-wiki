@@ -38,12 +38,13 @@ test.describe("UI layout smoke — Session / Settings skill / Sources", () => {
     // --- Settings skill layout ---
     await page.getByTestId("workspace-subnav-settings").click();
     await expect(page.getByTestId("settings-page")).toBeVisible();
+    await expectVisibleBox(page.getByTestId("settings-plan-confirm"));
+    await page.getByTestId("settings-tab-skill").click();
     const skillPanel = page.getByTestId("settings-skill-panel");
     await expectVisibleBox(skillPanel, { minWidth: 200, minHeight: 80 });
     await expectVisibleBox(page.getByTestId("settings-skill-kind"));
     await expectVisibleBox(page.getByTestId("settings-skill-digest"));
     await expectVisibleBox(page.getByTestId("settings-skill-fork"));
-    await expectVisibleBox(page.getByTestId("settings-plan-confirm"));
 
     await page.getByTestId("settings-skill-fork").click();
     await expect(page.getByTestId("settings-skill-kind")).toHaveText("fork", {

@@ -25,6 +25,11 @@ import { workspaceHref } from "../lib/workspace-path";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
   Table,
   TableBody,
   TableCell,
@@ -32,6 +37,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { ChevronDownIcon } from "lucide-react";
 
 function formatTime(iso: string): string {
   try {
@@ -561,16 +567,6 @@ export function WorkspaceRunPage() {
                   ) : null}
                   <Button
                     type="button"
-                    variant="outline"
-                    onClick={() => void handleStartHeadless()}
-                    disabled={starting || !canStart || canCancel}
-                    data-testid="run-start"
-                    title={t.runs.startHeadlessTitle}
-                  >
-                    {starting ? t.runs.starting : t.runs.startHeadless}
-                  </Button>
-                  <Button
-                    type="button"
                     onClick={() => handleStartInSession()}
                     disabled={!canStart || canCancel}
                     data-testid="run-start-session"
@@ -588,6 +584,35 @@ export function WorkspaceRunPage() {
                     </Link>
                   </p>
                 ) : null}
+
+                <Collapsible defaultOpen className="rounded-lg border">
+                  <CollapsibleTrigger className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm font-medium hover:bg-muted/50">
+                    <span>
+                      {t.runs.advancedTitle}
+                      <span className="ml-2 font-normal text-muted-foreground">
+                        {t.runs.advancedHint}
+                      </span>
+                    </span>
+                    <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground" />
+                  </CollapsibleTrigger>
+                  <CollapsibleContent
+                    keepMounted
+                    className="border-t px-3 py-3"
+                  >
+                    <div className="row-actions">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => void handleStartHeadless()}
+                        disabled={starting || !canStart || canCancel}
+                        data-testid="run-start"
+                        title={t.runs.startHeadlessTitle}
+                      >
+                        {starting ? t.runs.starting : t.runs.startHeadless}
+                      </Button>
+                    </div>
+                  </CollapsibleContent>
+                </Collapsible>
 
                 {lastRun ? (
                   <div className="run-last" data-testid="run-last">
@@ -632,25 +657,43 @@ export function WorkspaceRunPage() {
                       </div>
                     </dl>
 
-                    <div className="run-event-log mono small" data-testid="run-event-log">
-                      <h3 className="panel-subtitle">{t.runs.jobEvents}</h3>
-                      <p className="muted small mb-2">
-                        {t.runs.jobEventsHintBefore}
-                        <Link to={workspaceHref(id, "/session", rootPathHint)}>
-                          {t.runs.jobEventsHintLink}
-                        </Link>
-                        {t.runs.jobEventsHintAfter}
-                      </p>
-                      {eventLog.length === 0 ? (
-                        <p className="muted">{t.runs.noEvents}</p>
-                      ) : (
-                        <ul className="event-log" data-testid="run-event-list">
-                          {eventLog.map((line, i) => (
-                            <li key={`${i}-${line.slice(0, 24)}`}>{line}</li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
+                    <Collapsible
+                      defaultOpen={
+                        lastRun.status === "running" ||
+                        lastRun.status === "awaiting_plan" ||
+                        lastRun.status === "awaiting_publication" ||
+                        eventLog.length > 0
+                      }
+                      className="rounded-lg border"
+                    >
+                      <CollapsibleTrigger className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm font-medium hover:bg-muted/50">
+                        <span>{t.runs.jobEvents}</span>
+                        <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground" />
+                      </CollapsibleTrigger>
+                      <CollapsibleContent keepMounted className="border-t px-3 py-3">
+                        <div
+                          className="run-event-log mono small"
+                          data-testid="run-event-log"
+                        >
+                          <p className="muted small mb-2">
+                            {t.runs.jobEventsHintBefore}
+                            <Link to={workspaceHref(id, "/session", rootPathHint)}>
+                              {t.runs.jobEventsHintLink}
+                            </Link>
+                            {t.runs.jobEventsHintAfter}
+                          </p>
+                          {eventLog.length === 0 ? (
+                            <p className="muted">{t.runs.noEvents}</p>
+                          ) : (
+                            <ul className="event-log" data-testid="run-event-list">
+                              {eventLog.map((line, i) => (
+                                <li key={`${i}-${line.slice(0, 24)}`}>{line}</li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      </CollapsibleContent>
+                    </Collapsible>
 
                     {lastRun.skillDigest ? (
                       <p className="muted small mono" data-testid="run-skill-digest">

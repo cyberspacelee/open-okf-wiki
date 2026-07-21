@@ -23,7 +23,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
-import { useI18n } from "../i18n";
+import { formatMessage, useI18n } from "../i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -41,6 +41,7 @@ import { Input } from "@/components/ui/input";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Table,
   TableBody,
@@ -195,7 +196,7 @@ export function SettingsPage() {
           ? await updateModelProfile(editingId, payload)
           : await createModelProfile(payload);
       setProvider(result.provider);
-      setStatus(editorMode === "edit" ? "Model updated" : "Model added");
+      setStatus(editorMode === "edit" ? t.globalSettings.statusModelUpdated : t.globalSettings.statusModelAdded);
       closeEditor();
       try {
         setDoctor(await getDoctor());
@@ -223,7 +224,7 @@ export function SettingsPage() {
       if (editingId === model.id) {
         closeEditor();
       }
-      setStatus("Model deleted");
+      setStatus(t.globalSettings.statusModelDeleted);
     } catch (err) {
       setError(err);
     } finally {
@@ -237,7 +238,7 @@ export function SettingsPage() {
     try {
       const result = await setDefaultModelProfile(model.id);
       setProvider(result.provider);
-      setStatus(`Default: ${model.name}`);
+      setStatus(formatMessage(t.globalSettings.statusDefault, { name: model.name }));
     } catch (err) {
       setError(err);
     }
@@ -275,7 +276,7 @@ export function SettingsPage() {
           </div>
           <div className="row-actions">
             <Button type="button" variant="outline" onClick={() => void loadAll()} disabled={loading}>
-              Refresh
+              {t.globalSettings.refresh}
             </Button>
             <Button
               type="button"
@@ -283,7 +284,7 @@ export function SettingsPage() {
               disabled={loading || editorMode !== "closed"}
               data-testid="model-add"
             >
-              Add model
+              {t.globalSettings.addModel}
             </Button>
           </div>
         </header>
@@ -296,9 +297,22 @@ export function SettingsPage() {
         ) : null}
 
         {loading ? (
-          <LoadingState label="Loading settings…" />
+          <LoadingState label={t.globalSettings.loading} />
         ) : (
           <>
+          <Tabs defaultValue="models" className="w-full">
+            <TabsList variant="line" className="mb-2 w-full justify-start">
+              <TabsTrigger value="models" data-testid="settings-tab-models">
+                {t.globalSettings.tabModels}
+              </TabsTrigger>
+              <TabsTrigger value="app" data-testid="settings-tab-app">
+                {t.globalSettings.tabApp}
+              </TabsTrigger>
+              <TabsTrigger value="diagnostics" data-testid="settings-tab-diagnostics">
+                {t.globalSettings.tabDiagnostics}
+              </TabsTrigger>
+            </TabsList>
+            <TabsContent value="app" className="flex flex-col gap-4 outline-none">
             <Card data-testid="home-skills-panel">
               <CardHeader>
                 <CardTitle>{t.globalSettings.skillsTitle}</CardTitle>
@@ -346,39 +360,40 @@ export function SettingsPage() {
                     ) : null}
                   </>
                 ) : (
-                  <p className="muted small">App settings unavailable.</p>
+                  <p className="muted small">{t.globalSettings.appSettingsUnavailable}</p>
                 )}
               </CardContent>
             </Card>
+            </TabsContent>
 
+            <TabsContent value="models" className="flex flex-col gap-4 outline-none">
             <Card data-testid="provider-panel">
               <CardHeader className="row-between items-center">
-                <CardTitle>Models</CardTitle>
+                <CardTitle>{t.globalSettings.modelsTitle}</CardTitle>
                 <span className="muted small">
-                  {models.length} configured
+                  {formatMessage(t.globalSettings.modelsCount, { n: models.length })}
                   {provider?.defaultModelProfileId
-                    ? ` · default set`
+                    ? ` · ${t.globalSettings.defaultSet}`
                     : models.length > 0
-                      ? " · no default"
+                      ? ` · ${t.globalSettings.noDefault}`
                       : ""}
                 </span>
               </CardHeader>
               <CardContent className="flex flex-col gap-4">
                 {models.length === 0 ? (
                   <p className="muted" data-testid="models-empty">
-                    No models yet. Add at least one OpenAI-compatible model, then select it when
-                    creating a workspace.
+                    {t.globalSettings.modelsEmpty}
                   </p>
                 ) : (
                   <Table data-testid="models-table">
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Name</TableHead>
-                        <TableHead>Model id</TableHead>
-                        <TableHead>Shape</TableHead>
-                        <TableHead>Base URL</TableHead>
-                        <TableHead>Key</TableHead>
-                        <TableHead className="text-right">Actions</TableHead>
+                        <TableHead>{t.globalSettings.colName}</TableHead>
+                        <TableHead>{t.globalSettings.colModelId}</TableHead>
+                        <TableHead>{t.globalSettings.colShape}</TableHead>
+                        <TableHead>{t.globalSettings.colBaseUrl}</TableHead>
+                        <TableHead>{t.globalSettings.colKey}</TableHead>
+                        <TableHead className="text-right">{t.globalSettings.colActions}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -390,7 +405,7 @@ export function SettingsPage() {
                               <span className="font-medium">{model.name}</span>
                               {isDefault ? (
                                 <Badge variant="secondary" className="ml-2">
-                                  default
+                                  {t.globalSettings.defaultBadge}
                                 </Badge>
                               ) : null}
                             </TableCell>
@@ -400,7 +415,7 @@ export function SettingsPage() {
                               {model.baseUrl || "—"}
                             </TableCell>
                             <TableCell className="mono small">
-                              {model.apiKeySet ? model.apiKeyMasked ?? "set" : "—"}
+                              {model.apiKeySet ? model.apiKeyMasked ?? t.globalSettings.keySet : "—"}
                             </TableCell>
                             <TableCell className="actions-cell">
                               <div className="row-actions justify-end">
@@ -412,7 +427,7 @@ export function SettingsPage() {
                                     onClick={() => void handleSetDefault(model)}
                                     data-testid="model-set-default"
                                   >
-                                    Set default
+                                    {t.globalSettings.setDefault}
                                   </Button>
                                 ) : null}
                                 <Button
@@ -422,7 +437,7 @@ export function SettingsPage() {
                                   onClick={() => openEdit(model)}
                                   data-testid="model-edit"
                                 >
-                                  Edit
+                                  {t.globalSettings.edit}
                                 </Button>
                                 <Button
                                   type="button"
@@ -435,7 +450,7 @@ export function SettingsPage() {
                                   {deletingId === model.id ? (
                                     <Spinner data-icon="inline-start" />
                                   ) : null}
-                                  {deletingId === model.id ? "…" : "Delete"}
+                                  {deletingId === model.id ? "…" : t.globalSettings.delete}
                                 </Button>
                               </div>
                             </TableCell>
@@ -448,9 +463,14 @@ export function SettingsPage() {
 
                 {provider ? (
                   <p className="muted small">
-                    Env fallback: OPENAI_BASE_URL=
-                    {provider.envFallback.openaiBaseUrlSet ? "set" : "unset"} · OPENAI_API_KEY=
-                    {provider.envFallback.openaiApiKeySet ? "set" : "unset"}
+                    {formatMessage(t.globalSettings.envFallback, {
+                      base: provider.envFallback.openaiBaseUrlSet
+                        ? t.globalSettings.envSet
+                        : t.globalSettings.envUnset,
+                      key: provider.envFallback.openaiApiKeySet
+                        ? t.globalSettings.envSet
+                        : t.globalSettings.envUnset,
+                    })}
                   </p>
                 ) : null}
               </CardContent>
@@ -460,24 +480,26 @@ export function SettingsPage() {
               <Card data-testid="model-editor">
                 <CardHeader className="row-between items-center">
                   <CardTitle>
-                    {editorMode === "create" ? "Add model" : "Edit model"}
+                    {editorMode === "create"
+                      ? t.globalSettings.editorCreateTitle
+                      : t.globalSettings.editorEditTitle}
                   </CardTitle>
                   <Button type="button" variant="ghost" size="sm" onClick={closeEditor}>
-                    Cancel
+                    {t.common.cancel}
                   </Button>
                 </CardHeader>
                 <CardContent>
                   <form className="form form-wide" onSubmit={(e) => void handleSave(e)}>
                     <FieldGroup>
                       <Field>
-                        <FieldLabel htmlFor="model-name">Display name</FieldLabel>
+                        <FieldLabel htmlFor="model-name">{t.globalSettings.displayName}</FieldLabel>
                         <Input
                           id="model-name"
                           value={form.name}
                           onChange={(e) =>
                             setForm((f) => ({ ...f, name: e.target.value }))
                           }
-                          placeholder="Corp GPT-4o"
+                          placeholder={t.globalSettings.displayNamePlaceholder}
                           required
                           maxLength={120}
                           data-testid="model-name-input"
@@ -485,25 +507,24 @@ export function SettingsPage() {
                         />
                       </Field>
                       <Field>
-                        <FieldLabel htmlFor="model-id">Model id</FieldLabel>
+                        <FieldLabel htmlFor="model-id">{t.globalSettings.modelIdLabel}</FieldLabel>
                         <Input
                           id="model-id"
                           value={form.modelId}
                           onChange={(e) =>
                             setForm((f) => ({ ...f, modelId: e.target.value }))
                           }
-                          placeholder="openai/my-served-model"
+                          placeholder={t.globalSettings.modelIdPlaceholder}
                           required
                           className="font-mono"
                           data-testid="model-id-input"
                         />
                         <FieldDescription>
-                          Served identity sent to the gateway (Mastra form{" "}
-                          <code>provider/model</code>).
+                          {t.globalSettings.modelIdHint}
                         </FieldDescription>
                       </Field>
                       <Field>
-                        <FieldLabel htmlFor="model-base-url">Base URL</FieldLabel>
+                        <FieldLabel htmlFor="model-base-url">{t.globalSettings.baseUrl}</FieldLabel>
                         <Input
                           id="model-base-url"
                           type="url"
@@ -511,14 +532,14 @@ export function SettingsPage() {
                           onChange={(e) =>
                             setForm((f) => ({ ...f, baseUrl: e.target.value }))
                           }
-                          placeholder="https://gateway.example.com/v1"
+                          placeholder={t.globalSettings.baseUrlPlaceholder}
                           className="font-mono"
                           data-testid="model-base-url"
                           autoComplete="off"
                         />
                       </Field>
                       <Field>
-                        <FieldLabel htmlFor="model-api-key">API key</FieldLabel>
+                        <FieldLabel htmlFor="model-api-key">{t.globalSettings.apiKey}</FieldLabel>
                         <Input
                           id="model-api-key"
                           type="password"
@@ -532,8 +553,8 @@ export function SettingsPage() {
                           }
                           placeholder={
                             editorMode === "edit" && editingId
-                              ? "Leave blank to keep stored key"
-                              : "sk-… or gateway token"
+                              ? t.globalSettings.apiKeyKeepPlaceholder
+                              : t.globalSettings.apiKeyPlaceholder
                           }
                           className="font-mono"
                           data-testid="model-api-key"
@@ -555,13 +576,13 @@ export function SettingsPage() {
                               data-testid="model-clear-key"
                             />
                             <FieldLabel htmlFor="model-clear-key" className="font-normal">
-                              Clear stored API key
+                              {t.globalSettings.clearApiKey}
                             </FieldLabel>
                           </Field>
                         ) : null}
                       </Field>
                       <FieldSet>
-                        <FieldLegend variant="label">API shape</FieldLegend>
+                        <FieldLegend variant="label">{t.globalSettings.apiShape}</FieldLegend>
                         <RadioGroup
                           value={form.apiShape}
                           onValueChange={(next) => {
@@ -572,7 +593,7 @@ export function SettingsPage() {
                               }));
                             }
                           }}
-                          aria-label="API shape"
+                          aria-label={t.globalSettings.apiShape}
                           className="gap-3"
                         >
                           <Field orientation="horizontal">
@@ -583,7 +604,7 @@ export function SettingsPage() {
                             />
                             <FieldContent>
                               <FieldLabel htmlFor="model-shape-completions">
-                                Chat Completions
+                                {t.globalSettings.shapeCompletions}
                               </FieldLabel>
                               <FieldDescription>
                                 <code>POST …/v1/chat/completions</code>
@@ -598,7 +619,7 @@ export function SettingsPage() {
                             />
                             <FieldContent>
                               <FieldLabel htmlFor="model-shape-responses">
-                                Responses
+                                {t.globalSettings.shapeResponses}
                               </FieldLabel>
                               <FieldDescription>
                                 <code>POST …/v1/responses</code>
@@ -617,10 +638,10 @@ export function SettingsPage() {
                         >
                           {saving ? <Spinner data-icon="inline-start" /> : null}
                           {saving
-                            ? "Saving…"
+                            ? t.globalSettings.saving
                             : editorMode === "create"
-                              ? "Add model"
-                              : "Save changes"}
+                              ? t.globalSettings.saveCreate
+                              : t.globalSettings.saveEdit}
                         </Button>
                         <Button
                           type="button"
@@ -630,7 +651,7 @@ export function SettingsPage() {
                           data-testid="model-test"
                         >
                           {testing ? <Spinner data-icon="inline-start" /> : null}
-                          {testing ? "Testing…" : "Test connection"}
+                          {testing ? t.globalSettings.testing : t.globalSettings.testConnection}
                         </Button>
                       </div>
                       {testResult ? (
@@ -644,7 +665,7 @@ export function SettingsPage() {
                           role="status"
                         >
                           <Badge variant={testResult.ok ? "secondary" : "destructive"}>
-                            {testResult.ok ? "reachable" : "failed"}
+                            {testResult.ok ? t.globalSettings.testOk : t.globalSettings.testFail}
                           </Badge>
                           <span className="mono small">
                             {testResult.message}
@@ -660,28 +681,33 @@ export function SettingsPage() {
               </Card>
             ) : null}
 
+            </TabsContent>
+
+            <TabsContent value="diagnostics" className="flex flex-col gap-4 outline-none">
             <Card data-testid="health-panel">
               <CardHeader>
-                <CardTitle>API connection</CardTitle>
+                <CardTitle>{t.globalSettings.healthTitle}</CardTitle>
               </CardHeader>
               <CardContent className="flex flex-col gap-4">
                 <dl className="kv">
                   <div>
-                    <dt>API base</dt>
-                    <dd className="mono">{getApiBase() || "(same origin)"}</dd>
+                    <dt>{t.globalSettings.apiBase}</dt>
+                    <dd className="mono">{getApiBase() || t.globalSettings.apiBaseSameOrigin}</dd>
                   </div>
                   <div>
-                    <dt>Health</dt>
+                    <dt>{t.globalSettings.health}</dt>
                     <dd>
                       {health ? (
                         <Badge
                           variant={health.ok ? "secondary" : "destructive"}
                           data-testid="health-status"
                         >
-                          {health.ok ? `ok · ${health.service}` : "not ok"}
+                          {health.ok
+                            ? formatMessage(t.globalSettings.healthOk, { service: health.service })
+                            : t.globalSettings.healthNotOk}
                         </Badge>
                       ) : (
-                        <span className="muted">Not checked yet</span>
+                        <span className="muted">{t.globalSettings.healthNotChecked}</span>
                       )}
                     </dd>
                   </div>
@@ -693,7 +719,7 @@ export function SettingsPage() {
                     disabled={checkingHealth}
                   >
                     {checkingHealth ? <Spinner data-icon="inline-start" /> : null}
-                    {checkingHealth ? "Checking…" : "Run health check"}
+                    {checkingHealth ? t.globalSettings.checking : t.globalSettings.runHealthCheck}
                   </Button>
                 </div>
               </CardContent>
@@ -702,53 +728,57 @@ export function SettingsPage() {
             {doctor ? (
               <Card data-testid="doctor-panel">
                 <CardHeader>
-                  <CardTitle>Doctor</CardTitle>
+                  <CardTitle>{t.globalSettings.doctorTitle}</CardTitle>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-4">
                   <dl className="kv kv-grid">
                     <div>
-                      <dt>Status</dt>
+                      <dt>{t.globalSettings.status}</dt>
                       <dd>
                         <Badge
                           variant={doctor.ok ? "secondary" : "destructive"}
                           data-testid="doctor-status"
                         >
-                          {doctor.ok ? "ok" : "not ok"}
+                          {doctor.ok ? t.globalSettings.statusOk : t.globalSettings.statusNotOk}
                         </Badge>
                       </dd>
                     </div>
                     <div>
-                      <dt>Node</dt>
+                      <dt>{t.globalSettings.node}</dt>
                       <dd className="mono">{doctor.node}</dd>
                     </div>
                     <div>
-                      <dt>Platform</dt>
+                      <dt>{t.globalSettings.platform}</dt>
                       <dd className="mono">
                         {doctor.platform}/{doctor.arch}
                       </dd>
                     </div>
                     <div>
-                      <dt>Git</dt>
+                      <dt>{t.globalSettings.git}</dt>
                       <dd>
                         {doctor.git.available ? (
                           <Badge variant="secondary">
-                            available{doctor.git.version ? ` · ${doctor.git.version}` : ""}
+                            {t.globalSettings.gitAvailable}{doctor.git.version ? ` · ${doctor.git.version}` : ""}
                           </Badge>
                         ) : (
-                          <Badge variant="destructive">unavailable</Badge>
+                          <Badge variant="destructive">{t.globalSettings.gitUnavailable}</Badge>
                         )}
                       </dd>
                     </div>
                     <div>
-                      <dt>Models</dt>
+                      <dt>{t.globalSettings.doctorModels}</dt>
                       <dd>
                         {doctor.provider ? (
                           <Badge
                             variant={doctor.provider.configured ? "secondary" : "outline"}
                             data-testid="doctor-provider-status"
                           >
-                            {doctor.provider.modelCount ?? 0} configured
-                            {doctor.provider.configured ? "" : " · no credentials"}
+                            {formatMessage(t.globalSettings.doctorModelsConfigured, {
+                              n: doctor.provider.modelCount ?? 0,
+                            })}
+                            {doctor.provider.configured
+                              ? ""
+                              : ` · ${t.globalSettings.doctorNoCredentials}`}
                           </Badge>
                         ) : (
                           <span className="muted">—</span>
@@ -760,6 +790,9 @@ export function SettingsPage() {
               </Card>
             ) : null}
 
+            </TabsContent>
+          </Tabs>
+
             <ConfirmDialog
               open={deleteTarget != null}
               onOpenChange={(open) => {
@@ -767,13 +800,19 @@ export function SettingsPage() {
                   setDeleteTarget(null);
                 }
               }}
-              title="Delete model?"
+              title={t.globalSettings.deleteConfirmTitle}
               description={
                 deleteTarget
-                  ? `Delete model “${deleteTarget.name}”? Workspaces that selected it keep the last known model id.`
+                  ? formatMessage(t.globalSettings.deleteConfirmBody, {
+                      name: deleteTarget.name,
+                    })
                   : undefined
               }
-              confirmLabel={deletingId != null ? "Deleting…" : "Delete model"}
+              confirmLabel={
+                deletingId != null
+                  ? t.globalSettings.deleting
+                  : t.globalSettings.deleteSubmit
+              }
               cancelLabel={t.common.cancel}
               onConfirm={() => void handleDeleteConfirm()}
               confirmDisabled={deletingId != null}

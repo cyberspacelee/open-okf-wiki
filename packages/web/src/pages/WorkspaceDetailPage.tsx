@@ -7,7 +7,13 @@ import { useI18n } from "../i18n";
 import { workspaceHref } from "../lib/workspace-path";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
 export function WorkspaceDetailPage() {
@@ -56,100 +62,180 @@ export function WorkspaceDetailPage() {
       {loading ? (
         <LoadingState label={t.detail.loading} />
       ) : workspace ? (
-        <Card>
-          <CardContent className="flex flex-col gap-6">
-            <dl className="kv kv-grid">
-              <div>
-                <dt>{t.detail.name}</dt>
-                <dd>{workspace.name}</dd>
-              </div>
-              <div>
-                <dt>{t.detail.id}</dt>
-                <dd className="mono muted">{workspace.id}</dd>
-              </div>
-              <div>
-                <dt>{t.detail.rootPath}</dt>
-                <dd className="mono">{workspace.rootPath}</dd>
-              </div>
-              <div>
-                <dt>{t.detail.model}</dt>
-                <dd className="mono">
+        <div className="flex flex-col gap-6">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <Card size="sm">
+              <CardHeader>
+                <CardDescription>{t.detail.statusSourcesTitle}</CardDescription>
+                <CardTitle className="text-2xl tabular-nums">
+                  {workspace.sources.length}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="text-sm text-muted-foreground">
+                {workspace.sources.length === 0
+                  ? t.detail.statusSourcesEmpty
+                  : t.detail.manageSources}
+              </CardContent>
+            </Card>
+            <Card size="sm">
+              <CardHeader>
+                <CardDescription>{t.detail.statusModelTitle}</CardDescription>
+                <CardTitle className="truncate font-mono text-base">
                   {workspace.model.id}
-                  {workspace.model.profileId ? (
-                    <span className="muted small">
-                      {" "}
-                      · {t.detail.profile} {workspace.model.profileId}
-                    </span>
-                  ) : null}
-                </dd>
-              </div>
-              <div>
-                <dt>{t.detail.publicationPath}</dt>
-                <dd className="mono">{workspace.publicationPath}</dd>
-              </div>
-              <div>
-                <dt>{t.detail.wikiLanguage}</dt>
-                <dd data-testid="detail-wiki-language">{wikiLangLabel}</dd>
-              </div>
-              <div>
-                <dt>{t.detail.adaptive}</dt>
-                <dd>
-                  <Badge variant={workspace.adaptive ? "secondary" : "outline"}>
-                    {workspace.adaptive ? t.common.on : t.common.off}
-                  </Badge>
-                </dd>
-              </div>
-              <div>
-                <dt>{t.detail.reviewer}</dt>
-                <dd>
-                  <Badge variant={workspace.reviewer ? "secondary" : "outline"}>
-                    {workspace.reviewer ? t.common.on : t.common.off}
-                  </Badge>
-                </dd>
-              </div>
-              <div>
-                <dt>{t.detail.sources}</dt>
-                <dd>
-                  {workspace.sources.length}{" "}
-                  <Link
-                    to={workspaceHref(workspace.id, "/sources", rootPathHint)}
-                    className="inline-link"
-                  >
-                    {t.detail.manageSources}
-                  </Link>
-                </dd>
-              </div>
-              <div>
-                <dt>{t.detail.created}</dt>
-                <dd className="muted">
-                  {new Date(workspace.createdAt).toLocaleString()}
-                </dd>
-              </div>
-              {workspace.lastOpenedAt ? (
-                <div>
-                  <dt>{t.detail.lastOpened}</dt>
-                  <dd className="muted">
-                    {new Date(workspace.lastOpenedAt).toLocaleString()}
-                  </dd>
-                </div>
-              ) : null}
-            </dl>
-            <div className="form-actions">
-              <Link
-                to={workspaceHref(workspace.id, "/settings", rootPathHint)}
-                className={cn(buttonVariants({ variant: "outline" }))}
-              >
-                {t.detail.editSettings}
-              </Link>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="text-sm text-muted-foreground">
+                {workspace.model.profileId
+                  ? `${t.detail.profile} ${workspace.model.profileId}`
+                  : "—"}
+              </CardContent>
+            </Card>
+            <Card size="sm">
+              <CardHeader>
+                <CardDescription>{t.detail.statusWikiTitle}</CardDescription>
+                <CardTitle
+                  className="text-base"
+                  data-testid="detail-wiki-language"
+                >
+                  {wikiLangLabel}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="flex flex-wrap gap-2">
+                <Badge variant={workspace.adaptive ? "secondary" : "outline"}>
+                  {t.detail.adaptive}: {workspace.adaptive ? t.common.on : t.common.off}
+                </Badge>
+                <Badge variant={workspace.reviewer ? "secondary" : "outline"}>
+                  {t.detail.reviewer}: {workspace.reviewer ? t.common.on : t.common.off}
+                </Badge>
+              </CardContent>
+            </Card>
+            <Card size="sm">
+              <CardHeader>
+                <CardDescription>{t.detail.statusPublicationTitle}</CardDescription>
+                <CardTitle className="truncate font-mono text-sm font-normal">
+                  {workspace.publicationPath}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="text-sm text-muted-foreground">
+                {t.detail.rootPath}:{" "}
+                <span className="font-mono">{workspace.rootPath}</span>
+              </CardContent>
+            </Card>
+          </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>{t.detail.nextStepsTitle}</CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-wrap gap-2">
               <Link
                 to={workspaceHref(workspace.id, "/sources", rootPathHint)}
                 className={cn(buttonVariants())}
               >
-                {t.detail.sourcesBtn}
+                {t.detail.ctaAddSource}
               </Link>
-            </div>
-          </CardContent>
-        </Card>
+              <Link
+                to={workspaceHref(workspace.id, "/session", rootPathHint)}
+                className={cn(buttonVariants({ variant: "secondary" }))}
+              >
+                {t.detail.ctaOpenSession}
+              </Link>
+              <Link
+                to={workspaceHref(workspace.id, "/wiki", rootPathHint)}
+                className={cn(buttonVariants({ variant: "outline" }))}
+              >
+                {t.detail.ctaOpenWiki}
+              </Link>
+              <Link
+                to={workspaceHref(workspace.id, "/settings", rootPathHint)}
+                className={cn(buttonVariants({ variant: "ghost" }))}
+              >
+                {t.detail.editSettings}
+              </Link>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="flex flex-col gap-6">
+              <dl className="kv kv-grid">
+                <div>
+                  <dt>{t.detail.name}</dt>
+                  <dd>{workspace.name}</dd>
+                </div>
+                <div>
+                  <dt>{t.detail.id}</dt>
+                  <dd className="mono muted">{workspace.id}</dd>
+                </div>
+                <div>
+                  <dt>{t.detail.rootPath}</dt>
+                  <dd className="mono">{workspace.rootPath}</dd>
+                </div>
+                <div>
+                  <dt>{t.detail.model}</dt>
+                  <dd className="mono">
+                    {workspace.model.id}
+                    {workspace.model.profileId ? (
+                      <span className="muted small">
+                        {" "}
+                        · {t.detail.profile} {workspace.model.profileId}
+                      </span>
+                    ) : null}
+                  </dd>
+                </div>
+                <div>
+                  <dt>{t.detail.publicationPath}</dt>
+                  <dd className="mono">{workspace.publicationPath}</dd>
+                </div>
+                <div>
+                  <dt>{t.detail.wikiLanguage}</dt>
+                  <dd>{wikiLangLabel}</dd>
+                </div>
+                <div>
+                  <dt>{t.detail.adaptive}</dt>
+                  <dd>
+                    <Badge variant={workspace.adaptive ? "secondary" : "outline"}>
+                      {workspace.adaptive ? t.common.on : t.common.off}
+                    </Badge>
+                  </dd>
+                </div>
+                <div>
+                  <dt>{t.detail.reviewer}</dt>
+                  <dd>
+                    <Badge variant={workspace.reviewer ? "secondary" : "outline"}>
+                      {workspace.reviewer ? t.common.on : t.common.off}
+                    </Badge>
+                  </dd>
+                </div>
+                <div>
+                  <dt>{t.detail.sources}</dt>
+                  <dd>
+                    {workspace.sources.length}{" "}
+                    <Link
+                      to={workspaceHref(workspace.id, "/sources", rootPathHint)}
+                      className="inline-link"
+                    >
+                      {t.detail.manageSources}
+                    </Link>
+                  </dd>
+                </div>
+                <div>
+                  <dt>{t.detail.created}</dt>
+                  <dd className="muted">
+                    {new Date(workspace.createdAt).toLocaleString()}
+                  </dd>
+                </div>
+                {workspace.lastOpenedAt ? (
+                  <div>
+                    <dt>{t.detail.lastOpened}</dt>
+                    <dd className="muted">
+                      {new Date(workspace.lastOpenedAt).toLocaleString()}
+                    </dd>
+                  </div>
+                ) : null}
+              </dl>
+            </CardContent>
+          </Card>
+        </div>
       ) : null}
     </WorkspaceShell>
   );

@@ -15,6 +15,7 @@ test.describe("skill fork settings", () => {
 
     await page.getByTestId("workspace-subnav-settings").click();
     await expect(page.getByTestId("settings-page")).toBeVisible();
+    await page.getByTestId("settings-tab-skill").click();
     await expect(page.getByTestId("settings-skill-panel")).toBeVisible();
 
     // Default is home (~/.agents/skills) or package when home skills off

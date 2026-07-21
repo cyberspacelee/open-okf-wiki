@@ -285,10 +285,10 @@ export function WorkspaceWikiPage() {
                 </EmptyHeader>
                 <EmptyContent>
                   <Link
-                    to={workspaceHref(id, "/run", rootPathHint)}
+                    to={workspaceHref(id, "/session", rootPathHint)}
                     className={cn(buttonVariants())}
                   >
-                    {t.wiki.goToRun}
+                    {t.wiki.goToSession}
                   </Link>
                 </EmptyContent>
               </Empty>

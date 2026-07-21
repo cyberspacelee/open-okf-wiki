@@ -9,6 +9,7 @@ test.describe("doctor / global settings", () => {
     await expect(page.getByTestId("provider-panel")).toBeVisible();
     await expect(page.getByTestId("model-add")).toBeVisible();
 
+    await page.getByTestId("settings-tab-diagnostics").click();
     await expect(page.getByTestId("doctor-panel")).toBeVisible();
     await expect(page.getByTestId("doctor-status")).toHaveText("ok");
 
