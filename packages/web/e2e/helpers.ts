@@ -92,3 +92,144 @@ export async function expectVisibleBox(
   expect(rect.width, "getBoundingClientRect width").toBeGreaterThan(minW);
   expect(rect.height, "getBoundingClientRect height").toBeGreaterThan(minH);
 }
+
+/**
+ * Select an option from a native `<select>` **or** a shadcn/Base UI Select
+ * (trigger + listbox). `optionText` matches option label text, or for native
+ * selects also exact `value`.
+ *
+ * Dual-path so Phase 2 can swap ModelSelect / wiki language without rewriting
+ * every call site at once.
+ */
+export async function chooseOption(
+  page: Page,
+  testId: string,
+  optionText: string | RegExp,
+): Promise<void> {
+  const control = page.getByTestId(testId);
+  await expect(control).toBeVisible();
+
+  const tagName = await control.evaluate((el) => el.tagName.toLowerCase());
+  if (tagName === "select") {
+    if (typeof optionText === "string") {
+      const matched = await control.evaluate((el, text) => {
+        const select = el as HTMLSelectElement;
+        for (const opt of Array.from(select.options)) {
+          if (opt.text.trim() === text || opt.label.trim() === text) {
+            return { label: opt.label || opt.text };
+          }
+        }
+        for (const opt of Array.from(select.options)) {
+          if (opt.value === text) {
+            return { value: opt.value };
+          }
+        }
+        return null;
+      }, optionText);
+      if (!matched) {
+        throw new Error(
+          `chooseOption: no <option> matching ${JSON.stringify(optionText)} on [data-testid="${testId}"]`,
+        );
+      }
+      await control.selectOption(matched);
+      return;
+    }
+
+    const matched = await control.evaluate((el, pattern) => {
+      const select = el as HTMLSelectElement;
+      const re = new RegExp(pattern.source, pattern.flags);
+      for (const opt of Array.from(select.options)) {
+        if (re.test(opt.text) || re.test(opt.label) || re.test(opt.value)) {
+          return { value: opt.value };
+        }
+      }
+      return null;
+    }, { source: optionText.source, flags: optionText.flags });
+    if (!matched) {
+      throw new Error(
+        `chooseOption: no <option> matching ${optionText} on [data-testid="${testId}"]`,
+      );
+    }
+    await control.selectOption(matched);
+    return;
+  }
+
+  // shadcn / Base UI Select: open trigger, pick listbox option by accessible name
+  await control.click();
+  const listbox = page.getByRole("listbox");
+  await expect(listbox).toBeVisible({ timeout: 5_000 });
+  const option = listbox.getByRole("option", { name: optionText });
+  await option.click();
+}
+
+/**
+ * Set checked state on native checkbox/radio **or** ARIA checkbox/switch/radio
+ * (shadcn Checkbox / Switch / RadioGroup item).
+ */
+export async function setChecked(
+  page: Page,
+  testId: string,
+  checked: boolean,
+): Promise<void> {
+  const control = page.getByTestId(testId);
+  await expect(control).toBeVisible();
+
+  const kind = await control.evaluate((el) => {
+    if (el instanceof HTMLInputElement) {
+      return { native: true as const, type: el.type, isChecked: el.checked };
+    }
+    const role = el.getAttribute("role");
+    const ariaChecked = el.getAttribute("aria-checked");
+    const dataChecked = el.hasAttribute("data-checked");
+    const dataState = el.getAttribute("data-state");
+    const isChecked =
+      ariaChecked === "true" ||
+      dataChecked ||
+      dataState === "checked" ||
+      dataState === "on";
+    return {
+      native: false as const,
+      role,
+      isChecked,
+    };
+  });
+
+  if (kind.native && (kind.type === "checkbox" || kind.type === "radio")) {
+    if (checked) {
+      await control.check();
+    } else if (kind.type === "checkbox") {
+      await control.uncheck();
+    }
+    // radio cannot be unchecked via UI; ignore checked=false
+    return;
+  }
+
+  if (kind.isChecked !== checked) {
+    await control.click();
+  }
+}
+
+export type ConfirmDestructiveOptions = {
+  dialogTestId: string;
+  confirmTestId: string;
+  metaTestId?: string;
+  metaChecked?: boolean;
+};
+
+/**
+ * Confirm an AlertDialog (or any dialog with stable testids). Optionally
+ * toggle a meta checkbox first (delete-meta pattern).
+ */
+export async function confirmDestructive(
+  page: Page,
+  opts: ConfirmDestructiveOptions,
+): Promise<void> {
+  const dialog = page.getByTestId(opts.dialogTestId);
+  await expect(dialog).toBeVisible();
+
+  if (opts.metaTestId != null && opts.metaChecked != null) {
+    await setChecked(page, opts.metaTestId, opts.metaChecked);
+  }
+
+  await page.getByTestId(opts.confirmTestId).click();
+}
