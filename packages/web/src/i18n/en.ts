@@ -157,9 +157,12 @@ export const en = {
     dangerDescription:
       "Remove this workspace from the app index. Optionally delete the .okf-wiki meta directory (not the whole project tree).",
     deleteWorkspace: "Delete workspace",
+    deleteConfirmTitle: "Delete workspace?",
     deleteConfirm:
       "Delete workspace “{name}” from the recent list? This cannot be undone from the UI.",
     deleteMeta: "Also delete .okf-wiki/",
+    skillForked: "Skill fork ready",
+    skillSaved: "Skill file saved",
   },
   sources: {
     breadcrumbWorkspaces: "Workspaces",
@@ -181,6 +184,10 @@ export const en = {
     originClone: "clone",
     delete: "Delete",
     removing: "Removing…",
+    deleteConfirmTitle: "Delete source?",
+    deleteConfirmBody:
+      "Remove source “{id}” from this workspace? Linked paths are not deleted from disk; cloned trees under the workspace may remain.",
+    deleteSubmit: "Delete source",
     linkTitle: "Link existing path",
     pathLabel: "Path (absolute)",
     pathPlaceholder: "D:/src/repo",
@@ -267,6 +274,10 @@ export const en = {
     placeholderReadOnly: "History is read-only",
     deleteSession: "Delete",
     deletingSession: "Deleting…",
+    deleteConfirmTitle: "Delete session?",
+    deleteConfirmBody:
+      "Delete this session and its conversation history? This cannot be undone.",
+    deleteConfirmSubmit: "Delete session",
     slashHeading: "Commands",
     slashEmpty: "No matching command",
     slashTooltip: "Slash commands (Tab to complete)",

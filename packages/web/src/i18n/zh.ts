@@ -155,8 +155,11 @@ export const zh: MessageTree = {
     dangerDescription:
       "从应用索引中移除此工作区。可选删除 .okf-wiki 元数据目录（不会删除整个项目树）。",
     deleteWorkspace: "删除工作区",
+    deleteConfirmTitle: "删除工作区？",
     deleteConfirm: "将工作区「{name}」从最近列表删除？此操作无法从界面撤销。",
     deleteMeta: "同时删除 .okf-wiki/",
+    skillForked: "Skill fork 已就绪",
+    skillSaved: "Skill 文件已保存",
   },
   sources: {
     breadcrumbWorkspaces: "工作区",
@@ -178,6 +181,10 @@ export const zh: MessageTree = {
     originClone: "克隆",
     delete: "删除",
     removing: "移除中…",
+    deleteConfirmTitle: "删除源码？",
+    deleteConfirmBody:
+      "从本工作区移除源码「{id}」？关联的本地路径不会从磁盘删除；工作区内的克隆目录可能仍会保留。",
+    deleteSubmit: "删除源码",
     linkTitle: "关联已有路径",
     pathLabel: "路径（绝对）",
     pathPlaceholder: "D:/src/repo",
@@ -259,6 +266,9 @@ export const zh: MessageTree = {
     placeholderReadOnly: "历史会话只读",
     deleteSession: "删除",
     deletingSession: "删除中…",
+    deleteConfirmTitle: "删除会话？",
+    deleteConfirmBody: "删除此会话及其对话历史？此操作无法撤销。",
+    deleteConfirmSubmit: "删除会话",
     slashHeading: "命令",
     slashEmpty: "无匹配命令",
     slashTooltip: "斜杠命令（Tab 补全）",

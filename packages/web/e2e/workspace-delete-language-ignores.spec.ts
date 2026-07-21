@@ -3,6 +3,7 @@ import {
   addSourceViaUi,
   createTempGitRepo,
   createWorkspaceViaUi,
+  setChecked,
 } from "./helpers";
 
 async function setLocale(page: import("@playwright/test").Page, locale: "en" | "zh") {
@@ -64,7 +65,8 @@ test.describe("workspace delete, wiki language, ignore rules", () => {
     const row = page.locator('[data-testid="workspace-row"]').filter({ hasText: name });
     await row.getByTestId("workspace-delete").click();
     await expect(page.getByTestId("workspace-delete-dialog")).toBeVisible();
-    await page.getByTestId("workspace-delete-meta").check();
+    // Meta uses shadcn Checkbox (role=checkbox), not native input.
+    await setChecked(page, "workspace-delete-meta", true);
     await page.getByTestId("workspace-delete-confirm").click();
 
     await expect(

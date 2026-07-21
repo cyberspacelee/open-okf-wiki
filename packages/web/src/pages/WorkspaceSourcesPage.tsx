@@ -13,6 +13,7 @@ import {
   type WorkspaceConfig,
   type WorkspaceSource,
 } from "../api";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
@@ -23,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Spinner } from "@/components/ui/spinner";
 import {
   Table,
   TableBody,
@@ -75,6 +77,7 @@ export function WorkspaceSourcesPage() {
   const [cloning, setCloning] = useState(false);
   const [probing, setProbing] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const [probes, setProbes] = useState<Record<string, GitProbe>>({});
   const [editingSourceId, setEditingSourceId] = useState<string | null>(null);
   const [editApplyDefaults, setEditApplyDefaults] = useState(true);
@@ -201,10 +204,11 @@ export function WorkspaceSourcesPage() {
     }
   }
 
-  async function handleDelete(sourceIdToDelete: string) {
-    if (!id) {
+  async function handleDeleteConfirm() {
+    if (!id || !deleteTargetId) {
       return;
     }
+    const sourceIdToDelete = deleteTargetId;
     setDeletingId(sourceIdToDelete);
     setError(null);
     try {
@@ -278,6 +282,29 @@ export function WorkspaceSourcesPage() {
         {id ? <WorkspaceSubnav workspaceId={id} /> : null}
         <ErrorBanner error={error} onDismiss={() => setError(null)} />
 
+        <ConfirmDialog
+          open={deleteTargetId != null}
+          onOpenChange={(open) => {
+            if (!open) {
+              setDeleteTargetId(null);
+            }
+          }}
+          title={t.sources.deleteConfirmTitle}
+          description={
+            deleteTargetId
+              ? formatMessage(t.sources.deleteConfirmBody, { id: deleteTargetId })
+              : undefined
+          }
+          confirmLabel={
+            deletingId != null ? t.sources.removing : t.sources.deleteSubmit
+          }
+          cancelLabel={t.common.cancel}
+          onConfirm={() => void handleDeleteConfirm()}
+          confirmDisabled={deletingId != null}
+          data-testid="source-delete-dialog"
+          confirmTestId="source-delete-confirm"
+        />
+
         {loading ? (
           <LoadingState label={t.sources.loading} />
         ) : workspace ? (
@@ -346,8 +373,12 @@ export function WorkspaceSourcesPage() {
                                 variant="destructive"
                                 size="sm"
                                 disabled={deletingId === source.id}
-                                onClick={() => void handleDelete(source.id)}
+                                onClick={() => setDeleteTargetId(source.id)}
+                                data-testid={`source-delete-${source.id}`}
                               >
+                                {deletingId === source.id ? (
+                                  <Spinner data-icon="inline-start" />
+                                ) : null}
                                 {deletingId === source.id
                                   ? t.sources.removing
                                   : t.sources.delete}

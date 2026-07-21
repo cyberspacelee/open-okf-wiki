@@ -8,6 +8,7 @@ import {
   type ModelProfilePublic,
   type WorkspaceSummary,
 } from "../api";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
@@ -29,6 +30,7 @@ import {
 } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Spinner } from "@/components/ui/spinner";
 import {
   Table,
   TableBody,
@@ -110,15 +112,16 @@ export function WorkspacesPage() {
     if (!deleteTarget) {
       return;
     }
-    setDeletingId(deleteTarget.id);
+    // Capture before dialog close clears controlled state.
+    const target = deleteTarget;
+    const deleteFiles = deleteMeta;
+    setDeletingId(target.id);
     setError(null);
     try {
-      await deleteWorkspace(deleteTarget.id, {
-        rootPath: deleteTarget.rootPath,
-        deleteFiles: deleteMeta,
+      await deleteWorkspace(target.id, {
+        rootPath: target.rootPath,
+        deleteFiles,
       });
-      setDeleteTarget(null);
-      setDeleteMeta(false);
       await load();
     } catch (err) {
       setError(err);
@@ -153,52 +156,35 @@ export function WorkspacesPage() {
 
         <ErrorBanner error={error} onDismiss={() => setError(null)} />
 
-        {deleteTarget ? (
-          <Card data-testid="workspace-delete-dialog">
-            <CardHeader>
-              <CardTitle>{t.workspaces.deleteConfirmTitle}</CardTitle>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-4">
-              <p className="muted">
-                {formatMessage(t.workspaces.deleteConfirmBody, {
+        <ConfirmDialog
+          open={deleteTarget != null}
+          onOpenChange={(open) => {
+            if (!open) {
+              setDeleteTarget(null);
+              setDeleteMeta(false);
+            }
+          }}
+          title={t.workspaces.deleteConfirmTitle}
+          description={
+            deleteTarget
+              ? formatMessage(t.workspaces.deleteConfirmBody, {
                   name: deleteTarget.name,
-                })}
-              </p>
-              <label className="field checkbox-field">
-                <input
-                  type="checkbox"
-                  checked={deleteMeta}
-                  onChange={(e) => setDeleteMeta(e.target.checked)}
-                  data-testid="workspace-delete-meta"
-                />
-                <span>{t.workspaces.deleteMetaLabel}</span>
-              </label>
-              <div className="form-actions">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => {
-                    setDeleteTarget(null);
-                    setDeleteMeta(false);
-                  }}
-                >
-                  {t.common.cancel}
-                </Button>
-                <Button
-                  type="button"
-                  variant="destructive"
-                  disabled={deletingId === deleteTarget.id}
-                  onClick={() => void handleDeleteConfirm()}
-                  data-testid="workspace-delete-confirm"
-                >
-                  {deletingId === deleteTarget.id
-                    ? t.workspaces.deleting
-                    : t.workspaces.deleteSubmit}
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        ) : null}
+                })
+              : undefined
+          }
+          confirmLabel={
+            deletingId != null ? t.workspaces.deleting : t.workspaces.deleteSubmit
+          }
+          cancelLabel={t.common.cancel}
+          onConfirm={() => void handleDeleteConfirm()}
+          confirmDisabled={deletingId != null}
+          data-testid="workspace-delete-dialog"
+          confirmTestId="workspace-delete-confirm"
+          metaChecked={deleteMeta}
+          onMetaCheckedChange={setDeleteMeta}
+          metaLabel={t.workspaces.deleteMetaLabel}
+          metaTestId="workspace-delete-meta"
+        />
 
         {showForm ? (
           <Card data-testid="workspace-create-form">
@@ -254,6 +240,7 @@ export function WorkspacesPage() {
                     }
                     data-testid="workspace-create-submit"
                   >
+                    {submitting ? <Spinner data-icon="inline-start" /> : null}
                     {submitting ? t.workspaces.creating : t.workspaces.createSubmit}
                   </Button>
                 </div>

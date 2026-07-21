@@ -16,6 +16,7 @@ import {
   type WikiLanguage,
   type WorkspaceConfig,
 } from "../api";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
@@ -27,6 +28,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Spinner } from "@/components/ui/spinner";
+import { toast } from "sonner";
 
 export function WorkspaceSettingsPage() {
   const { t } = useI18n();
@@ -43,6 +46,7 @@ export function WorkspaceSettingsPage() {
   const [submitting, setSubmitting] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteMeta, setDeleteMeta] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 
   const [name, setName] = useState("");
   const [modelProfileId, setModelProfileId] = useState("");
@@ -159,6 +163,7 @@ export function WorkspaceSettingsPage() {
       );
       applyWorkspace(result.workspace, models);
       setSaved(true);
+      toast.success(t.settings.saved);
     } catch (err) {
       setError(err);
     } finally {
@@ -179,18 +184,13 @@ export function WorkspaceSettingsPage() {
     if (!id || !workspace) {
       return;
     }
-    const ok = window.confirm(
-      formatMessage(t.settings.deleteConfirm, { name: workspace.name }),
-    );
-    if (!ok) {
-      return;
-    }
+    const deleteFiles = deleteMeta;
     setDeleting(true);
     setError(null);
     try {
       await deleteWorkspace(id, {
         rootPath: workspace.rootPath ?? rootPathHint,
-        deleteFiles: deleteMeta,
+        deleteFiles,
       });
       navigate("/workspaces");
     } catch (err) {
@@ -358,6 +358,7 @@ export function WorkspaceSettingsPage() {
                     }
                     data-testid="settings-save"
                   >
+                    {submitting ? <Spinner data-icon="inline-start" /> : null}
                     {submitting ? t.settings.saving : t.settings.save}
                   </Button>
                   {saved ? (
@@ -425,6 +426,7 @@ export function WorkspaceSettingsPage() {
                           setSkillFilePath("SKILL.md");
                           setSkillFileContent(file.file.content);
                           setSkillFileDirty(false);
+                          toast.success(t.settings.skillForked);
                         } catch (err) {
                           setError(err);
                         } finally {
@@ -433,6 +435,7 @@ export function WorkspaceSettingsPage() {
                       })();
                     }}
                   >
+                    {skillBusy ? <Spinner data-icon="inline-start" /> : null}
                     {skillBusy ? t.settings.skillWorking : t.settings.skillFork}
                   </Button>
                   <Button
@@ -520,6 +523,7 @@ export function WorkspaceSettingsPage() {
                           );
                           setSkill(result.skill);
                           setSkillFileDirty(false);
+                          toast.success(t.settings.skillSaved);
                         } catch (err) {
                           setError(err);
                         } finally {
@@ -528,6 +532,7 @@ export function WorkspaceSettingsPage() {
                       })();
                     }}
                   >
+                    {skillBusy ? <Spinner data-icon="inline-start" /> : null}
                     {t.settings.skillSaveFile}
                   </Button>
                 </div>
@@ -618,27 +623,52 @@ export function WorkspaceSettingsPage() {
                   {t.settings.dangerTitle}
                 </h2>
                 <p className="muted small">{t.settings.dangerDescription}</p>
-                <label className="field checkbox-field">
-                  <input
-                    type="checkbox"
-                    checked={deleteMeta}
-                    onChange={(e) => setDeleteMeta(e.target.checked)}
-                    data-testid="settings-delete-meta"
-                  />
-                  <span>{t.settings.deleteMeta}</span>
-                </label>
                 <div className="form-actions">
                   <Button
                     type="button"
                     variant="destructive"
                     disabled={deleting}
-                    onClick={() => void handleDeleteWorkspace()}
+                    onClick={() => {
+                      setDeleteMeta(false);
+                      setDeleteDialogOpen(true);
+                    }}
                     data-testid="settings-delete-workspace"
                   >
+                    {deleting ? <Spinner data-icon="inline-start" /> : null}
                     {deleting ? t.common.deleting : t.settings.deleteWorkspace}
                   </Button>
                 </div>
               </section>
+
+              <ConfirmDialog
+                open={deleteDialogOpen}
+                onOpenChange={(open) => {
+                  setDeleteDialogOpen(open);
+                  if (!open) {
+                    setDeleteMeta(false);
+                  }
+                }}
+                title={t.settings.deleteConfirmTitle}
+                description={
+                  workspace
+                    ? formatMessage(t.settings.deleteConfirm, {
+                        name: workspace.name,
+                      })
+                    : undefined
+                }
+                confirmLabel={
+                  deleting ? t.common.deleting : t.settings.deleteWorkspace
+                }
+                cancelLabel={t.common.cancel}
+                onConfirm={() => void handleDeleteWorkspace()}
+                confirmDisabled={deleting}
+                data-testid="settings-delete-dialog"
+                confirmTestId="settings-delete-confirm"
+                metaChecked={deleteMeta}
+                onMetaCheckedChange={setDeleteMeta}
+                metaLabel={t.settings.deleteMeta}
+                metaTestId="settings-delete-meta"
+              />
             </CardContent>
           </Card>
         ) : null}

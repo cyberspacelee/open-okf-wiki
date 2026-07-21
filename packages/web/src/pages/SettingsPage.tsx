@@ -19,6 +19,7 @@ import {
   type ProviderPublic,
   type ProviderTestResult,
 } from "../api";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
@@ -28,6 +29,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Spinner } from "@/components/ui/spinner";
 import {
   Table,
   TableBody,
@@ -36,6 +38,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { toast } from "sonner";
 
 type EditorMode = "closed" | "create" | "edit";
 
@@ -64,9 +67,15 @@ export function SettingsPage() {
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ModelProfilePublic | null>(null);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<ProviderTestResult | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+
+  function setStatus(message: string) {
+    setStatusMsg(message);
+    toast.success(message);
+  }
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -97,7 +106,7 @@ export function SettingsPage() {
     try {
       const result = await patchAppSettings({ loadHomeSkills: next });
       setAppSettings(result.settings);
-      setStatusMsg(t.globalSettings.skillsSaved);
+      setStatus(t.globalSettings.skillsSaved);
     } catch (err) {
       setError(err);
     } finally {
@@ -175,7 +184,7 @@ export function SettingsPage() {
           ? await updateModelProfile(editingId, payload)
           : await createModelProfile(payload);
       setProvider(result.provider);
-      setStatusMsg(editorMode === "edit" ? "Model updated" : "Model added");
+      setStatus(editorMode === "edit" ? "Model updated" : "Model added");
       closeEditor();
       try {
         setDoctor(await getDoctor());
@@ -189,10 +198,11 @@ export function SettingsPage() {
     }
   }
 
-  async function handleDelete(model: ModelProfilePublic) {
-    if (!window.confirm(`Delete model “${model.name}”? Workspaces that selected it keep the last known model id.`)) {
+  async function handleDeleteConfirm() {
+    if (!deleteTarget) {
       return;
     }
+    const model = deleteTarget;
     setDeletingId(model.id);
     setError(null);
     setStatusMsg(null);
@@ -202,7 +212,7 @@ export function SettingsPage() {
       if (editingId === model.id) {
         closeEditor();
       }
-      setStatusMsg("Model deleted");
+      setStatus("Model deleted");
     } catch (err) {
       setError(err);
     } finally {
@@ -216,7 +226,7 @@ export function SettingsPage() {
     try {
       const result = await setDefaultModelProfile(model.id);
       setProvider(result.provider);
-      setStatusMsg(`Default: ${model.name}`);
+      setStatus(`Default: ${model.name}`);
     } catch (err) {
       setError(err);
     }
@@ -407,9 +417,12 @@ export function SettingsPage() {
                                   size="sm"
                                   variant="destructive"
                                   disabled={deletingId === model.id}
-                                  onClick={() => void handleDelete(model)}
+                                  onClick={() => setDeleteTarget(model)}
                                   data-testid="model-delete"
                                 >
+                                  {deletingId === model.id ? (
+                                    <Spinner data-icon="inline-start" />
+                                  ) : null}
                                   {deletingId === model.id ? "…" : "Delete"}
                                 </Button>
                               </div>
@@ -577,6 +590,7 @@ export function SettingsPage() {
                         }
                         data-testid="model-save"
                       >
+                        {saving ? <Spinner data-icon="inline-start" /> : null}
                         {saving
                           ? "Saving…"
                           : editorMode === "create"
@@ -590,6 +604,7 @@ export function SettingsPage() {
                         onClick={() => void handleTest()}
                         data-testid="model-test"
                       >
+                        {testing ? <Spinner data-icon="inline-start" /> : null}
                         {testing ? "Testing…" : "Test connection"}
                       </Button>
                     </div>
@@ -651,6 +666,7 @@ export function SettingsPage() {
                     onClick={() => void handleHealthCheck()}
                     disabled={checkingHealth}
                   >
+                    {checkingHealth ? <Spinner data-icon="inline-start" /> : null}
                     {checkingHealth ? "Checking…" : "Run health check"}
                   </Button>
                 </div>
@@ -717,6 +733,27 @@ export function SettingsPage() {
                 </CardContent>
               </Card>
             ) : null}
+
+            <ConfirmDialog
+              open={deleteTarget != null}
+              onOpenChange={(open) => {
+                if (!open) {
+                  setDeleteTarget(null);
+                }
+              }}
+              title="Delete model?"
+              description={
+                deleteTarget
+                  ? `Delete model “${deleteTarget.name}”? Workspaces that selected it keep the last known model id.`
+                  : undefined
+              }
+              confirmLabel={deletingId != null ? "Deleting…" : "Delete model"}
+              cancelLabel={t.common.cancel}
+              onConfirm={() => void handleDeleteConfirm()}
+              confirmDisabled={deletingId != null}
+              data-testid="model-delete-dialog"
+              confirmTestId="model-delete-confirm"
+            />
           </>
         )}
       </div>

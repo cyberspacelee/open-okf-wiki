@@ -41,8 +41,7 @@ export type ConfirmDialogProps = {
 
 /**
  * Thin AlertDialog wrapper for destructive / confirm flows.
- * Not wired into pages in Phase 0 — Phase 1 replaces `window.confirm` and
- * the inline delete Card with this component while preserving testids.
+ * Used by workspace/model/source/session delete paths; preserves stable e2e testids.
  */
 export function ConfirmDialog({
   open,
@@ -92,7 +91,10 @@ export function ConfirmDialog({
             disabled={confirmDisabled}
             data-testid={confirmTestId}
             onClick={() => {
+              // Invoke first so parent handlers can read controlled state
+              // (e.g. metaChecked) before onOpenChange clears it.
               void onConfirm();
+              onOpenChange(false);
             }}
           >
             {confirmLabel}

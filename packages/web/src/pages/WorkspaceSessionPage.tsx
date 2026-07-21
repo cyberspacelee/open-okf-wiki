@@ -40,6 +40,7 @@ import {
 } from "@/components/ai-elements/suggestion";
 import { MessageParts } from "../components/session/MessageParts";
 import { extractPendingFromMessages } from "../components/session/decision-types";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
@@ -81,6 +82,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
 import { MessageSquareIcon, PlusIcon, SlashIcon, Trash2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -337,6 +339,7 @@ export function WorkspaceSessionPage() {
   const [switching, setSwitching] = useState(false);
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   /** Bump to remount chat panel after reset/delete without id change races. */
   const [panelEpoch, setPanelEpoch] = useState(0);
 
@@ -438,6 +441,13 @@ export function WorkspaceSessionPage() {
       setCreating(false);
     }
   }, [id, creating, rootPath]);
+
+  const requestDeleteSession = useCallback(() => {
+    if (!id || !sessionMeta || deleting) {
+      return;
+    }
+    setDeleteDialogOpen(true);
+  }, [id, sessionMeta, deleting]);
 
   const handleDeleteSession = useCallback(async () => {
     if (!id || !sessionMeta || deleting) {
@@ -560,7 +570,11 @@ export function WorkspaceSessionPage() {
                   disabled={creating || loading || switching || deleting}
                   data-testid="session-new"
                 >
-                  <PlusIcon className="size-3.5" aria-hidden />
+                  {creating ? (
+                    <Spinner data-icon="inline-start" />
+                  ) : (
+                    <PlusIcon data-icon="inline-start" aria-hidden />
+                  )}
                   {creating ? t.session.creatingSession : t.session.newSession}
                 </Button>
                 {sessionMeta ? (
@@ -568,12 +582,16 @@ export function WorkspaceSessionPage() {
                     type="button"
                     variant="ghost"
                     size="sm"
-                    onClick={() => void handleDeleteSession()}
+                    onClick={requestDeleteSession}
                     disabled={deleting || loading || switching || creating}
                     data-testid="session-delete"
                     title={t.session.deleteSession}
                   >
-                    <Trash2Icon className="size-3.5" aria-hidden />
+                    {deleting ? (
+                      <Spinner data-icon="inline-start" />
+                    ) : (
+                      <Trash2Icon data-icon="inline-start" aria-hidden />
+                    )}
                     <span className="sr-only sm:not-sr-only">
                       {deleting ? t.session.deletingSession : t.session.deleteSession}
                     </span>
@@ -614,6 +632,21 @@ export function WorkspaceSessionPage() {
           }}
         />
 
+        <ConfirmDialog
+          open={deleteDialogOpen}
+          onOpenChange={setDeleteDialogOpen}
+          title={t.session.deleteConfirmTitle}
+          description={t.session.deleteConfirmBody}
+          confirmLabel={
+            deleting ? t.session.deletingSession : t.session.deleteConfirmSubmit
+          }
+          cancelLabel={t.common.cancel}
+          onConfirm={() => void handleDeleteSession()}
+          confirmDisabled={deleting}
+          data-testid="session-delete-dialog"
+          confirmTestId="session-delete-confirm"
+        />
+
         {loading || !sessionMeta || !workspace ? (
           <LoadingState label={t.session.loading} />
         ) : (
@@ -629,7 +662,7 @@ export function WorkspaceSessionPage() {
             onNewSession={() => void handleNewSession()}
             onSwitchToLatest={handleSwitchToLatest}
             onResetSession={() => void handleResetSession()}
-            onDeleteSession={() => void handleDeleteSession()}
+            onDeleteSession={requestDeleteSession}
           />
         )}
       </div>
