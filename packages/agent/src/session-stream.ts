@@ -1119,7 +1119,16 @@ export async function createSessionWorkflowStream(input: {
         ...toolParts.map((p) => projectSessionToolPart(p)),
         ...dataParts,
       ];
-      if (pending) {
+      // writeGate already pushed data-gate into dataParts; only re-append if missing.
+      const hasLiveGate = dataParts.some(
+        (p) =>
+          p.type === "data-gate" &&
+          typeof p === "object" &&
+          p !== null &&
+          "data" in p &&
+          !(p.data as { cancelled?: boolean } | undefined)?.cancelled,
+      );
+      if (pending && !hasLiveGate) {
         parts.push({
           type: "data-gate",
           data: {
