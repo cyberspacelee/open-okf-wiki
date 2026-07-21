@@ -15,12 +15,14 @@ import {
   skillDigest,
   loadOperatorSession,
   neutralizeSessionDecisionParts,
+  transition,
+  type SessionRunEvent,
+  type SessionRunState,
 } from "@okf-wiki/core";
 import {
   isTerminalRunStatus,
   WikiRunPlanSchema,
   type OperatorSession,
-  type SessionWorkflowState,
   type WikiRunPlan,
   type WikiRunRecordStatus,
   type WorkspaceConfig,
@@ -50,30 +52,78 @@ import {
   updateRunRecord,
 } from "../run-registry.ts";
 
-/** Map run status → Session workflow phase (ADR 0026 observe path). */
-function sessionPhaseForRunStatus(
-  status: WikiRunRecordStatus,
-): SessionWorkflowState["phase"] {
-  switch (status) {
-    case "awaiting_plan":
-      return "awaiting_plan";
-    case "awaiting_publication":
-      return "awaiting_publish";
-    case "published":
-    case "publication_declined":
-      return "done";
-    case "running":
-      return "writing";
-    case "cancelled":
-    case "failed":
-    default:
-      return "idle";
+function sessionRunStateFrom(
+  session: OperatorSession | null | undefined,
+  runStatus?: WikiRunRecordStatus | string | null,
+  runSummary?: string | null,
+): SessionRunState {
+  return {
+    sessionStatus: session?.status ?? "active",
+    workflowPhase: session?.workflow?.phase ?? "idle",
+    linkedRunId: session?.workflow?.linkedRunId,
+    runStatus: runStatus ?? undefined,
+    pending: session?.pending ?? null,
+    plan: session?.workflow?.plan,
+    summary: runSummary ?? undefined,
+  };
+}
+
+function eventForRunPatch(patch: {
+  status: WikiRunRecordStatus;
+  summary?: string | null;
+  plan?: WikiRunPlan | null;
+  pages?: string[] | null;
+  error?: string | null;
+  runId?: string;
+}): SessionRunEvent {
+  if (patch.status === "cancelled") {
+    return {
+      type: "Cancel",
+      runId: patch.runId,
+      summary: patch.summary ?? "Wiki Run cancelled",
+    };
   }
+  if (patch.status === "awaiting_plan") {
+    return {
+      type: "WorkflowSuspended",
+      runId: patch.runId,
+      gate: "plan",
+      plan: patch.plan ?? undefined,
+      pages: patch.pages ?? undefined,
+      summary: patch.summary ?? undefined,
+    };
+  }
+  if (patch.status === "awaiting_publication") {
+    return {
+      type: "WorkflowSuspended",
+      runId: patch.runId,
+      gate: "publication",
+      plan: patch.plan ?? undefined,
+      pages: patch.pages ?? undefined,
+      summary: patch.summary ?? undefined,
+    };
+  }
+  if (patch.status === "running") {
+    return {
+      type: "WorkflowLive",
+      runId: patch.runId ?? "unknown",
+    };
+  }
+  return {
+    type: "WorkflowTerminal",
+    runId: patch.runId,
+    status: patch.status,
+    plan: patch.plan ?? undefined,
+    pages: patch.pages ?? undefined,
+    summary: patch.summary ?? undefined,
+    error: patch.error,
+  };
 }
 
 /**
  * Append a high-level trajectory message to the Session linked to this run.
- * Background/headless jobs must still appear on Session (ADR 0026 I3).
+ * Thin I/O adapter over P2 `transition` (ADR 0026 I3 / ADR 0027).
+ * Phase/status maps live only in core — not re-derived here.
  */
 export async function projectRunStatusToSession(
   rootPath: string,
@@ -83,6 +133,7 @@ export async function projectRunStatusToSession(
     summary?: string | null;
     plan?: WikiRunPlan | null;
     pages?: string[] | null;
+    error?: string | null;
   },
 ): Promise<void> {
   const run = await loadRun(rootPath, runId);
@@ -95,19 +146,44 @@ export async function projectRunStatusToSession(
     return;
   }
 
-  const phase = sessionPhaseForRunStatus(patch.status);
+  const state = sessionRunStateFrom(session, run?.status, run?.summary);
+  const event = eventForRunPatch({ ...patch, runId });
+  const patches = transition(event, state);
+
+  if (patches.ignore && patches.ignoreReason === "durable_outcome") {
+    return;
+  }
+
+  const sessionPatch = patches.session;
+  const runPatch = patches.run;
+  const hint = patches.appendHint;
+  const phase = sessionPatch?.workflow?.phase ?? session.workflow?.phase ?? "idle";
+  const status = sessionPatch?.status ?? session.status;
+  const plan =
+    sessionPatch?.workflow?.plan ??
+    patch.plan ??
+    run?.plan ??
+    session.workflow?.plan;
+  const pages = runPatch?.pages ?? patch.pages ?? run?.pages ?? undefined;
   const summary =
-    patch.summary?.trim() ||
-    run?.summary?.trim() ||
-    `Wiki Run ${patch.status}`;
-  const plan = patch.plan ?? run?.plan ?? session.workflow?.plan;
-  const pages = patch.pages ?? run?.pages ?? undefined;
+    hint?.text ??
+    runPatch?.summary ??
+    (patch.summary?.trim() ||
+      run?.summary?.trim() ||
+      `Wiki Run ${patch.status}`);
+  const projectedRunStatus = runPatch?.status ?? patch.status;
+  const pending =
+    sessionPatch && "pending" in sessionPatch
+      ? sessionPatch.pending
+      : isGateStatus(projectedRunStatus)
+        ? session.pending
+        : null;
 
   const parts: OperatorSession["messages"][number]["parts"] = [
     {
       type: "data-run",
       id: randomUUID(),
-      data: { runId, status: patch.status },
+      data: { runId, status: projectedRunStatus },
     },
     { type: "text", text: summary, state: "done" },
   ];
@@ -122,39 +198,27 @@ export async function projectRunStatusToSession(
     });
   }
 
-  const pending =
-    patch.status === "awaiting_plan" || patch.status === "awaiting_publication"
-      ? session.pending
-      : null;
-
-  // Leaving a gate (or terminal): neutralize stale HITL chips in history.
-  const leaveGate =
-    patch.status !== "awaiting_plan" &&
-    patch.status !== "awaiting_publication";
-  const baseMessages = leaveGate
+  const baseMessages = patches.neutralizeDecisions
     ? neutralizeSessionDecisionParts(session.messages)
     : session.messages;
 
+  const workflow = {
+    ...session.workflow,
+    linkedRunId: runId,
+    phase,
+    ...(plan ? { plan } : {}),
+    ...(sessionPatch?.workflow?.notes !== undefined
+      ? { notes: sessionPatch.workflow.notes }
+      : {}),
+  };
+
   try {
     // Replace when neutralizing so old chips cannot reappear on refresh.
-    if (leaveGate) {
+    if (patches.neutralizeDecisions) {
       await replaceSessionMessages(rootPath, sessionId, baseMessages, {
-        status:
-          patch.status === "running"
-            ? "running"
-            : patch.status === "published" ||
-                patch.status === "publication_declined"
-              ? "completed"
-              : patch.status === "failed"
-                ? "failed"
-                : "active",
+        status,
         pending: null,
-        workflow: {
-          ...session.workflow,
-          linkedRunId: runId,
-          phase,
-          ...(plan ? { plan } : {}),
-        },
+        workflow,
       });
     }
     await appendSessionMessages(
@@ -169,29 +233,9 @@ export async function projectRunStatusToSession(
         },
       ],
       {
-        status:
-          patch.status === "awaiting_plan" ||
-          patch.status === "awaiting_publication"
-            ? "waiting"
-            : patch.status === "running"
-              ? "running"
-              : patch.status === "published" ||
-                  patch.status === "publication_declined"
-                ? "completed"
-                : patch.status === "failed"
-                  ? "failed"
-                  : "active",
-        pending:
-          patch.status === "awaiting_plan" ||
-          patch.status === "awaiting_publication"
-            ? pending
-            : null,
-        workflow: {
-          ...session.workflow,
-          linkedRunId: runId,
-          phase,
-          ...(plan ? { plan } : {}),
-        },
+        status,
+        pending,
+        workflow,
       },
     );
   } catch (error) {
@@ -199,6 +243,10 @@ export async function projectRunStatusToSession(
       `session trajectory append failed: ${redactErrorMessage(error)}\n`,
     );
   }
+}
+
+function isGateStatus(status: string | undefined): boolean {
+  return status === "awaiting_plan" || status === "awaiting_publication";
 }
 
 /** Prefer existing latest session; otherwise create one for headless runs. */
@@ -219,6 +267,10 @@ export async function ensureWorkspaceSessionId(
   return created.id;
 }
 
+/**
+ * Persist run status + project to linked Session via P2 transition.
+ * Thin I/O wrapper: load → transition → store + SSE. No phase map copies.
+ */
 export async function finalizeRunStatus(
   rootPath: string,
   runId: string,
@@ -231,18 +283,46 @@ export async function finalizeRunStatus(
   },
 ): Promise<void> {
   const existing = await loadRun(rootPath, runId);
-  if (existing?.status === "cancelled" && patch.status !== "cancelled") {
-    // Cancel already recorded — keep it and ensure stream is closed.
-    emitRunDone(runId, "cancelled", existing.summary ?? "Wiki Run cancelled");
+  const state: SessionRunState = {
+    sessionStatus: "active",
+    workflowPhase: "idle",
+    linkedRunId: runId,
+    runStatus: existing?.status,
+    plan: existing?.plan,
+    pages: existing?.pages,
+    summary: existing?.summary,
+  };
+  const event = eventForRunPatch({ ...patch, runId });
+  const pure = transition(event, state);
+
+  // Cancel already recorded — keep it and ensure stream is closed.
+  if (pure.ignore && pure.ignoreReason === "cancel_wins") {
+    emitRunDone(runId, "cancelled", existing?.summary ?? "Wiki Run cancelled");
+    return;
+  }
+  if (pure.ignore && pure.ignoreReason === "durable_outcome") {
+    if (existing && isTerminalRunStatus(existing.status)) {
+      emitRunDone(
+        runId,
+        existing.status,
+        existing.error ?? existing.summary ?? existing.status,
+      );
+    }
     return;
   }
 
+  const runFields = pure.run;
   const updated = await updateRunRecord(rootPath, runId, {
-    status: patch.status,
-    error: patch.error,
-    pages: patch.pages,
-    summary: patch.summary,
-    ...(patch.plan !== undefined ? { plan: patch.plan } : {}),
+    status: runFields?.status ?? patch.status,
+    error:
+      runFields?.error !== undefined
+        ? runFields.error
+        : patch.error,
+    pages: runFields?.pages ?? patch.pages,
+    summary: runFields?.summary ?? patch.summary,
+    ...(patch.plan !== undefined || runFields?.plan !== undefined
+      ? { plan: runFields?.plan ?? patch.plan }
+      : {}),
   });
 
   // TOCTOU: cancel may have landed between load and write; registry returns the
@@ -272,6 +352,7 @@ export async function finalizeRunStatus(
     summary: updated.summary ?? patch.summary,
     plan: patch.plan ?? updated.plan,
     pages: patch.pages ?? updated.pages,
+    error: updated.error ?? patch.error,
   });
 }
 

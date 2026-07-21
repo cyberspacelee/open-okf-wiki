@@ -230,7 +230,8 @@ test("sessionViewFromTerminal: published / declined / plan gate", () => {
     pages: ["x.md"],
   });
   assert.equal(declined.status, "active");
-  assert.equal(declined.workflowPhase, "idle");
+  // Durable outcome: phase done (single P2 map; was idle in pre-P2 fork).
+  assert.equal(declined.workflowPhase, "done");
   assert.equal(declined.runStatus, "publication_declined");
 
   const planGate = sessionViewFromTerminal({

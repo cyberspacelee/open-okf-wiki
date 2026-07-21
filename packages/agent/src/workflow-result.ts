@@ -9,7 +9,10 @@ import type {
   WikiRunPlan,
   WikiRunRecordStatus,
 } from "@okf-wiki/contract";
-import { isDurableRunStatus as coreIsDurableRunStatus } from "@okf-wiki/core";
+import {
+  isDurableRunStatus as coreIsDurableRunStatus,
+  sessionViewFromRunStatus,
+} from "@okf-wiki/core";
 import { redactErrorMessage } from "./run.js";
 import type { WikiRunWorkflowOutput } from "./wiki-workflow.js";
 
@@ -258,7 +261,11 @@ export function extractSuspendGate(
   };
 }
 
-/** Session-facing projection of a product terminal (phase vocabulary differs slightly). */
+/**
+ * Session-facing projection of a product terminal.
+ * Thin adapter over core P2 `sessionViewFromRunStatus` / `transition` —
+ * no second phase map (ADR 0027).
+ */
 export type SessionTerminalView = {
   status: OperatorSession["status"];
   workflowPhase: SessionWorkflowState["phase"];
@@ -271,95 +278,39 @@ export type SessionTerminalView = {
 export function sessionViewFromTerminal(
   terminal: WikiWorkflowTerminal,
 ): SessionTerminalView {
-  if (terminal.suspended && terminal.suspendGate === "plan") {
+  // Unknown product statuses still surface as failed for the Session shell.
+  const known = terminal.status;
+  if (
+    known !== "running" &&
+    known !== "published" &&
+    known !== "needs_input" &&
+    known !== "failed" &&
+    known !== "cancelled" &&
+    known !== "awaiting_plan" &&
+    known !== "awaiting_publication" &&
+    known !== "publication_declined"
+  ) {
     return {
-      status: "waiting",
-      workflowPhase: "awaiting_plan",
-      plan: terminal.plan,
-      pages: terminal.pages,
-      summary: terminal.summary,
-      runStatus: "awaiting_plan",
-    };
-  }
-  if (terminal.suspended && terminal.suspendGate === "publication") {
-    return {
-      status: "waiting",
-      workflowPhase: "awaiting_publish",
-      plan: terminal.plan,
-      pages: terminal.pages,
-      summary: terminal.summary,
-      runStatus: "awaiting_publication",
+      status: "failed",
+      workflowPhase: "idle",
+      summary:
+        typeof terminal.error === "string" && terminal.error
+          ? `Wiki Run failed: ${terminal.error}`
+          : typeof terminal.summary === "string"
+            ? terminal.summary
+            : `Wiki Run ended: ${terminal.status}`,
+      runStatus: terminal.status,
     };
   }
 
-  switch (terminal.status) {
-    case "published":
-      return {
-        status: "completed",
-        workflowPhase: "done",
-        pages: terminal.pages,
-        plan: terminal.plan,
-        summary: terminal.summary,
-        runStatus: "published",
-      };
-    case "publication_declined":
-      return {
-        status: "active",
-        workflowPhase: "idle",
-        pages: terminal.pages,
-        plan: terminal.plan,
-        summary: terminal.summary,
-        runStatus: "publication_declined",
-      };
-    case "cancelled":
-      return {
-        status: "active",
-        workflowPhase: "idle",
-        summary: terminal.summary,
-        runStatus: "cancelled",
-      };
-    case "awaiting_plan":
-      return {
-        status: "waiting",
-        workflowPhase: "awaiting_plan",
-        plan: terminal.plan,
-        summary: terminal.summary,
-        runStatus: "awaiting_plan",
-      };
-    case "awaiting_publication":
-      return {
-        status: "waiting",
-        workflowPhase: "awaiting_publish",
-        pages: terminal.pages,
-        plan: terminal.plan,
-        summary: terminal.summary,
-        runStatus: "awaiting_publication",
-      };
-    case "failed":
-      return {
-        status: "failed",
-        // Keep phase distinct from idle so Session does not show a green "Idle" chip.
-        workflowPhase: "idle",
-        summary:
-          typeof terminal.error === "string" && terminal.error
-            ? `Wiki Run failed: ${terminal.error}`
-            : typeof terminal.summary === "string" && terminal.summary
-              ? terminal.summary
-              : "Wiki Run failed",
-        runStatus: "failed",
-      };
-    default:
-      return {
-        status: "failed",
-        workflowPhase: "idle",
-        summary:
-          typeof terminal.error === "string" && terminal.error
-            ? `Wiki Run failed: ${terminal.error}`
-            : typeof terminal.summary === "string"
-              ? terminal.summary
-              : `Wiki Run ended: ${terminal.status}`,
-        runStatus: terminal.status,
-      };
-  }
+  return sessionViewFromRunStatus({
+    status: known,
+    pages: terminal.pages,
+    plan: terminal.plan,
+    summary: terminal.summary,
+    error: terminal.error,
+    suspended: terminal.suspended,
+    suspendGate: terminal.suspendGate,
+  });
 }
 
