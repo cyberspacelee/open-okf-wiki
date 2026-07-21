@@ -60,7 +60,7 @@ test.describe("UI layout smoke — Session / Settings skill / Sources", () => {
     // --- Runs job console layout ---
     await page.getByTestId("workspace-subnav-run").click();
     await expect(page.getByTestId("run-page")).toBeVisible();
-    await expect(page.getByTestId("run-page").locator(".breadcrumb")).toContainText("Runs");
+    await expect(page.getByTestId("workspace-breadcrumb")).toContainText("Runs");
     await expect(page.getByTestId("run-page").getByRole("heading", { level: 1 })).toHaveText(
       "Runs",
     );

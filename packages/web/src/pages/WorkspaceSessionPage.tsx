@@ -42,9 +42,8 @@ import { MessageParts } from "../components/session/MessageParts";
 import { extractPendingFromMessages } from "../components/session/decision-types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ErrorBanner } from "../components/ErrorBanner";
-import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
-import { WorkspaceSubnav } from "../components/WorkspaceSubnav";
+import { WorkspaceShell } from "../components/WorkspaceShell";
 import {
   cancelRun,
   createSession,
@@ -508,165 +507,142 @@ export function WorkspaceSessionPage() {
     [sessionList],
   );
 
-  return (
-    <Layout>
+  const sessionActions = (
+    <>
       <div
-        data-testid="session-chat-page"
-        className="relative flex min-h-0 flex-1 flex-col gap-3 overflow-hidden h-[calc(100vh-3rem)] max-h-[960px]"
+        className="flex flex-wrap items-center gap-2"
+        data-testid="session-list"
       >
-        <header className="page-header shrink-0">
-          <p className="breadcrumb">
-            <Link to="/workspaces">{t.session.breadcrumbWorkspaces}</Link>
-            <span aria-hidden="true"> / </span>
-            <Link to={workspaceHref(id, "", rootPathHint)}>
-              {workspace?.name ?? id}
-            </Link>
-            <span aria-hidden="true"> / </span>
-            <span>{t.session.breadcrumb}</span>
-          </p>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h1>{t.session.title}</h1>
-              <p className="muted text-sm">{t.session.description}</p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <div
-                className="flex flex-wrap items-center gap-2"
-                data-testid="session-list"
-              >
-                {sessionMeta && sessionList.length > 0 ? (
-                  <Select
-                    value={sessionMeta.id}
-                    onValueChange={(value) => {
-                      if (typeof value === "string" && value) {
-                        void handleSwitchSession(value);
-                      }
-                    }}
-                    items={sessionSelectItems}
-                    disabled={switching || creating || loading}
-                  >
-                    <SelectTrigger
-                      size="sm"
-                      className="min-w-[12rem] max-w-[18rem]"
-                      data-testid="session-select"
-                      aria-label={t.session.switchSession}
-                    >
-                      <SelectValue placeholder={t.session.sessions} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {sessionList.map((s) => (
-                        <SelectItem key={s.id} value={s.id}>
-                          {formatSessionLabel(s)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                ) : null}
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void handleNewSession()}
-                  disabled={creating || loading || switching || deleting}
-                  data-testid="session-new"
-                >
-                  {creating ? (
-                    <Spinner data-icon="inline-start" />
-                  ) : (
-                    <PlusIcon data-icon="inline-start" aria-hidden />
-                  )}
-                  {creating ? t.session.creatingSession : t.session.newSession}
-                </Button>
-                {sessionMeta ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={requestDeleteSession}
-                    disabled={deleting || loading || switching || creating}
-                    data-testid="session-delete"
-                    title={t.session.deleteSession}
-                  >
-                    {deleting ? (
-                      <Spinner data-icon="inline-start" />
-                    ) : (
-                      <Trash2Icon data-icon="inline-start" aria-hidden />
-                    )}
-                    <span className="sr-only sm:not-sr-only">
-                      {deleting ? t.session.deletingSession : t.session.deleteSession}
-                    </span>
-                  </Button>
-                ) : null}
-              </div>
-              {sessionMeta ? (
-                <Badge variant="secondary" data-testid="session-status">
-                  {sessionMeta.status}
-                </Badge>
-              ) : null}
-              {sessionMeta?.workflow?.linkedRunId ? (
-                <Badge variant="outline" data-testid="session-linked-run">
-                  {t.session.runPrefix}{" "}
-                  {sessionMeta.workflow.linkedRunId.slice(0, 8)}…
-                </Badge>
-              ) : null}
-              <Link
-                to={workspaceHref(id, "/run", rootPathHint)}
-                className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
-                data-testid="session-open-runs"
-              >
-                {t.session.openRuns}
-              </Link>
-            </div>
-          </div>
-        </header>
-
-        {id ? (
-          <div className="shrink-0">
-            <WorkspaceSubnav workspaceId={id} />
-          </div>
+        {sessionMeta && sessionList.length > 0 ? (
+          <Select
+            value={sessionMeta.id}
+            onValueChange={(value) => {
+              if (typeof value === "string" && value) {
+                void handleSwitchSession(value);
+              }
+            }}
+            items={sessionSelectItems}
+            disabled={switching || creating || loading}
+          >
+            <SelectTrigger
+              size="sm"
+              className="min-w-[12rem] max-w-[18rem]"
+              data-testid="session-select"
+              aria-label={t.session.switchSession}
+            >
+              <SelectValue placeholder={t.session.sessions} />
+            </SelectTrigger>
+            <SelectContent>
+              {sessionList.map((s) => (
+                <SelectItem key={s.id} value={s.id}>
+                  {formatSessionLabel(s)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         ) : null}
-        <ErrorBanner
-          error={bootError}
-          onDismiss={() => {
-            setBootError(null);
-          }}
-        />
-
-        <ConfirmDialog
-          open={deleteDialogOpen}
-          onOpenChange={setDeleteDialogOpen}
-          title={t.session.deleteConfirmTitle}
-          description={t.session.deleteConfirmBody}
-          confirmLabel={
-            deleting ? t.session.deletingSession : t.session.deleteConfirmSubmit
-          }
-          cancelLabel={t.common.cancel}
-          onConfirm={() => void handleDeleteSession()}
-          confirmDisabled={deleting}
-          data-testid="session-delete-dialog"
-          confirmTestId="session-delete-confirm"
-        />
-
-        {loading || !sessionMeta || !workspace ? (
-          <LoadingState label={t.session.loading} />
-        ) : (
-          <SessionChatPanel
-            key={`${sessionMeta.id}:${panelEpoch}`}
-            workspaceId={id}
-            workspace={workspace}
-            session={sessionMeta}
-            rootPathHint={rootPathHint}
-            kickoff={kickoff && !readOnly}
-            readOnly={readOnly}
-            onSessionMetaChange={handleSessionMetaChange}
-            onNewSession={() => void handleNewSession()}
-            onSwitchToLatest={handleSwitchToLatest}
-            onResetSession={() => void handleResetSession()}
-            onDeleteSession={requestDeleteSession}
-          />
-        )}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => void handleNewSession()}
+          disabled={creating || loading || switching || deleting}
+          data-testid="session-new"
+        >
+          {creating ? (
+            <Spinner data-icon="inline-start" />
+          ) : (
+            <PlusIcon data-icon="inline-start" aria-hidden />
+          )}
+          {creating ? t.session.creatingSession : t.session.newSession}
+        </Button>
+        {sessionMeta ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={requestDeleteSession}
+            disabled={deleting || loading || switching || creating}
+            data-testid="session-delete"
+            title={t.session.deleteSession}
+          >
+            {deleting ? (
+              <Spinner data-icon="inline-start" />
+            ) : (
+              <Trash2Icon data-icon="inline-start" aria-hidden />
+            )}
+            <span className="sr-only sm:not-sr-only">
+              {deleting ? t.session.deletingSession : t.session.deleteSession}
+            </span>
+          </Button>
+        ) : null}
       </div>
-    </Layout>
+      {sessionMeta ? (
+        <Badge variant="secondary" data-testid="session-status">
+          {sessionMeta.status}
+        </Badge>
+      ) : null}
+      {sessionMeta?.workflow?.linkedRunId ? (
+        <Badge variant="outline" data-testid="session-linked-run">
+          {t.session.runPrefix} {sessionMeta.workflow.linkedRunId.slice(0, 8)}…
+        </Badge>
+      ) : null}
+      <Link
+        to={workspaceHref(id, "/run", rootPathHint)}
+        className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+        data-testid="session-open-runs"
+      >
+        {t.session.openRuns}
+      </Link>
+    </>
+  );
+
+  return (
+    <WorkspaceShell
+      workspaceId={id}
+      workspaceName={workspace?.name}
+      breadcrumbLabel={t.session.breadcrumb}
+      title={t.session.title}
+      actions={sessionActions}
+      error={bootError}
+      onDismissError={() => setBootError(null)}
+      compact
+      testId="session-chat-page"
+    >
+      <ConfirmDialog
+        open={deleteDialogOpen}
+        onOpenChange={setDeleteDialogOpen}
+        title={t.session.deleteConfirmTitle}
+        description={t.session.deleteConfirmBody}
+        confirmLabel={
+          deleting ? t.session.deletingSession : t.session.deleteConfirmSubmit
+        }
+        cancelLabel={t.common.cancel}
+        onConfirm={() => void handleDeleteSession()}
+        confirmDisabled={deleting}
+        data-testid="session-delete-dialog"
+        confirmTestId="session-delete-confirm"
+      />
+
+      {loading || !sessionMeta || !workspace ? (
+        <LoadingState label={t.session.loading} />
+      ) : (
+        <SessionChatPanel
+          key={`${sessionMeta.id}:${panelEpoch}`}
+          workspaceId={id}
+          workspace={workspace}
+          session={sessionMeta}
+          rootPathHint={rootPathHint}
+          kickoff={kickoff && !readOnly}
+          readOnly={readOnly}
+          onSessionMetaChange={handleSessionMetaChange}
+          onNewSession={() => void handleNewSession()}
+          onSwitchToLatest={handleSwitchToLatest}
+          onResetSession={() => void handleResetSession()}
+          onDeleteSession={requestDeleteSession}
+        />
+      )}
+    </WorkspaceShell>
   );
 }
 

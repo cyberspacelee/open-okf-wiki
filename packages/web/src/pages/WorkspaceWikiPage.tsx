@@ -10,10 +10,8 @@ import {
   type WikiPageResponse,
   type WorkspaceConfig,
 } from "../api";
-import { ErrorBanner } from "../components/ErrorBanner";
-import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
-import { WorkspaceSubnav } from "../components/WorkspaceSubnav";
+import { WorkspaceShell } from "../components/WorkspaceShell";
 import { useI18n } from "../i18n";
 import { workspaceHref } from "../lib/workspace-path";
 import { buttonVariants } from "@/components/ui/button";
@@ -265,25 +263,16 @@ export function WorkspaceWikiPage() {
   const bodyMarkdown = page ? stripFrontmatter(page.content) : "";
 
   return (
-    <Layout>
-      <div data-testid="wiki-page" className="flex flex-col gap-5">
-        <header className="page-header">
-          <p className="breadcrumb">
-            <Link to="/workspaces">{t.wiki.breadcrumbWorkspaces}</Link>
-            <span aria-hidden="true"> / </span>
-            <Link to={workspaceHref(id, "", rootPathHint)}>
-              {workspace?.name ?? id}
-            </Link>
-            <span aria-hidden="true"> / </span>
-            <span>{t.wiki.breadcrumb}</span>
-          </p>
-          <h1>{t.wiki.title}</h1>
-          <p>{t.wiki.description}</p>
-        </header>
-
-        {id ? <WorkspaceSubnav workspaceId={id} /> : null}
-        <ErrorBanner error={error} onDismiss={() => setError(null)} />
-
+    <WorkspaceShell
+      workspaceId={id}
+      workspaceName={workspace?.name}
+      breadcrumbLabel={t.wiki.breadcrumb}
+      title={t.wiki.title}
+      description={t.wiki.description}
+      error={error}
+      onDismissError={() => setError(null)}
+      testId="wiki-page"
+    >
         {loading ? (
           <LoadingState label={t.wiki.loading} />
         ) : empty ? (
@@ -363,7 +352,6 @@ export function WorkspaceWikiPage() {
             </Card>
           </div>
         )}
-      </div>
-    </Layout>
+    </WorkspaceShell>
   );
 }

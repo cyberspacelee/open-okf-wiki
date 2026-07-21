@@ -17,13 +17,10 @@ import {
   type WorkspaceConfig,
 } from "../api";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-import { ErrorBanner } from "../components/ErrorBanner";
-import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
 import { ModelSelect } from "../components/ModelSelect";
-import { WorkspaceSubnav } from "../components/WorkspaceSubnav";
+import { WorkspaceShell } from "../components/WorkspaceShell";
 import { formatMessage, useI18n } from "../i18n";
-import { workspaceHref } from "../lib/workspace-path";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -216,29 +213,22 @@ export function WorkspaceSettingsPage() {
   }
 
   return (
-    <Layout>
-      <div data-testid="settings-page" className="flex flex-col gap-5">
-        <header className="page-header">
-          <p className="breadcrumb">
-            <Link to="/workspaces">{t.settings.breadcrumbWorkspaces}</Link>
-            <span aria-hidden="true"> / </span>
-            <Link to={workspaceHref(id, "", rootPathHint)}>
-              {workspace?.name ?? id}
-            </Link>
-            <span aria-hidden="true"> / </span>
-            <span>{t.settings.breadcrumbSettings}</span>
-          </p>
-          <h1>{t.settings.title}</h1>
-          <p>
-            {t.settings.descriptionPrefix}{" "}
-            <Link to="/settings">{t.settings.descriptionLink}</Link>
-            {t.settings.descriptionSuffix}
-          </p>
-        </header>
-
-        {id ? <WorkspaceSubnav workspaceId={id} /> : null}
-        <ErrorBanner error={error} onDismiss={() => setError(null)} />
-
+    <WorkspaceShell
+      workspaceId={id}
+      workspaceName={workspace?.name}
+      breadcrumbLabel={t.settings.breadcrumbSettings}
+      title={t.settings.title}
+      description={
+        <>
+          {t.settings.descriptionPrefix}{" "}
+          <Link to="/settings">{t.settings.descriptionLink}</Link>
+          {t.settings.descriptionSuffix}
+        </>
+      }
+      error={error}
+      onDismissError={() => setError(null)}
+      testId="settings-page"
+    >
         {loading ? (
           <LoadingState label={t.settings.loading} />
         ) : workspace ? (
@@ -728,7 +718,6 @@ export function WorkspaceSettingsPage() {
             </CardContent>
           </Card>
         ) : null}
-      </div>
-    </Layout>
+    </WorkspaceShell>
   );
 }

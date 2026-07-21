@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import { IGNORE_PRESETS } from "@okf-wiki/contract";
 import {
   addSource,
@@ -14,12 +14,9 @@ import {
   type WorkspaceSource,
 } from "../api";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-import { ErrorBanner } from "../components/ErrorBanner";
-import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
-import { WorkspaceSubnav } from "../components/WorkspaceSubnav";
+import { WorkspaceShell } from "../components/WorkspaceShell";
 import { formatMessage, useI18n } from "../i18n";
-import { workspaceHref } from "../lib/workspace-path";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -271,25 +268,16 @@ export function WorkspaceSourcesPage() {
   }
 
   return (
-    <Layout>
-      <div data-testid="sources-page" className="flex flex-col gap-5">
-        <header className="page-header">
-          <p className="breadcrumb">
-            <Link to="/workspaces">{t.sources.breadcrumbWorkspaces}</Link>
-            <span aria-hidden="true"> / </span>
-            <Link to={workspaceHref(id, "", rootPathHint)}>
-              {workspace?.name ?? id}
-            </Link>
-            <span aria-hidden="true"> / </span>
-            <span>{t.sources.breadcrumbSources}</span>
-          </p>
-          <h1>{t.sources.title}</h1>
-          <p>{t.sources.description}</p>
-        </header>
-
-        {id ? <WorkspaceSubnav workspaceId={id} /> : null}
-        <ErrorBanner error={error} onDismiss={() => setError(null)} />
-
+    <WorkspaceShell
+      workspaceId={id}
+      workspaceName={workspace?.name}
+      breadcrumbLabel={t.sources.breadcrumbSources}
+      title={t.sources.title}
+      description={t.sources.description}
+      error={error}
+      onDismissError={() => setError(null)}
+      testId="sources-page"
+    >
         <ConfirmDialog
           open={deleteTargetId != null}
           onOpenChange={(open) => {
@@ -615,7 +603,6 @@ export function WorkspaceSourcesPage() {
             </Card>
           </>
         ) : null}
-      </div>
-    </Layout>
+    </WorkspaceShell>
   );
 }

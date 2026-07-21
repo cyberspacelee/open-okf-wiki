@@ -17,11 +17,9 @@ import {
   type WorkspaceConfig,
 } from "../api";
 import { PlanConfirmCard } from "../components/session/PlanConfirmCard";
-import { ErrorBanner } from "../components/ErrorBanner";
-import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
 import { RunStatusBadge } from "../components/RunStatusBadge";
-import { WorkspaceSubnav } from "../components/WorkspaceSubnav";
+import { WorkspaceShell } from "../components/WorkspaceShell";
 import { useI18n } from "../i18n";
 import { workspaceHref } from "../lib/workspace-path";
 import { Button } from "@/components/ui/button";
@@ -513,31 +511,24 @@ export function WorkspaceRunPage() {
   }
 
   return (
-    <Layout>
-      <div data-testid="run-page" className="flex flex-col gap-5">
-        <header className="page-header">
-          <p className="breadcrumb">
-            <Link to="/workspaces">{t.runs.breadcrumbWorkspaces}</Link>
-            <span aria-hidden="true"> / </span>
-            <Link to={workspaceHref(id, "", rootPathHint)}>
-              {workspace?.name ?? id}
-            </Link>
-            <span aria-hidden="true"> / </span>
-            <span>{t.runs.breadcrumb}</span>
-          </p>
-          <h1>{t.runs.title}</h1>
-          <p>
-            {t.runs.descriptionBefore}
-            <Link to={workspaceHref(id, "/session", rootPathHint)}>
-              {t.runs.descriptionLink}
-            </Link>
-            {t.runs.descriptionAfter}
-          </p>
-        </header>
-
-        {id ? <WorkspaceSubnav workspaceId={id} /> : null}
-        <ErrorBanner error={error} onDismiss={() => setError(null)} />
-
+    <WorkspaceShell
+      workspaceId={id}
+      workspaceName={workspace?.name}
+      breadcrumbLabel={t.runs.breadcrumb}
+      title={t.runs.title}
+      description={
+        <>
+          {t.runs.descriptionBefore}
+          <Link to={workspaceHref(id, "/session", rootPathHint)}>
+            {t.runs.descriptionLink}
+          </Link>
+          {t.runs.descriptionAfter}
+        </>
+      }
+      error={error}
+      onDismissError={() => setError(null)}
+      testId="run-page"
+    >
         {loading ? (
           <LoadingState label={t.runs.loading} />
         ) : workspace ? (
@@ -753,7 +744,6 @@ export function WorkspaceRunPage() {
             </Card>
           </>
         ) : null}
-      </div>
-    </Layout>
+    </WorkspaceShell>
   );
 }
