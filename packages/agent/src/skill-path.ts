@@ -6,7 +6,8 @@
  * 3. User home skill (when Settings loadHomeSkills): `~/.agents/skills/…`
  * 4. Package assets: `@okf-wiki/skill` (seed source + fallback when home off)
  *
- * Does not scan monorepo paths via cwd heuristics.
+ * Package resolution prefers Node package resolution, then the monorepo sibling
+ * `packages/skill` next to this package (stable via import.meta.url, not cwd).
  * Home skills toggle is Settings/app.json only (no env override).
  */
 
@@ -45,46 +46,78 @@ async function existsSkillDir(candidate: string): Promise<boolean> {
 }
 
 /**
+ * Monorepo sibling of `@okf-wiki/agent`: `packages/agent/{src,dist}` → `packages/skill`.
+ * Does not use process.cwd().
+ */
+function monorepoSiblingSkillCandidates(): string[] {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  // packages/agent/dist|src → packages/skill
+  return [path.resolve(here, "..", "..", "skill")];
+}
+
+/**
  * Resolve the package-embedded Producer Skill directory (`@okf-wiki/skill`).
- * Uses package exports — not monorepo cwd heuristics.
+ * Order: Node package resolve → monorepo sibling packages/skill.
  */
 export async function resolvePackageSkillPath(): Promise<string> {
-  const require = createRequire(import.meta.url);
+  const errors: string[] = [];
+
+  // 1) createRequire from this module (respects agent/node_modules links)
   try {
+    const require = createRequire(import.meta.url);
     const pkgJson = require.resolve("@okf-wiki/skill/package.json");
     const root = path.dirname(pkgJson);
     if (await existsSkillDir(root)) {
       return root;
     }
-    throw new Error(`package skill missing SKILL.md: ${root}`);
+    errors.push(`linked package missing SKILL.md: ${root}`);
   } catch (error) {
-    try {
-      const resolved = import.meta.resolve("@okf-wiki/skill/package.json");
-      const root = path.dirname(fileURLToPath(resolved));
-      if (await existsSkillDir(root)) {
-        return root;
-      }
-    } catch {
-      // fall through
+    errors.push(error instanceof Error ? error.message : String(error));
+  }
+
+  // 2) ESM import.meta.resolve
+  try {
+    const resolved = import.meta.resolve("@okf-wiki/skill/package.json");
+    const root = path.dirname(fileURLToPath(resolved));
+    if (await existsSkillDir(root)) {
+      return root;
     }
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      `package skill (@okf-wiki/skill) not found: ${message}. ` +
-        `Install @okf-wiki/skill or place a skill under ${homeSkillsDir()}/` +
-        ` or {workspace}/.agents/skills/.`,
+    errors.push(`import.meta.resolve path missing SKILL.md: ${root}`);
+  } catch (error) {
+    errors.push(
+      `import.meta.resolve: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+
+  // 3) Monorepo sibling (no install link required when repo is checked out)
+  for (const candidate of monorepoSiblingSkillCandidates()) {
+    if (await existsSkillDir(candidate)) {
+      return candidate;
+    }
+    errors.push(`sibling not found: ${candidate}`);
+  }
+
+  throw new Error(
+    `package skill (@okf-wiki/skill) not found. ` +
+      `Run \`pnpm install\` from the monorepo root, or place a skill under ` +
+      `${homeSkillsDir()}/ or {workspace}/.agents/skills/. ` +
+      `(details: ${errors.join("; ")})`,
+  );
 }
 
 /**
  * Ensure the home Producer Skill exists by seeding from the package when missing.
  * Does not overwrite an existing home skill (operator may have customized it).
+ * If the home skill already exists, package resolution is skipped.
  */
 export async function ensureHomeProducerSkill(
   packageSkillPath?: string,
 ): Promise<{ path: string; seeded: boolean }> {
-  const source = packageSkillPath ?? (await resolvePackageSkillPath());
   const dest = homeProducerSkillPath();
+  if (await existsSkillDir(dest)) {
+    return { path: dest, seeded: false };
+  }
+  const source = packageSkillPath ?? (await resolvePackageSkillPath());
   return copySkillTree({
     sourceSkillPath: source,
     destSkillPath: dest,

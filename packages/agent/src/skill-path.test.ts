@@ -38,6 +38,30 @@ test("resolvePackageSkillPath finds @okf-wiki/skill package assets", async () =>
   assert.equal(path.basename(pkg), "skill");
 });
 
+test("ensureHomeProducerSkill skips package resolve when home skill exists", async () => {
+  const appHome = await isolateAppState();
+  const { setLoadHomeSkills } = await import("@okf-wiki/core");
+  await setLoadHomeSkills(true, path.join(appHome, "app.json"));
+
+  const fakeHome = await mkdtemp(path.join(tmpdir(), "okf-existing-home-"));
+  process.env.HOME = fakeHome;
+  const skillDir = path.join(
+    fakeHome,
+    ".agents",
+    "skills",
+    "repository-wiki-producer",
+  );
+  await mkdir(skillDir, { recursive: true });
+  await writeFile(
+    path.join(skillDir, "SKILL.md"),
+    "---\nname: repository-wiki-producer\ndescription: existing\n---\n# Existing\n",
+  );
+
+  const result = await ensureHomeProducerSkill();
+  assert.equal(result.seeded, false);
+  assert.equal(result.path, path.resolve(skillDir));
+});
+
 test("resolveSkillSource prefers explicit skillPath", async () => {
   await isolateAppState();
   const fakeHome = await mkdtemp(path.join(tmpdir(), "okf-home-"));
