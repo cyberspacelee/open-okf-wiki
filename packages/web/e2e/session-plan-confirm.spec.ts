@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { createTempGitRepo, uniqueWorkspaceRoot } from "./helpers";
+import { createTempGitRepo, setChecked, uniqueWorkspaceRoot } from "./helpers";
 
 test.describe("session plan-confirm + timeline", () => {
   test("planConfirm pauses for approval then writes and shows timeline parts", async ({
@@ -19,7 +19,7 @@ test.describe("session plan-confirm + timeline", () => {
     // Enable plan confirm
     await page.getByTestId("workspace-subnav-settings").click();
     await expect(page.getByTestId("settings-page")).toBeVisible();
-    await page.getByTestId("settings-plan-confirm").check();
+    await setChecked(page, "settings-plan-confirm", true);
     await page.getByTestId("settings-save").click();
     await expect(page.getByRole("status")).toContainText(/saved/i, { timeout: 10_000 });
 

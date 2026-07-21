@@ -1,7 +1,19 @@
+import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import type { ModelProfilePublic } from "../api";
 import { useI18n } from "../i18n";
-import { Label } from "@/components/ui/label";
+import {
+  Field,
+  FieldDescription,
+  FieldLabel,
+} from "@/components/ui/field";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 type Props = {
   models: ModelProfilePublic[];
@@ -16,6 +28,16 @@ type Props = {
   allowEmpty?: boolean;
   emptyLabel?: string;
 };
+
+function modelLabel(
+  m: ModelProfilePublic,
+  defaultModelProfileId: string | undefined,
+  defaultSuffix: string,
+): string {
+  const suffix =
+    defaultModelProfileId === m.id ? ` ${defaultSuffix}` : "";
+  return `${m.name}${suffix} - ${m.modelId}`;
+}
 
 export function ModelSelect({
   models,
@@ -32,48 +54,66 @@ export function ModelSelect({
   const { t } = useI18n();
   const placeholder = emptyLabel ?? t.modelSelect.selectPlaceholder;
 
+  const items = useMemo(
+    () =>
+      models.map((m) => ({
+        value: m.id,
+        label: modelLabel(m, defaultModelProfileId, t.modelSelect.defaultSuffix),
+      })),
+    [models, defaultModelProfileId, t.modelSelect.defaultSuffix],
+  );
+
   if (models.length === 0) {
     return (
-      <div className="field" data-testid="model-select-empty">
-        <Label htmlFor={id}>{t.modelSelect.label}</Label>
-        <p className="muted small">
+      <Field data-testid="model-select-empty">
+        <FieldLabel htmlFor={id}>{t.modelSelect.label}</FieldLabel>
+        <FieldDescription>
           {t.modelSelect.emptyBefore}
           <Link to="/settings" className="inline-link ml-0">
             {t.modelSelect.emptyLink}
           </Link>
           {t.modelSelect.emptyAfter}
-        </p>
-      </div>
+        </FieldDescription>
+      </Field>
     );
   }
 
   return (
-    <div className="field">
-      <Label htmlFor={id}>{t.modelSelect.label}</Label>
-      <select
-        id={id}
-        className="model-select"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        required={required}
+    <Field>
+      <FieldLabel htmlFor={id}>{t.modelSelect.label}</FieldLabel>
+      <Select
+        value={value || null}
+        onValueChange={(next) => {
+          if (typeof next === "string") {
+            onChange(next);
+          } else if (allowEmpty && next == null) {
+            onChange("");
+          }
+        }}
+        items={items}
         disabled={disabled}
-        data-testid={testId}
       >
-        {allowEmpty ? <option value="">{placeholder}</option> : null}
-        {models.map((m) => (
-          <option key={m.id} value={m.id}>
-            {m.name}
-            {defaultModelProfileId === m.id ? ` ${t.modelSelect.defaultSuffix}` : ""}
-            {" - "}
-            {m.modelId}
-          </option>
-        ))}
-      </select>
-      <span className="field-hint">
+        <SelectTrigger
+          id={id}
+          className="w-full max-w-md"
+          data-testid={testId}
+          aria-required={required || undefined}
+        >
+          <SelectValue placeholder={placeholder} />
+        </SelectTrigger>
+        <SelectContent>
+          {models.map((m) => (
+            <SelectItem key={m.id} value={m.id}>
+              {modelLabel(m, defaultModelProfileId, t.modelSelect.defaultSuffix)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <FieldDescription>
         {t.modelSelect.hintBefore}
         <Link to="/settings">{t.modelSelect.hintLink}</Link>
         {t.modelSelect.hintAfter}
-      </span>
-    </div>
+      </FieldDescription>
+    </Field>
   );
 }

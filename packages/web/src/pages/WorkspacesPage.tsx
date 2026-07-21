@@ -28,8 +28,13 @@ import {
   EmptyHeader,
   EmptyTitle,
 } from "@/components/ui/empty";
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Table,
@@ -193,57 +198,65 @@ export function WorkspacesPage() {
             </CardHeader>
             <CardContent>
               <form className="form" onSubmit={(e) => void handleCreate(e)}>
-                <div className="field">
-                  <Label htmlFor="workspace-name">{t.workspaces.nameLabel}</Label>
-                  <Input
-                    id="workspace-name"
-                    type="text"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder={t.workspaces.namePlaceholder}
-                    required
-                    maxLength={120}
-                    autoFocus
-                    data-testid="workspace-name-input"
+                <FieldGroup>
+                  <Field>
+                    <FieldLabel htmlFor="workspace-name">
+                      {t.workspaces.nameLabel}
+                    </FieldLabel>
+                    <Input
+                      id="workspace-name"
+                      type="text"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder={t.workspaces.namePlaceholder}
+                      required
+                      maxLength={120}
+                      autoFocus
+                      data-testid="workspace-name-input"
+                    />
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor="workspace-root">
+                      {t.workspaces.rootLabel}
+                    </FieldLabel>
+                    <Input
+                      id="workspace-root"
+                      type="text"
+                      value={rootPath}
+                      onChange={(e) => setRootPath(e.target.value)}
+                      placeholder={t.workspaces.rootPlaceholder}
+                      required
+                      className="font-mono"
+                      data-testid="workspace-root-input"
+                    />
+                    <FieldDescription>{t.workspaces.rootHint}</FieldDescription>
+                  </Field>
+                  <ModelSelect
+                    models={models}
+                    value={modelProfileId}
+                    onChange={setModelProfileId}
+                    defaultModelProfileId={defaultModelProfileId}
+                    required={models.length > 0}
+                    allowEmpty={models.length === 0}
                   />
-                </div>
-                <div className="field">
-                  <Label htmlFor="workspace-root">{t.workspaces.rootLabel}</Label>
-                  <Input
-                    id="workspace-root"
-                    type="text"
-                    value={rootPath}
-                    onChange={(e) => setRootPath(e.target.value)}
-                    placeholder={t.workspaces.rootPlaceholder}
-                    required
-                    className="font-mono"
-                    data-testid="workspace-root-input"
-                  />
-                  <span className="field-hint">{t.workspaces.rootHint}</span>
-                </div>
-                <ModelSelect
-                  models={models}
-                  value={modelProfileId}
-                  onChange={setModelProfileId}
-                  defaultModelProfileId={defaultModelProfileId}
-                  required={models.length > 0}
-                  allowEmpty={models.length === 0}
-                />
-                <div className="form-actions">
-                  <Button
-                    type="submit"
-                    disabled={
-                      submitting ||
-                      !name.trim() ||
-                      !rootPath.trim() ||
-                      (models.length > 0 && !modelProfileId)
-                    }
-                    data-testid="workspace-create-submit"
-                  >
-                    {submitting ? <Spinner data-icon="inline-start" /> : null}
-                    {submitting ? t.workspaces.creating : t.workspaces.createSubmit}
-                  </Button>
-                </div>
+                  <div className="form-actions">
+                    <Button
+                      type="submit"
+                      disabled={
+                        submitting ||
+                        !name.trim() ||
+                        !rootPath.trim() ||
+                        (models.length > 0 && !modelProfileId)
+                      }
+                      data-testid="workspace-create-submit"
+                    >
+                      {submitting ? <Spinner data-icon="inline-start" /> : null}
+                      {submitting
+                        ? t.workspaces.creating
+                        : t.workspaces.createSubmit}
+                    </Button>
+                  </div>
+                </FieldGroup>
               </form>
             </CardContent>
           </Card>

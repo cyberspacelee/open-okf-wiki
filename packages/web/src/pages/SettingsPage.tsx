@@ -27,9 +27,20 @@ import { useI18n } from "../i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+  FieldLegend,
+  FieldSet,
+} from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
 import {
   Table,
   TableBody,
@@ -296,24 +307,25 @@ export function SettingsPage() {
                 <p className="muted small">{t.globalSettings.skillsDescription}</p>
                 {appSettings ? (
                   <>
-                    <label className="flex items-start gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        className="mt-1"
+                    <Field orientation="horizontal">
+                      <FieldContent>
+                        <FieldLabel htmlFor="settings-load-home-skills">
+                          {t.globalSettings.loadHomeSkills}
+                        </FieldLabel>
+                        <FieldDescription>
+                          {t.globalSettings.loadHomeSkillsHint}
+                        </FieldDescription>
+                      </FieldContent>
+                      <Switch
+                        id="settings-load-home-skills"
                         checked={appSettings.loadHomeSkills}
                         disabled={skillsSaving}
                         data-testid="settings-load-home-skills"
-                        onChange={(event) => {
-                          void handleToggleHomeSkills(event.target.checked);
+                        onCheckedChange={(checked) => {
+                          void handleToggleHomeSkills(checked);
                         }}
                       />
-                      <span>
-                        <span className="font-medium">{t.globalSettings.loadHomeSkills}</span>
-                        <span className="muted block small">
-                          {t.globalSettings.loadHomeSkillsHint}
-                        </span>
-                      </span>
-                    </label>
+                    </Field>
                     <dl className="kv">
                       <div>
                         <dt>{t.globalSettings.homeSkillsPath}</dt>
@@ -456,179 +468,193 @@ export function SettingsPage() {
                 </CardHeader>
                 <CardContent>
                   <form className="form form-wide" onSubmit={(e) => void handleSave(e)}>
-                    <div className="field">
-                      <Label htmlFor="model-name">Display name</Label>
-                      <Input
-                        id="model-name"
-                        value={form.name}
-                        onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                        placeholder="Corp GPT-4o"
-                        required
-                        maxLength={120}
-                        data-testid="model-name-input"
-                        autoFocus
-                      />
-                    </div>
-                    <div className="field">
-                      <Label htmlFor="model-id">Model id</Label>
-                      <Input
-                        id="model-id"
-                        value={form.modelId}
-                        onChange={(e) => setForm((f) => ({ ...f, modelId: e.target.value }))}
-                        placeholder="openai/my-served-model"
-                        required
-                        className="font-mono"
-                        data-testid="model-id-input"
-                      />
-                      <span className="field-hint">
-                        Served identity sent to the gateway (Mastra form{" "}
-                        <code>provider/model</code>).
-                      </span>
-                    </div>
-                    <div className="field">
-                      <Label htmlFor="model-base-url">Base URL</Label>
-                      <Input
-                        id="model-base-url"
-                        type="url"
-                        value={form.baseUrl}
-                        onChange={(e) => setForm((f) => ({ ...f, baseUrl: e.target.value }))}
-                        placeholder="https://gateway.example.com/v1"
-                        className="font-mono"
-                        data-testid="model-base-url"
-                        autoComplete="off"
-                      />
-                    </div>
-                    <div className="field">
-                      <Label htmlFor="model-api-key">API key</Label>
-                      <Input
-                        id="model-api-key"
-                        type="password"
-                        value={form.apiKey}
-                        onChange={(e) =>
-                          setForm((f) => ({
-                            ...f,
-                            apiKey: e.target.value,
-                            clearApiKey: false,
-                          }))
-                        }
-                        placeholder={
-                          editorMode === "edit" && editingId
-                            ? "Leave blank to keep stored key"
-                            : "sk-… or gateway token"
-                        }
-                        className="font-mono"
-                        data-testid="model-api-key"
-                        autoComplete="off"
-                        disabled={form.clearApiKey}
-                      />
-                      {editorMode === "edit" ? (
-                        <label className="field checkbox-field mt-1">
-                          <input
-                            type="checkbox"
-                            checked={form.clearApiKey}
-                            onChange={(e) =>
+                    <FieldGroup>
+                      <Field>
+                        <FieldLabel htmlFor="model-name">Display name</FieldLabel>
+                        <Input
+                          id="model-name"
+                          value={form.name}
+                          onChange={(e) =>
+                            setForm((f) => ({ ...f, name: e.target.value }))
+                          }
+                          placeholder="Corp GPT-4o"
+                          required
+                          maxLength={120}
+                          data-testid="model-name-input"
+                          autoFocus
+                        />
+                      </Field>
+                      <Field>
+                        <FieldLabel htmlFor="model-id">Model id</FieldLabel>
+                        <Input
+                          id="model-id"
+                          value={form.modelId}
+                          onChange={(e) =>
+                            setForm((f) => ({ ...f, modelId: e.target.value }))
+                          }
+                          placeholder="openai/my-served-model"
+                          required
+                          className="font-mono"
+                          data-testid="model-id-input"
+                        />
+                        <FieldDescription>
+                          Served identity sent to the gateway (Mastra form{" "}
+                          <code>provider/model</code>).
+                        </FieldDescription>
+                      </Field>
+                      <Field>
+                        <FieldLabel htmlFor="model-base-url">Base URL</FieldLabel>
+                        <Input
+                          id="model-base-url"
+                          type="url"
+                          value={form.baseUrl}
+                          onChange={(e) =>
+                            setForm((f) => ({ ...f, baseUrl: e.target.value }))
+                          }
+                          placeholder="https://gateway.example.com/v1"
+                          className="font-mono"
+                          data-testid="model-base-url"
+                          autoComplete="off"
+                        />
+                      </Field>
+                      <Field>
+                        <FieldLabel htmlFor="model-api-key">API key</FieldLabel>
+                        <Input
+                          id="model-api-key"
+                          type="password"
+                          value={form.apiKey}
+                          onChange={(e) =>
+                            setForm((f) => ({
+                              ...f,
+                              apiKey: e.target.value,
+                              clearApiKey: false,
+                            }))
+                          }
+                          placeholder={
+                            editorMode === "edit" && editingId
+                              ? "Leave blank to keep stored key"
+                              : "sk-… or gateway token"
+                          }
+                          className="font-mono"
+                          data-testid="model-api-key"
+                          autoComplete="off"
+                          disabled={form.clearApiKey}
+                        />
+                        {editorMode === "edit" ? (
+                          <Field orientation="horizontal" className="mt-1">
+                            <Checkbox
+                              id="model-clear-key"
+                              checked={form.clearApiKey}
+                              onCheckedChange={(checked) =>
+                                setForm((f) => ({
+                                  ...f,
+                                  clearApiKey: checked === true,
+                                  apiKey: checked === true ? "" : f.apiKey,
+                                }))
+                              }
+                              data-testid="model-clear-key"
+                            />
+                            <FieldLabel htmlFor="model-clear-key" className="font-normal">
+                              Clear stored API key
+                            </FieldLabel>
+                          </Field>
+                        ) : null}
+                      </Field>
+                      <FieldSet>
+                        <FieldLegend variant="label">API shape</FieldLegend>
+                        <RadioGroup
+                          value={form.apiShape}
+                          onValueChange={(next) => {
+                            if (next === "completions" || next === "responses") {
                               setForm((f) => ({
                                 ...f,
-                                clearApiKey: e.target.checked,
-                                apiKey: e.target.checked ? "" : f.apiKey,
-                              }))
+                                apiShape: next as ProviderApiShape,
+                              }));
                             }
-                            data-testid="model-clear-key"
-                          />
-                          <span>
-                            <strong>Clear stored API key</strong>
+                          }}
+                          aria-label="API shape"
+                          className="gap-3"
+                        >
+                          <Field orientation="horizontal">
+                            <RadioGroupItem
+                              value="completions"
+                              id="model-shape-completions"
+                              data-testid="model-shape-completions"
+                            />
+                            <FieldContent>
+                              <FieldLabel htmlFor="model-shape-completions">
+                                Chat Completions
+                              </FieldLabel>
+                              <FieldDescription>
+                                <code>POST …/v1/chat/completions</code>
+                              </FieldDescription>
+                            </FieldContent>
+                          </Field>
+                          <Field orientation="horizontal">
+                            <RadioGroupItem
+                              value="responses"
+                              id="model-shape-responses"
+                              data-testid="model-shape-responses"
+                            />
+                            <FieldContent>
+                              <FieldLabel htmlFor="model-shape-responses">
+                                Responses
+                              </FieldLabel>
+                              <FieldDescription>
+                                <code>POST …/v1/responses</code>
+                              </FieldDescription>
+                            </FieldContent>
+                          </Field>
+                        </RadioGroup>
+                      </FieldSet>
+                      <div className="form-actions">
+                        <Button
+                          type="submit"
+                          disabled={
+                            saving || !form.name.trim() || !form.modelId.trim()
+                          }
+                          data-testid="model-save"
+                        >
+                          {saving ? <Spinner data-icon="inline-start" /> : null}
+                          {saving
+                            ? "Saving…"
+                            : editorMode === "create"
+                              ? "Add model"
+                              : "Save changes"}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={testing || !form.baseUrl.trim()}
+                          onClick={() => void handleTest()}
+                          data-testid="model-test"
+                        >
+                          {testing ? <Spinner data-icon="inline-start" /> : null}
+                          {testing ? "Testing…" : "Test connection"}
+                        </Button>
+                      </div>
+                      {testResult ? (
+                        <div
+                          className={
+                            testResult.ok
+                              ? "provider-test-result ok"
+                              : "provider-test-result fail"
+                          }
+                          data-testid="provider-test-result"
+                          role="status"
+                        >
+                          <Badge variant={testResult.ok ? "secondary" : "destructive"}>
+                            {testResult.ok ? "reachable" : "failed"}
+                          </Badge>
+                          <span className="mono small">
+                            {testResult.message}
+                            {testResult.latencyMs !== undefined
+                              ? ` · ${testResult.latencyMs}ms`
+                              : ""}
                           </span>
-                        </label>
+                        </div>
                       ) : null}
-                    </div>
-                    <fieldset className="field">
-                      <legend className="text-sm font-medium">API shape</legend>
-                      <div className="radio-row" role="radiogroup" aria-label="API shape">
-                        <label className="radio-option">
-                          <input
-                            type="radio"
-                            name="api-shape"
-                            value="completions"
-                            checked={form.apiShape === "completions"}
-                            onChange={() =>
-                              setForm((f) => ({ ...f, apiShape: "completions" }))
-                            }
-                            data-testid="model-shape-completions"
-                          />
-                          <span>
-                            <strong>Chat Completions</strong>
-                            <span className="field-hint">
-                              <code>POST …/v1/chat/completions</code>
-                            </span>
-                          </span>
-                        </label>
-                        <label className="radio-option">
-                          <input
-                            type="radio"
-                            name="api-shape"
-                            value="responses"
-                            checked={form.apiShape === "responses"}
-                            onChange={() =>
-                              setForm((f) => ({ ...f, apiShape: "responses" }))
-                            }
-                            data-testid="model-shape-responses"
-                          />
-                          <span>
-                            <strong>Responses</strong>
-                            <span className="field-hint">
-                              <code>POST …/v1/responses</code>
-                            </span>
-                          </span>
-                        </label>
-                      </div>
-                    </fieldset>
-                    <div className="form-actions">
-                      <Button
-                        type="submit"
-                        disabled={
-                          saving || !form.name.trim() || !form.modelId.trim()
-                        }
-                        data-testid="model-save"
-                      >
-                        {saving ? <Spinner data-icon="inline-start" /> : null}
-                        {saving
-                          ? "Saving…"
-                          : editorMode === "create"
-                            ? "Add model"
-                            : "Save changes"}
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        disabled={testing || !form.baseUrl.trim()}
-                        onClick={() => void handleTest()}
-                        data-testid="model-test"
-                      >
-                        {testing ? <Spinner data-icon="inline-start" /> : null}
-                        {testing ? "Testing…" : "Test connection"}
-                      </Button>
-                    </div>
-                    {testResult ? (
-                      <div
-                        className={
-                          testResult.ok
-                            ? "provider-test-result ok"
-                            : "provider-test-result fail"
-                        }
-                        data-testid="provider-test-result"
-                        role="status"
-                      >
-                        <Badge variant={testResult.ok ? "secondary" : "destructive"}>
-                          {testResult.ok ? "reachable" : "failed"}
-                        </Badge>
-                        <span className="mono small">
-                          {testResult.message}
-                          {testResult.latencyMs !== undefined
-                            ? ` · ${testResult.latencyMs}ms`
-                            : ""}
-                        </span>
-                      </div>
-                    ) : null}
+                    </FieldGroup>
                   </form>
                 </CardContent>
               </Card>

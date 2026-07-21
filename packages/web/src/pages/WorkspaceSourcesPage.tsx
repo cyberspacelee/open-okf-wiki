@@ -22,9 +22,16 @@ import { formatMessage, useI18n } from "../i18n";
 import { workspaceHref } from "../lib/workspace-path";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
 import {
   Table,
   TableBody,
@@ -33,6 +40,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 
 function probeLabel(probe: GitProbe | undefined): string {
   if (!probe) {
@@ -410,27 +418,35 @@ export function WorkspaceSourcesPage() {
                 </CardHeader>
                 <CardContent className="flex flex-col gap-4">
                   <p className="muted small">{t.sources.ignoreDescription}</p>
-                  <label className="field checkbox-field">
-                    <input
-                      type="checkbox"
-                      checked={editApplyDefaults}
-                      onChange={(e) => setEditApplyDefaults(e.target.checked)}
-                      data-testid="source-apply-defaults"
-                    />
-                    <span>{t.sources.applyDefaults}</span>
-                  </label>
-                  <div className="field">
-                    <Label htmlFor="source-ignore-text">{t.sources.ignorePatterns}</Label>
-                    <textarea
-                      id="source-ignore-text"
-                      className="min-h-32 w-full rounded-md border bg-background p-3 font-mono text-sm"
-                      value={editIgnoreText}
-                      onChange={(e) => setEditIgnoreText(e.target.value)}
-                      placeholder={t.sources.ignorePlaceholder}
-                      spellCheck={false}
-                      data-testid="source-ignore-text"
-                    />
-                  </div>
+                  <FieldGroup>
+                    <Field orientation="horizontal">
+                      <FieldContent>
+                        <FieldLabel htmlFor="source-apply-defaults">
+                          {t.sources.applyDefaults}
+                        </FieldLabel>
+                      </FieldContent>
+                      <Switch
+                        id="source-apply-defaults"
+                        checked={editApplyDefaults}
+                        onCheckedChange={setEditApplyDefaults}
+                        data-testid="source-apply-defaults"
+                      />
+                    </Field>
+                    <Field>
+                      <FieldLabel htmlFor="source-ignore-text">
+                        {t.sources.ignorePatterns}
+                      </FieldLabel>
+                      <Textarea
+                        id="source-ignore-text"
+                        className="min-h-32 font-mono text-sm"
+                        value={editIgnoreText}
+                        onChange={(e) => setEditIgnoreText(e.target.value)}
+                        placeholder={t.sources.ignorePlaceholder}
+                        spellCheck={false}
+                        data-testid="source-ignore-text"
+                      />
+                    </Field>
+                  </FieldGroup>
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="muted small">{t.sources.presets}:</span>
                     <Button
@@ -481,45 +497,51 @@ export function WorkspaceSourcesPage() {
               </CardHeader>
               <CardContent>
                 <form className="form" onSubmit={(e) => void handleAdd(e)}>
-                  <div className="field">
-                    <Label htmlFor="source-path">{t.sources.pathLabel}</Label>
-                    <Input
-                      id="source-path"
-                      type="text"
-                      value={path}
-                      onChange={(e) => setPath(e.target.value)}
-                      placeholder={t.sources.pathPlaceholder}
-                      required
-                      className="font-mono"
-                      data-testid="source-path-input"
-                    />
-                  </div>
-                  <div className="field">
-                    <Label htmlFor="source-id">
-                      {t.sources.sourceIdLabel}{" "}
-                      <span className="muted font-normal">{t.sources.sourceIdOptional}</span>
-                    </Label>
-                    <Input
-                      id="source-id"
-                      type="text"
-                      value={sourceId}
-                      onChange={(e) => setSourceId(e.target.value)}
-                      placeholder={t.sources.sourceIdPlaceholder}
-                      pattern="[a-z][a-z0-9-]{0,62}"
-                      className="font-mono"
-                      data-testid="source-id-input"
-                    />
-                    <span className="field-hint">{t.sources.sourceIdHint}</span>
-                  </div>
-                  <div className="form-actions">
-                    <Button
-                      type="submit"
-                      disabled={submitting || !path.trim()}
-                      data-testid="source-add-submit"
-                    >
-                      {submitting ? t.sources.adding : t.sources.addSource}
-                    </Button>
-                  </div>
+                  <FieldGroup>
+                    <Field>
+                      <FieldLabel htmlFor="source-path">
+                        {t.sources.pathLabel}
+                      </FieldLabel>
+                      <Input
+                        id="source-path"
+                        type="text"
+                        value={path}
+                        onChange={(e) => setPath(e.target.value)}
+                        placeholder={t.sources.pathPlaceholder}
+                        required
+                        className="font-mono"
+                        data-testid="source-path-input"
+                      />
+                    </Field>
+                    <Field>
+                      <FieldLabel htmlFor="source-id">
+                        {t.sources.sourceIdLabel}{" "}
+                        <span className="muted font-normal">
+                          {t.sources.sourceIdOptional}
+                        </span>
+                      </FieldLabel>
+                      <Input
+                        id="source-id"
+                        type="text"
+                        value={sourceId}
+                        onChange={(e) => setSourceId(e.target.value)}
+                        placeholder={t.sources.sourceIdPlaceholder}
+                        pattern="[a-z][a-z0-9-]{0,62}"
+                        className="font-mono"
+                        data-testid="source-id-input"
+                      />
+                      <FieldDescription>{t.sources.sourceIdHint}</FieldDescription>
+                    </Field>
+                    <div className="form-actions">
+                      <Button
+                        type="submit"
+                        disabled={submitting || !path.trim()}
+                        data-testid="source-add-submit"
+                      >
+                        {submitting ? t.sources.adding : t.sources.addSource}
+                      </Button>
+                    </div>
+                  </FieldGroup>
                 </form>
               </CardContent>
             </Card>
@@ -533,53 +555,61 @@ export function WorkspaceSourcesPage() {
                   {formatMessage(t.sources.cloneHint, { root: workspace.rootPath })}
                 </p>
                 <form className="form" onSubmit={(e) => void handleClone(e)}>
-                  <div className="field">
-                    <Label htmlFor="source-remote">{t.sources.remoteUrl}</Label>
-                    <Input
-                      id="source-remote"
-                      type="text"
-                      value={remoteUrl}
-                      onChange={(e) => setRemoteUrl(e.target.value)}
-                      placeholder="https://github.com/org/repo.git"
-                      required
-                      className="font-mono"
-                      data-testid="source-remote-input"
-                    />
-                  </div>
-                  <div className="field">
-                    <Label htmlFor="source-clone-id">{t.sources.cloneId}</Label>
-                    <Input
-                      id="source-clone-id"
-                      type="text"
-                      value={cloneId}
-                      onChange={(e) => setCloneId(e.target.value)}
-                      placeholder="repo"
-                      pattern="[a-z][a-z0-9-]{0,62}"
-                      className="font-mono"
-                      data-testid="source-clone-id-input"
-                    />
-                  </div>
-                  <div className="field">
-                    <Label htmlFor="source-clone-ref">{t.sources.cloneRef}</Label>
-                    <Input
-                      id="source-clone-ref"
-                      type="text"
-                      value={cloneRef}
-                      onChange={(e) => setCloneRef(e.target.value)}
-                      placeholder="main"
-                      className="font-mono"
-                      data-testid="source-clone-ref-input"
-                    />
-                  </div>
-                  <div className="form-actions">
-                    <Button
-                      type="submit"
-                      disabled={cloning || !remoteUrl.trim()}
-                      data-testid="source-clone-submit"
-                    >
-                      {cloning ? t.sources.cloning : t.sources.cloneSubmit}
-                    </Button>
-                  </div>
+                  <FieldGroup>
+                    <Field>
+                      <FieldLabel htmlFor="source-remote">
+                        {t.sources.remoteUrl}
+                      </FieldLabel>
+                      <Input
+                        id="source-remote"
+                        type="text"
+                        value={remoteUrl}
+                        onChange={(e) => setRemoteUrl(e.target.value)}
+                        placeholder="https://github.com/org/repo.git"
+                        required
+                        className="font-mono"
+                        data-testid="source-remote-input"
+                      />
+                    </Field>
+                    <Field>
+                      <FieldLabel htmlFor="source-clone-id">
+                        {t.sources.cloneId}
+                      </FieldLabel>
+                      <Input
+                        id="source-clone-id"
+                        type="text"
+                        value={cloneId}
+                        onChange={(e) => setCloneId(e.target.value)}
+                        placeholder="repo"
+                        pattern="[a-z][a-z0-9-]{0,62}"
+                        className="font-mono"
+                        data-testid="source-clone-id-input"
+                      />
+                    </Field>
+                    <Field>
+                      <FieldLabel htmlFor="source-clone-ref">
+                        {t.sources.cloneRef}
+                      </FieldLabel>
+                      <Input
+                        id="source-clone-ref"
+                        type="text"
+                        value={cloneRef}
+                        onChange={(e) => setCloneRef(e.target.value)}
+                        placeholder="main"
+                        className="font-mono"
+                        data-testid="source-clone-ref-input"
+                      />
+                    </Field>
+                    <div className="form-actions">
+                      <Button
+                        type="submit"
+                        disabled={cloning || !remoteUrl.trim()}
+                        data-testid="source-clone-submit"
+                      >
+                        {cloning ? t.sources.cloning : t.sources.cloneSubmit}
+                      </Button>
+                    </div>
+                  </FieldGroup>
                 </form>
               </CardContent>
             </Card>

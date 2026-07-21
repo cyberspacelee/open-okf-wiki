@@ -1,19 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { uniqueWorkspaceRoot } from "./helpers";
-
-async function selectModelByName(
-  page: import("@playwright/test").Page,
-  testId: string,
-  name: string,
-): Promise<void> {
-  const select = page.getByTestId(testId);
-  const value = await select.locator("option").evaluateAll((opts, target) => {
-    const match = opts.find((o) => (o.textContent ?? "").includes(target));
-    return match ? (match as HTMLOptionElement).value : null;
-  }, name);
-  expect(value, `option containing "${name}"`).toBeTruthy();
-  await select.selectOption(value!);
-}
+import { chooseOption, uniqueWorkspaceRoot } from "./helpers";
 
 test.describe("workspace settings", () => {
   test("selects configured model from dropdown and persists", async ({ page }) => {
@@ -42,7 +28,7 @@ test.describe("workspace settings", () => {
     await page.getByRole("button", { name: /^create( workspace)?$/i }).first().click();
     await page.getByTestId("workspace-name-input").fill(originalName);
     await page.getByTestId("workspace-root-input").fill(rootPath);
-    await selectModelByName(page, "model-profile-select", "Beta Model");
+    await chooseOption(page, "model-profile-select", /Beta Model/);
     await page.getByTestId("workspace-create-submit").click();
     await expect(page.getByTestId("workspace-detail")).toBeVisible({ timeout: 20_000 });
     await expect(page.getByTestId("workspace-detail")).toContainText("openai/beta-model");
@@ -51,7 +37,7 @@ test.describe("workspace settings", () => {
     await page.getByTestId("workspace-subnav-settings").click();
     await expect(page.getByTestId("settings-page")).toBeVisible();
     await page.getByTestId("settings-name-input").fill(updatedName);
-    await selectModelByName(page, "settings-model-select", "Alpha Model");
+    await chooseOption(page, "settings-model-select", /Alpha Model/);
     await page.getByTestId("settings-save").click();
     await expect(page.getByRole("status")).toContainText(/saved/i);
 

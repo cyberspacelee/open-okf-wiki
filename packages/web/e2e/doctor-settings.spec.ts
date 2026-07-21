@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { setChecked } from "./helpers";
 
 test.describe("doctor / global settings", () => {
   test("shows models panel, doctor, and health ok after check", async ({ page }) => {
@@ -27,7 +28,7 @@ test.describe("doctor / global settings", () => {
     await page.getByTestId("model-name-input").fill(name);
     await page.getByTestId("model-id-input").fill("openai/e2e-probe-model");
     await page.getByTestId("model-base-url").fill("https://e2e-gateway.example.com/v1");
-    await page.getByTestId("model-shape-responses").check();
+    await setChecked(page, "model-shape-responses", true);
     await page.getByTestId("model-api-key").fill("sk-e2e-test-key-not-real");
     await page.getByTestId("model-save").click();
 

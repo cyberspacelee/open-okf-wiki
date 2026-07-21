@@ -26,9 +26,24 @@ import { formatMessage, useI18n } from "../i18n";
 import { workspaceHref } from "../lib/workspace-path";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 
 export function WorkspaceSettingsPage() {
@@ -230,143 +245,178 @@ export function WorkspaceSettingsPage() {
           <Card>
             <CardContent className="flex flex-col gap-6">
               <form className="form" onSubmit={(e) => void handleSubmit(e)}>
-                <div className="field">
-                  <Label htmlFor="settings-name">{t.settings.name}</Label>
-                  <Input
-                    id="settings-name"
-                    type="text"
-                    value={name}
-                    onChange={(e) => {
-                      setName(e.target.value);
-                      setSaved(false);
-                    }}
-                    required
-                    maxLength={120}
-                    data-testid="settings-name-input"
-                  />
-                </div>
+                <FieldGroup>
+                  <Field>
+                    <FieldLabel htmlFor="settings-name">{t.settings.name}</FieldLabel>
+                    <Input
+                      id="settings-name"
+                      type="text"
+                      value={name}
+                      onChange={(e) => {
+                        setName(e.target.value);
+                        setSaved(false);
+                      }}
+                      required
+                      maxLength={120}
+                      data-testid="settings-name-input"
+                    />
+                  </Field>
 
-                <ModelSelect
-                  models={models}
-                  value={modelProfileId}
-                  onChange={(next) => {
-                    setModelProfileId(next);
-                    setSaved(false);
-                  }}
-                  defaultModelProfileId={defaultModelProfileId}
-                  required={models.length > 0}
-                  data-testid="settings-model-select"
-                />
-                {/* Keep a stable test id for e2e that assert selection */}
-                <input
-                  type="hidden"
-                  data-testid="settings-model-input"
-                  value={selectedModel?.modelId ?? orphanModelId ?? ""}
-                  readOnly
-                />
-                {orphanModelId ? (
-                  <p className="muted small" data-testid="settings-model-orphan">
-                    Previous model id <code className="mono">{orphanModelId}</code> is no longer in
-                    Settings. Pick a configured model above.
-                  </p>
-                ) : null}
-
-                <div className="field">
-                  <Label htmlFor="settings-publication">{t.settings.publicationPath}</Label>
-                  <Input
-                    id="settings-publication"
-                    type="text"
-                    value={publicationPath}
-                    onChange={(e) => {
-                      setPublicationPath(e.target.value);
+                  <ModelSelect
+                    models={models}
+                    value={modelProfileId}
+                    onChange={(next) => {
+                      setModelProfileId(next);
                       setSaved(false);
                     }}
-                    placeholder="D:/src/app/wiki"
-                    required
-                    className="font-mono"
+                    defaultModelProfileId={defaultModelProfileId}
+                    required={models.length > 0}
+                    data-testid="settings-model-select"
                   />
-                </div>
-                <div className="field">
-                  <Label htmlFor="settings-wiki-language">{t.settings.wikiLanguage}</Label>
-                  <select
-                    id="settings-wiki-language"
-                    className="flex h-9 w-full max-w-xs rounded-md border bg-background px-3 text-sm"
-                    value={wikiLanguage}
-                    onChange={(e) => {
-                      setWikiLanguage(e.target.value as WikiLanguage);
-                      setSaved(false);
-                    }}
-                    data-testid="settings-wiki-language"
-                  >
-                    <option value="en">{t.settings.langEn}</option>
-                    <option value="zh">{t.settings.langZh}</option>
-                  </select>
-                  <span className="field-hint">{t.settings.wikiLanguageHint}</span>
-                </div>
-                <label className="field checkbox-field">
+                  {/* Keep a stable test id for e2e that assert selection */}
                   <input
-                    type="checkbox"
-                    checked={adaptive}
-                    onChange={(e) => {
-                      setAdaptive(e.target.checked);
-                      setSaved(false);
-                    }}
+                    type="hidden"
+                    data-testid="settings-model-input"
+                    value={selectedModel?.modelId ?? orphanModelId ?? ""}
+                    readOnly
                   />
-                  <span>
-                    <strong>{t.settings.adaptive}</strong>
-                    <span className="field-hint">{t.settings.adaptiveHint}</span>
-                  </span>
-                </label>
-                <label className="field checkbox-field">
-                  <input
-                    type="checkbox"
-                    checked={reviewer}
-                    onChange={(e) => {
-                      setReviewer(e.target.checked);
-                      setSaved(false);
-                    }}
-                  />
-                  <span>
-                    <strong>{t.settings.reviewer}</strong>
-                    <span className="field-hint">{t.settings.reviewerHint}</span>
-                  </span>
-                </label>
-                <label className="field checkbox-field">
-                  <input
-                    type="checkbox"
-                    checked={planConfirm}
-                    onChange={(e) => {
-                      setPlanConfirm(e.target.checked);
-                      setSaved(false);
-                    }}
-                    data-testid="settings-plan-confirm"
-                  />
-                  <span>
-                    <strong>{t.settings.planConfirm}</strong>
-                    <span className="field-hint">{t.settings.planConfirmHint}</span>
-                  </span>
-                </label>
-
-                <div className="form-actions">
-                  <Button
-                    type="submit"
-                    disabled={
-                      submitting ||
-                      !name.trim() ||
-                      !publicationPath.trim() ||
-                      (models.length > 0 && !modelProfileId)
-                    }
-                    data-testid="settings-save"
-                  >
-                    {submitting ? <Spinner data-icon="inline-start" /> : null}
-                    {submitting ? t.settings.saving : t.settings.save}
-                  </Button>
-                  {saved ? (
-                    <span className="success-text" role="status">
-                      {t.settings.saved}
-                    </span>
+                  {orphanModelId ? (
+                    <p className="muted small" data-testid="settings-model-orphan">
+                      Previous model id <code className="mono">{orphanModelId}</code> is no
+                      longer in Settings. Pick a configured model above.
+                    </p>
                   ) : null}
-                </div>
+
+                  <Field>
+                    <FieldLabel htmlFor="settings-publication">
+                      {t.settings.publicationPath}
+                    </FieldLabel>
+                    <Input
+                      id="settings-publication"
+                      type="text"
+                      value={publicationPath}
+                      onChange={(e) => {
+                        setPublicationPath(e.target.value);
+                        setSaved(false);
+                      }}
+                      placeholder="D:/src/app/wiki"
+                      required
+                      className="font-mono"
+                    />
+                  </Field>
+
+                  <Field>
+                    <FieldLabel htmlFor="settings-wiki-language">
+                      {t.settings.wikiLanguage}
+                    </FieldLabel>
+                    <Select
+                      value={wikiLanguage}
+                      onValueChange={(next) => {
+                        if (next === "en" || next === "zh") {
+                          setWikiLanguage(next);
+                          setSaved(false);
+                        }
+                      }}
+                      items={[
+                        { value: "en", label: t.settings.langEn },
+                        { value: "zh", label: t.settings.langZh },
+                      ]}
+                    >
+                      <SelectTrigger
+                        id="settings-wiki-language"
+                        className="w-full max-w-xs"
+                        data-testid="settings-wiki-language"
+                        data-value={wikiLanguage}
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="en">{t.settings.langEn}</SelectItem>
+                        <SelectItem value="zh">{t.settings.langZh}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FieldDescription>
+                      {t.settings.wikiLanguageHint}
+                    </FieldDescription>
+                  </Field>
+
+                  <Field orientation="horizontal">
+                    <FieldContent>
+                      <FieldLabel htmlFor="settings-adaptive">
+                        {t.settings.adaptive}
+                      </FieldLabel>
+                      <FieldDescription>{t.settings.adaptiveHint}</FieldDescription>
+                    </FieldContent>
+                    <Switch
+                      id="settings-adaptive"
+                      checked={adaptive}
+                      onCheckedChange={(checked) => {
+                        setAdaptive(checked);
+                        setSaved(false);
+                      }}
+                      data-testid="settings-adaptive"
+                    />
+                  </Field>
+
+                  <Field orientation="horizontal">
+                    <FieldContent>
+                      <FieldLabel htmlFor="settings-reviewer">
+                        {t.settings.reviewer}
+                      </FieldLabel>
+                      <FieldDescription>{t.settings.reviewerHint}</FieldDescription>
+                    </FieldContent>
+                    <Switch
+                      id="settings-reviewer"
+                      checked={reviewer}
+                      onCheckedChange={(checked) => {
+                        setReviewer(checked);
+                        setSaved(false);
+                      }}
+                      data-testid="settings-reviewer"
+                    />
+                  </Field>
+
+                  <Field orientation="horizontal">
+                    <FieldContent>
+                      <FieldLabel htmlFor="settings-plan-confirm">
+                        {t.settings.planConfirm}
+                      </FieldLabel>
+                      <FieldDescription>
+                        {t.settings.planConfirmHint}
+                      </FieldDescription>
+                    </FieldContent>
+                    <Switch
+                      id="settings-plan-confirm"
+                      checked={planConfirm}
+                      onCheckedChange={(checked) => {
+                        setPlanConfirm(checked);
+                        setSaved(false);
+                      }}
+                      data-testid="settings-plan-confirm"
+                    />
+                  </Field>
+
+                  <div className="form-actions">
+                    <Button
+                      type="submit"
+                      disabled={
+                        submitting ||
+                        !name.trim() ||
+                        !publicationPath.trim() ||
+                        (models.length > 0 && !modelProfileId)
+                      }
+                      data-testid="settings-save"
+                    >
+                      {submitting ? <Spinner data-icon="inline-start" /> : null}
+                      {submitting ? t.settings.saving : t.settings.save}
+                    </Button>
+                    {saved ? (
+                      <span className="success-text" role="status">
+                        {t.settings.saved}
+                      </span>
+                    ) : null}
+                  </div>
+                </FieldGroup>
               </form>
 
               <section className="flex flex-col gap-3" data-testid="settings-skill-panel">
@@ -537,25 +587,31 @@ export function WorkspaceSettingsPage() {
                   </Button>
                 </div>
                 {skill?.kind === "fork" ? (
-                  <div className="flex flex-col gap-2">
-                    <Label htmlFor="settings-skill-file-path">{t.settings.skillFileLabel}</Label>
-                    <Input
-                      id="settings-skill-file-path"
-                      className="font-mono"
-                      value={skillFilePath}
-                      onChange={(e) => setSkillFilePath(e.target.value)}
-                      data-testid="settings-skill-file-path"
-                    />
-                    <textarea
-                      className="min-h-48 w-full rounded-md border bg-background p-3 font-mono text-sm"
-                      value={skillFileContent}
-                      onChange={(e) => {
-                        setSkillFileContent(e.target.value);
-                        setSkillFileDirty(true);
-                      }}
-                      data-testid="settings-skill-file-editor"
-                      spellCheck={false}
-                    />
+                  <FieldGroup className="gap-2">
+                    <Field>
+                      <FieldLabel htmlFor="settings-skill-file-path">
+                        {t.settings.skillFileLabel}
+                      </FieldLabel>
+                      <Input
+                        id="settings-skill-file-path"
+                        className="font-mono"
+                        value={skillFilePath}
+                        onChange={(e) => setSkillFilePath(e.target.value)}
+                        data-testid="settings-skill-file-path"
+                      />
+                    </Field>
+                    <Field>
+                      <Textarea
+                        className="min-h-48 font-mono text-sm"
+                        value={skillFileContent}
+                        onChange={(e) => {
+                          setSkillFileContent(e.target.value);
+                          setSkillFileDirty(true);
+                        }}
+                        data-testid="settings-skill-file-editor"
+                        spellCheck={false}
+                      />
+                    </Field>
                     <p className="muted small">
                       Files:{" "}
                       <button
@@ -590,7 +646,7 @@ export function WorkspaceSettingsPage() {
                         ? ` · ${skill.files.slice(0, 8).join(", ")}${skill.files.length > 8 ? "…" : ""}`
                         : null}
                     </p>
-                  </div>
+                  </FieldGroup>
                 ) : null}
               </section>
 

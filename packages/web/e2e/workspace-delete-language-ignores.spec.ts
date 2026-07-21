@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import {
   addSourceViaUi,
+  chooseOption,
   createTempGitRepo,
   createWorkspaceViaUi,
   setChecked,
@@ -33,12 +34,15 @@ test.describe("workspace delete, wiki language, ignore rules", () => {
 
     await page.getByTestId("workspace-subnav-settings").click();
     await expect(page.getByTestId("settings-page")).toBeVisible();
-    await page.getByTestId("settings-wiki-language").selectOption("zh");
+    await chooseOption(page, "settings-wiki-language", /Chinese|中文/i);
     await page.getByTestId("settings-save").click();
     await expect(page.getByRole("status")).toContainText(/saved|已保存/i);
 
     await page.reload();
-    await expect(page.getByTestId("settings-wiki-language")).toHaveValue("zh");
+    await expect(page.getByTestId("settings-wiki-language")).toHaveAttribute(
+      "data-value",
+      "zh",
+    );
 
     await page.getByTestId("workspace-subnav-overview").click();
     await expect(page.getByTestId("detail-wiki-language")).toContainText(/Chinese|中文/i);
