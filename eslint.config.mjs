@@ -27,7 +27,6 @@ export default defineConfig(
     ".scratch/**",
     ".agents/**",
     "tmp/**",
-    "tests/**",
     "packages/web/playwright-report/**",
     "packages/web/test-results/**",
     "packages/web/dist/**",
