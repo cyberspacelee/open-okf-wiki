@@ -702,7 +702,10 @@ export function WorkspaceSessionPage() {
       />
 
       {loading || !sessionMeta || !workspace ? (
-        <LoadingState label={t.session.loading} />
+        // Compact shell fills the viewport; center the skeleton like empty chat.
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center">
+          <LoadingState label={t.session.loading} />
+        </div>
       ) : (
         <SessionChatPanel
           key={`${sessionMeta.id}:${panelEpoch}`}

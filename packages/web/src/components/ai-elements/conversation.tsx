@@ -12,7 +12,9 @@ export type ConversationProps = ComponentProps<typeof StickToBottom>;
 
 export const Conversation = ({ className, ...props }: ConversationProps) => (
   <StickToBottom
-    className={cn("relative flex-1 overflow-y-hidden", className)}
+    // min-h-0: flex item must be allowed to shrink so the scroll viewport
+    // (height:100% inside StickToBottom.Content) gets a definite height.
+    className={cn("relative min-h-0 flex-1 overflow-y-hidden", className)}
     initial="smooth"
     resize="smooth"
     role="log"
@@ -29,7 +31,9 @@ export const ConversationContent = ({
   ...props
 }: ConversationContentProps) => (
   <StickToBottom.Content
-    className={cn("flex flex-col gap-8 p-4", className)}
+    // min-h-full: contentRef is height:auto inside a fixed scroll viewport.
+    // Without this, empty-state size-full/flex-1 has nothing to expand into.
+    className={cn("flex min-h-full flex-col gap-8 p-4", className)}
     {...props}
   />
 );
@@ -50,7 +54,9 @@ export const ConversationEmptyState = ({
 }: ConversationEmptyStateProps) => (
   <div
     className={cn(
-      "flex size-full flex-col items-center justify-center gap-3 p-8 text-center",
+      // flex-1 (not size-full): percentage height does not resolve against a
+      // parent that only has min-height; grow into ConversationContent instead.
+      "flex w-full flex-1 flex-col items-center justify-center gap-3 p-8 text-center",
       className
     )}
     {...props}
