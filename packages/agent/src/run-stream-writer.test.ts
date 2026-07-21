@@ -59,3 +59,64 @@ test("fixture runWikiAgent writes tool/text chunks to writer", async () => {
   assert.ok(types.includes("tool-call"), `expected tool-call in ${types.join(",")}`);
   assert.ok(types.includes("tool-result"), `expected tool-result in ${types.join(",")}`);
 });
+
+test("fixture write phase emits data-plan-progress via writer.custom", async () => {
+  process.env.OKF_WIKI_AGENT_MODE = "fixture";
+  const root = await mkdtemp(path.join(tmpdir(), "okf-writer-progress-"));
+  const customChunks: unknown[] = [];
+  const writeChunks: unknown[] = [];
+  const plan = {
+    summary: "Fixture plan",
+    pages: [
+      { path: "overview.md", purpose: "Overview" },
+      { path: "architecture.md", purpose: "Architecture" },
+    ],
+  };
+  const result = await runWikiAgent({
+    runId: "run-writer-progress",
+    workspace: await minimalWorkspace(root),
+    phase: "write",
+    plan,
+    writer: {
+      write: async (chunk) => {
+        writeChunks.push(chunk);
+      },
+      // Duck-typed Mastra ToolStream.custom (not on WikiRunStreamWriter type).
+      custom: async (chunk: unknown) => {
+        customChunks.push(chunk);
+      },
+    } as {
+      write: (chunk: unknown) => Promise<void>;
+      custom: (chunk: unknown) => Promise<void>;
+    },
+  });
+  assert.ok(
+    result.status === "awaiting_publication" || result.status === "published",
+  );
+  assert.ok(result.pages && result.pages.length > 0);
+  const progress = customChunks.filter(
+    (c) =>
+      c &&
+      typeof c === "object" &&
+      (c as { type?: string }).type === "data-plan-progress",
+  );
+  assert.ok(
+    progress.length >= 1,
+    `expected data-plan-progress via custom, got ${JSON.stringify(customChunks)}`,
+  );
+  const last = progress[progress.length - 1] as {
+    data?: { pages?: Array<{ path?: string; status?: string }> };
+  };
+  assert.ok(
+    (last.data?.pages ?? []).some(
+      (p) => p.path === "overview.md" && p.status === "written",
+    ),
+  );
+  // tool/text still go through write(), not custom
+  const writeTypes = writeChunks.map((c) =>
+    c && typeof c === "object" && "type" in c
+      ? String((c as { type: string }).type)
+      : "",
+  );
+  assert.ok(writeTypes.includes("tool-result"));
+});

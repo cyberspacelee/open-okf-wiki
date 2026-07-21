@@ -24,16 +24,139 @@ import { listMarkdownPages, writeFileContained } from "./fs-ops.js";
 import { resolveSkillPath } from "./skill-path.js";
 import { createSubagents, subagentsAsAgentsMap } from "./subagents.js";
 import { createWikiRunTools } from "./tools.js";
+import { buildPlanProgressData } from "./ui-projection.js";
 
 export type WikiRunAgentPhase = "plan" | "write";
 
 /**
- * Mastra workflow step writer — chunks become workflow-step-output and are
- * converted by toAISdkStream({ from: "workflow" }) for Session UI (ADR 0026).
+ * Mastra workflow step writer — agent tool/text chunks use write() (wrapped as
+ * workflow-step-output); product data-* parts must use custom() so they pass
+ * through toAISdkStream as UI data parts (ADR 0026 / 0027 Phase 2).
+ *
+ * `custom` is intentionally not declared on this type: Mastra ToolStream.custom
+ * is a generic overload that is not assignable to a simple `(unknown) => …`.
+ * Runtime detection via hasStreamCustom() keeps ToolStream assignable.
  */
 export type WikiRunStreamWriter = {
   write: (chunk: unknown) => Promise<void>;
 };
+
+type StreamCustomWriter = WikiRunStreamWriter & {
+  custom: (chunk: {
+    type: `data-${string}`;
+    data: unknown;
+    id?: string;
+    transient?: boolean;
+  }) => Promise<void>;
+};
+
+function hasStreamCustom(
+  writer: WikiRunStreamWriter,
+): writer is StreamCustomWriter {
+  return (
+    typeof (writer as { custom?: unknown }).custom === "function"
+  );
+}
+
+function normalizeWikiPath(path: string): string {
+  return path.replace(/^\.\/+/, "").replace(/^\/+/, "");
+}
+
+/**
+ * Emit a data-* UI part via writer.custom when available (framework path).
+ * Falls back to write() only for non-ToolStream test doubles.
+ */
+async function writeCustomDataPart(
+  writer: WikiRunStreamWriter | undefined,
+  part: { type: `data-${string}`; data: unknown; id?: string },
+): Promise<void> {
+  if (!writer) {
+    return;
+  }
+  if (hasStreamCustom(writer)) {
+    await writer.custom(part);
+    return;
+  }
+  await writer.write(part);
+}
+
+/** Emit plan page checklist from step writer (source of truth for Session UI). */
+async function emitPlanProgressFromWriter(
+  writer: WikiRunStreamWriter | undefined,
+  input: {
+    plan?: WikiRunPlan;
+    writtenPaths: Iterable<string>;
+    runId: string;
+    phase?: string;
+  },
+): Promise<void> {
+  if (!writer) {
+    return;
+  }
+  const data = buildPlanProgressData({
+    planPages: input.plan?.pages,
+    writtenPaths: input.writtenPaths,
+    runId: input.runId,
+    phase: input.phase ?? "writing",
+  });
+  if (data.pages.length === 0) {
+    return;
+  }
+  await writeCustomDataPart(writer, {
+    type: "data-plan-progress",
+    data,
+  });
+}
+
+/**
+ * Extract write_wiki path from a Mastra agent fullStream chunk (tool-result /
+ * tool-call with path). Returns undefined when not a write completion.
+ */
+function writePathFromAgentChunk(chunk: unknown): string | undefined {
+  if (!chunk || typeof chunk !== "object") {
+    return undefined;
+  }
+  const c = chunk as {
+    type?: string;
+    payload?: {
+      toolName?: string;
+      args?: unknown;
+      result?: unknown;
+      output?: unknown;
+    };
+  };
+  const type = c.type ?? "";
+  if (
+    type !== "tool-result" &&
+    type !== "tool-call-result" &&
+    type !== "tool-output"
+  ) {
+    return undefined;
+  }
+  const payload = c.payload;
+  if (!payload) {
+    return undefined;
+  }
+  const toolName = payload.toolName;
+  if (toolName && toolName !== "write_wiki") {
+    return undefined;
+  }
+  // When toolName is omitted, still accept path-shaped results (fixture).
+  const result = payload.result ?? payload.output;
+  if (result && typeof result === "object" && !Array.isArray(result)) {
+    const path = (result as { path?: unknown }).path;
+    if (typeof path === "string" && path) {
+      return normalizeWikiPath(path);
+    }
+  }
+  if (payload.args && typeof payload.args === "object") {
+    const path = (payload.args as { path?: unknown }).path;
+    if (typeof path === "string" && path) {
+      return normalizeWikiPath(path);
+    }
+  }
+  return undefined;
+}
 
 export type WikiRunAgentInput = {
   runId: string;
@@ -366,11 +489,17 @@ export function parsePlanFromAgentText(
 /**
  * Emit Mastra-shaped stream chunks for fixture mode so Session e2e can assert
  * tool + text parts without a live model (same seam as live fullStream).
+ * Write phase also emits data-plan-progress via writer.custom (Phase 2).
  */
 async function emitFixtureTrajectory(
   writer: WikiRunStreamWriter | undefined,
   phase: WikiRunAgentPhase,
   abortSignal?: AbortSignal,
+  options?: {
+    plan?: WikiRunPlan;
+    runId?: string;
+    writePath?: string;
+  },
 ): Promise<void> {
   if (!writer) {
     return;
@@ -378,6 +507,7 @@ async function emitFixtureTrajectory(
   const textId = `fixture-text-${phase}`;
   const toolCallId = `fixture-tool-${phase}`;
   const toolName = phase === "plan" ? "list_source" : "write_wiki";
+  const writePath = options?.writePath ?? "overview.md";
   const chunks: unknown[] = [
     { type: "text-start", payload: { id: textId } },
     {
@@ -399,7 +529,7 @@ async function emitFixtureTrajectory(
         args:
           phase === "plan"
             ? { sourceId: "fixture", path: "." }
-            : { path: "overview.md" },
+            : { path: writePath },
       },
     },
     {
@@ -410,7 +540,7 @@ async function emitFixtureTrajectory(
         args:
           phase === "plan"
             ? { sourceId: "fixture", path: "." }
-            : { path: "overview.md" },
+            : { path: writePath },
         result:
           phase === "plan"
             ? {
@@ -420,13 +550,21 @@ async function emitFixtureTrajectory(
                   { name: "src", path: "src", type: "directory" },
                 ],
               }
-            : { path: "overview.md", bytes: 128 },
+            : { path: writePath, bytes: 128 },
       },
     },
   ];
   for (const chunk of chunks) {
     throwIfAborted(abortSignal);
     await writer.write(chunk);
+  }
+  if (phase === "write" && options?.runId) {
+    await emitPlanProgressFromWriter(writer, {
+      plan: options.plan,
+      writtenPaths: [writePath],
+      runId: options.runId,
+      phase: "writing",
+    });
   }
 }
 
@@ -451,7 +589,12 @@ async function runFixture(input: WikiRunAgentInput, wikiRoot: string): Promise<W
   throwIfAborted(input.abortSignal);
 
   const phase: WikiRunAgentPhase = input.phase ?? "write";
-  await emitFixtureTrajectory(input.writer, phase, input.abortSignal);
+  const pagePath = input.plan?.pages[0]?.path ?? "overview.md";
+  await emitFixtureTrajectory(input.writer, phase, input.abortSignal, {
+    plan: input.plan,
+    runId: input.runId,
+    writePath: pagePath,
+  });
 
   if (phase === "plan") {
     const plan = buildFixturePlan(input);
@@ -485,10 +628,16 @@ async function runFixture(input: WikiRunAgentInput, wikiRoot: string): Promise<W
     "",
   ].join("\n");
 
-  const pagePath = input.plan?.pages[0]?.path ?? "overview.md";
   await writeFileContained(wikiRoot, pagePath, content);
   throwIfAborted(input.abortSignal);
   const pages = await listMarkdownPages(wikiRoot);
+  // Final checklist after disk write (all staged pages visible).
+  await emitPlanProgressFromWriter(input.writer, {
+    plan: input.plan,
+    writtenPaths: pages,
+    runId: input.runId,
+    phase: "writing",
+  });
   return {
     status: successStatus(input.autoApprove),
     pages,
@@ -704,8 +853,10 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
         "Load the producer skill first, inspect sources, write markdown pages with write_wiki, then summarize." +
         planHint;
 
-// Stream so tool side-effects run; forward fullStream to workflow writer for Session UI.
+  // Stream so tool side-effects run; forward fullStream to workflow writer for Session UI.
+  // On write phase, emit data-plan-progress via writer.custom after each write_wiki.
   let text: string;
+  const writtenPaths = new Set<string>();
   try {
     const stream = await agent.stream(
       [{ role: "user", content: userMessage }],
@@ -721,6 +872,18 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
         throwIfAborted(input.abortSignal);
         if (input.writer) {
           await input.writer.write(chunk);
+        }
+        if (phase === "write") {
+          const path = writePathFromAgentChunk(chunk);
+          if (path && !writtenPaths.has(path)) {
+            writtenPaths.add(path);
+            await emitPlanProgressFromWriter(input.writer, {
+              plan: input.plan,
+              writtenPaths,
+              runId: input.runId,
+              phase: "writing",
+            });
+          }
         }
       }
     } else if (
@@ -781,6 +944,16 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
   }
 
   const pages = await listMarkdownPages(wikiRoot);
+  // Final progress from disk inventory (covers generate-fallback path too).
+  for (const p of pages) {
+    writtenPaths.add(normalizeWikiPath(p));
+  }
+  await emitPlanProgressFromWriter(input.writer, {
+    plan: input.plan,
+    writtenPaths,
+    runId: input.runId,
+    phase: "writing",
+  });
   if (pages.length === 0) {
     return {
       status: "failed",
