@@ -266,6 +266,28 @@ export function getProvider(): Promise<{ provider: ProviderPublic }> {
   return request<{ provider: ProviderPublic }>("/api/provider");
 }
 
+/** Machine-local app settings (home skills switch; page-editable only). */
+export type AppSettingsPublic = {
+  loadHomeSkills: boolean;
+  loadHomeSkillsStored: boolean | null;
+  homeSkillsDir: string;
+  homeProducerSkill: string;
+  workspaceSkillsRelative: string;
+};
+
+export function getAppSettings(): Promise<{ settings: AppSettingsPublic }> {
+  return request<{ settings: AppSettingsPublic }>("/api/app-settings");
+}
+
+export function patchAppSettings(input: {
+  loadHomeSkills: boolean;
+}): Promise<{ settings: AppSettingsPublic }> {
+  return request<{ settings: AppSettingsPublic }>("/api/app-settings", {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
 export function createModelProfile(
   input: ModelProfileWriteInput,
 ): Promise<{ provider: ProviderPublic; model?: ModelProfilePublic }> {

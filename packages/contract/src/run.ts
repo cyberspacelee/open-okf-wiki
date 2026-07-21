@@ -73,7 +73,7 @@ export const StoredRunRecordSchema = z.object({
   status: WikiRunRecordStatusSchema,
   error: z.string().optional(),
   autoApprove: z.boolean().optional(),
-  /** Absolute skill root frozen for this run (bundled or fork). */
+  /** Absolute skill root frozen for this run (fork, home, or package). */
   skillPath: z.string().min(1).optional(),
   /** Content digest of the frozen Producer Skill. */
   skillDigest: z.string().min(1).optional(),

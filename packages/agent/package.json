@@ -23,6 +23,7 @@
     "@mastra/libsql": "1.16.0",
     "@okf-wiki/contract": "workspace:*",
     "@okf-wiki/core": "workspace:*",
+    "@okf-wiki/skill": "workspace:*",
     "ai": "^7.0.31",
     "zod": "^4.4.3"
   },

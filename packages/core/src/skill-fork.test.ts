@@ -18,8 +18,8 @@ async function tempDir(prefix: string): Promise<string> {
   return mkdtemp(path.join(tmpdir(), prefix));
 }
 
-async function makeBundled(): Promise<string> {
-  const root = await tempDir("okf-bundled-");
+async function makeSourceSkill(): Promise<string> {
+  const root = await tempDir("okf-source-skill-");
   await writeFile(
     path.join(root, "SKILL.md"),
     "---\nname: repository-wiki-producer\ndescription: test skill\n---\n# Skill\n",
@@ -29,31 +29,35 @@ async function makeBundled(): Promise<string> {
   return root;
 }
 
-test("createSkillFork copies bundled skill and getSkillInfo reports fork", async () => {
+test("createSkillFork copies source skill and getSkillInfo reports fork", async () => {
   const workspace = await tempDir("okf-ws-");
-  const bundled = await makeBundled();
+  const source = await makeSourceSkill();
   const forkPath = await createSkillFork({
     workspaceRoot: workspace,
-    bundledSkillPath: bundled,
+    sourceSkillPath: source,
   });
   assert.equal(forkPath, skillForkDir(workspace));
-  const info = await getSkillInfo({
-    workspaceRoot: workspace,
-    skillPath: forkPath,
-    bundledSkillPath: bundled,
-  });
+  assert.ok(forkPath.includes(path.join(".agents", "skills")));
+  const info = await getSkillInfo({ path: forkPath, kind: "fork" });
   assert.equal(info.kind, "fork");
   assert.equal(info.path, forkPath);
   assert.equal(info.name, "repository-wiki-producer");
   assert.equal(await skillDigest(forkPath), info.digest);
 });
 
+test("getSkillInfo reports package kind", async () => {
+  const source = await makeSourceSkill();
+  const info = await getSkillInfo({ path: source, kind: "package" });
+  assert.equal(info.kind, "package");
+  assert.equal(info.path, path.resolve(source));
+});
+
 test("writeSkillFile and readSkillFile roundtrip under fork", async () => {
   const workspace = await tempDir("okf-ws-write-");
-  const bundled = await makeBundled();
+  const source = await makeSourceSkill();
   const forkPath = await createSkillFork({
     workspaceRoot: workspace,
-    bundledSkillPath: bundled,
+    sourceSkillPath: source,
   });
   await writeSkillFile(forkPath, "templates/overview.md", "# Custom\n");
   const file = await readSkillFile(forkPath, "templates/overview.md");
@@ -70,10 +74,10 @@ test("normalizeSkillRelative rejects escapes", () => {
 
 test("writeSkillFile refuses path escape", async () => {
   const workspace = await tempDir("okf-ws-esc-");
-  const bundled = await makeBundled();
+  const source = await makeSourceSkill();
   const forkPath = await createSkillFork({
     workspaceRoot: workspace,
-    bundledSkillPath: bundled,
+    sourceSkillPath: source,
   });
   await assert.rejects(
     () => writeSkillFile(forkPath, "../outside.md", "x"),

@@ -137,7 +137,7 @@ export const en = {
       "Previous model id is no longer in Settings. Pick a configured model above.",
     skillTitle: "Producer Skill",
     skillDescription:
-      "Global method package for wiki generation. Create a workspace fork to customize templates and guidance; each Wiki Run freezes the skill content digest.",
+      "Global method package for wiki generation. Defaults follow Agent Skills paths: project `.agents/skills`, then user `~/.agents/skills` (Settings), then the product package. Create a workspace fork to customize templates and guidance; each Wiki Run freezes the skill content digest.",
     skillKind: "Kind",
     skillDigest: "Digest",
     skillPath: "Path",
@@ -145,7 +145,7 @@ export const en = {
     skillUnavailable: "Skill info unavailable.",
     skillFork: "Create / refresh fork",
     skillWorking: "Working…",
-    skillBundled: "Use bundled",
+    skillBundled: "Use default (home/package)",
     skillLoadFile: "Load file",
     skillSaveFile: "Save file",
     skillFileLabel: "Skill file (fork editor)",
@@ -220,6 +220,16 @@ export const en = {
     description:
       "Machine-local model profiles and credentials. Workspace config never stores API keys.",
     loading: "Loading settings…",
+    skillsTitle: "Producer Skill (Agent Skills)",
+    skillsDescription:
+      "Portable Agent Skills layout (same as Codex/Grok): project `.agents/skills`, then user `~/.agents/skills` when enabled below (seeded from the product package on first use). Disable user skills to use the package-embedded skill only when no project skill exists.",
+    loadHomeSkills: "Load skills from user ~/.agents/skills",
+    loadHomeSkillsHint:
+      "When off, skip ~/.agents/skills and fall back to package assets (project .agents/skills still wins).",
+    homeSkillsPath: "User skills path",
+    workspaceSkillsPath: "Project skills path",
+    skillsSaving: "Saving…",
+    skillsSaved: "Saved",
   },
   wikiLang: {
     en: "English",

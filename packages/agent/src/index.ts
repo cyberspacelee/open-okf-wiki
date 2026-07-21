@@ -13,7 +13,15 @@ export {
   type WikiRunAgentResult,
 } from "./run.js";
 
-export { resolveSkillPath, resolveBundledSkillPath } from "./skill-path.js";
+export {
+  resolveSkillPath,
+  resolveSkillSource,
+  resolvePackageSkillPath,
+  ensureHomeProducerSkill,
+  skillLayoutPaths,
+  type ResolveSkillSourceOptions,
+  type ResolvedSkillSource,
+} from "./skill-path.js";
 
 export { sanitizeSummary } from "./stream-parts.js";
 

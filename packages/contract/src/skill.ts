@@ -1,7 +1,12 @@
 import { z } from "zod";
 
-/** Whether the active skill is the product bundle or a workspace fork. */
-export const SkillSourceKindSchema = z.enum(["bundled", "fork"]);
+/**
+ * Where the active Producer Skill was resolved from.
+ * - `fork`: project `{root}/.agents/skills/<name>` (or explicit skillPath)
+ * - `home`: user `~/.agents/skills/<name>` (when loadHomeSkills is on in Settings)
+ * - `package`: package-embedded `@okf-wiki/skill` assets
+ */
+export const SkillSourceKindSchema = z.enum(["fork", "home", "package"]);
 
 export type SkillSourceKind = z.infer<typeof SkillSourceKindSchema>;
 

@@ -165,7 +165,11 @@ export const WorkspaceConfigSchema = z.object({
    * Independent of the operator UI locale.
    */
   wikiLanguage: WikiLanguageSchema.default("en"),
-  /** Optional path to a Skill fork directory; omit for bundled skill. */
+  /**
+   * Optional path to a project Producer Skill
+   * (`{root}/.agents/skills/repository-wiki-producer`).
+   * Omit to resolve home (`~/.agents/skills`) or package default.
+   */
   skillPath: z.string().trim().min(1).optional(),
   createdAt: z.string().datetime(),
   lastOpenedAt: z.string().datetime().optional(),

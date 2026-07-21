@@ -53,6 +53,9 @@ importers:
       '@okf-wiki/core':
         specifier: workspace:*
         version: link:../core
+      '@okf-wiki/skill':
+        specifier: workspace:*
+        version: link:../skill
       ai:
         specifier: ^7.0.31
         version: 7.0.31(zod@4.4.3)

@@ -17,10 +17,11 @@ test.describe("skill fork settings", () => {
     await expect(page.getByTestId("settings-page")).toBeVisible();
     await expect(page.getByTestId("settings-skill-panel")).toBeVisible();
 
-    // Bundled by default
-    await expect(page.getByTestId("settings-skill-kind")).toHaveText("bundled", {
-      timeout: 15_000,
-    });
+    // Default is home (~/.agents/skills) or package when home skills off
+    await expect(page.getByTestId("settings-skill-kind")).toHaveText(
+      /^(home|package)$/,
+      { timeout: 15_000 },
+    );
     await expect(page.getByTestId("settings-skill-digest")).toBeVisible();
 
     await page.getByTestId("settings-skill-fork").click();
@@ -38,8 +39,9 @@ test.describe("skill fork settings", () => {
     await expect(page.getByTestId("settings-skill-digest")).toBeVisible();
 
     await page.getByTestId("settings-skill-reset").click();
-    await expect(page.getByTestId("settings-skill-kind")).toHaveText("bundled", {
-      timeout: 15_000,
-    });
+    await expect(page.getByTestId("settings-skill-kind")).toHaveText(
+      /^(home|package)$/,
+      { timeout: 15_000 },
+    );
   });
 });

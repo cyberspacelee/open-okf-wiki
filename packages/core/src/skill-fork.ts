@@ -1,61 +1,38 @@
 import { cp, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { SkillFileContent, SkillFileEntry, SkillInfo } from "@okf-wiki/contract";
+import type { SkillFileContent, SkillFileEntry, SkillInfo, SkillSourceKind } from "@okf-wiki/contract";
 import { SkillInfoSchema } from "@okf-wiki/contract";
 import {
   listSkillFiles,
   readSkillFrontmatter,
   skillDigest,
 } from "./skill-digest.js";
-import { isPathInside, WORKSPACE_DIR_NAME } from "./workspace-store.js";
-
-export const SKILL_FORK_DIR_NAME = "skill-fork";
-
-/** Default relative location of a workspace skill fork. */
-export function skillForkDir(rootPath: string): string {
-  return path.join(path.resolve(rootPath), WORKSPACE_DIR_NAME, SKILL_FORK_DIR_NAME);
-}
+import {
+  isUnderWorkspaceSkills,
+  workspaceProducerSkillPath,
+} from "./product-home.js";
+import { isPathInside } from "./workspace-store.js";
 
 /**
- * Resolve which skill root a workspace uses.
- * Prefer explicit skillPath when it contains SKILL.md; else bundled.
+ * Default workspace Producer Skill directory
+ * (`{root}/.agents/skills/repository-wiki-producer`).
  */
-export async function resolveActiveSkillRoot(options: {
-  workspaceRoot: string;
-  skillPath?: string;
-  bundledSkillPath: string;
-}): Promise<{ path: string; kind: "bundled" | "fork" }> {
-  const bundled = path.resolve(options.bundledSkillPath);
-  if (typeof options.skillPath === "string" && options.skillPath.trim()) {
-    const fork = path.resolve(options.skillPath.trim());
-    try {
-      await stat(path.join(fork, "SKILL.md"));
-      return { path: fork, kind: "fork" };
-    } catch {
-      throw new Error(`skill path missing SKILL.md: ${fork}`);
-    }
-  }
-  try {
-    await stat(path.join(bundled, "SKILL.md"));
-  } catch {
-    throw new Error(`bundled skill missing SKILL.md: ${bundled}`);
-  }
-  return { path: bundled, kind: "bundled" };
+export function skillForkDir(rootPath: string): string {
+  return workspaceProducerSkillPath(rootPath);
 }
 
 /** Build operator-facing SkillInfo for Settings / APIs. */
 export async function getSkillInfo(options: {
-  workspaceRoot: string;
-  skillPath?: string;
-  bundledSkillPath: string;
+  path: string;
+  kind: SkillSourceKind;
 }): Promise<SkillInfo> {
-  const resolved = await resolveActiveSkillRoot(options);
-  const digest = await skillDigest(resolved.path);
-  const files = await listSkillFiles(resolved.path);
-  const meta = await readSkillFrontmatter(resolved.path);
+  const root = path.resolve(options.path);
+  const digest = await skillDigest(root);
+  const files = await listSkillFiles(root);
+  const meta = await readSkillFrontmatter(root);
   return SkillInfoSchema.parse({
-    path: resolved.path,
-    kind: resolved.kind,
+    path: root,
+    kind: options.kind,
     digest,
     ...(meta.name ? { name: meta.name } : {}),
     ...(meta.description ? { description: meta.description } : {}),
@@ -64,28 +41,33 @@ export async function getSkillInfo(options: {
 }
 
 /**
- * Copy bundled skill into `{root}/.okf-wiki/skill-fork` and return the fork path.
- * Overwrites an existing fork directory.
+ * Copy a skill tree into `{root}/.agents/skills/repository-wiki-producer`
+ * and return that path. Overwrites an existing project skill directory.
  */
 export async function createSkillFork(options: {
   workspaceRoot: string;
-  bundledSkillPath: string;
+  /** Source skill root (home or package) to copy from. */
+  sourceSkillPath: string;
 }): Promise<string> {
   const root = path.resolve(options.workspaceRoot);
-  const bundled = path.resolve(options.bundledSkillPath);
+  const rawSource = options.sourceSkillPath.trim();
+  if (!rawSource) {
+    throw new Error("sourceSkillPath is required");
+  }
+  const source = path.resolve(rawSource);
   const dest = skillForkDir(root);
 
-  if (!isPathInside(root, dest)) {
-    throw new Error("skill fork path escapes workspace root");
+  if (!isPathInside(root, dest) || !isUnderWorkspaceSkills(root, dest)) {
+    throw new Error("skill fork path escapes workspace .agents/skills");
   }
   try {
-    await stat(path.join(bundled, "SKILL.md"));
+    await stat(path.join(source, "SKILL.md"));
   } catch {
-    throw new Error(`bundled skill missing SKILL.md: ${bundled}`);
+    throw new Error(`source skill missing SKILL.md: ${source}`);
   }
 
   await mkdir(path.dirname(dest), { recursive: true });
-  await cp(bundled, dest, {
+  await cp(source, dest, {
     recursive: true,
     force: true,
     filter: (src) => {
@@ -103,6 +85,53 @@ export async function createSkillFork(options: {
     throw new Error(`skill fork copy failed (missing SKILL.md): ${dest}`);
   }
   return dest;
+}
+
+/**
+ * Copy package (or any source) skill tree into a destination directory.
+ * Used to seed `~/.agents/skills/<name>`. Does not overwrite an existing
+ * skill with SKILL.md unless `force` is true.
+ */
+export async function copySkillTree(options: {
+  sourceSkillPath: string;
+  destSkillPath: string;
+  force?: boolean;
+}): Promise<{ path: string; seeded: boolean }> {
+  const source = path.resolve(options.sourceSkillPath);
+  const dest = path.resolve(options.destSkillPath);
+  try {
+    await stat(path.join(source, "SKILL.md"));
+  } catch {
+    throw new Error(`source skill missing SKILL.md: ${source}`);
+  }
+
+  if (!options.force) {
+    try {
+      await stat(path.join(dest, "SKILL.md"));
+      return { path: dest, seeded: false };
+    } catch {
+      // missing — seed
+    }
+  }
+
+  await mkdir(path.dirname(dest), { recursive: true });
+  await cp(source, dest, {
+    recursive: true,
+    force: true,
+    filter: (src) => {
+      const base = path.basename(src);
+      if (base === "node_modules" || base === "dist" || base === ".git") {
+        return false;
+      }
+      return true;
+    },
+  });
+  try {
+    await stat(path.join(dest, "SKILL.md"));
+  } catch {
+    throw new Error(`skill copy failed (missing SKILL.md): ${dest}`);
+  }
+  return { path: dest, seeded: true };
 }
 
 /** List files/directories immediately under a skill-relative path (fork or any skill root). */

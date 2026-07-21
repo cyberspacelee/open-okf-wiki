@@ -436,7 +436,10 @@ export async function handleSessionChat(
           let frozenSkillPath: string | undefined;
           let frozenSkillDigest: string | undefined;
           try {
-            frozenSkillPath = await resolveSkillPath(workspace.skillPath);
+            frozenSkillPath = await resolveSkillPath({
+              skillPath: workspace.skillPath,
+              workspaceRoot: workspace.rootPath,
+            });
             frozenSkillDigest = await skillDigest(frozenSkillPath);
           } catch {
             // optional freeze
@@ -475,7 +478,10 @@ export async function handleSessionChat(
             let frozenSkillPath: string | undefined;
             let frozenSkillDigest: string | undefined;
             try {
-              frozenSkillPath = await resolveSkillPath(workspace.skillPath);
+              frozenSkillPath = await resolveSkillPath({
+                skillPath: workspace.skillPath,
+                workspaceRoot: workspace.rootPath,
+              });
               frozenSkillDigest = await skillDigest(frozenSkillPath);
             } catch {
               // optional freeze

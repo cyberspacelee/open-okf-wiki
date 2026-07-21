@@ -43,7 +43,7 @@ The short, non-forkable shell the product injects for every Wiki Run: mount and 
 _Avoid_: system prompt monolith, Producer Skill body, conversation-level one-off prompt, Skill Fork override
 
 **Producer Skill**:
-The trusted, versioned method-and-template bundle that teaches how a Repository Snapshot Set becomes a Wiki—investigation, page design, writing, review, and completion criteria—without owning Snapshot membership, budgets, or publication enforcement.
+The trusted, versioned method-and-template bundle that teaches how a Repository Snapshot Set becomes a Wiki—investigation, page design, writing, review, and completion criteria—without owning Snapshot membership, budgets, or publication enforcement. Resolved in Agent Skills order: project `{root}/.agents/skills/<name>` → user `~/.agents/skills/<name>` (when enabled in Settings) → package-embedded `@okf-wiki/skill`. Arbitrary target-repository Skills are not auto-loaded as the Producer Skill.
 _Avoid_: Target-repository Skill, Run Instructions, system prompt blob, ignore catalog, Python workflow
 
 **Skill Version**:

@@ -595,7 +595,10 @@ export async function runWikiAgent(input: WikiRunAgentInput): Promise<WikiRunAge
       return await runFixture(input, wikiRoot);
     }
 
-    const skillRoot = await resolveSkillPath(input.workspace.skillPath);
+    const skillRoot = await resolveSkillPath({
+      skillPath: input.workspace.skillPath,
+      workspaceRoot: input.workspace.rootPath,
+    });
     return await runLive(input, wikiRoot, skillRoot);
   } catch (error) {
     if (isAbortError(error) || input.abortSignal?.aborted) {

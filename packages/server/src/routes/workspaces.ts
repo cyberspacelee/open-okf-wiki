@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { rm } from "node:fs/promises";
 import path from "node:path";
-import { resolveSkillPath } from "@okf-wiki/agent";
+import { resolveSkillSource } from "@okf-wiki/agent";
 import {
   addSource,
   cloneIntoWorkspace,
@@ -576,12 +577,11 @@ export async function handleGetSkill(
     return;
   }
   try {
-    const bundled = await resolveSkillPath();
-    const skill = await getSkillInfo({
-      workspaceRoot: workspace.rootPath,
+    const active = await resolveSkillSource({
       skillPath: workspace.skillPath,
-      bundledSkillPath: bundled,
+      workspaceRoot: workspace.rootPath,
     });
+    const skill = await getSkillInfo(active);
     sendJson(res, 200, { skill });
   } catch (error) {
     sendError(res, 400, error instanceof Error ? error.message : String(error));
@@ -601,18 +601,15 @@ export async function handleCreateSkillFork(
     return;
   }
   try {
-    const bundled = await resolveSkillPath();
+    // Fork from home/package default — not from an existing project skill.
+    const fallback = await resolveSkillSource({});
     const forkPath = await createSkillFork({
       workspaceRoot: workspace.rootPath,
-      bundledSkillPath: bundled,
+      sourceSkillPath: fallback.path,
     });
     const next = { ...workspace, skillPath: forkPath };
     await saveWorkspace(next);
-    const skill = await getSkillInfo({
-      workspaceRoot: next.rootPath,
-      skillPath: next.skillPath,
-      bundledSkillPath: bundled,
-    });
+    const skill = await getSkillInfo({ path: forkPath, kind: "fork" });
     sendJson(res, 201, { workspace: next, skill });
   } catch (error) {
     sendError(res, 400, error instanceof Error ? error.message : String(error));
@@ -634,12 +631,19 @@ export async function handleResetSkill(
   const next = { ...workspace };
   delete next.skillPath;
   await saveWorkspace(next);
+  // Remove project-level `.agents/skills/<producer>` so resolution falls back
+  // to home/package (Grok-like: no project skill = not project-scoped).
   try {
-    const bundled = await resolveSkillPath();
-    const skill = await getSkillInfo({
+    const projectSkill = skillForkDir(workspace.rootPath);
+    await rm(projectSkill, { recursive: true, force: true });
+  } catch {
+    // best-effort
+  }
+  try {
+    const active = await resolveSkillSource({
       workspaceRoot: next.rootPath,
-      bundledSkillPath: bundled,
     });
+    const skill = await getSkillInfo(active);
     sendJson(res, 200, { workspace: next, skill });
   } catch (error) {
     sendError(res, 400, error instanceof Error ? error.message : String(error));
@@ -660,14 +664,16 @@ export async function handleListSkillFiles(
   }
   const dir = url.searchParams.get("path") ?? "";
   try {
-    const skillRoot = await resolveSkillPath(workspace.skillPath);
-    // Only allow writing later for forks; listing is OK for bundled too.
-    const entries = await listSkillDir(skillRoot, dir);
+    const active = await resolveSkillSource({
+      skillPath: workspace.skillPath,
+      workspaceRoot: workspace.rootPath,
+    });
+    const entries = await listSkillDir(active.path, dir);
     sendJson(res, 200, {
-      skillPath: skillRoot,
+      skillPath: active.path,
       path: dir,
       entries,
-      writable: Boolean(workspace.skillPath),
+      writable: active.kind === "fork",
     });
   } catch (error) {
     sendError(res, 400, error instanceof Error ? error.message : String(error));
@@ -692,11 +698,14 @@ export async function handleReadSkillFile(
     return;
   }
   try {
-    const skillRoot = await resolveSkillPath(workspace.skillPath);
-    const file = await readSkillFile(skillRoot, filePath);
+    const active = await resolveSkillSource({
+      skillPath: workspace.skillPath,
+      workspaceRoot: workspace.rootPath,
+    });
+    const file = await readSkillFile(active.path, filePath);
     sendJson(res, 200, {
       file,
-      writable: Boolean(workspace.skillPath),
+      writable: active.kind === "fork",
     });
   } catch (error) {
     sendError(res, 400, error instanceof Error ? error.message : String(error));
@@ -729,22 +738,20 @@ export async function handleWriteSkillFile(
     return;
   }
   try {
-    // Only write under the workspace skill fork path, never the bundled package.
+    // Only write under the workspace `.agents/skills` producer path.
     const forkPath = path.resolve(workspace.skillPath);
     const expectedFork = skillForkDir(workspace.rootPath);
-    // Allow skillPath override only if it is still under workspace root meta or explicit fork.
-    // For safety, require SKILL.md and refuse writing when path equals bundled.
-    const bundled = await resolveSkillPath();
-    if (path.resolve(forkPath) === path.resolve(bundled)) {
-      sendError(res, 400, "refusing to write into the bundled producer skill");
+    if (path.resolve(forkPath) !== path.resolve(expectedFork)) {
+      // Allow writing only into the canonical project skill directory.
+      sendError(
+        res,
+        400,
+        `skill writes must target the project skill at ${expectedFork}`,
+      );
       return;
     }
     const file = await writeSkillFile(forkPath, body.path.trim(), body.content);
-    const skill = await getSkillInfo({
-      workspaceRoot: workspace.rootPath,
-      skillPath: workspace.skillPath,
-      bundledSkillPath: bundled,
-    });
+    const skill = await getSkillInfo({ path: forkPath, kind: "fork" });
     sendJson(res, 200, { file, skill, expectedFork });
   } catch (error) {
     sendError(res, 400, error instanceof Error ? error.message : String(error));

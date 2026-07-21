@@ -3,12 +3,15 @@ import {
   createModelProfile,
   deleteModelProfile,
   getApiBase,
+  getAppSettings,
   getDoctor,
   getHealth,
   getProvider,
+  patchAppSettings,
   setDefaultModelProfile,
   testProvider,
   updateModelProfile,
+  type AppSettingsPublic,
   type DoctorResponse,
   type HealthResponse,
   type ModelProfilePublic,
@@ -50,6 +53,8 @@ export function SettingsPage() {
   const [doctor, setDoctor] = useState<DoctorResponse | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [provider, setProvider] = useState<ProviderPublic | null>(null);
+  const [appSettings, setAppSettings] = useState<AppSettingsPublic | null>(null);
+  const [skillsSaving, setSkillsSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
   const [checkingHealth, setCheckingHealth] = useState(false);
@@ -67,17 +72,38 @@ export function SettingsPage() {
     setLoading(true);
     setError(null);
     try {
-      const [doctorData, providerData] = await Promise.all([getDoctor(), getProvider()]);
+      const [doctorData, providerData, settingsData] = await Promise.all([
+        getDoctor(),
+        getProvider(),
+        getAppSettings(),
+      ]);
       setDoctor(doctorData);
       setProvider(providerData.provider);
+      setAppSettings(settingsData.settings);
     } catch (err) {
       setError(err);
       setDoctor(null);
       setProvider(null);
+      setAppSettings(null);
     } finally {
       setLoading(false);
     }
   }, []);
+
+  async function handleToggleHomeSkills(next: boolean) {
+    setSkillsSaving(true);
+    setError(null);
+    setStatusMsg(null);
+    try {
+      const result = await patchAppSettings({ loadHomeSkills: next });
+      setAppSettings(result.settings);
+      setStatusMsg(t.globalSettings.skillsSaved);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setSkillsSaving(false);
+    }
+  }
 
   useEffect(() => {
     void loadAll();
@@ -252,6 +278,57 @@ export function SettingsPage() {
           <LoadingState label="Loading settings…" />
         ) : (
           <>
+            <Card data-testid="home-skills-panel">
+              <CardHeader>
+                <CardTitle>{t.globalSettings.skillsTitle}</CardTitle>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-3">
+                <p className="muted small">{t.globalSettings.skillsDescription}</p>
+                {appSettings ? (
+                  <>
+                    <label className="flex items-start gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        className="mt-1"
+                        checked={appSettings.loadHomeSkills}
+                        disabled={skillsSaving}
+                        data-testid="settings-load-home-skills"
+                        onChange={(event) => {
+                          void handleToggleHomeSkills(event.target.checked);
+                        }}
+                      />
+                      <span>
+                        <span className="font-medium">{t.globalSettings.loadHomeSkills}</span>
+                        <span className="muted block small">
+                          {t.globalSettings.loadHomeSkillsHint}
+                        </span>
+                      </span>
+                    </label>
+                    <dl className="kv">
+                      <div>
+                        <dt>{t.globalSettings.homeSkillsPath}</dt>
+                        <dd className="mono small whitespace-normal">
+                          {appSettings.homeSkillsDir}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>{t.globalSettings.workspaceSkillsPath}</dt>
+                        <dd className="mono small whitespace-normal">
+                          {"{workspace}/"}
+                          {appSettings.workspaceSkillsRelative}
+                        </dd>
+                      </div>
+                    </dl>
+                    {skillsSaving ? (
+                      <p className="muted small">{t.globalSettings.skillsSaving}</p>
+                    ) : null}
+                  </>
+                ) : (
+                  <p className="muted small">App settings unavailable.</p>
+                )}
+              </CardContent>
+            </Card>
+
             <Card data-testid="provider-panel">
               <CardHeader className="row-between items-center">
                 <CardTitle>Models</CardTitle>

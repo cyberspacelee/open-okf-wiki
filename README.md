@@ -96,7 +96,7 @@ Route map (per workspace): `/session` (chat), `/run` (jobs + publish), `/sources
 | `OPENAI_BASE_URL` | Optional API root (usually ends with `/v1`) |
 | `OKF_WIKI_AGENT_MODE` | `fixture` \| `live` (default: auto — fixture without key/URL) |
 | `OKF_WIKI_HOST` / `OKF_WIKI_PORT` | API bind (default `127.0.0.1:8787`) |
-| `OKF_WIKI_HOME` | Machine-local product home (model catalog, indexes) |
+| `OKF_WIKI_HOME` | Machine-local product home (model catalog, app index) — not skills |
 | `OKF_WIKI_ALLOW_LAN` | Opt-in LAN bind / CORS for private origins |
 | `VITE_API_BASE` | Only if UI and API are **not** same-origin |
 

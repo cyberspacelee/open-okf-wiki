@@ -388,7 +388,10 @@ export async function handleCreateRun(
   let frozenSkillPath: string;
   let frozenSkillDigest: string;
   try {
-    frozenSkillPath = await resolveSkillPath(workspace.skillPath);
+    frozenSkillPath = await resolveSkillPath({
+      skillPath: workspace.skillPath,
+      workspaceRoot: workspace.rootPath,
+    });
     frozenSkillDigest = await skillDigest(frozenSkillPath);
   } catch (error) {
     sendError(
@@ -476,13 +479,16 @@ export async function handleRetryRun(
   let frozenSkillDigest = previous.skillDigest;
   try {
     if (!frozenSkillPath) {
-      frozenSkillPath = await resolveSkillPath(workspace.skillPath);
+      frozenSkillPath = await resolveSkillPath({
+        skillPath: workspace.skillPath,
+        workspaceRoot: workspace.rootPath,
+      });
     }
     if (!frozenSkillDigest) {
       frozenSkillDigest = await skillDigest(frozenSkillPath);
     } else {
       // Verify frozen path still has SKILL.md; digest is trusted from record.
-      await resolveSkillPath(frozenSkillPath);
+      await resolveSkillPath({ skillPath: frozenSkillPath });
     }
   } catch (error) {
     sendError(

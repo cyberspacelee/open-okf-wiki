@@ -135,7 +135,7 @@ export const zh: MessageTree = {
     orphanModel: "先前的模型 ID 已不在设置中。请在上方选择已配置的模型。",
     skillTitle: "Producer Skill",
     skillDescription:
-      "Wiki 生成的方法与模板包。可创建工作区 fork 自定义模板与指引；每次 Wiki Run 会冻结 skill 内容摘要。",
+      "Wiki 生成的方法与模板包。默认遵循 Agent Skills 路径：项目 `.agents/skills`，再用户 `~/.agents/skills`（见全局设置），最后产品包。可创建工作区 fork 自定义模板与指引；每次 Wiki Run 会冻结 skill 内容摘要。",
     skillKind: "类型",
     skillDigest: "摘要",
     skillPath: "路径",
@@ -143,7 +143,7 @@ export const zh: MessageTree = {
     skillUnavailable: "无法获取 Skill 信息。",
     skillFork: "创建 / 刷新 fork",
     skillWorking: "处理中…",
-    skillBundled: "使用内置",
+    skillBundled: "使用默认（home/包）",
     skillLoadFile: "加载文件",
     skillSaveFile: "保存文件",
     skillFileLabel: "Skill 文件（fork 编辑器）",
@@ -216,6 +216,16 @@ export const zh: MessageTree = {
     title: "设置",
     description: "本机模型配置与凭证。工作区配置从不保存 API 密钥。",
     loading: "加载设置…",
+    skillsTitle: "Producer Skill（Agent Skills）",
+    skillsDescription:
+      "可移植 Agent Skills 布局（与 Codex/Grok 一致）：项目 `.agents/skills`，再用户 `~/.agents/skills`（下方开关，首次从产品包 seed）。关闭用户 skill 后，无项目 skill 时回退到包内资产。",
+    loadHomeSkills: "从用户 ~/.agents/skills 加载 skill",
+    loadHomeSkillsHint:
+      "关闭后跳过 ~/.agents/skills，回退到包内资产（项目 .agents/skills 仍优先）。",
+    homeSkillsPath: "用户 skill 路径",
+    workspaceSkillsPath: "项目 skill 路径",
+    skillsSaving: "保存中…",
+    skillsSaved: "已保存",
   },
   wikiLang: {
     en: "英文",

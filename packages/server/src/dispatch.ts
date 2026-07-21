@@ -12,6 +12,10 @@ import {
 import { host, port } from "./server-config.ts";
 import { handleDoctor, handleHealth } from "./routes/health.ts";
 import {
+  handleGetAppSettings,
+  handlePatchAppSettings,
+} from "./routes/app-settings.ts";
+import {
   handleCreateModel,
   handleDeleteModel,
   handleGetProvider,
@@ -86,6 +90,14 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
     }
     if (method === "GET" && pathname === "/api/ignore-catalog") {
       await handleIgnoreCatalog(req, res);
+      return;
+    }
+    if (method === "GET" && pathname === "/api/app-settings") {
+      await handleGetAppSettings(req, res);
+      return;
+    }
+    if (method === "PATCH" && pathname === "/api/app-settings") {
+      await handlePatchAppSettings(req, res);
       return;
     }
     if (method === "GET" && pathname === "/api/provider") {
