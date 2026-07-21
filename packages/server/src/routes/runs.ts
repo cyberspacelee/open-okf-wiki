@@ -1186,8 +1186,7 @@ export async function handleCancelRun(
   // Session-first: cancel after a stream has already finalized at a gate must
   // still clear durable HITL so refresh does not re-offer approve/deny.
   // Mid-stream cancel also races finalizeOnce; neutralize is idempotent.
-  // Do not clobber a concurrent finalize that already persisted a durable
-  // publish outcome (phase done / completed) while cancel won the run record.
+  // Session status/phase come only from P2 transition(Cancel) — no hard-coded map.
   const linkedSessionId = updated.sessionId;
   if (linkedSessionId) {
     try {
@@ -1195,31 +1194,46 @@ export async function handleCancelRun(
         workspace.rootPath,
         linkedSessionId,
       );
-      const phase = linked?.workflow?.phase;
-      const durableSessionDone =
-        phase === "done" || linked?.status === "completed";
       if (
         linked &&
         linked.workspaceId === workspace.id &&
-        !durableSessionDone &&
         (linked.workflow?.linkedRunId === runId ||
           !linked.workflow?.linkedRunId)
       ) {
-        const messages = neutralizeSessionDecisionParts(linked.messages);
-        await replaceSessionMessages(
-          workspace.rootPath,
-          linkedSessionId,
-          messages,
+        // Pre-cancel run status (not the just-written cancelled) so Cancel
+        // policy (durable / not_cancellable) still applies correctly.
+        const patches = transition(
           {
-            status: "active",
-            pending: null,
-            workflow: {
-              ...linked.workflow,
-              phase: "idle",
-              linkedRunId: runId,
-            },
+            type: "Cancel",
+            runId,
+            summary: "Wiki Run cancelled",
           },
+          sessionRunStateFrom(linked, run.status, run.summary),
         );
+        if (!patches.ignore && patches.session) {
+          const messages = patches.neutralizeDecisions
+            ? neutralizeSessionDecisionParts(linked.messages)
+            : linked.messages;
+          await replaceSessionMessages(
+            workspace.rootPath,
+            linkedSessionId,
+            messages,
+            {
+              ...(patches.session.status !== undefined
+                ? { status: patches.session.status }
+                : {}),
+              ...(patches.session && "pending" in patches.session
+                ? { pending: patches.session.pending ?? null }
+                : {}),
+              workflow: {
+                ...linked.workflow,
+                ...(patches.session.workflow ?? {}),
+                linkedRunId:
+                  patches.session.workflow?.linkedRunId ?? runId,
+              },
+            },
+          );
+        }
       }
     } catch (error) {
       process.stderr.write(

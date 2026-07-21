@@ -31,6 +31,7 @@ import {
   normalizeSessionUserText,
   resolveSessionTurnMode,
 } from "@okf-wiki/contract";
+import { transition } from "@okf-wiki/core";
 import { redactErrorMessage } from "./run.js";
 import { uiMessagesToSessionMessages } from "./session-messages.js";
 import {
@@ -891,20 +892,47 @@ export async function createSessionWorkflowStream(input: {
         return;
       }
 
+      /** Product cancel via P2 transition (ADR 0027) — no hard-coded status/phase. */
       const markCancelled = async (summary = "Wiki Run cancelled") => {
-        pending = null;
-        status = "active";
+        const patches = transition(
+          { type: "Cancel", runId, summary },
+          {
+            sessionStatus: status,
+            workflowPhase: workflow.phase ?? "idle",
+            linkedRunId: runId,
+            runStatus: sideEffects?.upsertRun?.status ?? "running",
+            pending,
+            plan: workflow.plan ?? input.session.workflow.plan,
+            summary: sideEffects?.upsertRun?.summary,
+          },
+        );
+        if (patches.ignore) {
+          // Durable publish outcome already won — leave session/run as-is.
+          return;
+        }
+        if (patches.session?.status !== undefined) {
+          status = patches.session.status;
+        }
+        if (patches.session && "pending" in patches.session) {
+          pending = patches.session.pending ?? null;
+        }
         workflow = {
-          phase: "idle",
-          linkedRunId: runId,
-          plan: input.session.workflow.plan,
+          phase: patches.session?.workflow?.phase ?? "idle",
+          linkedRunId:
+            (patches.session?.workflow?.linkedRunId as string | undefined) ??
+            runId,
+          plan:
+            patches.session?.workflow?.plan ??
+            workflow.plan ??
+            input.session.workflow.plan,
         };
-        await writeText(summary);
+        const text = patches.appendHint?.text ?? patches.run?.summary ?? summary;
+        await writeText(text);
         sideEffects = {
           upsertRun: {
             runId,
-            status: "cancelled",
-            summary,
+            status: patches.run?.status ?? "cancelled",
+            summary: patches.run?.summary ?? summary,
             sessionId: input.session.id,
           },
         };
@@ -924,7 +952,6 @@ export async function createSessionWorkflowStream(input: {
       };
 
       try {
-        status = "running";
         if (abortSignal?.aborted) {
           await markCancelled();
           return;
@@ -936,9 +963,39 @@ export async function createSessionWorkflowStream(input: {
           await writeText(
             `Starting **Wiki Run** \`${runId}\` for **${input.workspace.name}**…`,
           );
-          // Mid-flight until suspend; do not pretent we are already at plan gate.
-          workflow = { phase: "planning", linkedRunId: runId };
-          writePhaseProgress("planning", "Planning wiki pages");
+          // P2 TurnStarted: running + planning (not hard-coded phase map).
+          const startPatches = transition(
+            { type: "TurnStarted", runId },
+            {
+              sessionStatus: status,
+              workflowPhase: workflow.phase ?? "idle",
+              linkedRunId: input.session.workflow.linkedRunId,
+              pending,
+              plan: input.session.workflow.plan,
+            },
+          );
+          if (startPatches.session?.status !== undefined) {
+            status = startPatches.session.status;
+          }
+          if (startPatches.session && "pending" in startPatches.session) {
+            pending = startPatches.session.pending ?? null;
+          }
+          const startPhase =
+            startPatches.session?.workflow?.phase ?? "planning";
+          workflow = {
+            phase: startPhase,
+            linkedRunId:
+              (startPatches.session?.workflow?.linkedRunId as
+                | string
+                | undefined) ?? runId,
+            plan:
+              startPatches.session?.workflow?.plan ??
+              input.session.workflow.plan,
+          };
+          writePhaseProgress(
+            startPhase,
+            startPhase === "planning" ? "Planning wiki pages" : undefined,
+          );
           // P1 thin shell: orchestrator open + one toAISdkStream (ADR 0027).
           ui = await openWikiRunUiProjection({
             kind: "start",
@@ -987,13 +1044,53 @@ export async function createSessionWorkflowStream(input: {
               : resumeStep === "plan-gate"
                 ? "Writing wiki pages"
                 : undefined;
+        // P2 WorkflowLive for resume mid-flight (status/phase from transition).
+        const livePatches = transition(
+          {
+            type: "WorkflowLive",
+            runId,
+            phase:
+              resumeAction === "approve" || resumeAction === "revise"
+                ? resumePhase
+                : undefined,
+          },
+          {
+            sessionStatus: status,
+            workflowPhase: workflow.phase ?? "idle",
+            linkedRunId: runId,
+            pending,
+            plan: workflow.plan ?? input.session.workflow.plan,
+            runStatus: sideEffects?.upsertRun?.status,
+          },
+        );
+        if (livePatches.session?.status !== undefined) {
+          status = livePatches.session.status;
+        }
+        if (livePatches.session && "pending" in livePatches.session) {
+          pending = livePatches.session.pending ?? null;
+        }
         if (resumeAction === "approve" || resumeAction === "revise") {
+          const phase =
+            livePatches.session?.workflow?.phase ?? resumePhase;
           workflow = {
             ...workflow,
-            phase: resumePhase,
+            phase,
             linkedRunId: runId,
+            plan:
+              livePatches.session?.workflow?.plan ??
+              workflow.plan ??
+              input.session.workflow.plan,
           };
-          writePhaseProgress(resumePhase, resumeLabel);
+          writePhaseProgress(phase, resumeLabel);
+        } else {
+          workflow = {
+            ...workflow,
+            linkedRunId: runId,
+            phase:
+              livePatches.session?.workflow?.phase ??
+              workflow.phase ??
+              "writing",
+          };
         }
         await writeText(
           resumeAction === "approve"
@@ -1061,21 +1158,53 @@ export async function createSessionWorkflowStream(input: {
           await markCancelled();
           return;
         }
-        status = "failed";
-        // Do not leave phase stuck at awaiting_plan (set optimistically on start)
-        // or a prior gate — failed turns must return to idle so kickoff works again.
-        pending = null;
+        // P2 WorkflowTerminal failed — idle phase so kickoff works again.
+        const errText = redactErrorMessage(failCause);
+        const failPatches = transition(
+          {
+            type: "WorkflowTerminal",
+            runId,
+            status: "failed",
+            error: errText,
+          },
+          {
+            sessionStatus: status,
+            workflowPhase: workflow.phase ?? "idle",
+            linkedRunId: runId,
+            runStatus: sideEffects?.upsertRun?.status,
+            pending,
+            plan: workflow.plan ?? input.session.workflow.plan,
+          },
+        );
+        if (failPatches.ignore) {
+          return;
+        }
+        if (failPatches.session?.status !== undefined) {
+          status = failPatches.session.status;
+        }
+        if (failPatches.session && "pending" in failPatches.session) {
+          pending = failPatches.session.pending ?? null;
+        }
         workflow = {
-          phase: "idle",
-          linkedRunId: runId,
-          plan: input.session.workflow.plan,
+          phase: failPatches.session?.workflow?.phase ?? "idle",
+          linkedRunId:
+            (failPatches.session?.workflow?.linkedRunId as string | undefined) ??
+            runId,
+          plan:
+            failPatches.session?.workflow?.plan ??
+            workflow.plan ??
+            input.session.workflow.plan,
         };
-        await writeText(`Wiki Run failed: ${redactErrorMessage(failCause)}`);
+        await writeText(
+          failPatches.appendHint?.text ??
+            failPatches.run?.summary ??
+            `Wiki Run failed: ${errText}`,
+        );
         sideEffects = {
           upsertRun: {
             runId,
-            status: "failed",
-            summary: redactErrorMessage(failCause),
+            status: failPatches.run?.status ?? "failed",
+            summary: failPatches.run?.summary ?? errText,
             sessionId: input.session.id,
           },
         };

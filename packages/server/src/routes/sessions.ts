@@ -24,6 +24,7 @@ import {
   resetOperatorSessionWorkflow,
   SessionSchemaVersionError,
   skillDigest,
+  transition,
   updateRunRecord,
 } from "@okf-wiki/core";
 import {
@@ -277,6 +278,39 @@ export function sessionChatLockKey(rootPath: string, sessionId: string): string 
 }
 
 /**
+ * Dual lock decision (pure): in-process Set OR durable session.status=running TTL.
+ * Extracted so unit tests can assert concurrent-turn rejection without HTTP.
+ */
+export function isSessionChatTurnBlocked(input: {
+  inFlight: boolean;
+  wouldRunWorkflow: boolean;
+  session: Pick<OperatorSession, "status" | "updatedAt">;
+  nowMs?: number;
+}): boolean {
+  return (
+    input.inFlight ||
+    (input.wouldRunWorkflow &&
+      isSessionTurnLocked(input.session, input.nowMs))
+  );
+}
+
+/** Test helper: mark / clear in-process lock without opening a chat stream. */
+export function setSessionChatInFlightForTests(
+  key: string,
+  inFlight: boolean,
+): void {
+  if (inFlight) {
+    sessionChatInFlight.add(key);
+  } else {
+    sessionChatInFlight.delete(key);
+  }
+}
+
+export function isSessionChatInFlightForTests(key: string): boolean {
+  return sessionChatInFlight.has(key);
+}
+
+/**
  * AI SDK UI message stream for conversational Session.
  *
  * Body: { message (last user only), id?, intent?, resumeData?, runId?, step? }
@@ -461,8 +495,11 @@ export async function handleSessionChat(
     body.intent === "resume" ||
     Boolean(body.resumeData);
   if (
-    sessionChatInFlight.has(lockKey) ||
-    (wouldRunWorkflow && isSessionTurnLocked(session))
+    isSessionChatTurnBlocked({
+      inFlight: sessionChatInFlight.has(lockKey),
+      wouldRunWorkflow,
+      session,
+    })
   ) {
     const help = helpTextForSessionTurn({
       helpReason: "running",
@@ -512,6 +549,7 @@ export async function handleSessionChat(
         return registerRunAbortController(runId);
       },
       // Mark run running only once Mastra stream is open (crash-safe vs eager).
+      // Status comes from P2 WorkflowLive — not a hard-coded "running" literal map.
       onWorkflowLive: async (liveRunId) => {
         try {
           const existing = await loadRun(workspace.rootPath, liveRunId);
@@ -523,9 +561,21 @@ export async function handleSessionChat(
             existing.status === "awaiting_publication" ||
             existing.status === "running"
           ) {
+            const livePatches = transition(
+              { type: "WorkflowLive", runId: liveRunId },
+              {
+                sessionStatus: "running",
+                workflowPhase: "planning",
+                linkedRunId: liveRunId,
+                runStatus: existing.status,
+              },
+            );
+            if (livePatches.ignore) {
+              return;
+            }
             await updateRunRecord(workspace.rootPath, liveRunId, {
-              status: "running",
-              summary: "Wiki Run in progress",
+              status: livePatches.run?.status ?? "running",
+              summary: livePatches.run?.summary ?? "Wiki Run in progress",
               error: null,
               sessionId,
             }).catch(() => undefined);
@@ -592,9 +642,9 @@ export async function handleSessionChat(
     }
 
     // Eager gate-exit / mid-turn durability (ADR 0026 I6):
-    // Persist "running" + neutralize decision chips as soon as start/resume
+    // Persist running + neutralize decision chips as soon as start/resume
     // begins so a page refresh does not re-offer an already-answered plan gate
-    // while write work is still in flight.
+    // while write work is still in flight. Phase/status via P2 transition.
     if (chat.mode === "start" || chat.mode === "resume") {
       try {
         const midPhase = midTurnPhaseForChat({
@@ -614,13 +664,40 @@ export async function handleSessionChat(
         // Session only: do NOT flip run off awaiting_* here. Run becomes
         // running in onWorkflowLive after Mastra open succeeds. If we crash
         // before that, reconcile restores the gate from the run record.
+        const event =
+          chat.mode === "start" && linked
+            ? ({
+                type: "TurnStarted" as const,
+                runId: linked,
+                phase: midPhase,
+              })
+            : linked
+              ? ({
+                  type: "WorkflowLive" as const,
+                  runId: linked,
+                  phase: midPhase,
+                })
+              : null;
+        const patches = event
+          ? transition(event, {
+              sessionStatus: session.status,
+              workflowPhase: session.workflow?.phase ?? "idle",
+              linkedRunId: session.workflow?.linkedRunId,
+              pending: session.pending,
+              plan: session.workflow?.plan,
+            })
+          : null;
         await replaceSessionMessages(workspace.rootPath, sessionId, withUser, {
-          status: "running",
-          pending: null,
+          status: patches?.session?.status ?? "running",
+          pending:
+            patches?.session && "pending" in patches.session
+              ? (patches.session.pending ?? null)
+              : null,
           workflow: {
             ...session.workflow,
+            ...(patches?.session?.workflow ?? {}),
             ...(linked ? { linkedRunId: linked } : {}),
-            phase: midPhase,
+            phase: patches?.session?.workflow?.phase ?? midPhase,
           },
         });
       } catch (error) {
