@@ -1,6 +1,7 @@
 /**
  * Run console / headless job projection over the wiki-run workflow.
- * Open + abort bind: wiki-run-orchestrator; terminal map: workflow-result.
+ * Open + abort bind: wiki-run-orchestrator (same product open path as Session);
+ * terminal map: workflow-result. Stream conversion is not owned here (ADR 0027).
  */
 
 import type { WikiRunPlan, WorkspaceConfig } from "@okf-wiki/contract";

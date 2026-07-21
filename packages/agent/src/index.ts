@@ -105,7 +105,14 @@ export {
   type WikiRunWorkflowHandle,
 } from "./wiki-run-orchestrator.js";
 
-export { openWikiWorkflowUiStream } from "./workflow-ui-stream.js";
+export {
+  openWikiRunUiProjection,
+  openWikiWorkflowUiStream,
+  type WikiWorkflowUiParams,
+  type WikiWorkflowUiHandle,
+  type WikiWorkflowUiStart,
+  type WikiWorkflowUiResume,
+} from "./workflow-ui-stream.js";
 export { mapWorkflowStreamEvent } from "./workflow-events.js";
 
 export {

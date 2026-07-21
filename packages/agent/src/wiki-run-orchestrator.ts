@@ -1,7 +1,9 @@
 /**
- * Deep module: open the single wiki-run workflow (ADR 0025) once.
- * Session (UI stream) and Run console (job stream) are projection adapters only.
- * Owns: createRun, product abort bind/unbind, stream / resumeStream.
+ * Product open path for the single wiki-run workflow (ADR 0025 / 0027).
+ * Owns: createRun, product abort bind/unbind, stream / resumeStream with
+ * closeOnSuspend. Stream conversion (toAISdkStream) is NOT owned here —
+ * Session UI uses the thin projection shell in workflow-ui-stream.ts;
+ * headless/job uses fullStream + mapWorkflowResult (wiki-run.ts).
  */
 
 import type { WikiRunPlan, WorkspaceConfig } from "@okf-wiki/contract";
@@ -52,6 +54,8 @@ export type WikiRunWorkflowHandle = {
 
 /**
  * Open wiki-run workflow stream/resumeStream with product abort bound for steps.
+ * Explicit closeOnSuspend: true so suspend ends the stream for Session finalize
+ * (Mastra default is also true; pass explicitly for ADR 0027 contract).
  * Callers must await output.result (via result()) so release() runs.
  */
 export async function openWikiRunWorkflow(
@@ -79,6 +83,9 @@ export async function openWikiRunWorkflow(
     const workflow = mastra.getWorkflow(WIKI_RUN_WORKFLOW_ID);
     const run = await workflow.createRun({ runId: params.runId });
 
+    // Start: explicit closeOnSuspend: true (Mastra default is true; pin for ADR 0027).
+    // Resume: resumeStream always closes after settlement (no closeOnSuspend in API).
+    // Product needs stream end on suspend so Session pipe + result() can finalize.
     const output =
       params.kind === "resume"
         ? run.resumeStream({
@@ -94,6 +101,7 @@ export async function openWikiRunWorkflow(
               forcePlanConfirm: params.forcePlanConfirm,
               plan: params.plan,
             },
+            closeOnSuspend: true,
           });
 
     return {

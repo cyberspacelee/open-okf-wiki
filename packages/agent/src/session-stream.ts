@@ -1,5 +1,12 @@
 /**
- * Operator Session turn streaming via Mastra Workflow + @mastra/ai-sdk toAISdkStream.
+ * Operator Session turn streaming (P1 Session Shell — ADR 0027).
+ *
+ * Framework-first: workflow open + toAISdkStream live in the thin UI projection
+ * shell (openWikiRunUiProjection). This module assembles turn params, owns outer
+ * createUIMessageStream framing, mid-stream checkpoints, and finalize → product
+ * Session/Run state via mapWorkflowResult. Do not invent new stream part types
+ * here (Phase 2 will drop legacy data-gate accumulation in favor of framework parts).
+ *
  * AI SDK persistence: server owns history; client sends last message only.
  * No Session-local Staging materialize; no hand-rolled Mastra→SSE projection.
  */
@@ -83,7 +90,7 @@ import {
   mapWorkflowResult,
   sessionViewFromTerminal,
 } from "./workflow-result.js";
-import { openWikiWorkflowUiStream } from "./workflow-ui-stream.js";
+import { openWikiRunUiProjection } from "./workflow-ui-stream.js";
 
 // Re-export shared policy + message bridge for existing agent imports.
 export {
@@ -981,9 +988,7 @@ export async function createSessionWorkflowStream(input: {
       };
 
       // Hold ui so catch can settle result() and unbind product abort signal.
-      let ui:
-        | Awaited<ReturnType<typeof openWikiWorkflowUiStream>>
-        | undefined;
+      let ui: Awaited<ReturnType<typeof openWikiRunUiProjection>> | undefined;
       /** Cancel wins over gates/errors, but not over durable publish outcomes. */
       const cancelUnlessDurableSuccess = async () => {
         if (!abortSignal?.aborted) {
@@ -1011,7 +1016,8 @@ export async function createSessionWorkflowStream(input: {
           // Mid-flight until suspend; do not pretent we are already at plan gate.
           workflow = { phase: "planning", linkedRunId: runId };
           writePhaseProgress("planning", "Planning wiki pages");
-          ui = await openWikiWorkflowUiStream({
+          // P1 thin shell: orchestrator open + one toAISdkStream (ADR 0027).
+          ui = await openWikiRunUiProjection({
             kind: "start",
             runId,
             workspace: input.workspace,
@@ -1073,7 +1079,7 @@ export async function createSessionWorkflowStream(input: {
               ? "Revising the wiki plan with your feedback…"
               : "Declining and closing the suspended gate…",
         );
-        ui = await openWikiWorkflowUiStream({
+        ui = await openWikiRunUiProjection({
           kind: "resume",
           runId,
           step: resumeStep ?? "plan-gate",

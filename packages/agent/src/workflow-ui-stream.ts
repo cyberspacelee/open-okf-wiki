@@ -1,6 +1,20 @@
 /**
- * Session projection adapter: Mastra wiki-run → AI SDK UI stream (toAISdkStream).
- * Opening/abort bind lives in wiki-run-orchestrator (ADR 0025).
+ * P1 thin UI projection shell (ADR 0027): product open + one framework conversion.
+ *
+ * Path (minimal fork of @mastra/ai-sdk handleWorkflowStream):
+ *   bind abort → createRun → stream|resumeStream (closeOnSuspend: true)
+ *     → toAISdkStream({ from: "workflow", includeTextStreamParts, sendReasoning })
+ *     → { stream, result }
+ *
+ * Why not call handleWorkflowStream directly:
+ * 1. Session already owns outer createUIMessageStream and strips nested start/finish
+ *    (pipeUiStream). handleWorkflowStream wraps another createUIMessageStream.
+ * 2. Session finalize needs workflow result() for mapWorkflowResult; the handler
+ *    does not expose result().
+ * 3. Product cancel requires bindRunAbortSignal before stream (orchestrator).
+ *
+ * Conversion logic is only toAISdkStream — do not copy or invent a second protocol.
+ * Opening/abort bind lives in wiki-run-orchestrator (not stream conversion).
  */
 
 import { toAISdkStream } from "@mastra/ai-sdk";
@@ -36,16 +50,22 @@ export type WikiWorkflowUiResume = {
   abortSignal?: AbortSignal;
 };
 
-/**
- * Open a wiki-run workflow stream converted with @mastra/ai-sdk toAISdkStream.
- * Exposes result() so Session finalize can map suspend/terminal once.
- */
-export async function openWikiWorkflowUiStream(
-  params: WikiWorkflowUiStart | WikiWorkflowUiResume,
-): Promise<{
+export type WikiWorkflowUiParams = WikiWorkflowUiStart | WikiWorkflowUiResume;
+
+export type WikiWorkflowUiHandle = {
+  /** Raw AI SDK UIMessageChunk stream (no nested message framing). */
   stream: ReadableStream<UIMessageChunk>;
+  /** Settle workflow result and unbind product abort. */
   result: () => Promise<unknown>;
-}> {
+};
+
+/**
+ * Open wiki-run as a framework UI chunk stream + result() for Session finalize.
+ * Preferred name for the P1 shell; openWikiWorkflowUiStream is an alias.
+ */
+export async function openWikiRunUiProjection(
+  params: WikiWorkflowUiParams,
+): Promise<WikiWorkflowUiHandle> {
   const openParams: WikiRunOpenParams =
     params.kind === "resume"
       ? {
@@ -68,9 +88,10 @@ export async function openWikiWorkflowUiStream(
 
   const handle = await openWikiRunWorkflow(openParams);
 
-  // Raw AI SDK chunks — no nested createUIMessageStream (avoids duplicate assistant ids).
+  // Same conversion options as handleWorkflowStream internals (@mastra/ai-sdk).
+  // Raw chunks — no nested createUIMessageStream (avoids duplicate assistant ids).
   // includeTextStreamParts + sendReasoning: forward nested agent text/tools/reasoning
-  // written via step writer (runWikiAgent fullStream pipe) — ADR 0026.
+  // written via step writer (runWikiAgent fullStream pipe) — ADR 0026 / 0027.
   const stream = toAISdkStream(handle.output as never, {
     from: "workflow",
     includeTextStreamParts: true,
@@ -83,3 +104,9 @@ export async function openWikiWorkflowUiStream(
 
   return { stream, result };
 }
+
+/**
+ * @deprecated Prefer openWikiRunUiProjection (same function). Kept for a short
+ * compile-stable export name; not a second converter.
+ */
+export const openWikiWorkflowUiStream = openWikiRunUiProjection;
