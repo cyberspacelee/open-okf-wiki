@@ -25,12 +25,12 @@ The product was a Python CLI with Pydantic AI, pydantic-ai-harness (CodeMode, Su
 ## Decision
 
 1. **Language / runtime:** TypeScript on Node.js LTS. *(Historical: Python `okf_wiki` was transitional; **removed** per ADR 0021.)*
-2. **Semantic Workflow:** Mastra agents (Code Mode + `LocalSandbox`, Skills, tool approval, optional Supervisor). Prefer framework capabilities; do not reimplement sandbox/subagent engines.
+2. **Semantic Workflow:** Mastra agents with discrete path-policy tools (`list_source` / `glob_source` / `search_source` / `read_source` / `write_wiki`), Skills, optional Domain/Leaf/Reviewer subagents, and workflow HITL. **No Code Mode and no agent shell** (ADR 0002). Prefer framework capabilities for agents/workflows/streaming; keep multi-root source policy in product tools.
 3. **Run Boundary:** Product-owned TypeScript package (`@okf-wiki/core`) for snapshot freeze, path policy, mechanical validation, atomic publication, records, local `git` inspection, and secret-safe events. Core must not depend on Mastra or React.
 4. **Operator surface:** Local Web app (Vite + React + shadcn with **Base UI** primitives) talking to a **127.0.0.1** Node server. Headless `wiki-run` remains for automation. Terminal TUI (Textual/Ink/slash) is not ported.
 5. **Workspace:** First-class project entity (name, root path, sources, model ref, publication path, flags). Secrets stay in environment or user-level settings, never in `workspace.json`.
 6. **Git sources:** Operators attach sources as **linked absolute checkouts** and/or **operator-initiated clones** into the Workspace ([ADR 0022](0022-source-clone-into-workspace.md)). The product probes local `git` revision/status for Wiki Runs. The Semantic Workflow never clones, fetches, or pushes. Dirty trees default to blocking a Wiki Run. Credentials use the host git helper / SSH agent only—not `workspace.json`.
-7. **Sandbox on Windows:** `LocalSandbox` with `isolation: 'none'`; safety via denied shell tools and path-policy tools (source/skill read-only; wiki write only for Root).
+7. **Source safety:** no agent sandbox shell; multi-root path-policy tools only (source/skill read-only; wiki write only for Root; Effective Source Ignores host-enforced).
 8. **Defaults:** `adaptive: false` (single Root agent). Optional bounded Supervisor tree is a later, explicit opt-in.
 9. **Desktop shell:** Deferred; same Web UI may later ship inside Tauri (preferred) or Electron without changing the API contract.
 

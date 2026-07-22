@@ -171,23 +171,6 @@ export function projectToolInput(toolName: string, input: unknown): unknown {
   if (name === "write_wiki") {
     return projectWriteWikiInput(input);
   }
-  // CodeMode scripts can be long — keep a short preview only.
-  if (name === "execute_typescript" || name === "code_mode") {
-    if (!isRecord(input)) {
-      return projectUnknownValue(input);
-    }
-    const next: Record<string, unknown> = { ...input };
-    for (const key of ["code", "script", "source", "typescript"]) {
-      if (typeof next[key] === "string") {
-        const t = truncateContent(String(next[key]), UI_WRITE_PREVIEW_MAX);
-        next[`${key}Preview`] = t.text;
-        next[`${key}Chars`] = t.contentChars;
-        next.truncated = t.truncated || next.truncated;
-        delete next[key];
-      }
-    }
-    return next;
-  }
   // Other tools: inputs are path-sized; still redact free-form strings.
   if (!isRecord(input)) {
     return projectUnknownValue(input);
@@ -221,14 +204,59 @@ export function projectToolOutput(toolName: string, output: unknown): unknown {
   ) {
     return projectListOutput(output);
   }
+  if (name === "glob_source") {
+    return projectGlobOutput(output);
+  }
+  if (name === "search_source") {
+    return projectSearchOutput(output);
+  }
   // write_wiki output is already small {path, bytes}
   if (name === "write_wiki") {
     return isRecord(output) ? output : projectUnknownValue(output);
   }
-  if (name === "execute_typescript" || name === "code_mode") {
+  return projectUnknownValue(output);
+}
+
+const UI_GLOB_PATHS_MAX = 80;
+const UI_SEARCH_MATCHES_MAX = 40;
+
+function projectGlobOutput(output: unknown): unknown {
+  if (!isRecord(output)) {
     return projectUnknownValue(output);
   }
-  return projectUnknownValue(output);
+  const paths = Array.isArray(output.paths) ? output.paths : [];
+  const stringPaths = paths.filter((p): p is string => typeof p === "string");
+  const truncated =
+    Boolean(output.truncated) || stringPaths.length > UI_GLOB_PATHS_MAX;
+  return {
+    ...output,
+    paths: stringPaths.slice(0, UI_GLOB_PATHS_MAX),
+    pathCount: stringPaths.length,
+    truncated,
+  };
+}
+
+function projectSearchOutput(output: unknown): unknown {
+  if (!isRecord(output)) {
+    return projectUnknownValue(output);
+  }
+  const matches = Array.isArray(output.matches) ? output.matches : [];
+  const sliced = matches.slice(0, UI_SEARCH_MATCHES_MAX).map((m) => {
+    if (!isRecord(m)) {
+      return m;
+    }
+    const text = typeof m.text === "string" ? m.text : undefined;
+    if (text && text.length > 200) {
+      return { ...m, text: truncate(text, 200) };
+    }
+    return m;
+  });
+  return {
+    ...output,
+    matches: sliced,
+    matchCount: matches.length,
+    truncated: Boolean(output.truncated) || matches.length > UI_SEARCH_MATCHES_MAX,
+  };
 }
 
 /**

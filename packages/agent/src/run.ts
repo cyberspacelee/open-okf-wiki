@@ -3,8 +3,7 @@ import path from "node:path";
 import { createOpenAI } from "@ai-sdk/openai";
 import { Agent } from "@mastra/core/agent";
 import type { MastraModelConfig } from "@mastra/core/llm";
-import { createCodeMode } from "@mastra/core/tools";
-import { LocalFilesystem, LocalSandbox, Workspace } from "@mastra/core/workspace";
+import { LocalFilesystem, Workspace } from "@mastra/core/workspace";
 import type {
   WikiRunPlan,
   WikiRunRecordStatus,
@@ -17,6 +16,7 @@ import {
   hasProviderCredentials,
   loadProviderConfig,
   resolveProviderRuntime,
+  validateWikiTree,
   writeAnalysisReceipt,
 } from "@okf-wiki/core";
 import {
@@ -117,6 +117,28 @@ async function emitPlanProgressFromWriter(
     type: "data-plan-progress",
     data,
   });
+}
+
+/** Best-effort tool name from a Mastra agent fullStream chunk. */
+function toolNameFromAgentChunk(chunk: unknown): string | undefined {
+  if (!chunk || typeof chunk !== "object") {
+    return undefined;
+  }
+  const c = chunk as {
+    type?: string;
+    payload?: { toolName?: string; name?: string };
+  };
+  const type = c.type ?? "";
+  if (
+    !type.includes("tool") &&
+    type !== "tool-call" &&
+    type !== "tool-result" &&
+    type !== "tool-call-result"
+  ) {
+    return undefined;
+  }
+  const name = c.payload?.toolName ?? c.payload?.name;
+  return typeof name === "string" && name.trim() ? name.trim() : undefined;
 }
 
 /**
@@ -659,11 +681,39 @@ function formatEffectiveIgnoresSection(workspace: WorkspaceConfig): string {
   });
   return [
     "## Effective Source Ignores (host-enforced)",
-    "These patterns are applied by the Run Boundary on every list_source and read_source call.",
+    "These patterns are applied by the Run Boundary on every list_source, read_source, glob_source, and search_source call.",
     "Ignored paths are omitted from listings and cannot be read. Do not invent a second exclusion policy.",
-    "Do not use shell, raw filesystem APIs, or CodeMode to bypass these filters.",
+    "Do not use shell or raw filesystem APIs to bypass these filters.",
     ...blocks,
   ].join("\n");
+}
+
+/** Default tool-step budget for plan phase. */
+export const DEFAULT_PLAN_MAX_STEPS = 16;
+/** Base tool-step budget for write phase (before plan page scaling). */
+export const DEFAULT_WRITE_MAX_STEPS_BASE = 32;
+/** Extra write steps per planned page. */
+export const WRITE_MAX_STEPS_PER_PLAN_PAGE = 4;
+/** Hard ceiling for write maxSteps. */
+export const WRITE_MAX_STEPS_CAP = 64;
+
+/** Resolve host-enforced maxSteps for a Wiki Run phase. */
+export function resolvePhaseMaxSteps(
+  workspace: WorkspaceConfig,
+  phase: WikiRunAgentPhase,
+  plan?: WikiRunPlan,
+): number {
+  if (workspace.limits?.maxSteps && workspace.limits.maxSteps > 0) {
+    return workspace.limits.maxSteps;
+  }
+  if (phase === "plan") {
+    return DEFAULT_PLAN_MAX_STEPS;
+  }
+  const pageCount = plan?.pages?.length ?? 0;
+  return Math.min(
+    WRITE_MAX_STEPS_CAP,
+    DEFAULT_WRITE_MAX_STEPS_BASE + pageCount * WRITE_MAX_STEPS_PER_PLAN_PAGE,
+  );
 }
 
 function buildInstructions(workspace: WorkspaceConfig): string {
@@ -676,21 +726,31 @@ function buildInstructions(workspace: WorkspaceConfig): string {
     "",
     "## Run instructions",
     "1. Activate/load the Producer Skill (Mastra skill tools and/or read_skill). Start with SKILL.md, then references/templates as needed.",
-    "2. Explore sources with list_source / read_source only (read-only, multi-root by sourceId).",
+    "2. Explore sources with list_source, glob_source, search_source, and read_source (read-only, multi-root by sourceId).",
+    "   - glob_source: find files by name pattern (e.g. **/*Listener.java)",
+    "   - search_source: content regex; results include true 1-based line numbers",
+    "   - read_source: returns numbered lines `N| text` plus lineCount — cite only within lineCount",
     "   Source paths may live outside the workspace root; never assume sources are under cwd.",
     "   Effective Source Ignores are host-enforced on those tools (see section below).",
     "3. Write final Markdown pages under the wiki staging area with write_wiki.",
+    "   Prefer writing planned pages as soon as you have enough evidence; do not only explore.",
     "4. Every page MUST start with YAML frontmatter containing a non-empty `title`.",
     "5. Prefer a small coherent page set (e.g. overview.md plus architecture/module as needed).",
     "6. When finished, reply with a short plain-text summary listing the wiki-relative page paths you wrote.",
+    "",
+    "## Source Citations",
+    "- Format: [Source](repo:path#Lstart-Lend) or multi-repo [Source](repo:sourceId/path#Lstart-Lend).",
+    "- Line numbers are 1-based inclusive and MUST be ≤ read_source lineCount (or a search_source hit line).",
+    "- The `N|` prefix in read_source content is metadata only — never copy it into wiki prose or citations.",
+    "- Do not invent or estimate line ranges. Re-read if unsure.",
     "",
     wikiLanguageInstruction(workspace),
     "",
     formatEffectiveIgnoresSection(workspace),
     "",
     "Do not use shell/git clone/fetch. Use only the provided tools.",
-    "Do not invent source citations without reading the cited files.",
-    "Do not cite or describe paths that list_source never returned or that read_source rejected as ignored.",
+    "Do not invent source citations without reading or searching the cited files.",
+    "Do not cite or describe paths that tools never returned or that were rejected as ignored.",
     "",
     `Workspace root (agent cwd): ${workspace.rootPath}`,
     `Workspace: ${workspace.name} (${workspace.id})`,
@@ -766,10 +826,9 @@ export async function resolveModelConfig(
 async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: string): Promise<WikiRunAgentResult> {
   const sources = buildSourceMap(input.workspace);
   // Freeze Effective Source Ignores at run start (defaults + per-source user ignore).
-  // list_source / read_source enforce this map for the whole Wiki generation loop.
+  // Source tools enforce this map for the whole Wiki generation loop.
   const sourceIgnores = buildSourceIgnoreMap(input.workspace.sources);
-  // Discrete path-policy tools always registered; CodeMode only orchestrates them
-  // via host-side RPC (validation/tracing/path containment stay on the host).
+  // Discrete path-policy tools only (no CodeMode / no shell).
   const tools = createWikiRunTools({
     sources,
     sourceIgnores,
@@ -779,7 +838,7 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
 
   // Mastra Workspace: product workspace root as agent cwd + Producer Skill discovery.
   // Sources stay multi-root via product tools (may live outside rootPath).
-  // No unrestricted shell for clone/fetch — CodeMode sandbox has no free shell tools.
+  // No sandbox/shell — ADR 0002 untrusted snapshot as data.
   const mastraWorkspace = new Workspace({
     id: `okf-wiki-run-${input.runId}`,
     name: input.workspace.name,
@@ -789,16 +848,6 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
     skills: [skillRoot],
   });
   await mastraWorkspace.init();
-
-  // Optional Mastra Code Mode (live only): orchestration TS runs in LocalSandbox;
-  // external_* calls still hit the same contained tools above.
-  const { tool: execute_typescript, instructions: codeModeInstructions } = createCodeMode({
-    tools,
-    sandbox: new LocalSandbox({
-      isolation: "none",
-      workingDirectory: input.workspace.rootPath,
-    }),
-  });
 
   const { model, maxContextTokens } = await resolveWikiModel(input.workspace);
   const contextTarget = resolveContextTargetForWorkspace(
@@ -843,10 +892,8 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
   const agent = new Agent({
     id: "okf-wiki-root",
     name: "OKF Wiki Root",
-    instructions: [
+    instructions:
       buildInstructions(input.workspace) + adaptiveHint + contextHint,
-      codeModeInstructions,
-    ],
     model,
     workspace: mastraWorkspace,
     ...(Object.keys(childAgents).length > 0 ? { agents: childAgents } : {}),
@@ -854,16 +901,13 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
       ? { inputProcessors: contextProcessors }
       : {}),
     ...(runMemory ? { memory: runMemory } : {}),
-    tools: {
-      ...tools,
-      execute_typescript,
-    },
+    tools,
   });
 
   throwIfAborted(input.abortSignal);
 
-  const maxSteps = input.workspace.limits?.maxSteps ?? 24;
   const phase: WikiRunAgentPhase = input.phase ?? "write";
+  const maxSteps = resolvePhaseMaxSteps(input.workspace, phase, input.plan);
   const planHint = input.plan
     ? `\nConfirmed page plan (follow it):\n${JSON.stringify(input.plan, null, 2)}\n`
     : "";
@@ -877,12 +921,14 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
   const userMessage =
     phase === "plan"
       ? "Plan a source-grounded Wiki for this workspace. " +
-        "Load the producer skill, briefly inspect sources, then reply with a short summary and a Markdown bullet list of " +
+        "Load the producer skill, briefly inspect sources (list/glob/search/read), then reply with a short summary and a Markdown bullet list of " +
         "intended pages using exactly: `- \\`path.md\\` — purpose` (one page per line). " +
         "Do NOT call write_wiki yet." +
         revisionHint
       : "Produce a source-grounded Wiki for this workspace. " +
-        "Load the producer skill first, inspect sources, write markdown pages with write_wiki, then summarize." +
+        "Load the producer skill first, inspect sources with glob_source/search_source/read_source, " +
+        "then write markdown pages with write_wiki (do this before your step budget ends), then summarize. " +
+        "Source Citations must use line ranges from tool output (lineCount / search hits), never guesses." +
         planHint;
 
   // Stream so tool side-effects run; forward fullStream to workflow writer for Session UI.
@@ -892,6 +938,7 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
     : {};
   let text: string;
   const writtenPaths = new Set<string>();
+  const toolNamesSeen: string[] = [];
   try {
     const stream = await agent.stream(
       [{ role: "user", content: userMessage }],
@@ -908,6 +955,10 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
         throwIfAborted(input.abortSignal);
         if (input.writer) {
           await input.writer.write(chunk);
+        }
+        const toolName = toolNameFromAgentChunk(chunk);
+        if (toolName) {
+          toolNamesSeen.push(toolName);
         }
         if (phase === "write") {
           const path = writePathFromAgentChunk(chunk);
@@ -992,10 +1043,32 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
     phase: "writing",
   });
   if (pages.length === 0) {
+    const planPages = input.plan?.pages?.length ?? 0;
+    const lastTools = toolNamesSeen.slice(-8).join(", ") || "(none observed)";
+    const toolCalls = toolNamesSeen.length;
     return {
       status: "failed",
-      error: "agent finished without writing any wiki pages",
+      error:
+        `agent finished without writing any wiki pages ` +
+        `(maxSteps=${maxSteps}, toolCalls=${toolCalls}, lastTools=[${lastTools}], ` +
+        `planPages=${planPages}, writtenPaths=0)`,
       summary: text?.slice(0, 400) || undefined,
+    };
+  }
+
+  // Mechanical staging validation before publish-gate (citations, frontmatter).
+  // Fail here with actionable errors so the operator does not only see gate failure.
+  const validation = await validateWikiTree(wikiRoot, {
+    sources: input.workspace.sources.map((s) => ({ id: s.id, path: s.path })),
+  });
+  if (!validation.ok) {
+    const detail = validation.errors.slice(0, 20).join("; ");
+    return {
+      status: "failed",
+      error: `staging failed wiki validation: ${detail}`,
+      pages,
+      summary: text?.slice(0, 400) || undefined,
+      plan: input.plan,
     };
   }
 

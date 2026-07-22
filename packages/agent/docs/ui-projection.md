@@ -11,6 +11,8 @@ what is persisted on `OperatorSession.messages` is shaped by
 | `write_wiki` | Drop `input.content`; keep `path`, `contentPreview` (≤2KB), `contentChars`, `truncated` |
 | `read_source` / `read_skill` / `read_wiki` | Truncate `content` to ≤4KB; set `contentChars`, `truncated` |
 | `list_source` / `list_skill` / `list_wiki` | Cap `entries` at 200; set `entryCount`, `truncated` when capped |
+| `glob_source` | Cap `paths`; set `pathCount`, `truncated` |
+| `search_source` | Cap `matches`; truncate match text; set `matchCount`, `truncated` |
 | unknown | JSON-bounded + secret redaction |
 
 Server chat turns project tool parts via `sessionMessagesToUIMessages` / `projectSessionToolPart` before streaming.

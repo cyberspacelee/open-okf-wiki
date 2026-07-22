@@ -315,7 +315,11 @@ code.mono {
 }
 
 .wiki-layout {
-  @apply grid gap-4 lg:grid-cols-[16rem_minmax(0,1fr)];
+  @apply grid gap-4 lg:grid-cols-[15rem_minmax(0,1fr)] lg:items-start;
+}
+
+.wiki-layout > :first-child {
+  @apply lg:sticky lg:top-4;
 }
 
 .wiki-page-list {
@@ -331,15 +335,28 @@ code.mono {
 }
 
 .wiki-page-title {
-  @apply mb-1 text-xl font-semibold tracking-tight;
+  @apply mb-1 text-2xl font-semibold tracking-tight;
 }
 
 .wiki-page-path {
-  @apply mb-4;
+  @apply mb-6;
 }
 
 .wiki-markdown {
-  @apply max-w-none text-sm leading-relaxed;
+  @apply max-w-3xl text-[0.95rem] leading-7 text-foreground;
+}
+
+/* Source citation chips ([Source](repo:…#L…)) */
+.wiki-source-cite {
+  @apply mx-0.5 inline-flex max-w-full items-baseline gap-1 rounded-md border border-border bg-muted/60 px-1.5 py-0.5 align-baseline text-[0.75rem] leading-snug;
+}
+
+.wiki-source-cite__label {
+  @apply shrink-0 font-medium text-foreground;
+}
+
+.wiki-source-cite__target {
+  @apply min-w-0 truncate font-mono text-muted-foreground;
 }
 
 .wiki-markdown h1,

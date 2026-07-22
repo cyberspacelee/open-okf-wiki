@@ -25,8 +25,8 @@ export const REGISTERED_TOOL_BODY_NAMES = [
   "read_skill",
   "read_wiki",
   "write_wiki",
-  "execute_typescript",
-  "code_mode",
+  "glob_source",
+  "search_source",
 ] as const;
 
 export function unwrapToolPayload(value: unknown): unknown {
@@ -163,6 +163,8 @@ export function latestPhaseFromMessages(
 const RESEARCH_TOOLS = new Set([
   "list_source",
   "read_source",
+  "glob_source",
+  "search_source",
   "list_skill",
   "read_skill",
   "list_wiki",

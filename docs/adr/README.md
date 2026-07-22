@@ -35,7 +35,7 @@ Still load-bearing domain/ops decisions (map Host → Run Boundary when reading 
 | ADR | Status |
 |---|---|
 | [0003](0003-let-one-pydanticai-agent-own-the-semantic-loop.md) | Framework: Pydantic AI → Mastra (0020/0025) |
-| [0004](0004-use-codemode-for-dynamic-repository-work.md) | CodeMode idea remains; harness is Mastra, not Pydantic AI Harness |
+| [0004](0004-use-codemode-for-dynamic-repository-work.md) | **Superseded**: no CodeMode; discrete path-policy tools + Mastra subagents |
 | [0006](0006-keep-python-as-a-thin-harness.md) | **Superseded** by 0020/0021 |
 | [0010](0010-use-dynamic-workflow-for-bounded-leaf-coordination.md) | Historical DynamicWorkflow wording; leaf coordination still optional/adaptive |
 | [0014](0014-use-planning-and-bounded-recursive-subagents.md) | Planning/subagents idea remains; stack is Mastra |

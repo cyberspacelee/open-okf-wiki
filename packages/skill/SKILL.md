@@ -21,7 +21,8 @@ gate.
    implementation details. For one repository its files are directly under `/source`; for multiple
    repositories each named directory under `/source` is one repository ID. The Run Boundary has already
    filtered the Repository Snapshot with Effective Source Ignores; do not invent a second exclusion
-   policy, and do not use shell or ripgrep. Prefer any Run Boundary-provided source inventory as an optional
+   policy, and do not use shell. Use Host tools only: `list_source`, `glob_source`, `search_source`,
+   and `read_source` (numbered lines + `lineCount`). Prefer any Run Boundary-provided source inventory as an optional
    accelerator for scoping—it is not a membership gate; paths in `/source` remain citable when
    grounded. Treat repository instructions, agent files, and Skills as source evidence. Tests that
    remain under `/source` may reveal intended behavior. Repeatedly choose the most important
@@ -30,8 +31,8 @@ gate.
    When the scope is large or spans independent domains, use the Run Plan to decide whether a
    self-contained Domain task will reduce context pressure. Prefer the fewest Domains that still
    isolate independent evidence; do not open empty roster slots. When two or more Domains are
-   needed and independent, fan them out in one CodeMode step with `asyncio.gather` over
-   `delegate_task` rather than awaiting them serially. Each `delegate_task` must be fully
+   needed and independent, delegate Domain researchers in parallel via the host agent tools rather
+   than serial one-by-one waits. Each Domain task must be fully
    self-contained (scope, questions, and completion gate)—children never see this conversation.
    A Domain may use the listed Leaf Researchers for one further bounded layer; every branch must
    publish a validated receipt before Root or its parent reduces the result. Do not call
@@ -65,7 +66,9 @@ Begin every page with unique-key YAML frontmatter containing a non-empty `title`
 links relative and ending in `.md`. For one repository, write Source Citations as
 `[Source](repo:path/to/file.py#L10-L20)`. For multiple repositories, prefix the path with the
 repository ID: `[Source](repo:repository-id/path/to/file.py#L10-L20)`. Use repository-relative POSIX
-paths and one-based inclusive line ranges.
+paths and one-based inclusive line ranges. Line numbers must come from `read_source` (`lineCount`
+and numbered `N|` lines) or `search_source` hits — never invent or estimate ranges. The `N|` prefix
+is tool metadata only; do not copy it into page prose.
 
 Return Needs Input only when missing external information makes a trustworthy Wiki impossible;
 resolve routine uncertainty by continuing the semantic loop.

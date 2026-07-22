@@ -236,6 +236,24 @@ export function WorkspaceWikiPage() {
             </a>
           );
         }
+        // Source Citations: [Source](repo:…#L…) — render as chips, not plain links.
+        if (/^repo:/i.test(href) || (typeof children === "string" && children === "Source")) {
+          const label =
+            typeof children === "string" || typeof children === "number"
+              ? String(children)
+              : "Source";
+          const target = href.replace(/^repo:/i, "");
+          return (
+            <span
+              className="wiki-source-cite"
+              title={href}
+              data-testid="wiki-source-cite"
+            >
+              <span className="wiki-source-cite__label">{label}</span>
+              <span className="wiki-source-cite__target">{target}</span>
+            </span>
+          );
+        }
         const wikiTarget = resolveWikiMdHref(href, pageFromRoute);
         if (wikiTarget) {
           return (

@@ -45,6 +45,8 @@ export function createSubagents(options: {
   const researchTools = {
     list_source: options.tools.list_source,
     read_source: options.tools.read_source,
+    glob_source: options.tools.glob_source,
+    search_source: options.tools.search_source,
     list_skill: options.tools.list_skill,
     read_skill: options.tools.read_skill,
   };
@@ -69,9 +71,9 @@ export function createSubagents(options: {
       model: options.model,
       instructions: [
         "You are a Domain research subagent for one Wiki Run.",
-        "Investigate only the scope in the user message using list_source/read_source.",
-        "Return a concise receipt: findings, source paths, open questions.",
-        "Do not write wiki pages. Do not invent citations.",
+        "Investigate only the scope in the user message using list_source/glob_source/search_source/read_source.",
+        "Return a concise receipt: findings, source paths with line numbers from tools, open questions.",
+        "Do not write wiki pages. Do not invent citations or line ranges.",
         `Stay within ${ADAPTIVE_RUN_LIMITS.domainMaxSteps} tool steps (host-enforced).`,
       ].join("\n"),
       tools: researchTools,
@@ -86,9 +88,9 @@ export function createSubagents(options: {
       model: options.model,
       instructions: [
         "You are a Leaf research subagent.",
-        "Inspect a narrow path/module using list_source/read_source only.",
-        "Return short evidence bullets with concrete paths.",
-        "Do not write wiki pages.",
+        "Inspect a narrow path/module using list_source/glob_source/search_source/read_source.",
+        "Return short evidence bullets with concrete paths and tool-derived line numbers.",
+        "Do not write wiki pages. Do not invent line ranges.",
         `Stay within ${ADAPTIVE_RUN_LIMITS.leafMaxSteps} tool steps (host-enforced).`,
       ].join("\n"),
       tools: researchTools,
@@ -105,7 +107,8 @@ export function createSubagents(options: {
       model: options.model,
       instructions: [
         "You are an independent Wiki Reviewer.",
-        "Read staged pages with list_wiki/read_wiki and verify claims against list_source/read_source.",
+        "Read staged pages with list_wiki/read_wiki and verify claims against list_source/glob_source/search_source/read_source.",
+        "Flag invented or out-of-bounds citation line ranges.",
         "Return a defects list only (severity + issue + related path).",
         "Do not write or edit wiki pages. Do not publish.",
       ].join("\n"),

@@ -95,10 +95,11 @@ test("unwrapToolPayload peels thin result envelopes", () => {
   assert.deepEqual(unwrapToolPayload(inner), inner);
 });
 
-test("REGISTERED_TOOL_BODY_NAMES lists wiki + CodeMode tools", () => {
+test("REGISTERED_TOOL_BODY_NAMES lists wiki discovery tools", () => {
   assert.ok(REGISTERED_TOOL_BODY_NAMES.includes("list_source"));
   assert.ok(REGISTERED_TOOL_BODY_NAMES.includes("write_wiki"));
-  assert.ok(REGISTERED_TOOL_BODY_NAMES.includes("execute_typescript"));
+  assert.ok(REGISTERED_TOOL_BODY_NAMES.includes("glob_source"));
+  assert.ok(REGISTERED_TOOL_BODY_NAMES.includes("search_source"));
 });
 
 test("writtenPathsFromMessages includes data-plan-progress written pages", () => {

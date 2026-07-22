@@ -17,7 +17,7 @@ import {
 } from "./tool-summary";
 import { unwrapToolPayload } from "./session-tool-utils";
 import { sessionCardCode, sessionCardMeta } from "./session-card-styles";
-import { SessionCardAdvanced, SessionCardMono } from "./SessionCard";
+import { SessionCardAdvanced } from "./SessionCard";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -254,56 +254,75 @@ export function WriteBody({
   );
 }
 
-export function CodeModeBody({
-  input,
-  output,
-  errorText,
-}: {
-  input: unknown;
-  output: unknown;
-  errorText?: string;
-}) {
-  if (errorText) {
-    return <ErrorLine text={errorText} />;
-  }
-  const preview =
-    isRecord(input) && typeof input.codePreview === "string"
-      ? input.codePreview
-      : isRecord(input) && typeof input.code === "string"
-        ? String(input.code).slice(0, 800)
-        : undefined;
-  const outPreview =
-    typeof output === "string"
-      ? output.slice(0, 800)
-      : isRecord(output) && typeof output.preview === "string"
-        ? output.preview
-        : isRecord(output) && typeof output.result === "string"
-          ? String(output.result).slice(0, 800)
-          : undefined;
+export function GlobPathsBody({ output }: { output: unknown }) {
+  const unwrapped = unwrapToolPayload(output);
+  const paths =
+    isRecord(unwrapped) && Array.isArray(unwrapped.paths)
+      ? unwrapped.paths.filter((p): p is string => typeof p === "string")
+      : [];
+  const truncated = isRecord(unwrapped) && Boolean(unwrapped.truncated);
+  return (
+    <div className="min-w-0 max-w-full space-y-1" data-testid="session-tool-glob-body">
+      <p className={sessionCardMeta}>
+        {paths.length} path{paths.length === 1 ? "" : "s"}
+        {truncated ? " (truncated)" : ""}
+      </p>
+      {paths.length > 0 ? (
+        <ul className="m-0 max-h-36 list-none space-y-0.5 overflow-auto p-0 font-mono text-xs">
+          {paths.slice(0, 40).map((p) => (
+            <li key={p} className="truncate text-muted-foreground">
+              {p}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className={sessionCardMeta}>No matches</p>
+      )}
+    </div>
+  );
+}
 
+export function SearchMatchesBody({ output }: { output: unknown }) {
+  const unwrapped = unwrapToolPayload(output);
+  const matches =
+    isRecord(unwrapped) && Array.isArray(unwrapped.matches)
+      ? unwrapped.matches
+      : [];
+  const truncated = isRecord(unwrapped) && Boolean(unwrapped.truncated);
   return (
     <div
-      className="min-w-0 max-w-full space-y-2"
-      data-testid="session-tool-codemode-body"
+      className="min-w-0 max-w-full space-y-1"
+      data-testid="session-tool-search-body"
     >
       <p className={sessionCardMeta}>
-        Orchestration script (CodeMode) — host tools still enforce path policy.
+        {matches.length} match{matches.length === 1 ? "" : "es"}
+        {truncated ? " (truncated)" : ""}
       </p>
-      {preview ? (
-        <div className="max-h-40 min-w-0 overflow-hidden rounded-md bg-muted/50">
-          <CodeBlock
-            code={preview}
-            language={"typescript" as BundledLanguage}
-            className={sessionCardCode}
-          />
-        </div>
-      ) : null}
-      {outPreview ? (
-        <div className="max-h-32 min-w-0 overflow-auto rounded-md border bg-muted/30 p-3">
-          <SessionCardMono>{outPreview}</SessionCardMono>
-        </div>
+      {matches.length > 0 ? (
+        <ul className="m-0 max-h-40 list-none space-y-1 overflow-auto p-0 text-xs">
+          {matches.slice(0, 30).map((m, i) => {
+            if (!isRecord(m)) {
+              return null;
+            }
+            const path = typeof m.path === "string" ? m.path : "?";
+            const line = typeof m.line === "number" ? m.line : "?";
+            const text = typeof m.text === "string" ? m.text : "";
+            return (
+              <li key={`${path}:${line}:${i}`} className="min-w-0">
+                <span className="font-mono text-foreground">
+                  {path}:{line}
+                </span>
+                {text ? (
+                  <span className="mt-0.5 block truncate font-mono text-muted-foreground">
+                    {text}
+                  </span>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
       ) : (
-        <p className={sessionCardMeta}>Script completed</p>
+        <p className={sessionCardMeta}>No matches</p>
       )}
     </div>
   );
@@ -424,12 +443,8 @@ export const TOOL_BODY_REGISTRY: Record<string, ToolBodyRenderer> = {
       errorText={errorText}
     />
   ),
-  execute_typescript: ({ input, output, errorText }) => (
-    <CodeModeBody input={input} output={output} errorText={errorText} />
-  ),
-  code_mode: ({ input, output, errorText }) => (
-    <CodeModeBody input={input} output={output} errorText={errorText} />
-  ),
+  glob_source: ({ output }) => <GlobPathsBody output={output} />,
+  search_source: ({ output }) => <SearchMatchesBody output={output} />,
 };
 
 export function renderToolBody(props: ToolBodyProps): ReactNode {

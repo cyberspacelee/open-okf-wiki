@@ -165,3 +165,98 @@ test("list_source under ignored directory returns empty", async () => {
   assert.equal(listed.ignored, true);
   assert.deepEqual(listed.entries, []);
 });
+
+test("read_source returns numbered lines and lineCount", async () => {
+  const sourceRoot = await mkdtemp(path.join(tmpdir(), "okf-src-num-"));
+  const wikiRoot = await mkdtemp(path.join(tmpdir(), "okf-wiki-stg-"));
+  const skillRoot = await mkdtemp(path.join(tmpdir(), "okf-skill-"));
+  await writeFile(
+    path.join(sourceRoot, "a.txt"),
+    "one\ntwo\nthree\nfour\nfive\n",
+    "utf8",
+  );
+
+  const tools = createWikiRunTools({
+    sources: new Map([["app", sourceRoot]]),
+    sourceIgnores: buildSourceIgnoreMap([
+      { id: "app", path: sourceRoot, applyDefaultIgnores: false, ignore: [] },
+    ]),
+    skillRoot,
+    wikiRoot,
+  });
+
+  const full = await invokeTool(tools.read_source, { path: "a.txt" });
+  assert.equal(full.lineCount, 5);
+  assert.equal(full.startLine, 1);
+  assert.equal(full.endLine, 5);
+  assert.match(full.content, /^1\| one$/m);
+  assert.match(full.content, /^5\| five$/m);
+
+  const page = await invokeTool(tools.read_source, {
+    path: "a.txt",
+    offset: 2,
+    limit: 2,
+  });
+  assert.equal(page.lineCount, 5);
+  assert.equal(page.startLine, 2);
+  assert.equal(page.endLine, 3);
+  assert.match(page.content, /^2\| two$/m);
+  assert.match(page.content, /^3\| three$/m);
+  assert.equal(page.truncated, true);
+});
+
+test("glob_source finds files by pattern and honors ignores", async () => {
+  const sourceRoot = await makeJavaishTree();
+  const wikiRoot = await mkdtemp(path.join(tmpdir(), "okf-wiki-stg-"));
+  const skillRoot = await mkdtemp(path.join(tmpdir(), "okf-skill-"));
+
+  const tools = createWikiRunTools({
+    sources: new Map([["app", sourceRoot]]),
+    sourceIgnores: buildSourceIgnoreMap([
+      {
+        id: "app",
+        path: sourceRoot,
+        applyDefaultIgnores: true,
+        ignore: ["**/src/test/**", "**/*Test.java"],
+      },
+    ]),
+    skillRoot,
+    wikiRoot,
+  });
+
+  const found = await invokeTool(tools.glob_source, {
+    pattern: "**/*.java",
+  });
+  assert.ok(found.paths.some((p: string) => p.endsWith("App.java")));
+  assert.ok(!found.paths.some((p: string) => p.includes("Test")));
+  assert.ok(!found.paths.some((p: string) => p.includes("node_modules")));
+});
+
+test("search_source returns path and 1-based line", async () => {
+  const sourceRoot = await mkdtemp(path.join(tmpdir(), "okf-src-search-"));
+  const wikiRoot = await mkdtemp(path.join(tmpdir(), "okf-wiki-stg-"));
+  const skillRoot = await mkdtemp(path.join(tmpdir(), "okf-skill-"));
+  await mkdir(path.join(sourceRoot, "pkg"), { recursive: true });
+  await writeFile(
+    path.join(sourceRoot, "pkg/Hello.java"),
+    "package pkg;\nclass Hello {\n  void run() {}\n}\n",
+    "utf8",
+  );
+
+  const tools = createWikiRunTools({
+    sources: new Map([["app", sourceRoot]]),
+    sourceIgnores: buildSourceIgnoreMap([
+      { id: "app", path: sourceRoot, applyDefaultIgnores: false, ignore: [] },
+    ]),
+    skillRoot,
+    wikiRoot,
+  });
+
+  const hit = await invokeTool(tools.search_source, {
+    pattern: "class Hello",
+    glob: "**/*.java",
+  });
+  assert.equal(hit.matches.length, 1);
+  assert.equal(hit.matches[0].path, "pkg/Hello.java");
+  assert.equal(hit.matches[0].line, 2);
+});

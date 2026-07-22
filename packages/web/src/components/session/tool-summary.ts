@@ -131,17 +131,31 @@ export function toolSummaryTitle(
         !bytes && meta.chars !== undefined ? ` · ${meta.chars} chars` : "";
       return `Write ${path}${bytes || chars}`;
     }
-    case "execute_typescript":
-    case "code_mode": {
-      const chars =
-        isRecord(input) && typeof input.codeChars === "number"
-          ? input.codeChars
-          : isRecord(input) && typeof input.codePreview === "string"
-            ? input.codePreview.length
+    case "glob_source": {
+      const n =
+        isRecord(output) && typeof output.pathCount === "number"
+          ? output.pathCount
+          : isRecord(output) && Array.isArray(output.paths)
+            ? output.paths.length
             : undefined;
-      return chars !== undefined
-        ? `CodeMode · ${chars} chars`
-        : "CodeMode";
+      const pattern =
+        isRecord(input) && typeof input.pattern === "string"
+          ? input.pattern
+          : "*";
+      return `Glob ${sid ? `${sid}:` : ""}${pattern}${n !== undefined ? ` · ${n}` : ""}`;
+    }
+    case "search_source": {
+      const n =
+        isRecord(output) && typeof output.matchCount === "number"
+          ? output.matchCount
+          : isRecord(output) && Array.isArray(output.matches)
+            ? output.matches.length
+            : undefined;
+      const pattern =
+        isRecord(input) && typeof input.pattern === "string"
+          ? input.pattern
+          : "";
+      return `Search ${loc}${pattern ? ` · /${pattern}/` : ""}${n !== undefined ? ` · ${n}` : ""}`;
     }
     default:
       return toolName;

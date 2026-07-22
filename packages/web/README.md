@@ -22,7 +22,7 @@ React + TypeScript UI for open-okf-wiki (Vite). Talks to `@okf-wiki/server` over
 - **Toasts:** `sonner` via `<Toaster />` in `main.tsx`
 - **Session chat:** AI Elements under `src/components/ai-elements/` + `session/*` (do not rewrite transport for pure UI polish)
   - **Session timeline architecture:** AI Elements for text primitives (`MessageResponse`, `Reasoning`, `Suggestion`); **`SessionCard`** is the single chrome for tools / workflow / phase / batch / subagent (`session/SessionCard.tsx` + `session-card-styles.ts`).
-  - Tool bodies: registry in `session/tool-bodies.tsx` (`TOOL_BODY_REGISTRY`); never default JSON wall for known wiki tools / CodeMode.
+  - Tool bodies: registry in `session/tool-bodies.tsx` (`TOOL_BODY_REGISTRY`); never default JSON wall for known wiki tools (list/read/glob/search/write).
   - Backend projects operator payloads via `@okf-wiki/agent` `ui-projection` (model loop keeps full fidelity). See `packages/agent/docs/ui-projection.md`.
   - **data-\* whitelist** in `MessageParts` only: gate, plan, plan-progress, progress, run, workflow*, tool-agent. Unknown data parts are not rendered.
   - Plan: `PlanViewer` + page checklist; HITL only from `data-gate` / `data-plan`.
