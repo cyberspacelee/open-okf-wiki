@@ -4,10 +4,15 @@
  */
 
 import type {
+  AgentCommand,
+  AgentCommandResponse,
+  CreatePiAgentSessionBody,
+  CreatePiAgentSessionResponse,
   GitProbe,
   ModelProfilePublic,
   ModelProfileWrite,
   OperatorSession,
+  PiSessionSummary,
   ProviderApiShape,
   ProviderPublic,
   ProviderTestResult,
@@ -27,9 +32,14 @@ import type {
 } from "@okf-wiki/contract";
 
 export type {
+  AgentCommand,
+  AgentCommandResponse,
+  CreatePiAgentSessionBody,
+  CreatePiAgentSessionResponse,
   GitProbe,
   ModelProfilePublic,
   OperatorSession,
+  PiSessionSummary,
   ProviderApiShape,
   ProviderPublic,
   ProviderTestResult,
@@ -862,5 +872,115 @@ export function getWikiPage(
   }
   return request(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/wiki?${params.toString()}`,
+  );
+}
+
+// --- Pi Agent Workspace (ADR 0030) ---
+// Routes match packages/server/src/routes/agent-sessions.ts
+
+/** List Pi agent sessions under `.okf-wiki/pi-sessions/`. */
+export function listAgentSessions(
+  workspaceId: string,
+  rootPath?: string,
+): Promise<{ sessions: PiSessionSummary[] }> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/agent/sessions`,
+      rootPath,
+    ),
+  );
+}
+
+/** Create a Pi agent session placeholder (stub until AgentSession factory lands). */
+export function createAgentSession(
+  workspaceId: string,
+  input?: CreatePiAgentSessionBody,
+  rootPath?: string,
+): Promise<CreatePiAgentSessionResponse> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/agent/sessions`,
+      rootPath,
+    ),
+    {
+      method: "POST",
+      body: JSON.stringify(input ?? {}),
+    },
+  );
+}
+
+/**
+ * POST an AgentCommand (prompt | steer | abort | compact | start_wiki_run | resume_gate).
+ * Server returns 202 with status `stub` | `accepted`.
+ */
+export function agentSessionCommand(
+  workspaceId: string,
+  sessionId: string,
+  command: AgentCommand,
+  rootPath?: string,
+): Promise<AgentCommandResponse> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/agent/sessions/${encodeURIComponent(sessionId)}/command`,
+      rootPath,
+    ),
+    {
+      method: "POST",
+      body: JSON.stringify(command),
+    },
+  );
+}
+
+/** Absolute EventSource URL for Pi + product agent SSE. */
+export function agentSessionEventsUrl(
+  workspaceId: string,
+  sessionId: string,
+  rootPath?: string,
+): string {
+  return `${API_BASE}${withRootPathQuery(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/agent/sessions/${encodeURIComponent(sessionId)}/events`,
+    rootPath,
+  )}`;
+}
+
+/**
+ * @deprecated Prefer {@link agentSessionCommand} with `{ type: "prompt", text }`.
+ * Thin alias kept for early shell call sites.
+ */
+export function agentPrompt(
+  workspaceId: string,
+  sessionId: string,
+  input: { text: string; intent?: string },
+  rootPath?: string,
+): Promise<AgentCommandResponse> {
+  if (input.intent === "start_wiki_run") {
+    return agentSessionCommand(
+      workspaceId,
+      sessionId,
+      { type: "start_wiki_run", notes: input.text },
+      rootPath,
+    );
+  }
+  return agentSessionCommand(
+    workspaceId,
+    sessionId,
+    { type: "prompt", text: input.text },
+    rootPath,
+  );
+}
+
+/**
+ * @deprecated Prefer {@link agentSessionCommand} with `{ type: "abort" }`.
+ */
+export function agentAbort(
+  workspaceId: string,
+  sessionId: string,
+  rootPath?: string,
+): Promise<AgentCommandResponse> {
+  return agentSessionCommand(
+    workspaceId,
+    sessionId,
+    { type: "abort" },
+    rootPath,
   );
 }

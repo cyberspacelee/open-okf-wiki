@@ -2,21 +2,22 @@
 
 OKF Wiki turns a pinned **Repository Snapshot Set** into a source-grounded Markdown **Wiki**.
 
-The product is a **local Web UI**, a **localhost Node server**, and a **Mastra agent**, with a trusted **Run Boundary** in TypeScript (`@okf-wiki/core`). The operator configures a **Workspace** of local Git checkouts (link existing paths or clone into the workspace). The agent follows a versioned Producer Skill, writes pages into isolated Staging, and returns a typed terminal result. The Run Boundary freezes snapshots and skill digests, enforces path policy, validates Markdown mechanically, and publishes the whole Wiki atomically.
+The product is a **local Web UI**, a **localhost Node server**, and a **Pi agent harness** (`@earendil-works/pi-ai` / `pi-agent-core` / `pi-coding-agent`), with a trusted **Run Boundary** in TypeScript (`@okf-wiki/core`). The operator configures a **Workspace** of local Git checkouts (link existing paths or clone into the workspace). The agent follows a versioned Producer Skill, writes pages into isolated Staging, and returns a typed terminal result. The Run Boundary freezes snapshots and skill digests, enforces path policy, validates Markdown mechanically, and publishes the whole Wiki atomically.
 
-The primary operator surface is the **Session** page — a multi-turn conversational workspace (AI SDK `useChat` + message `parts`) for plan negotiation, tool visibility, and HITL choices. **Wiki Run** remains the bounded production job (history, staging, publish) that may be started from a Session.
+The primary operator surface is the **Agent Workspace** (`/w/:id`) — a session-first coding-agent UI (Pi JSONL sessions, SSE events, tool cards, plan/publish gates). **Wiki Run** remains the bounded production job (history, staging, publish) linked to that session.
 
 | Doc | Purpose |
 |---|---|
 | [CONTEXT.md](CONTEXT.md) | Domain vocabulary |
 | [docs/adr/](docs/adr/) | Architecture decisions ([index](docs/adr/README.md)) |
 | [packages/README.md](packages/README.md) | Monorepo package map |
-| [ADR 0020](docs/adr/0020-typescript-mastra-web-workspace.md) | TypeScript / Mastra / Web layout |
+| [ADR 0030](docs/adr/0030-pi-agent-harness-for-semantic-workflow.md) | **Current stack:** Pi harness, WikiRunShell, Agent Workspace |
 | [ADR 0021](docs/adr/0021-retire-python-primary-path.md) | Python primary path retired |
 | [ADR 0022](docs/adr/0022-source-clone-into-workspace.md) | Operator-initiated source clone |
-| [ADR 0024](docs/adr/0024-session-as-conversational-workspace.md) | Session as conversational workspace |
-| [ADR 0025](docs/adr/0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) | Single Mastra workflow + official AI SDK bridge |
-| [ADR 0028](docs/adr/0028-supervisor-tree-and-thin-workflow-shell.md) | Thin Workflow shell + Supervisor produce (WikiRunSpec, review council) |
+| [ADR 0026](docs/adr/0026-session-centric-agent-workspace.md) | Session-centric operate surface (intent) |
+| [ADR 0028](docs/adr/0028-supervisor-tree-and-thin-workflow-shell.md) | Thin shell + supervisor produce (intent) |
+
+Historical ADRs 0020 / 0024 / 0025 / 0027 describe the former Mastra + AI SDK stack; framework clauses are superseded by **0030**.
 
 ## Requirements
 
@@ -41,13 +42,15 @@ Copy [`.env.example`](.env.example) to an untracked `.env` (or export vars in th
 
 | Package | Role |
 |---|---|
-| `@okf-wiki/web` | Operator Web UI (Vite + React + AI Elements) |
-| `@okf-wiki/server` | Localhost HTTP API + Session stream |
-| `@okf-wiki/agent` | Mastra agent assembly + session chat stream |
-| `@okf-wiki/core` | Run Boundary (git probe, path policy, publish, session store) |
-| `@okf-wiki/contract` | Shared Zod schemas |
-| `@okf-wiki/cli` | Headless CLI helpers |
+| `@okf-wiki/web` | Operator Web UI (Vite + React + shadcn Agent Workspace) |
+| `@okf-wiki/server` | Localhost HTTP API + Pi agent session SSE/commands |
+| `@okf-wiki/agent` | Pi sessions, WikiRunShell, produce (no Mastra/AI SDK) |
+| `@okf-wiki/core` | Run Boundary (git probe, path policy, publish, stores) |
+| `@okf-wiki/contract` | Shared Zod schemas + agent protocol |
+| `@okf-wiki/cli` | Headless CLI (`wiki-run`, doctor, …) |
 | `@okf-wiki/skill` | Bundled Producer Skill assets |
+
+**Forbidden product dependencies:** `@mastra/*`, `ai`, `@ai-sdk/*` (guard: `pnpm check:deps`).
 
 ## Quick start
 
@@ -66,7 +69,7 @@ pnpm dev
 # → UI   http://127.0.0.1:5173  (proxies /api → server)
 ```
 
-Without a live model key, the stack still runs in **fixture** mode (deterministic Session/Run streams for local UI and e2e).
+Without a live model key, the stack runs in **fixture** mode (`OKF_WIKI_AGENT_MODE=fixture` or auto without key/URL).
 
 `pnpm dev` builds shared packages once, then runs in parallel:
 
@@ -82,12 +85,21 @@ Split terminals if you prefer: `pnpm dev:server` and `pnpm dev:web`.
 
 1. Open **Workspaces** → create a workspace with an **absolute** `rootPath`.
 2. **Settings** → configure model catalog endpoints if needed (secrets stay machine-local / env).
-3. **Sources** → link a clean local Git checkout **or** clone into the workspace.
-4. **Session** → multi-turn chat: plan options, free-text revise, tool parts, linked run materialization.
-5. **Run** → job history, staging review, **Approve / deny publish** when `awaiting_publication`.
-6. **Wiki** → browse published Markdown.
+3. Open **Agent Workspace** (`/w/:id`) — session list, transcript, sources/wiki/plan/run panels.
+4. Start a wiki run from the composer; approve plan/publish gates when shown.
+5. Browse published Markdown under the Wiki panel or `/workspaces/:id/wiki`.
 
-Route map (per workspace): `/session` (chat), `/run` (jobs + publish), `/sources`, `/settings`, wiki browse.
+Legacy multi-tab Session chat (AI SDK `useChat`) is **removed**. Old `.okf-wiki/sessions/*.json` files are not migrated — wipe if present and use Pi sessions under `.okf-wiki/pi-sessions/`.
+
+### Headless wiki-run
+
+```bash
+OKF_WIKI_AGENT_MODE=fixture \
+  pnpm --filter @okf-wiki/cli start -- wiki-run \
+    --root /abs/workspace \
+    --source app=/abs/repo \
+    --yes --fixture
+```
 
 ### Provider and server environment
 
@@ -111,15 +123,16 @@ Model identity stays provider-prefixed (for example `openai:<served-model-name>`
 | `pnpm build` | Build all packages | Release / packaging |
 | `pnpm typecheck` | `tsc --noEmit` across packages | Local before PR; **CI** |
 | `pnpm lint` / `pnpm lint:fix` | ESLint flat config (`eslint.config.mjs`) | Local; staged pre-commit; **CI** |
-| `pnpm check` | `typecheck` + `lint` | Convenient full static check |
+| `pnpm check` | `typecheck` + `lint` + forbidden-deps guard | Convenient full static check |
+| `pnpm check:deps` | Fail if `@mastra/*` / `ai` / `@ai-sdk/*` reappear | Local; part of `check` |
 | `pnpm test` | Package unit tests (`node:test` where present) | Local; **CI** |
 | `pnpm test:e2e` | Playwright Web e2e (`@okf-wiki/web`) | Local when touching UI/API; **CI job** |
-| `pnpm cli` | Headless CLI entry (`@okf-wiki/cli`) | Doctor / automation stubs |
+| `pnpm cli` | Headless CLI entry (`@okf-wiki/cli`) | Doctor / wiki-run / automation |
 
 ```bash
 pnpm install
 pnpm test
-pnpm check          # typecheck + eslint
+pnpm check          # typecheck + eslint + dep guard
 ```
 
 ### Pre-commit (optional, recommended)
@@ -140,7 +153,7 @@ pnpm --filter @okf-wiki/web exec playwright install chromium
 pnpm test:e2e
 ```
 
-Covers workspace create, settings, sources, **session chat**, plan confirm, run console, and publish. Specs live under `packages/web/e2e/`. Not a pre-commit gate.
+Legacy Session/UIMessage e2e specs are ignored; Agent Workspace smoke lives under `packages/web/e2e/agent-workspace.spec.ts`. Specs under `packages/web/e2e/`. Not a pre-commit gate.
 
 ### CI
 
@@ -159,39 +172,8 @@ pnpm dev
 # → API http://127.0.0.1:8787
 ```
 
-Smoke API:
+Open `/workspaces`, create a workspace, land on `/w/<id>` Agent Workspace.
 
-```bash
-curl -s http://127.0.0.1:8787/api/health
-curl -s http://127.0.0.1:8787/api/doctor
-```
+## License
 
-Fixture path (no API key): open **Session**, send a message, confirm plan / choice UI streams; **Run** still supports one-shot generate + publish when you need the job console only.
-
-### LAN (another device on the same network)
-
-No hardcoded IP in the client. The UI uses **same-origin** `/api/*`; Vite proxies to the local API. Open `http://<host-ip>:5173`.
-
-```bash
-# Host machine — allow API on all interfaces (opt-in)
-export OKF_WIKI_ALLOW_LAN=1
-export OKF_WIKI_HOST=0.0.0.0
-export OKF_WIKI_PORT=8787
-pnpm dev:server
-
-# UI (listens on 0.0.0.0:5173; proxies /api → 127.0.0.1:8787)
-pnpm dev:web
-```
-
-On another device:
-
-1. Find the host IP (e.g. `192.168.1.20`).
-2. Open **`http://<host-ip>:5173`**.
-3. Optional direct API: `http://<host-ip>:8787/api/health` (`allowLan: true`).
-
-**Notes**
-
-- Firewall: allow TCP **5173** (and **8787** if you hit the API directly).
-- Paths are always on the **host** disk (browser is only a remote control).
-- Optional override if UI and API are not same-origin: `VITE_API_BASE=http://host:8787`.
-- Do not expose this to the public internet.
+See repository license file when present.

@@ -138,7 +138,11 @@ export function WorkspaceDetailPage() {
                 {t.detail.ctaAddSource}
               </Link>
               <Link
-                to={workspaceHref(workspace.id, "/session", rootPathHint)}
+                to={`/w/${encodeURIComponent(workspace.id)}${
+                  rootPathHint
+                    ? `?${new URLSearchParams({ rootPath: rootPathHint }).toString()}`
+                    : ""
+                }`}
                 className={cn(buttonVariants({ variant: "secondary" }))}
               >
                 {t.detail.ctaOpenSession}

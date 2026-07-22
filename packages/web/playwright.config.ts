@@ -14,6 +14,13 @@ const pwHome =
 
 export default defineConfig({
   testDir: "./e2e",
+  // Legacy Session/UIMessage e2e retired with ADR 0030 Agent Workspace cutover.
+  testIgnore: [
+    "**/session-*.spec.ts",
+    "**/run-console.spec.ts",
+    "**/run-publish.spec.ts",
+    "**/ui-layout.spec.ts",
+  ],
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,

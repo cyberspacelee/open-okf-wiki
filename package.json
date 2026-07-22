@@ -2,7 +2,7 @@
   "name": "okf-wiki",
   "private": true,
   "version": "0.2.0-dev",
-  "description": "Generate source-grounded Markdown Wikis from local Git repositories (Mastra + local Web UI).",
+  "description": "Generate source-grounded Markdown Wikis from local Git repositories (Pi agent harness + local Web UI).",
   "packageManager": "pnpm@10.33.2",
   "engines": {
     "node": ">=22"
@@ -14,7 +14,8 @@
     "typecheck": "pnpm -r run typecheck",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "check": "pnpm run typecheck && pnpm run lint",
+    "check": "pnpm run typecheck && pnpm run lint && node scripts/check-no-forbidden-agent-deps.mjs",
+    "check:deps": "node scripts/check-no-forbidden-agent-deps.mjs",
     "test:e2e": "pnpm --filter @okf-wiki/web test:e2e",
     "dev": "pnpm run build:libs && pnpm run dev:stack",
     "dev:stack": "concurrently -k -n contract,core,agent,server,web -c blue,cyan,magenta,green,yellow \"pnpm --filter @okf-wiki/contract dev\" \"pnpm --filter @okf-wiki/core dev\" \"pnpm --filter @okf-wiki/agent dev\" \"pnpm --filter @okf-wiki/server dev\" \"pnpm --filter @okf-wiki/web dev\"",

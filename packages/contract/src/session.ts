@@ -79,6 +79,11 @@ export type SessionWorkflowState = z.infer<typeof SessionWorkflowStateSchema>;
  * One conversation message in AI SDK UIMessage-compatible shape.
  * `parts` is the source of truth for rendering (text / reasoning / tool / data).
  * Aligned with AI SDK UI parts + Session-centric trajectory (ADR 0026).
+ *
+ * @deprecated ADR 0030: conversation truth moves to Pi JSONL sessions
+ * (`.okf-wiki/pi-sessions/`) + AgentSession SSE. Prefer AgentCommand /
+ * product SSE types from `agent-protocol.ts`. Kept for pre-cutover Session
+ * routes; zero history migration for old records.
  */
 export const SessionToolPartStateSchema = z.enum([
   "input-streaming",
@@ -144,6 +149,10 @@ export const SessionMessagePartSchema = z.union([
 
 export type SessionMessagePart = z.infer<typeof SessionMessagePartSchema>;
 
+/**
+ * @deprecated ADR 0030 — see SessionMessagePartSchema deprecation above.
+ * New code should not persist UIMessage history as conversation truth.
+ */
 export const SessionMessageSchema = z.object({
   id: z.string().min(1),
   role: z.enum(["user", "assistant", "system"]),
@@ -151,6 +160,7 @@ export const SessionMessageSchema = z.object({
   createdAt: z.string().datetime().optional(),
 });
 
+/** @deprecated ADR 0030 — prefer Pi session + AgentCommand / product SSE. */
 export type SessionMessage = z.infer<typeof SessionMessageSchema>;
 
 /**
@@ -158,9 +168,16 @@ export type SessionMessage = z.infer<typeof SessionMessageSchema>;
  * Older versions (missing / pre-v3, including v2) are rejected on load — no migrator.
  * Operators: delete `.okf-wiki/sessions/*.json` under the workspace and start a new session.
  * HITL uses product `data-gate` only (no `data-choice` / tool fakes). ADR 0029.
+ *
+ * @deprecated ADR 0030 supersedes UIMessage session files with Pi JSONL under
+ * `.okf-wiki/pi-sessions/`. Legacy routes may still load v3 until hard cutover.
  */
 export const SESSION_SCHEMA_VERSION = 3 as const;
 
+/**
+ * @deprecated ADR 0030 — Operator conversation moves to Pi AgentSession.
+ * Kept so monorepo typechecks while old session routes remain.
+ */
 export const OperatorSessionSchema = z.object({
   /** Product disk contract; must be 3. Missing or other values are rejected (no migrate). */
   schemaVersion: z.literal(SESSION_SCHEMA_VERSION),
@@ -171,6 +188,7 @@ export const OperatorSessionSchema = z.object({
   /**
    * AI SDK UIMessage-compatible history (`id` / `role` / `parts`).
    * Same shape as UIMessage for chat persistence (ADR 0027).
+   * @deprecated ADR 0030 — not conversation truth after Pi cutover.
    */
   messages: z.array(SessionMessageSchema).default([]),
   workflow: SessionWorkflowStateSchema.default(() =>

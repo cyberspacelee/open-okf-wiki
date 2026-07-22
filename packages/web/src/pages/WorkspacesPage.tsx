@@ -120,7 +120,7 @@ export function WorkspacesPage() {
       setName("");
       setRootPath("");
       setShowForm(false);
-      navigate(`/workspaces/${encodeURIComponent(workspace.id)}`);
+      navigate(`/w/${encodeURIComponent(workspace.id)}`);
     } catch (err) {
       setError(err);
     } finally {
@@ -332,7 +332,7 @@ export function WorkspacesPage() {
                 <TableBody>
                   {workspaces.map((ws) => {
                     const params = new URLSearchParams({ rootPath: ws.rootPath });
-                    const href = `/workspaces/${encodeURIComponent(ws.id)}?${params.toString()}`;
+                    const href = `/w/${encodeURIComponent(ws.id)}?${params.toString()}`;
                     return (
                       <TableRow
                         key={ws.id}

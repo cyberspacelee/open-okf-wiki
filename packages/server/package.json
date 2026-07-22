@@ -14,8 +14,7 @@
   "dependencies": {
     "@okf-wiki/agent": "workspace:*",
     "@okf-wiki/contract": "workspace:*",
-    "@okf-wiki/core": "workspace:*",
-    "ai": "^7.0.31"
+    "@okf-wiki/core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

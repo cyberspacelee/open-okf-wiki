@@ -24,7 +24,7 @@ export function createDelegationCounters(): DelegationCounters {
 }
 
 /**
- * Build Mastra stream `delegation` option for Root supervisor.
+ * Build Root supervisor delegation hooks.
  * Caps Domain/Leaf fan-out and injects scope-only prompts.
  */
 export function buildRootDelegationOptions(input: {

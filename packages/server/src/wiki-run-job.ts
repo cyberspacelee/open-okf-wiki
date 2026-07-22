@@ -1,10 +1,9 @@
 /**
  * Single Wiki Run job lifecycle for headless / REST / automation entry.
  *
- * Session chat uses SessionTurn → same `startWikiRun` / `resumeWikiRun` under
- * the hood. This module owns: abort bind, status finalize, Session trajectory
- * projection, and background start/resume. HTTP routes are thin adapters only
- * (ADR 0026 / 0029 — dual entry converges here).
+ * Uses Pi-based `startWikiRun` / `resumeWikiRun` from @okf-wiki/agent (no
+ * Mastra / AI SDK). Owns: abort bind, status finalize, Session trajectory
+ * projection, and background start/resume. HTTP routes are thin adapters.
  */
 
 import { randomUUID } from "node:crypto";
@@ -348,27 +347,13 @@ type ProcessRunOptions = {
 };
 
 function jobEventsToSse(runId: string) {
-  return (event: {
-    type: string;
-    message?: string;
-    partType?: string;
-    text?: string;
-    nodeId?: string;
-  }) => {
-    if (event.type === "part") {
-      emitRunEvent(runId, {
-        type: "part",
-        partType: event.partType,
-        message: event.message,
-        text: event.text,
-        nodeId: event.nodeId,
-      });
-      return;
-    }
+  return (event: { type: string; message?: string; data?: unknown }) => {
+    const detail =
+      event.message ??
+      (event.data !== undefined ? JSON.stringify(event.data) : event.type);
     emitRunEvent(runId, {
       type: "log",
-      message: event.message ?? "",
-      nodeId: event.nodeId,
+      message: detail,
     });
   };
 }
@@ -449,8 +434,8 @@ async function persistWorkflowResult(
 }
 
 /**
- * Background Wiki Run via the same Mastra wiki-run workflow as Session.
- * Plan/write/publish gates live in the workflow; autoApprove skips suspends.
+ * Background Wiki Run via Pi startWikiRun + WikiRunShell.
+ * Plan/write/publish gates live in the shell; autoApprove skips suspends.
  */
 export function processRunInBackground(
   workspace: WorkspaceConfig,
@@ -541,8 +526,7 @@ export function processRunInBackground(
 }
 
 /**
- * Resume a suspended wiki-run workflow (plan or publication).
- * Same resumeWikiRun path Session uses for gate intents.
+ * Resume a suspended wiki-run (plan or publication) via Pi resumeWikiRun.
  */
 export function resumeRunInBackground(
   workspace: WorkspaceConfig,
@@ -571,20 +555,24 @@ export function resumeRunInBackground(
         return;
       }
 
+      const existing = await loadRun(workspace.rootPath, runId);
+      const resolvedPlan = plan ?? existing?.plan ?? undefined;
+      const pages = existing?.pages ?? undefined;
+      const step = gate === "publication" ? "publish-gate" : "plan-gate";
+
       const result = await resumeWikiRun({
         runId,
-        gate,
-        action,
-        plan,
-        feedback,
-        abortSignal,
-        onEvent: (event) => {
-          emitRunEvent(runId, {
-            type: "log",
-            message: event.message,
-            nodeId: event.nodeId,
-          });
+        workspace,
+        step,
+        resumeData: {
+          action,
+          plan: resolvedPlan,
+          feedback,
         },
+        plan: resolvedPlan,
+        pages,
+        abortSignal,
+        onEvent: jobEventsToSse(runId),
       });
 
       await persistWorkflowResult(
@@ -592,7 +580,7 @@ export function resumeRunInBackground(
         runId,
         result,
         abortSignal,
-        plan,
+        resolvedPlan,
       );
     } catch (error) {
       process.stderr.write(

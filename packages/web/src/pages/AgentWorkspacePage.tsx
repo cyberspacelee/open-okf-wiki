@@ -1,0 +1,223 @@
+/**
+ * Agent Workspace page — default home for a workspace (`/w/:id`).
+ * Loads workspace + Pi agent sessions; wires the 3-pane shell.
+ */
+
+import { useCallback, useEffect, useState } from "react";
+import { Link, useParams, useSearchParams } from "react-router-dom";
+import {
+  createAgentSession,
+  getWorkspace,
+  listAgentSessions,
+  listRuns,
+  type PiSessionSummary,
+  type StoredRunRecord,
+  type WorkspaceConfig,
+} from "../api";
+import { Layout } from "../components/Layout";
+import { LoadingState } from "../components/LoadingState";
+import { ErrorBanner } from "../components/ErrorBanner";
+import { AgentWorkspaceShell } from "../features/agent-workspace/AgentWorkspaceShell";
+import { useSessionAgent } from "../features/agent-workspace/hooks/useSessionAgent";
+import { useI18n } from "../i18n";
+import { Button } from "@/components/ui/button";
+
+export function AgentWorkspacePage() {
+  const { t } = useI18n();
+  const { id = "" } = useParams<{ id: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const rootPathHint = searchParams.get("rootPath") ?? undefined;
+
+  const [workspace, setWorkspace] = useState<WorkspaceConfig | null>(null);
+  const [sessions, setSessions] = useState<PiSessionSummary[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(
+    searchParams.get("sessionId"),
+  );
+  const [recentRuns, setRecentRuns] = useState<StoredRunRecord[]>([]);
+  const [bootError, setBootError] = useState<unknown>(null);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+
+  const rootPath = workspace?.rootPath ?? rootPathHint;
+
+  const agent = useSessionAgent({
+    workspaceId: id,
+    sessionId: activeSessionId,
+    rootPath,
+  });
+
+  const syncSessionIdInUrl = useCallback(
+    (sessionId: string) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.set("sessionId", sessionId);
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
+  const boot = useCallback(async () => {
+    if (!id) return;
+    setLoading(true);
+    setBootError(null);
+    try {
+      const wsRes = await getWorkspace(id, rootPathHint);
+      const ws = wsRes.workspace;
+      setWorkspace(ws);
+      const root = ws.rootPath ?? rootPathHint;
+
+      const [sessRes, runsRes] = await Promise.all([
+        listAgentSessions(id, root),
+        listRuns(id, root).catch(() => ({ runs: [] as StoredRunRecord[] })),
+      ]);
+
+      let list = sessRes.sessions ?? [];
+      let sessionId =
+        searchParams.get("sessionId") ??
+        list[0]?.id ??
+        null;
+
+      if (sessionId && !list.some((s) => s.id === sessionId)) {
+        // URL id missing on disk — fall through to create/latest.
+        sessionId = list[0]?.id ?? null;
+      }
+
+      if (!sessionId) {
+        const created = await createAgentSession(id, {}, root);
+        list = [
+          {
+            id: created.session.id,
+            name: `${created.session.id}.json`,
+            updatedAt: created.session.createdAt,
+            placeholder: true,
+          },
+          ...list,
+        ];
+        sessionId = created.session.id;
+      }
+
+      setSessions(list);
+      setActiveSessionId(sessionId);
+      setRecentRuns(runsRes.runs ?? []);
+      if (sessionId) {
+        syncSessionIdInUrl(sessionId);
+      }
+    } catch (err) {
+      setBootError(err);
+    } finally {
+      setLoading(false);
+    }
+  }, [id, rootPathHint, searchParams, syncSessionIdInUrl]);
+
+  useEffect(() => {
+    void boot();
+    // Boot once per workspace id / rootPath hint (not on every sessionId write).
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional one-shot boot
+  }, [id, rootPathHint]);
+
+  const handleSelectSession = useCallback(
+    (sessionId: string) => {
+      setActiveSessionId(sessionId);
+      syncSessionIdInUrl(sessionId);
+    },
+    [syncSessionIdInUrl],
+  );
+
+  const handleCreateSession = useCallback(async () => {
+    if (!id || creating) return;
+    setCreating(true);
+    setBootError(null);
+    try {
+      const created = await createAgentSession(
+        id,
+        { title: `Wiki Agent · ${workspace?.name ?? id}` },
+        rootPath,
+      );
+      const summary: PiSessionSummary = {
+        id: created.session.id,
+        name: `${created.session.id}.json`,
+        updatedAt: created.session.createdAt,
+        placeholder: true,
+      };
+      setSessions((prev) => [summary, ...prev]);
+      setActiveSessionId(created.session.id);
+      syncSessionIdInUrl(created.session.id);
+    } catch (err) {
+      setBootError(err);
+    } finally {
+      setCreating(false);
+    }
+  }, [id, creating, workspace?.name, rootPath, syncSessionIdInUrl]);
+
+  return (
+    <Layout>
+      <div
+        data-testid="agent-workspace-page"
+        className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden"
+      >
+        <div className="flex shrink-0 items-center justify-between gap-2">
+          <div className="min-w-0">
+            <p className="text-[11px] text-muted-foreground">
+              <Link to="/workspaces" className="hover:underline">
+                {t.nav.workspaces}
+              </Link>
+              <span className="mx-1.5">/</span>
+              <span>{t.agentWorkspace.title}</span>
+            </p>
+          </div>
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            render={
+              <Link
+                to={`/workspaces/${encodeURIComponent(id)}${
+                  rootPath
+                    ? `?${new URLSearchParams({ rootPath }).toString()}`
+                    : ""
+                }`}
+              />
+            }
+          >
+            {t.agentWorkspace.overview}
+          </Button>
+        </div>
+
+        {bootError ? (
+          <ErrorBanner error={bootError} onDismiss={() => setBootError(null)} />
+        ) : null}
+
+        {loading || !workspace ? (
+          <div className="flex min-h-0 flex-1 items-center justify-center">
+            <LoadingState label={t.agentWorkspace.loading} />
+          </div>
+        ) : (
+          <AgentWorkspaceShell
+            workspaceId={id}
+            workspace={workspace}
+            rootPath={rootPath}
+            sessions={sessions}
+            activeSessionId={activeSessionId}
+            onSelectSession={handleSelectSession}
+            onCreateSession={() => void handleCreateSession()}
+            creatingSession={creating}
+            messages={agent.messages}
+            input={agent.input}
+            onInputChange={agent.setInput}
+            onSend={() => void agent.send()}
+            onStartWikiRun={() => void agent.startWikiRun()}
+            onAbort={() => void agent.abort()}
+            agentStatus={agent.status}
+            agentError={agent.error}
+            onDismissAgentError={agent.clearError}
+            recentRuns={recentRuns}
+          />
+        )}
+      </div>
+    </Layout>
+  );
+}

@@ -14,6 +14,8 @@
     "test": "node -e \"process.exit(0)\""
   },
   "dependencies": {
+    "@okf-wiki/agent": "workspace:*",
+    "@okf-wiki/contract": "workspace:*",
     "@okf-wiki/core": "workspace:*"
   },
   "devDependencies": {

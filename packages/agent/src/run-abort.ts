@@ -3,7 +3,7 @@
  *
  * Server owns AbortControllers (registerRunAbortController / abortRun) and
  * passes the signal into agent entrypoints. Workflow steps look up the bound
- * signal by runId so runWikiAgent can stop mid-step (fixture delay / LLM stream).
+ * signal by runId so wiki-run / produce can stop mid-step.
  *
  * Mastra also provides a per-step abortSignal; callers should combine both.
  */

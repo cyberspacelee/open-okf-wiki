@@ -11,7 +11,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
-import { resetMastraForTests } from "@okf-wiki/agent";
 import {
   addSource,
   createOperatorSession,
@@ -94,8 +93,6 @@ async function makeFixtureWorkspace(
 
 test("job: autoApprove publishes and links Session trajectory", async () => {
   process.env.OKF_WIKI_AGENT_MODE = "fixture";
-  process.env.OKF_WIKI_MASTRA_STORAGE = "memory";
-  resetMastraForTests();
 
   const root = await mkdtemp(path.join(tmpdir(), "okf-job-auto-"));
   try {
@@ -136,15 +133,11 @@ test("job: autoApprove publishes and links Session trajectory", async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
     delete process.env.OKF_WIKI_AGENT_MODE;
-    delete process.env.OKF_WIKI_MASTRA_STORAGE;
-    resetMastraForTests();
   }
 });
 
 test("job: plan gate → resume approve → publication → approve publish", async () => {
   process.env.OKF_WIKI_AGENT_MODE = "fixture";
-  process.env.OKF_WIKI_MASTRA_STORAGE = "memory";
-  resetMastraForTests();
 
   const root = await mkdtemp(path.join(tmpdir(), "okf-job-plan-"));
   try {
@@ -195,8 +188,6 @@ test("job: plan gate → resume approve → publication → approve publish", as
   } finally {
     await rm(root, { recursive: true, force: true });
     delete process.env.OKF_WIKI_AGENT_MODE;
-    delete process.env.OKF_WIKI_MASTRA_STORAGE;
-    resetMastraForTests();
   }
 });
 

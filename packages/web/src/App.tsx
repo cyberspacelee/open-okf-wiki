@@ -1,21 +1,35 @@
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation, useParams } from "react-router-dom";
+import { AgentWorkspacePage } from "./pages/AgentWorkspacePage";
 import { SettingsPage } from "./pages/SettingsPage";
-import { WorkspaceDetailPage } from "./pages/WorkspaceDetailPage";
 import { WorkspaceRunPage } from "./pages/WorkspaceRunPage";
-import { WorkspaceSessionPage } from "./pages/WorkspaceSessionPage";
 import { WorkspaceSettingsPage } from "./pages/WorkspaceSettingsPage";
 import { WorkspaceSourcesPage } from "./pages/WorkspaceSourcesPage";
 import { WorkspaceWikiPage } from "./pages/WorkspaceWikiPage";
 import { WorkspacesPage } from "./pages/WorkspacesPage";
+
+/** Redirect legacy `/workspaces/:id` and `/session` paths → `/w/:id` (preserve query). */
+function LegacyWorkspaceRedirect() {
+  const { id = "" } = useParams<{ id: string }>();
+  const location = useLocation();
+  return (
+    <Navigate
+      to={`/w/${encodeURIComponent(id)}${location.search}`}
+      replace
+    />
+  );
+}
 
 export default function App() {
   return (
     <Routes>
       <Route path="/" element={<Navigate to="/workspaces" replace />} />
       <Route path="/workspaces" element={<WorkspacesPage />} />
-      <Route path="/workspaces/:id" element={<WorkspaceDetailPage />} />
+      {/* Agent Workspace (ADR 0030) — primary operate surface */}
+      <Route path="/w/:id" element={<AgentWorkspacePage />} />
+      {/* Legacy workspace home / session → Agent Workspace */}
+      <Route path="/workspaces/:id" element={<LegacyWorkspaceRedirect />} />
+      <Route path="/workspaces/:id/session" element={<LegacyWorkspaceRedirect />} />
       <Route path="/workspaces/:id/sources" element={<WorkspaceSourcesPage />} />
-      <Route path="/workspaces/:id/session" element={<WorkspaceSessionPage />} />
       <Route path="/workspaces/:id/run" element={<WorkspaceRunPage />} />
       <Route path="/workspaces/:id/wiki/*" element={<WorkspaceWikiPage />} />
       <Route path="/workspaces/:id/wiki" element={<WorkspaceWikiPage />} />

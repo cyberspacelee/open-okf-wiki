@@ -1,72 +1,47 @@
 # Operator Event contract
 
-**Status:** accepted (Phase 0 of architecture cleanup)  
+**Status:** accepted (rewritten for ADR 0030)  
 **Date:** 2026-07-22  
-**Authority:** [ADR 0029](../adr/0029-architecture-cleanup-no-compat.md)  
-**Related:** ADR 0026 (Session timeline), ADR 0027 (framework-first stream), ADR 0028 (Produce / timeline parts)
+**Authority:** [ADR 0030](../adr/0030-pi-agent-harness-for-semantic-workflow.md), [ADR 0029](../adr/0029-architecture-cleanup-no-compat.md)  
+**Related:** ADR 0026 (Session-centric intent), ADR 0028 (thin shell + supervisor intent)
 
 ## Purpose
 
-Define **who may produce** which Operator Event (`data-*` and stream) parts so the Session timeline stays truthful and there is a **single emit path** for business progress: **Produce**.
+Define **who may produce** which operator-visible timeline signals so the Session stays truthful and there is a **single emit path** for business progress: **Produce** (and product shell for gates only).
 
-Session shell **forwards** framework UIMessage parts. It does **not** invent business progress to compensate for a quiet Produce stream.
+Live transport is **Pi `AgentSession` events + thin product SSE injects** (not AI SDK UIMessage / Mastra `toAISdkStream`).
 
-## Part table
+## Live channels
 
-| Part type | Meaning (operator-facing) | Who may produce | Who must not produce |
-|---|---|---|---|
-| `data-plan-progress` | Spec page queue / write progress (paths, done/total) | **Produce** (Supervisor produce step / writer.custom) | Session shell, Run REST adapter, SessionTurn fallbacks |
-| `data-progress` | Phase strip / step timeline (`planning` → … → `done`/`failed`) | **Produce** | Session shell synthesis; dual HTTP-layer progress protocol |
-| `data-defects` | Review council defect list after a round | **Produce** (Host review council path inside produce) | Session inventing defects; soft UI-only defect cards without produce emit |
-| `data-agent-span` | Subagent / Domain / Leaf / reviewer span cards | **Produce** (delegation hooks → writer) | Session fabricating spans from logs alone |
-| `data-sources-index` | Repo-relative sources index for Sources UI | **Produce** | Session synthesizing source lists outside produce |
-| `data-gate` | HITL chip payload (plan / publish options) | Product shell / Session–Run transition (aligned with workflow suspend) | Free-text inference; legacy `data-choice` |
-| `data-plan` | Plan / WikiRunSpec payload for gate UI | Produce (spec snapshot) **or** shell when attaching gate context for suspend | Parallel plan DTOs not on the Session timeline |
-| `data-run` | Run identity / status projection for timeline | Shell / transition when linking Session ↔ Run; Produce may emit status-aligned run data | Second run lifecycle map that diverges from `mapWorkflowResult` |
-| `tool-*` / tool UI parts | Tool call cards (name, args, result snippet) | Framework agent stream inside Produce (via `toAISdkStream` / step writer) | Hand-rolled Session SSE tool protocol |
-| `text` / reasoning | Assistant narration and optional thinking | Framework agent stream inside Produce (or help-only SessionTurn replies with **no** fake run progress) | Fake CoT; progress text standing in for `data-progress` |
+| Channel | Content | Who |
+|---------|---------|-----|
+| Pi events (`source: "pi"`) | text deltas, thinking, tool_execution_*, agent lifecycle | Pi AgentSession |
+| Product injects (`source: "product"`) | `run_phase`, `gate`, `run_link` | WikiRunShell / server registry |
+| Server heartbeat | keep-alive | server only |
 
-Notes:
+Durable conversation = **Pi JSONL** under `.okf-wiki/pi-sessions/`.  
+Durable job = **Run Record** under core.
 
-- **Produce** = Layer B Semantic Workflow body (Supervisor produce step of the thin shell `plan-gate → produce → hard-validate → publish-gate`).
-- Gate parts are **not** a substitute for progress parts: a suspended plan-gate may show `data-gate` + `data-plan` without inventing mid-run `data-progress`.
-- Headless / Run REST automation uses the **same** Produce emit path; it must not become a second progress author.
+## Business progress ownership
 
-## Session MUST NOT synthesize business progress
+| Signal | Who may produce | Who must not |
+|--------|-----------------|--------------|
+| Tool cards / assistant text | **Pi session** during produce/chat | Session UI inventing tools without SSE |
+| Plan/publish gates | **Product shell** (`resume_gate` / product SSE) | Free-text `"approve"` inference |
+| Run phase / run link | **Shell / registry** | Dual lifecycle maps |
+| Spec progress / defects / agent spans | **Produce** (when implemented on Pi path) | Session shell synthesis |
 
-The SessionTurn / session-stream shell **MUST NOT**:
+## Session MUST NOT
 
-1. Construct `data-plan-progress`, `data-progress`, `data-defects`, `data-agent-span`, or `data-sources-index` because Produce was silent.
-2. Reintroduce `data-choice` or free-text `"approve"` / `__choice__:` gate inference.
-3. Maintain a second Mastra→UI converter that invents timeline parts outside `toAISdkStream` + Produce `writer.custom`.
-4. Paper over missing Produce emissions with heuristic “fake steps” on refresh.
+1. Invent tool or progress rows because Produce was quiet.  
+2. Maintain a second Mastra/AI SDK converter.  
+3. Use UIMessage `data-*` as the persistence model (historical; wiped).
 
-Allowed SessionTurn work (non-exhaustive):
+## Wipe
 
-- Intent / mode resolution and turn lock.
-- Start / resume param assembly and product abort bind.
-- Tee of framework UI stream into outer Session `createUIMessageStream`.
-- Optional redaction before persist.
-- Help-only text when sources or credentials are missing (**no** fake run progress parts).
-- Aligning `data-gate` / durable Session status with the linked Run after suspend/terminal (transition / reconcile — not business progress).
-
-If the timeline lacks progress, **fix Produce** (or the writer path), not Session.
-
-## Deletion test note
-
-Implementation phases should keep **deletion tests** that fail if Session (or server chat adapter) reintroduces business progress synthesis:
-
-| Assert | Intent |
-|---|---|
-| No Session/server module constructs `data-plan-progress` / `data-progress` / `data-defects` / `data-agent-span` / `data-sources-index` for a live turn | Single emit path |
-| No `data-choice` writers remain on the Session path | Legacy gate deleted |
-| No references to `OKF_WIKI_DURABLE_PRODUCE` / durable-produce stub as a live feature | Stub deleted |
-| Produce path tests still emit the progress parts above via writer | Emit ownership stays in Produce |
-
-Prefer grep/unit guards over documenting dual paths “for compatibility.”
+Old `.okf-wiki/sessions/*.json` (UIMessage) and Mastra LibSQL stores are not migrated. Use Pi sessions only.
 
 ## Non-goals
 
-- Specifying every JSON field of each `data-*` payload (live shapes live in `@okf-wiki/contract` / agent timeline helpers).
-- Defining Run console SSE job logs (secondary audit surface; not a second write or progress-author path).
-- Migrating historical Session message parts.
+- Specifying every JSON field of Pi assistant message content.  
+- Requiring Mastra workflow snapshots for audit.

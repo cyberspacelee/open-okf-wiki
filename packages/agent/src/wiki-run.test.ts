@@ -1,5 +1,5 @@
 /**
- * Wiki workflow orchestration (fixture mode) — single production path.
+ * Wiki Run orchestration on Pi + WikiRunShell (fixture mode).
  */
 
 import assert from "node:assert/strict";
@@ -12,24 +12,12 @@ import {
   WorkspaceConfigSchema,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
-import { resetMastraForTests } from "./mastra-instance.js";
 import { startWikiRun, resumeWikiRun } from "./wiki-run.js";
 
 async function makeWorkspace(root: string): Promise<WorkspaceConfig> {
   const sourcePath = path.join(root, "src-repo");
   await mkdir(sourcePath, { recursive: true });
   await writeFile(path.join(sourcePath, "README.md"), "# fixture source\n", "utf8");
-  // Minimal git tree so later gates can probe if needed.
-  const { execFile } = await import("node:child_process");
-  const { promisify } = await import("node:util");
-  const execFileAsync = promisify(execFile);
-  await execFileAsync("git", ["init"], { cwd: sourcePath });
-  await execFileAsync("git", ["config", "user.email", "test@example.com"], {
-    cwd: sourcePath,
-  });
-  await execFileAsync("git", ["config", "user.name", "test"], { cwd: sourcePath });
-  await execFileAsync("git", ["add", "."], { cwd: sourcePath });
-  await execFileAsync("git", ["commit", "-m", "init"], { cwd: sourcePath });
 
   const publicationPath = path.join(root, "wiki-out");
   return WorkspaceConfigSchema.parse({
@@ -56,8 +44,6 @@ async function makeWorkspace(root: string): Promise<WorkspaceConfig> {
 
 test("startWikiRun fixture auto-publishes without planConfirm", async () => {
   process.env.OKF_WIKI_AGENT_MODE = "fixture";
-  process.env.OKF_WIKI_MASTRA_STORAGE = "memory";
-  resetMastraForTests();
 
   const root = await mkdtemp(path.join(tmpdir(), "okf-wiki-run-"));
   try {
@@ -75,15 +61,11 @@ test("startWikiRun fixture auto-publishes without planConfirm", async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
     delete process.env.OKF_WIKI_AGENT_MODE;
-    delete process.env.OKF_WIKI_MASTRA_STORAGE;
-    resetMastraForTests();
   }
 });
 
 test("startWikiRun suspends for plan when planConfirm", async () => {
   process.env.OKF_WIKI_AGENT_MODE = "fixture";
-  process.env.OKF_WIKI_MASTRA_STORAGE = "memory";
-  resetMastraForTests();
 
   const root = await mkdtemp(path.join(tmpdir(), "okf-wiki-plan-"));
   try {
@@ -102,8 +84,12 @@ test("startWikiRun suspends for plan when planConfirm", async () => {
 
     const resumed = await resumeWikiRun({
       runId,
-      gate: "plan",
-      action: "approve",
+      workspace,
+      step: "plan-gate",
+      resumeData: {
+        action: "approve",
+        plan: result.plan,
+      },
       plan: result.plan,
     });
     // After plan approve: write then suspend publication (no autoApprove).
@@ -112,47 +98,39 @@ test("startWikiRun suspends for plan when planConfirm", async () => {
 
     const published = await resumeWikiRun({
       runId,
-      gate: "publication",
-      action: "approve",
+      workspace,
+      step: "publish-gate",
+      resumeData: { action: "approve" },
+      pages: resumed.pages,
+      plan: resumed.plan ?? result.plan,
     });
     assert.equal(published.status, "published");
   } finally {
     await rm(root, { recursive: true, force: true });
     delete process.env.OKF_WIKI_AGENT_MODE;
-    delete process.env.OKF_WIKI_MASTRA_STORAGE;
-    resetMastraForTests();
   }
 });
 
-test("startWikiRun hard-stops when product abortSignal fires mid-fixture", async () => {
+test("startWikiRun returns cancelled when abortSignal already aborted", async () => {
   process.env.OKF_WIKI_AGENT_MODE = "fixture";
-  process.env.OKF_WIKI_MASTRA_STORAGE = "memory";
-  process.env.OKF_WIKI_FIXTURE_DELAY_MS = "400";
-  resetMastraForTests();
 
   const root = await mkdtemp(path.join(tmpdir(), "okf-wiki-abort-"));
   try {
     const workspace = await makeWorkspace(root);
     const runId = randomUUID();
     const controller = new AbortController();
-    const started = startWikiRun({
+    controller.abort();
+    const result = await startWikiRun({
       runId,
       workspace,
       autoApprove: true,
       skipPlanConfirm: true,
       abortSignal: controller.signal,
     });
-    // Abort while fixture delay is still slicing (50ms steps).
-    await new Promise((r) => setTimeout(r, 80));
-    controller.abort();
-    const result = await started;
     assert.equal(result.status, "cancelled");
     assert.equal(result.error, "cancelled");
   } finally {
     await rm(root, { recursive: true, force: true });
     delete process.env.OKF_WIKI_AGENT_MODE;
-    delete process.env.OKF_WIKI_MASTRA_STORAGE;
-    delete process.env.OKF_WIKI_FIXTURE_DELAY_MS;
-    resetMastraForTests();
   }
 });

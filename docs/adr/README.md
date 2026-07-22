@@ -6,15 +6,12 @@ Domain vocabulary: [CONTEXT.md](../../CONTEXT.md). Package map: [packages/README
 
 | ADR | Role |
 |---|---|
-| [0020](0020-typescript-mastra-web-workspace.md) | TypeScript monorepo, Mastra Semantic Workflow, Web UI, Workspace, `@okf-wiki/core` Run Boundary (no Mastra in core) |
+| [0030](0030-pi-agent-harness-for-semantic-workflow.md) | **Current:** Pi agent harness (`pi-ai` / `pi-agent-core` / `pi-coding-agent`); Pi JSONL session; Pi built-in tools + phase allowlists; product WikiRunShell; Agent Workspace UI; no Mastra/AI SDK |
 | [0021](0021-retire-python-primary-path.md) | Python primary path **removed** |
 | [0022](0022-source-clone-into-workspace.md) | Operator-initiated clone; Semantic Workflow never clones |
-| [0024](0024-session-as-conversational-workspace.md) | Operator Session = conversational workspace (`useChat` + parts) |
-| [0025](0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) | **Single** wiki-run write path; Session uses `toAISdkStream`; no dual materialize / hand-rolled Session SSE |
-| [0026](0026-session-centric-agent-workspace.md) | **Session-centric agent**: sole operate/observe surface; Run = Session-owned job (fg/bg); Run UI read-mostly |
-| [0027](0027-framework-first-session-stream.md) | **Framework-first** Session stream/HITL: Mastra + AI SDK only; thin P1 shell; ban parallel converters |
-| [0028](0028-supervisor-tree-and-thin-workflow-shell.md) | **Thin Workflow shell + Supervisor produce**: WikiRunSpec, always-on Domain/Leaf, Host review council, fail-closed hard-validate |
-| [0029](0029-architecture-cleanup-no-compat.md) | **No-compat cleanup**: single Produce Operator Event emit; Session schema v3 wipe; SessionTurn deep module; human HITL Session-only; delete durable-produce / data-choice / Session progress synthesis |
+| [0026](0026-session-centric-agent-workspace.md) | **Session-centric intent** (re-read under 0030: Pi session = operator timeline; Run = linked job) |
+| [0028](0028-supervisor-tree-and-thin-workflow-shell.md) | Thin shell + Supervisor produce **intent** (impl moves to Pi + WikiRunShell per 0030) |
+| [0029](0029-architecture-cleanup-no-compat.md) | No-compat cleanup culture; wipe-not-migrate (session shape again under 0030) |
 
 Still load-bearing domain/ops decisions (map Host → Run Boundary when reading pre-0019 text):
 
@@ -36,17 +33,22 @@ Still load-bearing domain/ops decisions (map Host → Run Boundary when reading 
 
 | ADR | Status |
 |---|---|
-| [0003](0003-let-one-pydanticai-agent-own-the-semantic-loop.md) | Framework: Pydantic AI → Mastra (0020/0025) |
-| [0004](0004-use-codemode-for-dynamic-repository-work.md) | **Superseded**: no CodeMode; discrete path-policy tools + Mastra subagents |
+| [0003](0003-let-one-pydanticai-agent-own-the-semantic-loop.md) | Framework history → Mastra → **Pi (0030)** |
+| [0004](0004-use-codemode-for-dynamic-repository-work.md) | **Superseded**: no CodeMode; tools = Pi built-ins (0030) |
 | [0006](0006-keep-python-as-a-thin-harness.md) | **Superseded** by 0020/0021 |
-| [0010](0010-use-dynamic-workflow-for-bounded-leaf-coordination.md) | Historical DynamicWorkflow wording; superseded in practice by [0028](0028-supervisor-tree-and-thin-workflow-shell.md) Supervisor fan-out |
-| [0014](0014-use-planning-and-bounded-recursive-subagents.md) | Planning/subagents idea remains; topology refined by [0028](0028-supervisor-tree-and-thin-workflow-shell.md) |
-| [0023](0023-operator-session-stream-and-plan-confirm.md) | Plan-confirm + HITL still valid; **Session SSE transport superseded** by 0024/0025; **Run-as-primary HITL superseded** by 0026 |
+| [0010](0010-use-dynamic-workflow-for-bounded-leaf-coordination.md) | Historical DynamicWorkflow; topology via [0028](0028-supervisor-tree-and-thin-workflow-shell.md) / Pi children (0030) |
+| [0014](0014-use-planning-and-bounded-recursive-subagents.md) | Planning/subagents idea remains; Pi child sessions (0030) |
+| [0020](0020-typescript-mastra-web-workspace.md) | TS monorepo + Workspace + core still valid; **Mastra/AI SDK stack superseded by 0030** |
+| [0023](0023-operator-session-stream-and-plan-confirm.md) | Plan-confirm + HITL intent; transport superseded repeatedly → **0030 Pi events** |
+| [0024](0024-session-as-conversational-workspace.md) | Conversational workspace intent; **useChat/UIMessage superseded by 0030** |
+| [0025](0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) | Single write path intent; **Mastra + toAISdkStream superseded by 0030** |
+| [0027](0027-framework-first-session-stream.md) | Framework-first intent; **framework is Pi (0030), not Mastra/AI SDK** |
 
 ## Reading rules for agents
 
 1. Prefer **CONTEXT.md** for domain terms.
-2. Prefer **0020 + 0021 + 0022 + 0024 + 0025 + 0026 + 0027 + 0028 + 0029** for “how the product is built today” (0026 wins on Session vs Run center; **0027** wins on framework-first stream/HITL; **0028** wins on Wiki generation orchestration; **0029** wins on single Produce emit / no-compat cleanup / Session schema v3).
+2. Prefer **0030 + 0021 + 0022 + 0026 + 0028 + 0029** for “how the product is built” (0030 wins on agent/session/tools stack; 0026 wins on Session vs Run center *intent*; 0028 wins on shell + supervisor *intent*; 0029 wins on no-compat culture).
 3. Pre-0019 ADRs may say **Host** / **Host Instructions** → map to **Run Boundary** / **Run Instructions**.
 4. Pre-0021 ADRs may assume **Python** harness → map duties to `@okf-wiki/core` + `@okf-wiki/agent`.
-5. Do **not** reintroduce: dual Staging writers, Session-local materialize, `__choice__:` HITL, hand-rolled Session Mastra→SSE, parallel `toAISdkStream` business wrappers, Session synthesis of business progress parts, durable-produce stubs, `data-choice` gates, Mastra dependency inside core.
+5. Pre-0030 ADRs may assume **Mastra / AI SDK / UIMessage / list_source tools** → map to **Pi AgentSession / JSONL / built-in tools** (0030).
+6. Do **not** reintroduce: dual Staging writers, UIMessage Session history, Mastra workflow suspend as product HITL backbone, hand-rolled `list_source`/`write_wiki` tools, `bash` in Semantic Workflow, Session synthesis of business progress, Mastra/Pi inside `@okf-wiki/core`.

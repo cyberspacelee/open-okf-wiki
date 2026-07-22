@@ -1,11 +1,10 @@
 /**
  * HTTP adapters for Wiki Run jobs (list/create/retry/HITL/SSE/cancel).
- * Job lifecycle lives in wiki-run-job.ts — same start/resumeWikiRun as Session.
- * REST approve/deny is automation-only; humans use Session (ADR 0026/0029).
+ * Job lifecycle lives in wiki-run-job.ts — Pi startWikiRun / resumeWikiRun.
+ * REST approve/deny is automation-only (ADR 0026/0029).
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { replayWikiRunAuditEvents } from "@okf-wiki/agent";
 import {
   createRun,
   listRuns,
@@ -586,32 +585,8 @@ export async function handleRunEvents(
     res.write(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`);
   };
 
-  let recent = getRecentRunEvents(runId);
-
-  if (isTerminalRunStatus(run.status) && recent.length === 0) {
-    try {
-      await replayWikiRunAuditEvents(runId, (jobEvent) => {
-        if (jobEvent.type === "part") {
-          emitRunEvent(runId, {
-            type: "part",
-            partType: jobEvent.partType,
-            message: jobEvent.message,
-            text: jobEvent.text,
-            nodeId: jobEvent.nodeId,
-          });
-          return;
-        }
-        emitRunEvent(runId, {
-          type: "log",
-          message: jobEvent.message,
-          nodeId: jobEvent.nodeId,
-        });
-      });
-      recent = getRecentRunEvents(runId);
-    } catch {
-      // Best-effort
-    }
-  }
+  // Pi path has no Mastra workflow snapshot audit replay — ring buffer only.
+  const recent = getRecentRunEvents(runId);
 
   for (const event of recent) {
     writeEvent(event);

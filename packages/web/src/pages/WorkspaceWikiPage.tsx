@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import type { Components } from "streamdown";
+import { cjk } from "@streamdown/cjk";
+import { code } from "@streamdown/code";
+import { math } from "@streamdown/math";
+import { mermaid } from "@streamdown/mermaid";
+import { Streamdown, type Components } from "streamdown";
 import {
   ApiError,
   getWikiPage,
@@ -9,7 +13,6 @@ import {
   type WikiPageResponse,
   type WorkspaceConfig,
 } from "../api";
-import { MessageResponse } from "../components/ai-elements/message";
 import { LoadingState } from "../components/LoadingState";
 import { WorkspaceShell } from "../components/WorkspaceShell";
 import { useI18n } from "../i18n";
@@ -25,6 +28,8 @@ import {
 } from "@/components/ui/empty";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+
+const streamdownPlugins = { cjk, code, math, mermaid };
 
 /** Strip YAML frontmatter so the body renders without the --- block. */
 function stripFrontmatter(content: string): string {
@@ -358,14 +363,15 @@ export function WorkspaceWikiPage() {
                     )}
                     <p className="muted small mono wiki-page-path">{page.path}</p>
                     <div className="wiki-markdown" data-testid="wiki-markdown">
-                      <MessageResponse
+                      <Streamdown
                         key={page.path}
                         mode="static"
                         components={markdownComponents}
+                        plugins={streamdownPlugins}
                         className="size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
                       >
                         {bodyMarkdown}
-                      </MessageResponse>
+                      </Streamdown>
                     </div>
                   </>
                 ) : (

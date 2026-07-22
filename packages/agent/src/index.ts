@@ -1,45 +1,48 @@
 /**
- * Mastra-backed Wiki Run agent assembly.
- * Keep framework imports out of @okf-wiki/core and @okf-wiki/contract.
+ * @okf-wiki/agent — Pi + product shell Wiki Run surface (ADR 0030).
+ * No Mastra / AI SDK. Framework imports stay out of core/contract.
  *
- * Skill resolve (`resolveSkillPath`, etc.) lives in `@okf-wiki/core` —
- * re-exported here for agent-internal convenience only. Server must import
- * skill resolve from `@okf-wiki/core`.
+ * Skill resolve lives in `@okf-wiki/core` — re-exported here for convenience.
+ * Server should prefer importing skill resolve from `@okf-wiki/core`.
  */
 
 export {
-  runWikiAgent,
-  stagingDirForRun,
-  shouldUseFixtureMode,
-  resolveModelConfig,
-  resolveWikiModel,
+  startWikiRun,
+  resumeWikiRun,
+  replayWikiRunAuditEvents,
+  extractSuspendGate,
+  sessionViewFromTerminal,
+  type StartWikiRunInput,
+  type ResumeWikiRunInput,
+  type WikiRunOrchestrationResult,
+  type WikiWorkflowJobEvent,
+  type WikiWorkflowTerminal,
+} from "./wiki-run.js";
+
+export {
+  produceWithPi,
+  shouldUsePiFixtureMode,
   parsePlanFromAgentText,
+  stagingDirForRun,
+  type ProduceWithPiInput,
+  type ProduceWithPiResult,
+  type LivePiRole,
   type WikiRunAgentInput,
   type WikiRunAgentResult,
   type WikiRunStreamWriter,
-  type ResolvedWikiModel,
 } from "./produce/index.js";
+
+export {
+  runChildSession,
+  runChildrenParallel,
+  type ChildRole,
+  type RunChildSessionInput,
+  type RunChildSessionResult,
+} from "./produce/children.js";
 
 export { redactErrorMessage } from "./run-redact.js";
 
-export {
-  CONTEXT_COMPACTION_RATIO,
-  CONTEXT_TOOL_RESULT_RECENT_STEPS,
-  resolveContextTargetTokens,
-  resolveContextTargetForWorkspace,
-  buildContextInputProcessors,
-  type ResolveContextTargetInput,
-} from "./context-limits.js";
-
-export {
-  OM_OBSERVATION_RATIO,
-  OM_REFLECTION_RATIO,
-  createWikiRunMemory,
-  resolveObservationMessageTokens,
-  resolveReflectionObservationTokens,
-  wikiRunMemoryOption,
-  type CreateWikiRunMemoryInput,
-} from "./wiki-memory.js";
+export { sanitizeSummary } from "./stream-parts.js";
 
 /** Prefer `@okf-wiki/core` — re-export for agent convenience. */
 export {
@@ -48,34 +51,10 @@ export {
   resolvePackageSkillPath,
   ensureHomeProducerSkill,
   skillLayoutPaths,
+  isDurableRunStatus,
   type ResolveSkillSourceOptions,
   type ResolvedSkillSource,
 } from "@okf-wiki/core";
-
-export { sanitizeSummary } from "./stream-parts.js";
-
-export {
-  projectToolInput,
-  projectToolOutput,
-  projectUiMessageChunk,
-  projectSessionToolPart,
-  projectSessionMessages,
-  buildPlanProgressData,
-  buildPhaseProgressData,
-  writePathFromToolFields,
-  UI_READ_CONTENT_MAX,
-  UI_WRITE_PREVIEW_MAX,
-  UI_LIST_ENTRIES_MAX,
-  type PlanProgressData,
-  type PhaseProgressData,
-  type PlanPageStatus,
-} from "./ui-projection.js";
-
-export {
-  createSubagents,
-  subagentsAsAgentsMap,
-  type SubagentBundle,
-} from "./subagents.js";
 
 export {
   DEFAULT_ORCHESTRATION,
@@ -98,14 +77,15 @@ export {
   runAnalysisDir,
 } from "./spec-store.js";
 
-export { resolveRoleModels } from "./role-models.js";
-
 export {
   buildRootDelegationOptions,
   createDelegationCounters,
 } from "./delegation.js";
 
-export { runReviewCouncil } from "./review-council.js";
+export {
+  runReviewCouncil,
+  type ReviewerOutput,
+} from "./review-council.js";
 
 export {
   buildPhaseSteps,
@@ -116,54 +96,11 @@ export {
 } from "./run-timeline.js";
 
 export {
-  createSessionTurnStream,
-  createSessionWorkflowStream,
-  isRunCancelledError,
-  uiMessagesToSessionMessages,
-  sessionMessagesToUIMessages,
-  helpTextForSessionTurn,
-  isKickoff,
-  isKickoffPhrase,
-  normalizeSessionUserText,
-  resolveSessionTurnMode,
-  planToMarkdown,
-  type SessionStreamResult,
-  type SessionStreamBody,
-  type SessionStreamSideEffects,
-  type SessionTurnHooks,
-  type CreateSessionTurnStreamInput,
-  type SessionTurnHelpReason,
-  type SessionTurnModeResult,
-} from "./session-turn/index.js";
-
-export { getMastra, mastraStorageDir, resetMastraForTests } from "./mastra-instance.js";
-
-export {
-  wikiRunWorkflow,
-  WIKI_RUN_WORKFLOW_ID,
-  type WikiRunWorkflowInput,
-  type WikiRunWorkflowOutput,
-} from "./wiki-workflow.js";
-
-export {
-  startWikiRun,
-  resumeWikiRun,
-  replayWikiRunAuditEvents,
-  type StartWikiRunInput,
-  type ResumeWikiRunInput,
-  type WikiRunOrchestrationResult,
-  type WikiWorkflowJobEvent,
-} from "./wiki-run.js";
-
-export {
-  mapWorkflowResult,
-  extractSuspendGate,
-  sessionViewFromTerminal,
-  isDurableRunStatus,
-  type WikiWorkflowTerminal,
-  type SessionTerminalView,
-  type SuspendGatePayload,
-} from "./workflow-result.js";
+  bindRunAbortSignal,
+  unbindRunAbortSignal,
+  getRunAbortSignal,
+  combineAbortSignals,
+} from "./run-abort.js";
 
 /** Re-export single gate UI map (also on @okf-wiki/contract). */
 export {
@@ -175,29 +112,79 @@ export {
   type GateUiMap,
 } from "@okf-wiki/contract";
 
+/** Pi harness (ADR 0030) — tool policy + run workdir layout. */
 export {
-  openWikiRunWorkflow,
-  stepIdForGate,
-  type WikiRunOpenParams,
-  type WikiRunStartParams,
-  type WikiRunResumeParams,
-  type WikiRunWorkflowHandle,
-} from "./wiki-run-orchestrator.js";
+  toolNamesForRole,
+  roleMayWrite,
+  assertSafeWikiToolList,
+  isReadOnlyToolList,
+  FORBIDDEN_WIKI_TOOLS,
+  type PiFsToolName,
+  type WikiAgentRole,
+} from "./pi/tool-policy.js";
+export {
+  assertPathAllowed,
+  assertAbsolutePathAllowed,
+  isUnder,
+  isWriteScopeRel,
+  isReadOnlyTreeRel,
+  isIgnoredSourceRel,
+  normalizeRelPath,
+  parseSourceMountPath,
+  buildWikiScopedToolDefinitions,
+  createWikiReadOperations,
+  createWikiWriteOperations,
+  createWikiEditOperations,
+  WRITE_SCOPE_PREFIXES,
+  READ_ONLY_PREFIXES,
+  type PathAccessMode,
+  type SourceIgnoreInput,
+  type AssertPathAllowedOptions,
+  type WikiToolOperationsOptions,
+  type BuildWikiScopedToolsInput,
+} from "./pi/tool-operations.js";
+export {
+  materializeRunWorkdir,
+  runWorkdirPromptPaths,
+  type RunWorkdirLayout,
+  type MaterializeRunWorkdirInput,
+} from "./pi/run-workdir.js";
+export {
+  createWikiSession,
+  resolveWikiSessionTools,
+  buildWikiSessionCustomTools,
+  type CreateWikiSessionInput,
+  type WikiSessionHandle,
+} from "./pi/create-wiki-session.js";
+export {
+  piSessionsDir,
+  piRunsDir,
+  piSessionPath,
+  piRunWorkDir,
+} from "./pi/session-paths.js";
 
+/** WikiRunShell — pure product phase machine (no Mastra). */
 export {
-  openWikiRunUiProjection,
-  type WikiWorkflowUiHandle,
-} from "./workflow-ui-stream.js";
-export {
-  openWikiRunAuditStream,
-  loadWikiRunWorkflowSnapshot,
-  minimalWorkflowStateForAudit,
-} from "./workflow-audit-stream.js";
-export { uiChunkToJobEvent } from "./workflow-events.js";
-
-export {
-  bindRunAbortSignal,
-  unbindRunAbortSignal,
-  getRunAbortSignal,
-  combineAbortSignals,
-} from "./run-abort.js";
+  startShell,
+  enterPlanGate,
+  resumeGate,
+  markProducing,
+  markHardValidate,
+  markAwaitingPublish,
+  markPublished,
+  markPublicationDeclined,
+  markFailed,
+  markCancelled,
+  shellPhaseLabel,
+  isTerminalPhase,
+  applyPlanRevision,
+  assertValidResumeGate,
+  isWikiRunGateAction,
+  isWikiRunGateKind,
+  type StartShellInput,
+  type WikiRunShellState,
+  type WikiRunShellPhase,
+  type ResumeGateInput,
+  type WikiRunGateAction,
+  type WikiRunGateKind,
+} from "./shell/wiki-run-shell.js";

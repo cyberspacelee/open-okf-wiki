@@ -1,6 +1,5 @@
 /**
  * Shared redaction helpers for operator-facing strings.
- * (Mastra→UI streaming uses @mastra/ai-sdk toAISdkStream — no hand-written chunk bridge.)
  */
 
 const MAX_SUMMARY = 400;

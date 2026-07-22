@@ -65,6 +65,12 @@ import {
   handleResetSession,
   handleSessionChat,
 } from "./routes/sessions.ts";
+import {
+  handleAgentSessionCommand,
+  handleAgentSessionEvents,
+  handleCreateAgentSession,
+  handleListAgentSessions,
+} from "./routes/agent-sessions.ts";
 import { handleListWiki, handleReadWiki, matchWikiApiRoute } from "./routes/wiki.ts";
 
 export async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -212,6 +218,51 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
       const params = matchRoute(pathname, "/api/workspaces/:id/skill");
       if (params && method === "GET") {
         await handleGetSkill(req, res, params.id!, url);
+        return;
+      }
+    }
+    // Pi agent sessions (ADR 0030) — conversational entry.
+    // Legacy /sessions is list/create meta only; chat returns 410.
+    {
+      const params = matchRoute(
+        pathname,
+        "/api/workspaces/:id/agent/sessions/:sessionId/command",
+      );
+      if (params && method === "POST") {
+        await handleAgentSessionCommand(
+          req,
+          res,
+          params.id!,
+          params.sessionId!,
+          url,
+        );
+        return;
+      }
+    }
+    {
+      const params = matchRoute(
+        pathname,
+        "/api/workspaces/:id/agent/sessions/:sessionId/events",
+      );
+      if (params && method === "GET") {
+        await handleAgentSessionEvents(
+          req,
+          res,
+          params.id!,
+          params.sessionId!,
+          url,
+        );
+        return;
+      }
+    }
+    {
+      const params = matchRoute(pathname, "/api/workspaces/:id/agent/sessions");
+      if (params && method === "GET") {
+        await handleListAgentSessions(req, res, params.id!, url);
+        return;
+      }
+      if (params && method === "POST") {
+        await handleCreateAgentSession(req, res, params.id!, url);
         return;
       }
     }

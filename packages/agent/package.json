@@ -14,18 +14,16 @@
     "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src --max-warnings 0",
-    "test": "tsc -p tsconfig.json && node --test dist/*.test.js dist/**/*.test.js"
+    "test": "tsc -p tsconfig.json && node --test dist/*.test.js dist/**/*.test.js",
+    "spike:pi": "node scripts/pi-spike.mjs"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^2.0.114",
-    "@mastra/ai-sdk": "1.6.2",
-    "@mastra/core": "1.51.0",
-    "@mastra/libsql": "1.16.0",
-    "@mastra/memory": "1.23.0",
+    "@earendil-works/pi-agent-core": "0.81.1",
+    "@earendil-works/pi-ai": "0.81.1",
+    "@earendil-works/pi-coding-agent": "0.81.1",
     "@okf-wiki/contract": "workspace:*",
     "@okf-wiki/core": "workspace:*",
     "@okf-wiki/skill": "workspace:*",
-    "ai": "^7.0.31",
     "zod": "^4.4.3"
   },
   "devDependencies": {

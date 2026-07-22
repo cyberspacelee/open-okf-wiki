@@ -1,5 +1,5 @@
 /**
- * Shared Produce types and small host helpers.
+ * Shared Produce types and small host helpers (Pi path).
  */
 
 import path from "node:path";
@@ -12,26 +12,9 @@ import { WORKSPACE_DIR_NAME } from "@okf-wiki/core";
 
 export type WikiRunAgentPhase = "plan" | "write";
 
-/**
- * Mastra workflow step writer — agent tool/text chunks use write() (wrapped as
- * workflow-step-output); product data-* parts must use custom() so they pass
- * through toAISdkStream as UI data parts (ADR 0026 / 0027 Phase 2).
- *
- * `custom` is intentionally not declared on this type: Mastra ToolStream.custom
- * is a generic overload that is not assignable to a simple `(unknown) => …`.
- * Runtime detection via hasStreamCustom() keeps ToolStream assignable.
- */
+/** Optional stream writer for product data parts (Pi / shell orchestration). */
 export type WikiRunStreamWriter = {
   write: (chunk: unknown) => Promise<void>;
-};
-
-export type StreamCustomWriter = WikiRunStreamWriter & {
-  custom: (chunk: {
-    type: `data-${string}`;
-    data: unknown;
-    id?: string;
-    transient?: boolean;
-  }) => Promise<void>;
 };
 
 export type WikiRunAgentInput = {
@@ -45,12 +28,9 @@ export type WikiRunAgentInput = {
   phase?: WikiRunAgentPhase;
   /** Confirmed plan from plan-confirm HITL (write phase). */
   plan?: WikiRunPlan;
-  /** Best-effort cancellation; fixture checks periodically, live passes to Mastra. */
+  /** Best-effort cancellation. */
   abortSignal?: AbortSignal;
-  /**
-   * When set (Session / workflow step), forward agent fullStream chunks so
-   * operators see text / tools / reasoning live. Never discard without writer.
-   */
+  /** Optional product stream writer. */
   writer?: WikiRunStreamWriter;
 };
 
