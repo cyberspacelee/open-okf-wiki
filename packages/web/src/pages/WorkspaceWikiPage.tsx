@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import remarkGfm from "remark-gfm";
+import type { Components } from "streamdown";
 import {
   ApiError,
   getWikiPage,
@@ -10,6 +9,7 @@ import {
   type WikiPageResponse,
   type WorkspaceConfig,
 } from "../api";
+import { MessageResponse } from "../components/ai-elements/message";
 import { LoadingState } from "../components/LoadingState";
 import { WorkspaceShell } from "../components/WorkspaceShell";
 import { useI18n } from "../i18n";
@@ -340,9 +340,14 @@ export function WorkspaceWikiPage() {
                     )}
                     <p className="muted small mono wiki-page-path">{page.path}</p>
                     <div className="wiki-markdown" data-testid="wiki-markdown">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                      <MessageResponse
+                        key={page.path}
+                        mode="static"
+                        components={markdownComponents}
+                        className="size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
+                      >
                         {bodyMarkdown}
-                      </ReactMarkdown>
+                      </MessageResponse>
                     </div>
                   </>
                 ) : (
