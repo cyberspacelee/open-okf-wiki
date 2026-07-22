@@ -7,8 +7,28 @@ This context defines the language for deriving a source-grounded Markdown wiki f
 ## Language
 
 **Wiki**:
-A set of source-grounded Markdown pages that explains one Repository Snapshot Set for human readers.
-_Avoid_: Knowledge Bundle, knowledge graph, model transcript
+The product deliverable: a set of source-grounded Markdown pages that explains one Repository Snapshot Set for human readers. The system produces a Wiki (Staging / Published), not a differently named artifact.
+_Avoid_: Knowledge Bundle (as product or deliverable name), Accepted Knowledge Model, Claim ledger (as product model), knowledge graph, model transcript
+
+**Concept page**:
+A non-reserved Markdown page in a Wiki tree (YAML OKF frontmatter + body) that explains one concept for readers.
+_Avoid_: Reserved wiki doc, Claim record
+
+**Concept ID**:
+The Wiki-root-relative path of a Concept page without the `.md` suffix.
+_Avoid_: Repository path, Source Citation target
+
+**OKF frontmatter**:
+The YAML block on a Concept page used for OKF page format (product-required fields and optional extensions as defined by the producer contract).
+_Avoid_: Wiki Manifest, Run Instructions metadata
+
+**Reserved wiki doc**:
+`index.md` or `log.md` in the Wiki tree — not Concept pages; maintained by the Run Boundary under product rules (directory listing and update log).
+_Avoid_: Concept page, overview narrative page
+
+**OKF page format**:
+The page-tree writing contract applied to this product’s Wiki (concept pages, reserved docs, dual-link model). A format constraint, not a product name.
+_Avoid_: Knowledge Bundle (product name), Accepted Knowledge Model, Claim ledger (as product model)
 
 **Repository Snapshot**:
 An immutable, read-only view of one named target repository at the exact revision used by one Wiki Run.
@@ -95,8 +115,8 @@ The bounded terminal summary of pages produced by a Wiki Run.
 _Avoid_: Page contents, workflow state, knowledge graph
 
 **Source Citation**:
-A resolvable reference from a Wiki page to a repository ID, path, and line range inside the pinned Repository Snapshot Set.
-_Avoid_: Unsupported filename mention, Claim record
+A resolvable reference from a Wiki page to a repository ID, path, and line range inside the pinned Repository Snapshot Set (producer form `repo:…`), listed under the page’s Citations section; not a concept-to-concept link.
+_Avoid_: Unsupported filename mention, Claim record, Concept ID edge
 
 **Refresh**:
 A Wiki Run that updates an existing Published Wiki for a newer Repository Snapshot Set while following the selected Producer Skill.
@@ -142,3 +162,4 @@ Index and current-stack shortlist: [docs/adr/README.md](docs/adr/README.md).
 - Pre-[0021](docs/adr/0021-retire-python-primary-path.md): Python / Pydantic AI harness language → TypeScript `@okf-wiki/core` (Run Boundary) + `@okf-wiki/agent` (Mastra).
 - [0020](docs/adr/0020-typescript-mastra-web-workspace.md) §6 originally forbade product clone; **operator clone** is allowed per [0022](docs/adr/0022-source-clone-into-workspace.md) (Semantic Workflow still never clones).
 - Session stream / single write path: [0024](docs/adr/0024-session-as-conversational-workspace.md) + [0025](docs/adr/0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) supersede transitional Session-SSE wording in [0023](docs/adr/0023-operator-session-stream-and-plan-confirm.md).
+- Wiki **page format**: [0028](docs/adr/0028-wiki-writing-adopts-okf-page-format.md) — OKF concept pages + reserved docs + dual links + hard gate; product remains Wiki (not Knowledge Bundle).
