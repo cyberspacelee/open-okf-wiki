@@ -13,6 +13,7 @@ Domain vocabulary: [CONTEXT.md](../../CONTEXT.md). Package map: [packages/README
 | [0025](0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) | **Single** wiki-run write path; Session uses `toAISdkStream`; no dual materialize / hand-rolled Session SSE |
 | [0026](0026-session-centric-agent-workspace.md) | **Session-centric agent**: sole operate/observe surface; Run = Session-owned job (fg/bg); Run UI read-mostly |
 | [0027](0027-framework-first-session-stream.md) | **Framework-first** Session stream/HITL: Mastra + AI SDK only; thin P1 shell; ban parallel converters |
+| [0028](0028-wiki-writing-adopts-okf-page-format.md) | **OKF page format** on Wiki trees: concept FM, reserved index/log, dual links, hard gate (not Bundle producer) |
 
 Still load-bearing domain/ops decisions (map Host → Run Boundary when reading pre-0019 text):
 
@@ -45,6 +46,7 @@ Still load-bearing domain/ops decisions (map Host → Run Boundary when reading 
 
 1. Prefer **CONTEXT.md** for domain terms.
 2. Prefer **0020 + 0021 + 0022 + 0024 + 0025 + 0026 + 0027** for “how the product is built today” (0026 wins on Session vs Run center; **0027** wins on framework-first stream/HITL).
-3. Pre-0019 ADRs may say **Host** / **Host Instructions** → map to **Run Boundary** / **Run Instructions**.
-4. Pre-0021 ADRs may assume **Python** harness → map duties to `@okf-wiki/core` + `@okf-wiki/agent`.
-5. Do **not** reintroduce: dual Staging writers, Session-local materialize, `__choice__:` HITL, hand-rolled Session Mastra→SSE, parallel `toAISdkStream` business wrappers, Mastra dependency inside core.
+3. Prefer **0028** for Wiki **page-format** contract (OKF concept pages, reserved docs, dual links, hard gate). Do not treat title-only frontmatter as current target.
+4. Pre-0019 ADRs may say **Host** / **Host Instructions** → map to **Run Boundary** / **Run Instructions**.
+5. Pre-0021 ADRs may assume **Python** harness → map duties to `@okf-wiki/core` + `@okf-wiki/agent`.
+6. Do **not** reintroduce: dual Staging writers, Session-local materialize, `__choice__:` HITL, hand-rolled Session Mastra→SSE, parallel `toAISdkStream` business wrappers, Mastra dependency inside core; do **not** rename the product deliverable to Knowledge Bundle.
