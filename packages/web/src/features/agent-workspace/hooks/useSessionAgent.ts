@@ -7,6 +7,11 @@
  *
  * Transcript is projected from SSE only for assistant / tool / product rows.
  * User prompts are optimistic; no invented stub tool trails.
+ *
+ * Projection rules (see project-agent-events.ts) follow pi-web:
+ * - ignore user / toolResult message_* as transcript cards
+ * - one assistant bubble per assistant message; tools nest under last assistant
+ * - busy status follows agent_start / agent_end (not every message_end)
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -15,46 +20,44 @@ import type {
   AgentCommandResponse,
   AgentSseEvent,
   ProductSseEvent,
+  WikiRunPlan,
 } from "@okf-wiki/contract";
 import {
   agentSessionCommand,
   agentSessionEventsUrl,
 } from "../../../api";
+import {
+  applyPiEvent,
+  applyProductEvent,
+  isTerminalOrWaitingPhase,
+  type AgentMessage,
+  type StreamingRefs,
+} from "./project-agent-events";
 
-export type AgentMessageRole = "user" | "assistant" | "tool" | "system";
+export type {
+  AgentMessage,
+  AgentProductMeta,
+  AgentToolCall,
+} from "./project-agent-events";
 
-export type AgentToolCall = {
-  id: string;
-  name: string;
-  input?: string;
-  output?: string;
-  status: "pending" | "running" | "done" | "error";
-};
-
-/** Product SSE inject rendered as a system/product card. */
-export type AgentProductMeta = {
-  kind: "run_phase" | "gate" | "run_link";
-  phase?: string;
-  gate?: "plan" | "publication";
-  runId?: string;
-  status?: string;
-  question?: string;
-};
-
-export type AgentMessage = {
-  id: string;
-  role: AgentMessageRole;
-  content: string;
-  createdAt: string;
-  /** Tool-like cards nested under an assistant turn. */
-  tools?: AgentToolCall[];
-  /** Soft status line (e.g. "streaming", "aborted"). */
-  status?: string;
-  /** Product inject metadata (phase / gate / run_link). */
-  product?: AgentProductMeta;
-};
-
+export type AgentMessageRole = AgentMessage["role"];
 export type AgentStatus = "idle" | "sending" | "streaming" | "error";
+
+/** Active product HITL gate waiting on the operator. */
+export type PendingGate = {
+  gate: "plan" | "publication";
+  runId?: string;
+  question?: string;
+  plan?: WikiRunPlan;
+  pages?: string[];
+};
+
+export type ResumeGateInput = {
+  gate: "plan" | "publication";
+  action: "approve" | "deny" | "revise";
+  feedback?: string;
+  runId?: string;
+};
 
 export type UseSessionAgentArgs = {
   workspaceId: string;
@@ -74,11 +77,23 @@ export type UseSessionAgentResult = {
    * Optional modelProfileId overrides the workspace default for this run.
    */
   startWikiRun: (options?: { modelProfileId?: string }) => Promise<void>;
+  /** Resume plan / publication gate (approve | deny | revise). */
+  resumeGate: (input: ResumeGateInput) => Promise<void>;
   abort: () => Promise<void>;
   clearError: () => void;
   /** Absolute EventSource URL for Pi + product SSE. */
   eventsUrl: string | null;
   lastCommandResponse: AgentCommandResponse | null;
+  /** Latest product run phase (from SSE). */
+  phase: string | null;
+  /** Linked product run id (from run_link / run_phase). */
+  linkedRunId: string | null;
+  /** Plan from the latest product gate inject. */
+  plan: WikiRunPlan | null;
+  /** Active HITL gate, if any. */
+  pendingGate: PendingGate | null;
+  /** True while a resume_gate command is in flight. */
+  gateBusy: boolean;
 };
 
 const RECONNECT_MS = 1500;
@@ -89,19 +104,6 @@ function nowIso(): string {
 
 function makeId(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function safeStringify(value: unknown, max = 4000): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value === "string") {
-    return value.length > max ? `${value.slice(0, max)}…` : value;
-  }
-  try {
-    const s = JSON.stringify(value, null, 2);
-    return s.length > max ? `${s.slice(0, max)}…` : s;
-  } catch {
-    return String(value);
-  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -115,275 +117,6 @@ function eventSequence(event: AgentSseEvent): number | undefined {
   return undefined;
 }
 
-function productCardContent(event: ProductSseEvent): string {
-  switch (event.kind) {
-    case "run_phase": {
-      const bits = [`Phase: ${event.phase}`];
-      if (event.status) bits.push(`status=${event.status}`);
-      if (event.runId) bits.push(`run=${event.runId}`);
-      if (event.message) bits.push(event.message);
-      return bits.join(" · ");
-    }
-    case "gate": {
-      const bits = [`Gate: ${event.gate}`];
-      if (event.runId) bits.push(`run=${event.runId}`);
-      if (event.question) bits.push(event.question);
-      if (event.pages?.length) {
-        bits.push(`pages: ${event.pages.slice(0, 8).join(", ")}`);
-      }
-      return bits.join(" · ");
-    }
-    case "run_link": {
-      const bits = [`Linked run ${event.runId}`];
-      if (event.status) bits.push(`status=${event.status}`);
-      return bits.join(" · ");
-    }
-    default: {
-      const _exhaustive: never = event;
-      return String(_exhaustive);
-    }
-  }
-}
-
-function productMeta(event: ProductSseEvent): AgentProductMeta {
-  switch (event.kind) {
-    case "run_phase":
-      return {
-        kind: "run_phase",
-        phase: event.phase,
-        runId: event.runId,
-        status: event.status,
-      };
-    case "gate":
-      return {
-        kind: "gate",
-        gate: event.gate,
-        runId: event.runId,
-        question: event.question,
-      };
-    case "run_link":
-      return {
-        kind: "run_link",
-        runId: event.runId,
-        status: event.status,
-      };
-    default: {
-      const _exhaustive: never = event;
-      return _exhaustive;
-    }
-  }
-}
-
-/**
- * Project a Pi AgentSession event (wrapped as source:"pi") into transcript
- * mutations. Mutates `messages` in place via functional updates outside.
- */
-function applyPiEvent(
-  prev: AgentMessage[],
-  kind: string,
-  payload: unknown,
-  streamingAssistantId: { current: string | null },
-): AgentMessage[] {
-  const body = isRecord(payload) ? payload : {};
-  const ts = nowIso();
-
-  // text_delta under message_update
-  if (kind === "message_update") {
-    const ame = isRecord(body.assistantMessageEvent)
-      ? body.assistantMessageEvent
-      : null;
-    if (ame?.type === "text_delta" && typeof ame.delta === "string") {
-      const delta = ame.delta;
-      const existingId = streamingAssistantId.current;
-      if (existingId) {
-        let found = false;
-        const next = prev.map((m) => {
-          if (m.id !== existingId) return m;
-          found = true;
-          return {
-            ...m,
-            content: m.content + delta,
-            status: "streaming",
-          };
-        });
-        if (found) return next;
-      }
-      const id = makeId("asst");
-      streamingAssistantId.current = id;
-      return [
-        ...prev,
-        {
-          id,
-          role: "assistant",
-          content: delta,
-          createdAt: ts,
-          status: "streaming",
-          tools: [],
-        },
-      ];
-    }
-    return prev;
-  }
-
-  if (kind === "message_start") {
-    // Prefer creating a bubble so later tool events have a parent.
-    if (streamingAssistantId.current) {
-      const id = streamingAssistantId.current;
-      if (prev.some((m) => m.id === id)) return prev;
-    }
-    const id = makeId("asst");
-    streamingAssistantId.current = id;
-    return [
-      ...prev,
-      {
-        id,
-        role: "assistant",
-        content: "",
-        createdAt: ts,
-        status: "streaming",
-        tools: [],
-      },
-    ];
-  }
-
-  if (kind === "message_end") {
-    const id = streamingAssistantId.current;
-    // Fixture mode: server emits note without prior streaming deltas.
-    const fixtureNote =
-      typeof body.note === "string"
-        ? body.note
-        : typeof body.mode === "string" && body.mode === "fixture"
-          ? "fixture mode — prompt recorded (no LLM)"
-          : undefined;
-    if (id) {
-      streamingAssistantId.current = null;
-      return prev.map((m) => {
-        if (m.id !== id) return m;
-        const content =
-          m.content ||
-          (typeof fixtureNote === "string" ? fixtureNote : m.content);
-        return { ...m, content, status: "done" };
-      });
-    }
-    if (fixtureNote) {
-      return [
-        ...prev,
-        {
-          id: makeId("asst"),
-          role: "assistant",
-          content: fixtureNote,
-          createdAt: ts,
-          status: "done",
-        },
-      ];
-    }
-    return prev;
-  }
-
-  if (kind === "tool_execution_start") {
-    const toolCallId =
-      typeof body.toolCallId === "string" ? body.toolCallId : makeId("tool");
-    const toolName =
-      typeof body.toolName === "string" ? body.toolName : "tool";
-    const input = safeStringify(body.args);
-    const tool: AgentToolCall = {
-      id: toolCallId,
-      name: toolName,
-      input,
-      status: "running",
-    };
-
-    let assistantId = streamingAssistantId.current;
-    if (!assistantId || !prev.some((m) => m.id === assistantId)) {
-      assistantId = makeId("asst");
-      streamingAssistantId.current = assistantId;
-      return [
-        ...prev,
-        {
-          id: assistantId,
-          role: "assistant",
-          content: "",
-          createdAt: ts,
-          status: "streaming",
-          tools: [tool],
-        },
-      ];
-    }
-
-    return prev.map((m) => {
-      if (m.id !== assistantId) return m;
-      const tools = [...(m.tools ?? [])];
-      const idx = tools.findIndex((t) => t.id === toolCallId);
-      if (idx >= 0) {
-        tools[idx] = { ...tools[idx], ...tool };
-      } else {
-        tools.push(tool);
-      }
-      return { ...m, tools, status: "streaming" };
-    });
-  }
-
-  if (kind === "tool_execution_update") {
-    const toolCallId =
-      typeof body.toolCallId === "string" ? body.toolCallId : null;
-    if (!toolCallId) return prev;
-    const partial = safeStringify(body.partialResult);
-    return prev.map((m) => {
-      if (!m.tools?.some((t) => t.id === toolCallId)) return m;
-      return {
-        ...m,
-        tools: m.tools.map((t) =>
-          t.id === toolCallId
-            ? { ...t, output: partial ?? t.output, status: "running" as const }
-            : t,
-        ),
-      };
-    });
-  }
-
-  if (kind === "tool_execution_end") {
-    const toolCallId =
-      typeof body.toolCallId === "string" ? body.toolCallId : null;
-    if (!toolCallId) return prev;
-    const output = safeStringify(body.result);
-    const isError = body.isError === true;
-    return prev.map((m) => {
-      if (!m.tools?.some((t) => t.id === toolCallId)) return m;
-      return {
-        ...m,
-        tools: m.tools.map((t) =>
-          t.id === toolCallId
-            ? {
-                ...t,
-                output: output ?? t.output,
-                status: isError ? ("error" as const) : ("done" as const),
-              }
-            : t,
-        ),
-      };
-    });
-  }
-
-  if (kind === "error") {
-    const message =
-      typeof body.message === "string" ? body.message : "Agent error";
-    return [
-      ...prev,
-      {
-        id: makeId("sys"),
-        role: "system",
-        content: message,
-        createdAt: ts,
-        status: "error",
-      },
-    ];
-  }
-
-  // agent_start / agent_end / agent_settled / prompt / session_ready / etc.
-  // do not invent transcript rows — status is handled by the caller.
-  return prev;
-}
-
 export function useSessionAgent({
   workspaceId,
   sessionId,
@@ -395,12 +128,24 @@ export function useSessionAgent({
   const [input, setInput] = useState("");
   const [lastCommandResponse, setLastCommandResponse] =
     useState<AgentCommandResponse | null>(null);
+  const [phase, setPhase] = useState<string | null>(null);
+  const [linkedRunId, setLinkedRunId] = useState<string | null>(null);
+  const [plan, setPlan] = useState<WikiRunPlan | null>(null);
+  const [pendingGate, setPendingGate] = useState<PendingGate | null>(null);
+  const [gateBusy, setGateBusy] = useState(false);
 
   const sendInFlight = useRef(false);
+  const planRef = useRef<WikiRunPlan | null>(null);
+  const linkedRunIdRef = useRef<string | null>(null);
+  planRef.current = plan;
+  linkedRunIdRef.current = linkedRunId;
   const esRef = useRef<EventSource | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSequenceRef = useRef<number>(-1);
-  const streamingAssistantId = useRef<string | null>(null);
+  const streamRefs = useRef<StreamingRefs>({
+    streamingAssistantId: null,
+    lastAssistantId: null,
+  });
   /** Generation counter so stale reconnects do not reopen closed sessions. */
   const streamGenRef = useRef(0);
 
@@ -425,30 +170,53 @@ export function useSessionAgent({
 
     if (event.source === "product") {
       const product = event as ProductSseEvent;
-      const card: AgentMessage = {
-        id: makeId(`product_${product.kind}`),
-        role: "system",
-        content: productCardContent(product),
-        createdAt:
-          "timestamp" in product && typeof product.timestamp === "string"
-            ? product.timestamp
-            : nowIso(),
-        product: productMeta(product),
-        status: product.kind,
-      };
-      setMessages((prev) => [...prev, card]);
+      setMessages((prev) => applyProductEvent(prev, product));
+
       if (product.kind === "run_phase") {
-        if (
-          product.phase === "done" ||
-          product.phase === "failed" ||
-          product.phase === "cancelled" ||
-          product.phase === "idle" ||
-          product.phase === "awaiting_plan" ||
-          product.phase === "awaiting_publish"
-        ) {
+        setPhase(product.phase);
+        if (product.runId) setLinkedRunId(product.runId);
+        if (isTerminalOrWaitingPhase(product.phase)) {
           setStatus("idle");
         } else {
           setStatus("streaming");
+        }
+        // Clear HITL chrome when the shell leaves a waiting phase.
+        // (revise keeps awaiting_plan — gate inject will refresh pendingGate.)
+        if (
+          product.phase !== "awaiting_plan" &&
+          product.phase !== "awaiting_publish"
+        ) {
+          setPendingGate(null);
+        }
+      } else if (product.kind === "run_link") {
+        setLinkedRunId(product.runId);
+      } else if (product.kind === "gate") {
+        if (product.runId) setLinkedRunId(product.runId);
+        if (product.plan) setPlan(product.plan);
+        // resume_gate echoes also emit gate — open questions set pending;
+        // revise echoes refresh plan while keeping the gate open.
+        const isResumeEcho =
+          typeof product.question === "string" &&
+          product.question.startsWith("resume_gate ");
+        if (!isResumeEcho && product.gate) {
+          setPendingGate({
+            gate: product.gate,
+            runId: product.runId,
+            question: product.question,
+            plan: product.plan,
+            pages: product.pages,
+          });
+          setStatus("idle");
+        } else if (isResumeEcho && product.gate) {
+          setPendingGate((prev) => {
+            if (!prev || prev.gate !== product.gate) return prev;
+            return {
+              ...prev,
+              runId: product.runId ?? prev.runId,
+              plan: product.plan ?? prev.plan,
+              pages: product.pages ?? prev.pages,
+            };
+          });
         }
       }
       return;
@@ -456,13 +224,11 @@ export function useSessionAgent({
 
     if (event.source === "pi") {
       const kind = event.kind;
+      // Busy chrome follows agent lifecycle, NOT every message_end
+      // (Pi emits message_end for user + toolResult mid-turn).
       if (kind === "agent_start" || kind === "prompt" || kind === "steer") {
         setStatus("streaming");
-      } else if (
-        kind === "agent_end" ||
-        kind === "agent_settled" ||
-        kind === "message_end"
-      ) {
+      } else if (kind === "agent_end" || kind === "agent_settled") {
         setStatus((s) => (s === "error" ? s : "idle"));
       } else if (kind === "error") {
         const payload = event.payload;
@@ -475,7 +241,7 @@ export function useSessionAgent({
       }
 
       setMessages((prev) =>
-        applyPiEvent(prev, kind, event.payload, streamingAssistantId),
+        applyPiEvent(prev, kind, event.payload, streamRefs.current),
       );
     }
   }, []);
@@ -487,9 +253,17 @@ export function useSessionAgent({
     setError(null);
     setInput("");
     setLastCommandResponse(null);
+    setPhase(null);
+    setLinkedRunId(null);
+    setPlan(null);
+    setPendingGate(null);
+    setGateBusy(false);
     sendInFlight.current = false;
     lastSequenceRef.current = -1;
-    streamingAssistantId.current = null;
+    streamRefs.current = {
+      streamingAssistantId: null,
+      lastAssistantId: null,
+    };
 
     if (esRef.current) {
       esRef.current.close();
@@ -593,7 +367,7 @@ export function useSessionAgent({
       try {
         setStatus("streaming");
         await runCommand({ type: "prompt", text: body });
-        // Stay streaming until agent_end / message_end / idle product phase.
+        // Stay streaming until agent_end / terminal product phase.
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         setError(message);
@@ -617,11 +391,16 @@ export function useSessionAgent({
       try {
         setStatus("streaming");
         const profileId = options?.modelProfileId?.trim();
-        await runCommand({
+        const res = await runCommand({
           type: "start_wiki_run",
           ...(profileId ? { modelProfileId: profileId } : {}),
         });
         // Product run_phase / gate / run_link events populate the transcript.
+        // If the command was ignored (busy), surface that immediately.
+        if (res?.message?.includes("ignored")) {
+          setError(res.message);
+          setStatus("idle");
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         setError(message);
@@ -633,6 +412,57 @@ export function useSessionAgent({
     [sessionId, runCommand],
   );
 
+  const resumeGate = useCallback(
+    async (input: ResumeGateInput) => {
+      if (!sessionId || gateBusy || sendInFlight.current) {
+        return;
+      }
+      setGateBusy(true);
+      setError(null);
+      try {
+        setStatus("streaming");
+        const runId =
+          input.runId ??
+          pendingGate?.runId ??
+          linkedRunIdRef.current ??
+          undefined;
+        const planForApprove =
+          input.gate === "plan" && input.action === "approve"
+            ? (pendingGate?.plan ?? planRef.current ?? undefined)
+            : undefined;
+        const res = await runCommand({
+          type: "resume_gate",
+          gate: input.gate,
+          action: input.action,
+          ...(input.feedback?.trim()
+            ? { feedback: input.feedback.trim() }
+            : {}),
+          ...(planForApprove ? { plan: planForApprove } : {}),
+          ...(runId ? { runId } : {}),
+        });
+        if (
+          res?.message?.includes("rejected") ||
+          res?.message?.includes("ignored")
+        ) {
+          setError(res.message);
+          setStatus("idle");
+          return;
+        }
+        // Optimistic clear for terminal gate decisions; revise stays open.
+        if (input.action === "approve" || input.action === "deny") {
+          setPendingGate(null);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        setStatus("error");
+      } finally {
+        setGateBusy(false);
+      }
+    },
+    [sessionId, gateBusy, pendingGate, runCommand],
+  );
+
   const abort = useCallback(async () => {
     if (!sessionId) return;
     try {
@@ -641,7 +471,10 @@ export function useSessionAgent({
       // Server may reject if session missing — still mark local idle.
     }
     setStatus("idle");
-    streamingAssistantId.current = null;
+    streamRefs.current = {
+      streamingAssistantId: null,
+      lastAssistantId: streamRefs.current.lastAssistantId,
+    };
     setMessages((prev) => [
       ...prev,
       {
@@ -664,9 +497,15 @@ export function useSessionAgent({
     setInput,
     send,
     startWikiRun,
+    resumeGate,
     abort,
     clearError,
     eventsUrl,
     lastCommandResponse,
+    phase,
+    linkedRunId,
+    plan,
+    pendingGate,
+    gateBusy,
   };
 }

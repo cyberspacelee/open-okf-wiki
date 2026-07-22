@@ -17,11 +17,19 @@ import type {
   AgentMessage,
   AgentProductMeta,
   AgentToolCall,
+  PendingGate,
+  ResumeGateInput,
 } from "../hooks/useSessionAgent";
+import { AgentMarkdown } from "./AgentMarkdown";
+import { GateActions } from "./GateActions";
 
 export type TranscriptProps = {
   messages: AgentMessage[];
   className?: string;
+  /** Active HITL gate — actions render on the matching product gate card. */
+  pendingGate?: PendingGate | null;
+  gateBusy?: boolean;
+  onResumeGate?: (input: ResumeGateInput) => void | Promise<void>;
 };
 
 function ToolCard({ tool }: { tool: AgentToolCall }) {
@@ -105,7 +113,19 @@ function productBadgeVariant(
   return "secondary";
 }
 
-function MessageCard({ message }: { message: AgentMessage }) {
+function MessageCard({
+  message,
+  showGateActions,
+  pendingGate,
+  gateBusy,
+  onResumeGate,
+}: {
+  message: AgentMessage;
+  showGateActions: boolean;
+  pendingGate: PendingGate | null;
+  gateBusy: boolean;
+  onResumeGate?: (input: ResumeGateInput) => void | Promise<void>;
+}) {
   const { t } = useI18n();
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
@@ -179,7 +199,14 @@ function MessageCard({ message }: { message: AgentMessage }) {
           ) : null}
         </div>
         {message.content ? (
-          <div className="whitespace-pre-wrap">{message.content}</div>
+          message.role === "assistant" ? (
+            <AgentMarkdown
+              content={message.content}
+              streaming={message.status === "streaming"}
+            />
+          ) : (
+            <div className="whitespace-pre-wrap">{message.content}</div>
+          )
         ) : null}
         {message.tools && message.tools.length > 0 ? (
           <div className="mt-2 flex flex-col gap-1.5">
@@ -188,13 +215,43 @@ function MessageCard({ message }: { message: AgentMessage }) {
             ))}
           </div>
         ) : null}
+        {showGateActions && pendingGate && onResumeGate ? (
+          <GateActions
+            pending={pendingGate}
+            busy={gateBusy}
+            onResume={onResumeGate}
+            compact
+            className="mt-2 border-t border-border/50 pt-2"
+          />
+        ) : null}
       </div>
     </div>
   );
 }
 
-export function Transcript({ messages, className }: TranscriptProps) {
+export function Transcript({
+  messages,
+  className,
+  pendingGate = null,
+  gateBusy = false,
+  onResumeGate,
+}: TranscriptProps) {
   const { t } = useI18n();
+
+  // Only the latest matching gate card shows actions (avoid stale buttons).
+  let activeGateMessageId: string | null = null;
+  if (pendingGate) {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i]!;
+      if (
+        m.product?.kind === "gate" &&
+        m.product.gate === pendingGate.gate
+      ) {
+        activeGateMessageId = m.id;
+        break;
+      }
+    }
+  }
 
   if (messages.length === 0) {
     return (
@@ -220,7 +277,14 @@ export function Transcript({ messages, className }: TranscriptProps) {
     >
       <div className="flex flex-col gap-3 px-3 py-3 md:px-4">
         {messages.map((m) => (
-          <MessageCard key={m.id} message={m} />
+          <MessageCard
+            key={m.id}
+            message={m}
+            showGateActions={m.id === activeGateMessageId}
+            pendingGate={pendingGate}
+            gateBusy={gateBusy}
+            onResumeGate={onResumeGate}
+          />
         ))}
       </div>
     </ScrollArea>

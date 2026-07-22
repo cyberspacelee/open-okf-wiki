@@ -23,6 +23,11 @@ import type {
 } from "../../../api";
 import { useI18n } from "../../../i18n";
 import { workspaceHref } from "../../../lib/workspace-path";
+import type {
+  PendingGate,
+  ResumeGateInput,
+} from "../hooks/useSessionAgent";
+import { GateActions } from "../transcript/GateActions";
 
 export type ContextPanelsProps = {
   workspaceId: string;
@@ -33,6 +38,9 @@ export type ContextPanelsProps = {
   linkedRunId?: string | null;
   phase?: string | null;
   recentRuns?: StoredRunRecord[];
+  pendingGate?: PendingGate | null;
+  gateBusy?: boolean;
+  onResumeGate?: (input: ResumeGateInput) => void | Promise<void>;
   className?: string;
 };
 
@@ -77,10 +85,17 @@ export function ContextPanels({
   linkedRunId = null,
   phase = null,
   recentRuns = [],
+  pendingGate = null,
+  gateBusy = false,
+  onResumeGate,
   className,
 }: ContextPanelsProps) {
   const { t } = useI18n();
   const sources: WorkspaceSource[] = workspace?.sources ?? [];
+  const showPlanGate =
+    pendingGate?.gate === "plan" && Boolean(onResumeGate);
+  const showPubGate =
+    pendingGate?.gate === "publication" && Boolean(onResumeGate);
 
   return (
     <div
@@ -189,6 +204,13 @@ export function ContextPanels({
             <span className="text-xs font-semibold tracking-wide uppercase">
               {t.agentWorkspace.panelPlan}
             </span>
+            {showPlanGate && pendingGate && onResumeGate ? (
+              <GateActions
+                pending={pendingGate}
+                busy={gateBusy}
+                onResume={onResumeGate}
+              />
+            ) : null}
             {!plan ? (
               <EmptyHint text={t.agentWorkspace.planEmpty} />
             ) : (
@@ -251,6 +273,13 @@ export function ContextPanels({
                 </dd>
               </div>
             </dl>
+            {showPubGate && pendingGate && onResumeGate ? (
+              <GateActions
+                pending={pendingGate}
+                busy={gateBusy}
+                onResume={onResumeGate}
+              />
+            ) : null}
             {recentRuns.length === 0 ? (
               <EmptyHint text={t.agentWorkspace.runsEmpty} />
             ) : (

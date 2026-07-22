@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
     "lint": "eslint . --max-warnings 0",
-    "test": "node -e \"console.log('web unit tests: none (session suite purged)')\"",
+    "test": "node --experimental-strip-types --test src/**/*.test.ts",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui"
   },

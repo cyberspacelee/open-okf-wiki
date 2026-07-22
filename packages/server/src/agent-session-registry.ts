@@ -40,7 +40,11 @@ import {
   type WikiRunRecordStatus,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
-import { isPathInside, resolveSkillPath } from "@okf-wiki/core";
+import {
+  isPathInside,
+  publishStagingToPublication,
+  resolveSkillPath,
+} from "@okf-wiki/core";
 import {
   emitAgentSessionEvent,
   emitProductAgentEvent,
@@ -962,13 +966,22 @@ async function handleStartWikiRun(
     };
   }
 
-  // Plan gate skipped — produce immediately (fixture by default).
+  // Plan gate skipped — produce in the background so the HTTP command
+  // returns immediately and the client can observe run_phase SSE progress
+  // (planning → writing → awaiting_publish) without waiting for the LLM.
   entry.busy = true;
-  try {
-    await runProducePhase(entry, workspace);
-  } finally {
-    entry.busy = false;
-  }
+  void runProducePhase(entry, workspace)
+    .catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      emitPi(entry.workspaceId, entry.sessionId, "error", { message });
+      if (entry.shell && !isTerminalPhase(entry.shell.phase)) {
+        entry.shell = markFailed(entry.shell, message);
+        emitPhase(entry, "failed", message, "failed");
+      }
+    })
+    .finally(() => {
+      entry.busy = false;
+    });
 
   return {
     ok: true,
@@ -976,8 +989,8 @@ async function handleStartWikiRun(
     command: "start_wiki_run",
     status: "accepted",
     message: preferPiFixture()
-      ? "Wiki run produced in fixture mode — awaiting publication"
-      : "Wiki run produce finished — awaiting publication",
+      ? "Wiki run produce started (fixture mode)"
+      : "Wiki run produce started",
     runId,
   };
 }
@@ -1003,6 +1016,49 @@ async function handleResumeGate(
   }
 
   const step = command.gate === "publication" ? "publish" : "plan";
+
+  // Publication approve: copy staging → publicationPath *before* shell
+  // becomes terminal `published`, so a copy failure can still markFailed.
+  let publicationPathMsg: string | undefined;
+  if (
+    command.gate === "publication" &&
+    command.action === "approve" &&
+    entry.runId
+  ) {
+    try {
+      const runWorkDir = piRunWorkDir(workspace.rootPath, entry.runId);
+      const wikiDir = path.join(runWorkDir, "wiki");
+      const publicationPath =
+        workspace.publicationPath ?? path.join(workspace.rootPath, "wiki");
+      const sources = (workspace.sources ?? []).map((s) => ({
+        id: s.id,
+        path: s.path,
+      }));
+      const pub = await publishStagingToPublication({
+        stagingDir: wikiDir,
+        publicationPath,
+        runId: entry.runId,
+        sources,
+      });
+      publicationPathMsg = pub.publicationPath;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      emitPi(entry.workspaceId, entry.sessionId, "error", { message });
+      if (entry.shell && !isTerminalPhase(entry.shell.phase)) {
+        entry.shell = markFailed(entry.shell, message);
+        emitPhase(entry, "failed", message, "failed");
+        emitRunLink(entry, "failed");
+      }
+      return {
+        ok: true,
+        sessionId: entry.sessionId,
+        command: "resume_gate",
+        status: "accepted",
+        message: `publication failed: ${message}`,
+        runId: entry.runId,
+      };
+    }
+  }
 
   try {
     entry.shell = resumeGate(entry.shell, {
@@ -1033,15 +1089,19 @@ async function handleResumeGate(
   );
 
   const shellPhase = entry.shell.phase;
+  const phaseMessage =
+    publicationPathMsg != null
+      ? `Published to ${publicationPathMsg}`
+      : `gate ${command.gate} → ${command.action}`;
   emitPhase(
     entry,
     productPhaseFromShell(shellPhase),
-    `gate ${command.gate} → ${command.action}`,
+    phaseMessage,
     statusFromShell(shellPhase),
   );
   emitRunLink(entry, statusFromShell(shellPhase));
 
-  // Plan approved → shell idle with plan → produce.
+  // Plan approved → shell idle with plan → produce in the background.
   if (
     command.gate === "plan" &&
     command.action === "approve" &&
@@ -1049,11 +1109,18 @@ async function handleResumeGate(
     entry.shell.plan
   ) {
     entry.busy = true;
-    try {
-      await runProducePhase(entry, workspace);
-    } finally {
-      entry.busy = false;
-    }
+    void runProducePhase(entry, workspace)
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        emitPi(entry.workspaceId, entry.sessionId, "error", { message });
+        if (entry.shell && !isTerminalPhase(entry.shell.phase)) {
+          entry.shell = markFailed(entry.shell, message);
+          emitPhase(entry, "failed", message, "failed");
+        }
+      })
+      .finally(() => {
+        entry.busy = false;
+      });
   }
 
   return {
@@ -1061,7 +1128,7 @@ async function handleResumeGate(
     sessionId: entry.sessionId,
     command: "resume_gate",
     status: "accepted",
-    message: `gate ${command.gate} ${command.action} → ${entry.shell.phase}`,
+    message: `gate ${command.gate} ${command.action} → ${shellPhase}`,
     runId: entry.runId,
   };
 }

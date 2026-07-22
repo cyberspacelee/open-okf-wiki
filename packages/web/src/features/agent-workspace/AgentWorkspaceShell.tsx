@@ -31,6 +31,8 @@ import { Transcript } from "./transcript/Transcript";
 import type {
   AgentMessage,
   AgentStatus,
+  PendingGate,
+  ResumeGateInput,
 } from "./hooks/useSessionAgent";
 import type {
   ModelProfilePublic,
@@ -61,6 +63,9 @@ export type AgentWorkspaceShellProps = {
   plan?: WikiRunPlan | null;
   linkedRunId?: string | null;
   phase?: string | null;
+  pendingGate?: PendingGate | null;
+  gateBusy?: boolean;
+  onResumeGate?: (input: ResumeGateInput) => void | Promise<void>;
   recentRuns?: StoredRunRecord[];
   className?: string;
   /** Settings model catalog for wiki-run picker. */
@@ -91,6 +96,9 @@ export function AgentWorkspaceShell({
   plan = null,
   linkedRunId = null,
   phase = null,
+  pendingGate = null,
+  gateBusy = false,
+  onResumeGate,
   recentRuns = [],
   className,
   models = [],
@@ -124,6 +132,9 @@ export function AgentWorkspaceShell({
       plan={plan}
       linkedRunId={linkedRunId}
       phase={phase}
+      pendingGate={pendingGate}
+      gateBusy={gateBusy}
+      onResumeGate={onResumeGate}
       recentRuns={recentRuns}
     />
   );
@@ -204,7 +215,12 @@ export function AgentWorkspaceShell({
         ) : null}
 
         <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <Transcript messages={messages} />
+          <Transcript
+            messages={messages}
+            pendingGate={pendingGate}
+            gateBusy={gateBusy}
+            onResumeGate={onResumeGate}
+          />
           <Composer
             input={input}
             onInputChange={onInputChange}

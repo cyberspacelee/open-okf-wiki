@@ -237,6 +237,12 @@ export function AgentWorkspacePage() {
             agentStatus={agent.status}
             agentError={agent.error}
             onDismissAgentError={agent.clearError}
+            plan={agent.plan}
+            linkedRunId={agent.linkedRunId}
+            phase={agent.phase}
+            pendingGate={agent.pendingGate}
+            gateBusy={agent.gateBusy}
+            onResumeGate={(input) => void agent.resumeGate(input)}
             recentRuns={recentRuns}
             models={models}
             wikiModelProfileId={wikiModelProfileId}

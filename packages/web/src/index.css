@@ -445,12 +445,42 @@ code.mono {
 
 .session-markdown h1,
 .session-markdown h2,
+.session-markdown h3,
+.session-markdown h4 {
+  @apply font-semibold mt-2 mb-1 tracking-tight;
+}
+
+.session-markdown h1 {
+  @apply text-lg;
+}
+
+.session-markdown h2 {
+  @apply text-base;
+}
+
 .session-markdown h3 {
-  @apply font-semibold mt-2 mb-1;
+  @apply text-sm;
 }
 
 .session-markdown p {
   @apply mb-2;
+}
+
+.session-markdown ul,
+.session-markdown ol {
+  @apply my-2 pl-5;
+}
+
+.session-markdown ul {
+  @apply list-disc;
+}
+
+.session-markdown ol {
+  @apply list-decimal;
+}
+
+.session-markdown a {
+  @apply text-primary underline underline-offset-2;
 }
 
 .session-markdown code {
@@ -459,6 +489,28 @@ code.mono {
 
 .session-markdown pre {
   @apply overflow-x-auto rounded bg-muted p-2 text-xs mb-2;
+}
+
+.session-markdown pre code {
+  @apply bg-transparent p-0;
+}
+
+.session-markdown blockquote {
+  @apply my-2 border-l-2 border-border pl-3 text-muted-foreground;
+}
+
+.session-markdown table {
+  @apply my-2 w-full border-collapse text-xs;
+}
+
+.session-markdown th,
+.session-markdown td {
+  @apply border border-border px-2 py-1 text-left;
+}
+
+/* Agent Workspace transcript (Streamdown density) */
+.agent-markdown {
+  @apply text-sm leading-relaxed;
 }
 
 .session-tool-card {
