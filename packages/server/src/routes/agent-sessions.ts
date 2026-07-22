@@ -32,6 +32,59 @@ import { readJsonBody, sendError, sendJson } from "../http-util.ts";
 
 const HEARTBEAT_MS = 15_000;
 
+/**
+ * Merge raw pi-sessions directory entries into unique product session summaries.
+ * Prefer product meta `{id}.json` over companion workdir `{id}/`.
+ * Standalone Pi `*.jsonl` files are conversation storage and are omitted.
+ */
+export function mergePiSessionEntries(
+  entries: Array<{
+    name: string;
+    isDirectory: boolean;
+    updatedAt?: string;
+  }>,
+): PiSessionSummary[] {
+  type Ranked = PiSessionSummary & { rank: number };
+  const byId = new Map<string, Ranked>();
+
+  for (const entry of entries) {
+    const { name, isDirectory: isDir, updatedAt } = entry;
+    if (name.startsWith(".")) continue;
+
+    const isJsonl = /\.jsonl$/i.test(name);
+    if (isJsonl) continue;
+
+    const isMetaJson = /\.json$/i.test(name);
+    if (!isMetaJson && !isDir) continue;
+
+    const idFromName = isDir ? name : name.replace(/\.json$/i, "");
+    if (!idFromName) continue;
+
+    const rank = isMetaJson ? 2 : 1;
+    const candidate: Ranked = {
+      id: idFromName,
+      name,
+      updatedAt,
+      placeholder: isMetaJson,
+      rank,
+    };
+
+    const existing = byId.get(idFromName);
+    if (!existing || candidate.rank > existing.rank) {
+      byId.set(idFromName, candidate);
+    } else if (
+      candidate.rank === existing.rank &&
+      (candidate.updatedAt ?? "") > (existing.updatedAt ?? "")
+    ) {
+      byId.set(idFromName, candidate);
+    }
+  }
+
+  return [...byId.values()]
+    .map(({ rank: _rank, ...summary }) => summary)
+    .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+}
+
 async function loadWorkspaceOr404(
   res: ServerResponse,
   id: string,
@@ -69,33 +122,28 @@ export async function handleListAgentSessions(
     // Missing or unreadable dir → empty list (ensurePiSessionsDir should create it).
   }
 
-  const sessions: PiSessionSummary[] = [];
+  const entries: Array<{
+    name: string;
+    isDirectory: boolean;
+    updatedAt?: string;
+  }> = [];
   for (const name of names) {
     if (name.startsWith(".")) continue;
     const full = path.join(dir, name);
     if (!isPathInside(path.resolve(workspace.rootPath), full)) continue;
-    let updatedAt: string | undefined;
     try {
       const st = await stat(full);
-      updatedAt = st.mtime.toISOString();
+      entries.push({
+        name,
+        isDirectory: st.isDirectory(),
+        updatedAt: st.mtime.toISOString(),
+      });
     } catch {
       continue;
     }
-    const idFromName = name.replace(/\.jsonl?$/i, "").replace(/\.json$/i, "");
-    sessions.push({
-      id: idFromName,
-      name,
-      updatedAt,
-      // Meta JSON is product-side; live handle is created on first command.
-      placeholder: name.endsWith(".json") && !name.endsWith(".jsonl"),
-    });
   }
 
-  sessions.sort((a, b) =>
-    (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""),
-  );
-
-  sendJson(res, 200, { sessions });
+  sendJson(res, 200, { sessions: mergePiSessionEntries(entries) });
 }
 
 /**

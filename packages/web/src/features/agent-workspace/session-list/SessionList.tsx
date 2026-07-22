@@ -51,6 +51,16 @@ export function SessionList({
 }: SessionListProps) {
   const { t } = useI18n();
 
+  // Server should already dedupe; keep first-seen id so React keys stay unique
+  // if a stale API ever returns both `{id}.json` and `{id}/` for one session.
+  const uniqueSessions: PiSessionSummary[] = [];
+  const seenIds = new Set<string>();
+  for (const session of sessions) {
+    if (seenIds.has(session.id)) continue;
+    seenIds.add(session.id);
+    uniqueSessions.push(session);
+  }
+
   return (
     <div
       data-testid="agent-session-list"
@@ -76,13 +86,13 @@ export function SessionList({
       </div>
 
       <ScrollArea className="min-h-0 flex-1">
-        {sessions.length === 0 ? (
+        {uniqueSessions.length === 0 ? (
           <p className="px-3 py-4 text-xs text-muted-foreground">
             {t.agentWorkspace.noSessions}
           </p>
         ) : (
           <ul className="flex flex-col gap-0.5 p-1.5">
-            {sessions.map((session) => {
+            {uniqueSessions.map((session) => {
               const active = session.id === activeSessionId;
               return (
                 <li key={session.id}>

@@ -32,9 +32,9 @@ export function AgentWorkspacePage() {
 
   const [workspace, setWorkspace] = useState<WorkspaceConfig | null>(null);
   const [sessions, setSessions] = useState<PiSessionSummary[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(
-    searchParams.get("sessionId"),
-  );
+  // Only set after boot validates the id exists (or creates one). Starting
+  // from the URL would race getAgentSession and 404 on stale sessionIds.
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [recentRuns, setRecentRuns] = useState<StoredRunRecord[]>([]);
   const [bootError, setBootError] = useState<unknown>(null);
   const [loading, setLoading] = useState(true);
@@ -192,6 +192,7 @@ export function AgentWorkspacePage() {
             type="button"
             size="xs"
             variant="outline"
+            nativeButton={false}
             render={
               <Link
                 to={`/workspaces/${encodeURIComponent(id)}${

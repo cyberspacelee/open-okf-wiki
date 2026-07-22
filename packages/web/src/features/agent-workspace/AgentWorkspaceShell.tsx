@@ -172,6 +172,7 @@ export function AgentWorkspaceShell({
           type="button"
           size="sm"
           variant="ghost"
+          nativeButton={false}
           render={
             <Link
               to={`/workspaces/${encodeURIComponent(workspaceId)}/settings${
