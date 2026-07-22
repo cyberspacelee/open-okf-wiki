@@ -37,7 +37,7 @@ test("WorkspaceConfigSchema rejects secrets-shaped extra keys only via strict pa
   });
   assert.equal(ws.planConfirm, false);
   assert.equal(ws.orchestration.maxDomainFanOut, 4);
-  assert.equal(ws.orchestration.reviewCouncilSize, 2);
+  assert.equal(ws.orchestration.reviewCouncilSize, 1);
   assert.deepEqual(ws.roleModels.reviewers, []);
   assert.equal(ws.version, 1);
   assert.equal(ws.wikiLanguage, "en");

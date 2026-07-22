@@ -1,18 +1,32 @@
 /**
- * Nested card for Mastra subagent / agent-as-tool calls — SessionCard shell.
+ * Nested card for Mastra subagent / agent-as-tool calls.
+ * Uses AI Elements Task chrome for clearer multi-agent distinction.
  */
 
 import { Badge } from "@/components/ui/badge";
-import { BotIcon } from "lucide-react";
-import type { UIMessage } from "ai";
-import { MessageResponse } from "@/components/ai-elements/message";
-import { agentDisplayName } from "./session-tool-utils";
-import { useI18n } from "../../i18n";
 import {
-  SessionCard,
-  type SessionCardStatus,
-} from "./SessionCard";
-import { sessionCardBadge, sessionCardMeta } from "./session-card-styles";
+  Task,
+  TaskContent,
+  TaskItem,
+  TaskTrigger,
+} from "@/components/ai-elements/task";
+import { MessageResponse } from "@/components/ai-elements/message";
+import type { UIMessage } from "ai";
+import {
+  BotIcon,
+  GitBranchIcon,
+  LeafIcon,
+  SearchIcon,
+  ShieldCheckIcon,
+} from "lucide-react";
+import type { ReactNode } from "react";
+import {
+  agentDisplayName,
+  agentRoleKind,
+  type AgentRoleKind,
+} from "./session-tool-utils";
+import { useI18n } from "../../i18n";
+import { sessionCardMeta } from "./session-card-styles";
 
 type ToolPart = UIMessage["parts"][number];
 
@@ -56,24 +70,53 @@ function scopeFromInput(input: unknown): string | undefined {
     const v = input[key];
     if (typeof v === "string" && v.trim()) {
       const t = v.trim().replace(/\s+/g, " ");
-      return t.length > 120 ? `${t.slice(0, 120)}…` : t;
+      return t.length > 160 ? `${t.slice(0, 160)}…` : t;
     }
   }
   return undefined;
 }
 
-function stateToStatus(state: string): SessionCardStatus {
+function roleIcon(kind: AgentRoleKind): ReactNode {
+  switch (kind) {
+    case "domain":
+      return <GitBranchIcon className="size-4 text-sky-600" />;
+    case "leaf":
+      return <LeafIcon className="size-4 text-emerald-600" />;
+    case "reviewer":
+      return <ShieldCheckIcon className="size-4 text-violet-600" />;
+    default:
+      return <BotIcon className="size-4 text-muted-foreground" />;
+  }
+}
+
+function roleBadgeClass(kind: AgentRoleKind): string {
+  switch (kind) {
+    case "domain":
+      return "border-sky-500/40 bg-sky-500/10 text-sky-800 dark:text-sky-200";
+    case "leaf":
+      return "border-emerald-500/40 bg-emerald-500/10 text-emerald-800 dark:text-emerald-200";
+    case "reviewer":
+      return "border-violet-500/40 bg-violet-500/10 text-violet-800 dark:text-violet-200";
+    default:
+      return "";
+  }
+}
+
+function stateLabel(
+  state: string,
+  tools: { subagentRunning: string; noReceipt: string },
+): string {
   if (
     state === "input-streaming" ||
     state === "input-available" ||
     state === "approval-requested"
   ) {
-    return "running";
+    return tools.subagentRunning;
   }
   if (state === "output-error") {
-    return "failed";
+    return "Failed";
   }
-  return "completed";
+  return "Done";
 }
 
 export type SubagentCardProps = {
@@ -82,7 +125,7 @@ export type SubagentCardProps = {
   partKey: string;
 };
 
-export function SubagentCard({ part, toolName, partKey }: SubagentCardProps) {
+export function SubagentCard({ part, toolName, partKey: _partKey }: SubagentCardProps) {
   const { t } = useI18n();
   const tools = t.session.tools;
   const state =
@@ -93,53 +136,84 @@ export function SubagentCard({ part, toolName, partKey }: SubagentCardProps) {
   const output = "output" in part ? part.output : undefined;
   const errorText =
     "errorText" in part ? (part.errorText as string | undefined) : undefined;
+  const kind = agentRoleKind(toolName);
   const label = agentDisplayName(toolName);
   const scope = scopeFromInput(input);
   const summary = summaryFromOutput(output);
-  const cardStatus = stateToStatus(state);
-  const running = cardStatus === "running";
+  const running =
+    state === "input-streaming" ||
+    state === "input-available" ||
+    state === "approval-requested";
   const title = scope ? `${label}: ${scope}` : label;
 
   return (
-    <SessionCard
-      key={partKey}
-      title={title}
-      icon={<BotIcon className="size-4" />}
-      status={cardStatus}
-      defaultOpen={running || Boolean(errorText)}
-      failed={cardStatus === "failed"}
+    <div
+      className="mb-2 rounded-lg border border-border/80 bg-card/40 px-3 py-2"
       data-testid="session-subagent-part"
-      dataAttrs={{ "agent-name": toolName }}
-      badges={
-        <Badge variant="secondary" className={sessionCardBadge}>
-          {tools.subagent}
-        </Badge>
-      }
+      data-agent-name={toolName}
+      data-agent-role={kind}
     >
-      {scope ? (
-        <p className={sessionCardMeta}>
-          <span className="font-medium text-foreground">{tools.scope}: </span>
-          {scope}
-        </p>
-      ) : null}
-      {errorText ? (
-        <p className="whitespace-pre-wrap break-words text-xs text-destructive">
-          {errorText}
-        </p>
-      ) : summary ? (
-        <div
-          className="max-h-56 overflow-y-auto rounded-md border bg-muted/20 p-3"
-          data-testid="session-subagent-summary"
-        >
-          <MessageResponse className="size-full text-xs [&>*:first-child]:mt-0">
-            {summary}
-          </MessageResponse>
-        </div>
-      ) : (
-        <p className={sessionCardMeta}>
-          {running ? tools.subagentRunning : tools.noReceipt}
-        </p>
-      )}
-    </SessionCard>
+      <Task defaultOpen={running || Boolean(errorText)} className="w-full">
+        <TaskTrigger title={title} className="w-full">
+          <div className="flex w-full cursor-pointer items-center gap-2 text-sm transition-colors hover:text-foreground">
+            {roleIcon(kind)}
+            <span className="min-w-0 flex-1 truncate font-medium text-foreground">
+              {title}
+            </span>
+            <Badge
+              variant="outline"
+              className={`shrink-0 text-[10px] ${roleBadgeClass(kind)}`}
+            >
+              {label}
+            </Badge>
+            <Badge variant="secondary" className="shrink-0 text-[10px]">
+              {stateLabel(state, tools)}
+            </Badge>
+            <SearchIcon className="size-3.5 shrink-0 text-muted-foreground opacity-0" />
+          </div>
+        </TaskTrigger>
+        <TaskContent>
+          <TaskItem>
+            <span className={sessionCardMeta}>
+              <span className="font-medium text-foreground">
+                {tools.subagent}
+              </span>
+              {" · "}
+              {toolName}
+            </span>
+          </TaskItem>
+          {scope ? (
+            <TaskItem>
+              <span className="font-medium text-foreground">{tools.scope}: </span>
+              {scope}
+            </TaskItem>
+          ) : null}
+          {errorText ? (
+            <TaskItem>
+              <p className="whitespace-pre-wrap break-words text-xs text-destructive">
+                {errorText}
+              </p>
+            </TaskItem>
+          ) : summary ? (
+            <TaskItem>
+              <div
+                className="max-h-56 overflow-y-auto rounded-md border bg-muted/20 p-3"
+                data-testid="session-subagent-summary"
+              >
+                <MessageResponse className="size-full text-xs [&>*:first-child]:mt-0">
+                  {summary}
+                </MessageResponse>
+              </div>
+            </TaskItem>
+          ) : (
+            <TaskItem>
+              <span className={sessionCardMeta}>
+                {running ? tools.subagentRunning : tools.noReceipt}
+              </span>
+            </TaskItem>
+          )}
+        </TaskContent>
+      </Task>
+    </div>
   );
 }

@@ -178,34 +178,64 @@ export function isBatchableToolName(toolName: string): boolean {
 
 /**
  * Known subagent / agent-as-tool names used by Mastra Root.agents map
- * and common AI SDK / Mastra envelopes.
+ * and common AI SDK / Mastra envelopes (agent-*, okf-wiki-*, tool-agent-*).
  */
 const AGENT_NAME_RE =
-  /^(agent[-_])?(domainResearcher|leafResearcher|reviewer|domain_researcher|leaf_researcher)$/i;
+  /^(agent[-_]|tool-agent[-_]|okf-wiki-)?(domainResearcher|leafResearcher|reviewer|domain_researcher|leaf_researcher|domain|leaf)(-\d+)?$/i;
+
+export type AgentRoleKind = "domain" | "leaf" | "reviewer" | "agent";
 
 export function isAgentToolName(toolName: string): boolean {
-  if (AGENT_NAME_RE.test(toolName)) {
+  const name = toolName.trim();
+  if (!name) {
+    return false;
+  }
+  if (AGENT_NAME_RE.test(name)) {
     return true;
   }
-  if (/^agent[-_]/i.test(toolName)) {
+  if (/^agent[-_]/i.test(name) || /^tool-agent[-_]/i.test(name)) {
+    return true;
+  }
+  // Mastra agent ids: okf-wiki-domain, okf-wiki-leaf, okf-wiki-reviewer-1
+  if (/okf-wiki-(domain|leaf|reviewer)/i.test(name)) {
+    return true;
+  }
+  if (/domainResearcher|leafResearcher/i.test(name)) {
     return true;
   }
   return false;
 }
 
+export function agentRoleKind(toolName: string): AgentRoleKind {
+  const n = toolName.toLowerCase();
+  if (/reviewer/.test(n)) {
+    return "reviewer";
+  }
+  if (/leaf/.test(n)) {
+    return "leaf";
+  }
+  if (/domain/.test(n)) {
+    return "domain";
+  }
+  return "agent";
+}
+
 export function agentDisplayName(toolName: string): string {
-  const bare = toolName.replace(/^agent[-_]/i, "");
-  switch (bare.toLowerCase()) {
-    case "domainresearcher":
-    case "domain_researcher":
+  const bare = toolName
+    .replace(/^(agent[-_]|tool-agent[-_]|okf-wiki-)/i, "")
+    .replace(/-\d+$/, "");
+  const kind = agentRoleKind(toolName);
+  switch (kind) {
+    case "domain":
       return "Domain Researcher";
-    case "leafresearcher":
-    case "leaf_researcher":
+    case "leaf":
       return "Leaf Researcher";
     case "reviewer":
       return "Wiki Reviewer";
-    default:
-      return bare || toolName;
+    default: {
+      const cleaned = bare || toolName;
+      return cleaned.length > 40 ? `${cleaned.slice(0, 40)}…` : cleaned;
+    }
   }
 }
 

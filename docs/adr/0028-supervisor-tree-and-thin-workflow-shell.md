@@ -36,10 +36,10 @@ Cursor’s 2026 agent-swarm results favor a **dynamic Planner–Worker tree** ov
 - Session plan UI shows Spec (domains + pages + questions), not only path bullets.
 - Fixture mode writes clean `defects.json` so hard-validate passes without an LLM.
 - ADR 0010 “DynamicWorkflow-only leaf layer” is historical; dynamic fan-out is Supervisor + hooks.
-- **Review council size** defaults to **2** (same model + decorrelated prompts when only one reviewer model is configured; set `roleModels.reviewers` for true multi-model lenses).
-- Session timeline shows **`data-defects`** cards after each council round.
-- Produce uses Host **`isTaskComplete`** (pages-written scorer) so the Root loop continues until staging has markdown.
-- Optional **`OKF_WIKI_DURABLE_PRODUCE=1`**: try Mastra DurableAgent for produce reconnectability; falls back to normal `Agent.stream` if unavailable.
+- **Review council size** defaults to **1** (set `orchestration.reviewCouncilSize` or `roleModels.reviewers` for multi-lens review).
+- Session timeline shows **`data-defects`** cards after each council round; subagents use AI Elements **Task** chrome with role badges.
+- Produce uses **soft** `onIterationComplete` write nudges only — **not** `isTaskComplete` score-0 forced loops (that caused research thrash without `write_wiki`).
+- Optional **`OKF_WIKI_DURABLE_PRODUCE=1`** is reserved; DurableAgent stream shape is not yet wired to Session projection.
 
 ## Non-goals
 

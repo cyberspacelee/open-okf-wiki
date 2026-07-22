@@ -52,7 +52,6 @@ import {
   createWikiRunMemory,
   wikiRunMemoryOption,
 } from "./wiki-memory.js";
-import { buildProducePagesCompleteConfig } from "./produce-complete.js";
 import type { MergedDefectReport } from "@okf-wiki/contract";
 
 /** Default repair rounds when Spec.acceptance.maxRepairRounds is unset. */
@@ -1110,10 +1109,10 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
         "Do NOT call write_wiki yet." +
         revisionHint
       : "Produce a source-grounded Wiki for this workspace. " +
-        "Load the producer skill first, inspect sources with glob_source/search_source/read_source, " +
-        "delegate domainResearcher/leafResearcher when scopes are large, " +
-        "maintain the Spec with read_spec/write_spec, " +
-        "then write markdown pages with write_wiki (do this before your step budget ends), then summarize. " +
+        "Priority order: (1) load skill, (2) brief source inspection, (3) write_wiki for planned pages ASAP, " +
+        "(4) only then deepen with domainResearcher/leafResearcher if a page is blocked on evidence. " +
+        "Do not spend the whole budget exploring. Prefer writing incomplete-but-grounded pages over zero pages. " +
+        "Maintain Spec with read_spec/write_spec when the page set changes. " +
         "Source Citations must use line ranges from tool output (lineCount / search hits), never guesses." +
         planHint;
 
@@ -1122,11 +1121,44 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
   const rootMemoryOpt = runMemory
     ? { memory: wikiRunMemoryOption(input.runId, "root") }
     : {};
-  // Host isTaskComplete: keep produce loop going until at least one page exists.
-  const produceComplete =
+  /**
+   * Soft write nudge only — never isTaskComplete-score-0 forced loops.
+   * isTaskComplete was causing meaningless research thrash when no pages
+   * existed yet (score 0 → inject feedback → another iteration forever).
+   */
+  const writeNudgeState = { lastNudgeAt: 0 };
+  const onIterationComplete =
     phase === "write"
-      ? { isTaskComplete: buildProducePagesCompleteConfig(wikiRoot) as never }
-      : {};
+      ? async (context: {
+          iteration: number;
+          text?: string;
+          finishReason?: string;
+        }) => {
+          try {
+            const pages = await listMarkdownPages(wikiRoot);
+            if (pages.length > 0) {
+              return { continue: true as const };
+            }
+            // Nudge at most every 4 iterations after iteration 3, max 3 nudges.
+            const iter = context.iteration ?? 0;
+            if (
+              iter >= 3 &&
+              iter - writeNudgeState.lastNudgeAt >= 4 &&
+              writeNudgeState.lastNudgeAt < 12
+            ) {
+              writeNudgeState.lastNudgeAt = iter;
+              return {
+                continue: true as const,
+                feedback:
+                  "Host: still no staged wiki pages. Prefer write_wiki for planned critical pages now; stop endless exploration. Use Source Citations from tools only.",
+              };
+            }
+          } catch {
+            // ignore
+          }
+          return { continue: true as const };
+        }
+      : undefined;
   let text: string;
   const writtenPaths = new Set<string>();
   const toolNamesSeen: string[] = [];
@@ -1138,7 +1170,7 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
         ...rootMemoryOpt,
         // Cast: Mastra DelegationConfig message types are framework-internal.
         delegation: delegation as never,
-        ...produceComplete,
+        ...(onIterationComplete ? { onIterationComplete } : {}),
         ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       },
     );
@@ -1203,7 +1235,7 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
         maxSteps,
         ...rootMemoryOpt,
         delegation: delegation as never,
-        ...produceComplete,
+        ...(onIterationComplete ? { onIterationComplete } : {}),
         ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       },
     );

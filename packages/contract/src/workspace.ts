@@ -125,10 +125,11 @@ export const WorkspaceOrchestrationSchema = z.object({
   reviewerMaxSteps: z.number().int().min(2).max(30).default(8),
   planMaxSteps: z.number().int().min(4).max(60).default(24),
   /**
-   * Independent review council size (Host-owned). Default 2 for decorrelated
-   * lenses (same model with different prompts when only one reviewer model).
+   * Independent review council size (Host-owned).
+   * Default 1 for cost/latency; set 2+ for decorrelated multi-lens review
+   * (pad with same model + different prompts when only one reviewer model).
    */
-  reviewCouncilSize: z.number().int().min(1).max(4).default(2),
+  reviewCouncilSize: z.number().int().min(1).max(4).default(1),
 });
 
 export type WorkspaceOrchestration = z.infer<typeof WorkspaceOrchestrationSchema>;

@@ -85,8 +85,11 @@ test("groupPartsForRender batches consecutive completed reads", () => {
 test("isAgentToolName detects domain/leaf/reviewer", () => {
   assert.equal(isAgentToolName("domainResearcher"), true);
   assert.equal(isAgentToolName("agent-leafResearcher"), true);
+  assert.equal(isAgentToolName("okf-wiki-domain"), true);
+  assert.equal(isAgentToolName("okf-wiki-reviewer-1"), true);
   assert.equal(isAgentToolName("read_source"), false);
   assert.equal(agentDisplayName("domainResearcher"), "Domain Researcher");
+  assert.equal(agentDisplayName("okf-wiki-leaf"), "Leaf Researcher");
 });
 
 test("unwrapToolPayload peels thin result envelopes", () => {

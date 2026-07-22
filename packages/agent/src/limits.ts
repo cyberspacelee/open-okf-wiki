@@ -16,7 +16,7 @@ export const DEFAULT_ORCHESTRATION: WorkspaceOrchestration = {
   leafMaxSteps: 8,
   reviewerMaxSteps: 8,
   planMaxSteps: 24,
-  reviewCouncilSize: 2,
+  reviewCouncilSize: 1,
 };
 
 /** @deprecated Prefer resolveOrchestration(workspace). */

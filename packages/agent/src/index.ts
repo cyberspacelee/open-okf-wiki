@@ -103,8 +103,6 @@ export {
 
 export { runReviewCouncil } from "./review-council.js";
 
-export { buildProducePagesCompleteConfig } from "./produce-complete.js";
-
 export {
   durableProduceEnabled,
   tryCreateDurableRoot,
