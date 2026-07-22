@@ -37,8 +37,14 @@ Cursor’s 2026 agent-swarm results favor a **dynamic Planner–Worker tree** ov
 - Fixture mode writes clean `defects.json` so hard-validate passes without an LLM.
 - ADR 0010 “DynamicWorkflow-only leaf layer” is historical; dynamic fan-out is Supervisor + hooks.
 - **Review council size** defaults to **1** (set `orchestration.reviewCouncilSize` or `roleModels.reviewers` for multi-lens review).
-- Session timeline shows **`data-defects`** cards after each council round; subagents use AI Elements **Task** chrome with role badges.
-- Produce uses **soft** `onIterationComplete` write nudges only — **not** `isTaskComplete` score-0 forced loops (that caused research thrash without `write_wiki`).
+- Session timeline (AI Elements):
+  - **ChainOfThought** phase strip from `data-progress.steps`
+  - **Queue** for Spec pages (`data-plan-progress`)
+  - **Sources** from `data-sources-index` (repo-relative paths)
+  - **Task** subagent cards + `data-agent-span` from delegation hooks
+  - **`data-defects`** after each council round
+  - **Checkpoint** visual separators only (no message restore / run rollback)
+- Produce uses **soft** `onIterationComplete` write nudges only — **not** `isTaskComplete` score-0 forced loops.
 - Optional **`OKF_WIKI_DURABLE_PRODUCE=1`** is reserved; DurableAgent stream shape is not yet wired to Session projection.
 
 ## Non-goals

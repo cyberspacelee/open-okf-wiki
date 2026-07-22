@@ -109,6 +109,14 @@ export {
 } from "./durable-produce.js";
 
 export {
+  buildPhaseSteps,
+  emitRunPhase,
+  emitAgentSpan,
+  emitSourcesIndex,
+  roleFromAgentId,
+} from "./run-timeline.js";
+
+export {
   createSessionWorkflowStream,
   uiMessagesToSessionMessages,
   sessionMessagesToUIMessages,

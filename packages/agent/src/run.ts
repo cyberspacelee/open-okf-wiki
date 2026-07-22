@@ -52,6 +52,13 @@ import {
   createWikiRunMemory,
   wikiRunMemoryOption,
 } from "./wiki-memory.js";
+import {
+  emitRunPhase,
+  emitSourcesIndex,
+  noteSourceHit,
+  sourceHitsFromToolChunk,
+  type SourceIndexEntry,
+} from "./run-timeline.js";
 import type { MergedDefectReport } from "@okf-wiki/contract";
 
 /** Default repair rounds when Spec.acceptance.maxRepairRounds is unset. */
@@ -773,10 +780,32 @@ async function runFixture(input: WikiRunAgentInput, wikiRoot: string): Promise<W
       summary: "NO_DEFECTS",
     };
     await writeMergedDefects(input.workspace.rootPath, input.runId, cleanReport);
+    await emitRunPhase(input.writer, {
+      runId: input.runId,
+      phase: "writing",
+      plan,
+      writtenPaths: pages,
+    });
+    await emitRunPhase(input.writer, {
+      runId: input.runId,
+      phase: "reviewing",
+      plan,
+      writtenPaths: pages,
+    });
     await emitDefectsFromWriter(input.writer, {
       runId: input.runId,
       round: 1,
       merged: cleanReport,
+    });
+    await emitSourcesIndex(input.writer, {
+      runId: input.runId,
+      sources: [{ path: "README.md", sourceId: primarySource?.id }],
+    });
+    await emitRunPhase(input.writer, {
+      runId: input.runId,
+      phase: "done",
+      plan,
+      writtenPaths: pages,
     });
   } catch {
     // best-effort
@@ -1037,9 +1066,31 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
   });
   const childAgents = subagentsAsAgentsMap(subagents);
   const delegationCounters = createDelegationCounters();
+  // writer is available later; re-bound after we have input.writer in stream opts.
+  // Delegation hooks close over a mutable holder so emit works once stream starts.
+  const writerHolder: { current: WikiRunStreamWriter | undefined } = {
+    current: input.writer,
+  };
   const delegation = buildRootDelegationOptions({
     orchestration: orch,
     counters: delegationCounters,
+    runId: input.runId,
+    writer: {
+      write: async (chunk) => {
+        const w = writerHolder.current;
+        if (w) {
+          await w.write(chunk);
+        }
+      },
+      custom: async (chunk) => {
+        const w = writerHolder.current;
+        if (w && hasStreamCustom(w)) {
+          await w.custom(chunk);
+        } else if (w) {
+          await w.write(chunk);
+        }
+      },
+    },
   });
 
   // Persist initial Spec when produce starts with a confirmed plan.
@@ -1162,6 +1213,16 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
   let text: string;
   const writtenPaths = new Set<string>();
   const toolNamesSeen: string[] = [];
+  const sourceHits = new Map<string, SourceIndexEntry>();
+  let lastSourcesEmit = 0;
+  writerHolder.current = input.writer;
+
+  await emitRunPhase(input.writer, {
+    runId: input.runId,
+    phase: phase === "plan" ? "planning" : "researching",
+    plan: input.plan,
+  });
+
   try {
     const stream = await agent.stream(
       [{ role: "user", content: userMessage }],
@@ -1185,6 +1246,28 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
         const toolName = toolNameFromAgentChunk(chunk);
         if (toolName) {
           toolNamesSeen.push(toolName);
+          if (
+            phase === "write" &&
+            toolName === "write_wiki" &&
+            writtenPaths.size === 0
+          ) {
+            await emitRunPhase(input.writer, {
+              runId: input.runId,
+              phase: "writing",
+              plan: input.plan,
+              writtenPaths,
+            });
+          }
+        }
+        for (const hit of sourceHitsFromToolChunk(chunk)) {
+          noteSourceHit(sourceHits, hit);
+        }
+        if (sourceHits.size > 0 && sourceHits.size - lastSourcesEmit >= 3) {
+          lastSourcesEmit = sourceHits.size;
+          await emitSourcesIndex(input.writer, {
+            runId: input.runId,
+            sources: [...sourceHits.values()],
+          });
         }
         if (phase === "write") {
           const path = writePathFromAgentChunk(chunk);
@@ -1195,6 +1278,12 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
               writtenPaths,
               runId: input.runId,
               phase: "writing",
+            });
+            await emitRunPhase(input.writer, {
+              runId: input.runId,
+              phase: "writing",
+              plan: input.plan,
+              writtenPaths,
             });
           }
         }
@@ -1257,6 +1346,16 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
     } catch {
       // best-effort
     }
+    await emitSourcesIndex(input.writer, {
+      runId: input.runId,
+      sources: [...sourceHits.values()],
+    });
+    await emitRunPhase(input.writer, {
+      runId: input.runId,
+      phase: "planning",
+      label: "Spec ready for confirmation",
+      plan,
+    });
     return {
       status: "awaiting_plan",
       plan,
@@ -1313,6 +1412,17 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
   let reviewRound = 0;
   let reviewClean = false;
   let lastDefectSummary = "";
+
+  await emitSourcesIndex(input.writer, {
+    runId: input.runId,
+    sources: [...sourceHits.values()],
+  });
+  await emitRunPhase(input.writer, {
+    runId: input.runId,
+    phase: "reviewing",
+    plan: input.plan,
+    writtenPaths: pages,
+  });
 
   while (reviewRound <= maxRepairRounds) {
     reviewRound += 1;
@@ -1376,6 +1486,14 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
     if (reviewRound > maxRepairRounds) {
       break;
     }
+
+    await emitRunPhase(input.writer, {
+      runId: input.runId,
+      phase: "repairing",
+      plan: input.plan,
+      writtenPaths: pages,
+      defectCount: merged.defects.length,
+    });
 
     const defectText = merged.defects
       .map(
@@ -1458,6 +1576,14 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
     requireReviewReceipt: true,
   });
   if (!scored.publishable) {
+    await emitRunPhase(input.writer, {
+      runId: input.runId,
+      phase: "failed",
+      plan: input.plan,
+      writtenPaths: scored.pages,
+      failed: true,
+      label: scored.reasons.slice(0, 2).join("; "),
+    });
     return {
       status: "failed",
       error: `host publishability gate failed: ${scored.reasons.join("; ")}`,
@@ -1466,6 +1592,13 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
       plan: input.plan,
     };
   }
+
+  await emitRunPhase(input.writer, {
+    runId: input.runId,
+    phase: "done",
+    plan: input.plan,
+    writtenPaths: scored.pages,
+  });
 
   return {
     status: successStatus(input.autoApprove),

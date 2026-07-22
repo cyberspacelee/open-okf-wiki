@@ -33,7 +33,6 @@ import type { PendingInteraction } from "./decision-types";
 import { PlanViewer } from "./PlanViewer";
 import type { PlanLike } from "./plan-markdown";
 import { renderSessionToolPart } from "./tool-render";
-import { SubagentCard } from "./SubagentCard";
 import { ToolBatch } from "./ToolBatch";
 import { PhaseProgress } from "./PhaseProgress";
 import {
@@ -49,6 +48,12 @@ import {
   toolNameFromPart,
   writtenPathsFromMessages,
 } from "./session-tool-utils";
+import { extractRunTimelineChrome } from "./run-timeline-extract";
+import { RunPhaseStrip } from "./RunPhaseStrip";
+import { RunPagesQueue } from "./RunPagesQueue";
+import { RunSourcesPanel } from "./RunSourcesPanel";
+import { RunCheckpoint } from "./RunCheckpoint";
+import { SubagentCard } from "./SubagentCard";
 
 /** Product data-* parts that may appear on the operator timeline. */
 const DATA_PART_WHITELIST = new Set([
@@ -57,6 +62,8 @@ const DATA_PART_WHITELIST = new Set([
   "data-plan-progress",
   "data-defects",
   "data-progress",
+  "data-agent-span",
+  "data-sources-index",
   "data-run",
   "data-workflow",
   "data-workflow-step",
@@ -649,6 +656,7 @@ function renderSinglePart(
     }
 
     if (part.type === "data-plan-progress") {
+      // Prefer RunPagesQueue chrome at message top; keep compact badge as live pulse.
       if (
         data &&
         typeof data === "object" &&
@@ -660,6 +668,56 @@ function renderSinglePart(
           <PlanProgressBadge key={key} written={written} total={pages.length} />
         );
       }
+      return null;
+    }
+
+    if (part.type === "data-agent-span") {
+      if (data && typeof data === "object") {
+        const d = data as {
+          agentId?: string;
+          role?: string;
+          status?: string;
+          promptSummary?: string;
+          error?: string;
+        };
+        const agentId = String(d.agentId ?? "agent");
+        const status = String(d.status ?? "running");
+        // Synthetic tool part so SubagentCard can render role chrome.
+        const synthetic = {
+          type: "dynamic-tool" as const,
+          toolCallId: key,
+          toolName: agentId,
+          state:
+            status === "running"
+              ? ("input-available" as const)
+              : status === "failed"
+                ? ("output-error" as const)
+                : ("output-available" as const),
+          input: d.promptSummary
+            ? { prompt: d.promptSummary }
+            : { prompt: agentId },
+          output:
+            status === "complete"
+              ? { summary: "Delegation complete" }
+              : status === "failed"
+                ? undefined
+                : undefined,
+          errorText: d.error,
+        };
+        return (
+          <SubagentCard
+            key={key}
+            part={synthetic as UIMessage["parts"][number]}
+            toolName={agentId}
+            partKey={key}
+          />
+        );
+      }
+      return null;
+    }
+
+    if (part.type === "data-sources-index") {
+      // Rendered once in message chrome via extractRunTimelineChrome.
       return null;
     }
 
@@ -777,9 +835,29 @@ export function MessageParts({
   const writtenPaths =
     writtenPathsProp ?? writtenPathsFromMessages(message);
   const items = groupPartsForRender(message.parts ?? []);
+  const chrome = extractRunTimelineChrome(message.parts ?? []);
 
   return (
     <>
+      {chrome.phaseSteps.length > 0 ? (
+        <RunPhaseStrip
+          label={chrome.phaseLabel ?? "Wiki Run"}
+          steps={chrome.phaseSteps}
+          defaultOpen={isLatestAssistant}
+        />
+      ) : null}
+      {chrome.pages.length > 0 ? (
+        <RunPagesQueue pages={chrome.pages} />
+      ) : null}
+      {chrome.sources.length > 0 ? (
+        <RunSourcesPanel sources={chrome.sources} />
+      ) : null}
+      {chrome.hasPlan ? (
+        <RunCheckpoint
+          label="Plan Spec confirmed / proposed"
+          testId="session-checkpoint-plan"
+        />
+      ) : null}
       {items.map((item) => {
         if (item.kind === "batch") {
           return (
@@ -801,6 +879,12 @@ export function MessageParts({
           hasDataPlan,
         });
       })}
+      {chrome.produceDone ? (
+        <RunCheckpoint
+          label="Ready to publish"
+          testId="session-checkpoint-done"
+        />
+      ) : null}
     </>
   );
 }

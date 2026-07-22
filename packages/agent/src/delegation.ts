@@ -1,20 +1,26 @@
 /**
  * Supervisor delegation hooks: Host-enforced depth, fan-out, message filter.
- * Aligns with Cursor planner/worker context isolation.
+ * Emits data-agent-span for Session multi-agent timeline (ADR 0028 UI).
  */
 
 import type { WorkspaceOrchestration } from "@okf-wiki/contract";
 import { DEFAULT_ORCHESTRATION } from "./limits.js";
+import {
+  emitAgentSpan,
+  roleFromAgentId,
+  summarizePrompt,
+  type WikiRunStreamWriterLike,
+} from "./run-timeline.js";
 
 export type DelegationCounters = {
   domainStarts: number;
   leafStarts: number;
-  /** Approximate nesting: increments on domain, leaf treated as depth 2. */
   maxObservedDepth: number;
+  spanSeq: number;
 };
 
 export function createDelegationCounters(): DelegationCounters {
-  return { domainStarts: 0, leafStarts: 0, maxObservedDepth: 0 };
+  return { domainStarts: 0, leafStarts: 0, maxObservedDepth: 0, spanSeq: 0 };
 }
 
 /**
@@ -24,9 +30,13 @@ export function createDelegationCounters(): DelegationCounters {
 export function buildRootDelegationOptions(input: {
   orchestration?: WorkspaceOrchestration;
   counters?: DelegationCounters;
+  runId?: string;
+  writer?: WikiRunStreamWriterLike;
 }) {
   const orch = input.orchestration ?? DEFAULT_ORCHESTRATION;
   const counters = input.counters ?? createDelegationCounters();
+  const runId = input.runId ?? "run";
+  const writer = input.writer;
 
   return {
     onDelegationStart: async (context: {
@@ -47,6 +57,17 @@ export function buildRootDelegationOptions(input: {
         }
         counters.domainStarts += 1;
         counters.maxObservedDepth = Math.max(counters.maxObservedDepth, 1);
+        counters.spanSeq += 1;
+        const spanId = `${runId}-domain-${counters.spanSeq}`;
+        await emitAgentSpan(writer, {
+          spanId,
+          agentId: id || "domainResearcher",
+          role: roleFromAgentId(id || "domain"),
+          status: "running",
+          promptSummary: summarizePrompt(context.prompt),
+          parentId: "root",
+          runId,
+        });
         return {
           proceed: true,
           modifiedPrompt: [
@@ -54,6 +75,7 @@ export function buildRootDelegationOptions(input: {
             "",
             "Host constraints: research only; do not write wiki pages; cite tool-derived line numbers only.",
             `Tool step budget: ${orch.domainMaxSteps}.`,
+            `Host spanId: ${spanId}`,
           ].join("\n"),
           modifiedMaxSteps: orch.domainMaxSteps,
         };
@@ -66,14 +88,29 @@ export function buildRootDelegationOptions(input: {
             rejectionReason: `Host maxDepth=${orch.maxDepth} forbids Leaf researchers.`,
           };
         }
-        if (counters.leafStarts >= orch.maxLeafFanOut * Math.max(1, orch.maxDomainFanOut)) {
+        if (
+          counters.leafStarts >=
+          orch.maxLeafFanOut * Math.max(1, orch.maxDomainFanOut)
+        ) {
           return {
             proceed: false,
-            rejectionReason: "Host leaf fan-out budget exhausted. Reduce existing evidence.",
+            rejectionReason:
+              "Host leaf fan-out budget exhausted. Reduce existing evidence.",
           };
         }
         counters.leafStarts += 1;
         counters.maxObservedDepth = Math.max(counters.maxObservedDepth, 2);
+        counters.spanSeq += 1;
+        const spanId = `${runId}-leaf-${counters.spanSeq}`;
+        await emitAgentSpan(writer, {
+          spanId,
+          agentId: id || "leafResearcher",
+          role: roleFromAgentId(id || "leaf"),
+          status: "running",
+          promptSummary: summarizePrompt(context.prompt),
+          parentId: "root",
+          runId,
+        });
         return {
           proceed: true,
           modifiedPrompt: [
@@ -81,12 +118,23 @@ export function buildRootDelegationOptions(input: {
             "",
             "Host constraints: narrow path only; short evidence bullets with paths and line numbers; no wiki writes.",
             `Tool step budget: ${orch.leafMaxSteps}.`,
+            `Host spanId: ${spanId}`,
           ].join("\n"),
           modifiedMaxSteps: orch.leafMaxSteps,
         };
       }
 
-      // Unknown subagent: allow with conservative step cap.
+      counters.spanSeq += 1;
+      const spanId = `${runId}-agent-${counters.spanSeq}`;
+      await emitAgentSpan(writer, {
+        spanId,
+        agentId: id || "agent",
+        role: roleFromAgentId(id || "agent"),
+        status: "running",
+        promptSummary: summarizePrompt(context.prompt),
+        parentId: "root",
+        runId,
+      });
       return {
         proceed: true,
         modifiedMaxSteps: Math.min(orch.domainMaxSteps, 12),
@@ -98,6 +146,23 @@ export function buildRootDelegationOptions(input: {
       error?: unknown;
       bail: () => void;
     }) => {
+      const id = context.primitiveId ?? "agent";
+      const spanId = `${runId}-complete-${id}-${counters.spanSeq}`;
+      await emitAgentSpan(writer, {
+        spanId,
+        agentId: id,
+        role: roleFromAgentId(id),
+        status: context.error ? "failed" : "complete",
+        parentId: "root",
+        runId,
+        error: context.error
+          ? String(
+              context.error instanceof Error
+                ? context.error.message
+                : context.error,
+            ).slice(0, 400)
+          : undefined,
+      });
       if (context.error) {
         return {
           feedback: `Delegation to ${context.primitiveId} failed: ${String(context.error)}. Prefer a narrower scope or direct read_source fallback.`,
@@ -108,16 +173,17 @@ export function buildRootDelegationOptions(input: {
       };
     },
 
-    /**
-     * Keep child context small: only the last few messages + system-ish content.
-     * Cursor insight: workers should not inherit full planner history.
-     */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    messageFilter: ({ messages }: { messages: any[]; primitiveId: string; prompt: string }) => {
+    messageFilter: ({
+      messages,
+    }: {
+      messages: any[];
+      primitiveId: string;
+      prompt: string;
+    }) => {
       if (!Array.isArray(messages)) {
         return [] as any[];
       }
-      // Keep at most last 6 messages to avoid full Root trajectory.
       return messages.slice(-6);
     },
   };

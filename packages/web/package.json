@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
     "lint": "eslint . --max-warnings 0",
-    "test": "node --experimental-strip-types --test src/lib/session-commands.test.ts src/lib/session-catchup.test.ts src/components/session/tool-render.test.ts src/components/session/session-tool-utils.test.ts",
+    "test": "node --experimental-strip-types --test src/lib/session-commands.test.ts src/lib/session-catchup.test.ts src/components/session/tool-render.test.ts src/components/session/session-tool-utils.test.ts src/components/session/run-timeline-extract.test.ts",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui"
   },
@@ -18,6 +18,7 @@
     "@base-ui/react": "^1.6.0",
     "@fontsource-variable/geist": "^5.3.0",
     "@okf-wiki/contract": "workspace:*",
+    "@radix-ui/react-use-controllable-state": "^1.2.4",
     "@streamdown/cjk": "^1.0.3",
     "@streamdown/code": "^1.1.1",
     "@streamdown/math": "^1.0.2",

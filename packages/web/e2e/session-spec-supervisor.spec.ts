@@ -50,9 +50,18 @@ test.describe("session Spec + supervisor shell", () => {
     });
     await page.getByTestId("session-choice-approve").click();
 
-    // Fixture produce emits a clean review council card on the timeline.
-    await expect(page.getByTestId("session-defects-card").first()).toBeVisible({
+    // Fixture produce emits phase strip, pages queue, sources, defects.
+    await expect(page.getByTestId("session-run-phase-strip").first()).toBeVisible({
       timeout: 60_000,
+    });
+    await expect(page.getByTestId("session-pages-queue").first()).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByTestId("session-defects-card").first()).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByTestId("session-sources-panel").first()).toBeVisible({
+      timeout: 15_000,
     });
 
     await expect(page.getByText(/Publish the staged wiki/i).first()).toBeVisible({
