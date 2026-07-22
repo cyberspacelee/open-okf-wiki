@@ -92,6 +92,48 @@ export const WorkspaceLimitsSchema = z.object({
 export type WorkspaceLimits = z.infer<typeof WorkspaceLimitsSchema>;
 
 /**
+ * Role → model mapping for planner/worker economics (Cursor-style hybrid).
+ * When a role is omitted, the agent falls back to workspace.model.
+ */
+export const WorkspaceRoleModelsSchema = z.object({
+  /** Root planner / synthesis / hard repairs. */
+  planner: ModelRefSchema.optional(),
+  /** Domain / Leaf research workers (prefer cheaper/faster). */
+  worker: ModelRefSchema.optional(),
+  /** Optional dedicated page writer; defaults to planner. */
+  writer: ModelRefSchema.optional(),
+  /**
+   * Independent reviewer model(s). Multiple entries enable a decorrelated council.
+   * Empty → fall back to workspace.model for a single reviewer.
+   */
+  reviewers: z.array(ModelRefSchema).max(4).default([]),
+});
+
+export type WorkspaceRoleModels = z.infer<typeof WorkspaceRoleModelsSchema>;
+
+/**
+ * Host-enforced orchestration budgets for the dynamic supervisor tree.
+ * Fan-out/depth are enforced via delegation hooks, not prompt-only.
+ */
+export const WorkspaceOrchestrationSchema = z.object({
+  maxDepth: z.number().int().min(1).max(4).default(2),
+  maxDomainFanOut: z.number().int().min(1).max(16).default(4),
+  maxLeafFanOut: z.number().int().min(1).max(16).default(6),
+  rootMaxSteps: z.number().int().min(8).max(200).default(96),
+  domainMaxSteps: z.number().int().min(2).max(40).default(12),
+  leafMaxSteps: z.number().int().min(2).max(30).default(8),
+  reviewerMaxSteps: z.number().int().min(2).max(30).default(8),
+  planMaxSteps: z.number().int().min(4).max(60).default(24),
+  /**
+   * Independent review council size (Host-owned). Default 2 for decorrelated
+   * lenses (same model with different prompts when only one reviewer model).
+   */
+  reviewCouncilSize: z.number().int().min(1).max(4).default(2),
+});
+
+export type WorkspaceOrchestration = z.infer<typeof WorkspaceOrchestrationSchema>;
+
+/**
  * Language for generated Wiki page content (not the operator UI locale).
  * Default English; Chinese is Simplified Chinese prose.
  */
@@ -159,11 +201,22 @@ export const WorkspaceConfigSchema = z.object({
   /** Absolute path for the Published Wiki tree (same-volume rules apply at prepare). */
   publicationPath: z.string().trim().min(1),
   limits: WorkspaceLimitsSchema.default(() => WorkspaceLimitsSchema.parse({})),
-  adaptive: z.boolean().default(false),
-  reviewer: z.boolean().default(false),
   /**
-   * When true, interactive Wiki Runs pause for operator plan confirmation
-   * before writing pages. Headless/autoApprove skips this gate.
+   * Optional per-role models (planner / worker / reviewers).
+   * Omitted roles use `model`.
+   */
+  roleModels: WorkspaceRoleModelsSchema.default(() =>
+    WorkspaceRoleModelsSchema.parse({}),
+  ),
+  /**
+   * Supervisor tree budgets and fan-out (Host-enforced where possible).
+   */
+  orchestration: WorkspaceOrchestrationSchema.default(() =>
+    WorkspaceOrchestrationSchema.parse({}),
+  ),
+  /**
+   * When true, interactive Wiki Runs pause for operator Spec confirmation
+   * before produce. Headless/autoApprove skips this gate.
    */
   planConfirm: z.boolean().default(false),
   /**

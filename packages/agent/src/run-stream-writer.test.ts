@@ -3,14 +3,18 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import type { WorkspaceConfig } from "@okf-wiki/contract";
+import {
+  WorkspaceConfigSchema,
+  defaultWikiRunSpec,
+  type WorkspaceConfig,
+} from "@okf-wiki/contract";
 import { runWikiAgent } from "./run.js";
 
 async function minimalWorkspace(root: string): Promise<WorkspaceConfig> {
   const sourcePath = path.join(root, "src-repo");
   await mkdir(sourcePath, { recursive: true });
   await writeFile(path.join(sourcePath, "README.md"), "# fixture\n", "utf8");
-  return {
+  return WorkspaceConfigSchema.parse({
     version: 1,
     id: "ws-stream",
     name: "Stream WS",
@@ -26,12 +30,10 @@ async function minimalWorkspace(root: string): Promise<WorkspaceConfig> {
     model: { id: "openai/test" },
     publicationPath: path.join(root, "wiki"),
     limits: { requestTimeoutSeconds: 60, maxSteps: 8 },
-    adaptive: false,
-    reviewer: false,
     planConfirm: false,
     wikiLanguage: "en",
     createdAt: new Date().toISOString(),
-  };
+  });
 }
 
 test("fixture runWikiAgent writes tool/text chunks to writer", async () => {
@@ -66,10 +68,23 @@ test("fixture write phase emits data-plan-progress via writer.custom", async () 
   const customChunks: unknown[] = [];
   const writeChunks: unknown[] = [];
   const plan = {
+    ...defaultWikiRunSpec("Fixture"),
     summary: "Fixture plan",
     pages: [
-      { path: "overview.md", purpose: "Overview" },
-      { path: "architecture.md", purpose: "Architecture" },
+      {
+        path: "overview.md",
+        purpose: "Overview",
+        domainIds: ["core"],
+        questions: ["Overview?"],
+        critical: true,
+      },
+      {
+        path: "architecture.md",
+        purpose: "Architecture",
+        domainIds: ["core"],
+        questions: ["Architecture?"],
+        critical: true,
+      },
     ],
   };
   const result = await runWikiAgent({

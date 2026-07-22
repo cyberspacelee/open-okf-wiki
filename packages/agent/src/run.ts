@@ -4,26 +4,44 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { Agent } from "@mastra/core/agent";
 import type { MastraModelConfig } from "@mastra/core/llm";
 import { LocalFilesystem, Workspace } from "@mastra/core/workspace";
-import type {
-  WikiRunPlan,
-  WikiRunRecordStatus,
-  WorkspaceConfig,
+import {
+  WikiRunSpecSchema,
+  defaultWikiRunSpec,
+  type WikiRunPlan,
+  type WikiRunRecordStatus,
+  type WikiRunSpec,
+  type WorkspaceConfig,
 } from "@okf-wiki/contract";
 import {
   WORKSPACE_DIR_NAME,
+  analysisScratchDir,
   buildSourceIgnoreMap,
   effectiveIgnoresForSource,
   hasProviderCredentials,
   loadProviderConfig,
   resolveProviderRuntime,
   validateWikiTree,
-  writeAnalysisReceipt,
 } from "@okf-wiki/core";
 import {
   buildContextInputProcessors,
   resolveContextTargetForWorkspace,
 } from "./context-limits.js";
-import { adaptiveLimitsInstruction } from "./limits.js";
+import {
+  orchestrationLimitsInstruction,
+  resolveOrchestration,
+} from "./limits.js";
+import {
+  buildRootDelegationOptions,
+  createDelegationCounters,
+} from "./delegation.js";
+import {
+  evaluateWikiPublishable,
+  hasBlockingDefects,
+  writeMergedDefects,
+} from "./defects.js";
+import { runReviewCouncil } from "./review-council.js";
+import { resolveRoleModels } from "./role-models.js";
+import { writeWikiRunSpec } from "./spec-store.js";
 import { listMarkdownPages, writeFileContained } from "./fs-ops.js";
 import { resolveSkillPath } from "./skill-path.js";
 import { createSubagents, subagentsAsAgentsMap } from "./subagents.js";
@@ -34,6 +52,45 @@ import {
   createWikiRunMemory,
   wikiRunMemoryOption,
 } from "./wiki-memory.js";
+import { buildProducePagesCompleteConfig } from "./produce-complete.js";
+import type { MergedDefectReport } from "@okf-wiki/contract";
+
+/** Default repair rounds when Spec.acceptance.maxRepairRounds is unset. */
+const DEFAULT_ORCHESTRATION_REPAIR_ROUNDS = 2;
+
+/** Emit review council summary to Session timeline. */
+async function emitDefectsFromWriter(
+  writer: WikiRunStreamWriter | undefined,
+  input: {
+    runId: string;
+    round: number;
+    merged: MergedDefectReport;
+  },
+): Promise<void> {
+  await writeCustomDataPart(writer, {
+    type: "data-defects",
+    data: {
+      runId: input.runId,
+      round: input.round,
+      clean: input.merged.clean,
+      defectCount: input.merged.defects.length,
+      blockingCount: input.merged.defects.filter(
+        (d) => d.severity === "blocking",
+      ).length,
+      majorCount: input.merged.defects.filter((d) => d.severity === "major")
+        .length,
+      reviewerIds: input.merged.reviewerIds,
+      summary: input.merged.summary,
+      defects: input.merged.defects.slice(0, 12).map((d) => ({
+        severity: d.severity,
+        code: d.code,
+        path: d.path,
+        issue: d.issue.slice(0, 280),
+      })),
+    },
+    id: `defects-${input.runId}-r${input.round}`,
+  });
+}
 
 export { redactErrorMessage } from "./run-redact.js";
 
@@ -320,60 +377,87 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-function buildFixturePlan(input: WikiRunAgentInput): WikiRunPlan {
+function buildFixturePlan(input: WikiRunAgentInput): WikiRunSpec {
   const title = input.workspace.name || "Repository overview";
   const notes = input.plan?.notes?.trim();
   const revised = Boolean(notes && /operator revision feedback/i.test(notes));
-  return {
+  return WikiRunSpecSchema.parse({
     summary: revised
       ? `Revised fixture plan for ${title} after operator feedback.`
       : `Fixture plan for ${title}: one overview page grounded in registered sources.`,
+    audience: "Engineers and operators reading this repository",
+    domains: [
+      {
+        id: "core",
+        title: "Core",
+        scope: "Registered sources and primary modules",
+        critical: true,
+        questions: [`What is ${title}?`],
+      },
+    ],
     pages: [
       {
         path: "overview.md",
         purpose: `Explain ${title} purpose, sources, and where to continue.`,
+        domainIds: ["core"],
+        questions: [`What is ${title}?`],
+        template: "overview",
+        critical: true,
       },
       ...(revised
         ? [
             {
               path: "concepts.md",
               purpose: "Key concepts requested via plan revision feedback.",
+              domainIds: ["core"],
+              questions: ["What domain terms matter?"],
+              template: "concept" as const,
+              critical: false,
             },
           ]
         : []),
     ],
+    openQuestions: [],
+    acceptance: {
+      reviewRequired: true,
+      maxRepairRounds: 2,
+      blockingSeverities: ["blocking"],
+    },
+    changelog: revised ? ["Operator revision applied in fixture plan"] : [],
     ...(notes ? { notes } : {}),
-  };
+  });
 }
 
 /**
- * Parse a model Markdown plan into structured WikiRunPlan pages.
- * Accepts common list forms:
- * - `path.md` — purpose
- * - path.md: purpose
- * - path.md - purpose
- * Falls back to prior plan pages or a single overview page.
+ * Parse a model plan into a WikiRunSpec.
+ * Accepts fenced JSON Spec/plan shapes or Markdown page lists.
+ * Falls back to prior Spec pages or defaultWikiRunSpec.
  */
 export function parsePlanFromAgentText(
   text: string,
   options: {
     workspaceName: string;
-    prior?: WikiRunPlan;
+    prior?: WikiRunSpec;
   },
-): WikiRunPlan {
+): WikiRunSpec {
   const raw = text?.trim() ?? "";
   const pages: Array<{ path: string; purpose: string }> = [];
   const seen = new Set<string>();
 
-  // Prefer fenced JSON { summary, pages: [{path,purpose}] } when present.
+  // Prefer fenced JSON Spec (or legacy { summary, pages }) when present.
   const jsonFence = /```(?:json)?\s*([\s\S]*?)```/i.exec(raw);
   if (jsonFence?.[1]) {
     try {
-      const parsed = JSON.parse(jsonFence[1]!) as {
-        summary?: unknown;
-        pages?: unknown;
-        notes?: unknown;
-      };
+      const parsed = JSON.parse(jsonFence[1]!) as Record<string, unknown>;
+      const asSpec = WikiRunSpecSchema.safeParse({
+        ...parsed,
+        ...(options.prior?.notes && !parsed.notes
+          ? { notes: options.prior.notes }
+          : {}),
+      });
+      if (asSpec.success && asSpec.data.pages.length > 0) {
+        return asSpec.data;
+      }
       if (Array.isArray(parsed.pages)) {
         for (const item of parsed.pages) {
           if (!item || typeof item !== "object") {
@@ -398,17 +482,34 @@ export function parsePlanFromAgentText(
       if (pages.length > 0) {
         const summary =
           (typeof parsed.summary === "string" && parsed.summary.trim()) ||
-          raw.split("\n").find((l) => l.trim() && !l.trim().startsWith("```"))?.trim() ||
+          raw
+            .split("\n")
+            .find((l) => l.trim() && !l.trim().startsWith("```"))
+            ?.trim() ||
           `Proposed wiki plan for ${options.workspaceName}`;
-        return {
+        return WikiRunSpecSchema.parse({
           summary: summary.slice(0, 1500),
-          pages,
+          pages: pages.map((p) => ({
+            ...p,
+            domainIds: ["core"],
+            questions: [p.purpose],
+            critical: true,
+          })),
+          domains: [
+            {
+              id: "core",
+              title: "Core",
+              scope: "Primary repository scope",
+              critical: true,
+              questions: pages.map((p) => p.purpose).slice(0, 8),
+            },
+          ],
           ...(options.prior?.notes
             ? { notes: options.prior.notes }
             : typeof parsed.notes === "string" && parsed.notes.trim()
               ? { notes: parsed.notes.trim().slice(0, 4000) }
               : {}),
-        };
+        });
       }
     } catch {
       // fall through to list parsing
@@ -456,23 +557,37 @@ export function parsePlanFromAgentText(
       `Proposed wiki plan for ${options.workspaceName}`;
   }
 
-  const resolvedPages =
-    pages.length > 0
-      ? pages
-      : options.prior?.pages?.length
-        ? options.prior.pages
-        : [
-            {
-              path: "overview.md",
-              purpose: "Repository purpose, audience, and navigation",
-            },
-          ];
+  if (pages.length === 0 && options.prior?.pages?.length) {
+    return WikiRunSpecSchema.parse({
+      ...options.prior,
+      summary: summary.slice(0, 1500),
+      ...(options.prior.notes ? { notes: options.prior.notes } : {}),
+    });
+  }
 
-  return {
+  if (pages.length === 0) {
+    return defaultWikiRunSpec(options.workspaceName);
+  }
+
+  return WikiRunSpecSchema.parse({
     summary: summary.slice(0, 1500),
-    pages: resolvedPages,
+    pages: pages.map((p) => ({
+      ...p,
+      domainIds: ["core"],
+      questions: [p.purpose],
+      critical: true,
+    })),
+    domains: [
+      {
+        id: "core",
+        title: "Core",
+        scope: "Primary repository scope",
+        critical: true,
+        questions: pages.map((p) => p.purpose).slice(0, 8),
+      },
+    ],
     ...(options.prior?.notes ? { notes: options.prior.notes } : {}),
-  };
+  });
 }
 
 /**
@@ -628,6 +743,16 @@ async function runFixture(input: WikiRunAgentInput, wikiRoot: string): Promise<W
   ].join("\n");
 
   await writeFileContained(wikiRoot, pagePath, content);
+  // Extra planned pages in fixture mode (simple copies with distinct titles).
+  if (input.plan?.pages && input.plan.pages.length > 1) {
+    for (const page of input.plan.pages.slice(1)) {
+      const extra = content.replace(
+        `title: ${JSON.stringify(title)}`,
+        `title: ${JSON.stringify(page.purpose.slice(0, 80))}`,
+      );
+      await writeFileContained(wikiRoot, page.path, extra);
+    }
+  }
   throwIfAborted(input.abortSignal);
   const pages = await listMarkdownPages(wikiRoot);
   // Final checklist after disk write (all staged pages visible).
@@ -637,6 +762,26 @@ async function runFixture(input: WikiRunAgentInput, wikiRoot: string): Promise<W
     runId: input.runId,
     phase: "writing",
   });
+  // Clean review receipt so Host publishability scorer can pass in fixture mode.
+  try {
+    const plan = input.plan ?? buildFixturePlan(input);
+    await writeWikiRunSpec(input.workspace.rootPath, input.runId, plan);
+    const cleanReport = {
+      version: 1 as const,
+      clean: true,
+      defects: [] as [],
+      reviewerIds: ["fixture"],
+      summary: "NO_DEFECTS",
+    };
+    await writeMergedDefects(input.workspace.rootPath, input.runId, cleanReport);
+    await emitDefectsFromWriter(input.writer, {
+      runId: input.runId,
+      round: 1,
+      merged: cleanReport,
+    });
+  } catch {
+    // best-effort
+  }
   return {
     status: successStatus(input.autoApprove),
     pages,
@@ -688,14 +833,14 @@ function formatEffectiveIgnoresSection(workspace: WorkspaceConfig): string {
   ].join("\n");
 }
 
-/** Default tool-step budget for plan phase. */
-export const DEFAULT_PLAN_MAX_STEPS = 16;
-/** Base tool-step budget for write phase (before plan page scaling). */
-export const DEFAULT_WRITE_MAX_STEPS_BASE = 32;
+/** Default tool-step budget for plan phase (overridden by orchestration.planMaxSteps). */
+export const DEFAULT_PLAN_MAX_STEPS = 24;
+/** Base tool-step budget for write/produce phase (before plan page scaling). */
+export const DEFAULT_WRITE_MAX_STEPS_BASE = 48;
 /** Extra write steps per planned page. */
-export const WRITE_MAX_STEPS_PER_PLAN_PAGE = 4;
+export const WRITE_MAX_STEPS_PER_PLAN_PAGE = 6;
 /** Hard ceiling for write maxSteps. */
-export const WRITE_MAX_STEPS_CAP = 64;
+export const WRITE_MAX_STEPS_CAP = 120;
 
 /** Resolve host-enforced maxSteps for a Wiki Run phase. */
 export function resolvePhaseMaxSteps(
@@ -706,12 +851,13 @@ export function resolvePhaseMaxSteps(
   if (workspace.limits?.maxSteps && workspace.limits.maxSteps > 0) {
     return workspace.limits.maxSteps;
   }
+  const orch = resolveOrchestration(workspace);
   if (phase === "plan") {
-    return DEFAULT_PLAN_MAX_STEPS;
+    return orch.planMaxSteps || DEFAULT_PLAN_MAX_STEPS;
   }
   const pageCount = plan?.pages?.length ?? 0;
   return Math.min(
-    WRITE_MAX_STEPS_CAP,
+    Math.max(orch.rootMaxSteps, WRITE_MAX_STEPS_CAP),
     DEFAULT_WRITE_MAX_STEPS_BASE + pageCount * WRITE_MAX_STEPS_PER_PLAN_PAGE,
   );
 }
@@ -828,12 +974,17 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
   // Freeze Effective Source Ignores at run start (defaults + per-source user ignore).
   // Source tools enforce this map for the whole Wiki generation loop.
   const sourceIgnores = buildSourceIgnoreMap(input.workspace.sources);
+  const analysisRoot = analysisScratchDir(
+    input.workspace.rootPath,
+    input.runId,
+  );
   // Discrete path-policy tools only (no CodeMode / no shell).
   const tools = createWikiRunTools({
     sources,
     sourceIgnores,
     skillRoot,
     wikiRoot,
+    analysisRoot,
   });
 
   // Mastra Workspace: product workspace root as agent cwd + Producer Skill discovery.
@@ -849,7 +1000,9 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
   });
   await mastraWorkspace.init();
 
-  const { model, maxContextTokens } = await resolveWikiModel(input.workspace);
+  const roles = await resolveRoleModels(input.workspace);
+  const model = roles.planner;
+  const maxContextTokens = roles.plannerMaxContextTokens;
   const contextTarget = resolveContextTargetForWorkspace(
     input.workspace,
     maxContextTokens,
@@ -864,20 +1017,50 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
       ? createWikiRunMemory({ model, contextTargetTokens: contextTarget })
       : undefined;
 
+  const orch = resolveOrchestration(input.workspace);
+  // Pad reviewer models to council size (same model + decorrelated prompts when only one).
+  const councilSize = Math.max(1, Math.min(orch.reviewCouncilSize, 4));
+  const baseReviewers =
+    roles.reviewers.length > 0 ? roles.reviewers : [roles.planner];
+  const paddedReviewers = Array.from(
+    { length: councilSize },
+    (_, i) => baseReviewers[i % baseReviewers.length]!,
+  );
   const subagents = createSubagents({
-    model,
+    model: roles.planner,
+    workerModel: roles.worker,
+    reviewerModels: paddedReviewers,
     tools,
-    adaptive: Boolean(input.workspace.adaptive),
-    reviewer: Boolean(input.workspace.reviewer),
+    orchestration: orch,
     inputProcessors: contextProcessors,
     // Domain/Leaf: TokenLimiter only (short scopes). Reviewer gets OM via explicit generate.
     memory: runMemory,
   });
   const childAgents = subagentsAsAgentsMap(subagents);
+  const delegationCounters = createDelegationCounters();
+  const delegation = buildRootDelegationOptions({
+    orchestration: orch,
+    counters: delegationCounters,
+  });
 
-  const adaptiveHint = input.workspace.adaptive
-    ? `\nAdaptive mode: you may delegate domainResearcher / leafResearcher for large scopes; reduce their receipts yourself. You alone write wiki pages.\n${adaptiveLimitsInstruction()}`
-    : "";
+  // Persist initial Spec when produce starts with a confirmed plan.
+  if (input.phase !== "plan" && input.plan) {
+    try {
+      await writeWikiRunSpec(
+        input.workspace.rootPath,
+        input.runId,
+        input.plan,
+      );
+    } catch {
+      // best-effort
+    }
+  }
+
+  const supervisorHint =
+    `\nSupervisor tree: always available. Delegate domainResearcher / leafResearcher for large or independent scopes; reduce their receipts yourself. You alone write wiki pages.\n` +
+    `${orchestrationLimitsInstruction(orch)}\n` +
+    "Maintain a living Spec via read_spec/write_spec (domains, pages, questions, changelog). Replan when discovery demands it.\n" +
+    "Before finishing produce: ensure critical pages exist with Source Citations. Host will run an independent review council.";
   const contextHint =
     contextTarget !== undefined
       ? `\nContext budget: operational target ${contextTarget} tokens` +
@@ -893,10 +1076,10 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
     id: "okf-wiki-root",
     name: "OKF Wiki Root",
     instructions:
-      buildInstructions(input.workspace) + adaptiveHint + contextHint,
+      buildInstructions(input.workspace) + supervisorHint + contextHint,
     model,
     workspace: mastraWorkspace,
-    ...(Object.keys(childAgents).length > 0 ? { agents: childAgents } : {}),
+    agents: childAgents,
     ...(contextProcessors.length > 0
       ? { inputProcessors: contextProcessors }
       : {}),
@@ -909,7 +1092,7 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
   const phase: WikiRunAgentPhase = input.phase ?? "write";
   const maxSteps = resolvePhaseMaxSteps(input.workspace, phase, input.plan);
   const planHint = input.plan
-    ? `\nConfirmed page plan (follow it):\n${JSON.stringify(input.plan, null, 2)}\n`
+    ? `\nConfirmed WikiRunSpec (follow and replan via write_spec when needed):\n${JSON.stringify(input.plan, null, 2)}\n`
     : "";
   const revisionHint =
     phase === "plan" && input.plan?.notes
@@ -923,10 +1106,13 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
       ? "Plan a source-grounded Wiki for this workspace. " +
         "Load the producer skill, briefly inspect sources (list/glob/search/read), then reply with a short summary and a Markdown bullet list of " +
         "intended pages using exactly: `- \\`path.md\\` — purpose` (one page per line). " +
+        "Prefer also a fenced JSON WikiRunSpec with domains and page questions when possible. " +
         "Do NOT call write_wiki yet." +
         revisionHint
       : "Produce a source-grounded Wiki for this workspace. " +
         "Load the producer skill first, inspect sources with glob_source/search_source/read_source, " +
+        "delegate domainResearcher/leafResearcher when scopes are large, " +
+        "maintain the Spec with read_spec/write_spec, " +
         "then write markdown pages with write_wiki (do this before your step budget ends), then summarize. " +
         "Source Citations must use line ranges from tool output (lineCount / search hits), never guesses." +
         planHint;
@@ -936,6 +1122,11 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
   const rootMemoryOpt = runMemory
     ? { memory: wikiRunMemoryOption(input.runId, "root") }
     : {};
+  // Host isTaskComplete: keep produce loop going until at least one page exists.
+  const produceComplete =
+    phase === "write"
+      ? { isTaskComplete: buildProducePagesCompleteConfig(wikiRoot) as never }
+      : {};
   let text: string;
   const writtenPaths = new Set<string>();
   const toolNamesSeen: string[] = [];
@@ -945,6 +1136,9 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
       {
         maxSteps,
         ...rootMemoryOpt,
+        // Cast: Mastra DelegationConfig message types are framework-internal.
+        delegation: delegation as never,
+        ...produceComplete,
         ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       },
     );
@@ -1008,6 +1202,8 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
       {
         maxSteps,
         ...rootMemoryOpt,
+        delegation: delegation as never,
+        ...produceComplete,
         ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       },
     );
@@ -1024,6 +1220,11 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
       workspaceName: input.workspace.name,
       prior: input.plan,
     });
+    try {
+      await writeWikiRunSpec(input.workspace.rootPath, input.runId, plan);
+    } catch {
+      // best-effort
+    }
     return {
       status: "awaiting_plan",
       plan,
@@ -1031,7 +1232,7 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
     };
   }
 
-  const pages = await listMarkdownPages(wikiRoot);
+  let pages = await listMarkdownPages(wikiRoot);
   // Final progress from disk inventory (covers generate-fallback path too).
   for (const p of pages) {
     writtenPaths.add(normalizeWikiPath(p));
@@ -1056,8 +1257,7 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
     };
   }
 
-  // Mechanical staging validation before publish-gate (citations, frontmatter).
-  // Fail here with actionable errors so the operator does not only see gate failure.
+  // Mechanical staging validation before review (citations, frontmatter).
   const validation = await validateWikiTree(wikiRoot, {
     sources: input.workspace.sources.map((s) => ({ id: s.id, path: s.path })),
   });
@@ -1072,63 +1272,176 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
     };
   }
 
-  // Optional independent reviewer pass (read-only); Root remains responsible for repairs.
-  if (input.workspace.reviewer && subagents.reviewer && phase === "write") {
+  // Host-owned review council + repair loop (fail-closed).
+  const maxRepairRounds =
+    input.plan?.acceptance?.maxRepairRounds ??
+    DEFAULT_ORCHESTRATION_REPAIR_ROUNDS;
+  const blockingSeverities =
+    input.plan?.acceptance?.blockingSeverities ?? ["blocking"];
+  let reviewRound = 0;
+  let reviewClean = false;
+  let lastDefectSummary = "";
+
+  while (reviewRound <= maxRepairRounds) {
+    reviewRound += 1;
+    throwIfAborted(input.abortSignal);
+    let merged;
     try {
-      const review = await subagents.reviewer.generate(
-        [
-          {
-            role: "user",
-            content:
-              `Review staged wiki pages: ${pages.join(", ")}. ` +
-              "List defects only (severity, issue, path). If clean, say NO_DEFECTS.",
-          },
-        ],
-        {
-          maxSteps: subagents.reviewerMaxSteps,
-          ...(runMemory
-            ? { memory: wikiRunMemoryOption(input.runId, "reviewer") }
-            : {}),
-          ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
-        },
-      );
-      const reviewText = (review.text ?? "").slice(0, 2000);
-      const clean = /NO_DEFECTS/i.test(reviewText);
-      try {
-        await writeAnalysisReceipt(input.workspace.rootPath, {
-          version: 1,
-          runId: input.runId,
-          nodeId: "reviewer",
-          parentId: "root",
-          attempt: 1,
-          status: "complete",
-          scope: `staged pages: ${pages.join(", ")}`,
-          summary: clean ? "NO_DEFECTS" : reviewText.slice(0, 500),
-          findings: clean
-            ? ["NO_DEFECTS"]
-            : reviewText
-                .split("\n")
-                .map((l) => l.trim())
-                .filter(Boolean)
-                .slice(0, 40),
-          evidence: [],
-          childReceipts: [],
-          openQuestions: [],
-        });
-      } catch {
-        // Receipt persistence is best-effort; do not fail the run.
-      }
+      merged = await runReviewCouncil({
+        reviewers: subagents.reviewers,
+        pages,
+        maxSteps: subagents.reviewerMaxSteps,
+        workspaceRoot: input.workspace.rootPath,
+        runId: input.runId,
+        abortSignal: input.abortSignal,
+        memoryOption: runMemory
+          ? {
+              thread: input.runId,
+              resource: input.workspace.id,
+            }
+          : undefined,
+        round: reviewRound,
+      });
     } catch (reviewError) {
       if (isAbortError(reviewError) || input.abortSignal?.aborted) {
         throw reviewError;
       }
+      return {
+        status: "failed",
+        error: `review council failed: ${redactErrorMessage(reviewError)}`,
+        pages,
+        summary: text?.slice(0, 400) || undefined,
+        plan: input.plan,
+      };
     }
+
+    lastDefectSummary = merged.summary ?? "";
+    reviewClean =
+      merged.clean ||
+      !hasBlockingDefects(merged, blockingSeverities as ("blocking" | "major" | "minor")[]);
+
+    await emitDefectsFromWriter(input.writer, {
+      runId: input.runId,
+      round: reviewRound,
+      merged,
+    });
+    await writeCustomDataPart(input.writer, {
+      type: "data-progress",
+      data: {
+        phase: reviewClean ? "review_clean" : "review_defects",
+        label: reviewClean
+          ? `Review council clean (round ${reviewRound})`
+          : `Review council: ${merged.defects.length} defect(s) (round ${reviewRound})`,
+        runId: input.runId,
+        failed: !reviewClean && reviewRound > maxRepairRounds,
+      },
+      id: `progress-review-${input.runId}-r${reviewRound}`,
+    });
+
+    if (reviewClean) {
+      break;
+    }
+    if (reviewRound > maxRepairRounds) {
+      break;
+    }
+
+    const defectText = merged.defects
+      .map(
+        (d) =>
+          `- [${d.severity}] ${d.path ?? "?"}: ${d.issue}` +
+          (d.suggestedFix ? ` (fix: ${d.suggestedFix})` : ""),
+      )
+      .join("\n");
+
+    try {
+      const repairStream = await agent.stream(
+        [
+          {
+            role: "user",
+            content:
+              "Repair the staged wiki based on this independent review council. " +
+              "Use write_wiki to fix pages; re-read sources when citations are wrong.\n\n" +
+              `Defects:\n${defectText || lastDefectSummary}\n\n` +
+              "When done, list the paths you updated.",
+          },
+        ],
+        {
+          maxSteps: Math.min(24, maxSteps),
+          ...rootMemoryOpt,
+          delegation: delegation as never,
+          ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+        },
+      );
+      if (
+        repairStream.fullStream &&
+        typeof repairStream.fullStream[Symbol.asyncIterator] === "function"
+      ) {
+        for await (const chunk of repairStream.fullStream) {
+          throwIfAborted(input.abortSignal);
+          if (input.writer) {
+            await input.writer.write(chunk);
+          }
+        }
+      }
+      await repairStream.text;
+    } catch (repairError) {
+      if (isAbortError(repairError) || input.abortSignal?.aborted) {
+        throw repairError;
+      }
+      return {
+        status: "failed",
+        error: `repair failed: ${redactErrorMessage(repairError)}`,
+        pages,
+        plan: input.plan,
+      };
+    }
+
+    pages = await listMarkdownPages(wikiRoot);
+    if (pages.length === 0) {
+      return {
+        status: "failed",
+        error: "repair removed all wiki pages",
+        plan: input.plan,
+      };
+    }
+    const revalidation = await validateWikiTree(wikiRoot, {
+      sources: input.workspace.sources.map((s) => ({ id: s.id, path: s.path })),
+    });
+    if (!revalidation.ok) {
+      return {
+        status: "failed",
+        error: `staging failed wiki validation after repair: ${revalidation.errors.slice(0, 20).join("; ")}`,
+        pages,
+        plan: input.plan,
+      };
+    }
+  }
+
+  const scored = await evaluateWikiPublishable({
+    wikiRoot,
+    workspaceRoot: input.workspace.rootPath,
+    runId: input.runId,
+    sources: input.workspace.sources.map((s) => ({ id: s.id, path: s.path })),
+    spec: input.plan,
+    requireReviewReceipt: true,
+  });
+  if (!scored.publishable) {
+    return {
+      status: "failed",
+      error: `host publishability gate failed: ${scored.reasons.join("; ")}`,
+      pages: scored.pages,
+      summary: text?.slice(0, 400) || undefined,
+      plan: input.plan,
+    };
   }
 
   return {
     status: successStatus(input.autoApprove),
-    pages,
-    summary: (text?.trim() || `Wrote ${pages.length} page(s)`).slice(0, 1000),
+    pages: scored.pages,
+    summary: (text?.trim() || `Wrote ${scored.pages.length} page(s)`).slice(
+      0,
+      1000,
+    ),
     plan: input.plan,
   };
 }

@@ -62,17 +62,21 @@ _Avoid_: Renderer schema, mandatory page taxonomy, typed content block
 The model-directed sequence of repository exploration, page design, writing, review, and completion decisions for one Wiki Run, directed by the Producer Skill within Run Boundary limits.
 _Avoid_: Python state machine, fixed role pipeline, Run Instructions dump
 
-**Run Plan**:
-The current objective, completion gates, evidence gaps, and delegated-scope status that keep one Wiki Run oriented across long investigation and compaction.
-_Avoid_: Todo transcript, Operator Session history, durable checkpoint of the Semantic Workflow
+**WikiRunSpec** (also: living Spec; operator plan-gate payload):
+The executable specification for one Wiki Run: audience, domains, intended pages with reader questions, acceptance (review rounds / blocking severities), open questions, and replan changelog. Persisted under the run analysis scratch (`spec.json`) and revised when discovery demands it.
+_Avoid_: Thin path-only checklist, Todo transcript, Operator Session history as the only plan store
+
+**Run Plan** (legacy synonym):
+Older ADRs/skills may say “Run Plan”; map to **WikiRunSpec** / living Spec.
+_Avoid_: Treating Run Plan as a separate durable product object
 
 **Operator Session**:
 The operator-facing **sole truth surface** for one project thread (Session-centric agent, ADR 0026): durable AI SDK message history (`parts`, on-disk `schemaVersion: 2`), tool/progress visibility, pending decisions, workflow view (plan, linked runs), and zero or more Wiki Runs owned by that thread. Foreground or background execution still appends to this timeline. Primary UI is the Session chatbot page (AI Elements + `useChat`). Stream/HITL conversion is framework-first (Mastra + AI SDK, ADR 0027). Unsupported older session files are rejected — wipe `.okf-wiki/sessions/*.json` and start a new session (no migrator; see ADR 0027).
 _Avoid_: Wiki Run as the main UI, chat as only a job form, Run console as the default human operate surface, discarding timeline because it is “not a graph checkpoint”
 
-**Wiki Reviewer**:
-An independent, bounded agent role that inspects the Staging Wiki against the Repository Snapshot Set and Producer Skill review guidance, producing a defects receipt for the operator and Root; it does not write Wiki pages or publish.
-_Avoid_: Run Boundary mechanical validation, Skill self-review alone, multi-model voting panel, publisher
+**Wiki Reviewer** / **Review council**:
+Independent, read-only agent role(s) that inspect the Staging Wiki against sources and Skill review guidance. Host merges outputs into `defects.json`; Root repairs; Host **fail-closes** publish when blocking defects remain. Reviewers never write Wiki pages or publish.
+_Avoid_: Optional soft review, Skill self-review alone as the only gate, open-loop receipts that do not block publish
 
 **Wiki Run**:
 One bounded attempt to derive and publish a Wiki from a Repository Snapshot Set using one exact Skill Version or Skill Fork revision; **owned by / linked from an Operator Session**. Execution mode may be interactive or background; observable trajectory still belongs on the Session. Not the operator’s home UI.

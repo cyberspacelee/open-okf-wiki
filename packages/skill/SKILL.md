@@ -7,11 +7,13 @@ description: Produce or refresh a source-grounded Wiki from a pinned Repository 
 
 ## Run one semantic loop
 
-The Root Agent owns this loop and advances only when the current completion gate holds. On large or
-multi-domain scopes, Root may open the bounded Domain → Leaf research branch described below; child
-Agents investigate and publish receipts, while Root keeps the global plan, synthesis, Wiki writing,
-review, and final completion decision. Return to an earlier step whenever later evidence breaks its
-gate.
+The Root Agent owns this loop and advances only when the current completion gate holds. Maintain a
+living **WikiRunSpec** (domains, pages, questions, acceptance, changelog) via Host `read_spec` /
+`write_spec` tools. On large or multi-domain scopes, Root opens the bounded Domain → Leaf research
+branch; children investigate and return evidence, while Root keeps Spec synthesis, Wiki writing, and
+repair after the Host review council. Return to an earlier step whenever later evidence breaks its
+gate. The Host always runs review and **fails the run** if blocking defects remain after repair
+rounds.
 
 1. **Choose the branch.** Inspect `/wiki`; read
    `/skill/references/generate.md` when it is empty and `/skill/references/refresh.md` otherwise.
@@ -28,17 +30,16 @@ gate.
    remain under `/source` may reveal intended behavior. Repeatedly choose the most important
    unanswered reader question, inspect enough source to answer it, and revise the intended page set.
    Add only pages with distinct purposes; split, merge, and cross-link them as the evidence demands.
-   When the scope is large or spans independent domains, use the Run Plan to decide whether a
-   self-contained Domain task will reduce context pressure. Prefer the fewest Domains that still
-   isolate independent evidence; do not open empty roster slots. When two or more Domains are
-   needed and independent, delegate Domain researchers in parallel via the host agent tools rather
-   than serial one-by-one waits. Each Domain task must be fully
-   self-contained (scope, questions, and completion gate)—children never see this conversation.
-   A Domain may use the listed Leaf Researchers for one further bounded layer; every branch must
-   publish a validated receipt before Root or its parent reduces the result. Do not call
-   `reviewer` until staged Wiki pages exist. Keep the Run Plan's objective, completion gates,
-   intended pages, evidence gaps, branch states, receipt references, unresolved questions, and
-   next actions concise and current.
+   When the scope is large or spans independent domains, maintain a living Spec (domains, pages,
+   questions, changelog) and decide whether a self-contained Domain task will reduce context
+   pressure. Prefer the fewest Domains that still isolate independent evidence; do not open empty
+   roster slots. When two or more Domains are needed and independent, delegate Domain researchers
+   in parallel via the host agent tools rather than serial one-by-one waits. Each Domain task must
+   be fully self-contained (scope, questions, and completion gate)—children never see this
+   conversation. A Domain may use the listed Leaf Researchers for one further bounded layer; every
+   branch must return evidence before Root reduces the result. Do not call Reviewer until staged
+   Wiki pages exist. Keep the Spec's objective, acceptance gates, intended pages, open questions,
+   and changelog concise and current. Replan the Spec when discovery changes the page set.
    **Completion gate:** every intended page has a clear reader purpose and enough inspected evidence
    to write, and further inspection would not materially improve the intended Wiki.
 3. **Write the Wiki.** Select only relevant files from
@@ -48,16 +49,16 @@ gate.
    source-consistent diagrams. **Completion gate:** every intended page exists, answers its reader
    question, links to related pages where useful, and is grounded by nearby verified Source
    Citations.
-4. **Review and finish.** Prefer the run-registered `reviewer` subagent for an independent
-   read-only review of staged pages against `/skill/references/review.md`; otherwise read that
-   reference yourself. The Reviewer publishes a defects receipt only and cannot write `/wiki` or
-   delegate further. Repair each issue yourself, returning to earlier steps when page scope or
-   evidence changes. Reopen load-bearing source spans as needed rather than treating a child
-   summary as proof. A partial, failed, or cancelled critical branch may be retried only within
-   the Run Boundary budget; if direct fallback research cannot complete it, fail the Wiki Run and preserve
-   the previous Published Wiki. Internal child or budget failure is not Needs Input. Then return
-   the exact Markdown page manifest. **Completion gate:** every review check passes, every critical
-   planned scope is complete, every non-critical cancellation is explicit in the Run Plan, and the
+4. **Review and finish.** The Host always runs an independent Reviewer (and may run a review
+   council). Read `/skill/references/review.md` and treat Reviewer defects as blocking work: repair
+   each issue, returning to earlier steps when page scope or evidence changes. Reopen load-bearing
+   source spans as needed rather than treating a child summary as proof. Do not claim completion
+   while blocking defects remain — the Host fails the run if review is unclean after repair rounds.
+   A partial, failed, or cancelled critical branch may be retried only within the Run Boundary
+   budget; if direct fallback research cannot complete it, fail the Wiki Run and preserve the
+   previous Published Wiki. Internal child or budget failure is not Needs Input. Then return the
+   exact Markdown page manifest. **Completion gate:** every review check passes, every critical
+   planned scope is complete, every non-critical cancellation is explicit in the Spec, and the
    manifest exactly matches the final page tree.
 
 ## Core output contract

@@ -16,6 +16,7 @@ The primary operator surface is the **Session** page — a multi-turn conversati
 | [ADR 0022](docs/adr/0022-source-clone-into-workspace.md) | Operator-initiated source clone |
 | [ADR 0024](docs/adr/0024-session-as-conversational-workspace.md) | Session as conversational workspace |
 | [ADR 0025](docs/adr/0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) | Single Mastra workflow + official AI SDK bridge |
+| [ADR 0028](docs/adr/0028-supervisor-tree-and-thin-workflow-shell.md) | Thin Workflow shell + Supervisor produce (WikiRunSpec, review council) |
 
 ## Requirements
 

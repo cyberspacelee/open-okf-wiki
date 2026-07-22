@@ -31,7 +31,7 @@ The product was a Python CLI with Pydantic AI, pydantic-ai-harness (CodeMode, Su
 5. **Workspace:** First-class project entity (name, root path, sources, model ref, publication path, flags). Secrets stay in environment or user-level settings, never in `workspace.json`.
 6. **Git sources:** Operators attach sources as **linked absolute checkouts** and/or **operator-initiated clones** into the Workspace ([ADR 0022](0022-source-clone-into-workspace.md)). The product probes local `git` revision/status for Wiki Runs. The Semantic Workflow never clones, fetches, or pushes. Dirty trees default to blocking a Wiki Run. Credentials use the host git helper / SSH agent only—not `workspace.json`.
 7. **Source safety:** no agent sandbox shell; multi-root path-policy tools only (source/skill read-only; wiki write only for Root; Effective Source Ignores host-enforced).
-8. **Defaults:** `adaptive: false` (single Root agent). Optional bounded Supervisor tree is a later, explicit opt-in.
+8. **Defaults:** Supervisor tree is always on (Domain/Leaf/Reviewer). See [ADR 0028](0028-supervisor-tree-and-thin-workflow-shell.md). Historical `adaptive`/`reviewer` workspace flags are removed.
 9. **Desktop shell:** Deferred; same Web UI may later ship inside Tauri (preferred) or Electron without changing the API contract.
 
 ## Consequences

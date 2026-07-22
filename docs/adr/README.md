@@ -13,6 +13,7 @@ Domain vocabulary: [CONTEXT.md](../../CONTEXT.md). Package map: [packages/README
 | [0025](0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) | **Single** wiki-run write path; Session uses `toAISdkStream`; no dual materialize / hand-rolled Session SSE |
 | [0026](0026-session-centric-agent-workspace.md) | **Session-centric agent**: sole operate/observe surface; Run = Session-owned job (fg/bg); Run UI read-mostly |
 | [0027](0027-framework-first-session-stream.md) | **Framework-first** Session stream/HITL: Mastra + AI SDK only; thin P1 shell; ban parallel converters |
+| [0028](0028-supervisor-tree-and-thin-workflow-shell.md) | **Thin Workflow shell + Supervisor produce**: WikiRunSpec, always-on Domain/Leaf, Host review council, fail-closed hard-validate |
 
 Still load-bearing domain/ops decisions (map Host → Run Boundary when reading pre-0019 text):
 
@@ -37,14 +38,14 @@ Still load-bearing domain/ops decisions (map Host → Run Boundary when reading 
 | [0003](0003-let-one-pydanticai-agent-own-the-semantic-loop.md) | Framework: Pydantic AI → Mastra (0020/0025) |
 | [0004](0004-use-codemode-for-dynamic-repository-work.md) | **Superseded**: no CodeMode; discrete path-policy tools + Mastra subagents |
 | [0006](0006-keep-python-as-a-thin-harness.md) | **Superseded** by 0020/0021 |
-| [0010](0010-use-dynamic-workflow-for-bounded-leaf-coordination.md) | Historical DynamicWorkflow wording; leaf coordination still optional/adaptive |
-| [0014](0014-use-planning-and-bounded-recursive-subagents.md) | Planning/subagents idea remains; stack is Mastra |
+| [0010](0010-use-dynamic-workflow-for-bounded-leaf-coordination.md) | Historical DynamicWorkflow wording; superseded in practice by [0028](0028-supervisor-tree-and-thin-workflow-shell.md) Supervisor fan-out |
+| [0014](0014-use-planning-and-bounded-recursive-subagents.md) | Planning/subagents idea remains; topology refined by [0028](0028-supervisor-tree-and-thin-workflow-shell.md) |
 | [0023](0023-operator-session-stream-and-plan-confirm.md) | Plan-confirm + HITL still valid; **Session SSE transport superseded** by 0024/0025; **Run-as-primary HITL superseded** by 0026 |
 
 ## Reading rules for agents
 
 1. Prefer **CONTEXT.md** for domain terms.
-2. Prefer **0020 + 0021 + 0022 + 0024 + 0025 + 0026 + 0027** for “how the product is built today” (0026 wins on Session vs Run center; **0027** wins on framework-first stream/HITL).
+2. Prefer **0020 + 0021 + 0022 + 0024 + 0025 + 0026 + 0027 + 0028** for “how the product is built today” (0026 wins on Session vs Run center; **0027** wins on framework-first stream/HITL; **0028** wins on Wiki generation orchestration).
 3. Pre-0019 ADRs may say **Host** / **Host Instructions** → map to **Run Boundary** / **Run Instructions**.
 4. Pre-0021 ADRs may assume **Python** harness → map duties to `@okf-wiki/core` + `@okf-wiki/agent`.
 5. Do **not** reintroduce: dual Staging writers, Session-local materialize, `__choice__:` HITL, hand-rolled Session Mastra→SSE, parallel `toAISdkStream` business wrappers, Mastra dependency inside core.

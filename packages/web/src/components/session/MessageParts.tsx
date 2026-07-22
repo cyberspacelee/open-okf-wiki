@@ -55,6 +55,7 @@ const DATA_PART_WHITELIST = new Set([
   "data-gate",
   "data-plan",
   "data-plan-progress",
+  "data-defects",
   "data-progress",
   "data-run",
   "data-workflow",
@@ -407,6 +408,73 @@ function PlanProgressBadge({
   );
 }
 
+function DefectsCard({
+  data,
+}: {
+  data: {
+    round?: number;
+    clean?: boolean;
+    defectCount?: number;
+    blockingCount?: number;
+    summary?: string;
+    defects?: Array<{
+      severity?: string;
+      path?: string;
+      issue?: string;
+    }>;
+  };
+}) {
+  const { t } = useI18n();
+  const clean = Boolean(data.clean);
+  const round = data.round ?? 1;
+  const blocking = data.blockingCount ?? 0;
+  const total = data.defectCount ?? data.defects?.length ?? 0;
+  const title = clean
+    ? (t.session.tools.reviewClean ?? "Review clean")
+    : (t.session.tools.reviewDefects ?? "Review defects")
+        .replace("{n}", String(total))
+        .replace("{blocking}", String(blocking));
+  return (
+    <div
+      className={`mb-2 rounded-md border px-3 py-2 text-sm ${
+        clean
+          ? "border-emerald-500/30 bg-emerald-500/5"
+          : "border-amber-500/40 bg-amber-500/5"
+      }`}
+      data-testid="session-defects-card"
+      data-clean={clean ? "true" : "false"}
+    >
+      <p className="font-medium" data-testid="session-defects-title">
+        {title}
+        <span className={`ml-2 ${sessionCardMeta}`}>
+          {(t.session.tools.reviewRound ?? "round {n}").replace(
+            "{n}",
+            String(round),
+          )}
+        </span>
+      </p>
+      {data.summary && !clean ? (
+        <p className={`mt-1 ${sessionCardMeta}`}>{data.summary}</p>
+      ) : null}
+      {!clean && data.defects && data.defects.length > 0 ? (
+        <ul className="mt-2 list-disc space-y-1 pl-4" data-testid="session-defects-list">
+          {data.defects.slice(0, 8).map((d, i) => (
+            <li key={`${d.path ?? "x"}-${i}`}>
+              <span className="font-mono text-xs uppercase opacity-80">
+                {d.severity ?? "issue"}
+              </span>
+              {d.path ? (
+                <span className="font-mono text-xs"> `{d.path}`</span>
+              ) : null}
+              {d.issue ? <span> — {d.issue}</span> : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 function renderToolOrAgent(
   key: string,
   part: UIMessage["parts"][number],
@@ -590,6 +658,29 @@ function renderSinglePart(
         const written = pages.filter((p) => p.status === "written").length;
         return (
           <PlanProgressBadge key={key} written={written} total={pages.length} />
+        );
+      }
+      return null;
+    }
+
+    if (part.type === "data-defects") {
+      if (data && typeof data === "object") {
+        return (
+          <DefectsCard
+            key={key}
+            data={data as {
+              round?: number;
+              clean?: boolean;
+              defectCount?: number;
+              blockingCount?: number;
+              summary?: string;
+              defects?: Array<{
+                severity?: string;
+                path?: string;
+                issue?: string;
+              }>;
+            }}
+          />
         );
       }
       return null;

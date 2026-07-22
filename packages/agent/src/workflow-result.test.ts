@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { WikiRunPlan } from "@okf-wiki/contract";
+import { defaultWikiRunSpec, type WikiRunPlan } from "@okf-wiki/contract";
 import {
   collectSuspendPayloads,
   extractSuspendGate,
@@ -15,8 +15,17 @@ import {
 } from "./workflow-result.js";
 
 const samplePlan: WikiRunPlan = {
+  ...defaultWikiRunSpec("test"),
   summary: "Cover core modules",
-  pages: [{ path: "overview.md", purpose: "Intro" }],
+  pages: [
+    {
+      path: "overview.md",
+      purpose: "Intro",
+      domainIds: ["core"],
+      questions: ["Intro?"],
+      critical: true,
+    },
+  ],
 };
 
 test("mapWorkflowResult: plan gate from top-level suspendPayload", () => {

@@ -45,5 +45,10 @@ test.describe("workspace settings", () => {
     await expect(page.getByTestId("settings-page")).toBeVisible();
     await expect(page.getByTestId("settings-name-input")).toHaveValue(updatedName);
     await expect(page.getByTestId("settings-model-input")).toHaveValue("openai/alpha-model");
+
+    // Adaptive/reviewer toggles removed (ADR 0028); plan confirm remains.
+    await expect(page.getByTestId("settings-adaptive")).toHaveCount(0);
+    await expect(page.getByTestId("settings-reviewer")).toHaveCount(0);
+    await expect(page.getByTestId("settings-plan-confirm")).toBeVisible();
   });
 });

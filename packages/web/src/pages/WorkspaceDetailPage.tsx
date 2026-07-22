@@ -101,11 +101,14 @@ export function WorkspaceDetailPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="flex flex-wrap gap-2">
-                <Badge variant={workspace.adaptive ? "secondary" : "outline"}>
-                  {t.detail.adaptive}: {workspace.adaptive ? t.common.on : t.common.off}
+                <Badge variant="secondary">
+                  {t.detail.orchestration ?? "Supervisor tree"}: {t.common.on}
                 </Badge>
-                <Badge variant={workspace.reviewer ? "secondary" : "outline"}>
-                  {t.detail.reviewer}: {workspace.reviewer ? t.common.on : t.common.off}
+                <Badge
+                  variant={workspace.planConfirm ? "secondary" : "outline"}
+                >
+                  {t.detail.planConfirm ?? "Plan confirm"}:{" "}
+                  {workspace.planConfirm ? t.common.on : t.common.off}
                 </Badge>
               </CardContent>
             </Card>
@@ -191,18 +194,12 @@ export function WorkspaceDetailPage() {
                   <dd>{wikiLangLabel}</dd>
                 </div>
                 <div>
-                  <dt>{t.detail.adaptive}</dt>
+                  <dt>{t.detail.planConfirm ?? "Plan confirm"}</dt>
                   <dd>
-                    <Badge variant={workspace.adaptive ? "secondary" : "outline"}>
-                      {workspace.adaptive ? t.common.on : t.common.off}
-                    </Badge>
-                  </dd>
-                </div>
-                <div>
-                  <dt>{t.detail.reviewer}</dt>
-                  <dd>
-                    <Badge variant={workspace.reviewer ? "secondary" : "outline"}>
-                      {workspace.reviewer ? t.common.on : t.common.off}
+                    <Badge
+                      variant={workspace.planConfirm ? "secondary" : "outline"}
+                    >
+                      {workspace.planConfirm ? t.common.on : t.common.off}
                     </Badge>
                   </dd>
                 </div>

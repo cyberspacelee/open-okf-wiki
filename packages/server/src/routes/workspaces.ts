@@ -189,22 +189,6 @@ export async function handlePatchWorkspace(
     next.publicationPath = path.resolve(body.publicationPath.trim());
   }
 
-  if (body.adaptive !== undefined) {
-    if (typeof body.adaptive !== "boolean") {
-      sendError(res, 400, "adaptive must be a boolean");
-      return;
-    }
-    next.adaptive = body.adaptive;
-  }
-
-  if (body.reviewer !== undefined) {
-    if (typeof body.reviewer !== "boolean") {
-      sendError(res, 400, "reviewer must be a boolean");
-      return;
-    }
-    next.reviewer = body.reviewer;
-  }
-
   if (body.limits !== undefined) {
     try {
       next.limits = WorkspaceLimitsSchema.parse(body.limits);

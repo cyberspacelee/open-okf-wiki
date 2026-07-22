@@ -42,7 +42,31 @@ test("applyLateAbortStatus preserves durable", () => {
     applyLateAbortStatus(published, true),
     published,
   );
-  const running = { status: "awaiting_plan" as const, plan: { summary: "x", pages: [{ path: "a", purpose: "b" }] } };
+  const running = {
+    status: "awaiting_plan" as const,
+    plan: {
+      version: 1 as const,
+      summary: "x",
+      audience: "a",
+      domains: [],
+      pages: [
+        {
+          path: "a",
+          purpose: "b",
+          domainIds: [],
+          questions: [],
+          critical: true,
+        },
+      ],
+      openQuestions: [],
+      acceptance: {
+        reviewRequired: true,
+        maxRepairRounds: 2,
+        blockingSeverities: ["blocking" as const],
+      },
+      changelog: [],
+    },
+  };
   const cancelled = applyLateAbortStatus(running, true);
   assert.equal(cancelled.status, "cancelled");
   assert.equal(applyLateAbortStatus(running, false), running);

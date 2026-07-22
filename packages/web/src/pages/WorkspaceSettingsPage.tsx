@@ -64,8 +64,6 @@ export function WorkspaceSettingsPage() {
   const [name, setName] = useState("");
   const [modelProfileId, setModelProfileId] = useState("");
   const [publicationPath, setPublicationPath] = useState("");
-  const [adaptive, setAdaptive] = useState(false);
-  const [reviewer, setReviewer] = useState(false);
   const [planConfirm, setPlanConfirm] = useState(false);
   const [wikiLanguage, setWikiLanguage] = useState<WikiLanguage>("en");
   /** Empty string means unset (derive from model max context). */
@@ -81,8 +79,6 @@ export function WorkspaceSettingsPage() {
       setWorkspace(ws);
       setName(ws.name);
       setPublicationPath(ws.publicationPath);
-      setAdaptive(ws.adaptive);
-      setReviewer(ws.reviewer);
       setPlanConfirm(Boolean(ws.planConfirm));
       setWikiLanguage(ws.wikiLanguage ?? "en");
       setContextTargetTokens(
@@ -197,8 +193,6 @@ export function WorkspaceSettingsPage() {
           name: name.trim(),
           ...(modelProfileId ? { modelProfileId } : {}),
           publicationPath: publicationPath.trim(),
-          adaptive,
-          reviewer,
           planConfirm,
           wikiLanguage,
           limits: nextLimits,
@@ -379,42 +373,6 @@ export function WorkspaceSettingsPage() {
                     <FieldDescription>
                       {t.settings.wikiLanguageHint}
                     </FieldDescription>
-                  </Field>
-
-                  <Field orientation="horizontal">
-                    <FieldContent>
-                      <FieldLabel htmlFor="settings-adaptive">
-                        {t.settings.adaptive}
-                      </FieldLabel>
-                      <FieldDescription>{t.settings.adaptiveHint}</FieldDescription>
-                    </FieldContent>
-                    <Switch
-                      id="settings-adaptive"
-                      checked={adaptive}
-                      onCheckedChange={(checked) => {
-                        setAdaptive(checked);
-                        setSaved(false);
-                      }}
-                      data-testid="settings-adaptive"
-                    />
-                  </Field>
-
-                  <Field orientation="horizontal">
-                    <FieldContent>
-                      <FieldLabel htmlFor="settings-reviewer">
-                        {t.settings.reviewer}
-                      </FieldLabel>
-                      <FieldDescription>{t.settings.reviewerHint}</FieldDescription>
-                    </FieldContent>
-                    <Switch
-                      id="settings-reviewer"
-                      checked={reviewer}
-                      onCheckedChange={(checked) => {
-                        setReviewer(checked);
-                        setSaved(false);
-                      }}
-                      data-testid="settings-reviewer"
-                    />
                   </Field>
 
                   <Field orientation="horizontal">

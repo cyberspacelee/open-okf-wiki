@@ -71,7 +71,44 @@ export {
   type SubagentBundle,
 } from "./subagents.js";
 
-export { ADAPTIVE_RUN_LIMITS, adaptiveLimitsInstruction } from "./limits.js";
+export {
+  ADAPTIVE_RUN_LIMITS,
+  DEFAULT_ORCHESTRATION,
+  adaptiveLimitsInstruction,
+  orchestrationLimitsInstruction,
+  resolveOrchestration,
+} from "./limits.js";
+
+export {
+  evaluateWikiPublishable,
+  hasBlockingDefects,
+  mergeDefectReports,
+  parseDefectReportFromText,
+  writeMergedDefects,
+  readMergedDefects,
+} from "./defects.js";
+
+export {
+  writeWikiRunSpec,
+  readWikiRunSpec,
+  runAnalysisDir,
+} from "./spec-store.js";
+
+export { resolveRoleModels } from "./role-models.js";
+
+export {
+  buildRootDelegationOptions,
+  createDelegationCounters,
+} from "./delegation.js";
+
+export { runReviewCouncil } from "./review-council.js";
+
+export { buildProducePagesCompleteConfig } from "./produce-complete.js";
+
+export {
+  durableProduceEnabled,
+  tryCreateDurableRoot,
+} from "./durable-produce.js";
 
 export {
   createSessionWorkflowStream,

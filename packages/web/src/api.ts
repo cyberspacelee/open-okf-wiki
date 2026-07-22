@@ -131,8 +131,6 @@ export type PatchWorkspaceInput = {
   modelProfileId?: string;
   modelId?: string;
   publicationPath?: string;
-  adaptive?: boolean;
-  reviewer?: boolean;
   planConfirm?: boolean;
   wikiLanguage?: WikiLanguage;
   skillPath?: string | null;

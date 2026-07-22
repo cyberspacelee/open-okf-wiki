@@ -1,29 +1,72 @@
 /**
- * Product bounds for adaptive Wiki Runs.
- * - domainMaxSteps / leafMaxSteps / reviewerMaxSteps: host-enforced via generate maxSteps
- * - maxDepth / fan-out: instructional (Mastra free supervisor does not hard-cap fan-out yet)
+ * Product bounds for supervisor-tree Wiki Runs.
+ * Prefer workspace.orchestration when present; these are fallbacks.
+ * - domain/leaf/reviewer maxSteps: host-enforced via generate maxSteps
+ * - maxDepth / fan-out: enforced via delegation hooks when possible
  */
-export const ADAPTIVE_RUN_LIMITS = {
-  /** Max Domain→Leaf depth below Root (Root=0) — instructional for Root. */
+
+import type { WorkspaceConfig, WorkspaceOrchestration } from "@okf-wiki/contract";
+
+export const DEFAULT_ORCHESTRATION: WorkspaceOrchestration = {
   maxDepth: 2,
-  /** Max concurrent Domain branches — instructional for Root. */
   maxDomainFanOut: 4,
-  /** Max Leaf tasks per Domain — instructional for Root. */
   maxLeafFanOut: 6,
-  /** Host-enforced maxSteps for Domain research generate/stream. */
+  rootMaxSteps: 96,
   domainMaxSteps: 12,
-  /** Host-enforced maxSteps for Leaf research generate/stream. */
   leafMaxSteps: 8,
-  /** Host-enforced maxSteps for Reviewer generate. */
   reviewerMaxSteps: 8,
+  planMaxSteps: 24,
+  reviewCouncilSize: 2,
+};
+
+/** @deprecated Prefer resolveOrchestration(workspace). */
+export const ADAPTIVE_RUN_LIMITS = {
+  maxDepth: DEFAULT_ORCHESTRATION.maxDepth,
+  maxDomainFanOut: DEFAULT_ORCHESTRATION.maxDomainFanOut,
+  maxLeafFanOut: DEFAULT_ORCHESTRATION.maxLeafFanOut,
+  domainMaxSteps: DEFAULT_ORCHESTRATION.domainMaxSteps,
+  leafMaxSteps: DEFAULT_ORCHESTRATION.leafMaxSteps,
+  reviewerMaxSteps: DEFAULT_ORCHESTRATION.reviewerMaxSteps,
 } as const;
 
-export function adaptiveLimitsInstruction(): string {
+export function resolveOrchestration(
+  workspace?: WorkspaceConfig | null,
+): WorkspaceOrchestration {
+  const o = workspace?.orchestration;
+  if (!o) {
+    return { ...DEFAULT_ORCHESTRATION };
+  }
+  return {
+    maxDepth: o.maxDepth ?? DEFAULT_ORCHESTRATION.maxDepth,
+    maxDomainFanOut: o.maxDomainFanOut ?? DEFAULT_ORCHESTRATION.maxDomainFanOut,
+    maxLeafFanOut: o.maxLeafFanOut ?? DEFAULT_ORCHESTRATION.maxLeafFanOut,
+    rootMaxSteps: o.rootMaxSteps ?? DEFAULT_ORCHESTRATION.rootMaxSteps,
+    domainMaxSteps: o.domainMaxSteps ?? DEFAULT_ORCHESTRATION.domainMaxSteps,
+    leafMaxSteps: o.leafMaxSteps ?? DEFAULT_ORCHESTRATION.leafMaxSteps,
+    reviewerMaxSteps:
+      o.reviewerMaxSteps ?? DEFAULT_ORCHESTRATION.reviewerMaxSteps,
+    planMaxSteps: o.planMaxSteps ?? DEFAULT_ORCHESTRATION.planMaxSteps,
+    reviewCouncilSize:
+      o.reviewCouncilSize ?? DEFAULT_ORCHESTRATION.reviewCouncilSize,
+  };
+}
+
+export function orchestrationLimitsInstruction(
+  orch: WorkspaceOrchestration = DEFAULT_ORCHESTRATION,
+): string {
   return [
-    `Adaptive policy: maxDepth=${ADAPTIVE_RUN_LIMITS.maxDepth},`,
-    `maxDomainFanOut=${ADAPTIVE_RUN_LIMITS.maxDomainFanOut}, maxLeafFanOut=${ADAPTIVE_RUN_LIMITS.maxLeafFanOut}`,
-    `(instructional). Domain/Leaf/Reviewer tool steps are host-capped at`,
-    `${ADAPTIVE_RUN_LIMITS.domainMaxSteps}/${ADAPTIVE_RUN_LIMITS.leafMaxSteps}/${ADAPTIVE_RUN_LIMITS.reviewerMaxSteps}.`,
+    `Supervisor policy: maxDepth=${orch.maxDepth},`,
+    `maxDomainFanOut=${orch.maxDomainFanOut}, maxLeafFanOut=${orch.maxLeafFanOut}`,
+    `(Host-enforced via delegation hooks where possible).`,
+    `Domain/Leaf/Reviewer tool steps are host-capped at`,
+    `${orch.domainMaxSteps}/${orch.leafMaxSteps}/${orch.reviewerMaxSteps}.`,
     "Prefer the fewest Domains that isolate independent evidence; do not open empty slots.",
+    "Replan the Spec when discovery changes page set; keep a changelog entry.",
+    "Before finishing, run review council and repair blocking defects.",
   ].join(" ");
+}
+
+/** @deprecated Use orchestrationLimitsInstruction */
+export function adaptiveLimitsInstruction(): string {
+  return orchestrationLimitsInstruction();
 }

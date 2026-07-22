@@ -8,7 +8,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import type { WorkspaceConfig } from "@okf-wiki/contract";
+import {
+  WorkspaceConfigSchema,
+  type WorkspaceConfig,
+} from "@okf-wiki/contract";
 import { resetMastraForTests } from "./mastra-instance.js";
 import { startWikiRun, resumeWikiRun } from "./wiki-run.js";
 
@@ -29,7 +32,7 @@ async function makeWorkspace(root: string): Promise<WorkspaceConfig> {
   await execFileAsync("git", ["commit", "-m", "init"], { cwd: sourcePath });
 
   const publicationPath = path.join(root, "wiki-out");
-  return {
+  return WorkspaceConfigSchema.parse({
     version: 1,
     id: "ws-fixture",
     name: "Fixture WS",
@@ -45,12 +48,10 @@ async function makeWorkspace(root: string): Promise<WorkspaceConfig> {
     model: { id: "openai/test" },
     publicationPath,
     limits: { requestTimeoutSeconds: 60, maxSteps: 8 },
-    adaptive: false,
-    reviewer: false,
     planConfirm: false,
     wikiLanguage: "en",
     createdAt: new Date().toISOString(),
-  };
+  });
 }
 
 test("startWikiRun fixture auto-publishes without planConfirm", async () => {

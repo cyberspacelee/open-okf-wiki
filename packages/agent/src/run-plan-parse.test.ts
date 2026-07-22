@@ -47,8 +47,26 @@ test("parsePlanFromAgentText falls back to prior pages", () => {
   const plan = parsePlanFromAgentText("No list here, just prose.", {
     workspaceName: "Demo",
     prior: {
+      version: 1,
       summary: "Prior",
-      pages: [{ path: "overview.md", purpose: "Keep me" }],
+      audience: "Engineers",
+      domains: [],
+      pages: [
+        {
+          path: "overview.md",
+          purpose: "Keep me",
+          domainIds: [],
+          questions: [],
+          critical: true,
+        },
+      ],
+      openQuestions: [],
+      acceptance: {
+        reviewRequired: true,
+        maxRepairRounds: 2,
+        blockingSeverities: ["blocking"],
+      },
+      changelog: [],
       notes: "Operator revision feedback:\nadd concepts",
     },
   });

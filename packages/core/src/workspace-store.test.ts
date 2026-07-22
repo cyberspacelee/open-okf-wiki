@@ -97,8 +97,8 @@ test("create/load/save workspace roundtrip", async () => {
   assert.equal(loaded.publicationPath, config.publicationPath);
   assert.equal(loaded.model.id, "openai/corp-model");
   assert.deepEqual(loaded.sources, config.sources);
-  assert.equal(loaded.adaptive, false);
-  assert.equal(loaded.reviewer, false);
+  assert.equal(loaded.orchestration.maxDomainFanOut, 4);
+  assert.deepEqual(loaded.roleModels.reviewers, []);
 });
 
 test("saveWorkspace allows empty sources (draft workspace)", async () => {

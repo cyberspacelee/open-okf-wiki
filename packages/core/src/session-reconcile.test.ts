@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { OperatorSession } from "@okf-wiki/contract";
+import { defaultWikiRunSpec, type OperatorSession } from "@okf-wiki/contract";
 import {
   isSessionTurnLocked,
   midTurnPhaseForChat,
@@ -38,7 +38,7 @@ function baseSession(
     workflow: {
       phase: "awaiting_plan",
       linkedRunId: "run-1",
-      plan: { summary: "s", pages: [{ path: "overview.md", purpose: "p" }] },
+      plan: defaultWikiRunSpec("s"),
     },
     pending: {
       type: "approval",
@@ -74,7 +74,7 @@ test("reconcile: orphan session mid-flight + run still at gate → restore gate"
     workflow: {
       phase: "writing",
       linkedRunId: "run-1",
-      plan: { summary: "s", pages: [{ path: "overview.md", purpose: "p" }] },
+      plan: defaultWikiRunSpec("s"),
     },
     pending: null,
     messages: [
@@ -97,7 +97,7 @@ test("reconcile: orphan session mid-flight + run still at gate → restore gate"
   });
   const patch = reconcileSessionWithRun(session, {
     status: "awaiting_plan",
-    plan: { summary: "s", pages: [{ path: "overview.md", purpose: "p" }] },
+    plan: defaultWikiRunSpec("s"),
   });
   assert.equal(patch.changed, true);
   assert.equal(patch.status, "waiting");

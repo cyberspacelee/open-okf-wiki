@@ -1,6 +1,9 @@
 /**
- * Single Wiki Run production path as a Mastra Workflow.
- * Plan / write use runWikiAgent (Mastra Agent + tools); publication uses core.
+ * Thin Wiki Run product shell (Mastra Workflow).
+ *
+ * Layer A (this file): prepare boundaries, plan HITL, produce, hard-validate, publish HITL.
+ * Layer B (runWikiAgent): dynamic supervisor tree — research / write / review-repair.
+ *
  * HITL gates use workflow suspend/resume (no Session-side materialize).
  */
 
@@ -8,16 +11,19 @@ import { createStep, createWorkflow } from "@mastra/core/workflows";
 import {
   WikiRunPlanSchema,
   WorkspaceConfigSchema,
+  defaultWikiRunSpec,
   type WikiRunPlan,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
 import { publishStagingToPublication } from "@okf-wiki/core";
 import { z } from "zod";
+import { evaluateWikiPublishable } from "./defects.js";
 import {
   combineAbortSignals,
   getRunAbortSignal,
 } from "./run-abort.js";
 import { runWikiAgent, stagingDirForRun } from "./run.js";
+import { readWikiRunSpec } from "./spec-store.js";
 
 /** Merge Mastra step abort with product cancel (Stop / cancel API). */
 function stepAbortSignal(
@@ -148,7 +154,7 @@ const planGateStep = createStep({
         throw new Error("plan revision requires feedback text");
       }
       const prior = resumeData.plan ?? inputData.plan;
-      const seedPlan: WikiRunPlan | undefined = prior
+      const seedPlan: WikiRunPlan = prior
         ? {
             ...prior,
             notes: [
@@ -158,16 +164,16 @@ const planGateStep = createStep({
               .filter(Boolean)
               .join("\n\n")
               .slice(0, 4000),
+            changelog: [
+              ...(prior.changelog ?? []),
+              "Operator requested Spec revision",
+            ].slice(-20),
           }
         : {
+            ...defaultWikiRunSpec(inputData.workspace.name),
             summary: "Revised wiki plan",
-            pages: [
-              {
-                path: "overview.md",
-                purpose: "Repository purpose, audience, and navigation",
-              },
-            ],
             notes: `Operator revision feedback:\n${feedback}`.slice(0, 4000),
+            changelog: ["Operator requested Spec revision (no prior Spec)"],
           };
 
       const revised = await runWikiAgent({
@@ -234,9 +240,12 @@ const planGateStep = createStep({
   },
 });
 
-/** Write Staging Wiki via runWikiAgent (single production path). */
-const writeStep = createStep({
-  id: "write",
+/**
+ * Produce Staging Wiki via supervisor agent loop (research → write → review-repair).
+ * Semantic dynamics live here; the workflow only bounds the step.
+ */
+const produceStep = createStep({
+  id: "produce",
   inputSchema: AfterPlanSchema,
   outputSchema: AfterWriteSchema,
   execute: async ({ inputData, abortSignal, writer }) => {
@@ -256,10 +265,10 @@ const writeStep = createStep({
       throw err;
     }
     if (result.status === "failed") {
-      throw new Error(result.error ?? "write phase failed");
+      throw new Error(result.error ?? "produce phase failed");
     }
     if (!result.pages?.length) {
-      throw new Error("write phase produced no pages");
+      throw new Error("produce phase produced no pages");
     }
 
     return {
@@ -267,6 +276,48 @@ const writeStep = createStep({
       pages: result.pages,
       summary: result.summary,
       plan: result.plan ?? inputData.plan,
+    };
+  },
+});
+
+/**
+ * Host hard-validate before publish-gate (fail-closed).
+ * Re-checks mechanical validation + defects.json + critical pages from Spec.
+ */
+const hardValidateStep = createStep({
+  id: "hard-validate",
+  inputSchema: AfterWriteSchema,
+  outputSchema: AfterWriteSchema,
+  execute: async ({ inputData }) => {
+    const stagingDir = stagingDirForRun(
+      inputData.workspace.rootPath,
+      inputData.runId,
+    );
+    const spec =
+      inputData.plan ??
+      (await readWikiRunSpec(
+        inputData.workspace.rootPath,
+        inputData.runId,
+      ));
+    const scored = await evaluateWikiPublishable({
+      wikiRoot: stagingDir,
+      workspaceRoot: inputData.workspace.rootPath,
+      runId: inputData.runId,
+      sources: inputData.workspace.sources.map((s) => ({
+        id: s.id,
+        path: s.path,
+      })),
+      spec,
+      requireReviewReceipt: true,
+    });
+    if (!scored.publishable) {
+      throw new Error(
+        `hard-validate failed: ${scored.reasons.join("; ")}`,
+      );
+    }
+    return {
+      ...inputData,
+      pages: scored.pages.length ? scored.pages : inputData.pages,
     };
   },
 });
@@ -326,7 +377,7 @@ const publishGateStep = createStep({
 });
 
 /**
- * End-to-end Wiki Run workflow.
+ * Thin shell: plan-gate → produce → hard-validate → publish-gate.
  * Product runId is used as the Mastra workflow run id for resume correlation.
  */
 export const wikiRunWorkflow = createWorkflow({
@@ -335,7 +386,8 @@ export const wikiRunWorkflow = createWorkflow({
   outputSchema: WikiRunWorkflowOutputSchema,
 })
   .then(planGateStep)
-  .then(writeStep)
+  .then(produceStep)
+  .then(hardValidateStep)
   .then(publishGateStep)
   .commit();
 

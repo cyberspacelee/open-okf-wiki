@@ -1,12 +1,12 @@
 # TypeScript monorepo
 
-Primary product implementation for OKF Wiki. Current ADRs: [0020](../docs/adr/0020-typescript-mastra-web-workspace.md) (stack), [0021](../docs/adr/0021-retire-python-primary-path.md) (no Python path), [0022](../docs/adr/0022-source-clone-into-workspace.md) (operator clone), [0024](../docs/adr/0024-session-as-conversational-workspace.md) (Session), [0025](../docs/adr/0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) (single workflow + AI SDK bridge). Full index: [docs/adr/README.md](../docs/adr/README.md).
+Primary product implementation for OKF Wiki. Current ADRs: [0020](../docs/adr/0020-typescript-mastra-web-workspace.md) (stack), [0021](../docs/adr/0021-retire-python-primary-path.md) (no Python path), [0025](../docs/adr/0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) (single workflow + AI SDK bridge), [0028](../docs/adr/0028-supervisor-tree-and-thin-workflow-shell.md) (Supervisor produce + thin shell). Full index: [docs/adr/README.md](../docs/adr/README.md).
 
 | Package | Role |
 |---|---|
-| `@okf-wiki/contract` | Zod schemas (Workspace, Run, Session, events, receipts) |
+| `@okf-wiki/contract` | Zod schemas (Workspace, WikiRunSpec, defects, Run, Session, events, receipts) |
 | `@okf-wiki/core` | Run Boundary: path policy, publish, session/run stores, git probe (no Mastra) |
-| `@okf-wiki/agent` | Mastra wiki-run workflow + agent tools + Session stream via `@mastra/ai-sdk` |
+| `@okf-wiki/agent` | Thin wiki-run workflow shell + Supervisor produce (Domain/Leaf/review council) + Session stream |
 | `@okf-wiki/server` | Localhost HTTP API; starts/resumes workflow; thin Session chat adapter |
 | `@okf-wiki/web` | Operator Web UI (Vite + React + Session `useChat`); types from contract |
 | `@okf-wiki/cli` | Headless CLI helpers |

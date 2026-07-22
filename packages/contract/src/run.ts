@@ -46,27 +46,116 @@ export function exitCodeForStatus(status: WikiRunRecordStatus): WikiRunExitCodeV
   }
 }
 
-/**
- * Lightweight persisted run record for the Web UI / server registry.
- * Frozen skill fields + plan live on the record; orchestration is the
- * Mastra wiki-run workflow (not a parallel WikiRunRequest DTO).
- */
-/** Intended page set proposed during plan-confirm (operator-facing). */
-export const WikiRunPlanSchema = z.object({
-  summary: z.string().min(1).max(4000),
-  pages: z
-    .array(
-      z.object({
-        path: z.string().min(1),
-        purpose: z.string().min(1).max(500),
-      }),
-    )
-    .min(1),
-  notes: z.string().max(4000).optional(),
+/** Page template hints from the Producer Skill. */
+export const WikiPageTemplateSchema = z.enum([
+  "overview",
+  "architecture",
+  "module",
+  "flow",
+  "concept",
+]);
+
+export type WikiPageTemplate = z.infer<typeof WikiPageTemplateSchema>;
+
+export const WikiRunSpecDomainSchema = z.object({
+  id: z.string().trim().min(1).max(80),
+  title: z.string().trim().min(1).max(200),
+  /** Source scope description (paths, boundaries, concerns). */
+  scope: z.string().trim().min(1).max(2000),
+  critical: z.boolean().default(true),
+  questions: z.array(z.string().trim().min(1).max(500)).default([]),
 });
 
-export type WikiRunPlan = z.infer<typeof WikiRunPlanSchema>;
+export type WikiRunSpecDomain = z.infer<typeof WikiRunSpecDomainSchema>;
 
+export const WikiRunSpecPageSchema = z.object({
+  path: z.string().trim().min(1).max(200),
+  purpose: z.string().trim().min(1).max(500),
+  domainIds: z.array(z.string().trim().min(1)).default([]),
+  questions: z.array(z.string().trim().min(1).max(500)).default([]),
+  template: WikiPageTemplateSchema.optional(),
+  critical: z.boolean().default(true),
+});
+
+export type WikiRunSpecPage = z.infer<typeof WikiRunSpecPageSchema>;
+
+export const WikiRunSpecAcceptanceSchema = z.object({
+  reviewRequired: z.boolean().default(true),
+  maxRepairRounds: z.number().int().min(0).max(8).default(2),
+  /** Severities that block publish when present after final review. */
+  blockingSeverities: z
+    .array(z.enum(["blocking", "major", "minor"]))
+    .default(["blocking"]),
+});
+
+export type WikiRunSpecAcceptance = z.infer<typeof WikiRunSpecAcceptanceSchema>;
+
+/**
+ * Living, executable Wiki Run specification (operator-facing + agent-facing).
+ * Replaces the thin path/purpose plan: domains, questions, acceptance, replan trail.
+ */
+export const WikiRunSpecSchema = z.object({
+  version: z.literal(1).default(1),
+  summary: z.string().min(1).max(4000),
+  audience: z.string().min(1).max(1000).default("Engineers and operators reading this repository"),
+  domains: z.array(WikiRunSpecDomainSchema).default([]),
+  pages: z.array(WikiRunSpecPageSchema).min(1),
+  openQuestions: z.array(z.string().max(500)).default([]),
+  acceptance: WikiRunSpecAcceptanceSchema.default(() =>
+    WikiRunSpecAcceptanceSchema.parse({}),
+  ),
+  /** Operator revision feedback and agent replan notes. */
+  notes: z.string().max(4000).optional(),
+  /** Chronological replan / discovery trail (stigmergy-lite). */
+  changelog: z.array(z.string().max(500)).default([]),
+});
+
+export type WikiRunSpec = z.infer<typeof WikiRunSpecSchema>;
+
+/**
+ * @deprecated Use WikiRunSpec. Kept as a type alias during rename; same schema.
+ */
+export const WikiRunPlanSchema = WikiRunSpecSchema;
+export type WikiRunPlan = WikiRunSpec;
+
+export const DefectSeveritySchema = z.enum(["blocking", "major", "minor"]);
+export type DefectSeverity = z.infer<typeof DefectSeveritySchema>;
+
+export const DefectItemSchema = z.object({
+  severity: DefectSeveritySchema,
+  code: z.string().trim().min(1).max(80),
+  path: z.string().trim().min(1).max(200).optional(),
+  issue: z.string().trim().min(1).max(2000),
+  suggestedFix: z.string().trim().max(2000).optional(),
+});
+
+export type DefectItem = z.infer<typeof DefectItemSchema>;
+
+export const DefectReportSchema = z.object({
+  version: z.literal(1).default(1),
+  reviewerId: z.string().min(1),
+  clean: z.boolean(),
+  defects: z.array(DefectItemSchema).default([]),
+  summary: z.string().max(2000).optional(),
+});
+
+export type DefectReport = z.infer<typeof DefectReportSchema>;
+
+export const MergedDefectReportSchema = z.object({
+  version: z.literal(1).default(1),
+  clean: z.boolean(),
+  defects: z.array(DefectItemSchema).default([]),
+  reviewerIds: z.array(z.string()).default([]),
+  summary: z.string().max(4000).optional(),
+});
+
+export type MergedDefectReport = z.infer<typeof MergedDefectReportSchema>;
+
+/**
+ * Lightweight persisted run record for the Web UI / server registry.
+ * Frozen skill fields + spec live on the record; orchestration is the
+ * Mastra wiki-run workflow (thin shell + supervisor produce).
+ */
 export const StoredRunRecordSchema = z.object({
   runId: z.string().min(1),
   workspaceId: z.string().min(1),
@@ -77,8 +166,11 @@ export const StoredRunRecordSchema = z.object({
   skillPath: z.string().min(1).optional(),
   /** Content digest of the frozen Producer Skill. */
   skillDigest: z.string().min(1).optional(),
-  /** Proposed page plan when planConfirm is active. */
-  plan: WikiRunPlanSchema.optional(),
+  /**
+   * Proposed / living WikiRunSpec (plan-gate + produce).
+   * Field name remains `plan` for Session/Run UI continuity; value is WikiRunSpec.
+   */
+  plan: WikiRunSpecSchema.optional(),
   /** Wiki-relative page paths produced under staging (when available). */
   pages: z.array(z.string().min(1)).optional(),
   /** Short operator-facing summary of the run outcome. */
@@ -93,3 +185,40 @@ export const StoredRunRecordSchema = z.object({
 });
 
 export type StoredRunRecord = z.infer<typeof StoredRunRecordSchema>;
+
+/** Minimal default Spec used when parsing fails or fixtures need a seed. */
+export function defaultWikiRunSpec(workspaceName: string): WikiRunSpec {
+  return WikiRunSpecSchema.parse({
+    summary: `Source-grounded wiki for ${workspaceName}`,
+    audience: "Engineers and operators reading this repository",
+    domains: [
+      {
+        id: "core",
+        title: "Core",
+        scope: "Repository entry points, layout, and primary modules",
+        critical: true,
+        questions: [
+          "What is this repository for?",
+          "What are the main runtime boundaries?",
+        ],
+      },
+    ],
+    pages: [
+      {
+        path: "overview.md",
+        purpose: "Repository purpose, audience, and navigation",
+        domainIds: ["core"],
+        questions: ["What is this repository for?"],
+        template: "overview",
+        critical: true,
+      },
+    ],
+    openQuestions: [],
+    acceptance: {
+      reviewRequired: true,
+      maxRepairRounds: 2,
+      blockingSeverities: ["blocking"],
+    },
+    changelog: [],
+  });
+}

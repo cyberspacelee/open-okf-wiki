@@ -6,12 +6,26 @@ import {
   optionsForPlanGate,
   optionsForPublishGate,
 } from "./gate-ui.js";
+import { defaultWikiRunSpec } from "./run.js";
 
 const samplePlan = {
+  ...defaultWikiRunSpec("S"),
   summary: "S",
   pages: [
-    { path: "overview.md", purpose: "Overview" },
-    { path: "architecture.md", purpose: "Arch" },
+    {
+      path: "overview.md",
+      purpose: "Overview",
+      domainIds: ["core"],
+      questions: ["Overview?"],
+      critical: true,
+    },
+    {
+      path: "architecture.md",
+      purpose: "Arch",
+      domainIds: ["core"],
+      questions: ["Arch?"],
+      critical: true,
+    },
   ],
 };
 

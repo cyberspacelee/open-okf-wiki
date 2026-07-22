@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { WikiRunPlan } from "@okf-wiki/contract";
+import { defaultWikiRunSpec, type WikiRunPlan } from "@okf-wiki/contract";
 import {
   sessionProjectionForRunStatus,
   sessionViewFromRunStatus,
@@ -9,10 +9,7 @@ import {
   type SessionRunState,
 } from "./session-run-transition.js";
 
-const samplePlan: WikiRunPlan = {
-  summary: "plan",
-  pages: [{ path: "a.md", purpose: "p" }],
-};
+const samplePlan: WikiRunPlan = defaultWikiRunSpec("test");
 
 const idle: SessionRunState = {
   sessionStatus: "active",
