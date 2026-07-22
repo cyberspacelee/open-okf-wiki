@@ -69,7 +69,9 @@ pnpm dev
 # → UI   http://127.0.0.1:5173  (proxies /api → server)
 ```
 
-Without a live model key, the stack runs in **fixture** mode (`OKF_WIKI_AGENT_MODE=fixture` or auto without key/URL).
+**Default is live** produce (real Pi agent + model). Configure `OPENAI_API_KEY` (and optional `OPENAI_BASE_URL`). Missing credentials fail with a clear error.
+
+For **no-LLM pipeline smoke** only (tests, e2e, shell/path/publish checks), set `OKF_WIKI_AGENT_MODE=fixture` or CLI `--fixture`. That is not the normal operator path.
 
 `pnpm dev` builds shared packages once, then runs in parallel:
 
@@ -107,7 +109,7 @@ OKF_WIKI_AGENT_MODE=fixture \
 |---|---|
 | `OPENAI_API_KEY` | API key for OpenAI / compatible Chat Completions |
 | `OPENAI_BASE_URL` | Optional API root (usually ends with `/v1`) |
-| `OKF_WIKI_AGENT_MODE` | `fixture` \| `live` (default: auto — fixture without key/URL) |
+| `OKF_WIKI_AGENT_MODE` | Optional `fixture` for no-LLM smoke only; default is live |
 | `OKF_WIKI_HOST` / `OKF_WIKI_PORT` | API bind (default `127.0.0.1:8787`) |
 | `OKF_WIKI_HOME` | Machine-local product home (model catalog, app index) — not skills |
 | `OKF_WIKI_ALLOW_LAN` | Opt-in LAN bind / CORS for private origins |

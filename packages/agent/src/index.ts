@@ -22,6 +22,7 @@ export {
 export {
   produceWithPi,
   shouldUsePiFixtureMode,
+  hasModelCredentials,
   parsePlanFromAgentText,
   stagingDirForRun,
   type ProduceWithPiInput,

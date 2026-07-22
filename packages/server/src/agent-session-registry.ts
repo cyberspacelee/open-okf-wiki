@@ -79,13 +79,11 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-/** Offline-friendly default: fixture unless OKF_WIKI_AGENT_MODE=live with creds. */
+/**
+ * Fixture only when explicitly requested (`OKF_WIKI_AGENT_MODE=fixture`).
+ * Default is live; missing credentials fail on the live path with a clear error.
+ */
 export function preferPiFixture(): boolean {
-  // Safety default for CI / no API keys.
-  if (process.env.OKF_WIKI_AGENT_MODE === "fixture") return true;
-  if (process.env.OKF_WIKI_AGENT_MODE === "live") {
-    return shouldUsePiFixtureMode({ fixture: false });
-  }
   return shouldUsePiFixtureMode({});
 }
 
@@ -590,10 +588,10 @@ async function handlePrompt(
   });
 
   if (preferPiFixture()) {
-    // No model / offline: acknowledge without calling session.prompt (needs API key).
+    // Explicit OKF_WIKI_AGENT_MODE=fixture only — not the default.
     emitPi(entry.workspaceId, entry.sessionId, "message_end", {
       mode: "fixture",
-      note: "fixture mode — prompt recorded; set OKF_WIKI_AGENT_MODE=live with credentials for LLM",
+      note: "OKF_WIKI_AGENT_MODE=fixture — no LLM; unset for live (requires API credentials)",
       textPreview: text.slice(0, 200),
     });
     return {
@@ -601,7 +599,7 @@ async function handlePrompt(
       sessionId: entry.sessionId,
       command: "prompt",
       status: "accepted",
-      message: "prompt accepted (fixture mode — no LLM call)",
+      message: "prompt accepted (explicit fixture mode — no LLM call)",
     };
   }
 

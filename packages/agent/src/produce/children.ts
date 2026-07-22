@@ -50,16 +50,19 @@ export async function runChildSession(
     throw err;
   }
 
-  if (
-    input.fixture ||
-    process.env.OKF_WIKI_AGENT_MODE === "fixture" ||
-    (!input.model && process.env.OKF_WIKI_AGENT_MODE !== "live")
-  ) {
+  // Explicit fixture only (arg or OKF_WIKI_AGENT_MODE=fixture). No auto-fallback.
+  if (input.fixture === true || process.env.OKF_WIKI_AGENT_MODE === "fixture") {
     return {
       role: input.role,
       mode: "fixture",
       summary: `[fixture ${input.role}] ${input.task.slice(0, 200)}`,
     };
+  }
+
+  if (!input.model) {
+    throw new Error(
+      `Child session (${input.role}) live mode requires a model, or pass fixture: true / OKF_WIKI_AGENT_MODE=fixture for smoke only`,
+    );
   }
 
   let handle: WikiSessionHandle | undefined;

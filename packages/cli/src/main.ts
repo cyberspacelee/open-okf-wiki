@@ -45,15 +45,16 @@ wiki-run options:
   --auto-approve          Skip plan gate (default for headless)
   --plan-confirm          Stop at plan gate (no produce)
   --yes, --publish        Mark shell published after produce (no filesystem publish)
-  --fixture               Force Pi fixture mode (no LLM)
-  --live                  Force live Pi mode (requires model credentials)
+  --fixture               No-LLM pipeline smoke only (writes placeholder wiki pages)
+  --live                  Live Pi mode (default; requires model credentials)
   --json                  Emit only the final JSON result (phases on stderr)
 
 Notes:
   - workspace-create writes a draft workspace.json (empty sources). Add local
     Git source paths via the Web UI or POST /api/workspaces/:id/sources.
   - Web UI is the primary operator surface (packages/web + packages/server).
-  - wiki-run is headless Pi produce (fixture by default / OKF_WIKI_AGENT_MODE).
+  - wiki-run defaults to **live** produce. Use --fixture or OKF_WIKI_AGENT_MODE=fixture
+    only for shell/path/publish smoke without an LLM.
   - doctor probes http://127.0.0.1:$OKF_WIKI_PORT/api/doctor (default 8787).
 `);
   process.exit(0);
@@ -411,7 +412,7 @@ type PhaseLine = {
 
 /**
  * Headless wiki-run via WikiRunShell + produceWithPi (ADR 0030).
- * Fixture by default (OKF_WIKI_AGENT_MODE=fixture or no live credentials).
+ * Default is live; --fixture / OKF_WIKI_AGENT_MODE=fixture for no-LLM smoke only.
  */
 async function cmdWikiRun(argv: string[]): Promise<void> {
   let args: WikiRunCliArgs;
@@ -468,7 +469,10 @@ async function cmdWikiRun(argv: string[]): Promise<void> {
   }
 
   const plan = defaultWikiRunSpec(workspaceName);
-  const useFixture = shouldUsePiFixtureMode({ fixture: args.fixture });
+  // Explicit only: --fixture or env OKF_WIKI_AGENT_MODE=fixture (no auto from missing keys).
+  const useFixture = shouldUsePiFixtureMode({
+    fixture: args.fixture === true ? true : args.fixture === false ? false : undefined,
+  });
   if (useFixture) {
     process.env.OKF_WIKI_AGENT_MODE = "fixture";
   } else if (args.fixture === false) {

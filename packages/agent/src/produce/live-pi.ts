@@ -58,20 +58,31 @@ function throwIfAborted(signal?: AbortSignal): void {
   }
 }
 
-/** Fixture / offline when env or explicit flag says so. */
+/**
+ * Whether to use the no-LLM fixture produce path.
+ *
+ * **Explicit only** — never auto-selected because credentials are missing.
+ * Prefer Pi faux/mock models in unit tests; use fixture only as a product
+ * shortcut for pipeline smoke (shell, paths, publish) when requested:
+ * - `fixture: true` argument, or
+ * - `OKF_WIKI_AGENT_MODE=fixture` (tests / e2e / deliberate CLI `--fixture`)
+ *
+ * Default is **live**. Missing API keys must fail clearly on the live path.
+ */
 export function shouldUsePiFixtureMode(
   input: { fixture?: boolean },
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   if (input.fixture === true) return true;
   if (input.fixture === false) return false;
-  if (env.OKF_WIKI_AGENT_MODE === "fixture") return true;
-  if (env.OKF_WIKI_AGENT_MODE === "live") return false;
-  // Default offline-friendly: fixture when no live model credentials hint.
-  if (!env.OPENAI_API_KEY?.trim() && !env.OPENAI_BASE_URL?.trim()) {
-    return true;
-  }
-  return false;
+  return env.OKF_WIKI_AGENT_MODE === "fixture";
+}
+
+/** True when env hints at a configured chat-completions credential. */
+export function hasModelCredentials(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return Boolean(env.OPENAI_API_KEY?.trim() || env.OPENAI_BASE_URL?.trim());
 }
 
 async function listWikiMarkdown(wikiDir: string): Promise<string[]> {
@@ -120,7 +131,7 @@ async function writeFixtureWiki(
     "",
     "Grounding: [Source](repo:README.md#L1).",
     "",
-    "Set `OKF_WIKI_AGENT_MODE=live` with credentials for a live Pi session.",
+    "This page is a pipeline smoke fixture (no LLM). Use live mode with API credentials for real generation.",
     "",
   ].join("\n");
   const indexPath = path.join(layout.wikiDir, "index.md");
@@ -205,7 +216,9 @@ export async function produceWithPi(
 
   if (!input.model) {
     throw new Error(
-      "produceWithPi live mode requires a model (or set fixture / OKF_WIKI_AGENT_MODE=fixture)",
+      "Live produce requires a model. Configure OPENAI_API_KEY (and optional OPENAI_BASE_URL), " +
+        "or pass an explicit model. For no-LLM pipeline smoke only, pass fixture: true or set " +
+        "OKF_WIKI_AGENT_MODE=fixture (not the default).",
     );
   }
 

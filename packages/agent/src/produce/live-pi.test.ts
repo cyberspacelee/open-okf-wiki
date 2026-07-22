@@ -17,7 +17,7 @@ after(async () => {
 });
 
 describe("produce/live-pi fixture mode", () => {
-  it("shouldUsePiFixtureMode respects flag and env", () => {
+  it("shouldUsePiFixtureMode is explicit-only (no auto from missing keys)", () => {
     assert.equal(shouldUsePiFixtureMode({ fixture: true }), true);
     assert.equal(
       shouldUsePiFixtureMode({ fixture: false }, { OKF_WIKI_AGENT_MODE: "fixture" }),
@@ -29,6 +29,12 @@ describe("produce/live-pi fixture mode", () => {
     );
     assert.equal(
       shouldUsePiFixtureMode({}, { OKF_WIKI_AGENT_MODE: "live", OPENAI_API_KEY: "x" }),
+      false,
+    );
+    // Default is live even with no credentials (caller must fail clearly).
+    assert.equal(shouldUsePiFixtureMode({}, {}), false);
+    assert.equal(
+      shouldUsePiFixtureMode({}, { OPENAI_API_KEY: "", OPENAI_BASE_URL: "" }),
       false,
     );
   });

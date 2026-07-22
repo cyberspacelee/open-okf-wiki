@@ -6,6 +6,7 @@
 export {
   produceWithPi,
   shouldUsePiFixtureMode,
+  hasModelCredentials,
   type ProduceWithPiInput,
   type ProduceWithPiResult,
   type LivePiRole,

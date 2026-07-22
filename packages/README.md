@@ -9,7 +9,7 @@ Primary product implementation for OKF Wiki. Current stack ADR: [0030](../docs/a
 | `@okf-wiki/agent` | Pi sessions, WikiRunShell, produce, tool policy (no Mastra/AI SDK) |
 | `@okf-wiki/server` | Localhost API: agent sessions SSE/commands, runs, workspaces |
 | `@okf-wiki/web` | Operator Web UI (Vite + React + shadcn Agent Workspace) |
-| `@okf-wiki/cli` | Headless helpers including `wiki-run` (Pi fixture/live) |
+| `@okf-wiki/cli` | Headless helpers including `wiki-run` (live by default; `--fixture` for smoke) |
 | `@okf-wiki/skill` | Embedded Producer Skill |
 
 **Forbidden product deps (CI):** `@mastra/*`, `ai`, `@ai-sdk/*` — see `scripts/check-no-forbidden-agent-deps.mjs`.
