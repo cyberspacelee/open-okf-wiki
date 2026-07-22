@@ -19,6 +19,10 @@ import {
   resolveProviderRuntime,
   writeAnalysisReceipt,
 } from "@okf-wiki/core";
+import {
+  buildContextInputProcessors,
+  resolveContextTargetForWorkspace,
+} from "./context-limits.js";
 import { adaptiveLimitsInstruction } from "./limits.js";
 import { listMarkdownPages, writeFileContained } from "./fs-ops.js";
 import { resolveSkillPath } from "./skill-path.js";
@@ -26,6 +30,10 @@ import { createSubagents, subagentsAsAgentsMap } from "./subagents.js";
 import { createWikiRunTools } from "./tools.js";
 import { buildPlanProgressData } from "./ui-projection.js";
 import { redactErrorMessage } from "./run-redact.js";
+import {
+  createWikiRunMemory,
+  wikiRunMemoryOption,
+} from "./wiki-memory.js";
 
 export { redactErrorMessage } from "./run-redact.js";
 
@@ -692,13 +700,19 @@ function buildInstructions(workspace: WorkspaceConfig): string {
   ].join("\n");
 }
 
+/** Model + optional provider hard window for Wiki Run context compaction. */
+export type ResolvedWikiModel = {
+  model: MastraModelConfig;
+  maxContextTokens?: number;
+};
+
 /**
- * Resolve Mastra model config from workspace model selection + Settings catalog.
+ * Resolve Mastra model config and context window from workspace + Settings catalog.
  * Supports OpenAI-compatible chat completions and the Responses API shape.
  */
-export async function resolveModelConfig(
+export async function resolveWikiModel(
   workspace: WorkspaceConfig,
-): Promise<MastraModelConfig> {
+): Promise<ResolvedWikiModel> {
   const provider = await loadProviderConfig();
   const runtime = resolveProviderRuntime(provider, {
     profileId: workspace.model?.profileId,
@@ -714,21 +728,39 @@ export async function resolveModelConfig(
   const id = (rawId.includes("/") ? rawId : `openai/${rawId}`) as `${string}/${string}`;
   const modelIdOnly = id.includes("/") ? id.slice(id.indexOf("/") + 1) : id;
 
+  let model: MastraModelConfig;
   if (runtime.apiShape === "responses") {
     // Official / compatible Responses API via AI SDK OpenAI provider.
     const openai = createOpenAI({
       apiKey: runtime.apiKey,
       ...(runtime.baseUrl ? { baseURL: runtime.baseUrl } : {}),
     });
-    return openai.responses(modelIdOnly);
+    model = openai.responses(modelIdOnly);
+  } else {
+    // Default: OpenAI-compatible chat completions (…/v1/chat/completions).
+    model = {
+      id,
+      url: runtime.baseUrl,
+      apiKey: runtime.apiKey,
+    };
   }
 
-  // Default: OpenAI-compatible chat completions (…/v1/chat/completions).
   return {
-    id,
-    url: runtime.baseUrl,
-    apiKey: runtime.apiKey,
+    model,
+    ...(runtime.maxContextTokens !== undefined
+      ? { maxContextTokens: runtime.maxContextTokens }
+      : {}),
   };
+}
+
+/**
+ * Resolve Mastra model config from workspace model selection + Settings catalog.
+ * Supports OpenAI-compatible chat completions and the Responses API shape.
+ */
+export async function resolveModelConfig(
+  workspace: WorkspaceConfig,
+): Promise<MastraModelConfig> {
+  return (await resolveWikiModel(workspace)).model;
 }
 
 async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: string): Promise<WikiRunAgentResult> {
@@ -768,29 +800,60 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
     }),
   });
 
-  const model = await resolveModelConfig(input.workspace);
+  const { model, maxContextTokens } = await resolveWikiModel(input.workspace);
+  const contextTarget = resolveContextTargetForWorkspace(
+    input.workspace,
+    maxContextTokens,
+  );
+  const contextProcessors =
+    contextTarget !== undefined
+      ? buildContextInputProcessors(contextTarget)
+      : [];
+  // Semantic compaction (OM) when budget known; hard TokenLimiter still on all agents.
+  const runMemory =
+    contextTarget !== undefined
+      ? createWikiRunMemory({ model, contextTargetTokens: contextTarget })
+      : undefined;
+
   const subagents = createSubagents({
     model,
     tools,
     adaptive: Boolean(input.workspace.adaptive),
     reviewer: Boolean(input.workspace.reviewer),
+    inputProcessors: contextProcessors,
+    // Domain/Leaf: TokenLimiter only (short scopes). Reviewer gets OM via explicit generate.
+    memory: runMemory,
   });
   const childAgents = subagentsAsAgentsMap(subagents);
 
   const adaptiveHint = input.workspace.adaptive
     ? `\nAdaptive mode: you may delegate domainResearcher / leafResearcher for large scopes; reduce their receipts yourself. You alone write wiki pages.\n${adaptiveLimitsInstruction()}`
     : "";
+  const contextHint =
+    contextTarget !== undefined
+      ? `\nContext budget: operational target ${contextTarget} tokens` +
+        (maxContextTokens !== undefined
+          ? ` (model max ${maxContextTokens}).`
+          : ".") +
+        (runMemory
+          ? " Observational Memory summarizes long tool history; TokenLimiter is the hard cap."
+          : " Prefer receipts and concise tool use; older tool results may be pruned automatically.")
+      : "";
 
   const agent = new Agent({
     id: "okf-wiki-root",
     name: "OKF Wiki Root",
     instructions: [
-      buildInstructions(input.workspace) + adaptiveHint,
+      buildInstructions(input.workspace) + adaptiveHint + contextHint,
       codeModeInstructions,
     ],
     model,
     workspace: mastraWorkspace,
     ...(Object.keys(childAgents).length > 0 ? { agents: childAgents } : {}),
+    ...(contextProcessors.length > 0
+      ? { inputProcessors: contextProcessors }
+      : {}),
+    ...(runMemory ? { memory: runMemory } : {}),
     tools: {
       ...tools,
       execute_typescript,
@@ -824,6 +887,9 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
 
   // Stream so tool side-effects run; forward fullStream to workflow writer for Session UI.
   // On write phase, emit data-plan-progress via writer.custom after each write_wiki.
+  const rootMemoryOpt = runMemory
+    ? { memory: wikiRunMemoryOption(input.runId, "root") }
+    : {};
   let text: string;
   const writtenPaths = new Set<string>();
   try {
@@ -831,6 +897,7 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
       [{ role: "user", content: userMessage }],
       {
         maxSteps,
+        ...rootMemoryOpt,
         ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       },
     );
@@ -889,6 +956,7 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
       [{ role: "user", content: userMessage }],
       {
         maxSteps,
+        ...rootMemoryOpt,
         ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       },
     );
@@ -945,6 +1013,9 @@ async function runLive(input: WikiRunAgentInput, wikiRoot: string, skillRoot: st
         ],
         {
           maxSteps: subagents.reviewerMaxSteps,
+          ...(runMemory
+            ? { memory: wikiRunMemoryOption(input.runId, "reviewer") }
+            : {}),
           ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
         },
       );

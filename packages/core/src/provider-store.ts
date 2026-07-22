@@ -165,6 +165,9 @@ export function toModelProfilePublic(profile: ModelProfile): ModelProfilePublic 
     apiKeySet: apiKey.length > 0,
     apiKeyMasked: maskSecret(apiKey),
     apiShape: profile.apiShape ?? "completions",
+    ...(profile.maxContextTokens !== undefined
+      ? { maxContextTokens: profile.maxContextTokens }
+      : {}),
   };
 }
 
@@ -239,6 +242,9 @@ export async function createModelProfile(
     baseUrl: write.baseUrl,
     apiKey: write.apiKey,
     apiShape: write.apiShape,
+    ...(typeof input.maxContextTokens === "number"
+      ? { maxContextTokens: input.maxContextTokens }
+      : {}),
   });
 
   const models = [...current.models, profile];
@@ -276,6 +282,12 @@ export async function updateModelProfile(
     }
   }
 
+  let maxContextTokens = existing.maxContextTokens;
+  if (input.maxContextTokens !== undefined) {
+    maxContextTokens =
+      input.maxContextTokens === null ? undefined : input.maxContextTokens;
+  }
+
   const profile = ModelProfileSchema.parse({
     id: existing.id,
     name: input.name.trim(),
@@ -283,6 +295,7 @@ export async function updateModelProfile(
     baseUrl: (input.baseUrl ?? "").trim(),
     apiKey,
     apiShape: input.apiShape ?? existing.apiShape,
+    ...(maxContextTokens !== undefined ? { maxContextTokens } : {}),
   });
 
   const models = [...current.models];
@@ -358,6 +371,8 @@ export type ResolvedProviderRuntime = {
   modelId: string | undefined;
   profileId: string | undefined;
   profileName: string | undefined;
+  /** Provider hard context window from the selected model profile, when set. */
+  maxContextTokens: number | undefined;
   source: {
     baseUrl: "stored" | "env" | "none";
     apiKey: "stored" | "env" | "none";
@@ -424,6 +439,7 @@ export function resolveProviderRuntime(
     modelId: profile?.modelId ?? options.modelId,
     profileId: profile?.id,
     profileName: profile?.name,
+    maxContextTokens: profile?.maxContextTokens,
     source: { baseUrl: baseUrlSource, apiKey: apiKeySource },
   };
 }

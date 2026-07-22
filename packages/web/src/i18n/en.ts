@@ -140,6 +140,11 @@ export const en = {
     wikiLanguage: "Wiki language",
     wikiLanguageHint:
       "Language used for generated Wiki page titles and body (not the operator UI).",
+    contextTargetTokens: "Context target (tokens)",
+    contextTargetTokensHint:
+      "Operational budget for Wiki Run context compaction (Observational Memory + hard token limit). Leave blank to use 85% of the selected model’s max context when that is configured.",
+    contextTargetTokensPlaceholder: "e.g. 100000",
+    contextTargetDerived: "Currently derived from model max: {n} tokens (85%).",
     langEn: "English",
     langZh: "Chinese (Simplified)",
     save: "Save changes",
@@ -267,6 +272,7 @@ export const en = {
     colShape: "Shape",
     colBaseUrl: "Base URL",
     colKey: "Key",
+    colMaxContext: "Max ctx",
     colActions: "Actions",
     defaultBadge: "default",
     setDefault: "Set default",
@@ -292,6 +298,10 @@ export const en = {
     apiShape: "API shape",
     shapeCompletions: "Chat Completions",
     shapeResponses: "Responses",
+    maxContextTokens: "Max context (tokens)",
+    maxContextTokensHint:
+      "Provider hard context window for this model. Wiki Runs auto-compact when usage reaches about 85% of this value (or the workspace context target).",
+    maxContextTokensPlaceholder: "e.g. 128000",
     saving: "Saving…",
     saveCreate: "Add model",
     saveEdit: "Save changes",

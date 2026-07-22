@@ -9,11 +9,32 @@ export {
   redactErrorMessage,
   shouldUseFixtureMode,
   resolveModelConfig,
+  resolveWikiModel,
   parsePlanFromAgentText,
   type WikiRunAgentInput,
   type WikiRunAgentResult,
   type WikiRunStreamWriter,
+  type ResolvedWikiModel,
 } from "./run.js";
+
+export {
+  CONTEXT_COMPACTION_RATIO,
+  CONTEXT_TOOL_RESULT_RECENT_STEPS,
+  resolveContextTargetTokens,
+  resolveContextTargetForWorkspace,
+  buildContextInputProcessors,
+  type ResolveContextTargetInput,
+} from "./context-limits.js";
+
+export {
+  OM_OBSERVATION_RATIO,
+  OM_REFLECTION_RATIO,
+  createWikiRunMemory,
+  resolveObservationMessageTokens,
+  resolveReflectionObservationTokens,
+  wikiRunMemoryOption,
+  type CreateWikiRunMemoryInput,
+} from "./wiki-memory.js";
 
 export {
   resolveSkillPath,

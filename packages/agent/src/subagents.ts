@@ -5,6 +5,8 @@
 
 import { Agent } from "@mastra/core/agent";
 import type { MastraModelConfig } from "@mastra/core/llm";
+import type { InputProcessor } from "@mastra/core/processors";
+import type { Memory } from "@mastra/memory";
 import { ADAPTIVE_RUN_LIMITS } from "./limits.js";
 import type { WikiRunTools } from "./tools.js";
 
@@ -32,6 +34,13 @@ export function createSubagents(options: {
   tools: WikiRunTools;
   adaptive: boolean;
   reviewer: boolean;
+  /** Shared context-compaction processors (TokenLimiter + ToolCallFilter). */
+  inputProcessors?: InputProcessor[];
+  /**
+   * Observational Memory for Reviewer only (explicit generate + threadId).
+   * Domain/Leaf stay TokenLimiter-only — supervisor delegation may omit threadId.
+   */
+  memory?: Memory;
 }): SubagentBundle {
   const researchTools = {
     list_source: options.tools.list_source,
@@ -39,6 +48,11 @@ export function createSubagents(options: {
     list_skill: options.tools.list_skill,
     read_skill: options.tools.read_skill,
   };
+  const processorOpts =
+    options.inputProcessors && options.inputProcessors.length > 0
+      ? { inputProcessors: options.inputProcessors }
+      : {};
+  const reviewerMemoryOpts = options.memory ? { memory: options.memory } : {};
 
   const out: SubagentBundle = {
     domainMaxSteps: ADAPTIVE_RUN_LIMITS.domainMaxSteps,
@@ -61,6 +75,7 @@ export function createSubagents(options: {
         `Stay within ${ADAPTIVE_RUN_LIMITS.domainMaxSteps} tool steps (host-enforced).`,
       ].join("\n"),
       tools: researchTools,
+      ...processorOpts,
     });
 
     out.leafResearcher = new Agent({
@@ -77,6 +92,7 @@ export function createSubagents(options: {
         `Stay within ${ADAPTIVE_RUN_LIMITS.leafMaxSteps} tool steps (host-enforced).`,
       ].join("\n"),
       tools: researchTools,
+      ...processorOpts,
     });
   }
 
@@ -98,6 +114,8 @@ export function createSubagents(options: {
         list_wiki: options.tools.list_wiki,
         read_wiki: options.tools.read_wiki,
       },
+      ...processorOpts,
+      ...reviewerMemoryOpts,
     });
   }
 

@@ -76,7 +76,13 @@ export type ModelRef = z.infer<typeof ModelRefSchema>;
 
 export const WorkspaceLimitsSchema = z.object({
   requestTimeoutSeconds: z.number().positive().default(120),
-  contextTargetTokens: z.number().int().positive().optional(),
+  /**
+   * Operational context budget for Wiki Run message compaction (tokens).
+   * Not the provider hard window — that lives on the model profile as
+   * `maxContextTokens`. When unset, the agent derives a target from
+   * profile maxContextTokens × 0.85 when available.
+   */
+  contextTargetTokens: z.number().int().positive().max(10_000_000).optional(),
   inputTokensLimit: z.number().int().positive().optional(),
   outputTokensLimit: z.number().int().positive().optional(),
   totalTokensLimit: z.number().int().positive().optional(),

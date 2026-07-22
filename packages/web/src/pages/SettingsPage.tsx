@@ -60,6 +60,8 @@ const emptyForm = {
   baseUrl: "",
   apiKey: "",
   apiShape: "completions" as ProviderApiShape,
+  /** Empty string means unset; digits-only string when set. */
+  maxContextTokens: "",
   clearApiKey: false,
 };
 
@@ -147,6 +149,10 @@ export function SettingsPage() {
       baseUrl: model.baseUrl,
       apiKey: "",
       apiShape: model.apiShape,
+      maxContextTokens:
+        model.maxContextTokens !== undefined
+          ? String(model.maxContextTokens)
+          : "",
       clearApiKey: false,
     });
     setTestResult(null);
@@ -180,6 +186,20 @@ export function SettingsPage() {
     setStatusMsg(null);
     setTestResult(null);
     try {
+      const maxContextRaw = form.maxContextTokens.trim();
+      let maxContextTokens: number | null | undefined;
+      if (maxContextRaw === "") {
+        // Create: omit (unset). Edit: clear stored value.
+        maxContextTokens = editorMode === "edit" ? null : undefined;
+      } else {
+        const parsed = Number(maxContextRaw);
+        if (!Number.isInteger(parsed) || parsed <= 0) {
+          setError(new Error("maxContextTokens must be a positive integer"));
+          setSaving(false);
+          return;
+        }
+        maxContextTokens = parsed;
+      }
       const payload = {
         name: form.name.trim(),
         modelId: form.modelId.trim(),
@@ -190,6 +210,7 @@ export function SettingsPage() {
           : form.apiKey.trim()
             ? { apiKey: form.apiKey.trim() }
             : {}),
+        ...(maxContextTokens !== undefined ? { maxContextTokens } : {}),
       };
       const result =
         editorMode === "edit" && editingId
@@ -397,6 +418,7 @@ export function SettingsPage() {
                         <TableHead>{t.globalSettings.colShape}</TableHead>
                         <TableHead>{t.globalSettings.colBaseUrl}</TableHead>
                         <TableHead>{t.globalSettings.colKey}</TableHead>
+                        <TableHead>{t.globalSettings.colMaxContext}</TableHead>
                         <TableHead className="text-right">{t.globalSettings.colActions}</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -420,6 +442,14 @@ export function SettingsPage() {
                             </TableCell>
                             <TableCell className="mono small">
                               {model.apiKeySet ? model.apiKeyMasked ?? t.globalSettings.keySet : "—"}
+                            </TableCell>
+                            <TableCell
+                              className="mono small"
+                              data-testid="model-max-context-cell"
+                            >
+                              {model.maxContextTokens !== undefined
+                                ? model.maxContextTokens.toLocaleString()
+                                : "—"}
                             </TableCell>
                             <TableCell className="actions-cell">
                               <div className="row-actions justify-end">
@@ -632,6 +662,30 @@ export function SettingsPage() {
                           </Field>
                         </RadioGroup>
                       </FieldSet>
+                      <Field>
+                        <FieldLabel htmlFor="model-max-context">
+                          {t.globalSettings.maxContextTokens}
+                        </FieldLabel>
+                        <Input
+                          id="model-max-context"
+                          type="number"
+                          min={1}
+                          step={1}
+                          value={form.maxContextTokens}
+                          onChange={(e) =>
+                            setForm((f) => ({
+                              ...f,
+                              maxContextTokens: e.target.value,
+                            }))
+                          }
+                          placeholder={t.globalSettings.maxContextTokensPlaceholder}
+                          className="font-mono max-w-xs"
+                          data-testid="model-max-context"
+                        />
+                        <FieldDescription>
+                          {t.globalSettings.maxContextTokensHint}
+                        </FieldDescription>
+                      </Field>
                       <div className="form-actions">
                         <Button
                           type="submit"

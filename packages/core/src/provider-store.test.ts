@@ -169,6 +169,76 @@ test("resolveProviderRuntime prefers profileId", () => {
   assert.equal(runtime.apiKey, "key-b-value");
   assert.equal(runtime.apiShape, "responses");
   assert.equal(runtime.modelId, "openai/b");
+  assert.equal(runtime.maxContextTokens, undefined);
+});
+
+test("resolveProviderRuntime surfaces maxContextTokens from profile", () => {
+  const runtime = resolveProviderRuntime(
+    {
+      version: 2,
+      models: [
+        {
+          id: "ctx",
+          name: "Ctx",
+          modelId: "openai/ctx",
+          baseUrl: "https://ctx/v1",
+          apiKey: "key-ctx",
+          apiShape: "completions",
+          maxContextTokens: 128_000,
+        },
+      ],
+    },
+    { profileId: "ctx" },
+  );
+  assert.equal(runtime.maxContextTokens, 128_000);
+});
+
+test("create/update model profile persists and clears maxContextTokens", async () => {
+  const home = await tempHome();
+  const file = path.join(home, "provider.json");
+
+  const created = await createModelProfile(
+    {
+      name: "With Context",
+      modelId: "openai/ctx-model",
+      baseUrl: "https://gw/v1",
+      apiKey: "sk-ctx-key",
+      apiShape: "completions",
+      maxContextTokens: 64_000,
+    },
+    file,
+  );
+  assert.equal(created.profile.maxContextTokens, 64_000);
+  const publicView = toProviderPublic(created.config);
+  assert.equal(publicView.models[0]!.maxContextTokens, 64_000);
+
+  const updated = await updateModelProfile(
+    created.profile.id,
+    {
+      name: "With Context",
+      modelId: "openai/ctx-model",
+      baseUrl: "https://gw/v1",
+      apiShape: "completions",
+      maxContextTokens: 128_000,
+    },
+    file,
+  );
+  assert.equal(updated.profile.maxContextTokens, 128_000);
+
+  const cleared = await updateModelProfile(
+    created.profile.id,
+    {
+      name: "With Context",
+      modelId: "openai/ctx-model",
+      baseUrl: "https://gw/v1",
+      apiShape: "completions",
+      maxContextTokens: null,
+    },
+    file,
+  );
+  assert.equal(cleared.profile.maxContextTokens, undefined);
+  const reloaded = await loadProviderConfig(file);
+  assert.equal(reloaded.models[0]!.maxContextTokens, undefined);
 });
 
 test("resolveProviderRuntime falls back to env when profile empty", () => {

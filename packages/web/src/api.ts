@@ -136,6 +136,8 @@ export type PatchWorkspaceInput = {
   planConfirm?: boolean;
   wikiLanguage?: WikiLanguage;
   skillPath?: string | null;
+  /** Full workspace limits document (server replaces the limits object). */
+  limits?: WorkspaceConfig["limits"];
 };
 
 export type UpdateSourceInput = {

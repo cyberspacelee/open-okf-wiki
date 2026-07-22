@@ -68,6 +68,8 @@ export function WorkspaceSettingsPage() {
   const [reviewer, setReviewer] = useState(false);
   const [planConfirm, setPlanConfirm] = useState(false);
   const [wikiLanguage, setWikiLanguage] = useState<WikiLanguage>("en");
+  /** Empty string means unset (derive from model max context). */
+  const [contextTargetTokens, setContextTargetTokens] = useState("");
   const [skill, setSkill] = useState<SkillInfo | null>(null);
   const [skillBusy, setSkillBusy] = useState(false);
   const [skillFilePath, setSkillFilePath] = useState("SKILL.md");
@@ -83,6 +85,11 @@ export function WorkspaceSettingsPage() {
       setReviewer(ws.reviewer);
       setPlanConfirm(Boolean(ws.planConfirm));
       setWikiLanguage(ws.wikiLanguage ?? "en");
+      setContextTargetTokens(
+        ws.limits?.contextTargetTokens !== undefined
+          ? String(ws.limits.contextTargetTokens)
+          : "",
+      );
 
       // Prefer profileId; else match denormalized model id; else keep empty.
       if (ws.model.profileId && catalog.some((m) => m.id === ws.model.profileId)) {
@@ -161,6 +168,29 @@ export function WorkspaceSettingsPage() {
     setError(null);
     setSaved(false);
     try {
+      const contextRaw = contextTargetTokens.trim();
+      let nextContextTarget: number | undefined;
+      if (contextRaw !== "") {
+        const parsed = Number(contextRaw);
+        if (!Number.isInteger(parsed) || parsed <= 0) {
+          setError(new Error("contextTargetTokens must be a positive integer"));
+          setSubmitting(false);
+          return;
+        }
+        nextContextTarget = parsed;
+      }
+      const baseLimits = workspace?.limits ?? { requestTimeoutSeconds: 120 };
+      const {
+        contextTargetTokens: _drop,
+        ...limitsWithoutContext
+      } = baseLimits;
+      void _drop;
+      const nextLimits = {
+        ...limitsWithoutContext,
+        ...(nextContextTarget !== undefined
+          ? { contextTargetTokens: nextContextTarget }
+          : {}),
+      };
       const result = await patchWorkspace(
         id,
         {
@@ -171,6 +201,7 @@ export function WorkspaceSettingsPage() {
           reviewer,
           planConfirm,
           wikiLanguage,
+          limits: nextLimits,
         },
         workspace?.rootPath ?? rootPathHint,
       );
@@ -192,6 +223,12 @@ export function WorkspaceSettingsPage() {
     !models.some((m) => m.modelId === workspace.model.id)
       ? workspace.model.id
       : null;
+  /** 85% of model max when workspace target is blank (matches agent CONTEXT_COMPACTION_RATIO). */
+  const derivedContextTarget =
+    !contextTargetTokens.trim() &&
+    selectedModel?.maxContextTokens !== undefined
+      ? Math.floor(selectedModel.maxContextTokens * 0.85)
+      : undefined;
 
   async function handleDeleteWorkspace() {
     if (!id || !workspace) {
@@ -398,6 +435,37 @@ export function WorkspaceSettingsPage() {
                       }}
                       data-testid="settings-plan-confirm"
                     />
+                  </Field>
+
+                  <Field>
+                    <FieldLabel htmlFor="settings-context-target">
+                      {t.settings.contextTargetTokens}
+                    </FieldLabel>
+                    <Input
+                      id="settings-context-target"
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={contextTargetTokens}
+                      onChange={(e) => {
+                        setContextTargetTokens(e.target.value);
+                        setSaved(false);
+                      }}
+                      placeholder={t.settings.contextTargetTokensPlaceholder}
+                      className="font-mono max-w-xs"
+                      data-testid="settings-context-target"
+                    />
+                    <FieldDescription>
+                      {t.settings.contextTargetTokensHint}
+                      {derivedContextTarget !== undefined ? (
+                        <>
+                          {" "}
+                          {formatMessage(t.settings.contextTargetDerived, {
+                            n: derivedContextTarget.toLocaleString(),
+                          })}
+                        </>
+                      ) : null}
+                    </FieldDescription>
                   </Field>
 
                   <div className="form-actions">

@@ -46,7 +46,11 @@ repositories:
 limits:
   request_limit: 50
   tool_calls_limit: 200
-  # Operational context target for compaction (not the provider hard window).
+  # Operational context target for Wiki Run compaction (not the provider hard window).
+  # Prefer Settings model profile maxContextTokens; when set and this key is omitted,
+  # the agent uses floor(maxContextTokens * 0.85).
+  # With a target: Observational Memory summarizes long history; TokenLimiter +
+  # ToolCallFilter hard-cap multi-step tool growth. When neither is set, no auto-prune.
   context_target_tokens: 100000
   input_tokens_limit: 250000
   output_tokens_limit: 100000

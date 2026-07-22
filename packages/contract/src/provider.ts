@@ -23,6 +23,12 @@ export const ModelProfileSchema = z.object({
   /** Secret; never return raw value from HTTP APIs. */
   apiKey: z.string().default(""),
   apiShape: ProviderApiShapeSchema.default("completions"),
+  /**
+   * Provider hard context window for this model (tokens).
+   * Used to derive the Wiki Run compaction target when workspace
+   * `limits.contextTargetTokens` is unset (default 85% of this value).
+   */
+  maxContextTokens: z.number().int().positive().max(10_000_000).optional(),
 });
 
 export type ModelProfile = z.infer<typeof ModelProfileSchema>;
@@ -61,6 +67,8 @@ export const ModelProfilePublicSchema = z.object({
   apiKeySet: z.boolean(),
   apiKeyMasked: z.string().nullable(),
   apiShape: ProviderApiShapeSchema,
+  /** Provider hard context window when configured on the profile. */
+  maxContextTokens: z.number().int().positive().optional(),
 });
 
 export type ModelProfilePublic = z.infer<typeof ModelProfilePublicSchema>;
@@ -91,6 +99,13 @@ export const ModelProfileWriteSchema = z.object({
   apiShape: ProviderApiShapeSchema.default("completions"),
   /** Optional stable id on create; server generates otherwise. */
   id: z.string().trim().min(1).max(64).optional(),
+  /**
+   * Provider hard context window (tokens). Omit on update to keep;
+   * null to clear. On create, omit means unset.
+   */
+  maxContextTokens: z
+    .union([z.number().int().positive().max(10_000_000), z.null()])
+    .optional(),
 });
 
 export type ModelProfileWrite = z.infer<typeof ModelProfileWriteSchema>;
