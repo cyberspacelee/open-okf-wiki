@@ -1,24 +1,31 @@
 /**
  * Run console / headless job projection over the wiki-run workflow.
- * Open + abort bind: wiki-run-orchestrator (same product open path as Session);
- * terminal map: workflow-result. Stream conversion is not owned here (ADR 0027).
+ *
+ * Live timeline uses the same framework conversion as Session
+ * (`openWikiRunUiProjection` → toAISdkStream). Terminal audit replay uses
+ * `workflowSnapshotToStream` (ADR 0027 Phase 6 full Run SSE cutover).
  */
 
 import type { WikiRunPlan, WorkspaceConfig } from "@okf-wiki/contract";
-import { redactErrorMessage } from "./run.js";
-import {
-  openWikiRunWorkflow,
-  stepIdForGate,
-} from "./wiki-run-orchestrator.js";
 import { applyLateAbortStatus } from "@okf-wiki/core";
+import { redactErrorMessage } from "./run-redact.js";
+import { stepIdForGate } from "./wiki-run-orchestrator.js";
+import {
+  openWikiRunUiProjection,
+  type WikiWorkflowUiParams,
+} from "./workflow-ui-stream.js";
 import {
   mapWorkflowResult,
   type WikiWorkflowTerminal,
 } from "./workflow-result.js";
 import {
-  mapWorkflowStreamEvent,
+  uiChunkToJobEvent,
   type WikiWorkflowJobEvent,
 } from "./workflow-events.js";
+import {
+  loadWikiRunWorkflowSnapshot,
+  openWikiRunAuditStream,
+} from "./workflow-audit-stream.js";
 
 export type StartWikiRunInput = {
   runId: string;
@@ -29,7 +36,7 @@ export type StartWikiRunInput = {
   /** Session conversational entry forces plan gate. */
   forcePlanConfirm?: boolean;
   plan?: WikiRunPlan;
-  /** Job timeline callback (Run console SSE). */
+  /** Job timeline callback (Run console SSE) — framework UI parts. */
   onEvent?: (event: WikiWorkflowJobEvent) => void;
   /**
    * Product cancel signal (server registerRunAbortController / abortRun).
@@ -50,30 +57,49 @@ function isCancelledError(error: unknown): boolean {
     return true;
   }
   const message = error instanceof Error ? error.message : String(error);
-  // bail() should not throw; keep string match for older runners / nested errors.
   return /plan declined|cancelled|aborted|bailed/i.test(message);
 }
 
-async function consumeWorkflowStream(
-  output: {
-    fullStream?: AsyncIterable<unknown>;
-    result: Promise<unknown>;
-  },
+async function consumeUiProjection(
+  stream: ReadableStream<unknown>,
+  result: () => Promise<unknown>,
   onEvent?: (event: WikiWorkflowJobEvent) => void,
 ): Promise<unknown> {
-  if (onEvent && output.fullStream) {
+  if (onEvent) {
     try {
-      for await (const event of output.fullStream) {
-        const mapped = mapWorkflowStreamEvent(event);
-        if (mapped) {
-          onEvent(mapped);
+      const reader = stream.getReader();
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) {
+            break;
+          }
+          const mapped = uiChunkToJobEvent(value);
+          if (mapped) {
+            onEvent(mapped);
+          }
         }
+      } finally {
+        reader.releaseLock();
       }
     } catch {
       // Stream iteration errors surface via result; keep job timeline best-effort.
     }
+  } else {
+    // Drain so the workflow is not back-pressured when no listener.
+    try {
+      await stream.pipeTo(
+        new WritableStream({
+          write() {
+            /* discard */
+          },
+        }),
+      );
+    } catch {
+      // ignore
+    }
   }
-  return output.result;
+  return result();
 }
 
 function cancelledResult(): WikiRunOrchestrationResult {
@@ -86,7 +112,7 @@ function cancelledResult(): WikiRunOrchestrationResult {
 
 /**
  * Start (or re-create) the wiki-run workflow for a product run id.
- * Prefer stream() so Run console can mirror workflow step events.
+ * Mirrors Session: openWikiRunUiProjection (framework toAISdkStream).
  */
 export async function startWikiRun(
   input: StartWikiRunInput,
@@ -94,9 +120,8 @@ export async function startWikiRun(
   if (input.abortSignal?.aborted) {
     return cancelledResult();
   }
-  let release: (() => void) | undefined;
   try {
-    const handle = await openWikiRunWorkflow({
+    const params: WikiWorkflowUiParams = {
       kind: "start",
       runId: input.runId,
       workspace: input.workspace,
@@ -105,11 +130,15 @@ export async function startWikiRun(
       forcePlanConfirm: input.forcePlanConfirm,
       plan: input.plan,
       abortSignal: input.abortSignal,
-    });
-    release = handle.release;
-    const result = await consumeWorkflowStream(handle.output, input.onEvent);
+    };
+    const handle = await openWikiRunUiProjection(params);
+    const raw = await consumeUiProjection(
+      handle.stream,
+      handle.result,
+      input.onEvent,
+    );
     return applyLateAbortStatus(
-      mapWorkflowResult(result),
+      mapWorkflowResult(raw),
       Boolean(input.abortSignal?.aborted),
     ) as WikiRunOrchestrationResult;
   } catch (error) {
@@ -120,8 +149,6 @@ export async function startWikiRun(
       status: "failed",
       error: redactErrorMessage(error),
     };
-  } finally {
-    release?.();
   }
 }
 
@@ -146,7 +173,6 @@ export async function resumeWikiRun(
   if (input.abortSignal?.aborted) {
     return cancelledResult();
   }
-  let release: (() => void) | undefined;
   try {
     if (input.gate === "publication" && input.action === "revise") {
       throw new Error("publication gate does not support revise");
@@ -160,17 +186,20 @@ export async function resumeWikiRun(
           }
         : { action: input.action as "approve" | "deny" };
 
-    const handle = await openWikiRunWorkflow({
+    const handle = await openWikiRunUiProjection({
       kind: "resume",
       runId: input.runId,
       step: stepIdForGate(input.gate),
       resumeData,
       abortSignal: input.abortSignal,
     });
-    release = handle.release;
-    const result = await consumeWorkflowStream(handle.output, input.onEvent);
+    const raw = await consumeUiProjection(
+      handle.stream,
+      handle.result,
+      input.onEvent,
+    );
     return applyLateAbortStatus(
-      mapWorkflowResult(result),
+      mapWorkflowResult(raw),
       Boolean(input.abortSignal?.aborted),
     ) as WikiRunOrchestrationResult;
   } catch (error) {
@@ -181,9 +210,38 @@ export async function resumeWikiRun(
       status: "failed",
       error: redactErrorMessage(error),
     };
-  } finally {
-    release?.();
   }
+}
+
+/**
+ * Replay a persisted Mastra workflow snapshot as job events (terminal audit).
+ * Used by Run SSE when the ring buffer is empty but a snapshot exists.
+ */
+export async function replayWikiRunAuditEvents(
+  runId: string,
+  onEvent: (event: WikiWorkflowJobEvent) => void,
+): Promise<boolean> {
+  const snapshot = await loadWikiRunWorkflowSnapshot(runId);
+  if (!snapshot) {
+    return false;
+  }
+  const stream = openWikiRunAuditStream(snapshot);
+  const reader = stream.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      const mapped = uiChunkToJobEvent(value);
+      if (mapped) {
+        onEvent(mapped);
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return true;
 }
 
 export type { WikiWorkflowJobEvent };

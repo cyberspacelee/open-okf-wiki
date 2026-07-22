@@ -1,7 +1,11 @@
 /**
- * Map Mastra workflow stream events → product-facing job log lines.
- * Used by Run console SSE so job timeline stays homologous with the wiki-run workflow.
+ * Map framework UI stream chunks → product Run console job events.
+ *
+ * Live Run SSE no longer hand-maps Mastra workflow-start/step events
+ * (ADR 0027 Phase 6). Prefer toAISdkStream / workflowSnapshotToStream chunks.
  */
+
+import type { UIMessageChunk } from "ai";
 
 export type WikiWorkflowJobEvent = {
   type: "log" | "part";
@@ -11,78 +15,121 @@ export type WikiWorkflowJobEvent = {
   nodeId?: string;
 };
 
-function stepName(payload: Record<string, unknown> | undefined): string {
-  if (!payload) {
-    return "step";
+function truncate(text: string, max = 500): string {
+  if (text.length <= max) {
+    return text;
   }
-  const id =
-    (typeof payload.id === "string" && payload.id) ||
-    (typeof payload.stepId === "string" && payload.stepId) ||
-    (typeof payload.stepName === "string" && payload.stepName) ||
-    (typeof payload.name === "string" && payload.name) ||
-    "";
-  return id || "step";
+  return `${text.slice(0, max - 1)}…`;
 }
 
 /**
- * Best-effort projection of a Mastra WorkflowStreamEvent into a job log event.
- * Unknown shapes become a short log line (never throw).
+ * Convert one AI SDK UIMessageChunk (from toAISdkStream / workflowSnapshotToStream)
+ * into a Run console job event. Returns null for noisy protocol-only chunks.
  */
-export function mapWorkflowStreamEvent(event: unknown): WikiWorkflowJobEvent | null {
-  if (!event || typeof event !== "object") {
+export function uiChunkToJobEvent(
+  chunk: unknown,
+): WikiWorkflowJobEvent | null {
+  if (!chunk || typeof chunk !== "object") {
     return null;
   }
-  const e = event as { type?: string; payload?: Record<string, unknown> };
-  const type = e.type ?? "";
-  const payload = e.payload;
+  const c = chunk as UIMessageChunk & {
+    type?: string;
+    delta?: string;
+    text?: string;
+    id?: string;
+    toolName?: string;
+    toolCallId?: string;
+    data?: unknown;
+  };
+  const type = c.type ?? "";
 
-  if (type === "workflow-start" || type === "start") {
-    return { type: "log", message: "wiki workflow running", nodeId: "workflow" };
-  }
-  if (type === "workflow-step-start") {
+  if (type === "text-delta" || type === "reasoning-delta") {
+    const delta =
+      typeof c.delta === "string"
+        ? c.delta
+        : typeof c.text === "string"
+          ? c.text
+          : "";
+    if (!delta.trim()) {
+      return null;
+    }
     return {
-      type: "log",
-      message: `workflow step started: ${stepName(payload)}`,
-      nodeId: stepName(payload),
+      type: "part",
+      partType: type.startsWith("reasoning") ? "reasoning" : "text",
+      message: truncate(delta.trim(), 200),
+      text: truncate(delta, 8000),
+      nodeId: "workflow",
     };
   }
-  if (type === "workflow-step-result" || type === "workflow-step-finish") {
-    const status =
-      typeof payload?.status === "string" ? payload.status : "done";
-    return {
-      type: "log",
-      message: `workflow step ${stepName(payload)}: ${status}`,
-      nodeId: stepName(payload),
-    };
-  }
-  if (type === "workflow-step-suspended") {
-    const gate =
-      payload?.suspendPayload &&
-      typeof payload.suspendPayload === "object" &&
-      "gate" in (payload.suspendPayload as object)
-        ? String((payload.suspendPayload as { gate?: string }).gate)
-        : "hitl";
-    return {
-      type: "log",
-      message: `workflow suspended (${gate}) at ${stepName(payload)}`,
-      nodeId: stepName(payload),
-    };
-  }
-  if (type === "workflow-finish" || type === "finish") {
-    return { type: "log", message: "wiki workflow finished", nodeId: "workflow" };
-  }
-  if (type === "workflow-step-output" && payload) {
-    // Skip noisy raw outputs; optional short log
+
+  if (type === "text-start" || type === "text-end") {
     return null;
   }
-  // Ignore other high-volume agent token events inside steps
+  if (type === "reasoning-start" || type === "reasoning-end") {
+    return null;
+  }
+  if (type === "start" || type === "finish" || type === "start-step" || type === "finish-step") {
+    return {
+      type: "log",
+      message: `workflow: ${type}`,
+      nodeId: "workflow",
+    };
+  }
+
+  if (typeof type === "string" && type.startsWith("tool-")) {
+    const toolName =
+      typeof c.toolName === "string"
+        ? c.toolName
+        : type.replace(/^tool-/, "") || "tool";
+    return {
+      type: "part",
+      partType: type,
+      message: toolName,
+      nodeId: "workflow",
+    };
+  }
+
+  if (typeof type === "string" && type.startsWith("data-")) {
+    const summary =
+      c.data && typeof c.data === "object"
+        ? truncate(JSON.stringify(c.data), 300)
+        : type;
+    return {
+      type: "part",
+      partType: type,
+      message: summary,
+      text:
+        c.data !== undefined
+          ? truncate(
+              typeof c.data === "string" ? c.data : JSON.stringify(c.data),
+              8000,
+            )
+          : undefined,
+      nodeId: "workflow",
+    };
+  }
+
+  if (type === "error") {
+    const msg =
+      typeof (c as { errorText?: string }).errorText === "string"
+        ? (c as { errorText: string }).errorText
+        : "workflow error";
+    return {
+      type: "log",
+      message: truncate(msg, 500),
+      nodeId: "workflow",
+    };
+  }
+
+  // Drop high-volume / unknown protocol noise.
   if (
-    type.includes("text-delta") ||
-    type.includes("tool-call") ||
-    type.includes("reasoning")
+    type.includes("delta") ||
+    type.includes("tool-input") ||
+    type.includes("tool-output")
   ) {
     return null;
   }
+
   if (type) {
     return {
       type: "log",
@@ -91,4 +138,49 @@ export function mapWorkflowStreamEvent(event: unknown): WikiWorkflowJobEvent | n
     };
   }
   return null;
+}
+
+/**
+ * @deprecated Use {@link uiChunkToJobEvent} on framework UI chunks.
+ * Kept as a thin alias that only accepts UI chunks (legacy name for imports).
+ */
+export function mapWorkflowStreamEvent(
+  event: unknown,
+): WikiWorkflowJobEvent | null {
+  // If it looks like a Mastra raw workflow event (type workflow-*), drop —
+  // live path must use toAISdkStream first.
+  if (
+    event &&
+    typeof event === "object" &&
+    typeof (event as { type?: string }).type === "string" &&
+    String((event as { type: string }).type).startsWith("workflow-")
+  ) {
+    const type = (event as { type: string }).type;
+    if (type === "workflow-start" || type === "start") {
+      return { type: "log", message: "wiki workflow running", nodeId: "workflow" };
+    }
+    if (type === "workflow-finish" || type === "finish") {
+      return {
+        type: "log",
+        message: "wiki workflow finished",
+        nodeId: "workflow",
+      };
+    }
+    if (type === "workflow-step-start") {
+      return {
+        type: "log",
+        message: "workflow step started",
+        nodeId: "workflow",
+      };
+    }
+    if (type === "workflow-step-suspended") {
+      return {
+        type: "log",
+        message: "workflow suspended (hitl)",
+        nodeId: "workflow",
+      };
+    }
+    return null;
+  }
+  return uiChunkToJobEvent(event);
 }

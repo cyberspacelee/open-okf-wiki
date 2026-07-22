@@ -307,6 +307,10 @@ const publishGateStep = createStep({
       stagingDir,
       publicationPath: inputData.workspace.publicationPath,
       runId: inputData.runId,
+      sources: inputData.workspace.sources.map((s) => ({
+        id: s.id,
+        path: s.path,
+      })),
     });
 
     return {

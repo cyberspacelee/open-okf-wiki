@@ -80,6 +80,7 @@ export {
 export {
   startWikiRun,
   resumeWikiRun,
+  replayWikiRunAuditEvents,
   type StartWikiRunInput,
   type ResumeWikiRunInput,
   type WikiRunOrchestrationResult,
@@ -124,9 +125,13 @@ export {
 } from "./workflow-ui-stream.js";
 export {
   openWikiRunAuditStream,
+  loadWikiRunWorkflowSnapshot,
   minimalWorkflowStateForAudit,
 } from "./workflow-audit-stream.js";
-export { mapWorkflowStreamEvent } from "./workflow-events.js";
+export {
+  mapWorkflowStreamEvent,
+  uiChunkToJobEvent,
+} from "./workflow-events.js";
 
 export {
   bindRunAbortSignal,

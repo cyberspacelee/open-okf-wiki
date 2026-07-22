@@ -4,6 +4,7 @@ import {
   resolveSkillPath,
   resumeWikiRun,
   startWikiRun,
+  replayWikiRunAuditEvents,
 } from "@okf-wiki/agent";
 import {
   appendSessionMessages,
@@ -1283,7 +1284,35 @@ export async function handleRunEvents(
 
   // Replay buffered stream parts so late subscribers still see text/tools
   // (fixture runs often finish before EventSource connects).
-  const recent = getRecentRunEvents(runId);
+  let recent = getRecentRunEvents(runId);
+
+  // Terminal + empty buffer: framework audit replay via workflowSnapshotToStream
+  // (ADR 0027 Phase 6 — full Run SSE cutover; no hand-rolled Mastra event map).
+  if (isTerminalRunStatus(run.status) && recent.length === 0) {
+    try {
+      await replayWikiRunAuditEvents(runId, (jobEvent) => {
+        if (jobEvent.type === "part") {
+          emitRunEvent(runId, {
+            type: "part",
+            partType: jobEvent.partType,
+            message: jobEvent.message,
+            text: jobEvent.text,
+            nodeId: jobEvent.nodeId,
+          });
+          return;
+        }
+        emitRunEvent(runId, {
+          type: "log",
+          message: jobEvent.message,
+          nodeId: jobEvent.nodeId,
+        });
+      });
+      recent = getRecentRunEvents(runId);
+    } catch {
+      // Best-effort; still emit done below.
+    }
+  }
+
   for (const event of recent) {
     writeEvent(event);
   }

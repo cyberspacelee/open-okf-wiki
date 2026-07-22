@@ -1,15 +1,14 @@
 /**
- * Phase 5 pilot — Run audit replay via framework `workflowSnapshotToStream`.
+ * Run audit via framework `workflowSnapshotToStream` (ADR 0027 Phase 6).
  *
- * Prefer this over hand-written Run SSE mapping when a historical Mastra
- * WorkflowState is available (getWorkflowRunById). Live job timeline still
- * uses mapWorkflowStreamEvent; full Run SSE migration is deferred (Phase 6+).
- *
- * Product shell only: no second conversion protocol.
+ * Live job timeline uses openWikiRunUiProjection (toAISdkStream).
+ * Terminal / empty-buffer SSE replay uses this module + getWorkflowRunById.
  */
 
 import { workflowSnapshotToStream } from "@mastra/ai-sdk";
 import type { WorkflowState } from "@mastra/core/workflows";
+import { getMastra } from "./mastra-instance.js";
+import { WIKI_RUN_WORKFLOW_ID } from "./wiki-workflow.js";
 
 /**
  * Convert a persisted Mastra workflow snapshot into AI SDK UI data parts
@@ -22,7 +21,23 @@ export function openWikiRunAuditStream(
 }
 
 /**
- * Minimal fixture-shaped WorkflowState for unit tests / smoke of the pilot.
+ * Load the Mastra workflow snapshot for a product run id, if storage has it.
+ */
+export async function loadWikiRunWorkflowSnapshot(
+  runId: string,
+): Promise<WorkflowState | null> {
+  try {
+    const mastra = getMastra();
+    const workflow = mastra.getWorkflow(WIKI_RUN_WORKFLOW_ID);
+    const state = await workflow.getWorkflowRunById(runId);
+    return (state as WorkflowState | null | undefined) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Minimal fixture-shaped WorkflowState for unit tests / smoke.
  * Not a product API — callers should pass real getWorkflowRunById results.
  */
 export function minimalWorkflowStateForAudit(input: {

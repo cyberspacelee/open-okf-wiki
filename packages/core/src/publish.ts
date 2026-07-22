@@ -8,6 +8,11 @@ export type PublishStagingInput = {
   publicationPath: string;
   /** Optional run id for diagnostics / future release naming. */
   runId?: string;
+  /**
+   * Pinned Snapshot sources for mechanical Source Citation resolve (ADR 0008).
+   * When set, validateWikiTree checks citations against these roots.
+   */
+  sources?: Array<{ id: string; path: string }>;
 };
 
 export type PublishStagingResult = {
@@ -103,8 +108,10 @@ export async function publishStagingToPublication(
     }
   }
 
-  // Mechanical wiki validation before any copy (frontmatter, caps, symlinks).
-  const validation = await validateWikiTree(stagingDir);
+  // Mechanical wiki validation before any copy (frontmatter, citations, caps).
+  const validation = await validateWikiTree(stagingDir, {
+    ...(input.sources?.length ? { sources: input.sources } : {}),
+  });
   if (!validation.ok) {
     throw new Error(
       `staging failed wiki validation: ${validation.errors.join("; ")}`,

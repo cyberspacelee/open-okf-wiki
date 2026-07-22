@@ -25,6 +25,9 @@ import { resolveSkillPath } from "./skill-path.js";
 import { createSubagents, subagentsAsAgentsMap } from "./subagents.js";
 import { createWikiRunTools } from "./tools.js";
 import { buildPlanProgressData } from "./ui-projection.js";
+import { redactErrorMessage } from "./run-redact.js";
+
+export { redactErrorMessage } from "./run-redact.js";
 
 export type WikiRunAgentPhase = "plan" | "write";
 
@@ -244,50 +247,6 @@ export function stagingDirForRun(workspaceRoot: string, runId: string): string {
     "staging",
     runId,
   );
-}
-
-/**
- * Coerce unknown errors to a short operator-safe string.
- * Never return "[object Object]" — that is not actionable in Session UI.
- */
-export function redactErrorMessage(error: unknown): string {
-  let raw: string;
-  if (error instanceof Error) {
-    raw = error.message || error.name || "Error";
-  } else if (typeof error === "string") {
-    raw = error;
-  } else if (error === null || error === undefined) {
-    raw = "unknown error";
-  } else if (typeof error === "object") {
-    const o = error as Record<string, unknown>;
-    // Prefer common error envelopes over JSON of the whole object.
-    if (typeof o.message === "string" && o.message.trim()) {
-      raw = o.message;
-    } else if (typeof o.error === "string" && o.error.trim()) {
-      raw = o.error;
-    } else if (o.error instanceof Error) {
-      raw = o.error.message;
-    } else if (typeof o.cause === "string" && o.cause.trim()) {
-      raw = o.cause;
-    } else {
-      try {
-        raw = JSON.stringify(error);
-      } catch {
-        raw = "unserializable error";
-      }
-    }
-  } else {
-    raw = String(error);
-  }
-  if (raw === "[object Object]") {
-    raw = "workflow failed (no message)";
-  }
-  return raw
-    // Allow hyphens in key material (e.g. sk-proj-..., sk-svcacct-...).
-    .replace(/\bsk-[a-zA-Z0-9-]{10,}\b/g, "[redacted-key]")
-    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
-    .replace(/api[_-]?key["']?\s*[:=]\s*["']?[^"'\s]+/gi, "api_key=[redacted]")
-    .slice(0, 500);
 }
 
 /**
@@ -610,6 +569,14 @@ async function runFixture(input: WikiRunAgentInput, wikiRoot: string): Promise<W
   const planNote = input.plan
     ? `\n\nConfirmed plan: ${input.plan.summary}\n`
     : "";
+  // Ground fixture pages with a resolvable Source Citation (ADR 0008 / Phase 6).
+  // Prefer README.md under the first source when present; path is repo-relative.
+  const primarySource = input.workspace.sources[0];
+  const citationTarget = primarySource
+    ? input.workspace.sources.length > 1
+      ? `${primarySource.id}/README.md`
+      : "README.md"
+    : "README.md";
   const content = [
     "---",
     `title: ${JSON.stringify(title)}`,
@@ -623,6 +590,8 @@ async function runFixture(input: WikiRunAgentInput, wikiRoot: string): Promise<W
     `- Sources: ${sourceIds || "(none)"}`,
     `- Run: \`${input.runId}\``,
     planNote,
+    `Source-grounded note: the repository root README is the fixture anchor ([Source](repo:${citationTarget}#L1-L1)).`,
+    "",
     "Replace fixture mode with a live model by setting `OPENAI_API_KEY` and/or",
     "`OPENAI_BASE_URL`, or force live with `OKF_WIKI_AGENT_MODE=live`.",
     "",

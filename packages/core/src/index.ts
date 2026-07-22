@@ -91,7 +91,18 @@ export {
   WIKI_VALIDATE_MAX_FILES,
   WIKI_VALIDATE_MAX_FILE_BYTES,
   type ValidateWikiResult,
+  type ValidateWikiOptions,
 } from "./validate-wiki.js";
+export {
+  parseSourceCitations,
+  validateCitationFormat,
+  validateCitationResolve,
+  resolveCitationFile,
+  sourceRootMapFromSources,
+  SOURCE_CITATION_RE,
+  type SourceCitation,
+  type SourceRootMap,
+} from "./citations.js";
 export {
   WORKSPACE_DIR_NAME,
   WORKSPACE_FILE_NAME,

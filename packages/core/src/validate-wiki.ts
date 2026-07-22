@@ -1,10 +1,29 @@
 import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import {
+  parseSourceCitations,
+  sourceRootMapFromSources,
+  validateCitationFormat,
+  validateCitationResolve,
+  type SourceRootMap,
+} from "./citations.js";
 import { assertAbsolutePath, assertNoSymlinkComponents } from "./paths.js";
 
 /** Soft caps for mechanical publication validation. */
 export const WIKI_VALIDATE_MAX_FILES = 500;
 export const WIKI_VALIDATE_MAX_FILE_BYTES = 1_000_000;
+
+export type ValidateWikiOptions = {
+  /**
+   * Pinned Repository Snapshot roots for Source Citation resolve (ADR 0008).
+   * When omitted, only citation *format* is checked (and pages need ≥1 citation).
+   */
+  sources?: Array<{ id: string; path: string }>;
+  /**
+   * When true (default), every `.md` page must contain at least one Source Citation.
+   */
+  requireCitations?: boolean;
+};
 
 export type ValidateWikiResult = {
   ok: boolean;
@@ -13,6 +32,8 @@ export type ValidateWikiResult = {
   pageCount?: number;
   /** Total files walked (md + non-md), when available. */
   fileCount?: number;
+  /** Total Source Citations found across pages. */
+  citationCount?: number;
 };
 
 /**
@@ -118,11 +139,23 @@ async function walkTreeNoFollow(
  * - Absolute path, real directory, no symlink components
  * - At least one `.md` file
  * - Each `.md` starts with YAML frontmatter containing non-empty `title:`
+ * - Source Citations present (format + optional Snapshot resolve) — ADR 0008
  * - No symlinks inside the tree
  * - Soft caps: ≤ {@link WIKI_VALIDATE_MAX_FILES} files, each ≤ 1MB
  */
-export async function validateWikiTree(dir: string): Promise<ValidateWikiResult> {
+export async function validateWikiTree(
+  dir: string,
+  options: ValidateWikiOptions = {},
+): Promise<ValidateWikiResult> {
   const errors: string[] = [];
+  // Citations required when Snapshot sources are supplied (publish path) unless
+  // explicitly disabled. Pure frontmatter/caps checks omit sources.
+  const requireCitations =
+    options.requireCitations ?? Boolean(options.sources?.length);
+  const sourceMap: SourceRootMap | undefined = options.sources
+    ? sourceRootMapFromSources(options.sources)
+    : undefined;
+  let citationCount = 0;
 
   let resolved: string;
   try {
@@ -237,6 +270,19 @@ export async function validateWikiTree(dir: string): Promise<ValidateWikiResult>
         `${md.relPath}: missing YAML frontmatter with non-empty title`,
       );
     }
+    const citations = parseSourceCitations(content);
+    citationCount += citations.length;
+    if (requireCitations && citations.length === 0) {
+      errors.push(
+        `${md.relPath}: missing Source Citation ([Source](repo:…#L…))`,
+      );
+    }
+    errors.push(...validateCitationFormat(citations, md.relPath));
+    if (sourceMap) {
+      errors.push(
+        ...(await validateCitationResolve(citations, md.relPath, sourceMap)),
+      );
+    }
   }
 
   return {
@@ -244,5 +290,6 @@ export async function validateWikiTree(dir: string): Promise<ValidateWikiResult>
     errors,
     pageCount,
     fileCount,
+    citationCount,
   };
 }
