@@ -70,12 +70,18 @@ export function successStatus(
   return "awaiting_publication";
 }
 
-export function stagingDirForRun(workspaceRoot: string, runId: string): string {
+/**
+ * Staging Wiki root for a run — co-located with the Pi run workdir (ADR 0030):
+ * `{root}/.okf-wiki/runs/{runId}/wiki`
+ */
+export function stagingWikiDirForRun(workspaceRoot: string, runId: string): string {
+  const safe = runId.replace(/[/\\]/g, "_");
   return path.join(
     path.resolve(workspaceRoot),
     WORKSPACE_DIR_NAME,
-    "staging",
-    runId,
+    "runs",
+    safe,
+    "wiki",
   );
 }
 

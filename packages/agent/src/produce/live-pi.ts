@@ -123,29 +123,35 @@ async function writeFixtureWiki(
   title: string,
 ): Promise<string[]> {
   await mkdir(layout.wikiDir, { recursive: true });
-  const content = [
-    "---",
-    `title: ${JSON.stringify(title)}`,
-    "---",
-    "",
-    `# ${title}`,
-    "",
-    "This page was produced in **Pi fixture mode** (no LLM call).",
-    "",
-    "Layout:",
-    "- `sources/` — registered source mounts",
-    "- `skill/` — Producer Skill",
-    "- `wiki/` — Staging Wiki",
-    "- `analysis/` — run analysis",
-    "",
-    "Grounding: [Source](repo:README.md#L1).",
-    "",
-    "This page is a pipeline smoke fixture (no LLM). Use live mode with API credentials for real generation.",
-    "",
-  ].join("\n");
+  // Match defaultWikiRunSpec critical page + single-source citation form.
+  const body = (heading: string) =>
+    [
+      "---",
+      `title: ${JSON.stringify(heading)}`,
+      "---",
+      "",
+      `# ${heading}`,
+      "",
+      "This page was produced in **Pi fixture mode** (no LLM call).",
+      "",
+      "Layout:",
+      "- `sources/` — registered source mounts",
+      "- `skill/` — Producer Skill",
+      "- `wiki/` — Staging Wiki",
+      "- `analysis/` — run analysis",
+      "",
+      // Bare repo:path is valid when the Snapshot Set has exactly one source.
+      "Grounding: [Source](repo:README.md#L1).",
+      "",
+      "This page is a pipeline smoke fixture (no LLM). Use live mode with API credentials for real generation.",
+      "",
+    ].join("\n");
+
+  const overviewPath = path.join(layout.wikiDir, "overview.md");
   const indexPath = path.join(layout.wikiDir, "index.md");
-  await writeFile(indexPath, content, "utf8");
-  return ["index.md"];
+  await writeFile(overviewPath, body(title), "utf8");
+  await writeFile(indexPath, body(`${title} (index)`), "utf8");
+  return ["overview.md", "index.md"];
 }
 
 function defaultLivePrompt(role: LivePiRole, layout: RunWorkdirLayout): string {

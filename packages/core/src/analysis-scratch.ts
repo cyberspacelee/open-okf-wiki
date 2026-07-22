@@ -6,15 +6,21 @@ import {
 } from "@okf-wiki/contract";
 import { isPathInside, WORKSPACE_DIR_NAME } from "./workspace-store.js";
 
-const SCRATCH_DIR_NAME = "analysis";
-
-/** `{root}/.okf-wiki/analysis/{runId}` */
+/**
+ * Analysis dir for one Wiki Run under the run workdir (ADR 0030):
+ * `{root}/.okf-wiki/runs/{runId}/analysis`
+ *
+ * Co-located with Staging Wiki (`…/wiki`) and source mounts. Not the
+ * legacy `{root}/.okf-wiki/analysis/{runId}` tree (deleted; no-compat).
+ */
 export function analysisScratchDir(workspaceRoot: string, runId: string): string {
+  const safe = runId.replace(/[/\\]/g, "_");
   return path.join(
     path.resolve(workspaceRoot),
     WORKSPACE_DIR_NAME,
-    SCRATCH_DIR_NAME,
-    runId,
+    "runs",
+    safe,
+    "analysis",
   );
 }
 

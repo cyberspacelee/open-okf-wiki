@@ -11,7 +11,7 @@ Use this branch only for the self-contained Domain task assigned by Root.
    the listed Leaf Researchers. Fan independent Leaves out in parallel via host agent tools so they
    run under the Run Boundary concurrency gate instead of waiting on each other. Every Leaf task must
    be self-contained (scope, questions, evidence needed, completion gate); do not open unused Leaf slots.
-   Use list_source / glob_source / search_source / read_source for evidence; cite tool-derived line numbers only.
+   Use Pi tools only (`ls`, `find`, `grep`, `read`) for evidence; cite tool-derived line numbers only. Never use bash.
 4. Treat each returned Handoff Ref as control only. Read receipts for incomplete or load-bearing
    branches, reject `partial`, `failed`, or `cancelled` coverage, and retry a given Leaf at most
    once within the Run Boundary budget. Reopen important source spans before relying on them.

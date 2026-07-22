@@ -97,7 +97,7 @@ describe("applyPiEvent — single turn with tools", () => {
             role: "assistant",
             content: [
               { type: "text", text: "Working" },
-              { type: "toolCall", id: "tc1", name: "list_source" },
+              { type: "toolCall", id: "tc1", name: "ls" },
             ],
           },
         },
@@ -107,7 +107,7 @@ describe("applyPiEvent — single turn with tools", () => {
         payload: {
           type: "tool_execution_start",
           toolCallId: "tc1",
-          toolName: "list_source",
+          toolName: "ls",
           args: { path: "." },
         },
       },
@@ -116,7 +116,7 @@ describe("applyPiEvent — single turn with tools", () => {
         payload: {
           type: "tool_execution_end",
           toolCallId: "tc1",
-          toolName: "list_source",
+          toolName: "ls",
           result: { entries: [] },
           isError: false,
         },
@@ -180,7 +180,7 @@ describe("applyPiEvent — single turn with tools", () => {
     assert.equal(messages[0]!.role, "assistant");
     assert.equal(messages[0]!.content, "Working");
     assert.equal(messages[0]!.tools?.length, 1);
-    assert.equal(messages[0]!.tools?.[0]?.name, "list_source");
+    assert.equal(messages[0]!.tools?.[0]?.name, "ls");
     assert.equal(messages[0]!.tools?.[0]?.status, "done");
     assert.equal(messages[1]!.content, "Done.");
     assert.equal(messages[1]!.status, "done");
@@ -272,14 +272,14 @@ describe("applyPiEvent — single turn with tools", () => {
       {
         type: "tool_execution_start",
         toolCallId: "x",
-        toolName: "read_source",
+        toolName: "read",
         args: {},
       },
       r,
     );
 
     assert.equal(assistantCount(messages), 1);
-    assert.equal(messages[0]!.tools?.[0]?.name, "read_source");
+    assert.equal(messages[0]!.tools?.[0]?.name, "read");
   });
 });
 

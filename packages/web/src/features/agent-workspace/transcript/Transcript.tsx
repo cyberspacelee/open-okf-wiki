@@ -92,6 +92,12 @@ function productBadgeLabel(product: AgentProductMeta): string {
       return product.gate ? `gate:${product.gate}` : "gate";
     case "run_link":
       return "run";
+    case "progress":
+      return product.phase ?? "progress";
+    case "agent_span":
+      return product.role ?? "agent";
+    case "defects":
+      return product.clean ? "review:ok" : "review:defects";
     default: {
       const _exhaustive: never = product.kind;
       return String(_exhaustive);

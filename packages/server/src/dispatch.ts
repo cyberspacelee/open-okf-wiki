@@ -57,17 +57,9 @@ import {
   handleRunEvents,
 } from "./routes/runs.ts";
 import {
-  handleCreateSession,
-  handleDeleteSession,
-  handleGetOrCreateSession,
-  handleGetSession,
-  handleListSessions,
-  handleResetSession,
-  handleSessionChat,
-} from "./routes/sessions.ts";
-import {
   handleAgentSessionCommand,
   handleAgentSessionEvents,
+  handleGetAgentSession,
   handleCreateAgentSession,
   handleListAgentSessions,
 } from "./routes/agent-sessions.ts";
@@ -256,6 +248,22 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
       }
     }
     {
+      const params = matchRoute(
+        pathname,
+        "/api/workspaces/:id/agent/sessions/:sessionId",
+      );
+      if (params && method === "GET") {
+        await handleGetAgentSession(
+          req,
+          res,
+          params.id!,
+          params.sessionId!,
+          url,
+        );
+        return;
+      }
+    }
+    {
       const params = matchRoute(pathname, "/api/workspaces/:id/agent/sessions");
       if (params && method === "GET") {
         await handleListAgentSessions(req, res, params.id!, url);
@@ -263,61 +271,6 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
       }
       if (params && method === "POST") {
         await handleCreateAgentSession(req, res, params.id!, url);
-        return;
-      }
-    }
-    {
-      const params = matchRoute(
-        pathname,
-        "/api/workspaces/:id/sessions/current",
-      );
-      if (params && (method === "GET" || method === "POST")) {
-        await handleGetOrCreateSession(req, res, params.id!, url);
-        return;
-      }
-    }
-    {
-      const params = matchRoute(
-        pathname,
-        "/api/workspaces/:id/sessions/:sessionId/chat",
-      );
-      if (params && method === "POST") {
-        await handleSessionChat(req, res, params.id!, params.sessionId!, url);
-        return;
-      }
-    }
-    {
-      const params = matchRoute(
-        pathname,
-        "/api/workspaces/:id/sessions/:sessionId/reset",
-      );
-      if (params && method === "POST") {
-        await handleResetSession(req, res, params.id!, params.sessionId!, url);
-        return;
-      }
-    }
-    {
-      const params = matchRoute(
-        pathname,
-        "/api/workspaces/:id/sessions/:sessionId",
-      );
-      if (params && method === "GET") {
-        await handleGetSession(req, res, params.id!, params.sessionId!, url);
-        return;
-      }
-      if (params && method === "DELETE") {
-        await handleDeleteSession(req, res, params.id!, params.sessionId!, url);
-        return;
-      }
-    }
-    {
-      const params = matchRoute(pathname, "/api/workspaces/:id/sessions");
-      if (params && method === "GET") {
-        await handleListSessions(req, res, params.id!, url);
-        return;
-      }
-      if (params && method === "POST") {
-        await handleCreateSession(req, res, params.id!, url);
         return;
       }
     }

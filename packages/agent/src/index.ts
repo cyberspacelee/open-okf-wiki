@@ -9,7 +9,6 @@
 export {
   startWikiRun,
   resumeWikiRun,
-  replayWikiRunAuditEvents,
   extractSuspendGate,
   sessionViewFromTerminal,
   type StartWikiRunInput,
@@ -17,16 +16,21 @@ export {
   type WikiRunOrchestrationResult,
   type WikiWorkflowJobEvent,
   type WikiWorkflowTerminal,
+  type WikiRunModelFactory,
 } from "./wiki-run.js";
 
 export {
   produceWithPi,
+  produceWiki,
   shouldUsePiFixtureMode,
   hasModelCredentials,
   parsePlanFromAgentText,
-  stagingDirForRun,
+  stagingWikiDirForRun,
   type ProduceWithPiInput,
   type ProduceWithPiResult,
+  type ProduceWikiInput,
+  type ProduceWikiResult,
+  type ProduceEventSink,
   type LivePiRole,
   type WikiRunAgentInput,
   type WikiRunAgentResult,
@@ -41,9 +45,7 @@ export {
   type RunChildSessionResult,
 } from "./produce/children.js";
 
-export { redactErrorMessage } from "./run-redact.js";
-
-export { sanitizeSummary } from "./stream-parts.js";
+export { redactErrorMessage, sanitizeSummary, truncate } from "./run-redact.js";
 
 /** Prefer `@okf-wiki/core` — re-export for agent convenience. */
 export {
@@ -79,29 +81,9 @@ export {
 } from "./spec-store.js";
 
 export {
-  buildRootDelegationOptions,
-  createDelegationCounters,
-} from "./delegation.js";
-
-export {
   runReviewCouncil,
   type ReviewerOutput,
 } from "./review-council.js";
-
-export {
-  buildPhaseSteps,
-  emitRunPhase,
-  emitAgentSpan,
-  emitSourcesIndex,
-  roleFromAgentId,
-} from "./run-timeline.js";
-
-export {
-  bindRunAbortSignal,
-  unbindRunAbortSignal,
-  getRunAbortSignal,
-  combineAbortSignals,
-} from "./run-abort.js";
 
 /** Re-export single gate UI map (also on @okf-wiki/contract). */
 export {
@@ -191,6 +173,12 @@ export {
   piSessionPath,
   piRunWorkDir,
 } from "./pi/session-paths.js";
+export {
+  loadPiSessionHistory,
+  findPiSessionFile,
+  type PiSessionHistory,
+  type ProjectedHistoryMessage,
+} from "./pi/session-history.js";
 
 /** WikiRunShell — pure product phase machine (no Mastra). */
 export {

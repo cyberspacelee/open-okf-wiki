@@ -174,15 +174,70 @@ export const ProductRunLinkEventSchema = z.object({
   timestamp: z.string().datetime().optional(),
 });
 
+/** Produce-owned progress (ADR 0029 — only Produce emits business progress). */
+export const ProductProgressEventSchema = z.object({
+  source: z.literal("product"),
+  kind: z.literal("progress"),
+  sessionId: z.string().min(1),
+  runId: z.string().min(1).optional(),
+  phase: z.enum([
+    "planning",
+    "researching",
+    "writing",
+    "reviewing",
+    "repairing",
+    "done",
+    "failed",
+  ]),
+  label: z.string().max(2000).optional(),
+  sequence: z.number().int().nonnegative().optional(),
+  timestamp: z.string().datetime().optional(),
+});
+
+/** Supervisor tree span (domain / leaf / reviewer). */
+export const ProductAgentSpanEventSchema = z.object({
+  source: z.literal("product"),
+  kind: z.literal("agent_span"),
+  sessionId: z.string().min(1),
+  runId: z.string().min(1).optional(),
+  spanId: z.string().min(1),
+  agentId: z.string().min(1),
+  role: z.enum(["domain", "leaf", "reviewer", "root"]),
+  status: z.enum(["running", "complete", "failed"]),
+  promptSummary: z.string().max(500).optional(),
+  sequence: z.number().int().nonnegative().optional(),
+  timestamp: z.string().datetime().optional(),
+});
+
+/** Review council defects summary after a round. */
+export const ProductDefectsEventSchema = z.object({
+  source: z.literal("product"),
+  kind: z.literal("defects"),
+  sessionId: z.string().min(1),
+  runId: z.string().min(1).optional(),
+  round: z.number().int().positive(),
+  clean: z.boolean(),
+  defectCount: z.number().int().nonnegative(),
+  summary: z.string().max(2000).optional(),
+  sequence: z.number().int().nonnegative().optional(),
+  timestamp: z.string().datetime().optional(),
+});
+
 export const ProductSseEventSchema = z.discriminatedUnion("kind", [
   ProductRunPhaseEventSchema,
   ProductGateEventSchema,
   ProductRunLinkEventSchema,
+  ProductProgressEventSchema,
+  ProductAgentSpanEventSchema,
+  ProductDefectsEventSchema,
 ]);
 
 export type ProductRunPhaseEvent = z.infer<typeof ProductRunPhaseEventSchema>;
 export type ProductGateEvent = z.infer<typeof ProductGateEventSchema>;
 export type ProductRunLinkEvent = z.infer<typeof ProductRunLinkEventSchema>;
+export type ProductProgressEvent = z.infer<typeof ProductProgressEventSchema>;
+export type ProductAgentSpanEvent = z.infer<typeof ProductAgentSpanEventSchema>;
+export type ProductDefectsEvent = z.infer<typeof ProductDefectsEventSchema>;
 export type ProductSseEvent = z.infer<typeof ProductSseEventSchema>;
 
 /** Server keepalive on the agent SSE stream (not a product inject). */

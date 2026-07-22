@@ -11,7 +11,6 @@ import type {
   GitProbe,
   ModelProfilePublic,
   ModelProfileWrite,
-  OperatorSession,
   PiSessionSummary,
   ProviderApiShape,
   ProviderPublic,
@@ -38,7 +37,6 @@ export type {
   CreatePiAgentSessionResponse,
   GitProbe,
   ModelProfilePublic,
-  OperatorSession,
   PiSessionSummary,
   ProviderApiShape,
   ProviderPublic,
@@ -166,9 +164,6 @@ export type CloneSourceInput = {
 export type CreateRunInput = {
   autoApprove?: boolean;
 };
-
-/** @deprecated Prefer OperatorSession from contract; alias for call sites. */
-export type OperatorSessionDto = OperatorSession;
 
 export class ApiError extends Error {
   readonly status: number;
@@ -612,104 +607,6 @@ export function createRun(
   );
 }
 
-// --- Operator Session (conversational workspace) ---
-
-/** List row from GET /sessions (no message bodies). */
-export type OperatorSessionSummary = {
-  id: string;
-  title: string;
-  status: OperatorSession["status"];
-  updatedAt: string;
-  createdAt: string;
-  pending?: OperatorSession["pending"];
-  workflow?: OperatorSession["workflow"];
-};
-
-export function listSessions(
-  workspaceId: string,
-  rootPath?: string,
-): Promise<{ sessions: OperatorSessionSummary[] }> {
-  return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/sessions`,
-      rootPath,
-    ),
-  );
-}
-
-export function createSession(
-  workspaceId: string,
-  input?: { title?: string },
-  rootPath?: string,
-): Promise<{ session: OperatorSessionDto }> {
-  return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/sessions`,
-      rootPath,
-    ),
-    {
-      method: "POST",
-      body: JSON.stringify(input ?? {}),
-    },
-  );
-}
-
-export function getOrCreateSession(
-  workspaceId: string,
-  rootPath?: string,
-): Promise<{ session: OperatorSessionDto; created: boolean }> {
-  return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/sessions/current`,
-      rootPath,
-    ),
-    { method: "POST", body: JSON.stringify({}) },
-  );
-}
-
-export function getSession(
-  workspaceId: string,
-  sessionId: string,
-  rootPath?: string,
-): Promise<{ session: OperatorSessionDto }> {
-  return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}`,
-      rootPath,
-    ),
-  );
-}
-
-/** Clear stuck plan/publish gate; keeps transcript. */
-export function resetSession(
-  workspaceId: string,
-  sessionId: string,
-  rootPath?: string,
-): Promise<{ session: OperatorSessionDto }> {
-  return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}/reset`,
-      rootPath,
-    ),
-    { method: "POST", body: JSON.stringify({}) },
-  );
-}
-
-/** Delete a session thread permanently. */
-export function deleteSession(
-  workspaceId: string,
-  sessionId: string,
-  rootPath?: string,
-): Promise<{ deleted: boolean; sessionId: string }> {
-  return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}`,
-      rootPath,
-    ),
-    { method: "DELETE" },
-  );
-}
-
 /**
  * Manual Retry: new run reusing frozen skillPath/skillDigest from a terminal run.
  */
@@ -941,6 +838,49 @@ export function agentSessionEventsUrl(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/agent/sessions/${encodeURIComponent(sessionId)}/events`,
     rootPath,
   )}`;
+}
+
+/** Cold-load Pi JSONL history + product meta (reload / reconnect). */
+export type AgentSessionHistoryMessage = {
+  id: string;
+  role: "user" | "assistant" | "system";
+  text: string;
+  createdAt?: string;
+  tools?: Array<{ id: string; name: string; status: "running" | "done" | "error" }>;
+};
+
+export type AgentSessionSnapshot = {
+  session: {
+    id: string;
+    workspaceId: string;
+    title?: string;
+    sessionFile?: string;
+  };
+  messages: AgentSessionHistoryMessage[];
+  product: {
+    runId?: string;
+    runStatus?: string;
+    phase?: string;
+    pendingGate?: {
+      gate: "plan" | "publication";
+      plan?: WikiRunPlan;
+      pages?: string[];
+    } | null;
+    plan?: WikiRunPlan | null;
+  };
+};
+
+export function getAgentSession(
+  workspaceId: string,
+  sessionId: string,
+  rootPath?: string,
+): Promise<AgentSessionSnapshot> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/agent/sessions/${encodeURIComponent(sessionId)}`,
+      rootPath,
+    ),
+  );
 }
 
 /**

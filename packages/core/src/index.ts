@@ -57,27 +57,6 @@ export {
   writeAnalysisReceipt,
 } from "./analysis-scratch.js";
 export {
-  createOperatorSession,
-  loadOperatorSession,
-  saveOperatorSession,
-  listOperatorSessions,
-  appendSessionMessages,
-  replaceSessionMessages,
-  neutralizeSessionDecisionParts,
-  resetOperatorSessionWorkflow,
-  deleteOperatorSession,
-  SessionSchemaVersionError,
-} from "./session-store.js";
-export {
-  reconcileSessionWithRun,
-  midTurnPhaseForChat,
-  isSessionTurnLocked,
-  ensureGateMessage,
-  SESSION_TURN_LOCK_MAX_AGE_MS,
-  type SessionRunSnapshot,
-  type SessionReconcilePatch,
-} from "./session-reconcile.js";
-export {
   countMarkdownFiles,
   publishStagingToPublication,
   type PublishStagingInput,
@@ -187,6 +166,14 @@ export {
   type RegisterRunOptions,
   type RunRecordPatch,
 } from "./run-store.js";
+export {
+  freezeWikiRun,
+  FreezeWikiRunError,
+  type FreezeWikiRunInput,
+  type FrozenRunBoundary,
+  type FrozenSourceSnapshot,
+  type FreezeWikiRunErrorCode,
+} from "./run-boundary.js";
 export {
   PROVIDER_FILE_NAME,
   defaultProviderPath,

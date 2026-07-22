@@ -44,9 +44,9 @@ export type RegisterRunOptions = CreateRunOptions & {
 
 /**
  * Persist a run record with an explicit runId and optional status.
- * Used when Session (or another entrypoint) already chose the run id and needs a
- * product Wiki Run Record before/while the Mastra wiki-run workflow progresses.
- * Staging is always written by the workflow agent path (ADR 0025) — not Session-local materialize.
+ * Used when Operator Session (or REST) already chose the run id and needs a
+ * Wiki Run Record before/while WikiRunShell + Produce progress (ADR 0030).
+ * Staging Wiki lives under the run workdir (`…/runs/<runId>/wiki`).
  */
 export async function registerRunRecord(
   rootPath: string,

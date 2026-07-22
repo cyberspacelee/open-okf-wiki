@@ -1,21 +1,31 @@
 /**
  * Wiki Run orchestration on Pi + WikiRunShell (ADR 0030).
- * No Mastra / AI SDK.
+ * Single Layer-A driver for REST, CLI, and Operator Session adapters.
  */
 
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import type { WikiRunPlan, WikiRunRecordStatus, WorkspaceConfig } from "@okf-wiki/contract";
+import type { Model } from "@earendil-works/pi-ai/compat";
+import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type {
+  WikiRunPlan,
+  WikiRunRecordStatus,
+  WorkspaceConfig,
+} from "@okf-wiki/contract";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
 import {
   publishStagingToPublication,
   resolveSkillPath,
 } from "@okf-wiki/core";
-import { produceWithPi, shouldUsePiFixtureMode } from "./produce/live-pi.js";
+import { produceWiki } from "./produce/orchestrate.js";
+import { shouldUsePiFixtureMode } from "./produce/live-pi.js";
+import type { ProduceEventSink } from "./produce/events.js";
+import { resolveWikiSkillPaths } from "./pi/skill-paths.js";
 import { piRunWorkDir } from "./pi/session-paths.js";
 import { redactErrorMessage } from "./run-redact.js";
 import {
   markAwaitingPublish,
+  markFailed,
   markHardValidate,
   markProducing,
   markPublished,
@@ -30,6 +40,13 @@ export type WikiWorkflowJobEvent = {
   data?: unknown;
 };
 
+export type WikiRunModelFactory = (role: "writer" | "planner") => Promise<{
+  model: Model<any>;
+  modelRuntime?: ModelRuntime;
+  maxContextTokens?: number;
+  profileId?: string;
+}>;
+
 export type WikiWorkflowTerminal = {
   status: WikiRunRecordStatus;
   pages?: string[];
@@ -39,6 +56,8 @@ export type WikiWorkflowTerminal = {
   publicationPath?: string;
   suspended?: boolean;
   suspendGate?: "plan" | "publication";
+  /** Final shell snapshot for adapters that cache in-memory. */
+  shell?: WikiRunShellState;
 };
 
 export type WikiRunOrchestrationResult = WikiWorkflowTerminal;
@@ -50,6 +69,17 @@ export type StartWikiRunInput = {
   skipPlanConfirm?: boolean;
   forcePlanConfirm?: boolean;
   plan?: WikiRunPlan;
+  /** Optional model profile override (Settings). */
+  modelProfileId?: string;
+  /**
+   * Injected model factory for live produce. Required when not in fixture mode.
+   * Adapters (server job / registry / CLI) supply Settings-backed resolution.
+   */
+  resolveModel?: WikiRunModelFactory;
+  /** Pre-resolved skill root from freezeWikiRun; otherwise resolved here. */
+  skillRoot?: string;
+  /** Pre-built source map from freeze; otherwise from workspace.sources. */
+  sourcePathMap?: Map<string, string>;
   onEvent?: (event: WikiWorkflowJobEvent) => void;
   abortSignal?: AbortSignal;
 };
@@ -68,6 +98,9 @@ export type ResumeWikiRunInput = {
   pages?: string[];
   plan?: WikiRunPlan;
   autoApprove?: boolean;
+  resolveModel?: WikiRunModelFactory;
+  skillRoot?: string;
+  sourcePathMap?: Map<string, string>;
   onEvent?: (event: WikiWorkflowJobEvent) => void;
   abortSignal?: AbortSignal;
 };
@@ -81,15 +114,20 @@ function emit(
   onEvent?.({ type, message, data });
 }
 
-function cancelledResult(): WikiWorkflowTerminal {
+function cancelledResult(shell?: WikiRunShellState): WikiWorkflowTerminal {
   return {
     status: "cancelled",
     error: "cancelled",
     summary: "Wiki Run cancelled",
+    shell,
   };
 }
 
-function sourcesMap(workspace: WorkspaceConfig): Map<string, string> {
+function sourcesMap(
+  workspace: WorkspaceConfig,
+  override?: Map<string, string>,
+): Map<string, string> {
+  if (override && override.size > 0) return override;
   const m = new Map<string, string>();
   for (const s of workspace.sources ?? []) {
     if (s.id && s.path) m.set(s.id, s.path);
@@ -105,33 +143,119 @@ function resolveSkipPlanConfirm(input: StartWikiRunInput): boolean {
   return false;
 }
 
+function produceEventsFromJob(
+  onEvent?: StartWikiRunInput["onEvent"],
+): ProduceEventSink {
+  return {
+    progress: (p) =>
+      emit(onEvent, "phase", p.phase, {
+        label: p.label,
+        written: p.written,
+        total: p.total,
+        defectCount: p.defectCount,
+      }),
+    planProgress: (p) => emit(onEvent, "plan_progress", undefined, p),
+    agentSpan: (p) => emit(onEvent, "agent_span", p.status, p),
+    defects: (p) => emit(onEvent, "defects", p.summary, p),
+  };
+}
+
 async function runProducePhase(input: {
   runId: string;
   workspace: WorkspaceConfig;
   plan?: WikiRunPlan;
   abortSignal?: AbortSignal;
   onEvent?: StartWikiRunInput["onEvent"];
-}): Promise<{ pages: string[]; summary: string; wikiDir: string }> {
+  resolveModel?: WikiRunModelFactory;
+  skillRoot?: string;
+  sourcePathMap?: Map<string, string>;
+}): Promise<
+  | { ok: true; pages: string[]; summary: string; wikiDir: string }
+  | { ok: false; pages: string[]; summary: string; wikiDir: string; reasons: string[] }
+> {
   const runWorkDir = piRunWorkDir(input.workspace.rootPath, input.runId);
   await mkdir(runWorkDir, { recursive: true });
-  const skillRoot = await resolveSkillPath({
+  const skillRoot =
+    input.skillRoot ??
+    (await resolveSkillPath({
+      workspaceRoot: input.workspace.rootPath,
+      skillPath: input.workspace.skillPath,
+    }));
+  const sources = sourcesMap(input.workspace, input.sourcePathMap);
+  if (sources.size === 0) {
+    throw new Error(
+      "Wiki Run produce requires at least one frozen source mount (fail-closed)",
+    );
+  }
+
+  const fixture = shouldUsePiFixtureMode({});
+  emit(input.onEvent, "phase", "producing", { runWorkDir, fixture });
+
+  let writerModel:
+    | { model: Model<any>; modelRuntime?: ModelRuntime; maxContextTokens?: number }
+    | undefined;
+  let workerModel = writerModel;
+  if (!fixture) {
+    if (!input.resolveModel) {
+      throw new Error(
+        "Live produce requires resolveModel factory (or OKF_WIKI_AGENT_MODE=fixture)",
+      );
+    }
+    const resolved = await input.resolveModel("writer");
+    writerModel = {
+      model: resolved.model,
+      modelRuntime: resolved.modelRuntime,
+      maxContextTokens: resolved.maxContextTokens,
+    };
+    workerModel = writerModel;
+  }
+
+  const skillPaths = await resolveWikiSkillPaths({
     workspaceRoot: input.workspace.rootPath,
     skillPath: input.workspace.skillPath,
-  });
-  emit(input.onEvent, "phase", "producing", { runWorkDir });
-  const result = await produceWithPi({
+  }).catch(() => [] as string[]);
+
+  const result = await produceWiki({
+    runId: input.runId,
+    workspace: input.workspace,
     runWorkDir,
-    role: "root_write",
+    spec: input.plan,
     materialize: {
-      sources: sourcesMap(input.workspace),
+      sources,
       skillRoot,
-      reset: false,
+      reset: true,
     },
-    fixture: shouldUsePiFixtureMode({}),
-    title: input.plan?.summary ?? input.workspace.name ?? "Wiki",
+    fixture,
     abortSignal: input.abortSignal,
+    models: {
+      writer: writerModel,
+      worker: workerModel,
+      reviewer: writerModel,
+    },
+    maxContextTokens: writerModel?.maxContextTokens,
+    contextTargetTokens: input.workspace.limits?.contextTargetTokens,
+    additionalSkillPaths: skillPaths,
+    onEvent: produceEventsFromJob(input.onEvent),
   });
+
+  if (result.status === "cancelled") {
+    const err = new Error("Wiki Run cancelled");
+    err.name = "AbortError";
+    throw err;
+  }
+
+  if (result.status === "failed") {
+    return {
+      ok: false,
+      pages: result.pages,
+      summary: result.summary,
+      wikiDir: result.layout.wikiDir,
+      reasons: result.publishability.reasons,
+    };
+  }
+
   return {
+    ok: true,
     pages: result.pages,
     summary: result.summary,
     wikiDir: result.layout.wikiDir,
@@ -144,7 +268,6 @@ async function maybePublish(input: {
   wikiDir: string;
   autoApprove?: boolean;
 }): Promise<{ publicationPath?: string }> {
-  // No workspace.publicationConfirm field — only autoApprove skips the publish gate.
   if (!input.autoApprove) {
     return {};
   }
@@ -164,6 +287,89 @@ async function maybePublish(input: {
   return { publicationPath: pub.publicationPath };
 }
 
+async function afterProduce(input: {
+  runId: string;
+  workspace: WorkspaceConfig;
+  plan?: WikiRunPlan;
+  produced:
+    | { ok: true; pages: string[]; summary: string; wikiDir: string }
+    | {
+        ok: false;
+        pages: string[];
+        summary: string;
+        wikiDir: string;
+        reasons: string[];
+      };
+  autoApprove?: boolean;
+  shell: WikiRunShellState;
+  onEvent?: StartWikiRunInput["onEvent"];
+  abortSignal?: AbortSignal;
+}): Promise<WikiWorkflowTerminal> {
+  let shell = input.shell;
+  if (input.abortSignal?.aborted) return cancelledResult(shell);
+
+  shell = markHardValidate(shell, input.produced.pages, input.produced.summary);
+  emit(input.onEvent, "phase", "hard_validate", {
+    pages: input.produced.pages,
+  });
+
+  if (!input.produced.ok) {
+    const message =
+      input.produced.summary ||
+      `hard-validate failed: ${input.produced.reasons.slice(0, 5).join("; ")}`;
+    shell = markFailed(shell, message);
+    emit(input.onEvent, "error", message, {
+      reasons: input.produced.reasons,
+    });
+    return {
+      status: "failed",
+      error: message,
+      summary: message,
+      pages: input.produced.pages,
+      plan: shell.plan,
+      shell,
+    };
+  }
+
+  const autoPub = input.autoApprove === true;
+  if (!autoPub) {
+    shell = markAwaitingPublish(
+      shell,
+      input.produced.pages,
+      input.produced.summary,
+    );
+    emit(input.onEvent, "gate", "awaiting_publication", {
+      pages: input.produced.pages,
+    });
+    return {
+      status: "awaiting_publication",
+      pages: input.produced.pages,
+      plan: shell.plan,
+      summary: input.produced.summary,
+      suspended: true,
+      suspendGate: "publication",
+      shell,
+    };
+  }
+
+  const pub = await maybePublish({
+    workspace: input.workspace,
+    runId: input.runId,
+    wikiDir: input.produced.wikiDir,
+    autoApprove: true,
+  });
+  shell = markPublished(shell, input.produced.summary);
+  emit(input.onEvent, "phase", "published", pub);
+  return {
+    status: "published",
+    pages: input.produced.pages,
+    plan: shell.plan,
+    summary: input.produced.summary,
+    publicationPath: pub.publicationPath,
+    shell,
+  };
+}
+
 /**
  * Start a Wiki Run: plan gate or produce → hard-validate → publish gate/auto.
  */
@@ -172,8 +378,7 @@ export async function startWikiRun(
 ): Promise<WikiRunOrchestrationResult> {
   if (input.abortSignal?.aborted) return cancelledResult();
 
-  const plan =
-    input.plan ?? defaultWikiRunSpec(input.workspace.name);
+  const plan = input.plan ?? defaultWikiRunSpec(input.workspace.name);
   const skipPlan = resolveSkipPlanConfirm(input);
   let shell = startShell({
     plan,
@@ -189,6 +394,7 @@ export async function startWikiRun(
         summary: shell.summary ?? "Awaiting plan confirmation",
         suspended: true,
         suspendGate: "plan",
+        shell,
       };
     }
 
@@ -199,59 +405,37 @@ export async function startWikiRun(
       plan: shell.plan,
       abortSignal: input.abortSignal,
       onEvent: input.onEvent,
+      resolveModel: input.resolveModel,
+      skillRoot: input.skillRoot,
+      sourcePathMap: input.sourcePathMap,
     });
-    if (input.abortSignal?.aborted) return cancelledResult();
-
-    shell = markHardValidate(shell, produced.pages, produced.summary);
-    emit(input.onEvent, "phase", "hard_validate", { pages: produced.pages });
-
-    const autoPub = input.autoApprove === true;
-
-    if (!autoPub) {
-      shell = markAwaitingPublish(shell, produced.pages, produced.summary);
-      emit(input.onEvent, "gate", "awaiting_publication", {
-        pages: produced.pages,
-      });
-      return {
-        status: "awaiting_publication",
-        pages: produced.pages,
-        plan: shell.plan,
-        summary: produced.summary,
-        suspended: true,
-        suspendGate: "publication",
-      };
-    }
-
-    const pub = await maybePublish({
-      workspace: input.workspace,
+    return afterProduce({
       runId: input.runId,
-      wikiDir: produced.wikiDir,
-      autoApprove: true,
-    });
-    shell = markPublished(shell, produced.summary);
-    emit(input.onEvent, "phase", "published", pub);
-    return {
-      status: "published",
-      pages: produced.pages,
+      workspace: input.workspace,
       plan: shell.plan,
-      summary: produced.summary,
-      publicationPath: pub.publicationPath,
-    };
+      produced,
+      autoApprove: input.autoApprove,
+      shell,
+      onEvent: input.onEvent,
+      abortSignal: input.abortSignal,
+    });
   } catch (err) {
     if (
       err instanceof Error &&
       (err.name === "AbortError" || /cancel/i.test(err.message))
     ) {
-      return cancelledResult();
+      return cancelledResult(shell);
     }
     const message = redactErrorMessage(
       err instanceof Error ? err.message : String(err),
     );
+    shell = markFailed(shell, message);
     emit(input.onEvent, "error", message);
     return {
       status: "failed",
       error: message,
       summary: message,
+      shell,
     };
   }
 }
@@ -262,7 +446,7 @@ export async function startWikiRun(
 export async function resumeWikiRun(
   input: ResumeWikiRunInput,
 ): Promise<WikiRunOrchestrationResult> {
-  if (input.abortSignal?.aborted) return cancelledResult();
+  if (input.abortSignal?.aborted) return cancelledResult(input.shell);
 
   const gate =
     input.step === "publish-gate" || input.step === "publication"
@@ -297,6 +481,7 @@ export async function resumeWikiRun(
         status: "cancelled",
         plan: shell.plan,
         summary: shell.summary ?? "Plan declined",
+        shell,
       };
     }
     if (shell.phase === "publication_declined") {
@@ -305,6 +490,7 @@ export async function resumeWikiRun(
         pages: shell.pages,
         plan: shell.plan,
         summary: shell.summary ?? "Publication declined",
+        shell,
       };
     }
     if (shell.phase === "awaiting_plan") {
@@ -314,6 +500,7 @@ export async function resumeWikiRun(
         suspended: true,
         suspendGate: "plan",
         summary: shell.summary,
+        shell,
       };
     }
 
@@ -326,35 +513,20 @@ export async function resumeWikiRun(
         plan: shell.plan,
         abortSignal: input.abortSignal,
         onEvent: input.onEvent,
+        resolveModel: input.resolveModel,
+        skillRoot: input.skillRoot,
+        sourcePathMap: input.sourcePathMap,
       });
-      if (input.abortSignal?.aborted) return cancelledResult();
-      shell = markHardValidate(shell, produced.pages, produced.summary);
-
-      const autoPub = input.autoApprove === true;
-      if (!autoPub) {
-        shell = markAwaitingPublish(shell, produced.pages, produced.summary);
-        return {
-          status: "awaiting_publication",
-          pages: produced.pages,
-          plan: shell.plan,
-          summary: produced.summary,
-          suspended: true,
-          suspendGate: "publication",
-        };
-      }
-      const pub = await maybePublish({
-        workspace: input.workspace,
+      return afterProduce({
         runId: input.runId,
-        wikiDir: produced.wikiDir,
-        autoApprove: true,
-      });
-      return {
-        status: "published",
-        pages: produced.pages,
+        workspace: input.workspace,
         plan: shell.plan,
-        summary: produced.summary,
-        publicationPath: pub.publicationPath,
-      };
+        produced,
+        autoApprove: input.autoApprove,
+        shell,
+        onEvent: input.onEvent,
+        abortSignal: input.abortSignal,
+      });
     }
 
     // Publish approved — resumeGate already transitioned to published.
@@ -373,6 +545,7 @@ export async function resumeWikiRun(
         plan: shell.plan,
         summary: shell.summary,
         publicationPath: pub.publicationPath,
+        shell,
       };
     }
 
@@ -380,27 +553,21 @@ export async function resumeWikiRun(
       status: "failed",
       error: `unexpected shell phase after resume: ${shell.phase}`,
       summary: shell.summary,
+      shell,
     };
   } catch (err) {
     if (
       err instanceof Error &&
       (err.name === "AbortError" || /cancel/i.test(err.message))
     ) {
-      return cancelledResult();
+      return cancelledResult(shell);
     }
     const message = redactErrorMessage(
       err instanceof Error ? err.message : String(err),
     );
-    return { status: "failed", error: message, summary: message };
+    shell = markFailed(shell, message);
+    return { status: "failed", error: message, summary: message, shell };
   }
-}
-
-/** Audit replay: no Mastra snapshots — empty async generator. */
-export async function* replayWikiRunAuditEvents(
-  _runId: string,
-): AsyncGenerator<WikiWorkflowJobEvent> {
-  // Pi path does not persist Mastra workflow snapshots.
-  yield { type: "audit", message: "no_mastra_snapshot" };
 }
 
 export function extractSuspendGate(

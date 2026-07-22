@@ -39,7 +39,7 @@ describe("produce/live-pi fixture mode", () => {
     );
   });
 
-  it("writes wiki/index.md without LLM", async () => {
+  it("writes wiki overview + index without LLM", async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), "okf-live-pi-"));
     temps.push(tmp);
     const src = path.join(tmp, "src");
@@ -62,13 +62,14 @@ describe("produce/live-pi fixture mode", () => {
     });
 
     assert.equal(result.mode, "fixture");
-    assert.deepEqual(result.pages, ["index.md"]);
+    assert.deepEqual([...result.pages].sort(), ["index.md", "overview.md"]);
     const body = await readFile(
-      path.join(result.layout.wikiDir, "index.md"),
+      path.join(result.layout.wikiDir, "overview.md"),
       "utf8",
     );
     assert.match(body, /Fixture Wiki/);
     assert.match(body, /Pi fixture mode/);
+    assert.match(body, /repo:README\.md/);
   });
 
   it("root_research fixture does not write pages", async () => {

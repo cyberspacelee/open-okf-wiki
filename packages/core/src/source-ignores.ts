@@ -8,8 +8,8 @@
  * - No `!` re-include / gitignore import.
  * - Tests are NOT excluded by default; operators add them via ignore or presets.
  *
- * Matching is enforced by the Run Boundary on every list_source / read_source
- * call during Wiki generation (not prompt-only).
+ * Matching is enforced by the Run Boundary on Pi read tools (`ls`, `find`,
+ * `grep`, `read`) via Operations wrappers during Wiki generation (not prompt-only).
  */
 
 import {
@@ -104,7 +104,7 @@ export function pathMatchesIgnore(relativePath: string, patterns: readonly strin
   return false;
 }
 
-/** True when a list_source entry name under `parentRel` should be hidden. */
+/** True when a directory listing entry under `parentRel` should be hidden. */
 export function entryMatchesIgnore(
   parentRel: string,
   entryName: string,

@@ -1,6 +1,6 @@
 /**
  * Produce module surface (Pi path, ADR 0030).
- * Live/fixture production: produceWithPi. Plan parse is pure text.
+ * Deep entry: produceWiki. Primitive: produceWithPi.
  */
 
 export {
@@ -11,9 +11,21 @@ export {
   type ProduceWithPiResult,
   type LivePiRole,
 } from "./live-pi.js";
+export {
+  produceWiki,
+  type ProduceWikiInput,
+  type ProduceWikiResult,
+  type ProduceWikiModels,
+} from "./orchestrate.js";
+export {
+  silentProduceEvents,
+  recordingProduceEvents,
+  type ProduceEventSink,
+  type ProduceProgressPhase,
+} from "./events.js";
 export { parsePlanFromAgentText } from "./plan-parse.js";
 export {
-  stagingDirForRun,
+  stagingWikiDirForRun,
   buildSourceMap,
   normalizeWikiPath,
   type WikiRunAgentInput,

@@ -20,13 +20,11 @@ React + TypeScript UI for open-okf-wiki (Vite). Talks to `@okf-wiki/server` over
 - **Forms:** `FieldGroup` / `Field` / `FieldLabel` / `FieldDescription` + shadcn controls (`Select`, `Switch`, `Checkbox`, `RadioGroup`, `Textarea`)
 - **Destructive actions:** `ConfirmDialog` (AlertDialog) — do not use `window.confirm`
 - **Toasts:** `sonner` via `<Toaster />` in `main.tsx`
-- **Session chat:** AI Elements under `src/components/ai-elements/` + `session/*` (do not rewrite transport for pure UI polish)
-  - **Session timeline architecture:** AI Elements for text primitives (`MessageResponse`, `Reasoning`, `Suggestion`); **`SessionCard`** is the single chrome for tools / workflow / phase / batch / subagent (`session/SessionCard.tsx` + `session-card-styles.ts`).
-  - Tool bodies: registry in `session/tool-bodies.tsx` (`TOOL_BODY_REGISTRY`); never default JSON wall for known wiki tools (list/read/glob/search/write).
-  - Backend projects operator payloads via `@okf-wiki/agent` `ui-projection` (model loop keeps full fidelity). See `packages/agent/docs/ui-projection.md`.
-  - **data-\* whitelist** in `MessageParts` only: gate, plan, plan-progress, progress, run, workflow*, tool-agent. Unknown data parts are not rendered.
-  - Plan: `PlanViewer` + page checklist; HITL only from `data-gate` / `data-plan`.
-  - **Not in product:** web `sources` / `web-preview` / external search; do not install AI Elements `all.json`.
+- **Agent Workspace (primary operate surface, ADR 0030):** `src/features/agent-workspace/`
+  - Live transport: Pi session SSE + product injects (`run_phase` / `gate` / `run_link`) via `useSessionAgent` + `project-agent-events`.
+  - Conversation truth: Pi JSONL under `.okf-wiki/pi-sessions/` (not UIMessage Session files).
+  - HITL: structured `resume_gate` commands only (no free-text approve).
+  - Tool cards use Pi built-in names (`ls`, `read`, `grep`, `find`, `write`, `edit`) — never Host `list_source` / `write_wiki`.
 - **Operator CSS leftovers** in `src/index.css` (`.form`, `.kv`, wiki prose, subnav). Prefer utilities / shadcn components for new UI.
 
 ### Adding a workspace page
@@ -38,9 +36,9 @@ React + TypeScript UI for open-okf-wiki (Vite). Talks to `@okf-wiki/server` over
 
 ### Product paths
 
-- **Primary generate path:** Session (`/workspaces/:id/session`)
-- **Runs:** audit + headless (`run-start` testid) under Advanced; prefer `run-start-session` for operators
-- **Wiki empty CTA:** Session, not Runs
+- **Primary generate path:** Agent Workspace (`/w/:id` or workspace agent route)
+- **Runs:** audit / headless automation (`run-start`); humans operate via Agent Workspace gates
+- **Wiki empty CTA:** Agent Workspace, not Run console timeline
 
 ## End-to-end tests
 

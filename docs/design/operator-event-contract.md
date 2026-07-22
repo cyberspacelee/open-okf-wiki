@@ -16,11 +16,12 @@ Live transport is **Pi `AgentSession` events + thin product SSE injects** (not A
 | Channel | Content | Who |
 |---------|---------|-----|
 | Pi events (`source: "pi"`) | text deltas, thinking, tool_execution_*, agent lifecycle | Pi AgentSession |
-| Product injects (`source: "product"`) | `run_phase`, `gate`, `run_link` | WikiRunShell / server registry |
+| Product injects (`source: "product"`) | `run_phase`, `gate`, `run_link`, `progress`, `agent_span`, `defects` | WikiRunShell / registry / Produce sink |
 | Server heartbeat | keep-alive | server only |
 
-Durable conversation = **Pi JSONL** under `.okf-wiki/pi-sessions/`.  
-Durable job = **Run Record** under core.
+Durable conversation = **Pi JSONL** under `.okf-wiki/pi-sessions/` (cold-load via `GET …/agent/sessions/:id`).  
+Durable job = **Run Record** under core.  
+**No** UIMessage `OperatorSession.messages` trajectory synthesis.
 
 ## Business progress ownership
 
@@ -29,7 +30,7 @@ Durable job = **Run Record** under core.
 | Tool cards / assistant text | **Pi session** during produce/chat | Session UI inventing tools without SSE |
 | Plan/publish gates | **Product shell** (`resume_gate` / product SSE) | Free-text `"approve"` inference |
 | Run phase / run link | **Shell / registry** | Dual lifecycle maps |
-| Spec progress / defects / agent spans | **Produce** (when implemented on Pi path) | Session shell synthesis |
+| Spec progress / defects / agent spans | **Produce** (`produceWiki` event sink → product SSE) | Session shell synthesis / job UIMessage append |
 
 ## Session MUST NOT
 

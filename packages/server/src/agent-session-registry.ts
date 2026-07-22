@@ -11,25 +11,22 @@ import path from "node:path";
 import {
   createWikiSession,
   isTerminalPhase,
-  markAwaitingPublish,
   markCancelled,
   markFailed,
-  markHardValidate,
-  markProducing,
-  piRunWorkDir,
   piSessionPath,
   piSessionsDir,
-  produceWithPi,
   resolveModelSelection,
   resolveWikiSkillPaths,
   resolveWorkspacePiModel,
-  resumeGate,
+  resumeWikiRun,
   shouldUsePiFixtureMode,
-  startShell,
+  startWikiRun,
   type ResolvedPiModel,
   type WikiModelRole,
+  type WikiRunModelFactory,
   type WikiRunShellState,
   type WikiSessionHandle,
+  type WikiWorkflowTerminal,
 } from "@okf-wiki/agent";
 import {
   defaultWikiRunSpec,
@@ -41,9 +38,10 @@ import {
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
 import {
+  freezeWikiRun,
+  FreezeWikiRunError,
   isPathInside,
-  publishStagingToPublication,
-  resolveSkillPath,
+  updateRunRecord,
 } from "@okf-wiki/core";
 import {
   emitAgentSessionEvent,
@@ -121,31 +119,6 @@ function productPhaseFromShell(phase: WikiRunShellState["phase"]): ProductPhase 
     case "published":
     case "publication_declined":
       return "done";
-    case "failed":
-      return "failed";
-    case "cancelled":
-      return "cancelled";
-    default: {
-      const _exhaustive: never = phase;
-      return _exhaustive;
-    }
-  }
-}
-
-function statusFromShell(phase: WikiRunShellState["phase"]): WikiRunRecordStatus {
-  switch (phase) {
-    case "awaiting_plan":
-      return "awaiting_plan";
-    case "producing":
-    case "hard_validate":
-    case "idle":
-      return "running";
-    case "awaiting_publish":
-      return "awaiting_publication";
-    case "published":
-      return "published";
-    case "publication_declined":
-      return "publication_declined";
     case "failed":
       return "failed";
     case "cancelled":
@@ -507,120 +480,195 @@ async function ensureLiveHandle(
 }
 
 // ---------------------------------------------------------------------------
-// Produce path
+// Wiki Run orchestration adapter (thin over startWikiRun / resumeWikiRun)
 // ---------------------------------------------------------------------------
 
-async function buildMaterializeInput(
+function makeResolveModel(
   workspace: WorkspaceConfig,
-): Promise<
-  | {
-      sources: Map<string, string>;
-      skillRoot: string;
-      reset: boolean;
-    }
-  | undefined
-> {
-  try {
-    const skillRoot = await resolveSkillPath({
-      skillPath: workspace.skillPath,
-      workspaceRoot: workspace.rootPath,
+  entry: RegisteredAgentSession,
+): WikiRunModelFactory {
+  return async () => {
+    const piModel = await resolvePiModelForWorkspace(workspace, {
+      role: "writer",
+      overrideProfileId: entry.produceModelProfileId,
     });
-    const sources = new Map<string, string>();
-    for (const src of workspace.sources) {
-      sources.set(src.id, src.path);
-    }
-    return { sources, skillRoot, reset: true };
-  } catch {
-    // Skill resolve failed — produce without materialize (wiki/analysis only).
-    return undefined;
-  }
+    emitPi(entry.workspaceId, entry.sessionId, "produce_model", {
+      providerId: piModel.providerId,
+      modelId: piModel.servedModelId,
+      providerKind: piModel.providerKind,
+      profileId: piModel.runtime.profileId,
+      maxContextTokens: piModel.runtime.maxContextTokens,
+      overrideProfileId: entry.produceModelProfileId,
+    });
+    return {
+      model: piModel.model,
+      modelRuntime: piModel.modelRuntime,
+      maxContextTokens: piModel.runtime.maxContextTokens,
+      profileId: piModel.runtime.profileId,
+    };
+  };
 }
 
-/**
- * After plan is approved (or skipped): mark producing → produceWithPi →
- * hard-validate → awaiting publish.
- */
-async function runProducePhase(
+function mapOrchestratorOnEvent(
   entry: RegisteredAgentSession,
-  workspace: WorkspaceConfig,
-): Promise<void> {
-  if (!entry.shell) {
-    throw new Error("no shell state for produce");
-  }
-  if (!entry.runId) {
-    throw new Error("no runId for produce");
-  }
-
-  entry.shell = markProducing(entry.shell);
-  emitPhase(entry, "writing", "producing wiki (Pi)", "running");
-
-  const runWorkDir = piRunWorkDir(entry.workspaceRoot, entry.runId);
-  const materialize = await buildMaterializeInput(workspace);
-  const fixture = preferPiFixture();
-
-  const controller = new AbortController();
-  entry.abortController = controller;
-
-  try {
-    // Live produce: writer role model, optional per-run profile override.
-    let piModel: ResolvedPiModel | undefined;
-    const skillPaths = await skillPathsForWorkspace(workspace);
-    if (!fixture) {
-      piModel = await resolvePiModelForWorkspace(workspace, {
-        role: "writer",
-        overrideProfileId: entry.produceModelProfileId,
+): (event: { type: string; message?: string; data?: unknown }) => void {
+  return (event) => {
+    const ts = nowIso();
+    if (event.type === "gate") {
+      const gate =
+        event.message === "awaiting_plan" || event.message === "plan"
+          ? "plan"
+          : "publication";
+      const data = (event.data ?? {}) as {
+        plan?: WikiRunPlan;
+        pages?: string[];
+      };
+      emitGate(
+        entry,
+        gate,
+        gate === "plan"
+          ? "Review and confirm the wiki Spec before produce"
+          : "Review produced pages and approve publication",
+        data.plan ?? entry.shell?.plan,
+        data.pages ?? entry.shell?.pages,
+      );
+      emitPhase(
+        entry,
+        gate === "plan" ? "awaiting_plan" : "awaiting_publish",
+        event.message,
+        gate === "plan" ? "awaiting_plan" : "awaiting_publication",
+      );
+      emitRunLink(
+        entry,
+        gate === "plan" ? "awaiting_plan" : "awaiting_publication",
+      );
+      return;
+    }
+    if (event.type === "phase") {
+      const msg = event.message ?? "";
+      const data = (event.data ?? {}) as { label?: string };
+      if (
+        msg === "planning" ||
+        msg === "researching" ||
+        msg === "writing" ||
+        msg === "reviewing" ||
+        msg === "repairing" ||
+        msg === "done" ||
+        msg === "failed"
+      ) {
+        emitProductAgentEvent(entry.workspaceId, {
+          source: "product",
+          kind: "progress",
+          sessionId: entry.sessionId,
+          runId: entry.runId,
+          phase: msg,
+          label: data.label ?? event.message,
+          timestamp: ts,
+        });
+      }
+      if (msg === "producing" || msg === "writing" || msg === "researching") {
+        emitPhase(entry, "writing", data.label ?? msg, "running");
+        emitRunLink(entry, "running");
+      } else if (msg === "hard_validate") {
+        emitPhase(entry, "writing", "hard-validate", "running");
+      } else if (msg === "published" || msg === "done") {
+        emitPhase(entry, "done", "published", "published");
+        emitRunLink(entry, "published");
+      } else if (msg === "failed") {
+        emitPhase(entry, "failed", data.label ?? msg, "failed");
+      } else {
+        emitPhase(entry, productPhaseFromShell(entry.shell?.phase ?? "idle"), msg);
+      }
+      return;
+    }
+    if (event.type === "agent_span") {
+      const data = (event.data ?? {}) as {
+        spanId?: string;
+        agentId?: string;
+        role?: "domain" | "leaf" | "reviewer" | "root";
+        status?: "running" | "complete" | "failed";
+        promptSummary?: string;
+        runId?: string;
+      };
+      if (data.spanId && data.agentId && data.role && data.status) {
+        emitProductAgentEvent(entry.workspaceId, {
+          source: "product",
+          kind: "agent_span",
+          sessionId: entry.sessionId,
+          runId: data.runId ?? entry.runId,
+          spanId: data.spanId,
+          agentId: data.agentId,
+          role: data.role,
+          status: data.status,
+          promptSummary: data.promptSummary,
+          timestamp: ts,
+        });
+      }
+      return;
+    }
+    if (event.type === "defects") {
+      const data = (event.data ?? {}) as {
+        round?: number;
+        clean?: boolean;
+        defectCount?: number;
+        summary?: string;
+      };
+      emitProductAgentEvent(entry.workspaceId, {
+        source: "product",
+        kind: "defects",
+        sessionId: entry.sessionId,
+        runId: entry.runId,
+        round: data.round ?? 1,
+        clean: data.clean ?? true,
+        defectCount: data.defectCount ?? 0,
+        summary: data.summary,
+        timestamp: ts,
       });
-      emitPi(entry.workspaceId, entry.sessionId, "produce_model", {
-        providerId: piModel.providerId,
-        modelId: piModel.servedModelId,
-        providerKind: piModel.providerKind,
-        profileId: piModel.runtime.profileId,
-        baseUrlSource: piModel.runtime.source.baseUrl,
-        maxContextTokens: piModel.runtime.maxContextTokens,
-        contextTargetTokens: workspace.limits?.contextTargetTokens,
-        skillPathCount: skillPaths.length,
-        overrideProfileId: entry.produceModelProfileId,
+      return;
+    }
+    if (event.type === "error") {
+      emitPi(entry.workspaceId, entry.sessionId, "error", {
+        message: event.message,
+        data: event.data,
       });
     }
+  };
+}
 
-    const result = await produceWithPi({
-      runWorkDir,
-      role: "root_write",
-      fixture,
-      title: entry.shell.plan?.summary ?? workspace.name,
-      materialize,
-      abortSignal: controller.signal,
-      maxContextTokens: piModel?.runtime.maxContextTokens,
-      contextTargetTokens: workspace.limits?.contextTargetTokens,
-      additionalSkillPaths: skillPaths,
-      ...(piModel
-        ? { model: piModel.model, modelRuntime: piModel.modelRuntime }
-        : {}),
+async function persistTerminal(
+  entry: RegisteredAgentSession,
+  workspace: WorkspaceConfig,
+  result: WikiWorkflowTerminal,
+): Promise<void> {
+  if (result.shell) {
+    entry.shell = result.shell;
+  }
+  if (!entry.runId) return;
+  try {
+    await updateRunRecord(workspace.rootPath, entry.runId, {
+      status: result.status,
+      pages: result.pages ?? null,
+      summary: result.summary ?? null,
+      error: result.error ?? null,
+      plan: result.plan ?? null,
     });
-
-    entry.shell = markHardValidate(
-      entry.shell,
-      result.pages,
-      result.summary,
-    );
+  } catch {
+    // best-effort; SSE still carries status
+  }
+  emitRunLink(entry, result.status);
+  if (result.status === "failed" || result.status === "cancelled") {
     emitPhase(
       entry,
-      "writing",
-      result.summary,
-      "running",
+      result.status === "cancelled" ? "cancelled" : "failed",
+      result.summary ?? result.error,
+      result.status,
     );
-
-    entry.shell = markAwaitingPublish(
-      entry.shell,
-      result.pages,
-      result.summary,
-    );
-    emitRunLink(entry, "awaiting_publication");
+  } else if (result.status === "awaiting_publication") {
     emitGate(
       entry,
       "publication",
       "Review produced pages and approve publication",
-      entry.shell.plan,
+      result.plan ?? entry.shell?.plan,
       result.pages,
     );
     emitPhase(
@@ -629,22 +677,15 @@ async function runProducePhase(
       result.summary,
       "awaiting_publication",
     );
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    const cancelled =
-      controller.signal.aborted ||
-      (err instanceof Error &&
-        (err.name === "AbortError" || /cancelled/i.test(err.message)));
-    if (cancelled) {
-      entry.shell = markCancelled(entry.shell, "Wiki Run cancelled");
-      emitPhase(entry, "cancelled", "Wiki Run cancelled", "cancelled");
-    } else {
-      entry.shell = markFailed(entry.shell, message);
-      emitPhase(entry, "failed", message, "failed");
-    }
-  } finally {
-    entry.abortController = undefined;
-    entry.produceModelProfileId = undefined;
+  } else if (result.status === "published") {
+    emitPhase(entry, "done", result.summary ?? "published", "published");
+  } else if (result.status === "publication_declined") {
+    emitPhase(
+      entry,
+      "done",
+      result.summary ?? "publication declined",
+      "publication_declined",
+    );
   }
 }
 
@@ -901,9 +942,6 @@ async function handleStartWikiRun(
     };
   }
 
-  const runId = randomUUID();
-  entry.runId = runId;
-  // Per-run model pick (Settings catalog); falls back to writer/default.
   entry.produceModelProfileId = command.modelProfileId?.trim() || undefined;
 
   const plan = defaultWikiRunSpec(workspace.name);
@@ -920,16 +958,34 @@ async function handleStartWikiRun(
     ].slice(-20);
   }
 
-  const skipPlanConfirm =
-    command.autoApprove === true || workspace.planConfirm === false;
+  let frozen;
+  try {
+    frozen = await freezeWikiRun({
+      workspace,
+      sessionId: entry.sessionId,
+      autoApprove: command.autoApprove === true,
+      runId: randomUUID(),
+    });
+  } catch (err) {
+    const message =
+      err instanceof FreezeWikiRunError
+        ? err.message
+        : err instanceof Error
+          ? err.message
+          : "freeze failed";
+    emitPi(entry.workspaceId, entry.sessionId, "error", { message });
+    emitPhase(entry, "failed", message, "failed");
+    return {
+      ok: true,
+      sessionId: entry.sessionId,
+      command: "start_wiki_run",
+      status: "accepted",
+      message: `freeze failed: ${message}`,
+    };
+  }
 
-  entry.shell = startShell({
-    plan,
-    skipPlanConfirm,
-    summary: plan.summary,
-  });
-
-  emitRunLink(entry, statusFromShell(entry.shell.phase));
+  entry.runId = frozen.runId;
+  emitRunLink(entry, "running");
   emitPhase(
     entry,
     "planning",
@@ -943,34 +999,65 @@ async function handleStartWikiRun(
     });
   }
 
-  if (entry.shell.phase === "awaiting_plan") {
-    emitGate(
-      entry,
-      "plan",
-      "Review and confirm the wiki Spec before produce",
-      entry.shell.plan,
-    );
-    emitPhase(
-      entry,
-      "awaiting_plan",
-      "awaiting plan confirmation",
-      "awaiting_plan",
-    );
-    return {
-      ok: true,
-      sessionId: entry.sessionId,
-      command: "start_wiki_run",
-      status: "accepted",
-      message: "Wiki run started — awaiting plan gate",
-      runId,
-    };
+  const skipPlanConfirm =
+    command.autoApprove === true || workspace.planConfirm === false;
+  const controller = new AbortController();
+  entry.abortController = controller;
+
+  const runOpts = {
+    runId: frozen.runId,
+    workspace,
+    plan,
+    autoApprove: command.autoApprove === true,
+    skipPlanConfirm,
+    resolveModel: preferPiFixture()
+      ? undefined
+      : makeResolveModel(workspace, entry),
+    skillRoot: frozen.skillPath,
+    sourcePathMap: frozen.sourcePathMap,
+    abortSignal: controller.signal,
+    onEvent: mapOrchestratorOnEvent(entry),
+  };
+
+  // Plan gate: await (returns quickly). Skip-plan produce: background so SSE can stream.
+  if (!skipPlanConfirm) {
+    try {
+      const result = await startWikiRun(runOpts);
+      if (result.shell) entry.shell = result.shell;
+      await persistTerminal(entry, workspace, result);
+      entry.abortController = undefined;
+      return {
+        ok: true,
+        sessionId: entry.sessionId,
+        command: "start_wiki_run",
+        status: "accepted",
+        message:
+          result.suspendGate === "plan"
+            ? "Wiki run started — awaiting plan gate"
+            : `Wiki run ${result.status}`,
+        runId: frozen.runId,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      emitPi(entry.workspaceId, entry.sessionId, "error", { message });
+      entry.abortController = undefined;
+      return {
+        ok: true,
+        sessionId: entry.sessionId,
+        command: "start_wiki_run",
+        status: "accepted",
+        message: `start failed: ${message}`,
+        runId: frozen.runId,
+      };
+    }
   }
 
-  // Plan gate skipped — produce in the background so the HTTP command
-  // returns immediately and the client can observe run_phase SSE progress
-  // (planning → writing → awaiting_publish) without waiting for the LLM.
   entry.busy = true;
-  void runProducePhase(entry, workspace)
+  void startWikiRun(runOpts)
+    .then(async (result) => {
+      if (result.shell) entry.shell = result.shell;
+      await persistTerminal(entry, workspace, result);
+    })
     .catch((err) => {
       const message = err instanceof Error ? err.message : String(err);
       emitPi(entry.workspaceId, entry.sessionId, "error", { message });
@@ -981,6 +1068,8 @@ async function handleStartWikiRun(
     })
     .finally(() => {
       entry.busy = false;
+      entry.abortController = undefined;
+      entry.produceModelProfileId = undefined;
     });
 
   return {
@@ -991,7 +1080,7 @@ async function handleStartWikiRun(
     message: preferPiFixture()
       ? "Wiki run produce started (fixture mode)"
       : "Wiki run produce started",
-    runId,
+    runId: frozen.runId,
   };
 }
 
@@ -1000,7 +1089,7 @@ async function handleResumeGate(
   workspace: WorkspaceConfig,
   command: Extract<AgentCommand, { type: "resume_gate" }>,
 ): Promise<AgentCommandResponse> {
-  if (!entry.shell) {
+  if (!entry.shell && !entry.runId && !command.runId) {
     return {
       ok: true,
       sessionId: entry.sessionId,
@@ -1014,121 +1103,74 @@ async function handleResumeGate(
   if (command.runId) {
     entry.runId = command.runId;
   }
-
-  const step = command.gate === "publication" ? "publish" : "plan";
-
-  // Publication approve: copy staging → publicationPath *before* shell
-  // becomes terminal `published`, so a copy failure can still markFailed.
-  let publicationPathMsg: string | undefined;
-  if (
-    command.gate === "publication" &&
-    command.action === "approve" &&
-    entry.runId
-  ) {
-    try {
-      const runWorkDir = piRunWorkDir(workspace.rootPath, entry.runId);
-      const wikiDir = path.join(runWorkDir, "wiki");
-      const publicationPath =
-        workspace.publicationPath ?? path.join(workspace.rootPath, "wiki");
-      const sources = (workspace.sources ?? []).map((s) => ({
-        id: s.id,
-        path: s.path,
-      }));
-      const pub = await publishStagingToPublication({
-        stagingDir: wikiDir,
-        publicationPath,
-        runId: entry.runId,
-        sources,
-      });
-      publicationPathMsg = pub.publicationPath;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      emitPi(entry.workspaceId, entry.sessionId, "error", { message });
-      if (entry.shell && !isTerminalPhase(entry.shell.phase)) {
-        entry.shell = markFailed(entry.shell, message);
-        emitPhase(entry, "failed", message, "failed");
-        emitRunLink(entry, "failed");
-      }
-      return {
-        ok: true,
-        sessionId: entry.sessionId,
-        command: "resume_gate",
-        status: "accepted",
-        message: `publication failed: ${message}`,
-        runId: entry.runId,
-      };
-    }
-  }
-
-  try {
-    entry.shell = resumeGate(entry.shell, {
-      step,
-      action: command.action,
-      plan: command.plan,
-      feedback: command.feedback,
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    emitPi(entry.workspaceId, entry.sessionId, "error", { message });
+  if (!entry.runId) {
     return {
       ok: true,
       sessionId: entry.sessionId,
       command: "resume_gate",
       status: "accepted",
-      message: `resume_gate rejected: ${message}`,
-      runId: entry.runId,
+      message: "no runId — resume ignored",
     };
   }
 
-  emitGate(
-    entry,
-    command.gate,
-    `resume_gate ${command.action}`,
-    entry.shell.plan,
-    entry.shell.pages,
-  );
+  const step =
+    command.gate === "publication" ? "publish-gate" : "plan-gate";
+  const controller = new AbortController();
+  entry.abortController = controller;
+  entry.busy = true;
 
-  const shellPhase = entry.shell.phase;
-  const phaseMessage =
-    publicationPathMsg != null
-      ? `Published to ${publicationPathMsg}`
-      : `gate ${command.gate} → ${command.action}`;
-  emitPhase(
-    entry,
-    productPhaseFromShell(shellPhase),
-    phaseMessage,
-    statusFromShell(shellPhase),
-  );
-  emitRunLink(entry, statusFromShell(shellPhase));
+  try {
+    const result = await resumeWikiRun({
+      runId: entry.runId,
+      workspace,
+      step,
+      resumeData: {
+        action: command.action,
+        plan: command.plan,
+        feedback: command.feedback,
+      },
+      shell: entry.shell,
+      pages: entry.shell?.pages,
+      plan: command.plan ?? entry.shell?.plan,
+      autoApprove: command.gate === "publication" && command.action === "approve"
+        ? true
+        : undefined,
+      resolveModel: preferPiFixture()
+        ? undefined
+        : makeResolveModel(workspace, entry),
+      abortSignal: controller.signal,
+      onEvent: mapOrchestratorOnEvent(entry),
+    });
 
-  // Plan approved → shell idle with plan → produce in the background.
-  if (
-    command.gate === "plan" &&
-    command.action === "approve" &&
-    shellPhase === "idle" &&
-    entry.shell.plan
-  ) {
-    entry.busy = true;
-    void runProducePhase(entry, workspace)
-      .catch((err) => {
-        const message = err instanceof Error ? err.message : String(err);
-        emitPi(entry.workspaceId, entry.sessionId, "error", { message });
-        if (entry.shell && !isTerminalPhase(entry.shell.phase)) {
-          entry.shell = markFailed(entry.shell, message);
-          emitPhase(entry, "failed", message, "failed");
-        }
-      })
-      .finally(() => {
-        entry.busy = false;
-      });
+    await persistTerminal(entry, workspace, result);
+
+    return {
+      ok: true,
+      sessionId: entry.sessionId,
+      command: "resume_gate",
+      status: "accepted",
+      message: `gate ${command.gate} ${command.action} → ${result.status}`,
+      runId: entry.runId,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    emitPi(entry.workspaceId, entry.sessionId, "error", { message });
+    if (entry.shell && !isTerminalPhase(entry.shell.phase)) {
+      entry.shell = markFailed(entry.shell, message);
+      emitPhase(entry, "failed", message, "failed");
+      emitRunLink(entry, "failed");
+    }
+    return {
+      ok: true,
+      sessionId: entry.sessionId,
+      command: "resume_gate",
+      status: "accepted",
+      message: `resume_gate failed: ${message}`,
+      runId: entry.runId,
+    };
+  } finally {
+    entry.busy = false;
+    entry.abortController = undefined;
+    entry.produceModelProfileId = undefined;
   }
-
-  return {
-    ok: true,
-    sessionId: entry.sessionId,
-    command: "resume_gate",
-    status: "accepted",
-    message: `gate ${command.gate} ${command.action} → ${shellPhase}`,
-    runId: entry.runId,
-  };
 }

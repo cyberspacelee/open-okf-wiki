@@ -3,24 +3,25 @@
  *
  * Primary conversational entry (ADR 0030). Legacy `/sessions` chat is retired.
  * Commands dispatch through agent-session-registry → @okf-wiki/agent
- * (createWikiSession, WikiRunShell, produceWithPi).
+ * (createWikiSession, WikiRunShell via startWikiRun / resumeWikiRun).
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
-import { piSessionsDir } from "@okf-wiki/agent";
+import { loadPiSessionHistory, piSessionsDir } from "@okf-wiki/agent";
 import {
   CreatePiAgentSessionBodySchema,
   safeParseAgentCommand,
   type AgentSseEvent,
   type PiSessionSummary,
 } from "@okf-wiki/contract";
-import { isPathInside, loadWorkspaceById } from "@okf-wiki/core";
+import { isPathInside, loadRun, loadWorkspaceById } from "@okf-wiki/core";
 import {
   agentSessionExistsOnDisk,
   dispatchAgentCommand,
   ensurePiSessionsDir,
+  getRegisteredAgentSession,
   registerAgentSession,
 } from "../agent-session-registry.ts";
 import {
@@ -147,6 +148,62 @@ export async function handleCreateAgentSession(
     }
     sendError(res, 500, message);
   }
+}
+
+/**
+ * GET /api/workspaces/:id/agent/sessions/:sessionId?rootPath=...
+ * Cold-load Pi JSONL history + product meta (pi-web style reload).
+ */
+export async function handleGetAgentSession(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  sessionId: string,
+  url: URL,
+): Promise<void> {
+  const workspace = await loadWorkspaceOr404(res, id, url);
+  if (!workspace) return;
+
+  const exists = await agentSessionExistsOnDisk(workspace.rootPath, sessionId);
+  if (!exists) {
+    sendError(res, 404, `agent session not found: ${sessionId}`);
+    return;
+  }
+
+  const history = await loadPiSessionHistory(workspace.rootPath, sessionId);
+  const reg = getRegisteredAgentSession(workspace.id, sessionId);
+  let runStatus: string | undefined;
+  if (reg?.runId) {
+    try {
+      const run = await loadRun(workspace.rootPath, reg.runId);
+      runStatus = run?.status;
+    } catch {
+      // ignore
+    }
+  }
+
+  sendJson(res, 200, {
+    session: {
+      id: sessionId,
+      workspaceId: workspace.id,
+      title: reg?.title,
+      sessionFile: history.sessionFile,
+    },
+    messages: history.messages,
+    product: {
+      runId: reg?.runId,
+      runStatus,
+      phase: reg?.shell?.phase,
+      pendingGate: reg?.shell?.pendingGate
+        ? {
+            gate: reg.shell.pendingGate === "publish" ? "publication" : "plan",
+            plan: reg.shell.plan,
+            pages: reg.shell.pages,
+          }
+        : null,
+      plan: reg?.shell?.plan ?? null,
+    },
+  });
 }
 
 /**

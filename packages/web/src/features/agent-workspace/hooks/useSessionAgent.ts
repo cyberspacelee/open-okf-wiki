@@ -25,6 +25,7 @@ import type {
 import {
   agentSessionCommand,
   agentSessionEventsUrl,
+  getAgentSession,
 } from "../../../api";
 import {
   applyPiEvent,
@@ -152,6 +153,59 @@ export function useSessionAgent({
   const eventsUrl = useMemo(() => {
     if (!sessionId) return null;
     return agentSessionEventsUrl(workspaceId, sessionId, rootPath);
+  }, [workspaceId, sessionId, rootPath]);
+
+  // Cold-load Pi JSONL + product meta before (and after) SSE reconnects.
+  useEffect(() => {
+    if (!sessionId) {
+      setMessages([]);
+      setPendingGate(null);
+      setPhase(null);
+      setLinkedRunId(null);
+      setPlan(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const snap = await getAgentSession(workspaceId, sessionId, rootPath);
+        if (cancelled) return;
+        const restored: AgentMessage[] = (snap.messages ?? []).map((m) => ({
+          id: m.id,
+          role: m.role === "system" ? "system" : m.role,
+          content: m.text,
+          createdAt: m.createdAt ?? nowIso(),
+          tools: m.tools?.map((t) => ({
+            id: t.id,
+            name: t.name,
+            status:
+              t.status === "running"
+                ? ("running" as const)
+                : t.status === "error"
+                  ? ("error" as const)
+                  : ("done" as const),
+          })),
+        }));
+        setMessages(restored);
+        if (snap.product?.runId) setLinkedRunId(snap.product.runId);
+        if (snap.product?.phase) setPhase(snap.product.phase);
+        if (snap.product?.plan) setPlan(snap.product.plan);
+        if (snap.product?.pendingGate?.gate) {
+          setPendingGate({
+            gate: snap.product.pendingGate.gate,
+            runId: snap.product.runId,
+            plan: snap.product.pendingGate.plan,
+            pages: snap.product.pendingGate.pages,
+          });
+        }
+      } catch {
+        // Empty history is fine for brand-new sessions.
+        if (!cancelled) setMessages([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [workspaceId, sessionId, rootPath]);
 
   const handleSseEvent = useCallback((raw: unknown) => {

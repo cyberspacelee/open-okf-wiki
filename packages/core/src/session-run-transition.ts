@@ -1,7 +1,7 @@
 /**
  * P2 — Session–Run pure transition table (ADR 0027).
  * Single product map: workflow/run events → Session + Run patches.
- * No I/O, no Mastra. Callers apply patches via stores / stream side-effects.
+ * No I/O, no framework deps. Callers apply patches via stores / stream side-effects.
  */
 
 import type {
@@ -29,7 +29,7 @@ export type SessionRunState = {
   summary?: string;
 };
 
-/** Product-level events (not Mastra types). */
+/** Product-level session–run events (framework-agnostic). */
 export type SessionRunEvent =
   | {
       type: "TurnStarted";

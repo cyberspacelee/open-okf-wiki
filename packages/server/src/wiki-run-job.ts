@@ -1,27 +1,25 @@
 /**
  * Single Wiki Run job lifecycle for headless / REST / automation entry.
  *
- * Uses Pi-based `startWikiRun` / `resumeWikiRun` from @okf-wiki/agent (no
- * Mastra / AI SDK). Owns: abort bind, status finalize, Session trajectory
- * projection, and background start/resume. HTTP routes are thin adapters.
+ * Uses Pi-based `startWikiRun` / `resumeWikiRun` from @okf-wiki/agent.
+ * Owns: abort bind, status finalize, Run Record updates. HTTP routes are thin.
+ * No UIMessage Operator Session trajectory (ADR 0030).
  */
 
 import { randomUUID } from "node:crypto";
 import {
   redactErrorMessage,
+  resolveModelSelection,
+  resolveWorkspacePiModel,
   resumeWikiRun,
+  shouldUsePiFixtureMode,
   startWikiRun,
+  type WikiRunModelFactory,
 } from "@okf-wiki/agent";
 import {
-  appendSessionMessages,
   applyLateAbortStatus,
-  createOperatorSession,
   isDurableRunStatus,
-  listOperatorSessions,
-  loadOperatorSession,
   loadRun,
-  neutralizeSessionDecisionParts,
-  replaceSessionMessages,
   transition,
   updateRunRecord,
   type SessionRunEvent,
@@ -29,7 +27,6 @@ import {
 } from "@okf-wiki/core";
 import {
   isTerminalRunStatus,
-  type OperatorSession,
   type WikiRunPlan,
   type WikiRunRecordStatus,
   type WorkspaceConfig,
@@ -43,18 +40,41 @@ import {
   registerRunAbortController,
 } from "./run-events.ts";
 
+/** Settings-backed model factory for headless/live Wiki Runs. */
+function resolveModelForWorkspace(
+  workspace: WorkspaceConfig,
+): WikiRunModelFactory | undefined {
+  if (shouldUsePiFixtureMode({})) return undefined;
+  return async (role) => {
+    const selection = resolveModelSelection({
+      workspace,
+      role: role === "planner" ? "planner" : "writer",
+    });
+    const resolved = await resolveWorkspacePiModel({
+      profileId: selection.profileId,
+      modelId: selection.id,
+    });
+    return {
+      model: resolved.model,
+      modelRuntime: resolved.modelRuntime,
+      maxContextTokens: resolved.runtime.maxContextTokens,
+      profileId: resolved.runtime.profileId,
+    };
+  };
+}
+
 export function sessionRunStateFrom(
-  session: OperatorSession | null | undefined,
   runStatus?: WikiRunRecordStatus | string | null,
   runSummary?: string | null,
+  linkedRunId?: string | null,
 ): SessionRunState {
   return {
-    sessionStatus: session?.status ?? "active",
-    workflowPhase: session?.workflow?.phase ?? "idle",
-    linkedRunId: session?.workflow?.linkedRunId,
+    sessionStatus: "active",
+    workflowPhase: "idle",
+    linkedRunId: linkedRunId ?? undefined,
     runStatus: runStatus ?? undefined,
-    pending: session?.pending ?? null,
-    plan: session?.workflow?.plan,
+    pending: null,
+    plan: undefined,
     summary: runSummary ?? undefined,
   };
 }
@@ -111,155 +131,16 @@ export function eventForRunPatch(patch: {
   };
 }
 
-function isGateStatus(status: string | undefined): boolean {
-  return status === "awaiting_plan" || status === "awaiting_publication";
-}
-
-/**
- * Append high-level trajectory to the Session linked to this run.
- * Thin I/O over P2 `transition` (ADR 0026 I3).
- */
-export async function projectRunStatusToSession(
-  rootPath: string,
-  runId: string,
-  patch: {
-    status: WikiRunRecordStatus;
-    summary?: string | null;
-    plan?: WikiRunPlan | null;
-    pages?: string[] | null;
-    error?: string | null;
-  },
-): Promise<void> {
-  const run = await loadRun(rootPath, runId);
-  const sessionId = run?.sessionId;
-  if (!sessionId) {
-    return;
-  }
-  const session = await loadOperatorSession(rootPath, sessionId);
-  if (!session) {
-    return;
-  }
-
-  const state = sessionRunStateFrom(session, run?.status, run?.summary);
-  const event = eventForRunPatch({ ...patch, runId });
-  const patches = transition(event, state);
-
-  if (patches.ignore && patches.ignoreReason === "durable_outcome") {
-    return;
-  }
-
-  const sessionPatch = patches.session;
-  const runPatch = patches.run;
-  const hint = patches.appendHint;
-  const phase =
-    sessionPatch?.workflow?.phase ?? session.workflow?.phase ?? "idle";
-  const status = sessionPatch?.status ?? session.status;
-  const plan =
-    sessionPatch?.workflow?.plan ??
-    patch.plan ??
-    run?.plan ??
-    session.workflow?.plan;
-  const pages = runPatch?.pages ?? patch.pages ?? run?.pages ?? undefined;
-  const summary =
-    hint?.text ??
-    runPatch?.summary ??
-    (patch.summary?.trim() ||
-      run?.summary?.trim() ||
-      `Wiki Run ${patch.status}`);
-  const projectedRunStatus = runPatch?.status ?? patch.status;
-  const pending =
-    sessionPatch && "pending" in sessionPatch
-      ? sessionPatch.pending
-      : isGateStatus(projectedRunStatus)
-        ? session.pending
-        : null;
-
-  const parts: OperatorSession["messages"][number]["parts"] = [
-    {
-      type: "data-run",
-      id: randomUUID(),
-      data: { runId, status: projectedRunStatus },
-    },
-    { type: "text", text: summary, state: "done" },
-  ];
-  if (plan && Array.isArray(plan.pages)) {
-    parts.push({ type: "data-plan", id: randomUUID(), data: plan });
-  }
-  if (pages && pages.length > 0) {
-    parts.push({
-      type: "data-run-pages",
-      id: randomUUID(),
-      data: { pages },
-    });
-  }
-
-  const baseMessages = patches.neutralizeDecisions
-    ? neutralizeSessionDecisionParts(session.messages)
-    : session.messages;
-
-  const workflow = {
-    ...session.workflow,
-    linkedRunId: runId,
-    phase,
-    ...(plan ? { plan } : {}),
-    ...(sessionPatch?.workflow?.notes !== undefined
-      ? { notes: sessionPatch.workflow.notes }
-      : {}),
-  };
-
-  try {
-    if (patches.neutralizeDecisions) {
-      await replaceSessionMessages(rootPath, sessionId, baseMessages, {
-        status,
-        pending: null,
-        workflow,
-      });
-    }
-    await appendSessionMessages(
-      rootPath,
-      sessionId,
-      [
-        {
-          id: randomUUID(),
-          role: "assistant",
-          parts,
-          createdAt: new Date().toISOString(),
-        },
-      ],
-      {
-        status,
-        pending,
-        workflow,
-      },
-    );
-  } catch (error) {
-    process.stderr.write(
-      `session trajectory append failed: ${redactErrorMessage(error)}\n`,
-    );
-  }
-}
-
-/** Prefer existing latest session; otherwise create one for headless runs. */
+/** Opaque correlation id for headless runs (not a UIMessage session file). */
 export async function ensureWorkspaceSessionId(
-  workspace: WorkspaceConfig,
+  _workspace: WorkspaceConfig,
 ): Promise<string> {
-  const existing = await listOperatorSessions(workspace.rootPath);
-  const match =
-    existing.find((s) => s.workspaceId === workspace.id) ?? existing[0];
-  if (match) {
-    return match.id;
-  }
-  const created = await createOperatorSession({
-    workspaceRoot: workspace.rootPath,
-    workspaceId: workspace.id,
-    title: `Wiki Session · ${workspace.name}`,
-  });
-  return created.id;
+  return randomUUID();
 }
 
 /**
- * Persist run status + project to linked Session via P2 transition.
- * Shared by background job and REST cancel cleanup paths.
+ * Persist run status via pure transition policy + Run Record.
+ * Shared by background job and REST cancel paths.
  */
 export async function finalizeRunStatus(
   rootPath: string,
@@ -314,10 +195,6 @@ export async function finalizeRunStatus(
 
   if (updated.status === "cancelled" && patch.status !== "cancelled") {
     emitRunDone(runId, "cancelled", updated.summary ?? "Wiki Run cancelled");
-    await projectRunStatusToSession(rootPath, runId, {
-      status: "cancelled",
-      summary: updated.summary ?? "Wiki Run cancelled",
-    });
     return;
   }
 
@@ -330,14 +207,6 @@ export async function finalizeRunStatus(
   } else {
     emitRunStatus(runId, updated.status, updated.summary ?? updated.status);
   }
-
-  await projectRunStatusToSession(rootPath, runId, {
-    status: updated.status,
-    summary: updated.summary ?? patch.summary,
-    plan: patch.plan ?? updated.plan,
-    pages: patch.pages ?? updated.pages,
-    error: updated.error ?? patch.error,
-  });
 }
 
 type ProcessRunOptions = {
@@ -480,6 +349,7 @@ export function processRunInBackground(
         skipPlanConfirm,
         plan: options.plan,
         abortSignal,
+        resolveModel: resolveModelForWorkspace(workspace),
         onEvent: jobEventsToSse(runId),
       });
 
@@ -572,6 +442,7 @@ export function resumeRunInBackground(
         plan: resolvedPlan,
         pages,
         abortSignal,
+        resolveModel: resolveModelForWorkspace(workspace),
         onEvent: jobEventsToSse(runId),
       });
 
@@ -605,74 +476,5 @@ export function resumeRunInBackground(
   })();
 }
 
-/**
- * Cancel product abort + optional linked Session gate cleanup.
- * Call after run record is marked cancelled.
- */
-export async function cleanupSessionAfterCancel(input: {
-  workspaceRoot: string;
-  workspaceId: string;
-  runId: string;
-  /** Status before cancel write (for transition policy). */
-  priorRunStatus: WikiRunRecordStatus | string;
-  priorSummary?: string | null;
-  sessionId?: string | null;
-}): Promise<void> {
-  const linkedSessionId = input.sessionId;
-  if (!linkedSessionId) {
-    return;
-  }
-  try {
-    const linked = await loadOperatorSession(
-      input.workspaceRoot,
-      linkedSessionId,
-    );
-    if (
-      !linked ||
-      linked.workspaceId !== input.workspaceId ||
-      (linked.workflow?.linkedRunId &&
-        linked.workflow.linkedRunId !== input.runId)
-    ) {
-      return;
-    }
-    const patches = transition(
-      {
-        type: "Cancel",
-        runId: input.runId,
-        summary: "Wiki Run cancelled",
-      },
-      sessionRunStateFrom(linked, input.priorRunStatus, input.priorSummary),
-    );
-    if (!patches.ignore && patches.session) {
-      const messages = patches.neutralizeDecisions
-        ? neutralizeSessionDecisionParts(linked.messages)
-        : linked.messages;
-      await replaceSessionMessages(
-        input.workspaceRoot,
-        linkedSessionId,
-        messages,
-        {
-          ...(patches.session.status !== undefined
-            ? { status: patches.session.status }
-            : {}),
-          ...(patches.session && "pending" in patches.session
-            ? { pending: patches.session.pending ?? null }
-            : {}),
-          workflow: {
-            ...linked.workflow,
-            ...(patches.session.workflow ?? {}),
-            linkedRunId:
-              patches.session.workflow?.linkedRunId ?? input.runId,
-          },
-        },
-      );
-    }
-  } catch (error) {
-    process.stderr.write(
-      `session cancel cleanup failed: ${redactErrorMessage(error)}\n`,
-    );
-  }
-}
-
-/** Re-export for Session finalize cancel-wins (same durable rule). */
+/** Re-export for cancel-wins policy + abort. */
 export { isDurableRunStatus, abortRun };

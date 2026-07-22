@@ -62,7 +62,8 @@ export const RunSseEventSchema = z.object({
   status: WikiRunRecordStatusSchema.optional(),
   message: z.string().optional(),
   /**
-   * UIMessage-like part type, e.g. `text`, `tool-read_source`, `tool-delegate_domain`.
+   * Optional part type for automation Run SSE (not Operator Session truth).
+   * Prefer Pi tool names (`tool-read`, `tool-ls`) when present.
    */
   partType: z.string().max(128).optional(),
   /** Markdown/plain text for text parts (truncated). */

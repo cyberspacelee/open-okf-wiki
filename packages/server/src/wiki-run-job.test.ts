@@ -11,12 +11,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
+import { randomUUID } from "node:crypto";
 import {
   addSource,
-  createOperatorSession,
   createRun,
   createWorkspace,
-  loadOperatorSession,
   loadRun,
   resolveSkillPath,
   saveWorkspace,
@@ -97,7 +96,6 @@ test("job: autoApprove publishes and links Session trajectory", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-job-auto-"));
   try {
     const workspace = await makeFixtureWorkspace(root, false);
-    const sessionId = await ensureWorkspaceSessionId(workspace);
     const skillPath = await resolveSkillPath({
       workspaceRoot: workspace.rootPath,
     });
@@ -106,7 +104,7 @@ test("job: autoApprove publishes and links Session trajectory", async () => {
       autoApprove: true,
       skillPath,
       skillDigest: digest,
-      sessionId,
+      sessionId: await ensureWorkspaceSessionId(workspace),
     });
 
     processRunInBackground(workspace, run.runId, { autoApprove: true });
@@ -116,20 +114,7 @@ test("job: autoApprove publishes and links Session trajectory", async () => {
       "published",
     );
     assert.equal(finished.status, "published");
-    assert.equal(finished.sessionId, sessionId);
-
-    const session = await loadOperatorSession(workspace.rootPath, sessionId);
-    assert.ok(session);
-    const hasRunPart = session.messages.some((m) =>
-      (m.parts ?? []).some(
-        (p) =>
-          p.type === "data-run" &&
-          typeof p === "object" &&
-          "data" in p &&
-          (p.data as { runId?: string })?.runId === run.runId,
-      ),
-    );
-    assert.ok(hasRunPart, "Session should receive data-run trajectory");
+    assert.ok(finished.pages && finished.pages.length >= 1);
   } finally {
     await rm(root, { recursive: true, force: true });
     delete process.env.OKF_WIKI_AGENT_MODE;
@@ -191,15 +176,11 @@ test("job: plan gate → resume approve → publication → approve publish", as
   }
 });
 
-test("finalizeRunStatus projects gate onto linked Session", async () => {
+test("finalizeRunStatus persists gate on Run Record", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-job-fin-"));
   try {
     const workspace = await makeFixtureWorkspace(root, true);
-    const session = await createOperatorSession({
-      workspaceRoot: workspace.rootPath,
-      workspaceId: workspace.id,
-      title: "t",
-    });
+    const sessionId = randomUUID();
     const skillPath = await resolveSkillPath({
       workspaceRoot: workspace.rootPath,
     });
@@ -207,7 +188,7 @@ test("finalizeRunStatus projects gate onto linked Session", async () => {
     const run = await createRun(workspace.rootPath, workspace.id, {
       skillPath,
       skillDigest: digest,
-      sessionId: session.id,
+      sessionId,
     });
 
     await finalizeRunStatus(workspace.rootPath, run.runId, {
@@ -218,9 +199,8 @@ test("finalizeRunStatus projects gate onto linked Session", async () => {
 
     const updated = await loadRun(workspace.rootPath, run.runId);
     assert.equal(updated?.status, "awaiting_plan");
-    const sess = await loadOperatorSession(workspace.rootPath, session.id);
-    assert.ok(sess);
-    assert.equal(sess.workflow?.linkedRunId, run.runId);
+    assert.equal(updated?.sessionId, sessionId);
+    assert.ok(updated?.plan);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

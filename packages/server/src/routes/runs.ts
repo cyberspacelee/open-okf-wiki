@@ -6,13 +6,11 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
-  createRun,
+  freezeWikiRun,
+  FreezeWikiRunError,
   listRuns,
   loadRun,
   loadWorkspaceById,
-  probeLocalGit,
-  resolveSkillPath,
-  skillDigest,
   RunStatusConflictError,
   updateRunRecord,
 } from "@okf-wiki/core";
@@ -30,7 +28,6 @@ import {
 } from "../run-events.ts";
 import {
   abortRun,
-  cleanupSessionAfterCancel,
   ensureWorkspaceSessionId,
   processRunInBackground,
   resumeRunInBackground,
@@ -41,7 +38,6 @@ export {
   ensureWorkspaceSessionId,
   finalizeRunStatus,
   processRunInBackground,
-  projectRunStatusToSession,
   resumeRunInBackground,
 } from "../wiki-run-job.ts";
 
@@ -61,40 +57,20 @@ async function loadWorkspaceOr404(
   return workspace;
 }
 
-async function assertSourcesClean(
-  res: ServerResponse,
-  workspace: NonNullable<Awaited<ReturnType<typeof loadWorkspaceById>>>,
-): Promise<boolean> {
-  if (!workspace.sources || workspace.sources.length === 0) {
-    sendError(
-      res,
-      400,
-      "workspace must have at least one source before starting a run",
-    );
-    return false;
+function sendFreezeError(res: ServerResponse, err: unknown): void {
+  if (err instanceof FreezeWikiRunError) {
+    sendError(res, 400, err.message, {
+      code: err.code,
+      sourceId: err.sourceId,
+      details: err.details,
+    });
+    return;
   }
-  for (const source of workspace.sources) {
-    const probe = await probeLocalGit(source.path);
-    if (!probe.isGit) {
-      sendError(
-        res,
-        400,
-        `source "${source.id}" is not a git working tree: ${source.path}`,
-        { sourceId: source.id, probe },
-      );
-      return false;
-    }
-    if (probe.dirty) {
-      sendError(
-        res,
-        400,
-        `source "${source.id}" has a dirty git working tree; commit or stash before starting a run: ${source.path}`,
-        { sourceId: source.id, probe },
-      );
-      return false;
-    }
-  }
-  return true;
+  sendError(
+    res,
+    400,
+    err instanceof Error ? err.message : "failed to freeze wiki run",
+  );
 }
 
 export async function handleCreateRun(
@@ -105,37 +81,30 @@ export async function handleCreateRun(
 ): Promise<void> {
   const workspace = await loadWorkspaceOr404(res, id, url);
   if (!workspace) return;
-  if (!(await assertSourcesClean(res, workspace))) return;
 
   const body = (await readJsonBody(req)) as { autoApprove?: unknown };
   const autoApprove =
     typeof body.autoApprove === "boolean" ? body.autoApprove : undefined;
 
-  let frozenSkillPath: string;
-  let frozenSkillDigest: string;
+  const sessionId = await ensureWorkspaceSessionId(workspace);
+  let frozen;
   try {
-    frozenSkillPath = await resolveSkillPath({
-      skillPath: workspace.skillPath,
-      workspaceRoot: workspace.rootPath,
+    frozen = await freezeWikiRun({
+      workspace,
+      sessionId,
+      autoApprove,
     });
-    frozenSkillDigest = await skillDigest(frozenSkillPath);
   } catch (error) {
-    sendError(
-      res,
-      400,
-      error instanceof Error ? error.message : "failed to freeze producer skill",
-    );
+    sendFreezeError(res, error);
     return;
   }
 
-  const sessionId = await ensureWorkspaceSessionId(workspace);
-  const run = await createRun(workspace.rootPath, workspace.id, {
-    autoApprove,
-    skillPath: frozenSkillPath,
-    skillDigest: frozenSkillDigest,
-    sessionId,
-  });
-  processRunInBackground(workspace, run.runId, { autoApprove });
+  const run = await loadRun(workspace.rootPath, frozen.runId);
+  if (!run) {
+    sendError(res, 500, "freeze succeeded but run record missing");
+    return;
+  }
+  processRunInBackground(workspace, frozen.runId, { autoApprove });
   sendJson(res, 201, { run });
 }
 
@@ -149,7 +118,6 @@ export async function handleRetryRun(
 ): Promise<void> {
   const workspace = await loadWorkspaceOr404(res, id, url);
   if (!workspace) return;
-  if (!(await assertSourcesClean(res, workspace))) return;
 
   const previous = await loadRun(workspace.rootPath, runId);
   if (!previous || previous.workspaceId !== workspace.id) {
@@ -170,46 +138,36 @@ export async function handleRetryRun(
     return;
   }
 
-  let frozenSkillPath = previous.skillPath;
-  let frozenSkillDigest = previous.skillDigest;
+  const sessionId =
+    previous.sessionId ?? (await ensureWorkspaceSessionId(workspace));
+  let frozen;
   try {
-    if (!frozenSkillPath) {
-      frozenSkillPath = await resolveSkillPath({
-        skillPath: workspace.skillPath,
-        workspaceRoot: workspace.rootPath,
-      });
-    }
-    if (!frozenSkillDigest) {
-      frozenSkillDigest = await skillDigest(frozenSkillPath);
-    } else {
-      await resolveSkillPath({ skillPath: frozenSkillPath });
-    }
+    frozen = await freezeWikiRun({
+      workspace,
+      sessionId,
+      autoApprove: previous.autoApprove,
+      priorSkill: {
+        skillPath: previous.skillPath,
+        skillDigest: previous.skillDigest,
+      },
+    });
   } catch (error) {
-    sendError(
-      res,
-      400,
-      error instanceof Error
-        ? error.message
-        : "failed to resolve frozen skill for retry",
-    );
+    sendFreezeError(res, error);
     return;
   }
 
-  const sessionId =
-    previous.sessionId ?? (await ensureWorkspaceSessionId(workspace));
-  const run = await createRun(workspace.rootPath, workspace.id, {
-    autoApprove: previous.autoApprove,
-    skillPath: frozenSkillPath,
-    skillDigest: frozenSkillDigest,
-    sessionId,
-  });
-  processRunInBackground(workspace, run.runId, {
+  const run = await loadRun(workspace.rootPath, frozen.runId);
+  if (!run) {
+    sendError(res, 500, "freeze succeeded but run record missing");
+    return;
+  }
+  processRunInBackground(workspace, frozen.runId, {
     autoApprove: previous.autoApprove,
   });
   sendJson(res, 201, {
     run,
     retriedFrom: previous.runId,
-    skillDigest: frozenSkillDigest,
+    skillDigest: frozen.skillDigest,
   });
 }
 
@@ -542,16 +500,6 @@ export async function handleCancelRun(
     throw error;
   }
   emitRunDone(runId, "cancelled", "Wiki Run cancelled");
-
-  await cleanupSessionAfterCancel({
-    workspaceRoot: workspace.rootPath,
-    workspaceId: workspace.id,
-    runId,
-    priorRunStatus: run.status,
-    priorSummary: run.summary,
-    sessionId: updated.sessionId,
-  });
-
   sendJson(res, 200, { run: updated });
 }
 

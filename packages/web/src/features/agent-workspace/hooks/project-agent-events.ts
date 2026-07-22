@@ -23,7 +23,13 @@ export type AgentToolCall = {
 };
 
 export type AgentProductMeta = {
-  kind: "run_phase" | "gate" | "run_link";
+  kind:
+    | "run_phase"
+    | "gate"
+    | "run_link"
+    | "progress"
+    | "agent_span"
+    | "defects";
   phase?: string;
   gate?: "plan" | "publication";
   runId?: string;
@@ -31,6 +37,12 @@ export type AgentProductMeta = {
   question?: string;
   /** Publication gate page paths (when known). */
   pages?: string[];
+  label?: string;
+  spanId?: string;
+  agentId?: string;
+  role?: string;
+  defectCount?: number;
+  clean?: boolean;
 };
 
 export type AgentMessage = {
@@ -51,7 +63,13 @@ export type StreamingRefs = {
 };
 
 export type ProductSseLike = {
-  kind: "run_phase" | "gate" | "run_link";
+  kind:
+    | "run_phase"
+    | "gate"
+    | "run_link"
+    | "progress"
+    | "agent_span"
+    | "defects";
   phase?: string;
   gate?: "plan" | "publication";
   runId?: string;
@@ -61,6 +79,15 @@ export type ProductSseLike = {
   pages?: string[];
   plan?: unknown;
   timestamp?: string;
+  label?: string;
+  spanId?: string;
+  agentId?: string;
+  role?: string;
+  promptSummary?: string;
+  round?: number;
+  clean?: boolean;
+  defectCount?: number;
+  summary?: string;
 };
 
 function nowIso(): string {
@@ -422,6 +449,24 @@ export function productCardContent(event: ProductSseLike): string {
       if (event.status) bits.push(`status=${event.status}`);
       return bits.join(" · ");
     }
+    case "progress": {
+      const bits = [`Produce: ${event.phase ?? "?"}`];
+      if (event.label) bits.push(event.label);
+      return bits.join(" · ");
+    }
+    case "agent_span": {
+      const bits = [
+        `Agent ${event.role ?? "?"}`,
+        event.agentId ?? "",
+        event.status ?? "",
+      ].filter(Boolean);
+      if (event.promptSummary) bits.push(event.promptSummary);
+      return bits.join(" · ");
+    }
+    case "defects": {
+      if (event.clean) return `Review: clean (round ${event.round ?? 1})`;
+      return `Review: ${event.defectCount ?? 0} defect(s) (round ${event.round ?? 1})`;
+    }
     default: {
       const _exhaustive: never = event.kind;
       return String(_exhaustive);
@@ -451,6 +496,31 @@ export function productMeta(event: ProductSseLike): AgentProductMeta {
         kind: "run_link",
         runId: event.runId,
         status: event.status,
+      };
+    case "progress":
+      return {
+        kind: "progress",
+        phase: event.phase,
+        runId: event.runId,
+        label: event.label,
+      };
+    case "agent_span":
+      return {
+        kind: "agent_span",
+        runId: event.runId,
+        spanId: event.spanId,
+        agentId: event.agentId,
+        role: event.role,
+        status: event.status,
+        label: event.promptSummary,
+      };
+    case "defects":
+      return {
+        kind: "defects",
+        runId: event.runId,
+        clean: event.clean,
+        defectCount: event.defectCount,
+        label: event.summary,
       };
     default: {
       const _exhaustive: never = event.kind;
