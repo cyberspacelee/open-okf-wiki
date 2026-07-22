@@ -74,6 +74,20 @@ export {
   type PublishStagingResult,
 } from "./publish.js";
 export {
+  generateWikiIndexes,
+  type GenerateWikiIndexesInput,
+  type GenerateWikiIndexesResult,
+} from "./wiki-index.js";
+export {
+  appendRootLog,
+  diffConceptSnapshots,
+  formatPublishLogEntry,
+  listConceptContentHashes,
+  parseWikiLogOrNull,
+  type ConceptDiff,
+  type PublishLogEntryInput,
+} from "./wiki-log.js";
+export {
   listPublishedWikiPages,
   readPublishedWikiPage,
   extractTitleFromFrontmatter,
@@ -87,15 +101,26 @@ export {
 } from "./published-wiki.js";
 export {
   validateWikiTree,
+  parseOkfConceptFrontmatter,
+  hasOkfConceptFrontmatter,
   hasNonEmptyTitleFrontmatter,
+  isReservedWikiBasename,
+  isReservedWikiRelPath,
+  isIso8601Datetime,
+  validateInternalConceptLinks,
+  RESERVED_WIKI_BASENAMES,
   WIKI_VALIDATE_MAX_FILES,
   WIKI_VALIDATE_MAX_FILE_BYTES,
   type ValidateWikiResult,
   type ValidateWikiOptions,
+  type OkfConceptFrontmatter,
+  type ParseOkfConceptFrontmatterResult,
 } from "./validate-wiki.js";
 export {
   parseSourceCitations,
+  findCitationsSectionRange,
   validateCitationFormat,
+  validateCitationPlacement,
   validateCitationResolve,
   resolveCitationFile,
   sourceRootMapFromSources,

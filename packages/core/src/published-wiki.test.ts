@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -11,8 +11,9 @@ import {
   resolvePublishedWikiPath,
 } from "./published-wiki.js";
 
+/** realpath: macOS /var → /private/var so assertNoSymlinkComponents accepts temp roots. */
 async function tempDir(prefix: string): Promise<string> {
-  return mkdtemp(path.join(tmpdir(), prefix));
+  return realpath(await mkdtemp(path.join(tmpdir(), prefix)));
 }
 
 async function writeMd(root: string, rel: string, body: string): Promise<void> {

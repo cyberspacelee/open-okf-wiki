@@ -4,7 +4,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -13,6 +13,11 @@ import type { WorkspaceConfig } from "@okf-wiki/contract";
 import { resetMastraForTests } from "./mastra-instance.js";
 import { mapWorkflowResult } from "./workflow-result.js";
 import { openWikiRunUiProjection } from "./workflow-ui-stream.js";
+
+/** realpath: macOS /var → /private/var so publish assertNoSymlinkComponents accepts roots. */
+async function tempDir(prefix: string): Promise<string> {
+  return realpath(await mkdtemp(path.join(tmpdir(), prefix)));
+}
 
 async function makeWorkspace(root: string): Promise<WorkspaceConfig> {
   const sourcePath = path.join(root, "src-repo");
@@ -78,7 +83,7 @@ test("openWikiRunUiProjection fixture: start → plan suspend → resume → pub
   process.env.OKF_WIKI_MASTRA_STORAGE = "memory";
   resetMastraForTests();
 
-  const root = await mkdtemp(path.join(tmpdir(), "okf-ui-proj-"));
+  const root = await tempDir("okf-ui-proj-");
   try {
     const workspace = await makeWorkspace(root);
     const runId = randomUUID();

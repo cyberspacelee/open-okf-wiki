@@ -1,8 +1,12 @@
 /**
- * Mechanical Source Citation parse + resolve (ADR 0008 page-level grounding).
- * Format from Producer Skill:
- *   single repo:  [Source](repo:path/to/file.py#L10-L20)
- *   multi repo:   [Source](repo:repository-id/path/to/file.py#L10-L20)
+ * Source Citation parse + mechanical placement/format checks (ADR 0028).
+ *
+ * Producer form (under page section `# Citations` only):
+ *   single repo:  [label](repo:path/to/file.py#L10-L20)
+ *   multi repo:   [label](repo:repository-id/path/to/file.py#L10-L20)
+ *
+ * Snapshot path/line resolve remains available as an optional soft helper
+ * ({@link validateCitationResolve}); the Run Boundary hard gate does not use it.
  */
 
 import { lstat, open } from "node:fs/promises";
@@ -23,11 +27,12 @@ export type SourceCitation = {
 };
 
 /**
- * Match Skill Source Citation links.
+ * Match Markdown links whose target is a `repo:` URI.
  * Line range is optional; when present must be #Lstart or #Lstart-Lend.
+ * Label is unrestricted (Skill often uses `Source`; OKF lists use short labels).
  */
 export const SOURCE_CITATION_RE =
-  /\[Source\]\(repo:([^)\s#]+)(?:#L(\d+)(?:-L(\d+))?)?\)/g;
+  /\[[^\]]*\]\(repo:([^)\s#]+)(?:#L(\d+)(?:-L(\d+))?)?\)/g;
 
 /**
  * Parse all Source Citations from Markdown page content.
@@ -57,6 +62,32 @@ export function parseSourceCitations(content: string): SourceCitation[] {
 }
 
 /**
+ * Locate the `# Citations` section body range (content after the heading line
+ * until the next ATX H1 or EOF). Returns null when the heading is absent.
+ */
+export function findCitationsSectionRange(
+  content: string,
+): { start: number; end: number } | null {
+  const heading = /^# Citations[ \t]*$/m.exec(content);
+  if (!heading || heading.index === undefined) {
+    return null;
+  }
+  const afterHeadingLine = heading.index + heading[0].length;
+  // Skip the newline after the heading when present.
+  let start = afterHeadingLine;
+  if (content[start] === "\r") {
+    start += 1;
+  }
+  if (content[start] === "\n") {
+    start += 1;
+  }
+  const rest = content.slice(start);
+  const nextH1 = /^# /m.exec(rest);
+  const end = nextH1 && nextH1.index !== undefined ? start + nextH1.index : content.length;
+  return { start, end };
+}
+
+/**
  * Format-only validation (no filesystem). Returns error strings.
  */
 export function validateCitationFormat(
@@ -80,6 +111,37 @@ export function validateCitationFormat(
     ) {
       errors.push(
         `${pageLabel}: citation line end before start (${c.raw})`,
+      );
+    }
+  }
+  return errors;
+}
+
+/**
+ * Hard-gate placement: every `repo:` citation must sit under `# Citations`.
+ * Pages with no `repo:` links need not include the section.
+ */
+export function validateCitationPlacement(
+  citations: SourceCitation[],
+  content: string,
+  pageLabel: string,
+): string[] {
+  if (citations.length === 0) {
+    return [];
+  }
+  const range = findCitationsSectionRange(content);
+  if (!range) {
+    return [
+      `${pageLabel}: repo: citations require a # Citations section (inline placement not allowed)`,
+    ];
+  }
+  const errors: string[] = [];
+  for (const c of citations) {
+    const citeStart = c.index;
+    const citeEnd = c.index + c.raw.length;
+    if (citeStart < range.start || citeEnd > range.end) {
+      errors.push(
+        `${pageLabel}: citation must be under # Citations (inline placement not allowed): ${c.raw}`,
       );
     }
   }
@@ -183,7 +245,8 @@ async function countFileLines(absPath: string): Promise<number> {
 }
 
 /**
- * Resolve citations against pinned source roots (file exists + line range in bounds).
+ * Optional soft helper: resolve citations against pinned source roots
+ * (file exists + line range in bounds). Not used by the Run Boundary hard gate.
  */
 export async function validateCitationResolve(
   citations: SourceCitation[],

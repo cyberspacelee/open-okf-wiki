@@ -1,22 +1,45 @@
-import { cp, lstat, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
+import {
+  cp,
+  lstat,
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { assertAbsolutePath, assertNoSymlinkComponents } from "./paths.js";
 import { validateWikiTree } from "./validate-wiki.js";
+import { generateWikiIndexes } from "./wiki-index.js";
+import {
+  appendRootLog,
+  diffConceptSnapshots,
+  listConceptContentHashes,
+} from "./wiki-log.js";
 
 export type PublishStagingInput = {
   stagingDir: string;
   publicationPath: string;
-  /** Optional run id for diagnostics / future release naming. */
+  /** Workspace display name — root `index.md` H1 (required). */
+  workspaceName: string;
+  /** Optional run id recorded in root `log.md`. */
   runId?: string;
   /**
-   * Pinned Snapshot sources for mechanical Source Citation resolve (ADR 0008).
-   * When set, validateWikiTree checks citations against these roots.
+   * Skill digest/version label for root `log.md` (defaults to `unknown`).
+   */
+  skill?: string;
+  /**
+   * @deprecated Not used by the hard gate (ADR 0028: format/placement only).
+   * Kept for call-site compatibility until agent wiring drops it.
    */
   sources?: Array<{ id: string; path: string }>;
 };
 
 export type PublishStagingResult = {
   publicationPath: string;
+  /** Concept page count (excludes reserved index/log). */
   pageCount: number;
 };
 
@@ -55,16 +78,13 @@ export async function countMarkdownFiles(dir: string): Promise<number> {
 /**
  * Publish a staging Wiki tree to the stable Published Wiki path.
  *
- * Portable MVP (ADR 0017): materialize a complete tree under a sibling temp
- * directory, then expose it via same-parent renames so readers never see a
- * half-written publication path.
- *
- * 1. Absolute paths; staging is a real directory with ≥1 `.md`
- * 2. Reject symlink components on staging / publication / parent
- * 3. Copy staging → `{publicationPath}.next.{ts}` (complete candidate)
- * 4. If live publication exists → rename aside to `.prev.{ts}`
- * 5. Rename candidate → publicationPath
- * 6. On failure after moving live aside, best-effort restore from aside
+ * ADR 0028 pipeline:
+ * 1. Generate/overwrite deterministic `index.md` on Staging (`workspaceName`)
+ * 2. `validateWikiTree` hard checks
+ * 3. Atomic copy/rename to `publicationPath` (ADR 0017)
+ * 4. On the candidate (before rename): append root `log.md` from concept diff
+ *    vs previous Published — so Published includes the new log entry.
+ *    Any failure before successful replace leaves prior Published unchanged.
  */
 export async function publishStagingToPublication(
   input: PublishStagingInput,
@@ -75,6 +95,10 @@ export async function publishStagingToPublication(
   const publicationPath = path.resolve(
     assertAbsolutePath(input.publicationPath, "publicationPath"),
   );
+  const workspaceName = input.workspaceName?.trim() ?? "";
+  if (!workspaceName) {
+    throw new Error("workspaceName must be a non-empty string");
+  }
 
   let stagingInfo;
   try {
@@ -108,19 +132,41 @@ export async function publishStagingToPublication(
     }
   }
 
-  // Mechanical wiki validation before any copy (frontmatter, citations, caps).
-  const validation = await validateWikiTree(stagingDir, {
-    ...(input.sources?.length ? { sources: input.sources } : {}),
+  // 1. Deterministic indexes on Staging (before concept hard gates).
+  await generateWikiIndexes({
+    wikiRoot: stagingDir,
+    workspaceName,
   });
+
+  // 2. Mechanical OKF validation (FM, links, citations placement, reserved, caps).
+  const validation = await validateWikiTree(stagingDir);
   if (!validation.ok) {
     throw new Error(
       `staging failed wiki validation: ${validation.errors.join("; ")}`,
     );
   }
-  const pageCount = validation.pageCount ?? (await countMarkdownFiles(stagingDir));
+  const pageCount =
+    validation.conceptCount ?? validation.pageCount ?? 0;
   if (pageCount < 1) {
-    throw new Error(`staging has no markdown pages: ${stagingDir}`);
+    throw new Error(`staging has no concept pages: ${stagingDir}`);
   }
+
+  // Snapshot previous Published concepts for log diff (before replace).
+  let previousConcepts = new Map<string, string>();
+  try {
+    const pubInfo = await lstat(publicationPath);
+    if (pubInfo.isDirectory() && !pubInfo.isSymbolicLink()) {
+      previousConcepts = await listConceptContentHashes(publicationPath);
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  const nextConcepts = await listConceptContentHashes(stagingDir);
+  const diff = diffConceptSnapshots(previousConcepts, nextConcepts);
 
   const parent = path.dirname(publicationPath);
   await mkdir(parent, { recursive: true });
@@ -149,6 +195,31 @@ export async function publishStagingToPublication(
     await rm(candidate, { recursive: true, force: true });
     throw new Error(`candidate release has no markdown pages: ${candidate}`);
   }
+
+  // 3b. Append root log on the candidate so Published includes the entry.
+  //     Seed from prior Published log first — staging is concept-only and must
+  //     not wipe history. Prior Published stays live until rename succeeds.
+  const candidateLog = path.join(candidate, "log.md");
+  try {
+    const prevLog = await readFile(path.join(publicationPath, "log.md"), "utf8");
+    await writeFile(candidateLog, prevLog, "utf8");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code !== "ENOENT") {
+      await rm(candidate, { recursive: true, force: true });
+      throw error;
+    }
+    // First publish or no prior log: drop any agent-staged log so append creates clean.
+    await rm(candidateLog, { force: true });
+  }
+
+  await appendRootLog(candidate, {
+    runId: input.runId ?? "unknown",
+    skill: input.skill ?? "unknown",
+    added: diff.added,
+    updated: diff.updated,
+    removed: diff.removed,
+  });
 
   let movedAside = false;
   try {

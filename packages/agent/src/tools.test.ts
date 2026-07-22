@@ -36,7 +36,6 @@ async function makeJavaishTree(): Promise<string> {
   return root;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function invokeTool(tool: { execute?: (...args: any[]) => any }, input: unknown): Promise<any> {
   assert.ok(tool.execute, "tool must have execute");
   return tool.execute(input, {
@@ -259,4 +258,58 @@ test("search_source returns path and 1-based line", async () => {
   assert.equal(hit.matches.length, 1);
   assert.equal(hit.matches[0].path, "pkg/Hello.java");
   assert.equal(hit.matches[0].line, 2);
+});
+
+test("write_wiki rejects reserved basenames at any depth", async () => {
+  const sourceRoot = await makeJavaishTree();
+  const wikiRoot = await mkdtemp(path.join(tmpdir(), "okf-wiki-stg-"));
+  const skillRoot = await mkdtemp(path.join(tmpdir(), "okf-skill-"));
+
+  const tools = createWikiRunTools({
+    sources: new Map([["app", sourceRoot]]),
+    sourceIgnores: buildSourceIgnoreMap([
+      { id: "app", path: sourceRoot, applyDefaultIgnores: true, ignore: [] },
+    ]),
+    skillRoot,
+    wikiRoot,
+  });
+
+  const okfPage =
+    "---\n" +
+    "type: concept\n" +
+    "title: Ok\n" +
+    "description: ok\n" +
+    "timestamp: 2026-07-21T12:00:00Z\n" +
+    "---\n\n# Ok\n";
+
+  await assert.rejects(
+    () => invokeTool(tools.write_wiki, { path: "index.md", content: okfPage }),
+    /reserved|index\.md/i,
+  );
+  await assert.rejects(
+    () => invokeTool(tools.write_wiki, { path: "log.md", content: okfPage }),
+    /reserved|log\.md/i,
+  );
+  await assert.rejects(
+    () =>
+      invokeTool(tools.write_wiki, {
+        path: "modules/index.md",
+        content: okfPage,
+      }),
+    /reserved|index\.md/i,
+  );
+  await assert.rejects(
+    () =>
+      invokeTool(tools.write_wiki, {
+        path: "modules/log.md",
+        content: okfPage,
+      }),
+    /reserved|log\.md/i,
+  );
+
+  const written = await invokeTool(tools.write_wiki, {
+    path: "overview.md",
+    content: okfPage,
+  });
+  assert.equal(written.path, "overview.md");
 });

@@ -306,7 +306,9 @@ const publishGateStep = createStep({
     const published = await publishStagingToPublication({
       stagingDir,
       publicationPath: inputData.workspace.publicationPath,
+      workspaceName: inputData.workspace.name,
       runId: inputData.runId,
+      // sources retained for call-site compat; hard gate no longer resolves them
       sources: inputData.workspace.sources.map((s) => ({
         id: s.id,
         path: s.path,

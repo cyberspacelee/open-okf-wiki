@@ -1,8 +1,10 @@
 import { createTool } from "@mastra/core/tools";
 import {
   entryMatchesIgnore,
+  isReservedWikiBasename,
   pathMatchesIgnore,
 } from "@okf-wiki/core";
+import path from "node:path";
 import { z } from "zod";
 import {
   listDirContained,
@@ -539,14 +541,28 @@ export function createWikiRunTools(roots: WikiRunToolRoots) {
   const write_wiki = createTool({
     id: "write_wiki",
     description:
-      "Write a markdown page into the staged Wiki. Begin pages with YAML frontmatter including title. " +
-      "Use relative .md paths (e.g. overview.md, architecture.md). " +
-      "Include Source Citations with line ranges from read_source/search_source (never invent line numbers).",
+      "Write a concept markdown page into the staged Wiki. " +
+      "Required OKF frontmatter: type, title, description, timestamp (ISO 8601 datetime). " +
+      "Write concept pages only (e.g. overview.md, architecture.md, modules/foo.md). " +
+      "Do NOT write reserved docs index.md or log.md (Run Boundary owns those). " +
+      "Concept edges: relative .md links. Source evidence: repo: URIs only under a final # Citations section " +
+      "(line ranges from read_source/search_source — never invent line numbers).",
     inputSchema: z.object({
-      path: z.string().min(1).describe("Relative .md path under the wiki staging root"),
-      content: z.string().min(1).describe("Full markdown page content"),
+      path: z
+        .string()
+        .min(1)
+        .describe("Relative concept .md path under the wiki staging root (not index.md/log.md)"),
+      content: z.string().min(1).describe("Full markdown page content with OKF frontmatter"),
     }),
     execute: async (input) => {
+      const rel = normalizeToolPath(input.path);
+      const base = path.posix.basename(rel.replace(/\\/g, "/"));
+      if (isReservedWikiBasename(base)) {
+        throw new Error(
+          `write_wiki cannot write reserved wiki doc "${base}" ` +
+            "(index.md and log.md are Run Boundary-owned; write concept pages only)",
+        );
+      }
       return writeFileContained(roots.wikiRoot, input.path, input.content);
     },
   });

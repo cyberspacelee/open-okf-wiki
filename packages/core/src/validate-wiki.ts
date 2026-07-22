@@ -2,10 +2,8 @@ import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   parseSourceCitations,
-  sourceRootMapFromSources,
   validateCitationFormat,
-  validateCitationResolve,
-  type SourceRootMap,
+  validateCitationPlacement,
 } from "./citations.js";
 import { assertAbsolutePath, assertNoSymlinkComponents } from "./paths.js";
 
@@ -13,14 +11,18 @@ import { assertAbsolutePath, assertNoSymlinkComponents } from "./paths.js";
 export const WIKI_VALIDATE_MAX_FILES = 500;
 export const WIKI_VALIDATE_MAX_FILE_BYTES = 1_000_000;
 
+/** Reserved wiki basenames (not Concept pages). Case-insensitive. */
+export const RESERVED_WIKI_BASENAMES = ["index.md", "log.md"] as const;
+
 export type ValidateWikiOptions = {
   /**
-   * Pinned Repository Snapshot roots for Source Citation resolve (ADR 0008).
-   * When omitted, only citation *format* is checked (and pages need ≥1 citation).
+   * @deprecated Snapshot sources are not used by the hard gate (ADR 0028).
+   * Kept for call-site compatibility; ignored for validation.
    */
   sources?: Array<{ id: string; path: string }>;
   /**
-   * When true (default), every `.md` page must contain at least one Source Citation.
+   * @deprecated Citations are never required by the hard gate (ADR 0028).
+   * Kept for call-site compatibility; ignored for validation.
    */
   requireCitations?: boolean;
 };
@@ -28,50 +30,366 @@ export type ValidateWikiOptions = {
 export type ValidateWikiResult = {
   ok: boolean;
   errors: string[];
-  /** Count of `.md` pages found when walk succeeded far enough. */
+  /** Count of all `.md` files found when walk succeeded far enough. */
   pageCount?: number;
+  /** Count of non-reserved concept `.md` pages. */
+  conceptCount?: number;
   /** Total files walked (md + non-md), when available. */
   fileCount?: number;
-  /** Total Source Citations found across pages. */
+  /** Total Source Citations found across concept pages. */
   citationCount?: number;
 };
 
+export type OkfConceptFrontmatter = {
+  type: string;
+  title: string;
+  description: string;
+  timestamp: string;
+  /** Simple scalar / flow optional keys (unknown keys preserved as raw values). */
+  extras: Record<string, string>;
+};
+
+export type ParseOkfConceptFrontmatterResult =
+  | { ok: true; fields: OkfConceptFrontmatter }
+  | { ok: false; errors: string[] };
+
+const REQUIRED_FM_KEYS = ["type", "title", "description", "timestamp"] as const;
+
+/** True when basename is a reserved wiki doc (`index.md` / `log.md`). */
+export function isReservedWikiBasename(name: string): boolean {
+  const lower = name.toLowerCase();
+  return (RESERVED_WIKI_BASENAMES as readonly string[]).includes(lower);
+}
+
+/** True when the path's basename is reserved (any depth). */
+export function isReservedWikiRelPath(relPath: string): boolean {
+  return isReservedWikiBasename(path.basename(relPath));
+}
+
+function unquoteScalar(raw: string): string {
+  const trimmed = raw.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'") && trimmed.length >= 2)
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+/** ISO 8601 datetime (must include a time component; date-only fails). */
+export function isIso8601Datetime(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(value)) {
+    return false;
+  }
+  const ms = Date.parse(value);
+  return Number.isFinite(ms);
+}
+
 /**
- * Minimal frontmatter check: file starts with `---` and a YAML block that
- * contains a non-empty `title:` key (simple regex — not a full YAML parser).
+ * Extract the raw YAML frontmatter block body (between leading `---` fences).
+ * Returns null when delimiters are missing.
  */
-export function hasNonEmptyTitleFrontmatter(content: string): boolean {
+function extractFrontmatterBlock(content: string): string | null {
   const trimmed = content.replace(/^\uFEFF/, "");
   if (!trimmed.startsWith("---")) {
-    return false;
+    return null;
   }
-  // First line must be exactly --- (optional trailing spaces)
   const firstNl = trimmed.indexOf("\n");
   if (firstNl < 0) {
-    return false;
+    return null;
   }
   if (trimmed.slice(0, firstNl).trim() !== "---") {
-    return false;
+    return null;
   }
   const rest = trimmed.slice(firstNl + 1);
   const close = rest.search(/^---\s*$/m);
   if (close < 0) {
+    return null;
+  }
+  return rest.slice(0, close);
+}
+
+/**
+ * Minimal line-oriented OKF concept frontmatter parser (no YAML dependency).
+ * Required: type, title, description, timestamp (ISO 8601 datetime).
+ * Optional keys: simple single-line scalars / flow lists only; nested or
+ * multi-line shapes hard-fail. Unknown keys allowed. Never rewrites content.
+ */
+export function parseOkfConceptFrontmatter(
+  content: string,
+): ParseOkfConceptFrontmatterResult {
+  const block = extractFrontmatterBlock(content);
+  if (block === null) {
+    return { ok: false, errors: ["missing YAML frontmatter delimiters"] };
+  }
+
+  const errors: string[] = [];
+  const scalars = new Map<string, string>();
+  const lines = block.split(/\r?\n/);
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line.trim() === "") {
+      continue;
+    }
+    // Nested / list item / continuation lines are not supported.
+    if (/^\s/.test(line)) {
+      errors.push(`unsupported nested or multi-line frontmatter near: ${line.trim()}`);
+      continue;
+    }
+    const match = /^([A-Za-z_][\w.-]*)\s*:\s*(.*)$/.exec(line);
+    if (!match) {
+      errors.push(`unparseable frontmatter line: ${line.trim()}`);
+      continue;
+    }
+    const key = match[1]!;
+    let value = match[2] ?? "";
+    // Block/folded scalars are multi-line YAML the minimal parser cannot type-check.
+    if (value.trim() === "|" || value.trim() === ">" || value.trim().startsWith("|") || value.trim().startsWith(">")) {
+      errors.push(`unsupported multi-line frontmatter value for key: ${key}`);
+      continue;
+    }
+    // Peek: next indented line means nested map / multi-line value.
+    const next = lines[i + 1];
+    if (next !== undefined && next.trim() !== "" && /^\s/.test(next)) {
+      errors.push(`unsupported nested or multi-line frontmatter for key: ${key}`);
+      // Skip following indented lines so we don't double-report.
+      while (i + 1 < lines.length && (lines[i + 1]!.trim() === "" || /^\s/.test(lines[i + 1]!))) {
+        i += 1;
+      }
+      continue;
+    }
+    value = unquoteScalar(value);
+    if (scalars.has(key)) {
+      errors.push(`duplicate frontmatter key: ${key}`);
+      continue;
+    }
+    scalars.set(key, value);
+  }
+
+  const required: Partial<Record<(typeof REQUIRED_FM_KEYS)[number], string>> = {};
+  for (const key of REQUIRED_FM_KEYS) {
+    const raw = scalars.get(key);
+    if (raw === undefined) {
+      errors.push(`missing required frontmatter key: ${key}`);
+      continue;
+    }
+    if (raw.length === 0) {
+      errors.push(`empty required frontmatter key: ${key}`);
+      continue;
+    }
+    required[key] = raw;
+    scalars.delete(key);
+  }
+
+  if (required.timestamp !== undefined && !isIso8601Datetime(required.timestamp)) {
+    errors.push(
+      `timestamp must be parseable ISO 8601 datetime (got ${required.timestamp})`,
+    );
+  }
+
+  if (errors.length > 0) {
+    return { ok: false, errors };
+  }
+
+  const extras: Record<string, string> = {};
+  for (const [key, value] of scalars) {
+    extras[key] = value;
+  }
+
+  return {
+    ok: true,
+    fields: {
+      type: required.type!,
+      title: required.title!,
+      description: required.description!,
+      timestamp: required.timestamp!,
+      extras,
+    },
+  };
+}
+
+/** True when content has valid OKF concept frontmatter. */
+export function hasOkfConceptFrontmatter(content: string): boolean {
+  return parseOkfConceptFrontmatter(content).ok;
+}
+
+/**
+ * @deprecated Title-only check superseded by {@link hasOkfConceptFrontmatter}.
+ * Kept for secondary browse helpers; does not satisfy the hard publish gate.
+ */
+export function hasNonEmptyTitleFrontmatter(content: string): boolean {
+  const block = extractFrontmatterBlock(content);
+  if (block === null) {
     return false;
   }
-  const front = rest.slice(0, close);
-  // title: value  — value must be non-empty after optional quotes
-  const match = front.match(/^\s*title\s*:\s*(.+?)\s*$/m);
+  const match = block.match(/^\s*title\s*:\s*(.+?)\s*$/m);
   if (!match) {
     return false;
   }
-  const raw = match[1]!.trim();
-  // Strip surrounding single/double quotes if present
-  const unquoted =
-    (raw.startsWith('"') && raw.endsWith('"')) ||
-    (raw.startsWith("'") && raw.endsWith("'"))
-      ? raw.slice(1, -1).trim()
-      : raw;
-  return unquoted.length > 0;
+  return unquoteScalar(match[1]!).length > 0;
+}
+
+/** Markdown links: [label](target) — simple single-line form. */
+const MD_LINK_RE = /(?<!!)\[([^\]]*)\]\(([^)\s]+)\)/g;
+
+function isExternalOrSpecialTarget(target: string): boolean {
+  const t = target.trim();
+  if (!t || t.startsWith("#")) {
+    return true;
+  }
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(t)) {
+    // repo: handled as citations; http(s)/mailto/etc. are non-concept edges.
+    return true;
+  }
+  return false;
+}
+
+/** Case-insensitive membership for concept path sets. */
+function conceptSetHas(conceptRelPaths: Set<string>, relPosix: string): boolean {
+  if (conceptRelPaths.has(relPosix)) {
+    return true;
+  }
+  const lower = relPosix.toLowerCase();
+  for (const c of conceptRelPaths) {
+    if (c.toLowerCase() === lower) {
+      return true;
+    }
+  }
+  return false;
+}
+
+type ResolvedConceptTarget =
+  | { ok: true; relPosix: string }
+  | { ok: false; reason: "escapes" | "not-md" | "reserved" | "missing" };
+
+/**
+ * Resolve a relative link target under wikiRoot to a POSIX path, then classify
+ * against the concept set / reserved rules.
+ */
+function resolveConceptTarget(
+  wikiRoot: string,
+  joinedUnderRoot: string,
+  conceptRelPaths: Set<string>,
+): ResolvedConceptTarget {
+  const absTarget = path.resolve(wikiRoot, joinedUnderRoot);
+  const rootResolved = path.resolve(wikiRoot);
+  if (
+    absTarget !== rootResolved &&
+    !absTarget.startsWith(rootResolved + path.sep)
+  ) {
+    return { ok: false, reason: "escapes" };
+  }
+  const relPosix = path
+    .relative(rootResolved, absTarget)
+    .split(path.sep)
+    .join("/");
+  if (!relPosix.toLowerCase().endsWith(".md")) {
+    return { ok: false, reason: "not-md" };
+  }
+  if (isReservedWikiRelPath(relPosix)) {
+    return { ok: false, reason: "reserved" };
+  }
+  if (!conceptSetHas(conceptRelPaths, relPosix)) {
+    return { ok: false, reason: "missing" };
+  }
+  return { ok: true, relPosix };
+}
+
+/**
+ * Resolve internal concept-edge links (relative `.md` targets).
+ *
+ * Resolution order (ADR 0028 + Concept ID = wiki-root path):
+ * 1. **Page-relative** Markdown (standard): join target to the source page dir.
+ * 2. **Wiki-root-relative** fallback when the target does not start with `.`
+ *    (so not `./` / `../`): treat the target as a Concept ID path from the wiki
+ *    root (e.g. `modules/core.md` from `modules/sc.md`). Agents and skill text
+ *    naturally emit this form; page-relative alone would map it to
+ *    `modules/modules/core.md`.
+ *
+ * Broken, out-of-tree, non-`.md`, or reserved targets fail.
+ */
+export function validateInternalConceptLinks(
+  content: string,
+  pageRelPath: string,
+  conceptRelPaths: Set<string>,
+  wikiRoot: string,
+): string[] {
+  const errors: string[] = [];
+  const pageDir = path.dirname(pageRelPath);
+  const re = new RegExp(MD_LINK_RE.source, "g");
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(content)) !== null) {
+    const rawTarget = match[2]!.trim();
+    if (isExternalOrSpecialTarget(rawTarget)) {
+      continue;
+    }
+    // Strip fragment.
+    const withoutHash = rawTarget.split("#")[0] ?? "";
+    if (!withoutHash) {
+      continue;
+    }
+    if (path.isAbsolute(withoutHash) || withoutHash.startsWith("/")) {
+      errors.push(
+        `${pageRelPath}: concept link must be wiki-relative (got ${rawTarget})`,
+      );
+      continue;
+    }
+
+    const pageJoined = path.normalize(
+      path.join(pageDir === "." ? "" : pageDir, withoutHash),
+    );
+    let resolved = resolveConceptTarget(wikiRoot, pageJoined, conceptRelPaths);
+
+    // Wiki-root fallback for targets that look like Concept IDs (no ./ or ../).
+    if (
+      !resolved.ok &&
+      resolved.reason === "missing" &&
+      !withoutHash.startsWith(".")
+    ) {
+      const rootJoined = path.normalize(withoutHash);
+      const rootResolved = resolveConceptTarget(
+        wikiRoot,
+        rootJoined,
+        conceptRelPaths,
+      );
+      if (rootResolved.ok) {
+        resolved = rootResolved;
+      } else if (rootResolved.reason !== "missing") {
+        // Prefer concrete root-form errors (escapes / not-md / reserved) when
+        // the root attempt is more specific than "missing".
+        resolved = rootResolved;
+      }
+    }
+
+    if (resolved.ok) {
+      continue;
+    }
+    switch (resolved.reason) {
+      case "escapes":
+        errors.push(
+          `${pageRelPath}: concept link escapes wiki root (${rawTarget})`,
+        );
+        break;
+      case "not-md":
+        errors.push(
+          `${pageRelPath}: concept link must target a .md page (${rawTarget})`,
+        );
+        break;
+      case "reserved":
+        errors.push(
+          `${pageRelPath}: concept link must not target reserved doc (${rawTarget})`,
+        );
+        break;
+      case "missing":
+        errors.push(
+          `${pageRelPath}: broken concept link (cannot resolve ${rawTarget})`,
+        );
+        break;
+    }
+  }
+  return errors;
 }
 
 type WalkEntry = {
@@ -132,29 +450,27 @@ async function walkTreeNoFollow(
   await walk(root, "");
 }
 
+function toPosixRel(relPath: string): string {
+  return relPath.split(path.sep).join("/");
+}
+
 /**
- * Mechanically validate a staging / publication-candidate Wiki tree before publish.
+ * Mechanically validate a staging / publication-candidate Wiki tree (ADR 0028).
  *
  * Checks:
  * - Absolute path, real directory, no symlink components
- * - At least one `.md` file
- * - Each `.md` starts with YAML frontmatter containing non-empty `title:`
- * - Source Citations present (format + optional Snapshot resolve) — ADR 0008
+ * - At least one concept `.md` (non-reserved)
+ * - Concept pages: OKF four-field frontmatter; internal concept link resolve
+ * - Citations: format + `# Citations` placement only (no Snapshot resolve, no require-≥1)
+ * - Reserved: `index.md` not a concept; root `log.md` allowed; nested `log.md` fails
  * - No symlinks inside the tree
  * - Soft caps: ≤ {@link WIKI_VALIDATE_MAX_FILES} files, each ≤ 1MB
  */
 export async function validateWikiTree(
   dir: string,
-  options: ValidateWikiOptions = {},
+  _options: ValidateWikiOptions = {},
 ): Promise<ValidateWikiResult> {
   const errors: string[] = [];
-  // Citations required when Snapshot sources are supplied (publish path) unless
-  // explicitly disabled. Pure frontmatter/caps checks omit sources.
-  const requireCitations =
-    options.requireCitations ?? Boolean(options.sources?.length);
-  const sourceMap: SourceRootMap | undefined = options.sources
-    ? sourceRootMapFromSources(options.sources)
-    : undefined;
   let citationCount = 0;
 
   let resolved: string;
@@ -199,7 +515,7 @@ export async function validateWikiTree(
 
   let fileCount = 0;
   let pageCount = 0;
-  const mdFiles: { absPath: string; relPath: string }[] = [];
+  const mdFiles: { absPath: string; relPath: string; posixRel: string }[] = [];
 
   await walkTreeNoFollow(
     resolved,
@@ -209,12 +525,15 @@ export async function validateWikiTree(
       }
       fileCount += 1;
       if (fileCount > WIKI_VALIDATE_MAX_FILES) {
-        // Keep counting pages for diagnostics but only emit the cap error once.
         return;
       }
       if (entry.relPath.toLowerCase().endsWith(".md")) {
         pageCount += 1;
-        mdFiles.push({ absPath: entry.absPath, relPath: entry.relPath });
+        mdFiles.push({
+          absPath: entry.absPath,
+          relPath: entry.relPath,
+          posixRel: toPosixRel(entry.relPath),
+        });
       }
     },
     errors,
@@ -226,14 +545,33 @@ export async function validateWikiTree(
     );
   }
 
-  if (pageCount < 1) {
-    errors.push(`wiki tree has no markdown pages: ${resolved}`);
-  }
+  // First pass: classify reserved vs concept; read contents for concepts.
+  const conceptRelPaths = new Set<string>();
+  const conceptContents = new Map<
+    string,
+    { absPath: string; relPath: string; posixRel: string; content: string }
+  >();
 
   for (const md of mdFiles) {
+    const base = path.basename(md.relPath);
+    if (base.toLowerCase() === "log.md") {
+      // Root-only log.md; nested log.md is a hard fail.
+      const parent = path.dirname(md.posixRel);
+      if (parent !== ".") {
+        errors.push(
+          `${md.posixRel}: log.md is root-only (nested log.md not allowed)`,
+        );
+      }
+      // Root log.md is reserved — not a concept; no FM check.
+      continue;
+    }
+    if (base.toLowerCase() === "index.md") {
+      // Reserved directory listing — not a concept; no FM check.
+      continue;
+    }
+
     let size: number;
     try {
-      // lstat: never follow a symlink swapped in after the walk (path escape).
       const info = await lstat(md.absPath);
       if (info.isSymbolicLink()) {
         errors.push(`symlink not allowed in wiki tree: ${md.relPath}`);
@@ -265,30 +603,51 @@ export async function validateWikiTree(
       );
       continue;
     }
-    if (!hasNonEmptyTitleFrontmatter(content)) {
+
+    conceptRelPaths.add(md.posixRel);
+    conceptContents.set(md.posixRel, {
+      absPath: md.absPath,
+      relPath: md.relPath,
+      posixRel: md.posixRel,
+      content,
+    });
+  }
+
+  if (conceptContents.size < 1) {
+    errors.push(`wiki tree has no concept pages: ${resolved}`);
+  }
+
+  // Second pass: FM, citations placement/format, internal links.
+  for (const concept of conceptContents.values()) {
+    const fm = parseOkfConceptFrontmatter(concept.content);
+    if (!fm.ok) {
       errors.push(
-        `${md.relPath}: missing YAML frontmatter with non-empty title`,
+        `${concept.posixRel}: invalid OKF concept frontmatter (${fm.errors.join("; ")})`,
       );
     }
-    const citations = parseSourceCitations(content);
+
+    const citations = parseSourceCitations(concept.content);
     citationCount += citations.length;
-    if (requireCitations && citations.length === 0) {
-      errors.push(
-        `${md.relPath}: missing Source Citation ([Source](repo:…#L…))`,
-      );
-    }
-    errors.push(...validateCitationFormat(citations, md.relPath));
-    if (sourceMap) {
-      errors.push(
-        ...(await validateCitationResolve(citations, md.relPath, sourceMap)),
-      );
-    }
+    errors.push(
+      ...validateCitationPlacement(citations, concept.content, concept.posixRel),
+    );
+    errors.push(...validateCitationFormat(citations, concept.posixRel));
+
+    errors.push(
+      ...validateInternalConceptLinks(
+        concept.content,
+        concept.posixRel,
+        conceptRelPaths,
+        resolved,
+      ),
+    );
   }
 
   return {
     ok: errors.length === 0,
     errors,
     pageCount,
+    conceptCount: conceptContents.size,
     fileCount,
     citationCount,
   };

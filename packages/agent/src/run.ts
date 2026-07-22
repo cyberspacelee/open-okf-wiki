@@ -599,7 +599,7 @@ async function runFixture(input: WikiRunAgentInput, wikiRoot: string): Promise<W
   const planNote = input.plan
     ? `\n\nConfirmed plan: ${input.plan.summary}\n`
     : "";
-  // Ground fixture pages with a resolvable Source Citation (ADR 0008 / Phase 6).
+  // OKF concept page (ADR 0028): four-field FM + optional # Citations (no inline repo:).
   // Prefer README.md under the first source when present; path is repo-relative.
   const primarySource = input.workspace.sources[0];
   const citationTarget = primarySource
@@ -607,9 +607,13 @@ async function runFixture(input: WikiRunAgentInput, wikiRoot: string): Promise<W
       ? `${primarySource.id}/README.md`
       : "README.md"
     : "README.md";
+  const timestamp = new Date().toISOString();
   const content = [
     "---",
+    "type: overview",
     `title: ${JSON.stringify(title)}`,
+    `description: ${JSON.stringify(`Fixture overview for ${input.workspace.name || "workspace"}`)}`,
+    `timestamp: ${timestamp}`,
     "---",
     "",
     `# ${title}`,
@@ -620,10 +624,14 @@ async function runFixture(input: WikiRunAgentInput, wikiRoot: string): Promise<W
     `- Sources: ${sourceIds || "(none)"}`,
     `- Run: \`${input.runId}\``,
     planNote,
-    `Source-grounded note: the repository root README is the fixture anchor ([Source](repo:${citationTarget}#L1-L1)).`,
+    "Source-grounded note: the repository root README is the fixture anchor.",
     "",
     "Replace fixture mode with a live model by setting `OPENAI_API_KEY` and/or",
     "`OPENAI_BASE_URL`, or force live with `OKF_WIKI_AGENT_MODE=live`.",
+    "",
+    "# Citations",
+    "",
+    `- [README](repo:${citationTarget}#L1-L1)`,
     "",
   ].join("\n");
 
@@ -650,16 +658,16 @@ function wikiLanguageInstruction(workspace: WorkspaceConfig): string {
   if (lang === "zh") {
     return [
       "## Output language",
-      "Write all Wiki page content in Simplified Chinese (简体中文).",
-      "Frontmatter `title` values and body prose must be Chinese.",
-      "Keep Source Citations, file paths, code identifiers, and relative `.md` links unchanged (do not translate paths).",
+      "Write all Wiki page body prose and frontmatter `title` / `description` in Simplified Chinese (简体中文).",
+      "Keep frontmatter keys (`type`, `title`, `description`, `timestamp`), recommended `type` tokens,",
+      "the `# Citations` heading, `repo:` URIs, file paths, code identifiers, and relative `.md` links in English/as-is.",
     ].join("\n");
   }
   return [
     "## Output language",
     "Write all Wiki page content in English.",
-    "Frontmatter `title` values and body prose must be English.",
-    "Keep Source Citations, file paths, code identifiers, and relative `.md` links unchanged.",
+    "Frontmatter `title` / `description` and body prose must be English.",
+    "Keep `# Citations`, `repo:` URIs, file paths, code identifiers, and relative `.md` links unchanged.",
   ].join("\n");
 }
 
@@ -732,11 +740,14 @@ function buildInstructions(workspace: WorkspaceConfig): string {
     "   - read_source: returns numbered lines `N| text` plus lineCount — cite only within lineCount",
     "   Source paths may live outside the workspace root; never assume sources are under cwd.",
     "   Effective Source Ignores are host-enforced on those tools (see section below).",
-    "3. Write final Markdown pages under the wiki staging area with write_wiki.",
+    "3. Write final Markdown concept pages under the wiki staging area with write_wiki.",
     "   Prefer writing planned pages as soon as you have enough evidence; do not only explore.",
-    "4. Every page MUST start with YAML frontmatter containing a non-empty `title`.",
-    "5. Prefer a small coherent page set (e.g. overview.md plus architecture/module as needed).",
-    "6. When finished, reply with a short plain-text summary listing the wiki-relative page paths you wrote.",
+    "4. Every concept page MUST start with OKF YAML frontmatter: non-empty `type`, `title`, `description`, and `timestamp` (ISO 8601 datetime).",
+    "   Recommended type tokens (English): overview | architecture | module | flow | concept. Custom types allowed when needed.",
+    "5. Root narrative page is overview.md (not index.md). Prefer a small coherent concept set (overview plus architecture/module/flow as needed).",
+    "6. Concept edges: relative .md links (page-relative like `./core.md` / `../overview.md`, or wiki-root Concept ID form like `modules/core.md`). Only link pages you write. Prefer relationship-bearing prose links; when using a Related pages / 相关页面 list: one link per line, each `- [Title](path.md) — <how this page relates to that page>` (no multi-link bullets). Source evidence uses repo: URIs only under a page-final `# Citations` section — never inline body repo: links.",
+    "7. Do NOT write reserved docs index.md or log.md (Run Boundary generates indexes and appends the root log on publish).",
+    "8. When finished, reply with a short plain-text summary listing the wiki-relative concept page paths you wrote.",
     "",
     "## Source Citations",
     "- Format: [Source](repo:path#Lstart-Lend) or multi-repo [Source](repo:sourceId/path#Lstart-Lend).",

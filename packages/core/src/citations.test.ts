@@ -1,21 +1,36 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import {
+  findCitationsSectionRange,
   parseSourceCitations,
   sourceRootMapFromSources,
   validateCitationFormat,
+  validateCitationPlacement,
   validateCitationResolve,
 } from "./citations.js";
 import { validateWikiTree } from "./validate-wiki.js";
 
-test("parseSourceCitations: single and multi-repo forms", () => {
+/** realpath: macOS /var → /private/var so assertNoSymlinkComponents accepts temp roots. */
+async function tempDir(prefix: string): Promise<string> {
+  return realpath(await mkdtemp(path.join(tmpdir(), prefix)));
+}
+
+const okfFm = (title: string) =>
+  "---\n" +
+  "type: concept\n" +
+  `title: ${title}\n` +
+  `description: ${title} description\n` +
+  "timestamp: 2026-07-21T12:00:00Z\n" +
+  "---\n\n";
+
+test("parseSourceCitations: single and multi-repo forms with any link label", () => {
   const text = [
     "Fact A [Source](repo:src/main.ts#L10-L20).",
-    "Fact B [Source](repo:my-lib/pkg/a.go#L1).",
-    "Fact C [Source](repo:README.md).",
+    "Fact B [lib](repo:my-lib/pkg/a.go#L1).",
+    "Fact C [readme](repo:README.md).",
   ].join("\n");
   const cites = parseSourceCitations(text);
   assert.equal(cites.length, 3);
@@ -37,8 +52,54 @@ test("validateCitationFormat rejects path escape and bad ranges", () => {
   assert.ok(errors.some((e) => e.includes("line end before start")));
 });
 
-test("validateCitationResolve: file + line bounds against snapshot", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "okf-cite-"));
+test("findCitationsSectionRange locates # Citations until next H1", () => {
+  const content = [
+    "# Title",
+    "",
+    "Body.",
+    "",
+    "# Citations",
+    "",
+    "- [a](repo:a.ts#L1)",
+    "",
+    "# Other",
+    "",
+    "Not citations [b](repo:b.ts).",
+  ].join("\n");
+  const range = findCitationsSectionRange(content);
+  assert.ok(range);
+  assert.ok(content.slice(range!.start, range!.end).includes("repo:a.ts"));
+  assert.ok(!content.slice(range!.start, range!.end).includes("repo:b.ts"));
+});
+
+test("validateCitationPlacement rejects repo: links outside # Citations", () => {
+  const content = [
+    "Inline [Source](repo:src/a.ts#L1).",
+    "",
+    "# Citations",
+    "",
+    "- [ok](repo:src/b.ts#L2)",
+  ].join("\n");
+  const cites = parseSourceCitations(content);
+  const errors = validateCitationPlacement(cites, content, "p.md");
+  assert.ok(errors.some((e) => /Citations|placement|inline/i.test(e)));
+  assert.ok(errors.some((e) => e.includes("src/a.ts")));
+});
+
+test("validateCitationPlacement accepts repo: only under # Citations", () => {
+  const content = [
+    "Body with no repo links.",
+    "",
+    "# Citations",
+    "",
+    "- [ok](repo:src/b.ts#L2)",
+  ].join("\n");
+  const cites = parseSourceCitations(content);
+  assert.deepEqual(validateCitationPlacement(cites, content, "p.md"), []);
+});
+
+test("validateCitationResolve still works as optional soft helper", async () => {
+  const root = await tempDir("okf-cite-");
   const src = path.join(root, "repo");
   await mkdir(src, { recursive: true });
   await writeFile(path.join(src, "README.md"), "line1\nline2\nline3\n", "utf8");
@@ -53,32 +114,48 @@ test("validateCitationResolve: file + line bounds against snapshot", async () =>
   assert.ok(err2.some((e) => e.includes("not found")));
 });
 
-test("validateWikiTree with sources requires resolvable citations", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "okf-wiki-cite-"));
+test("validateWikiTree hard gate uses placement only — not Snapshot resolve", async () => {
+  const root = await tempDir("okf-wiki-cite-");
   const src = path.join(root, "src");
   const wiki = path.join(root, "wiki");
   await mkdir(src, { recursive: true });
   await mkdir(wiki, { recursive: true });
   await writeFile(path.join(src, "README.md"), "# hi\n", "utf8");
-  await writeFile(
-    path.join(wiki, "overview.md"),
-    "---\ntitle: Overview\n---\n\n# Overview\n\nBody without cite.\n",
-    "utf8",
-  );
-  const fail = await validateWikiTree(wiki, {
-    sources: [{ id: "main", path: src }],
-  });
-  assert.equal(fail.ok, false);
-  assert.ok(fail.errors.some((e) => e.includes("missing Source Citation")));
 
+  // Missing citations is OK under the hard gate.
   await writeFile(
     path.join(wiki, "overview.md"),
-    "---\ntitle: Overview\n---\n\n# Overview\n\nNote [Source](repo:README.md#L1).\n",
+    okfFm("Overview") + "# Overview\n\nBody without cite.\n",
     "utf8",
   );
-  const pass = await validateWikiTree(wiki, {
+  const noCite = await validateWikiTree(wiki, {
     sources: [{ id: "main", path: src }],
   });
-  assert.equal(pass.ok, true, pass.errors.join("; "));
-  assert.equal(pass.citationCount, 1);
+  assert.equal(noCite.ok, true, noCite.errors.join("; "));
+
+  // Unresolvable path under # Citations still passes hard gate (format only).
+  await writeFile(
+    path.join(wiki, "overview.md"),
+    okfFm("Overview") +
+      "# Overview\n\nBody.\n\n# Citations\n\n- [missing](repo:nope.ts#L1)\n",
+    "utf8",
+  );
+  const unresolvable = await validateWikiTree(wiki, {
+    sources: [{ id: "main", path: src }],
+  });
+  assert.equal(unresolvable.ok, true, unresolvable.errors.join("; "));
+  assert.equal(unresolvable.citationCount, 1);
+
+  // Inline body placement still fails.
+  await writeFile(
+    path.join(wiki, "overview.md"),
+    okfFm("Overview") +
+      "# Overview\n\nNote [Source](repo:README.md#L1).\n",
+    "utf8",
+  );
+  const inline = await validateWikiTree(wiki, {
+    sources: [{ id: "main", path: src }],
+  });
+  assert.equal(inline.ok, false);
+  assert.ok(inline.errors.some((e) => /Citations|placement|inline/i.test(e)));
 });

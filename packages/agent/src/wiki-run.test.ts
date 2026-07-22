@@ -3,7 +3,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -11,6 +11,11 @@ import test from "node:test";
 import type { WorkspaceConfig } from "@okf-wiki/contract";
 import { resetMastraForTests } from "./mastra-instance.js";
 import { startWikiRun, resumeWikiRun } from "./wiki-run.js";
+
+/** realpath: macOS /var → /private/var so publish assertNoSymlinkComponents accepts roots. */
+async function tempDir(prefix: string): Promise<string> {
+  return realpath(await mkdtemp(path.join(tmpdir(), prefix)));
+}
 
 async function makeWorkspace(root: string): Promise<WorkspaceConfig> {
   const sourcePath = path.join(root, "src-repo");
@@ -58,7 +63,7 @@ test("startWikiRun fixture auto-publishes without planConfirm", async () => {
   process.env.OKF_WIKI_MASTRA_STORAGE = "memory";
   resetMastraForTests();
 
-  const root = await mkdtemp(path.join(tmpdir(), "okf-wiki-run-"));
+  const root = await tempDir("okf-wiki-run-");
   try {
     const workspace = await makeWorkspace(root);
     const runId = randomUUID();
@@ -71,6 +76,21 @@ test("startWikiRun fixture auto-publishes without planConfirm", async () => {
     assert.equal(result.status, "published");
     assert.ok(result.pages && result.pages.length >= 1);
     assert.ok(result.publicationPath);
+    // Published tree should include OKF mechanical artifacts from Run Boundary.
+    const { readFile } = await import("node:fs/promises");
+    const overview = await readFile(
+      path.join(result.publicationPath!, "overview.md"),
+      "utf8",
+    );
+    assert.match(overview, /^type:\s*overview/m);
+    assert.match(overview, /^# Citations/m);
+    const index = await readFile(
+      path.join(result.publicationPath!, "index.md"),
+      "utf8",
+    );
+    assert.match(index, /# Fixture WS/);
+    const log = await readFile(path.join(result.publicationPath!, "log.md"), "utf8");
+    assert.match(log, /# Wiki Update Log/);
   } finally {
     await rm(root, { recursive: true, force: true });
     delete process.env.OKF_WIKI_AGENT_MODE;
@@ -84,7 +104,7 @@ test("startWikiRun suspends for plan when planConfirm", async () => {
   process.env.OKF_WIKI_MASTRA_STORAGE = "memory";
   resetMastraForTests();
 
-  const root = await mkdtemp(path.join(tmpdir(), "okf-wiki-plan-"));
+  const root = await tempDir("okf-wiki-plan-");
   try {
     const workspace = await makeWorkspace(root);
     workspace.planConfirm = true;
@@ -129,7 +149,7 @@ test("startWikiRun hard-stops when product abortSignal fires mid-fixture", async
   process.env.OKF_WIKI_FIXTURE_DELAY_MS = "400";
   resetMastraForTests();
 
-  const root = await mkdtemp(path.join(tmpdir(), "okf-wiki-abort-"));
+  const root = await tempDir("okf-wiki-abort-");
   try {
     const workspace = await makeWorkspace(root);
     const runId = randomUUID();
