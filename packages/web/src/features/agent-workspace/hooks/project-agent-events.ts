@@ -570,6 +570,22 @@ export function applyPiEvent(
   if (kind === "error") {
     const errMessage =
       typeof body.message === "string" ? body.message : "Agent error";
+    // Dedupe: assistant bubble already carries the same provider error.
+    for (let i = prev.length - 1; i >= 0; i -= 1) {
+      const m = prev[i]!;
+      if (m.role === "assistant") {
+        if (
+          m.status === "error" &&
+          (m.errorMessage === errMessage || m.content === errMessage)
+        ) {
+          return prev;
+        }
+        break;
+      }
+      if (m.role === "system" && m.status === "error" && m.content === errMessage) {
+        return prev;
+      }
+    }
     return [
       ...prev,
       {

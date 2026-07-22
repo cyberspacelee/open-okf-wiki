@@ -5,13 +5,10 @@
  * - POST AgentCommand → /command
  * - EventSource ← /events (product injects + Pi AgentSession events)
  *
- * Transcript is projected from SSE only for assistant / tool / product rows.
- * User prompts are optimistic; no invented stub tool trails.
+ * Session bootstrap is a single effect: reset → cold-load history → open SSE.
+ * That avoids history/SSE races that wiped the transcript.
  *
- * Projection rules (see project-agent-events.ts) follow pi-web:
- * - ignore user / toolResult message_* as transcript cards
- * - one assistant bubble per assistant message; tools nest under last assistant
- * - busy status follows agent_start / agent_end (not every message_end)
+ * Command failures use `ok === false` / `status === "failed"` (not string matching).
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -26,7 +23,9 @@ import {
   agentSessionCommand,
   agentSessionEventsUrl,
   getAgentSession,
+  type AgentSessionHistoryMessage,
 } from "../../../api";
+import { isCommandFailed } from "./command-result";
 import {
   applyPiEvent,
   applyProductEvent,
@@ -34,6 +33,8 @@ import {
   type AgentMessage,
   type StreamingRefs,
 } from "./project-agent-events";
+
+export { isCommandFailed } from "./command-result";
 
 export type {
   AgentMessage,
@@ -118,6 +119,31 @@ function eventSequence(event: AgentSseEvent): number | undefined {
   return undefined;
 }
 
+function historyToMessages(
+  rows: AgentSessionHistoryMessage[] | undefined,
+): AgentMessage[] {
+  return (rows ?? []).map((m) => ({
+    id: m.id,
+    role: m.role === "system" ? "system" : m.role,
+    content: m.text,
+    thinking: m.thinking,
+    thinkingStatus: m.thinking ? ("done" as const) : undefined,
+    createdAt: m.createdAt ?? nowIso(),
+    status: m.status === "error" ? "error" : m.status,
+    errorMessage: m.errorMessage,
+    tools: m.tools?.map((t) => ({
+      id: t.id,
+      name: t.name,
+      status:
+        t.status === "running"
+          ? ("running" as const)
+          : t.status === "error"
+            ? ("error" as const)
+            : ("done" as const),
+    })),
+  }));
+}
+
 export function useSessionAgent({
   workspaceId,
   sessionId,
@@ -155,63 +181,6 @@ export function useSessionAgent({
     return agentSessionEventsUrl(workspaceId, sessionId, rootPath);
   }, [workspaceId, sessionId, rootPath]);
 
-  // Cold-load Pi JSONL + product meta before (and after) SSE reconnects.
-  useEffect(() => {
-    if (!sessionId) {
-      setMessages([]);
-      setPendingGate(null);
-      setPhase(null);
-      setLinkedRunId(null);
-      setPlan(null);
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const snap = await getAgentSession(workspaceId, sessionId, rootPath);
-        if (cancelled) return;
-        const restored: AgentMessage[] = (snap.messages ?? []).map((m) => ({
-          id: m.id,
-          role: m.role === "system" ? "system" : m.role,
-          content: m.text,
-          thinking: m.thinking,
-          thinkingStatus: m.thinking ? ("done" as const) : undefined,
-          createdAt: m.createdAt ?? nowIso(),
-          status: m.status === "error" ? "error" : m.status,
-          errorMessage: m.errorMessage,
-          tools: m.tools?.map((t) => ({
-            id: t.id,
-            name: t.name,
-            status:
-              t.status === "running"
-                ? ("running" as const)
-                : t.status === "error"
-                  ? ("error" as const)
-                  : ("done" as const),
-          })),
-        }));
-        setMessages(restored);
-        if (snap.product?.runId) setLinkedRunId(snap.product.runId);
-        if (snap.product?.phase) setPhase(snap.product.phase);
-        if (snap.product?.plan) setPlan(snap.product.plan);
-        if (snap.product?.pendingGate?.gate) {
-          setPendingGate({
-            gate: snap.product.pendingGate.gate,
-            runId: snap.product.runId,
-            plan: snap.product.pendingGate.plan,
-            pages: snap.product.pendingGate.pages,
-          });
-        }
-      } catch {
-        // Empty history is fine for brand-new sessions.
-        if (!cancelled) setMessages([]);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [workspaceId, sessionId, rootPath]);
-
   const handleSseEvent = useCallback((raw: unknown) => {
     if (!isRecord(raw) || typeof raw.source !== "string") return;
     const event = raw as AgentSseEvent;
@@ -234,25 +203,25 @@ export function useSessionAgent({
         setPhase(product.phase);
         if (product.runId) setLinkedRunId(product.runId);
         if (isTerminalOrWaitingPhase(product.phase)) {
-          setStatus("idle");
+          setStatus((s) => (s === "error" ? s : "idle"));
         } else {
           setStatus("streaming");
         }
-        // Clear HITL chrome when the shell leaves a waiting phase.
-        // (revise keeps awaiting_plan — gate inject will refresh pendingGate.)
         if (
           product.phase !== "awaiting_plan" &&
           product.phase !== "awaiting_publish"
         ) {
           setPendingGate(null);
         }
+        if (product.phase === "failed" && product.message) {
+          setError(product.message);
+          setStatus("error");
+        }
       } else if (product.kind === "run_link") {
         setLinkedRunId(product.runId);
       } else if (product.kind === "gate") {
         if (product.runId) setLinkedRunId(product.runId);
         if (product.plan) setPlan(product.plan);
-        // resume_gate echoes also emit gate — open questions set pending;
-        // revise echoes refresh plan while keeping the gate open.
         const isResumeEcho =
           typeof product.question === "string" &&
           product.question.startsWith("resume_gate ");
@@ -264,7 +233,7 @@ export function useSessionAgent({
             plan: product.plan,
             pages: product.pages,
           });
-          setStatus("idle");
+          setStatus((s) => (s === "error" ? s : "idle"));
         } else if (isResumeEcho && product.gate) {
           setPendingGate((prev) => {
             if (!prev || prev.gate !== product.gate) return prev;
@@ -282,8 +251,6 @@ export function useSessionAgent({
 
     if (event.source === "pi") {
       const kind = event.kind;
-      // Busy chrome follows agent lifecycle, NOT every message_end
-      // (Pi emits message_end for user + toolResult mid-turn).
       if (kind === "agent_start" || kind === "prompt" || kind === "steer") {
         setStatus("streaming");
       } else if (kind === "agent_end" || kind === "agent_settled") {
@@ -297,7 +264,6 @@ export function useSessionAgent({
         setError(message);
         setStatus("error");
       } else if (kind === "message_end") {
-        // Also catch in-message provider errors (stopReason error) for banner.
         const payload = event.payload;
         const msg =
           isRecord(payload) && isRecord(payload.message)
@@ -324,9 +290,8 @@ export function useSessionAgent({
     }
   }, []);
 
-  // Open / reconnect EventSource when session (or URL) changes.
+  // Single bootstrap: reset → cold-load history → open SSE (no dual wipe race).
   useEffect(() => {
-    setMessages([]);
     setStatus("idle");
     setError(null);
     setInput("");
@@ -352,11 +317,50 @@ export function useSessionAgent({
       reconnectTimerRef.current = null;
     }
 
-    if (!eventsUrl || !sessionId || typeof EventSource === "undefined") {
+    if (!sessionId) {
+      setMessages([]);
       return;
     }
 
+    // Keep previous transcript only until history arrives — clear for new session.
+    setMessages([]);
+
+    let cancelled = false;
     const gen = ++streamGenRef.current;
+
+    void (async () => {
+      try {
+        const snap = await getAgentSession(workspaceId, sessionId, rootPath);
+        if (cancelled || streamGenRef.current !== gen) return;
+        setMessages(historyToMessages(snap.messages));
+        if (snap.product?.runId) setLinkedRunId(snap.product.runId);
+        if (snap.product?.phase) setPhase(snap.product.phase);
+        if (snap.product?.plan) setPlan(snap.product.plan);
+        if (snap.product?.pendingGate?.gate) {
+          setPendingGate({
+            gate: snap.product.pendingGate.gate,
+            runId: snap.product.runId,
+            plan: snap.product.pendingGate.plan,
+            pages: snap.product.pendingGate.pages,
+          });
+        }
+      } catch (err) {
+        if (cancelled || streamGenRef.current !== gen) return;
+        // Do not pretend this is an empty brand-new session.
+        const message =
+          err instanceof Error ? err.message : "Failed to load session history";
+        setError(message);
+        // Leave messages empty only when we truly have nothing.
+        setMessages([]);
+      }
+    })();
+
+    if (!eventsUrl || typeof EventSource === "undefined") {
+      return () => {
+        cancelled = true;
+        streamGenRef.current += 1;
+      };
+    }
 
     const open = (): void => {
       if (streamGenRef.current !== gen) return;
@@ -375,8 +379,6 @@ export function useSessionAgent({
       };
 
       es.onerror = () => {
-        // Browser will retry automatically in some cases; we force a clean
-        // reconnect with a short backoff so late subscribers get the ring buffer.
         es.close();
         if (esRef.current === es) {
           esRef.current = null;
@@ -395,6 +397,7 @@ export function useSessionAgent({
     open();
 
     return () => {
+      cancelled = true;
       streamGenRef.current += 1;
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
@@ -405,7 +408,7 @@ export function useSessionAgent({
         esRef.current = null;
       }
     };
-  }, [eventsUrl, sessionId, handleSseEvent]);
+  }, [eventsUrl, sessionId, workspaceId, rootPath, handleSseEvent]);
 
   const runCommand = useCallback(
     async (command: AgentCommand): Promise<AgentCommandResponse | null> => {
@@ -422,6 +425,16 @@ export function useSessionAgent({
     [workspaceId, sessionId, rootPath],
   );
 
+  const applyCommandFailure = useCallback(
+    (res: AgentCommandResponse | null, fallback: string): boolean => {
+      if (!isCommandFailed(res)) return false;
+      setError(res?.message?.trim() || fallback);
+      setStatus("error");
+      return true;
+    },
+    [],
+  );
+
   const send = useCallback(
     async (text?: string) => {
       const body = (text ?? input).trim();
@@ -433,7 +446,6 @@ export function useSessionAgent({
       setStatus("sending");
       setInput("");
 
-      // Optimistic user row only — assistant/tool rows come from SSE.
       const userMsg: AgentMessage = {
         id: makeId("user"),
         role: "user",
@@ -445,17 +457,14 @@ export function useSessionAgent({
       try {
         setStatus("streaming");
         const res = await runCommand({ type: "prompt", text: body });
-        // Provider may finish the HTTP command with ok:false while SSE already
-        // projected an error bubble — surface banner either way.
-        if (res && (res.ok === false || res.status === "failed")) {
-          const msg =
-            res.message?.trim() ||
-            "Agent prompt failed (see transcript for details)";
-          setError(msg);
-          setStatus("error");
+        if (
+          applyCommandFailure(
+            res,
+            "Agent prompt failed (see transcript for details)",
+          )
+        ) {
           return;
         }
-        // Stay streaming until agent_end / terminal product phase when ok.
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         setError(message);
@@ -464,7 +473,7 @@ export function useSessionAgent({
         sendInFlight.current = false;
       }
     },
-    [input, sessionId, runCommand],
+    [input, sessionId, runCommand, applyCommandFailure],
   );
 
   const startWikiRun = useCallback(
@@ -483,11 +492,13 @@ export function useSessionAgent({
           type: "start_wiki_run",
           ...(profileId ? { modelProfileId: profileId } : {}),
         });
-        // Product run_phase / gate / run_link events populate the transcript.
-        // If the command was ignored (busy), surface that immediately.
-        if (res?.message?.includes("ignored")) {
-          setError(res.message);
-          setStatus("idle");
+        if (
+          applyCommandFailure(
+            res,
+            "Failed to start wiki run (see transcript for details)",
+          )
+        ) {
+          return;
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -497,7 +508,7 @@ export function useSessionAgent({
         sendInFlight.current = false;
       }
     },
-    [sessionId, runCommand],
+    [sessionId, runCommand, applyCommandFailure],
   );
 
   const resumeGate = useCallback(
@@ -529,14 +540,13 @@ export function useSessionAgent({
           ...(runId ? { runId } : {}),
         });
         if (
-          res?.message?.includes("rejected") ||
-          res?.message?.includes("ignored")
+          applyCommandFailure(
+            res,
+            "Gate resume failed (see transcript for details)",
+          )
         ) {
-          setError(res.message);
-          setStatus("idle");
           return;
         }
-        // Optimistic clear for terminal gate decisions; revise stays open.
         if (input.action === "approve" || input.action === "deny") {
           setPendingGate(null);
         }
@@ -548,7 +558,7 @@ export function useSessionAgent({
         setGateBusy(false);
       }
     },
-    [sessionId, gateBusy, pendingGate, runCommand],
+    [sessionId, gateBusy, pendingGate, runCommand, applyCommandFailure],
   );
 
   const abort = useCallback(async () => {

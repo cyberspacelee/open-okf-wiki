@@ -179,6 +179,11 @@ export {
   type PiSessionHistory,
   type ProjectedHistoryMessage,
 } from "./pi/session-history.js";
+export {
+  lastAssistantOutcome,
+  resolveAssistantSummary,
+  type AssistantOutcome,
+} from "./pi/assistant-outcome.js";
 
 /** WikiRunShell — pure product phase machine (no Mastra). */
 export {

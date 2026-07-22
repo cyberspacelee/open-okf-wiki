@@ -624,7 +624,8 @@ export async function testProviderConnection(input: {
         ok: true,
         apiShape: input.apiShape,
         status: response.status,
-        message: `ok (HTTP ${response.status})`,
+        // Reachability only — full agent turns (tools + system) may still fail.
+        message: `reachable (HTTP ${response.status}) — probe is not a full agent turn`,
         latencyMs,
       };
     }

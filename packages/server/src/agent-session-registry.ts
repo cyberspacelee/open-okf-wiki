@@ -842,10 +842,10 @@ async function handleSteer(
     const message = err instanceof Error ? err.message : String(err);
     emitPi(entry.workspaceId, entry.sessionId, "error", { message });
     return {
-      ok: true,
+      ok: false,
       sessionId: entry.sessionId,
       command: "steer",
-      status: "accepted",
+      status: "failed",
       message: `steer failed: ${message}`,
     };
   }
@@ -880,10 +880,10 @@ async function handleSteer(
     const message = err instanceof Error ? err.message : String(err);
     emitPi(entry.workspaceId, entry.sessionId, "error", { message });
     return {
-      ok: true,
+      ok: false,
       sessionId: entry.sessionId,
       command: "steer",
-      status: "accepted",
+      status: "failed",
       message: `steer failed: ${message}`,
     };
   }
@@ -979,10 +979,10 @@ async function handleStartWikiRun(
 ): Promise<AgentCommandResponse> {
   if (entry.busy) {
     return {
-      ok: true,
+      ok: false,
       sessionId: entry.sessionId,
       command: "start_wiki_run",
-      status: "accepted",
+      status: "failed",
       message: "session busy; start_wiki_run ignored",
       runId: entry.runId,
     };
@@ -1022,10 +1022,10 @@ async function handleStartWikiRun(
     emitPi(entry.workspaceId, entry.sessionId, "error", { message });
     emitPhase(entry, "failed", message, "failed");
     return {
-      ok: true,
+      ok: false,
       sessionId: entry.sessionId,
       command: "start_wiki_run",
-      status: "accepted",
+      status: "failed",
       message: `freeze failed: ${message}`,
     };
   }
@@ -1088,10 +1088,10 @@ async function handleStartWikiRun(
       emitPi(entry.workspaceId, entry.sessionId, "error", { message });
       entry.abortController = undefined;
       return {
-        ok: true,
+        ok: false,
         sessionId: entry.sessionId,
         command: "start_wiki_run",
-        status: "accepted",
+        status: "failed",
         message: `start failed: ${message}`,
         runId: frozen.runId,
       };
@@ -1137,10 +1137,10 @@ async function handleResumeGate(
 ): Promise<AgentCommandResponse> {
   if (!entry.shell && !entry.runId && !command.runId) {
     return {
-      ok: true,
+      ok: false,
       sessionId: entry.sessionId,
       command: "resume_gate",
-      status: "accepted",
+      status: "failed",
       message: "no active shell — resume ignored",
       runId: command.runId ?? entry.runId,
     };
@@ -1151,10 +1151,10 @@ async function handleResumeGate(
   }
   if (!entry.runId) {
     return {
-      ok: true,
+      ok: false,
       sessionId: entry.sessionId,
       command: "resume_gate",
-      status: "accepted",
+      status: "failed",
       message: "no runId — resume ignored",
     };
   }
@@ -1207,10 +1207,10 @@ async function handleResumeGate(
       emitRunLink(entry, "failed");
     }
     return {
-      ok: true,
+      ok: false,
       sessionId: entry.sessionId,
       command: "resume_gate",
-      status: "accepted",
+      status: "failed",
       message: `resume_gate failed: ${message}`,
       runId: entry.runId,
     };

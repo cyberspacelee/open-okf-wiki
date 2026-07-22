@@ -4,7 +4,6 @@
  * Projects Pi text, thinking, tools, and provider errors (never silent empty).
  */
 
-import type { ReactNode } from "react";
 import {
   BotIcon,
   ChevronRightIcon,
@@ -19,11 +18,16 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
-import { Bubble, BubbleContent } from "@/components/ui/bubble";
+import {
+  Bubble,
+  BubbleContent,
+  BubbleGroup,
+} from "@/components/ui/bubble";
 import {
   Empty,
   EmptyDescription,
   EmptyHeader,
+  EmptyMedia,
   EmptyTitle,
 } from "@/components/ui/empty";
 import {
@@ -31,6 +35,7 @@ import {
   MessageContent,
   MessageHeader,
 } from "@/components/ui/message";
+import { Marker, MarkerContent } from "@/components/ui/marker";
 import {
   MessageScroller,
   MessageScrollerButton,
@@ -207,6 +212,20 @@ function MessageCard({
     Boolean(message.tools?.length) ||
     isError;
 
+  if (isSystem && !product && message.status === "aborted") {
+    return (
+      <Marker
+        data-testid="agent-message"
+        data-role="system"
+        data-status="aborted"
+        variant="separator"
+        role="status"
+      >
+        <MarkerContent>{message.content}</MarkerContent>
+      </Marker>
+    );
+  }
+
   if (isSystem || isTool) {
     return (
       <div
@@ -222,9 +241,11 @@ function MessageCard({
             product
               ? "border-border/70 bg-muted/30"
               : "border-dashed border-border bg-muted/40 text-muted-foreground",
-            product?.kind === "gate" &&
-              "border-primary/30 bg-primary/5",
+            product?.kind === "gate" && "border-primary/30 bg-primary/5",
             isError && "border-destructive/40 bg-destructive/5 text-destructive",
+            product?.kind === "run_phase" &&
+              product.phase === "failed" &&
+              "border-destructive/40 bg-destructive/5",
           )}
         >
           <div className="mb-1 flex flex-wrap items-center gap-2 text-[10px] font-medium tracking-wide uppercase opacity-70">
@@ -315,7 +336,7 @@ function MessageCard({
           ) : null}
         </MessageHeader>
 
-        <BubbleGroupInner>
+        <BubbleGroup>
           {message.thinking ? (
             <ThinkingBlock
               thinking={message.thinking}
@@ -369,15 +390,10 @@ function MessageCard({
               </BubbleContent>
             </Bubble>
           ) : null}
-        </BubbleGroupInner>
+        </BubbleGroup>
       </MessageContent>
     </Message>
   );
-}
-
-/** Local stack for thinking + body bubbles. */
-function BubbleGroupInner({ children }: { children: ReactNode }) {
-  return <div className="flex min-w-0 flex-col gap-2">{children}</div>;
 }
 
 export function Transcript({
@@ -415,6 +431,9 @@ export function Transcript({
       >
         <Empty className="border-none">
           <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <BotIcon />
+            </EmptyMedia>
             <EmptyTitle>{t.agentWorkspace.emptyTitle}</EmptyTitle>
             <EmptyDescription>
               {t.agentWorkspace.emptyDescription}

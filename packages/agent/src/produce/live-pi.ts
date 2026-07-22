@@ -10,6 +10,7 @@ import path from "node:path";
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createWikiSession } from "../pi/create-wiki-session.js";
+import { lastAssistantOutcome } from "../pi/assistant-outcome.js";
 import {
   materializeRunWorkdir,
   runWorkdirPromptPaths,
@@ -269,10 +270,25 @@ export async function produceWithPi(
       input.prompt ?? defaultLivePrompt(input.role, layout);
     await handle.session.prompt(prompt);
     throwIfAborted(input.abortSignal);
+
+    // Pi may finish without throwing when the provider returns stopReason error.
+    const outcome = lastAssistantOutcome(handle.session.messages);
+    if (outcome?.isError) {
+      throw new Error(
+        outcome.errorMessage ||
+          `Pi live produce failed (stopReason=${outcome.stopReason ?? "error"})`,
+      );
+    }
+
     const pages =
       input.role === "root_write"
         ? await listWikiMarkdown(layout.wikiDir)
         : [];
+    if (input.role === "root_write" && pages.length === 0) {
+      throw new Error(
+        "Pi live produce finished without writing any wiki markdown pages",
+      );
+    }
     return {
       mode: "live",
       role: input.role,

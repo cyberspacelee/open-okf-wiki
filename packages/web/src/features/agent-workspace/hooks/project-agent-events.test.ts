@@ -337,6 +337,12 @@ describe("applyPiEvent — single turn with tools", () => {
           },
         },
       },
+      {
+        kind: "error",
+        payload: {
+          message: "OpenAI API error (403): 403 Your request was blocked.",
+        },
+      },
       { kind: "agent_end", payload: { type: "agent_end", messages: [] } },
     ]);
 
@@ -344,6 +350,12 @@ describe("applyPiEvent — single turn with tools", () => {
     assert.equal(messages[0]!.status, "error");
     assert.match(messages[0]!.content, /403/);
     assert.match(messages[0]!.errorMessage ?? "", /blocked/);
+    // Same error must not also spawn a system card.
+    assert.equal(
+      messages.filter((m) => m.role === "system" && m.status === "error")
+        .length,
+      0,
+    );
   });
 
   it("streams thinking_delta into assistant.thinking", () => {

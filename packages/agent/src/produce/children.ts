@@ -1,6 +1,9 @@
 /**
  * In-process Pi child sessions for Domain / Leaf / Reviewer (ADR 0030).
  * Prefer SDK embedding over spawning the `pi` CLI.
+ *
+ * Provider failures often complete session.prompt() without throwing
+ * (stopReason "error"). We fail closed instead of inventing empty success.
  */
 
 import type { Model } from "@earendil-works/pi-ai/compat";
@@ -9,6 +12,7 @@ import {
   createWikiSession,
   type WikiSessionHandle,
 } from "../pi/create-wiki-session.js";
+import { resolveAssistantSummary } from "../pi/assistant-outcome.js";
 import type { WikiAgentRole } from "../pi/tool-policy.js";
 import type { SourceIgnoreInput } from "../pi/tool-operations.js";
 
@@ -83,11 +87,11 @@ export async function runChildSession(
 
     let text = "";
     const unsub = handle.session.subscribe((event) => {
-      if (
-        event.type === "message_update" &&
-        event.assistantMessageEvent?.type === "text_delta"
-      ) {
-        text += event.assistantMessageEvent.delta ?? "";
+      if (event.type !== "message_update") return;
+      const ame = event.assistantMessageEvent;
+      if (!ame) return;
+      if (ame.type === "text_delta" && typeof ame.delta === "string") {
+        text += ame.delta;
       }
     });
 
@@ -97,10 +101,21 @@ export async function runChildSession(
       unsub();
     }
 
+    const resolved = resolveAssistantSummary({
+      streamedText: text,
+      messages: handle.session.messages,
+      roleLabel: input.role,
+    });
+    if (resolved.isError) {
+      throw new Error(
+        `Child session (${input.role}) failed: ${resolved.errorMessage ?? resolved.summary}`,
+      );
+    }
+
     return {
       role: input.role,
       mode: "live",
-      summary: text.trim() || `(${input.role} completed with empty summary)`,
+      summary: resolved.summary,
     };
   } finally {
     handle?.dispose();
