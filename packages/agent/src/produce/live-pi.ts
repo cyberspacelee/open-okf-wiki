@@ -39,6 +39,12 @@ export type ProduceWithPiInput = {
   /** Title used in fixture page frontmatter. */
   title?: string;
   abortSignal?: AbortSignal;
+  /** Provider hard context window (model profile maxContextTokens). */
+  maxContextTokens?: number;
+  /** Workspace operational context target for compaction. */
+  contextTargetTokens?: number;
+  /** Product skill dirs for Pi (producer / workspace / home). */
+  additionalSkillPaths?: readonly string[];
 };
 
 export type ProduceWithPiResult = {
@@ -78,7 +84,10 @@ export function shouldUsePiFixtureMode(
   return env.OKF_WIKI_AGENT_MODE === "fixture";
 }
 
-/** True when env hints at a configured chat-completions credential. */
+/**
+ * True when env hints at an OpenAI-compatible credential.
+ * Prefer `hasProviderCredentials` / Settings model profiles for full catalog checks.
+ */
 export function hasModelCredentials(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
@@ -216,8 +225,10 @@ export async function produceWithPi(
 
   if (!input.model) {
     throw new Error(
-      "Live produce requires a model. Configure OPENAI_API_KEY (and optional OPENAI_BASE_URL), " +
-        "or pass an explicit model. For no-LLM pipeline smoke only, pass fixture: true or set " +
+      "Live produce requires a model. Configure a model profile in Settings " +
+        "(base URL + API key; OpenAI-compatible only), set OPENAI_API_KEY " +
+        "(and optional OPENAI_BASE_URL), or pass an explicit model/modelRuntime. " +
+        "For no-LLM pipeline smoke only, pass fixture: true or set " +
         "OKF_WIKI_AGENT_MODE=fixture (not the default).",
     );
   }
@@ -228,6 +239,8 @@ export async function produceWithPi(
       "You are the Open OKF Wiki producer agent.",
       "Use only the provided tools. Never use bash.",
       "All paths are relative to the run workdir cwd.",
+      "Read skill/SKILL.md (Producer Skill) before writing wiki pages and follow its method.",
+      "Prefer product skills listed in your skill catalog when relevant.",
       input.role === "root_write"
         ? "You may write and edit under wiki/ and analysis/."
         : "You are read-only; do not attempt writes.",
@@ -239,6 +252,9 @@ export async function produceWithPi(
     model: input.model,
     modelRuntime: input.modelRuntime,
     systemPrompt,
+    maxContextTokens: input.maxContextTokens,
+    contextTargetTokens: input.contextTargetTokens,
+    additionalSkillPaths: input.additionalSkillPaths,
   });
 
   try {

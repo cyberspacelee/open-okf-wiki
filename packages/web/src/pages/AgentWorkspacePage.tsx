@@ -7,9 +7,11 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   createAgentSession,
+  getProvider,
   getWorkspace,
   listAgentSessions,
   listRuns,
+  type ModelProfilePublic,
   type PiSessionSummary,
   type StoredRunRecord,
   type WorkspaceConfig,
@@ -37,6 +39,11 @@ export function AgentWorkspacePage() {
   const [bootError, setBootError] = useState<unknown>(null);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [models, setModels] = useState<ModelProfilePublic[]>([]);
+  const [defaultModelProfileId, setDefaultModelProfileId] = useState<
+    string | undefined
+  >();
+  const [wikiModelProfileId, setWikiModelProfileId] = useState("");
 
   const rootPath = workspace?.rootPath ?? rootPathHint;
 
@@ -70,10 +77,22 @@ export function AgentWorkspacePage() {
       setWorkspace(ws);
       const root = ws.rootPath ?? rootPathHint;
 
-      const [sessRes, runsRes] = await Promise.all([
+      const [sessRes, runsRes, providerRes] = await Promise.all([
         listAgentSessions(id, root),
         listRuns(id, root).catch(() => ({ runs: [] as StoredRunRecord[] })),
+        getProvider().catch(() => null),
       ]);
+
+      const catalog = providerRes?.provider.models ?? [];
+      setModels(catalog);
+      setDefaultModelProfileId(providerRes?.provider.defaultModelProfileId);
+      // Prefer workspace selection, then catalog default, then first model.
+      const initialProfile =
+        ws.model?.profileId ||
+        providerRes?.provider.defaultModelProfileId ||
+        catalog[0]?.id ||
+        "";
+      setWikiModelProfileId(initialProfile);
 
       let list = sessRes.sessions ?? [];
       let sessionId =
@@ -209,12 +228,22 @@ export function AgentWorkspacePage() {
             input={agent.input}
             onInputChange={agent.setInput}
             onSend={() => void agent.send()}
-            onStartWikiRun={() => void agent.startWikiRun()}
+            onStartWikiRun={() =>
+              void agent.startWikiRun({
+                modelProfileId: wikiModelProfileId || undefined,
+              })
+            }
             onAbort={() => void agent.abort()}
             agentStatus={agent.status}
             agentError={agent.error}
             onDismissAgentError={agent.clearError}
             recentRuns={recentRuns}
+            models={models}
+            wikiModelProfileId={wikiModelProfileId}
+            onWikiModelProfileIdChange={setWikiModelProfileId}
+            defaultModelProfileId={
+              workspace.model?.profileId ?? defaultModelProfileId
+            }
           />
         )}
       </div>

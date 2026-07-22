@@ -33,6 +33,7 @@ import type {
   AgentStatus,
 } from "./hooks/useSessionAgent";
 import type {
+  ModelProfilePublic,
   PiSessionSummary,
   StoredRunRecord,
   WikiRunPlan,
@@ -62,6 +63,11 @@ export type AgentWorkspaceShellProps = {
   phase?: string | null;
   recentRuns?: StoredRunRecord[];
   className?: string;
+  /** Settings model catalog for wiki-run picker. */
+  models?: ModelProfilePublic[];
+  wikiModelProfileId?: string;
+  onWikiModelProfileIdChange?: (profileId: string) => void;
+  defaultModelProfileId?: string;
 };
 
 export function AgentWorkspaceShell({
@@ -87,6 +93,10 @@ export function AgentWorkspaceShell({
   phase = null,
   recentRuns = [],
   className,
+  models = [],
+  wikiModelProfileId = "",
+  onWikiModelProfileIdChange,
+  defaultModelProfileId,
 }: AgentWorkspaceShellProps) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
@@ -203,6 +213,10 @@ export function AgentWorkspaceShell({
             onAbort={onAbort}
             status={agentStatus}
             disabled={!activeSessionId}
+            models={models}
+            wikiModelProfileId={wikiModelProfileId}
+            onWikiModelProfileIdChange={onWikiModelProfileIdChange}
+            defaultModelProfileId={defaultModelProfileId}
           />
         </main>
 

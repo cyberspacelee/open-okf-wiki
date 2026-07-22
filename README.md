@@ -69,7 +69,7 @@ pnpm dev
 # → UI   http://127.0.0.1:5173  (proxies /api → server)
 ```
 
-**Default is live** produce (real Pi agent + model). Configure `OPENAI_API_KEY` (and optional `OPENAI_BASE_URL`). Missing credentials fail with a clear error.
+**Default is live** produce (real Pi agent + model). Configure one or more model profiles in **Settings** (base URL, API key, max context; OpenAI-compatible gateways only), or set `OPENAI_API_KEY` (and optional `OPENAI_BASE_URL`) as env fallback. Agent Workspace can pick a model per wiki run; workspace `limits.contextTargetTokens` drives Pi compaction (default 85% of profile max context). Producer / home / workspace skills load into the Pi session. Missing credentials fail with a clear error.
 
 For **no-LLM pipeline smoke** only (tests, e2e, shell/path/publish checks), set `OKF_WIKI_AGENT_MODE=fixture` or CLI `--fixture`. That is not the normal operator path.
 

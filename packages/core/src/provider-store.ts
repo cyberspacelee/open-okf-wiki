@@ -69,6 +69,7 @@ export function migrateProviderConfigV1(raw: unknown): ProviderConfig | null {
   const profile: ModelProfile = ModelProfileSchema.parse({
     id: "default",
     name: "Default",
+    providerKind: "openai-compatible",
     modelId,
     baseUrl: v1.baseUrl?.trim() ?? "",
     apiKey: v1.apiKey ?? "",
@@ -160,6 +161,7 @@ export function toModelProfilePublic(profile: ModelProfile): ModelProfilePublic 
   return {
     id: profile.id,
     name: profile.name,
+    providerKind: profile.providerKind ?? "openai-compatible",
     modelId: profile.modelId,
     baseUrl: profile.baseUrl?.trim() ?? "",
     apiKeySet: apiKey.length > 0,
@@ -222,10 +224,16 @@ export async function createModelProfile(
     modelId: input.modelId.trim(),
     baseUrl: (input.baseUrl ?? "").trim(),
     apiShape: input.apiShape ?? "completions",
+    providerKind: input.providerKind ?? "openai-compatible",
     apiKey: typeof input.apiKey === "string" ? input.apiKey : "",
   };
   if (!write.name || !write.modelId) {
     throw new Error("name and modelId are required");
+  }
+  if (write.providerKind !== "openai-compatible") {
+    throw new Error(
+      `Unsupported provider kind "${write.providerKind}". Currently only openai-compatible is supported.`,
+    );
   }
 
   const current = await loadProviderConfig(providerPath);
@@ -238,6 +246,7 @@ export async function createModelProfile(
   const profile = ModelProfileSchema.parse({
     id,
     name: write.name,
+    providerKind: write.providerKind,
     modelId: write.modelId,
     baseUrl: write.baseUrl,
     apiKey: write.apiKey,
@@ -288,9 +297,17 @@ export async function updateModelProfile(
       input.maxContextTokens === null ? undefined : input.maxContextTokens;
   }
 
+  const providerKind = input.providerKind ?? existing.providerKind ?? "openai-compatible";
+  if (providerKind !== "openai-compatible") {
+    throw new Error(
+      `Unsupported provider kind "${providerKind}". Currently only openai-compatible is supported.`,
+    );
+  }
+
   const profile = ModelProfileSchema.parse({
     id: existing.id,
     name: input.name.trim(),
+    providerKind,
     modelId: input.modelId.trim(),
     baseUrl: (input.baseUrl ?? "").trim(),
     apiKey,
@@ -367,6 +384,11 @@ export type ResolvedProviderRuntime = {
   baseUrl: string | undefined;
   apiKey: string;
   apiShape: ProviderApiShape;
+  /**
+   * Product provider kind (wire family).
+   * Currently always openai-compatible when a profile is selected.
+   */
+  providerKind: "openai-compatible";
   /** Served model id (may still include provider/ prefix). */
   modelId: string | undefined;
   profileId: string | undefined;
@@ -436,6 +458,7 @@ export function resolveProviderRuntime(
     baseUrl,
     apiKey: apiKey || "local",
     apiShape: profile?.apiShape ?? "completions",
+    providerKind: profile?.providerKind ?? "openai-compatible",
     modelId: profile?.modelId ?? options.modelId,
     profileId: profile?.id,
     profileName: profile?.name,

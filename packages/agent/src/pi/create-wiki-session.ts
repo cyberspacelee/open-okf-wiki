@@ -5,6 +5,10 @@
  * Registers Operations-wrapped Pi tools via `customTools` so write scope and
  * Source Ignores are enforced at the FS layer (see tool-operations.ts).
  * Model is optional so offline/fixture tests work without API keys.
+ *
+ * Product Settings integration:
+ * - compaction from maxContextTokens + contextTargetTokens
+ * - skills via additionalSkillPaths (producer / workspace / home)
  */
 
 import { mkdir } from "node:fs/promises";
@@ -31,6 +35,11 @@ import {
   type SourceIgnoreInput,
 } from "./tool-operations.js";
 import { piSessionsDir } from "./session-paths.js";
+import {
+  compactionSettingsFromBudget,
+  resolveContextBudget,
+  type ContextBudget,
+} from "./context-budget.js";
 
 export type CreateWikiSessionInput = {
   role: WikiAgentRole;
@@ -70,6 +79,20 @@ export type CreateWikiSessionInput = {
    * Set false to use stock Pi built-ins (allowlist only).
    */
   scopedTools?: boolean;
+  /**
+   * Provider hard context window (tokens). Used with contextTargetTokens
+   * to configure Pi auto-compaction. Falls back to model.contextWindow.
+   */
+  maxContextTokens?: number;
+  /**
+   * Workspace operational context budget. When unset, 85% of maxContextTokens.
+   */
+  contextTargetTokens?: number;
+  /**
+   * Product skill directories for Pi (producer / workspace / home).
+   * Injected as additionalSkillPaths with noSkills:true (skip Pi defaults).
+   */
+  additionalSkillPaths?: readonly string[];
 };
 
 export type WikiSessionHandle = {
@@ -80,6 +103,8 @@ export type WikiSessionHandle = {
   runWorkDir: string;
   /** True when Operations-scoped customTools were registered. */
   scopedTools: boolean;
+  /** Resolved context budget applied to compaction (if any). */
+  contextBudget?: ContextBudget;
   dispose: () => void;
 };
 
@@ -140,7 +165,29 @@ export async function createWikiSession(
       sessionManager = SessionManager.inMemory(runWorkDir);
     }
   }
-  const settingsManager = SettingsManager.inMemory();
+
+  const maxFromModel =
+    typeof input.model?.contextWindow === "number" && input.model.contextWindow > 0
+      ? input.model.contextWindow
+      : undefined;
+  const budget = resolveContextBudget({
+    maxContextTokens: input.maxContextTokens ?? maxFromModel,
+    contextTargetTokens: input.contextTargetTokens,
+  });
+
+  // Align model.contextWindow with product max when we own a mutable copy.
+  // Pi Model is typically a plain object from registerProvider.
+  if (input.model && input.model.contextWindow !== budget.contextWindow) {
+    (input.model as { contextWindow: number }).contextWindow = budget.contextWindow;
+  }
+
+  const settingsManager = SettingsManager.inMemory({
+    compaction: compactionSettingsFromBudget(budget),
+  });
+
+  const skillPaths = (input.additionalSkillPaths ?? [])
+    .map((p) => p.trim())
+    .filter(Boolean);
 
   const resourceLoader = new DefaultResourceLoader({
     cwd: runWorkDir,
@@ -148,7 +195,9 @@ export async function createWikiSession(
     settingsManager,
     systemPrompt: input.systemPrompt,
     noExtensions: true,
+    // Skip Pi built-in skills; inject product skill paths only.
     noSkills: true,
+    additionalSkillPaths: skillPaths.length > 0 ? skillPaths : undefined,
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: true,
@@ -182,6 +231,7 @@ export async function createWikiSession(
     tools,
     runWorkDir,
     scopedTools: useScoped,
+    contextBudget: budget,
     dispose: () => {
       session.dispose();
     },

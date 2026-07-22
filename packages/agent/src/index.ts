@@ -158,6 +158,34 @@ export {
   type WikiSessionHandle,
 } from "./pi/create-wiki-session.js";
 export {
+  resolvePiModelFromProvider,
+  resolveWorkspacePiModel,
+  piApiFromShape,
+  servedModelIdFromProfile,
+  okfProviderId,
+  hasLiveProviderCredentials,
+  OKF_PROVIDER_KINDS,
+  type OkfProviderKind,
+  type ResolvePiModelInput,
+  type ResolvedPiModel,
+} from "./pi/provider-model.js";
+export {
+  resolveContextBudget,
+  compactionSettingsFromBudget,
+  type ContextBudget,
+  type ContextBudgetInput,
+} from "./pi/context-budget.js";
+export {
+  resolveWikiSkillPaths,
+  type ResolveWikiSkillPathsInput,
+} from "./pi/skill-paths.js";
+export {
+  modelRefForRole,
+  resolveModelSelection,
+  type WikiModelRole,
+  type ResolvedModelRef,
+} from "./pi/role-model.js";
+export {
   piSessionsDir,
   piRunsDir,
   piSessionPath,

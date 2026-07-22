@@ -69,8 +69,11 @@ export type UseSessionAgentResult = {
   input: string;
   setInput: (value: string) => void;
   send: (text?: string) => Promise<void>;
-  /** Kick a wiki-run style turn via start_wiki_run command. */
-  startWikiRun: () => Promise<void>;
+  /**
+   * Kick a wiki-run style turn via start_wiki_run command.
+   * Optional modelProfileId overrides the workspace default for this run.
+   */
+  startWikiRun: (options?: { modelProfileId?: string }) => Promise<void>;
   abort: () => Promise<void>;
   clearError: () => void;
   /** Absolute EventSource URL for Pi + product SSE. */
@@ -602,26 +605,33 @@ export function useSessionAgent({
     [input, sessionId, runCommand],
   );
 
-  const startWikiRun = useCallback(async () => {
-    if (!sessionId || sendInFlight.current) {
-      return;
-    }
-    sendInFlight.current = true;
-    setError(null);
-    setStatus("sending");
+  const startWikiRun = useCallback(
+    async (options?: { modelProfileId?: string }) => {
+      if (!sessionId || sendInFlight.current) {
+        return;
+      }
+      sendInFlight.current = true;
+      setError(null);
+      setStatus("sending");
 
-    try {
-      setStatus("streaming");
-      await runCommand({ type: "start_wiki_run" });
-      // Product run_phase / gate / run_link events populate the transcript.
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setError(message);
-      setStatus("error");
-    } finally {
-      sendInFlight.current = false;
-    }
-  }, [sessionId, runCommand]);
+      try {
+        setStatus("streaming");
+        const profileId = options?.modelProfileId?.trim();
+        await runCommand({
+          type: "start_wiki_run",
+          ...(profileId ? { modelProfileId: profileId } : {}),
+        });
+        // Product run_phase / gate / run_link events populate the transcript.
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        setStatus("error");
+      } finally {
+        sendInFlight.current = false;
+      }
+    },
+    [sessionId, runCommand],
+  );
 
   const abort = useCallback(async () => {
     if (!sessionId) return;

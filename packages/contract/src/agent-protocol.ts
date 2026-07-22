@@ -42,6 +42,12 @@ export const AgentStartWikiRunCommandSchema = z.object({
   /** Optional operator notes / kickoff override. */
   notes: z.string().max(4000).optional(),
   autoApprove: z.boolean().optional(),
+  /**
+   * Optional Settings model profile id for this run.
+   * Overrides workspace.model / roleModels.writer for produce.
+   * Credentials still come from the machine-local provider catalog.
+   */
+  modelProfileId: z.string().trim().min(1).max(64).optional(),
 });
 
 /**

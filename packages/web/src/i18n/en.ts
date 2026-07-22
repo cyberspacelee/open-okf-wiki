@@ -285,7 +285,8 @@ export const en = {
     displayNamePlaceholder: "Corp GPT-4o",
     modelIdLabel: "Model id",
     modelIdPlaceholder: "openai/my-served-model",
-    modelIdHint: "Served identity sent to the gateway (Mastra form provider/model).",
+    modelIdHint:
+      "Served model id for the OpenAI-compatible gateway (e.g. openai/gpt-4o or bare deployment name). Only OpenAI-compatible providers are supported.",
     baseUrl: "Base URL",
     baseUrlPlaceholder: "https://gateway.example.com/v1",
     apiKey: "API key",
@@ -568,6 +569,8 @@ export const en = {
       "Message the agent or start a wiki run. Tool calls and gates stream into this transcript.",
     placeholder: "Message the agent… (Enter to send, Shift+Enter for newline)",
     startWikiRun: "Start wiki run",
+    wikiModel: "Wiki model",
+    wikiModelHint: "Model used for this wiki run (from Settings catalog).",
     send: "Send",
     stop: "Stop",
     statusReady: "Ready",

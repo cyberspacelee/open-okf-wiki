@@ -6,7 +6,17 @@ export const ProviderApiShapeSchema = z.enum(["completions", "responses"]);
 export type ProviderApiShape = z.infer<typeof ProviderApiShapeSchema>;
 
 /**
+ * Product provider kind (wire protocol family).
+ * Only OpenAI-compatible gateways are supported today; other kinds are
+ * reserved so the catalog can grow without another schema break.
+ */
+export const ProviderKindSchema = z.enum(["openai-compatible"]);
+
+export type ProviderKind = z.infer<typeof ProviderKindSchema>;
+
+/**
  * One named model entry in the machine-local Settings catalog.
+ * Each entry is a model under a provider endpoint (baseUrl + credentials).
  * Secrets stay here — never in workspace.json.
  */
 export const ModelProfileSchema = z.object({
@@ -15,7 +25,14 @@ export const ModelProfileSchema = z.object({
   /** Operator-facing label in dropdowns. */
   name: z.string().trim().min(1).max(120),
   /**
-   * Served model identity (Mastra form: `openai/my-served-model` or bare id).
+   * Provider kind for Pi / transport selection.
+   * Currently only `openai-compatible` (chat completions or responses).
+   * Optional on disk for backward compat; treat missing as openai-compatible.
+   */
+  providerKind: ProviderKindSchema.optional(),
+  /**
+   * Served model identity (`openai/my-served-model` or bare gateway id).
+   * The `provider/` prefix is stripped before the wire request.
    */
   modelId: z.string().trim().min(1).max(200),
   /** OpenAI-compatible base URL ending in /v1 (or gateway equivalent). */
@@ -62,6 +79,8 @@ export type ProviderConfigV1 = z.infer<typeof ProviderConfigV1Schema>;
 export const ModelProfilePublicSchema = z.object({
   id: z.string(),
   name: z.string(),
+  /** Always present on the public view (defaulted to openai-compatible). */
+  providerKind: ProviderKindSchema,
   modelId: z.string(),
   baseUrl: z.string(),
   apiKeySet: z.boolean(),
@@ -91,6 +110,11 @@ export const ModelProfileWriteSchema = z.object({
   name: z.string().trim().min(1).max(120),
   modelId: z.string().trim().min(1).max(200),
   baseUrl: z.string().trim().default(""),
+  /**
+   * Defaults to openai-compatible when omitted; only supported kind today.
+   * Optional on write so existing clients need not send it.
+   */
+  providerKind: ProviderKindSchema.optional(),
   /**
    * On create: required for live use (may be empty for draft).
    * On update: omit to keep, null/"" to clear.

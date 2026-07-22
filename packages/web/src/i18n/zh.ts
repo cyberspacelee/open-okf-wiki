@@ -280,7 +280,8 @@ export const zh: MessageTree = {
     displayNamePlaceholder: "企业 GPT-4o",
     modelIdLabel: "模型 ID",
     modelIdPlaceholder: "openai/my-served-model",
-    modelIdHint: "发送给网关的服务端标识（Mastra 形式 provider/model）。",
+    modelIdHint:
+      "OpenAI 兼容网关的模型标识（如 openai/gpt-4o 或裸部署名）。目前仅支持 OpenAI 兼容 provider。",
     baseUrl: "Base URL",
     baseUrlPlaceholder: "https://gateway.example.com/v1",
     apiKey: "API 密钥",
@@ -552,6 +553,8 @@ export const zh: MessageTree = {
       "向智能体发消息或启动 Wiki 运行。工具调用与门控会流式显示在此时间线。",
     placeholder: "给智能体发消息…（Enter 发送，Shift+Enter 换行）",
     startWikiRun: "启动 Wiki 运行",
+    wikiModel: "Wiki 模型",
+    wikiModelHint: "本次 Wiki 运行使用的模型（来自 Settings 目录）。",
     send: "发送",
     stop: "停止",
     statusReady: "就绪",

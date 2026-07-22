@@ -181,6 +181,7 @@ export {
 
 export {
   ProviderApiShapeSchema,
+  ProviderKindSchema,
   ModelProfileSchema,
   ProviderConfigSchema,
   ProviderConfigV1Schema,
@@ -189,6 +190,7 @@ export {
   ModelProfileWriteSchema,
   ProviderTestResultSchema,
   type ProviderApiShape,
+  type ProviderKind,
   type ModelProfile,
   type ProviderConfig,
   type ProviderConfigV1,

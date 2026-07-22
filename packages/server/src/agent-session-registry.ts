@@ -20,9 +20,14 @@ import {
   piSessionPath,
   piSessionsDir,
   produceWithPi,
+  resolveModelSelection,
+  resolveWikiSkillPaths,
+  resolveWorkspacePiModel,
   resumeGate,
   shouldUsePiFixtureMode,
   startShell,
+  type ResolvedPiModel,
+  type WikiModelRole,
   type WikiRunShellState,
   type WikiSessionHandle,
 } from "@okf-wiki/agent";
@@ -63,6 +68,11 @@ export type RegisteredAgentSession = {
   /** Active WikiRunShell state when a run has been started. */
   shell?: WikiRunShellState;
   runId?: string;
+  /**
+   * Optional model profile override for the current wiki produce
+   * (from start_wiki_run.modelProfileId). Cleared when produce finishes.
+   */
+  produceModelProfileId?: string;
   /** Abort controller for in-flight produce. */
   abortController?: AbortController;
   /** True while prompt/produce is running. */
@@ -402,18 +412,65 @@ export async function ensureRegistered(
 // Live Pi chat session
 // ---------------------------------------------------------------------------
 
+/**
+ * Resolve workspace / role / override → Pi Model + ModelRuntime.
+ * Uses Settings provider catalog (openai-compatible only today).
+ */
+async function resolvePiModelForWorkspace(
+  workspace: WorkspaceConfig,
+  options: {
+    role?: WikiModelRole;
+    overrideProfileId?: string;
+  } = {},
+): Promise<ResolvedPiModel> {
+  const selection = resolveModelSelection({
+    workspace,
+    role: options.role ?? "default",
+    overrideProfileId: options.overrideProfileId,
+  });
+  return resolveWorkspacePiModel({
+    profileId: selection.profileId,
+    modelId: selection.id,
+  });
+}
+
+async function skillPathsForWorkspace(
+  workspace: WorkspaceConfig,
+): Promise<string[]> {
+  return resolveWikiSkillPaths({
+    workspaceRoot: workspace.rootPath,
+    skillPath: workspace.skillPath,
+  });
+}
+
 async function ensureLiveHandle(
   entry: RegisteredAgentSession,
+  workspace: WorkspaceConfig,
   role: "operator_chat" | "root_research" = "operator_chat",
 ): Promise<WikiSessionHandle> {
   if (entry.handle) return entry.handle;
+
+  // Fixture mode: offline-safe session (no model). Live needs provider catalog.
+  let model: ResolvedPiModel | undefined;
+  if (!preferPiFixture()) {
+    model = await resolvePiModelForWorkspace(workspace, { role: "default" });
+  }
+
+  const skillPaths = await skillPathsForWorkspace(workspace);
+  const contextTargetTokens = workspace.limits?.contextTargetTokens;
+  const maxContextTokens = model?.runtime.maxContextTokens;
 
   const handle = await createWikiSession({
     role,
     runWorkDir: entry.sessionWorkDir,
     // Durable Pi JSONL under workspace .okf-wiki/pi-sessions/ (ADR 0030).
     workspaceRoot: entry.workspaceRoot,
-    // Model omitted: offline-safe construction; prompt only when not fixture.
+    contextTargetTokens,
+    maxContextTokens,
+    additionalSkillPaths: skillPaths,
+    ...(model
+      ? { model: model.model, modelRuntime: model.modelRuntime }
+      : {}),
   });
 
   entry.unsubPi = handle.session.subscribe((event) => {
@@ -429,6 +486,18 @@ async function ensureLiveHandle(
     role: handle.role,
     tools: [...handle.tools],
     runWorkDir: handle.runWorkDir,
+    skillPathCount: skillPaths.length,
+    contextTarget: handle.contextBudget?.contextTarget,
+    contextWindow: handle.contextBudget?.contextWindow,
+    ...(model
+      ? {
+          providerId: model.providerId,
+          modelId: model.servedModelId,
+          providerKind: model.providerKind,
+          profileId: model.runtime.profileId,
+          maxContextTokens: model.runtime.maxContextTokens,
+        }
+      : { fixture: true }),
   });
   return handle;
 }
@@ -489,6 +558,27 @@ async function runProducePhase(
   entry.abortController = controller;
 
   try {
+    // Live produce: writer role model, optional per-run profile override.
+    let piModel: ResolvedPiModel | undefined;
+    const skillPaths = await skillPathsForWorkspace(workspace);
+    if (!fixture) {
+      piModel = await resolvePiModelForWorkspace(workspace, {
+        role: "writer",
+        overrideProfileId: entry.produceModelProfileId,
+      });
+      emitPi(entry.workspaceId, entry.sessionId, "produce_model", {
+        providerId: piModel.providerId,
+        modelId: piModel.servedModelId,
+        providerKind: piModel.providerKind,
+        profileId: piModel.runtime.profileId,
+        baseUrlSource: piModel.runtime.source.baseUrl,
+        maxContextTokens: piModel.runtime.maxContextTokens,
+        contextTargetTokens: workspace.limits?.contextTargetTokens,
+        skillPathCount: skillPaths.length,
+        overrideProfileId: entry.produceModelProfileId,
+      });
+    }
+
     const result = await produceWithPi({
       runWorkDir,
       role: "root_write",
@@ -496,6 +586,12 @@ async function runProducePhase(
       title: entry.shell.plan?.summary ?? workspace.name,
       materialize,
       abortSignal: controller.signal,
+      maxContextTokens: piModel?.runtime.maxContextTokens,
+      contextTargetTokens: workspace.limits?.contextTargetTokens,
+      additionalSkillPaths: skillPaths,
+      ...(piModel
+        ? { model: piModel.model, modelRuntime: piModel.modelRuntime }
+        : {}),
     });
 
     entry.shell = markHardValidate(
@@ -544,6 +640,7 @@ async function runProducePhase(
     }
   } finally {
     entry.abortController = undefined;
+    entry.produceModelProfileId = undefined;
   }
 }
 
@@ -560,13 +657,13 @@ export async function dispatchAgentCommand(
 
   switch (command.type) {
     case "prompt":
-      return handlePrompt(entry, command.text);
+      return handlePrompt(entry, workspace, command.text);
     case "steer":
-      return handleSteer(entry, command.text);
+      return handleSteer(entry, workspace, command.text);
     case "abort":
       return handleAbort(entry);
     case "compact":
-      return handleCompact(entry);
+      return handleCompact(entry, workspace);
     case "start_wiki_run":
       return handleStartWikiRun(entry, workspace, command);
     case "resume_gate":
@@ -580,9 +677,23 @@ export async function dispatchAgentCommand(
 
 async function handlePrompt(
   entry: RegisteredAgentSession,
+  workspace: WorkspaceConfig,
   text: string,
 ): Promise<AgentCommandResponse> {
-  const handle = await ensureLiveHandle(entry, "operator_chat");
+  let handle: WikiSessionHandle;
+  try {
+    handle = await ensureLiveHandle(entry, workspace, "operator_chat");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    emitPi(entry.workspaceId, entry.sessionId, "error", { message });
+    return {
+      ok: true,
+      sessionId: entry.sessionId,
+      command: "prompt",
+      status: "accepted",
+      message: `prompt failed: ${message}`,
+    };
+  }
   emitPi(entry.workspaceId, entry.sessionId, "prompt", {
     textLength: text.length,
   });
@@ -630,9 +741,23 @@ async function handlePrompt(
 
 async function handleSteer(
   entry: RegisteredAgentSession,
+  workspace: WorkspaceConfig,
   text: string,
 ): Promise<AgentCommandResponse> {
-  const handle = await ensureLiveHandle(entry, "operator_chat");
+  let handle: WikiSessionHandle;
+  try {
+    handle = await ensureLiveHandle(entry, workspace, "operator_chat");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    emitPi(entry.workspaceId, entry.sessionId, "error", { message });
+    return {
+      ok: true,
+      sessionId: entry.sessionId,
+      command: "steer",
+      status: "accepted",
+      message: `steer failed: ${message}`,
+    };
+  }
   emitPi(entry.workspaceId, entry.sessionId, "steer", {
     textLength: text.length,
   });
@@ -701,6 +826,7 @@ async function handleAbort(
 
 async function handleCompact(
   entry: RegisteredAgentSession,
+  workspace: WorkspaceConfig,
 ): Promise<AgentCommandResponse> {
   if (entry.handle && !preferPiFixture()) {
     try {
@@ -729,7 +855,19 @@ async function handleCompact(
   }
 
   // Ensure handle exists so tools/role are ready; compact itself needs a model.
-  await ensureLiveHandle(entry, "operator_chat");
+  try {
+    await ensureLiveHandle(entry, workspace, "operator_chat");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    emitPi(entry.workspaceId, entry.sessionId, "error", { message });
+    return {
+      ok: true,
+      sessionId: entry.sessionId,
+      command: "compact",
+      status: "accepted",
+      message: `compact failed: ${message}`,
+    };
+  }
   emitPi(entry.workspaceId, entry.sessionId, "compaction_end", {
     mode: "fixture",
     note: "compact skipped in fixture mode",
@@ -761,6 +899,8 @@ async function handleStartWikiRun(
 
   const runId = randomUUID();
   entry.runId = runId;
+  // Per-run model pick (Settings catalog); falls back to writer/default.
+  entry.produceModelProfileId = command.modelProfileId?.trim() || undefined;
 
   const plan = defaultWikiRunSpec(workspace.name);
   if (command.notes?.trim()) {
@@ -768,6 +908,12 @@ async function handleStartWikiRun(
     plan.changelog = [...(plan.changelog ?? []), "Operator notes on start"].slice(
       -20,
     );
+  }
+  if (entry.produceModelProfileId) {
+    plan.changelog = [
+      ...(plan.changelog ?? []),
+      `Model profile: ${entry.produceModelProfileId}`,
+    ].slice(-20);
   }
 
   const skipPlanConfirm =
@@ -786,6 +932,12 @@ async function handleStartWikiRun(
     command.notes ?? "start_wiki_run",
     "running",
   );
+  if (entry.produceModelProfileId) {
+    emitPi(entry.workspaceId, entry.sessionId, "wiki_run_model", {
+      modelProfileId: entry.produceModelProfileId,
+      role: "writer",
+    });
+  }
 
   if (entry.shell.phase === "awaiting_plan") {
     emitGate(
