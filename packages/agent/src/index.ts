@@ -1,12 +1,15 @@
 /**
  * Mastra-backed Wiki Run agent assembly.
  * Keep framework imports out of @okf-wiki/core and @okf-wiki/contract.
+ *
+ * Skill resolve (`resolveSkillPath`, etc.) lives in `@okf-wiki/core` —
+ * re-exported here for agent-internal convenience only. Server must import
+ * skill resolve from `@okf-wiki/core`.
  */
 
 export {
   runWikiAgent,
   stagingDirForRun,
-  redactErrorMessage,
   shouldUseFixtureMode,
   resolveModelConfig,
   resolveWikiModel,
@@ -15,7 +18,9 @@ export {
   type WikiRunAgentResult,
   type WikiRunStreamWriter,
   type ResolvedWikiModel,
-} from "./run.js";
+} from "./produce/index.js";
+
+export { redactErrorMessage } from "./run-redact.js";
 
 export {
   CONTEXT_COMPACTION_RATIO,
@@ -36,6 +41,7 @@ export {
   type CreateWikiRunMemoryInput,
 } from "./wiki-memory.js";
 
+/** Prefer `@okf-wiki/core` — re-export for agent convenience. */
 export {
   resolveSkillPath,
   resolveSkillSource,
@@ -44,7 +50,7 @@ export {
   skillLayoutPaths,
   type ResolveSkillSourceOptions,
   type ResolvedSkillSource,
-} from "./skill-path.js";
+} from "@okf-wiki/core";
 
 export { sanitizeSummary } from "./stream-parts.js";
 
@@ -72,9 +78,7 @@ export {
 } from "./subagents.js";
 
 export {
-  ADAPTIVE_RUN_LIMITS,
   DEFAULT_ORCHESTRATION,
-  adaptiveLimitsInstruction,
   orchestrationLimitsInstruction,
   resolveOrchestration,
 } from "./limits.js";
@@ -104,11 +108,6 @@ export {
 export { runReviewCouncil } from "./review-council.js";
 
 export {
-  durableProduceEnabled,
-  tryCreateDurableRoot,
-} from "./durable-produce.js";
-
-export {
   buildPhaseSteps,
   emitRunPhase,
   emitAgentSpan,
@@ -117,7 +116,9 @@ export {
 } from "./run-timeline.js";
 
 export {
+  createSessionTurnStream,
   createSessionWorkflowStream,
+  isRunCancelledError,
   uiMessagesToSessionMessages,
   sessionMessagesToUIMessages,
   helpTextForSessionTurn,
@@ -125,12 +126,15 @@ export {
   isKickoffPhrase,
   normalizeSessionUserText,
   resolveSessionTurnMode,
+  planToMarkdown,
   type SessionStreamResult,
   type SessionStreamBody,
   type SessionStreamSideEffects,
+  type SessionTurnHooks,
+  type CreateSessionTurnStreamInput,
   type SessionTurnHelpReason,
   type SessionTurnModeResult,
-} from "./session-stream.js";
+} from "./session-turn/index.js";
 
 export { getMastra, mastraStorageDir, resetMastraForTests } from "./mastra-instance.js";
 
@@ -182,20 +186,14 @@ export {
 
 export {
   openWikiRunUiProjection,
-  type WikiWorkflowUiParams,
   type WikiWorkflowUiHandle,
-  type WikiWorkflowUiStart,
-  type WikiWorkflowUiResume,
 } from "./workflow-ui-stream.js";
 export {
   openWikiRunAuditStream,
   loadWikiRunWorkflowSnapshot,
   minimalWorkflowStateForAudit,
 } from "./workflow-audit-stream.js";
-export {
-  mapWorkflowStreamEvent,
-  uiChunkToJobEvent,
-} from "./workflow-events.js";
+export { uiChunkToJobEvent } from "./workflow-events.js";
 
 export {
   bindRunAbortSignal,

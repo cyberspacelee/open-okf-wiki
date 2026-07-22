@@ -1,11 +1,15 @@
 /**
- * Operator Session turn streaming (P1 Session Shell — ADR 0027).
+ * SessionTurn — deep module for one Operator Session turn (ADR 0027 / 0029).
  *
  * Framework-first: workflow open + toAISdkStream live in the thin UI projection
  * shell (openWikiRunUiProjection). This module assembles turn params, owns outer
  * createUIMessageStream framing, mid-stream checkpoints, and finalize → product
- * Session/Run state via mapWorkflowResult. Gate chips use mapSuspendToGateUi once;
- * plan-progress is preferred from step writer.custom (session layer is fallback only).
+ * Session/Run state via mapWorkflowResult. Gate chips use mapSuspendToGateUi once.
+ *
+ * Business Operator Events (`data-plan-progress`, `data-progress`, defects,
+ * agent spans, sources) are emitted only by Produce (writer.custom). Session
+ * forwards the framework UI stream and product shell parts (`data-gate`,
+ * `data-plan`, `data-run`) — it does not synthesize business progress.
  *
  * AI SDK persistence: server owns history; client sends last message only.
  * No Session-local Staging materialize; no hand-rolled Mastra→SSE projection.
@@ -22,8 +26,6 @@ import type {
   PendingInteraction,
   SessionMessage,
   SessionWorkflowState,
-  WikiRunPlan,
-  WorkspaceConfig,
 } from "@okf-wiki/contract";
 import {
   helpTextForSessionTurn,
@@ -32,68 +34,30 @@ import {
   resolveSessionTurnMode,
 } from "@okf-wiki/contract";
 import { transition } from "@okf-wiki/core";
-import { redactErrorMessage } from "./run.js";
-import { uiMessagesToSessionMessages } from "./session-messages.js";
-import {
-  buildPhaseProgressData,
-  buildPlanProgressData,
-  projectSessionMessages,
-  projectSessionToolPart,
-  projectToolOutputChunk,
-  projectUiMessageChunk,
-  writePathFromToolFields,
-} from "./ui-projection.js";
-
-/** Collect write_wiki paths already on durable Session history (cross-turn). */
-function writtenPathsFromSessionMessages(
-  messages: SessionMessage[],
-): Set<string> {
-  const paths = new Set<string>();
-  for (const m of messages) {
-    for (const p of m.parts ?? []) {
-      if (
-        (typeof p.type === "string" && p.type === "tool-write_wiki") ||
-        (p.type === "dynamic-tool" &&
-          "toolName" in p &&
-          (p as { toolName?: string }).toolName === "write_wiki") ||
-        (typeof p.type === "string" &&
-          p.type.startsWith("tool-") &&
-          "toolName" in p &&
-          (p as { toolName?: string }).toolName === "write_wiki")
-      ) {
-        const path = writePathFromToolFields(
-          "input" in p ? p.input : undefined,
-          "output" in p ? p.output : undefined,
-        );
-        if (path) {
-          paths.add(path);
-        }
-      }
-      if (p.type === "data-plan-progress" && "data" in p) {
-        const data = p.data as {
-          pages?: Array<{ path?: string; status?: string }>;
-        };
-        for (const page of data.pages ?? []) {
-          if (page.status === "written" && page.path) {
-            paths.add(
-              page.path.replace(/^\.\/+/, "").replace(/^\/+/, ""),
-            );
-          }
-        }
-      }
-    }
-  }
-  return paths;
-}
+import { redactErrorMessage } from "../run-redact.js";
+import { uiMessagesToSessionMessages } from "../session-messages.js";
+import { projectSessionMessages } from "../ui-projection.js";
 import {
   extractSuspendGate,
   isDurableRunStatus,
   mapWorkflowResult,
   sessionViewFromTerminal,
-} from "./workflow-result.js";
-import { openWikiRunUiProjection } from "./workflow-ui-stream.js";
+} from "../workflow-result.js";
+import { openWikiRunUiProjection } from "../workflow-ui-stream.js";
+import { isRunCancelledError } from "./cancel.js";
+import {
+  applyChunkToAcc,
+  createStreamPartAcc,
+  partsFromAcc,
+  pipeUiStream,
+} from "./stream-pipe.js";
+import type {
+  CreateSessionTurnStreamInput,
+  SessionStreamResult,
+  SessionStreamSideEffects,
+} from "./types.js";
 
-// Re-export shared policy + message bridge for existing agent imports.
+// Re-export shared policy + message bridge for agent package consumers.
 export {
   helpTextForSessionTurn,
   isKickoff,
@@ -106,321 +70,16 @@ export {
 export {
   sessionMessagesToUIMessages,
   uiMessagesToSessionMessages,
-} from "./session-messages.js";
-
-export type SessionStreamSideEffects = {
-  /** Register / update product run record after workflow progress. */
-  upsertRun?: {
-    runId: string;
-    status: OperatorSession["status"] | string;
-    pages?: string[];
-    plan?: WikiRunPlan;
-    summary?: string;
-    /** Link run record back to the Operator Session that started it. */
-    sessionId?: string;
-  };
-};
-
-export type SessionStreamResult = {
-  stream: ReadableStream<UIMessageChunk>;
-  /**
-   * Turn mode after body/session inspection. Server uses `start` to eagerly
-   * register a run record so explicit Stop/cancel can target it mid-stream.
-   */
-  mode: "start" | "resume" | "help";
-  /** Linked Wiki Run id for start/resume turns (undefined for help). */
-  runId?: string;
-  finalize: () => Promise<{
-    /** Full UIMessage-compatible history after this turn (server source of truth). */
-    messages: SessionMessage[];
-    assistantMessage: SessionMessage;
-    status: OperatorSession["status"];
-    pending: PendingInteraction | null;
-    workflow: Partial<SessionWorkflowState>;
-    sideEffects?: SessionStreamSideEffects;
-  }>;
-};
-
-export type SessionStreamBody = {
-  /** Last user message only (AI SDK chat persistence). Server loads prior history. */
-  message?: UIMessage;
-  /** Chat / session id from DefaultChatTransport. */
-  id?: string;
-  /**
-   * Explicit turn intent. Avoids guessing resume/start from user text.
-   * - start: kick off a Wiki Run
-   * - resume: answer plan/publish gate with resumeData
-   * - chat: help / non-run (default when omitted and no resumeData)
-   */
-  intent?: "start" | "resume" | "chat";
-  /** Workflow resume payload (plan/publication gate). Required when intent=resume. */
-  resumeData?: {
-    action: "approve" | "deny" | "revise";
-    plan?: WikiRunPlan;
-    feedback?: string;
-  };
-  runId?: string;
-  step?: string;
-};
-
-/** Accumulator for mid-stream durable checkpoints (refresh mid-flight). */
-type StreamPartAcc = {
-  textById: Map<string, string>;
-  toolParts: Map<string, SessionMessage["parts"][number]>;
-  /** toolCallId → toolName for output projection when chunk omits name */
-  toolNames: Map<string, string>;
-  dataParts: SessionMessage["parts"];
-  /** write_wiki paths observed this turn (plan checklist). */
-  writtenPaths: Set<string>;
-};
-
-function createStreamPartAcc(): StreamPartAcc {
-  return {
-    textById: new Map(),
-    toolParts: new Map(),
-    toolNames: new Map(),
-    dataParts: [],
-    writtenPaths: new Set(),
-  };
-}
-
-/**
- * Project a chunk for operator UI + durable Session (not model fidelity).
- * Resolves toolName for tool-output-available from prior input chunks.
- */
-function projectChunkForSession(
-  acc: StreamPartAcc,
-  value: UIMessageChunk,
-): UIMessageChunk {
-  const v = value as UIMessageChunk & Record<string, unknown>;
-  if (v.type === "tool-input-available") {
-    const toolCallId = String(v.toolCallId ?? "tool");
-    const toolName = String(v.toolName ?? "tool");
-    acc.toolNames.set(toolCallId, toolName);
-    return projectUiMessageChunk(value);
-  }
-  if (v.type === "tool-output-available") {
-    const toolCallId = String(v.toolCallId ?? "tool");
-    const toolName =
-      (typeof v.toolName === "string" && v.toolName) ||
-      acc.toolNames.get(toolCallId) ||
-      "tool";
-    return projectToolOutputChunk(value, toolName);
-  }
-  return projectUiMessageChunk(value);
-}
-
-function applyChunkToAcc(acc: StreamPartAcc, value: UIMessageChunk): void {
-  const projected = projectChunkForSession(acc, value);
-  const v = projected as UIMessageChunk & Record<string, unknown>;
-  switch (v.type) {
-    case "text-delta": {
-      const id = String(v.id ?? "text");
-      const delta = typeof v.delta === "string" ? v.delta : "";
-      acc.textById.set(id, (acc.textById.get(id) ?? "") + delta);
-      break;
-    }
-    case "tool-input-available": {
-      const toolCallId = String(v.toolCallId ?? "tool");
-      const toolName = String(v.toolName ?? acc.toolNames.get(toolCallId) ?? "tool");
-      acc.toolNames.set(toolCallId, toolName);
-      acc.toolParts.set(
-        toolCallId,
-        projectSessionToolPart({
-          type: `tool-${toolName}`,
-          toolCallId,
-          toolName,
-          state: "input-available",
-          input: v.input,
-        } as SessionMessage["parts"][number]),
-      );
-      break;
-    }
-    case "tool-output-available": {
-      const toolCallId = String(v.toolCallId ?? "tool");
-      const prev = acc.toolParts.get(toolCallId) as
-        | {
-            type: string;
-            toolCallId?: string;
-            toolName?: string;
-            input?: unknown;
-          }
-        | undefined;
-      const toolName =
-        prev?.toolName ??
-        acc.toolNames.get(toolCallId) ??
-        (prev?.type?.startsWith("tool-") ? prev.type.slice(5) : "tool");
-      acc.toolNames.set(toolCallId, toolName);
-      acc.toolParts.set(
-        toolCallId,
-        projectSessionToolPart({
-          type: `tool-${toolName}`,
-          toolCallId,
-          toolName,
-          state: "output-available",
-          input: prev?.input,
-          output: v.output,
-        } as SessionMessage["parts"][number]),
-      );
-      if (toolName === "write_wiki") {
-        const path = writePathFromToolFields(prev?.input, v.output);
-        if (path) {
-          acc.writtenPaths.add(path);
-        }
-      }
-      break;
-    }
-    default: {
-      if (typeof v.type === "string" && v.type.startsWith("data-")) {
-        acc.dataParts.push({
-          type: v.type,
-          id: typeof v.id === "string" ? v.id : undefined,
-          data: v.data,
-        } as SessionMessage["parts"][number]);
-      }
-      break;
-    }
-  }
-}
-
-function partsFromAcc(
-  productText: string,
-  productData: SessionMessage["parts"],
-  productTools: SessionMessage["parts"],
-  acc: StreamPartAcc,
-): SessionMessage["parts"] {
-  const parts: SessionMessage["parts"] = [];
-  const streamedText = [...acc.textById.values()].join("");
-  const text = [productText, streamedText].filter(Boolean).join("\n\n");
-  if (text) {
-    parts.push({ type: "text", text, state: "streaming" });
-  } else {
-    parts.push({
-      type: "text",
-      text: "Wiki Run in progress… (refresh will update as work continues)",
-      state: "streaming",
-    });
-  }
-  parts.push(...productData);
-  parts.push(...productTools);
-  parts.push(...acc.dataParts);
-  parts.push(...acc.toolParts.values());
-  return parts;
-}
-
-/**
- * Pipe another UI stream into the turn writer (awaited for ordering).
- * Skip nested start/finish — the outer createUIMessageStream owns message framing
- * (with originalMessages) so we do not open a second assistant bubble.
- * When `abortSignal` fires, cancel the reader so we stop merging chunks ASAP.
- * Optional `onChunk` supports durable mid-stream checkpoints for refresh.
- */
-async function pipeUiStream(
-  writer: { write: (part: UIMessageChunk) => void },
-  stream: ReadableStream<UIMessageChunk>,
-  abortSignal?: AbortSignal,
-  onChunk?: (chunk: UIMessageChunk) => void | Promise<void>,
-  /**
-   * Optional name map shared with durable acc so live stream and checkpoint
-   * use the same toolName when projecting tool-output-available.
-   */
-  toolNames?: Map<string, string>,
-): Promise<void> {
-  const reader = stream.getReader();
-  const names = toolNames ?? new Map<string, string>();
-  const onAbort = () => {
-    void reader.cancel().catch(() => undefined);
-  };
-  if (abortSignal?.aborted) {
-    await reader.cancel().catch(() => undefined);
-    return;
-  }
-  abortSignal?.addEventListener("abort", onAbort, { once: true });
-  try {
-    for (;;) {
-      if (abortSignal?.aborted) {
-        break;
-      }
-      let done: boolean;
-      let value: UIMessageChunk | undefined;
-      try {
-        ({ done, value } = await reader.read());
-      } catch {
-        // reader.cancel() from product abort rejects a pending read — treat as
-        // clean stop so the caller can still await workflow result() (durable
-        // publish must not be lost to a stream cancel error).
-        break;
-      }
-      if (done) {
-        break;
-      }
-      if (!value) {
-        continue;
-      }
-      if (value.type === "start" || value.type === "finish") {
-        continue;
-      }
-      // Drop further writes once product cancel wins mid-pipe.
-      if (abortSignal?.aborted) {
-        break;
-      }
-      // Operator projection only — model fidelity stays inside Mastra.
-      const projected = projectLiveChunk(names, value);
-      writer.write(projected);
-      try {
-        await onChunk?.(projected);
-      } catch {
-        // checkpoint must never break the live stream
-      }
-    }
-  } finally {
-    abortSignal?.removeEventListener("abort", onAbort);
-    // Ensure the underlying workflow stream is not left locked if we broke early.
-    try {
-      await reader.cancel();
-    } catch {
-      // already cancelled / closed
-    }
-  }
-}
-
-function projectLiveChunk(
-  toolNames: Map<string, string>,
-  value: UIMessageChunk,
-): UIMessageChunk {
-  const v = value as UIMessageChunk & Record<string, unknown>;
-  if (v.type === "tool-input-available") {
-    const toolCallId = String(v.toolCallId ?? "tool");
-    const toolName = String(v.toolName ?? "tool");
-    toolNames.set(toolCallId, toolName);
-    return projectUiMessageChunk(value);
-  }
-  if (v.type === "tool-output-available") {
-    const toolCallId = String(v.toolCallId ?? "tool");
-    const toolName =
-      (typeof v.toolName === "string" && v.toolName) ||
-      toolNames.get(toolCallId) ||
-      "tool";
-    return projectToolOutputChunk(value, toolName);
-  }
-  return projectUiMessageChunk(value);
-}
-
-function isCancelError(error: unknown): boolean {
-  if (!error || typeof error !== "object") {
-    return false;
-  }
-  const name = (error as { name?: string }).name;
-  if (
-    name === "AbortError" ||
-    name === "TimeoutError" ||
-    name === "WikiRunCancelled"
-  ) {
-    return true;
-  }
-  const message = error instanceof Error ? error.message : String(error);
-  return /aborted|AbortError|cancelled|plan declined/i.test(message);
-}
+} from "../session-messages.js";
+export { isRunCancelledError } from "./cancel.js";
+export { planToMarkdown } from "./plan.js";
+export type {
+  CreateSessionTurnStreamInput,
+  SessionStreamBody,
+  SessionStreamResult,
+  SessionStreamSideEffects,
+  SessionTurnHooks,
+} from "./types.js";
 
 function lastUserText(messages: UIMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -437,91 +96,13 @@ function lastUserText(messages: UIMessage[]): string {
   return "";
 }
 
-/** Render a WikiRunSpec as operator-facing Markdown (fullscreen / transcript). */
-export function planToMarkdown(plan: WikiRunPlan): string {
-  const lines = [
-    "## Proposed wiki Spec",
-    "",
-    plan.summary,
-    "",
-    `**Audience:** ${plan.audience ?? "—"}`,
-    "",
-  ];
-  if (plan.domains?.length) {
-    lines.push(
-      "### Domains",
-      ...plan.domains.map(
-        (d) =>
-          `- **${d.title}** (\`${d.id}\`${d.critical ? ", critical" : ""}) — ${d.scope}`,
-      ),
-      "",
-    );
-  }
-  lines.push(
-    "### Pages",
-    ...plan.pages.map((p) => {
-      const qs =
-        p.questions?.length > 0
-          ? ` _(questions: ${p.questions.slice(0, 3).join("; ")})_`
-          : "";
-      return `- \`${p.path}\` — ${p.purpose}${qs}`;
-    }),
-  );
-  if (plan.openQuestions?.length) {
-    lines.push(
-      "",
-      "### Open questions",
-      ...plan.openQuestions.map((q) => `- ${q}`),
-    );
-  }
-  if (plan.notes?.trim()) {
-    lines.push("", "### Notes", "", plan.notes.trim());
-  }
-  if (plan.changelog?.length) {
-    lines.push(
-      "",
-      "### Changelog",
-      ...plan.changelog.map((c) => `- ${c}`),
-    );
-  }
-  return lines.join("\n");
-}
-
-
-
 /**
  * Stream one Session turn: start or resume the wiki-run workflow via official AI SDK bridge.
  * Caller must pass full `messages` (server history + new user message).
  */
-export async function createSessionWorkflowStream(input: {
-  session: OperatorSession;
-  workspace: WorkspaceConfig;
-  /** Full UI message list for this turn (previous + new user). */
-  messages: UIMessage[];
-  body?: SessionStreamBody;
-  /**
-   * Register product cancel AbortController for this run (server abortRun).
-   * Called synchronously once mode/runId are known so Stop can abort mid-stream.
-   */
-  abortSignalForRun?: (runId: string) => AbortSignal;
-  /**
-   * Called after the Mastra workflow stream is successfully opened (start or
-   * resume). Server uses this to mark the run record `running` only once the
-   * workflow is live — not at eager session mid-flight — so a crash before open
-   * leaves the run at awaiting_* for gate recovery.
-   */
-  onWorkflowLive?: (runId: string) => void | Promise<void>;
-  /**
-   * Durable mid-stream journal: server persists partial assistant timeline so a
-   * page refresh mid-turn can render progress and keep catching up.
-   */
-  onCheckpoint?: (snapshot: {
-    messages: SessionMessage[];
-    status: OperatorSession["status"];
-    pending: PendingInteraction | null;
-    workflow: Partial<SessionWorkflowState>;
-  }) => void | Promise<void>;
-}): Promise<SessionStreamResult> {
+export async function createSessionTurnStream(
+  input: CreateSessionTurnStreamInput,
+): Promise<SessionStreamResult> {
   const assistantId = randomUUID();
   const textId = randomUUID();
   let finalText = "";
@@ -536,10 +117,6 @@ export async function createSessionWorkflowStream(input: {
   const dataParts: SessionMessage["parts"] = [];
   let finishedMessages: UIMessage[] | null = null;
   const streamAcc = createStreamPartAcc();
-  // Preserve write progress across resume turns (approve plan → write → publish).
-  for (const path of writtenPathsFromSessionMessages(input.session.messages)) {
-    streamAcc.writtenPaths.add(path);
-  }
   let lastCheckpointAt = 0;
 
   const phase = input.session.workflow.phase ?? "idle";
@@ -698,7 +275,7 @@ export async function createSessionWorkflowStream(input: {
 
       /**
        * Product HITL gate part (not a model tool).
-       * UI reads `data-gate` + `data-plan`; no tool-request_user_decision / data-choice.
+       * UI reads `data-gate` + `data-plan` only (ADR 0029).
        */
       const writeGate = (
         interaction: PendingInteraction,
@@ -737,74 +314,9 @@ export async function createSessionWorkflowStream(input: {
         void checkpoint(true);
       };
 
-      /** Product phase chip for Session timeline (not Mastra raw workflow JSON). */
-      const writePhaseProgress = (
-        phaseName: string,
-        label?: string,
-        extra?: { failed?: boolean },
-      ) => {
-        const partId = randomUUID();
-        const data = {
-          ...buildPhaseProgressData({
-            phase: phaseName,
-            runId,
-            label,
-          }),
-          ...(extra?.failed ? { failed: true as const } : {}),
-        };
-        writer.write({
-          type: "data-progress",
-          id: partId,
-          data,
-        } as UIMessageChunk);
-        dataParts.push({
-          type: "data-progress",
-          id: partId,
-          data,
-        } as SessionMessage["parts"][number]);
-      };
-
-      /**
-       * Plan checklist fallback when step writer did not emit data-plan-progress.
-       * Prefer framework/step writer.custom as the source of truth (Phase 2).
-       */
-      const writePlanProgressFallback = () => {
-        const alreadyFromStep = streamAcc.dataParts.some(
-          (p) => p.type === "data-plan-progress",
-        );
-        const alreadyInProduct = dataParts.some(
-          (p) => p.type === "data-plan-progress",
-        );
-        if (alreadyFromStep || alreadyInProduct) {
-          return;
-        }
-        const plan = workflow.plan ?? input.session.workflow.plan;
-        if (!plan?.pages?.length && streamAcc.writtenPaths.size === 0) {
-          return;
-        }
-        const partId = randomUUID();
-        const data = buildPlanProgressData({
-          planPages: plan?.pages,
-          writtenPaths: streamAcc.writtenPaths,
-          runId,
-          phase: workflow.phase,
-        });
-        writer.write({
-          type: "data-plan-progress",
-          id: partId,
-          data,
-        } as UIMessageChunk);
-        dataParts.push({
-          type: "data-plan-progress",
-          id: partId,
-          data,
-        } as SessionMessage["parts"][number]);
-      };
-
       const onPipedChunk = async (chunk: UIMessageChunk) => {
         applyChunkToAcc(streamAcc, chunk);
-        // data-plan-progress from step writer.custom lands via data-* acc path.
-        // Do not re-synthesize chips here (single emission path).
+        // Produce data-* parts (plan-progress, progress, …) land via acc path.
         await checkpoint(false);
       };
 
@@ -837,15 +349,8 @@ export async function createSessionWorkflowStream(input: {
               plan: decision.plan ?? input.session.workflow.plan,
               linkedRunId: runId,
             };
-            writePhaseProgress(
-              view.workflowPhase,
-              decision.gate === "plan"
-                ? "Awaiting plan confirmation"
-                : "Awaiting publication",
-            );
-            if (decision.plan || workflow.plan) {
-              writePlanProgressFallback();
-            }
+            // Business progress (data-progress / data-plan-progress) comes from
+            // Produce only — Session does not synthesize chips at gate suspend.
             sideEffects = {
               upsertRun: {
                 runId,
@@ -868,18 +373,6 @@ export async function createSessionWorkflowStream(input: {
           linkedRunId: runId,
         };
         const failed = terminal.runStatus === "failed" || terminal.status === "failed";
-        writePhaseProgress(
-          terminal.workflowPhase,
-          failed
-            ? "Failed"
-            : terminal.runStatus === "published"
-              ? "Done"
-              : undefined,
-          { failed },
-        );
-        if (streamAcc.writtenPaths.size > 0 || workflow.plan) {
-          writePlanProgressFallback();
-        }
         if (terminal.runStatus === "published") {
           // Stable operator copy for e2e + UI (prefer over fixture-specific summary alone).
           await writeText(
@@ -1026,10 +519,7 @@ export async function createSessionWorkflowStream(input: {
               startPatches.session?.workflow?.plan ??
               input.session.workflow.plan,
           };
-          writePhaseProgress(
-            startPhase,
-            startPhase === "planning" ? "Planning wiki pages" : undefined,
-          );
+          // Phase chips come from Produce emitRunPhase — not Session synthesis.
           // P1 thin shell: orchestrator open + one toAISdkStream (ADR 0027).
           ui = await openWikiRunUiProjection({
             kind: "start",
@@ -1070,14 +560,6 @@ export async function createSessionWorkflowStream(input: {
               : resumeAction === "approve" && resumeStep === "publish-gate"
                 ? "done"
                 : (workflow.phase as SessionWorkflowState["phase"]) ?? "writing";
-        const resumeLabel =
-          resumeAction === "revise"
-            ? "Revising plan"
-            : resumeStep === "publish-gate"
-              ? "Publishing wiki"
-              : resumeStep === "plan-gate"
-                ? "Writing wiki pages"
-                : undefined;
         // P2 WorkflowLive for resume mid-flight (status/phase from transition).
         const livePatches = transition(
           {
@@ -1104,18 +586,18 @@ export async function createSessionWorkflowStream(input: {
           pending = livePatches.session.pending ?? null;
         }
         if (resumeAction === "approve" || resumeAction === "revise") {
-          const phase =
+          const nextPhase =
             livePatches.session?.workflow?.phase ?? resumePhase;
           workflow = {
             ...workflow,
-            phase,
+            phase: nextPhase,
             linkedRunId: runId,
             plan:
               livePatches.session?.workflow?.plan ??
               workflow.plan ??
               input.session.workflow.plan,
           };
-          writePhaseProgress(phase, resumeLabel);
+          // Mid-flight phase chips come from Produce, not Session synthesis.
         } else {
           workflow = {
             ...workflow,
@@ -1172,11 +654,11 @@ export async function createSessionWorkflowStream(input: {
             // Prefer cancel classification when either the pipe or result aborted.
             if (
               abortSignal?.aborted ||
-              isCancelError(error) ||
-              isCancelError(resultError)
+              isRunCancelledError(error) ||
+              isRunCancelledError(resultError)
             ) {
               failCause =
-                isCancelError(resultError) || abortSignal?.aborted
+                isRunCancelledError(resultError) || abortSignal?.aborted
                   ? resultError
                   : error;
             } else {
@@ -1188,7 +670,11 @@ export async function createSessionWorkflowStream(input: {
           // Outcome already applied; do not rewrite as cancelled/failed.
           return;
         }
-        if (abortSignal?.aborted || isCancelError(failCause) || isCancelError(error)) {
+        if (
+          abortSignal?.aborted ||
+          isRunCancelledError(failCause) ||
+          isRunCancelledError(error)
+        ) {
           await markCancelled();
           return;
         }
@@ -1258,6 +744,9 @@ export async function createSessionWorkflowStream(input: {
         await Promise.resolve();
       }
       // Prefer full stream-assembled messages (tool/data parts included).
+      // Structural bridge first; single projectSessionMessages safety pass for
+      // durable Session (stream already projects live chunks — no second rewrite
+      // inside session-messages).
       if (finishedMessages && finishedMessages.length > 0) {
         const asSession = projectSessionMessages(
           uiMessagesToSessionMessages(finishedMessages),
@@ -1275,9 +764,11 @@ export async function createSessionWorkflowStream(input: {
         };
       }
 
+      // Fallback: stream-pipe toolParts are already operator-projected; one
+      // projectSessionMessages pass covers history + assistant assembly.
       const parts: SessionMessage["parts"] = [
         { type: "text", text: finalText || "(empty)", state: "done" },
-        ...toolParts.map((p) => projectSessionToolPart(p)),
+        ...toolParts,
         ...dataParts,
       ];
       // writeGate already pushed data-gate into dataParts; only re-append if missing.
@@ -1320,3 +811,8 @@ export async function createSessionWorkflowStream(input: {
     },
   };
 }
+
+/**
+ * @deprecated Prefer {@link createSessionTurnStream}. Alias kept for one PR cycle.
+ */
+export const createSessionWorkflowStream = createSessionTurnStream;

@@ -14,6 +14,7 @@ Domain vocabulary: [CONTEXT.md](../../CONTEXT.md). Package map: [packages/README
 | [0026](0026-session-centric-agent-workspace.md) | **Session-centric agent**: sole operate/observe surface; Run = Session-owned job (fg/bg); Run UI read-mostly |
 | [0027](0027-framework-first-session-stream.md) | **Framework-first** Session stream/HITL: Mastra + AI SDK only; thin P1 shell; ban parallel converters |
 | [0028](0028-supervisor-tree-and-thin-workflow-shell.md) | **Thin Workflow shell + Supervisor produce**: WikiRunSpec, always-on Domain/Leaf, Host review council, fail-closed hard-validate |
+| [0029](0029-architecture-cleanup-no-compat.md) | **No-compat cleanup**: single Produce Operator Event emit; Session schema v3 wipe; SessionTurn deep module; human HITL Session-only; delete durable-produce / data-choice / Session progress synthesis |
 
 Still load-bearing domain/ops decisions (map Host → Run Boundary when reading pre-0019 text):
 
@@ -45,7 +46,7 @@ Still load-bearing domain/ops decisions (map Host → Run Boundary when reading 
 ## Reading rules for agents
 
 1. Prefer **CONTEXT.md** for domain terms.
-2. Prefer **0020 + 0021 + 0022 + 0024 + 0025 + 0026 + 0027 + 0028** for “how the product is built today” (0026 wins on Session vs Run center; **0027** wins on framework-first stream/HITL; **0028** wins on Wiki generation orchestration).
+2. Prefer **0020 + 0021 + 0022 + 0024 + 0025 + 0026 + 0027 + 0028 + 0029** for “how the product is built today” (0026 wins on Session vs Run center; **0027** wins on framework-first stream/HITL; **0028** wins on Wiki generation orchestration; **0029** wins on single Produce emit / no-compat cleanup / Session schema v3).
 3. Pre-0019 ADRs may say **Host** / **Host Instructions** → map to **Run Boundary** / **Run Instructions**.
 4. Pre-0021 ADRs may assume **Python** harness → map duties to `@okf-wiki/core` + `@okf-wiki/agent`.
-5. Do **not** reintroduce: dual Staging writers, Session-local materialize, `__choice__:` HITL, hand-rolled Session Mastra→SSE, parallel `toAISdkStream` business wrappers, Mastra dependency inside core.
+5. Do **not** reintroduce: dual Staging writers, Session-local materialize, `__choice__:` HITL, hand-rolled Session Mastra→SSE, parallel `toAISdkStream` business wrappers, Session synthesis of business progress parts, durable-produce stubs, `data-choice` gates, Mastra dependency inside core.

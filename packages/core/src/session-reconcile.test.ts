@@ -11,7 +11,7 @@ function baseSession(
   overrides: Partial<OperatorSession> = {},
 ): OperatorSession {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     id: "sess-1",
     workspaceId: "ws-1",
     title: "T",

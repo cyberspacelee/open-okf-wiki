@@ -31,8 +31,8 @@ export type { PlanLike };
 export type PlanViewerProps = {
   plan: PlanLike;
   /**
-   * Paths already written via write_wiki (normalized). Used for page checklist
-   * progress on the plan card (Claude Code–style todo / queue).
+   * Paths marked written on Produce `data-plan-progress` parts (normalized).
+   * Prefer this over inventing status from tool cards (ADR 0029).
    */
   writtenPaths?: ReadonlySet<string> | readonly string[];
 };

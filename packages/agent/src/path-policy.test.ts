@@ -13,7 +13,7 @@ import {
   resolveContainedPath,
   toPosixRelative,
 } from "@okf-wiki/core";
-import { redactErrorMessage } from "./run.js";
+import { redactErrorMessage } from "./run-redact.js";
 
 const root = path.resolve("/tmp/okf-wiki-path-policy-root");
 

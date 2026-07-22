@@ -11,7 +11,10 @@ import {
   type GitProbe,
   type WorkspaceConfig,
   type WorkspaceSource,
+  type WorkspaceSummary,
 } from "@okf-wiki/contract";
+
+export type { WorkspaceSummary };
 import { probeLocalGit } from "./git.js";
 import {
   assertAbsolutePath,
@@ -438,14 +441,6 @@ export async function listWorkspaces(
 ): Promise<string[]> {
   return listRecentWorkspaces(appStatePath);
 }
-
-export type WorkspaceSummary = {
-  id: string;
-  name: string;
-  rootPath: string;
-  lastOpenedAt?: string;
-  sourceCount: number;
-};
 
 /** Load summaries for roots still present in the app index (skips broken entries). */
 export async function listWorkspaceSummaries(

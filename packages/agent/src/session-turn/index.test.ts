@@ -9,7 +9,7 @@ import {
   resolveSessionTurnMode,
   sessionMessagesToUIMessages,
   uiMessagesToSessionMessages,
-} from "./session-stream.js";
+} from "./index.js";
 
 test("isKickoff requires generate-ish phrase on idle/done only", () => {
   assert.equal(isKickoff("generate a wiki plan", "idle"), true);
@@ -296,20 +296,20 @@ test("uiMessagesToSessionMessages preserves tool and data parts", () => {
       parts: [
         { type: "text", text: "plan" },
         {
-          type: "tool-request_user_decision",
-          toolCallId: "t1",
-          state: "input-available",
-          input: { question: "ok?", mode: "choice_only", options: [] },
-        } as UIMessage["parts"][number],
-        {
           type: "data-run",
           id: "d1",
           data: { runId: "run-123", status: "starting" },
         } as UIMessage["parts"][number],
         {
-          type: "data-choice",
+          type: "data-gate",
           id: "d2",
-          data: { question: "Pick", mode: "choice_only", options: [] },
+          data: {
+            gate: "plan",
+            question: "Pick",
+            mode: "choice_only",
+            options: [{ id: "approve", label: "Yes" }],
+            cancelled: false,
+          },
         } as UIMessage["parts"][number],
         {
           type: "data-plan",
@@ -325,16 +325,17 @@ test("uiMessagesToSessionMessages preserves tool and data parts", () => {
 
   const stored = uiMessagesToSessionMessages(messages);
   assert.equal(stored.length, 2);
-  assert.equal(stored[1]!.parts.length, 5);
-  assert.equal(stored[1]!.parts[2]!.type, "data-run");
-  assert.deepEqual((stored[1]!.parts[2] as { data: unknown }).data, {
+  assert.equal(stored[1]!.parts.length, 4);
+  assert.equal(stored[1]!.parts[1]!.type, "data-run");
+  assert.deepEqual((stored[1]!.parts[1] as { data: unknown }).data, {
     runId: "run-123",
     status: "starting",
   });
-  assert.equal(stored[1]!.parts[4]!.type, "data-plan");
+  assert.equal(stored[1]!.parts[2]!.type, "data-gate");
+  assert.equal(stored[1]!.parts[3]!.type, "data-plan");
 
   const roundTrip = sessionMessagesToUIMessages(stored);
-  assert.equal(roundTrip[1]!.parts.length, 5);
+  assert.equal(roundTrip[1]!.parts.length, 4);
   const dataRun = roundTrip[1]!.parts.find((p) => p.type === "data-run");
   assert.ok(dataRun);
   assert.equal(
@@ -372,4 +373,59 @@ test("sessionMessagesToUIMessages round-trips step-start", () => {
   const ui = sessionMessagesToUIMessages(stored);
   assert.equal(ui[0]!.parts[0]!.type, "step-start");
   assert.equal(ui[0]!.parts[1]!.type, "text");
+});
+
+/**
+ * Deletion guard (ADR 0029 / operator-event contract): Session shell must not
+ * construct business progress parts. Produce owns those via writer.custom.
+ */
+test("session-turn source does not synthesize business progress parts", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { fileURLToPath } = await import("node:url");
+  const path = await import("node:path");
+  // Tests run from dist/session-turn/; source of truth is packages/agent/src/session-turn/.
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const srcDir = path.resolve(here, "..", "..", "src", "session-turn");
+  const files = ["index.ts", "stream-pipe.ts", "plan.ts", "types.ts", "cancel.ts"];
+  let src = "";
+  for (const f of files) {
+    src += await readFile(path.join(srcDir, f), "utf8");
+  }
+  // Product shell parts Session may still write:
+  assert.match(src, /type:\s*"data-gate"/);
+  assert.match(src, /type:\s*"data-plan"/);
+  assert.match(src, /type:\s*"data-run"/);
+  // Business progress must not be constructed by Session:
+  assert.equal(
+    /type:\s*"data-plan-progress"/.test(src),
+    false,
+    "Session must not construct data-plan-progress",
+  );
+  assert.equal(
+    /type:\s*"data-progress"/.test(src),
+    false,
+    "Session must not construct data-progress",
+  );
+  assert.equal(
+    /type:\s*"data-defects"/.test(src),
+    false,
+    "Session must not construct data-defects",
+  );
+  assert.equal(
+    /type:\s*"data-agent-span"/.test(src),
+    false,
+    "Session must not construct data-agent-span",
+  );
+  assert.equal(
+    /type:\s*"data-sources-index"/.test(src),
+    false,
+    "Session must not construct data-sources-index",
+  );
+  assert.equal(
+    /writePlanProgressFallback|writePhaseProgress|writtenPathsFromSessionMessages/.test(
+      src,
+    ),
+    false,
+    "Session progress synthesis helpers must stay deleted",
+  );
 });

@@ -1,19 +1,20 @@
 /**
  * Run console / headless job projection over the wiki-run workflow.
  *
- * Live timeline uses the same framework conversion as Session
- * (`openWikiRunUiProjection` → toAISdkStream). Terminal audit replay uses
- * `workflowSnapshotToStream` (ADR 0027 Phase 6 full Run SSE cutover).
+ * Live timeline shares Session's path: openWikiRunUiProjection → toAISdkStream
+ * → uiChunkToJobEvent. Terminal audit replay uses workflowSnapshotToStream
+ * (ADR 0027 Phase 6 full Run SSE cutover).
  */
 
 import type { WikiRunPlan, WorkspaceConfig } from "@okf-wiki/contract";
 import { applyLateAbortStatus } from "@okf-wiki/core";
 import { redactErrorMessage } from "./run-redact.js";
-import { stepIdForGate } from "./wiki-run-orchestrator.js";
+import { isRunCancelledError } from "./session-turn/cancel.js";
 import {
-  openWikiRunUiProjection,
-  type WikiWorkflowUiParams,
-} from "./workflow-ui-stream.js";
+  stepIdForGate,
+  type WikiRunOpenParams,
+} from "./wiki-run-orchestrator.js";
+import { openWikiRunUiProjection } from "./workflow-ui-stream.js";
 import {
   mapWorkflowResult,
   type WikiWorkflowTerminal,
@@ -47,18 +48,6 @@ export type StartWikiRunInput = {
 
 /** Job/orchestration result — same shape as unified WikiWorkflowTerminal. */
 export type WikiRunOrchestrationResult = WikiWorkflowTerminal;
-
-function isCancelledError(error: unknown): boolean {
-  if (!error || typeof error !== "object") {
-    return false;
-  }
-  const name = (error as { name?: string }).name;
-  if (name === "WikiRunCancelled" || name === "AbortError") {
-    return true;
-  }
-  const message = error instanceof Error ? error.message : String(error);
-  return /plan declined|cancelled|aborted|bailed/i.test(message);
-}
 
 async function consumeUiProjection(
   stream: ReadableStream<unknown>,
@@ -112,7 +101,7 @@ function cancelledResult(): WikiRunOrchestrationResult {
 
 /**
  * Start (or re-create) the wiki-run workflow for a product run id.
- * Mirrors Session: openWikiRunUiProjection (framework toAISdkStream).
+ * Same open + toAISdkStream path as Session (openWikiRunUiProjection).
  */
 export async function startWikiRun(
   input: StartWikiRunInput,
@@ -121,7 +110,7 @@ export async function startWikiRun(
     return cancelledResult();
   }
   try {
-    const params: WikiWorkflowUiParams = {
+    const params: WikiRunOpenParams = {
       kind: "start",
       runId: input.runId,
       workspace: input.workspace,
@@ -142,7 +131,7 @@ export async function startWikiRun(
       Boolean(input.abortSignal?.aborted),
     ) as WikiRunOrchestrationResult;
   } catch (error) {
-    if (isCancelledError(error) || input.abortSignal?.aborted) {
+    if (isRunCancelledError(error) || input.abortSignal?.aborted) {
       return cancelledResult();
     }
     return {
@@ -203,7 +192,7 @@ export async function resumeWikiRun(
       Boolean(input.abortSignal?.aborted),
     ) as WikiRunOrchestrationResult;
   } catch (error) {
-    if (isCancelledError(error) || input.abortSignal?.aborted) {
+    if (isRunCancelledError(error) || input.abortSignal?.aborted) {
       return cancelledResult();
     }
     return {

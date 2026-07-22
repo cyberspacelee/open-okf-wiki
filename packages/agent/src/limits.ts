@@ -19,16 +19,6 @@ export const DEFAULT_ORCHESTRATION: WorkspaceOrchestration = {
   reviewCouncilSize: 1,
 };
 
-/** @deprecated Prefer resolveOrchestration(workspace). */
-export const ADAPTIVE_RUN_LIMITS = {
-  maxDepth: DEFAULT_ORCHESTRATION.maxDepth,
-  maxDomainFanOut: DEFAULT_ORCHESTRATION.maxDomainFanOut,
-  maxLeafFanOut: DEFAULT_ORCHESTRATION.maxLeafFanOut,
-  domainMaxSteps: DEFAULT_ORCHESTRATION.domainMaxSteps,
-  leafMaxSteps: DEFAULT_ORCHESTRATION.leafMaxSteps,
-  reviewerMaxSteps: DEFAULT_ORCHESTRATION.reviewerMaxSteps,
-} as const;
-
 export function resolveOrchestration(
   workspace?: WorkspaceConfig | null,
 ): WorkspaceOrchestration {
@@ -64,9 +54,4 @@ export function orchestrationLimitsInstruction(
     "Replan the Spec when discovery changes page set; keep a changelog entry.",
     "Before finishing, run review council and repair blocking defects.",
   ].join(" ");
-}
-
-/** @deprecated Use orchestrationLimitsInstruction */
-export function adaptiveLimitsInstruction(): string {
-  return orchestrationLimitsInstruction();
 }

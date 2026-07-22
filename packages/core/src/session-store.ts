@@ -1,12 +1,5 @@
 import { randomUUID } from "node:crypto";
-import {
-  mkdir,
-  readdir,
-  readFile,
-  rename,
-  unlink,
-  writeFile,
-} from "node:fs/promises";
+import { readdir, readFile, unlink } from "node:fs/promises";
 import path from "node:path";
 import {
   OperatorSessionSchema,
@@ -16,13 +9,14 @@ import {
   type PendingInteraction,
   type SessionWorkflowState,
 } from "@okf-wiki/contract";
+import { atomicWriteJson as atomicWriteJsonUnlocked } from "./atomic-write.js";
 import { isPathInside, WORKSPACE_DIR_NAME } from "./workspace-store.js";
 
 const SESSIONS_DIR = "sessions";
 
 /**
- * On-disk session uses an unsupported schemaVersion (missing / pre-v2).
- * Product does not migrate — wipe sessions and start new (ADR 0027).
+ * On-disk session uses an unsupported schemaVersion (missing / pre-v3 / v2).
+ * Product does not migrate — wipe sessions and start new (ADR 0027 / 0029).
  */
 export class SessionSchemaVersionError extends Error {
   readonly sessionId: string;
@@ -75,15 +69,11 @@ function sessionPath(rootPath: string, sessionId: string): string {
   return path.join(sessionsDir(rootPath), `${sessionId}.json`);
 }
 
+/** Session writes serialize per path then use shared atomic JSON write. */
 async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
-  await withSessionFileLock(filePath, async () => {
-    const dir = path.dirname(filePath);
-    await mkdir(dir, { recursive: true });
-    // Unique temp name avoids clobber races between concurrent writers.
-    const tempPath = `${filePath}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
-    await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-    await rename(tempPath, filePath);
-  });
+  await withSessionFileLock(filePath, () =>
+    atomicWriteJsonUnlocked(filePath, value),
+  );
 }
 
 export async function createOperatorSession(options: {
@@ -129,7 +119,7 @@ export async function loadOperatorSession(
       // Corrupt mid-write (should be rare with file lock); treat as missing.
       return null;
     }
-    // Reject pre-v2 / wrong version before full schema parse (clear operator error).
+    // Reject pre-v3 / wrong version before full schema parse (clear operator error).
     if (
       !json ||
       typeof json !== "object" ||
@@ -288,22 +278,8 @@ export function neutralizeSessionDecisionParts(
     return {
       ...m,
       parts: m.parts.map((p) => {
-        if (
-          typeof p.type === "string" &&
-          p.type === "tool-request_user_decision" &&
-          "state" in p &&
-          p.state === "input-available"
-        ) {
-          return {
-            ...p,
-            state: "output-denied" as const,
-            output: { cancelled: true },
-          };
-        }
-        if (
-          typeof p.type === "string" &&
-          (p.type === "data-choice" || p.type === "data-gate")
-        ) {
+        // Product HITL is data-gate only (ADR 0029); ignore any other part types.
+        if (typeof p.type === "string" && p.type === "data-gate") {
           const data =
             p && typeof p === "object" && "data" in p
               ? (p.data as Record<string, unknown>)

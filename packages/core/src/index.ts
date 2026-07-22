@@ -32,6 +32,16 @@ export {
   normalizeSkillRelative,
 } from "./skill-fork.js";
 export {
+  resolveSkillPath,
+  resolveSkillSource,
+  resolvePackageSkillPath,
+  ensureHomeProducerSkill,
+  skillLayoutPaths,
+  type ResolveSkillSourceOptions,
+  type ResolvedSkillSource,
+} from "./skill-path.js";
+export { atomicWriteJson } from "./atomic-write.js";
+export {
   DEFAULT_PRODUCER_SKILL_NAME,
   AGENTS_DIR_NAME,
   SKILLS_DIR_NAME,

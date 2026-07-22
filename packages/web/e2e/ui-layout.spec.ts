@@ -58,12 +58,12 @@ test.describe("UI layout smoke — Session / Settings skill / Sources", () => {
     await expectVisibleBox(page.getByTestId("settings-skill-save-file"));
     await expectVisibleBox(page.getByTestId("settings-skill-reset"));
 
-    // --- Runs job console layout ---
+    // --- Jobs console layout (Run page demoted; ADR 0026/0029) ---
     await page.getByTestId("workspace-subnav-run").click();
     await expect(page.getByTestId("run-page")).toBeVisible();
-    await expect(page.getByTestId("workspace-breadcrumb")).toContainText("Runs");
+    await expect(page.getByTestId("workspace-breadcrumb")).toContainText("Jobs");
     await expect(page.getByTestId("run-page").getByRole("heading", { level: 1 })).toHaveText(
-      "Runs",
+      "Jobs",
     );
     await expectVisibleBox(page.getByTestId("run-start"));
 

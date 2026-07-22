@@ -22,7 +22,7 @@ import {
   combineAbortSignals,
   getRunAbortSignal,
 } from "./run-abort.js";
-import { runWikiAgent, stagingDirForRun } from "./run.js";
+import { runWikiAgent, stagingDirForRun } from "./produce/index.js";
 import { readWikiRunSpec } from "./spec-store.js";
 
 /** Merge Mastra step abort with product cancel (Stop / cancel API). */

@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   StoredRunRecordSchema,
   type StoredRunRecord,
   type WikiRunRecordStatus,
 } from "@okf-wiki/contract";
+import { atomicWriteJson } from "./atomic-write.js";
 import {
   canTransitionToCancelled,
   cancelWinsOverPatch,
@@ -23,15 +24,6 @@ function runsDir(rootPath: string): string {
 /** Absolute path to `{root}/.okf-wiki/runs/{runId}.json`. */
 function runRecordPath(rootPath: string, runId: string): string {
   return path.join(runsDir(rootPath), `${runId}.json`);
-}
-
-async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
-  const dir = path.dirname(filePath);
-  await mkdir(dir, { recursive: true });
-  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  const body = `${JSON.stringify(value, null, 2)}\n`;
-  await writeFile(tempPath, body, "utf8");
-  await rename(tempPath, filePath);
 }
 
 export type CreateRunOptions = {

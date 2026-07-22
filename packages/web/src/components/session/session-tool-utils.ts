@@ -114,7 +114,10 @@ export function pathFromWritePart(
   return undefined;
 }
 
-/** Collect write_wiki paths + data-plan-progress written pages across messages. */
+/**
+ * Collect written Spec pages from Produce `data-plan-progress` parts only.
+ * Does not invent checklist status from tool-write_wiki (ADR 0029 / operator-event contract).
+ */
 export function writtenPathsFromMessages(
   messages: UIMessage | readonly UIMessage[],
 ): Set<string> {
@@ -122,10 +125,6 @@ export function writtenPathsFromMessages(
   const paths = new Set<string>();
   for (const message of list) {
     for (const part of message.parts ?? []) {
-      const path = pathFromWritePart(part);
-      if (path) {
-        paths.add(path);
-      }
       if (part.type === "data-plan-progress" && "data" in part) {
         const data = part.data;
         if (data && typeof data === "object" && Array.isArray((data as { pages?: unknown }).pages)) {

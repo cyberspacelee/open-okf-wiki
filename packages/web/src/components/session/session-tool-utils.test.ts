@@ -10,7 +10,7 @@ import {
   writtenPathsFromMessages,
 } from "./session-tool-utils.ts";
 
-test("writtenPathsFromMessages aggregates across messages", () => {
+test("writtenPathsFromMessages does not invent paths from write_wiki tools", () => {
   const messages = [
     {
       id: "a1",
@@ -25,16 +25,41 @@ test("writtenPathsFromMessages aggregates across messages", () => {
         },
       ],
     },
+  ] as UIMessage[];
+
+  const paths = writtenPathsFromMessages(messages);
+  assert.equal(paths.size, 0);
+});
+
+test("writtenPathsFromMessages aggregates data-plan-progress across messages", () => {
+  const messages = [
+    {
+      id: "a1",
+      role: "assistant",
+      parts: [
+        {
+          type: "data-plan-progress",
+          data: {
+            pages: [
+              { path: "overview.md", status: "written" },
+              { path: "x.md", status: "pending" },
+            ],
+          },
+        },
+      ],
+    },
     {
       id: "a2",
       role: "assistant",
       parts: [
         {
-          type: "tool-write_wiki",
-          toolName: "write_wiki",
-          state: "output-available",
-          input: { path: "./architecture.md" },
-          output: { path: "architecture.md", bytes: 2 },
+          type: "data-plan-progress",
+          data: {
+            pages: [
+              { path: "overview.md", status: "written" },
+              { path: "architecture.md", status: "written" },
+            ],
+          },
         },
       ],
     },
@@ -44,6 +69,7 @@ test("writtenPathsFromMessages aggregates across messages", () => {
   assert.equal(paths.size, 2);
   assert.ok(paths.has("overview.md"));
   assert.ok(paths.has("architecture.md"));
+  assert.equal(paths.has("x.md"), false);
 });
 
 test("groupPartsForRender batches consecutive completed reads", () => {
@@ -105,25 +131,3 @@ test("REGISTERED_TOOL_BODY_NAMES lists wiki discovery tools", () => {
   assert.ok(REGISTERED_TOOL_BODY_NAMES.includes("search_source"));
 });
 
-test("writtenPathsFromMessages includes data-plan-progress written pages", () => {
-  const messages = [
-    {
-      id: "a1",
-      role: "assistant",
-      parts: [
-        {
-          type: "data-plan-progress",
-          data: {
-            pages: [
-              { path: "overview.md", status: "written" },
-              { path: "x.md", status: "pending" },
-            ],
-          },
-        },
-      ],
-    },
-  ] as UIMessage[];
-  const paths = writtenPathsFromMessages(messages);
-  assert.ok(paths.has("overview.md"));
-  assert.equal(paths.has("x.md"), false);
-});

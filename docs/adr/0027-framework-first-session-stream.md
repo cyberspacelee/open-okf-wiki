@@ -41,8 +41,8 @@ A **minimal fork** of that path is allowed: product abort bind + `closeOnSuspend
 
 ### 3. Destructive API / schema (landed)
 
-- Persist Session history as **AI SDK UIMessage-compatible** `SessionMessage[]` with product **`schemaVersion: 2`**.
-- **Reject** on-disk sessions with missing or non-2 `schemaVersion` — **no migrate-from-v1**.
+- Persist Session history as **AI SDK UIMessage-compatible** `SessionMessage[]` with product **`schemaVersion`** (see ADR 0029 for current value **3**).
+- **Reject** on-disk sessions with missing or non-current `schemaVersion` — **no migrate** (v1→v2 was the first wipe cutover; v2→v3 is ADR 0029).
 - Structured **`resumeData`** (+ `runId` + `step`) only for gates; no free-text approve/deny inference; no `body.messages[]` legacy.
 - Web loads session messages with a thin cast (no local part-rewrite bridge).
 - Headless runs share the same shell and force `sessionId` so trajectory lands on the Session timeline.
@@ -53,7 +53,7 @@ When loading or listing sessions fails with unsupported `schemaVersion`:
 
 1. Under the workspace root, delete `.okf-wiki/sessions/*.json` (or the specific session file named in the error).
 2. Create a **new** Operator Session from the UI (or `POST .../sessions`).
-3. Do **not** hand-edit old JSON to set `schemaVersion: 2` — message/part contracts are not migrated.
+3. Do **not** hand-edit old JSON to set the current `schemaVersion` — message/part contracts are not migrated.
 
 HTTP APIs surface this as **410** with the wipe path in the message. Delete of a legacy session file is still allowed so operators can recover without shell access.
 

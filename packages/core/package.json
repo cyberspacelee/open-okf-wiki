@@ -17,7 +17,8 @@
     "test": "tsc -p tsconfig.json && node --test dist/**/*.test.js"
   },
   "dependencies": {
-    "@okf-wiki/contract": "workspace:*"
+    "@okf-wiki/contract": "workspace:*",
+    "@okf-wiki/skill": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

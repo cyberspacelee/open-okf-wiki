@@ -10,6 +10,7 @@ export {
   WikiLanguageSchema,
   IGNORE_PRESETS,
   WorkspaceConfigSchema,
+  WorkspaceSummarySchema,
   GitProbeSchema,
   type SourceOrigin,
   type WorkspaceSource,
@@ -19,6 +20,7 @@ export {
   type WorkspaceOrchestration,
   type WikiLanguage,
   type WorkspaceConfig,
+  type WorkspaceSummary,
   type GitProbe,
 } from "./workspace.js";
 

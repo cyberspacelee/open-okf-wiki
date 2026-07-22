@@ -64,18 +64,12 @@ function isMidFlightPhase(phase: string | undefined): boolean {
   return phase === "planning" || phase === "writing";
 }
 
+/** Actionable product HITL chips — `data-gate` only (ADR 0029). */
 function hasActionableGateParts(messages: SessionMessage[]): boolean {
   return messages.some((m) =>
     m.parts.some((p) => {
       if (
-        p.type === "tool-request_user_decision" &&
-        "state" in p &&
-        p.state === "input-available"
-      ) {
-        return true;
-      }
-      if (
-        (p.type === "data-gate" || p.type === "data-choice") &&
+        p.type === "data-gate" &&
         "data" in p &&
         p.data &&
         typeof p.data === "object"
@@ -91,7 +85,7 @@ function hasActionableGateParts(messages: SessionMessage[]): boolean {
 /**
  * Ensure a live data-gate part exists for the current run gate (old sessions /
  * orphan recovery). Appends a small assistant message when needed.
- * Options come only from mapRunGateToGateUi (shared with session-stream).
+ * Options come only from mapRunGateToGateUi (shared with SessionTurn).
  */
 export function ensureGateMessage(
   messages: SessionMessage[],
@@ -169,8 +163,8 @@ export function ensureGateMessage(
  * Pure reconcile: align session status/phase/pending/chips with linked run.
  * Returns `{ changed: false }` when no durable rewrite is needed.
  *
- * Legacy gate parts (tool-request_user_decision / data-choice) are not migrated.
- * schemaVersion < 2 sessions are rejected on load; v2 stores data-gate only.
+ * HITL chips are product `data-gate` only. schemaVersion ≠ 3 sessions are
+ * rejected on load (no migrate from v2 / data-choice). ADR 0029.
  */
 export function reconcileSessionWithRun(
   session: OperatorSession,

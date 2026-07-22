@@ -8,7 +8,7 @@ import {
   defaultWikiRunSpec,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
-import { runWikiAgent } from "./run.js";
+import { runWikiAgent } from "./produce/index.js";
 
 async function minimalWorkspace(root: string): Promise<WorkspaceConfig> {
   const sourcePath = path.join(root, "src-repo");
@@ -127,6 +127,29 @@ test("fixture write phase emits data-plan-progress via writer.custom", async () 
       (p) => p.path === "overview.md" && p.status === "written",
     ),
   );
+  // Phase strip also via custom (Produce emitRunPhase)
+  const phases = customChunks.filter(
+    (c) =>
+      c &&
+      typeof c === "object" &&
+      (c as { type?: string }).type === "data-progress",
+  );
+  assert.ok(
+    phases.length >= 1,
+    `expected data-progress via custom, got ${JSON.stringify(customChunks)}`,
+  );
+  const phaseNames = phases.map(
+    (c) =>
+      (c as { data?: { phase?: string } }).data?.phase ?? "",
+  );
+  assert.ok(
+    phaseNames.includes("writing"),
+    `expected writing phase, got ${phaseNames.join(",")}`,
+  );
+  assert.ok(
+    phaseNames.includes("reviewing") || phaseNames.includes("done"),
+    `expected reviewing/done, got ${phaseNames.join(",")}`,
+  );
   // tool/text still go through write(), not custom
   const writeTypes = writeChunks.map((c) =>
     c && typeof c === "object" && "type" in c
@@ -134,4 +157,51 @@ test("fixture write phase emits data-plan-progress via writer.custom", async () 
       : "",
   );
   assert.ok(writeTypes.includes("tool-result"));
+});
+
+test("fixture plan phase emits data-progress and pending plan-progress via custom", async () => {
+  process.env.OKF_WIKI_AGENT_MODE = "fixture";
+  const root = await mkdtemp(path.join(tmpdir(), "okf-writer-plan-"));
+  const customChunks: unknown[] = [];
+  const result = await runWikiAgent({
+    runId: "run-writer-plan",
+    workspace: await minimalWorkspace(root),
+    phase: "plan",
+    writer: {
+      write: async () => {},
+      custom: async (chunk: unknown) => {
+        customChunks.push(chunk);
+      },
+    } as {
+      write: (chunk: unknown) => Promise<void>;
+      custom: (chunk: unknown) => Promise<void>;
+    },
+  });
+  assert.equal(result.status, "awaiting_plan");
+  assert.ok(result.plan?.pages?.length);
+  const types = customChunks.map((c) =>
+    c && typeof c === "object" && "type" in c
+      ? String((c as { type: string }).type)
+      : "",
+  );
+  assert.ok(
+    types.includes("data-progress"),
+    `expected data-progress, got ${types.join(",")}`,
+  );
+  assert.ok(
+    types.includes("data-plan-progress"),
+    `expected data-plan-progress, got ${types.join(",")}`,
+  );
+  const planProgress = customChunks.find(
+    (c) =>
+      c &&
+      typeof c === "object" &&
+      (c as { type?: string }).type === "data-plan-progress",
+  ) as {
+    data?: { pages?: Array<{ path?: string; status?: string }> };
+  };
+  assert.ok((planProgress.data?.pages ?? []).length > 0);
+  assert.ok(
+    (planProgress.data?.pages ?? []).every((p) => p.status === "pending"),
+  );
 });

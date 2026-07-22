@@ -62,6 +62,18 @@ _Avoid_: Renderer schema, mandatory page taxonomy, typed content block
 The model-directed sequence of repository exploration, page design, writing, review, and completion decisions for one Wiki Run, directed by the Producer Skill within Run Boundary limits.
 _Avoid_: Python state machine, fixed role pipeline, Run Instructions dump
 
+**Produce** (also: Supervisor produce; Layer B Semantic Workflow body):
+The thin Workflow shell step that owns Wiki generation work: Root → Domain → Leaf supervisor tree, living WikiRunSpec, Host review council, repair rounds, and **all business Operator Event** emissions (`data-plan-progress`, `data-progress`, `data-defects`, `data-agent-span`, `data-sources-index`, tool/text). Not the Session shell and not Run REST.
+_Avoid_: Session-synthesized progress, durable-produce stub, second write path, adaptive stage machine
+
+**Operator Event** (also: Operator timeline parts):
+UIMessage `data-*` / tool / text parts that form the operator-visible Wiki Run trajectory on the Session timeline. Business progress parts are emitted only from Produce; Session forwards the framework stream and must not invent progress. Contract: [docs/design/operator-event-contract.md](docs/design/operator-event-contract.md).
+_Avoid_: Hand-rolled Session SSE protocol, dual converters, Session business fallbacks, `data-choice` legacy gates
+
+**SessionTurn**:
+The deep product module for one operator chat turn: intent/mode resolution, turn lock, start/resume param assembly, framework stream tee into Session history, and onFinish drain into Session–Run transition. Owns conversational HITL routing — not Produce semantics or business progress synthesis.
+_Avoid_: Semantic Workflow body, second progress author, free-text gate parser
+
 **WikiRunSpec** (also: living Spec; operator plan-gate payload):
 The executable specification for one Wiki Run: audience, domains, intended pages with reader questions, acceptance (review rounds / blocking severities), open questions, and replan changelog. Persisted under the run analysis scratch (`spec.json`) and revised when discovery demands it.
 _Avoid_: Thin path-only checklist, Todo transcript, Operator Session history as the only plan store
@@ -71,8 +83,8 @@ Older ADRs/skills may say “Run Plan”; map to **WikiRunSpec** / living Spec.
 _Avoid_: Treating Run Plan as a separate durable product object
 
 **Operator Session**:
-The operator-facing **sole truth surface** for one project thread (Session-centric agent, ADR 0026): durable AI SDK message history (`parts`, on-disk `schemaVersion: 2`), tool/progress visibility, pending decisions, workflow view (plan, linked runs), and zero or more Wiki Runs owned by that thread. Foreground or background execution still appends to this timeline. Primary UI is the Session chatbot page (AI Elements + `useChat`). Stream/HITL conversion is framework-first (Mastra + AI SDK, ADR 0027). Unsupported older session files are rejected — wipe `.okf-wiki/sessions/*.json` and start a new session (no migrator; see ADR 0027).
-_Avoid_: Wiki Run as the main UI, chat as only a job form, Run console as the default human operate surface, discarding timeline because it is “not a graph checkpoint”
+The operator-facing **sole truth surface** for one project thread (Session-centric agent, ADR 0026): durable AI SDK message history (`parts`; on-disk `schemaVersion: 3` per ADR 0027/0029), tool/progress visibility, pending decisions, workflow view (plan, linked runs), and zero or more Wiki Runs owned by that thread. Foreground or background execution still appends to this timeline. Primary UI is the Session chatbot page (AI Elements + `useChat`). Stream/HITL conversion is framework-first (Mastra + AI SDK, ADR 0027). HITL chips are product `data-gate` only. Business Operator Events come from Produce only (ADR 0029). Unsupported older session files are rejected — wipe `.okf-wiki/sessions/*.json` and start a new session (no migrator).
+_Avoid_: Wiki Run as the main UI, chat as only a job form, Run console as the default human operate surface, Session-synthesized business progress, discarding timeline because it is “not a graph checkpoint”
 
 **Wiki Reviewer** / **Review council**:
 Independent, read-only agent role(s) that inspect the Staging Wiki against sources and Skill review guidance. Host merges outputs into `defects.json`; Root repairs; Host **fail-closes** publish when blocking defects remain. Reviewers never write Wiki pages or publish.
@@ -146,3 +158,4 @@ Index and current-stack shortlist: [docs/adr/README.md](docs/adr/README.md).
 - Pre-[0021](docs/adr/0021-retire-python-primary-path.md): Python / Pydantic AI harness language → TypeScript `@okf-wiki/core` (Run Boundary) + `@okf-wiki/agent` (Mastra).
 - [0020](docs/adr/0020-typescript-mastra-web-workspace.md) §6 originally forbade product clone; **operator clone** is allowed per [0022](docs/adr/0022-source-clone-into-workspace.md) (Semantic Workflow still never clones).
 - Session stream / single write path: [0024](docs/adr/0024-session-as-conversational-workspace.md) + [0025](docs/adr/0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) supersede transitional Session-SSE wording in [0023](docs/adr/0023-operator-session-stream-and-plan-confirm.md).
+- Operator Event emit / no-compat cleanup: [0029](docs/adr/0029-architecture-cleanup-no-compat.md) + [operator-event contract](docs/design/operator-event-contract.md) — Produce only; Session does not synthesize business progress; durable-produce deleted.

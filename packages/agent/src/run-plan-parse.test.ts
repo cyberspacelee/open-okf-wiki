@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parsePlanFromAgentText } from "./run.js";
+import { parsePlanFromAgentText } from "./produce/index.js";
 
 test("parsePlanFromAgentText extracts markdown list pages", () => {
   const plan = parsePlanFromAgentText(

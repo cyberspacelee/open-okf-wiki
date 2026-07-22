@@ -3,11 +3,11 @@
  * Toggle is Settings page only — no environment override.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { skillLayoutPaths } from "@okf-wiki/agent";
 import {
   readAppState,
   resolveLoadHomeSkills,
   setLoadHomeSkills,
+  skillLayoutPaths,
 } from "@okf-wiki/core";
 import { readJsonBody, sendError, sendJson } from "../http-util.ts";
 

@@ -21,43 +21,53 @@ test("create/load/list operator sessions", async () => {
     title: "T",
   });
   assert.equal(s.workspaceId, "ws1");
-  assert.equal(s.schemaVersion, 2);
+  assert.equal(s.schemaVersion, 3);
   const loaded = await loadOperatorSession(root, s.id);
   assert.equal(loaded?.id, s.id);
-  assert.equal(loaded?.schemaVersion, 2);
+  assert.equal(loaded?.schemaVersion, 3);
   const list = await listOperatorSessions(root);
   assert.equal(list.length, 1);
 });
 
-test("loadOperatorSession rejects schemaVersion < 2 (no migrate)", async () => {
+test("loadOperatorSession rejects schemaVersion ≠ 3 (no migrate)", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-sess-v1-"));
   const dir = path.join(root, ".okf-wiki", "sessions");
   await mkdir(dir, { recursive: true });
-  const id = "legacy-sess";
-  await writeFile(
-    path.join(dir, `${id}.json`),
-    `${JSON.stringify({
-      id,
-      workspaceId: "ws1",
-      title: "Old",
-      status: "active",
-      messages: [],
-      workflow: { phase: "idle" },
-      pending: null,
-      createdAt: "2026-01-01T00:00:00.000Z",
-      updatedAt: "2026-01-01T00:00:00.000Z",
-    }, null, 2)}\n`,
-    "utf8",
-  );
-  await assert.rejects(
-    () => loadOperatorSession(root, id),
-    (err: unknown) => {
-      assert.ok(err instanceof SessionSchemaVersionError);
-      assert.match(String(err), /unsupported schemaVersion/);
-      assert.match(String(err), /\.okf-wiki\/sessions/);
-      return true;
-    },
-  );
+
+  const writeLegacy = async (id: string, schemaVersion?: number) => {
+    await writeFile(
+      path.join(dir, `${id}.json`),
+      `${JSON.stringify({
+        ...(schemaVersion !== undefined ? { schemaVersion } : {}),
+        id,
+        workspaceId: "ws1",
+        title: "Old",
+        status: "active",
+        messages: [],
+        workflow: { phase: "idle" },
+        pending: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      }, null, 2)}\n`,
+      "utf8",
+    );
+  };
+
+  await writeLegacy("legacy-missing");
+  await writeLegacy("legacy-v2", 2);
+
+  for (const id of ["legacy-missing", "legacy-v2"] as const) {
+    await assert.rejects(
+      () => loadOperatorSession(root, id),
+      (err: unknown) => {
+        assert.ok(err instanceof SessionSchemaVersionError);
+        assert.match(String(err), /unsupported schemaVersion/);
+        assert.match(String(err), /need 3/);
+        assert.match(String(err), /\.okf-wiki\/sessions/);
+        return true;
+      },
+    );
+  }
 });
 
 test("appendSessionMessages updates pending and workflow", async () => {
@@ -93,7 +103,7 @@ test("appendSessionMessages updates pending and workflow", async () => {
   assert.equal(next.pending?.mode, "choice_only");
 });
 
-test("resetOperatorSessionWorkflow clears gate and neutralizes chips", async () => {
+test("resetOperatorSessionWorkflow clears gate and neutralizes data-gate chips", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-sess-r-"));
   const s = await createOperatorSession({
     workspaceRoot: root,
@@ -109,20 +119,13 @@ test("resetOperatorSessionWorkflow clears gate and neutralizes chips", async () 
         parts: [
           { type: "text", text: "plan?" },
           {
-            type: "tool-request_user_decision",
-            toolCallId: "t1",
-            state: "input-available",
-            input: {
+            type: "data-gate",
+            data: {
+              gate: "plan",
               question: "ok?",
               mode: "choice_only",
               options: [{ id: "approve", label: "Yes" }],
-            },
-          },
-          {
-            type: "data-choice",
-            data: {
-              question: "ok?",
-              options: [{ id: "approve", label: "Yes" }],
+              cancelled: false,
             },
           },
         ],
@@ -145,15 +148,11 @@ test("resetOperatorSessionWorkflow clears gate and neutralizes chips", async () 
   assert.equal(reset.pending, null);
   assert.equal(reset.workflow.phase, "idle");
   assert.equal(reset.workflow.linkedRunId, "run-1");
-  const tool = reset.messages[0]!.parts.find(
-    (p) => p.type === "tool-request_user_decision",
-  ) as { state?: string } | undefined;
-  assert.equal(tool?.state, "output-denied");
-  const choice = reset.messages[0]!.parts.find((p) => p.type === "data-choice") as
+  const gate = reset.messages[0]!.parts.find((p) => p.type === "data-gate") as
     | { data?: { cancelled?: boolean; options?: unknown[] } }
     | undefined;
-  assert.equal(choice?.data?.cancelled, true);
-  assert.deepEqual(choice?.data?.options, []);
+  assert.equal(gate?.data?.cancelled, true);
+  assert.deepEqual(gate?.data?.options, []);
 });
 
 test("neutralizeSessionDecisionParts clears data-gate options", async () => {
@@ -184,7 +183,7 @@ test("neutralizeSessionDecisionParts clears data-gate options", async () => {
   assert.deepEqual(gate.data?.options, []);
 });
 
-test("neutralizeSessionDecisionParts can keep latest assistant chips", async () => {
+test("neutralizeSessionDecisionParts can keep latest assistant data-gate chips", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-sess-n-"));
   const s = await createOperatorSession({
     workspaceRoot: root,
@@ -197,12 +196,12 @@ test("neutralizeSessionDecisionParts can keep latest assistant chips", async () 
       role: "assistant" as const,
       parts: [
         {
-          type: "tool-request_user_decision",
-          toolCallId: "t1",
-          state: "input-available" as const,
-          input: {
+          type: "data-gate",
+          data: {
+            gate: "plan",
             question: "plan?",
             options: [{ id: "approve", label: "Yes" }],
+            cancelled: false,
           },
         },
       ],
@@ -217,12 +216,12 @@ test("neutralizeSessionDecisionParts can keep latest assistant chips", async () 
       role: "assistant" as const,
       parts: [
         {
-          type: "tool-request_user_decision",
-          toolCallId: "t2",
-          state: "input-available" as const,
-          input: {
+          type: "data-gate",
+          data: {
+            gate: "publication",
             question: "publish?",
             options: [{ id: "approve", label: "Yes" }],
+            cancelled: false,
           },
         },
       ],
@@ -231,10 +230,16 @@ test("neutralizeSessionDecisionParts can keep latest assistant chips", async () 
   const kept = neutralizeSessionDecisionParts(messages, {
     keepLatestAssistant: true,
   });
-  const oldTool = kept[0]!.parts[0] as { state?: string };
-  const newTool = kept[2]!.parts[0] as { state?: string };
-  assert.equal(oldTool.state, "output-denied");
-  assert.equal(newTool.state, "input-available");
+  const oldGate = kept[0]!.parts[0] as {
+    data?: { cancelled?: boolean; options?: unknown[] };
+  };
+  const newGate = kept[2]!.parts[0] as {
+    data?: { cancelled?: boolean; options?: unknown[] };
+  };
+  assert.equal(oldGate.data?.cancelled, true);
+  assert.deepEqual(oldGate.data?.options, []);
+  assert.equal(newGate.data?.cancelled, false);
+  assert.equal(newGate.data?.options?.length, 1);
   // silence unused root
   assert.equal(s.workspaceId, "ws1");
 });

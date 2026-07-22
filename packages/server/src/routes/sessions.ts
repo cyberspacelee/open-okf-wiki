@@ -1,9 +1,13 @@
+/**
+ * Operator Session HTTP routes.
+ * Chat handler is a thin shell: parse → lock → SessionTurn → pipe → finalize.
+ */
+
 import type { IncomingMessage, ServerResponse } from "node:http";
-import path from "node:path";
 import {
-  createSessionWorkflowStream,
+  createSessionTurnStream,
+  projectSessionMessages,
   redactErrorMessage,
-  resolveSkillPath,
   sessionMessagesToUIMessages,
   uiMessagesToSessionMessages,
   type SessionStreamBody,
@@ -15,17 +19,10 @@ import {
   loadOperatorSession,
   loadRun,
   loadWorkspaceById,
-  isSessionTurnLocked,
-  midTurnPhaseForChat,
   neutralizeSessionDecisionParts,
-  reconcileSessionWithRun,
-  registerRunRecord,
   replaceSessionMessages,
   resetOperatorSessionWorkflow,
   SessionSchemaVersionError,
-  skillDigest,
-  transition,
-  updateRunRecord,
 } from "@okf-wiki/core";
 import {
   consumeStream,
@@ -33,7 +30,7 @@ import {
   pipeUIMessageStreamToResponse,
   type UIMessage,
 } from "ai";
-import type { OperatorSession, WikiRunRecordStatus } from "@okf-wiki/contract";
+import type { OperatorSession } from "@okf-wiki/contract";
 import { helpTextForSessionTurn } from "@okf-wiki/contract";
 import {
   BodyTooLargeError,
@@ -46,64 +43,28 @@ import {
   clearRunAbortController,
   registerRunAbortController,
 } from "../run-events.ts";
+import {
+  hasSessionChatLock,
+  isSessionChatTurnBlocked,
+  releaseSessionChatLock,
+  sessionChatLockKey,
+  setSessionChatInFlightForTests,
+} from "../session-chat-lock.ts";
+import { finalizeSessionChatTurn } from "../session-chat-finalize.ts";
+import {
+  eagerMidTurnPersist,
+  eagerRegisterStartRun,
+  markRunWorkflowLive,
+} from "../session-chat-mid-turn.ts";
+import { loadSessionReconciled } from "../session-load.ts";
 
-/**
- * Align durable session gate UI with the linked run (refresh / re-open).
- * Best-effort: never fails the GET when reconcile write fails.
- */
-async function loadSessionReconciled(
-  rootPath: string,
-  sessionId: string,
-): Promise<OperatorSession | null> {
-  // SessionSchemaVersionError propagates — callers map to HTTP 410.
-  const session = await loadOperatorSession(rootPath, sessionId);
-  if (!session) {
-    return null;
-  }
-  const linkedRunId = session.workflow?.linkedRunId;
-  let runSnap: { status: WikiRunRecordStatus; plan?: OperatorSession["workflow"]["plan"] } | null =
-    null;
-  if (linkedRunId) {
-    try {
-      const run = await loadRun(rootPath, linkedRunId);
-      if (run) {
-        runSnap = {
-          status: run.status,
-          ...(run.plan ? { plan: run.plan } : {}),
-        };
-      }
-    } catch {
-      runSnap = null;
-    }
-  }
-  const patch = reconcileSessionWithRun(session, runSnap);
-  if (!patch.changed) {
-    return session;
-  }
-  try {
-    return await replaceSessionMessages(
-      rootPath,
-      sessionId,
-      patch.messages ?? session.messages,
-      {
-        ...(patch.status !== undefined ? { status: patch.status } : {}),
-        ...(patch.pending !== undefined ? { pending: patch.pending } : {}),
-        ...(patch.workflow ? { workflow: patch.workflow } : {}),
-      },
-    );
-  } catch {
-    // Return in-memory reconciled view even if disk write failed.
-    return {
-      ...session,
-      status: patch.status ?? session.status,
-      pending: patch.pending !== undefined ? patch.pending : session.pending,
-      workflow: patch.workflow
-        ? { ...session.workflow, ...patch.workflow }
-        : session.workflow,
-      messages: patch.messages ?? session.messages,
-    };
-  }
-}
+// Re-export lock helpers for existing test imports.
+export {
+  isSessionChatInFlightForTests,
+  isSessionChatTurnBlocked,
+  sessionChatLockKey,
+  setSessionChatInFlightForTests,
+} from "../session-chat-lock.ts";
 
 export async function handleListSessions(
   _req: IncomingMessage,
@@ -268,49 +229,6 @@ export async function handleResetSession(
 }
 
 /**
- * In-process lock so rapid double-submit cannot start two Wiki Runs before
- * the first turn finalizes session messages. Keyed by workspace root + session.
- */
-const sessionChatInFlight = new Set<string>();
-
-export function sessionChatLockKey(rootPath: string, sessionId: string): string {
-  return `${path.resolve(rootPath)}::${sessionId}`;
-}
-
-/**
- * Dual lock decision (pure): in-process Set OR durable session.status=running TTL.
- * Extracted so unit tests can assert concurrent-turn rejection without HTTP.
- */
-export function isSessionChatTurnBlocked(input: {
-  inFlight: boolean;
-  wouldRunWorkflow: boolean;
-  session: Pick<OperatorSession, "status" | "updatedAt">;
-  nowMs?: number;
-}): boolean {
-  return (
-    input.inFlight ||
-    (input.wouldRunWorkflow &&
-      isSessionTurnLocked(input.session, input.nowMs))
-  );
-}
-
-/** Test helper: mark / clear in-process lock without opening a chat stream. */
-export function setSessionChatInFlightForTests(
-  key: string,
-  inFlight: boolean,
-): void {
-  if (inFlight) {
-    sessionChatInFlight.add(key);
-  } else {
-    sessionChatInFlight.delete(key);
-  }
-}
-
-export function isSessionChatInFlightForTests(key: string): boolean {
-  return sessionChatInFlight.has(key);
-}
-
-/**
  * AI SDK UI message stream for conversational Session.
  *
  * Body: { message (last user only), id?, intent?, resumeData?, runId?, step? }
@@ -368,7 +286,10 @@ export async function handleSessionChat(
   }
 
   // Server is source of truth: load history, append only body.message (last only).
-  const previousUI = sessionMessagesToUIMessages(session.messages);
+  // projectSessionMessages once on load (session-messages is a structural bridge only).
+  const previousUI = sessionMessagesToUIMessages(
+    projectSessionMessages(session.messages),
+  );
   let lastFromClient: UIMessage | undefined;
   if (body.message && typeof body.message === "object") {
     lastFromClient = body.message as UIMessage;
@@ -480,7 +401,9 @@ export async function handleSessionChat(
   // onFinish / finalize cannot re-persist a stale plan card after approve.
   const historyForTurn = looksLikeResume
     ? sessionMessagesToUIMessages(
-        neutralizeSessionDecisionParts(session.messages),
+        projectSessionMessages(
+          neutralizeSessionDecisionParts(session.messages),
+        ),
       )
     : previousUI;
   const messages: UIMessage[] = [...historyForTurn, lastFromClient];
@@ -496,7 +419,7 @@ export async function handleSessionChat(
     Boolean(body.resumeData);
   if (
     isSessionChatTurnBlocked({
-      inFlight: sessionChatInFlight.has(lockKey),
+      inFlight: hasSessionChatLock(lockKey),
       wouldRunWorkflow,
       session,
     })
@@ -524,7 +447,7 @@ export async function handleSessionChat(
     });
     return;
   }
-  sessionChatInFlight.add(lockKey);
+  setSessionChatInFlightForTests(lockKey, true);
 
   // Once the server drain task is scheduled, only finalizeOnce may release the lock.
   let serverDrainOwnsLock = false;
@@ -536,7 +459,7 @@ export async function handleSessionChat(
   try {
     // abortSignalForRun registers AbortController when mode/runId are known
     // (sync, before stream execute) so Stop → abortRun can hard-stop mid-step.
-    const chat = await createSessionWorkflowStream({
+    const chat = await createSessionTurnStream({
       session: {
         ...session,
         messages: uiMessagesToSessionMessages(messages),
@@ -549,40 +472,12 @@ export async function handleSessionChat(
         return registerRunAbortController(runId);
       },
       // Mark run running only once Mastra stream is open (crash-safe vs eager).
-      // Status comes from P2 WorkflowLive — not a hard-coded "running" literal map.
       onWorkflowLive: async (liveRunId) => {
-        try {
-          const existing = await loadRun(workspace.rootPath, liveRunId);
-          if (!existing) {
-            return;
-          }
-          if (
-            existing.status === "awaiting_plan" ||
-            existing.status === "awaiting_publication" ||
-            existing.status === "running"
-          ) {
-            const livePatches = transition(
-              { type: "WorkflowLive", runId: liveRunId },
-              {
-                sessionStatus: "running",
-                workflowPhase: "planning",
-                linkedRunId: liveRunId,
-                runStatus: existing.status,
-              },
-            );
-            if (livePatches.ignore) {
-              return;
-            }
-            await updateRunRecord(workspace.rootPath, liveRunId, {
-              status: livePatches.run?.status ?? "running",
-              summary: livePatches.run?.summary ?? "Wiki Run in progress",
-              error: null,
-              sessionId,
-            }).catch(() => undefined);
-          }
-        } catch {
-          // best-effort
-        }
+        await markRunWorkflowLive({
+          workspaceRoot: workspace.rootPath,
+          sessionId,
+          liveRunId,
+        });
       },
       // Mid-stream journal so refresh mid-turn can render progress + keep catching up.
       onCheckpoint: async (snapshot) => {
@@ -611,100 +506,24 @@ export async function handleSessionChat(
     // Eager run registry on start so explicit Session Stop → cancel can target
     // the job while the first stream is still open (before finalize upsert).
     if (chat.mode === "start" && chat.runId) {
-      try {
-        const existing = await loadRun(workspace.rootPath, chat.runId);
-        if (!existing) {
-          let frozenSkillPath: string | undefined;
-          let frozenSkillDigest: string | undefined;
-          try {
-            frozenSkillPath = await resolveSkillPath({
-              skillPath: workspace.skillPath,
-              workspaceRoot: workspace.rootPath,
-            });
-            frozenSkillDigest = await skillDigest(frozenSkillPath);
-          } catch {
-            // optional freeze
-          }
-          await registerRunRecord(workspace.rootPath, workspace.id, {
-            runId: chat.runId,
-            status: "running",
-            summary: "Session Wiki Run started",
-            skillPath: frozenSkillPath,
-            skillDigest: frozenSkillDigest,
-            sessionId,
-          });
-        }
-      } catch (error) {
-        process.stderr.write(
-          `session eager run register failed: ${redactErrorMessage(error)}\n`,
-        );
-      }
+      await eagerRegisterStartRun({
+        workspace,
+        sessionId,
+        runId: chat.runId,
+      });
     }
 
-    // Eager gate-exit / mid-turn durability (ADR 0026 I6):
-    // Persist running + neutralize decision chips as soon as start/resume
-    // begins so a page refresh does not re-offer an already-answered plan gate
-    // while write work is still in flight. Phase/status via P2 transition.
+    // Eager gate-exit / mid-turn durability.
     if (chat.mode === "start" || chat.mode === "resume") {
-      try {
-        const midPhase = midTurnPhaseForChat({
-          mode: chat.mode,
-          resumeAction: body.resumeData?.action,
-          gateStep: body.step,
-          previousPhase: session.workflow?.phase,
-        });
-        const linked =
-          chat.runId ??
-          (typeof body.runId === "string" ? body.runId : undefined) ??
-          session.workflow?.linkedRunId;
-        const withUser = [
-          ...neutralizeSessionDecisionParts(session.messages),
-          ...uiMessagesToSessionMessages([lastFromClient]),
-        ];
-        // Session only: do NOT flip run off awaiting_* here. Run becomes
-        // running in onWorkflowLive after Mastra open succeeds. If we crash
-        // before that, reconcile restores the gate from the run record.
-        const event =
-          chat.mode === "start" && linked
-            ? ({
-                type: "TurnStarted" as const,
-                runId: linked,
-                phase: midPhase,
-              })
-            : linked
-              ? ({
-                  type: "WorkflowLive" as const,
-                  runId: linked,
-                  phase: midPhase,
-                })
-              : null;
-        const patches = event
-          ? transition(event, {
-              sessionStatus: session.status,
-              workflowPhase: session.workflow?.phase ?? "idle",
-              linkedRunId: session.workflow?.linkedRunId,
-              pending: session.pending,
-              plan: session.workflow?.plan,
-            })
-          : null;
-        await replaceSessionMessages(workspace.rootPath, sessionId, withUser, {
-          status: patches?.session?.status ?? "running",
-          pending:
-            patches?.session && "pending" in patches.session
-              ? (patches.session.pending ?? null)
-              : null,
-          workflow: {
-            ...session.workflow,
-            ...(patches?.session?.workflow ?? {}),
-            ...(linked ? { linkedRunId: linked } : {}),
-            phase: patches?.session?.workflow?.phase ?? midPhase,
-          },
-        });
-      } catch (error) {
-        process.stderr.write(
-          `session eager mid-turn persist failed: ${redactErrorMessage(error)}\n`,
-        );
-      }
+      await eagerMidTurnPersist({
+        workspace,
+        session,
+        sessionId,
+        mode: chat.mode,
+        runId: chat.runId,
+        body,
+        lastFromClient,
+      });
     }
 
     let finalized = false;
@@ -715,242 +534,18 @@ export async function handleSessionChat(
       finalized = true;
       allowCheckpoint = false;
       try {
-        const result = await chat.finalize();
-        let workflow = { ...result.workflow };
-        let sessionStatus = result.status;
-        let sessionPending = result.pending;
-
-        if (result.sideEffects?.upsertRun) {
-          const u = result.sideEffects.upsertRun;
-          try {
-            let frozenSkillPath: string | undefined;
-            let frozenSkillDigest: string | undefined;
-            try {
-              frozenSkillPath = await resolveSkillPath({
-                skillPath: workspace.skillPath,
-                workspaceRoot: workspace.rootPath,
-              });
-              frozenSkillDigest = await skillDigest(frozenSkillPath);
-            } catch {
-              // optional freeze
-            }
-            const existing = await loadRun(workspace.rootPath, u.runId);
-            // Late abort / cancel must not rewrite durable publish outcomes
-            // (same rule as processRunInBackground / cancelUnlessDurableSuccess).
-            const durableSuccess =
-              u.status === "published" || u.status === "publication_declined";
-            const cancelledWin =
-              !durableSuccess &&
-              (existing?.status === "cancelled" || u.status === "cancelled");
-            // Explicit Stop/cancel may mark the run cancelled while the stream
-            // still drains. Cancel wins on the record; reset session gate state.
-            if (cancelledWin) {
-              workflow = {
-                ...workflow,
-                linkedRunId: u.runId,
-                phase: "idle",
-              };
-              sessionStatus = "active";
-              sessionPending = null;
-              // Neutralize any mid-stream decision chips so durable history
-              // does not leave actionable HITL after cancel.
-              result.messages = neutralizeSessionDecisionParts(result.messages);
-              if (!existing) {
-                await registerRunRecord(workspace.rootPath, workspace.id, {
-                  runId: u.runId,
-                  status: "cancelled",
-                  pages: u.pages,
-                  summary: u.summary ?? "Wiki Run cancelled",
-                  skillPath: frozenSkillPath,
-                  skillDigest: frozenSkillDigest,
-                  sessionId: u.sessionId ?? sessionId,
-                });
-              } else if (existing.status !== "cancelled") {
-                await updateRunRecord(workspace.rootPath, u.runId, {
-                  status: "cancelled",
-                  pages: u.pages ?? null,
-                  summary: u.summary ?? "Wiki Run cancelled",
-                  error: "cancelled",
-                  ...(u.sessionId || sessionId
-                    ? { sessionId: u.sessionId ?? sessionId }
-                    : {}),
-                }).catch(() => undefined);
-              }
-            } else if (!existing) {
-              await registerRunRecord(workspace.rootPath, workspace.id, {
-                runId: u.runId,
-                status: (u.status as WikiRunRecordStatus) ?? "running",
-                pages: u.pages,
-                summary: u.summary,
-                skillPath: frozenSkillPath,
-                skillDigest: frozenSkillDigest,
-                sessionId: u.sessionId ?? sessionId,
-              });
-              workflow = {
-                ...workflow,
-                linkedRunId: u.runId,
-              };
-            } else {
-              // Registry cancel-wins: if cancel already landed, updateRunRecord
-              // keeps cancelled; session still reflects durableSuccess above.
-              await updateRunRecord(workspace.rootPath, u.runId, {
-                status: u.status as WikiRunRecordStatus,
-                pages: u.pages ?? null,
-                summary: u.summary ?? null,
-                ...(u.plan ? { plan: u.plan } : {}),
-                ...(u.sessionId || sessionId
-                  ? { sessionId: u.sessionId ?? sessionId }
-                  : {}),
-                error: null,
-              }).catch(() => undefined);
-              workflow = {
-                ...workflow,
-                linkedRunId: u.runId,
-              };
-            }
-          } catch (error) {
-            process.stderr.write(
-              `session run upsert failed: ${redactErrorMessage(error)}\n`,
-            );
-          }
-        }
-
-        // Cancel-vs-finalize TOCTOU: handleCancelRun may mark the run cancelled
-        // after our loadRun snapshot (or after we wrote awaiting_*), then clean
-        // the session. Re-read before replaceSessionMessages so a late finalize
-        // cannot restore gate HITL over cancel cleanup.
-        // Do not apply when the turn already produced a durable publish outcome.
-        const linkedRunId =
-          result.sideEffects?.upsertRun?.runId ?? chat.runId ?? undefined;
-        const upsertStatus = result.sideEffects?.upsertRun?.status;
-        const turnDurableSuccess =
-          upsertStatus === "published" ||
-          upsertStatus === "publication_declined";
-        if (linkedRunId && !turnDurableSuccess) {
-          try {
-            const latest = await loadRun(workspace.rootPath, linkedRunId);
-            if (latest?.status === "cancelled") {
-              workflow = {
-                ...workflow,
-                linkedRunId,
-                phase: "idle",
-              };
-              sessionStatus = "active";
-              sessionPending = null;
-              result.messages = neutralizeSessionDecisionParts(result.messages);
-            }
-          } catch {
-            // best-effort; prefer writing stream outcome over blocking finalize
-          }
-        }
-
-        // Persist full UIMessage timeline (text + tool + data parts), not only finalText.
-        // Always clear answered gates on older assistant turns so refresh cannot
-        // re-offer a plan chip after approve (finishedMessages may still carry them).
-        const durableMessages = neutralizeSessionDecisionParts(
-          result.messages,
-          {
-            // Keep chips only when this turn re-opened a gate (pending set).
-            keepLatestAssistant: sessionPending != null,
-          },
-        );
-        await replaceSessionMessages(
-          workspace.rootPath,
+        await finalizeSessionChatTurn({
+          workspaceRoot: workspace.rootPath,
+          workspaceId: workspace.id,
+          workspaceSkillPath: workspace.skillPath,
           sessionId,
-          durableMessages,
-          {
-            status: sessionStatus,
-            pending: sessionPending,
-            workflow,
-          },
-        );
-
-        // Post-write cancel barrier: cancel may land between the re-read above
-        // and replaceSessionMessages, restoring gate HITL over cancel cleanup.
-        // Skip when this turn already produced a durable publish outcome so a
-        // cancel-wins run record cannot clobber session phase done/completed.
-        if (linkedRunId && !turnDurableSuccess) {
-          try {
-            const after = await loadRun(workspace.rootPath, linkedRunId);
-            if (after?.status === "cancelled") {
-              const current = await loadOperatorSession(
-                workspace.rootPath,
-                sessionId,
-              );
-              if (
-                current &&
-                current.workflow?.phase !== "done" &&
-                current.status !== "completed" &&
-                (current.workflow?.phase === "awaiting_plan" ||
-                  current.workflow?.phase === "awaiting_publish" ||
-                  current.pending != null ||
-                  current.status === "waiting")
-              ) {
-                await replaceSessionMessages(
-                  workspace.rootPath,
-                  sessionId,
-                  neutralizeSessionDecisionParts(current.messages),
-                  {
-                    status: "active",
-                    pending: null,
-                    workflow: {
-                      ...current.workflow,
-                      linkedRunId,
-                      phase: "idle",
-                    },
-                  },
-                );
-              }
-            }
-          } catch {
-            // best-effort second pass
-          }
-        }
-      } catch (error) {
-        // Do not silently drop timeline — log and attempt to keep prior history
-        // while recording a durable assistant error so refresh is not empty.
-        process.stderr.write(
-          `session chat finalize failed: ${redactErrorMessage(error)}\n`,
-        );
-        try {
-          const prior = await loadOperatorSession(workspace.rootPath, sessionId);
-          if (prior) {
-            const errMsg = {
-              id: `finalize-error-${Date.now()}`,
-              role: "assistant" as const,
-              parts: [
-                {
-                  type: "text" as const,
-                  text: `Session save failed: ${redactErrorMessage(error)}. Prior history retained; retry or start a new turn.`,
-                },
-              ],
-              createdAt: new Date().toISOString(),
-            };
-            // Only append error if the user turn was already in prior; else full messages may be incomplete.
-            const hasUser = prior.messages.some((m) => m.id === lastFromClient.id);
-            await replaceSessionMessages(
-              workspace.rootPath,
-              sessionId,
-              hasUser
-                ? [...prior.messages, errMsg]
-                : [
-                    ...prior.messages,
-                    ...uiMessagesToSessionMessages([lastFromClient]),
-                    errMsg,
-                  ],
-              {
-                status: "failed",
-                pending: null,
-              },
-            );
-          }
-        } catch (secondary) {
-          process.stderr.write(
-            `session chat finalize recovery failed: ${redactErrorMessage(secondary)}\n`,
-          );
-        }
+          lastUserMessageId: lastFromClient.id,
+          lastUserMessage: lastFromClient,
+          chat,
+          uiMessagesToSessionMessages,
+        });
       } finally {
-        sessionChatInFlight.delete(lockKey);
+        releaseSessionChatLock(lockKey);
       }
     };
 
@@ -1000,7 +595,7 @@ export async function handleSessionChat(
     // Drain task (if started) finalizes, clears abort controller, and releases the lock.
     // If setup failed before drain ownership, release lock + abort map here.
     if (!serverDrainOwnsLock) {
-      sessionChatInFlight.delete(lockKey);
+      releaseSessionChatLock(lockKey);
       if (registeredAbortRunId) {
         clearRunAbortController(registeredAbortRunId);
       }

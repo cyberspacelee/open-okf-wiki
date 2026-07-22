@@ -104,6 +104,9 @@ importers:
       '@okf-wiki/contract':
         specifier: workspace:*
         version: link:../contract
+      '@okf-wiki/skill':
+        specifier: workspace:*
+        version: link:../skill
     devDependencies:
       '@types/node':
         specifier: ^22.10.2

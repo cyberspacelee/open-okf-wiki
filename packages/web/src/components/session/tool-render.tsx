@@ -75,7 +75,7 @@ export type RenderToolPartOptions = {
 };
 
 /**
- * Render one tool UI part. Returns null for suppressed HITL fakes.
+ * Render one tool UI part. Product HITL is `data-gate` only (not tool fakes).
  */
 export function renderSessionToolPart({
   key,
@@ -83,10 +83,6 @@ export function renderSessionToolPart({
   toolName,
   onApproval,
 }: RenderToolPartOptions) {
-  if (toolName === "request_user_decision") {
-    return null;
-  }
-
   const state =
     "state" in part && typeof part.state === "string"
       ? part.state

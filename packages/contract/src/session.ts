@@ -155,13 +155,14 @@ export type SessionMessage = z.infer<typeof SessionMessageSchema>;
 
 /**
  * On-disk Operator Session schema version (AI SDK UIMessage-compatible parts).
- * v1 (pre-schemaVersion field / pre-framework-first) is rejected on load — no migrator.
+ * Older versions (missing / pre-v3, including v2) are rejected on load — no migrator.
  * Operators: delete `.okf-wiki/sessions/*.json` under the workspace and start a new session.
+ * HITL uses product `data-gate` only (no `data-choice` / tool fakes). ADR 0029.
  */
-export const SESSION_SCHEMA_VERSION = 2 as const;
+export const SESSION_SCHEMA_VERSION = 3 as const;
 
 export const OperatorSessionSchema = z.object({
-  /** Product disk contract; must be 2. Missing or other values are rejected (no migrate). */
+  /** Product disk contract; must be 3. Missing or other values are rejected (no migrate). */
   schemaVersion: z.literal(SESSION_SCHEMA_VERSION),
   id: z.string().min(1),
   workspaceId: z.string().min(1),

@@ -10,8 +10,7 @@ import {
   writeFileContained,
 } from "./fs-ops.js";
 import { WikiRunSpecSchema } from "@okf-wiki/contract";
-import path from "node:path";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { readWikiRunSpec, writeWikiRunSpec } from "./spec-store.js";
 
 export type WikiRunToolRoots = {
   /** source id → absolute path */
@@ -24,10 +23,11 @@ export type WikiRunToolRoots = {
   skillRoot: string;
   wikiRoot: string;
   /**
-   * Absolute analysis scratch for this run (`…/.okf-wiki/analysis/{runId}`).
-   * When set, Root gets read_spec / write_spec tools for the living WikiRunSpec.
+   * When set with runId, Root gets read_spec / write_spec via spec-store
+   * (living WikiRunSpec under analysis scratch).
    */
-  analysisRoot?: string;
+  workspaceRoot?: string;
+  runId?: string;
 };
 
 /** Default max lines returned by read_source when limit is omitted. */
@@ -559,7 +559,10 @@ export function createWikiRunTools(roots: WikiRunToolRoots) {
     },
   });
 
-  const analysisRoot = roots.analysisRoot?.trim();
+  const workspaceRoot = roots.workspaceRoot?.trim();
+  const runId = roots.runId?.trim();
+  const specEnabled = Boolean(workspaceRoot && runId);
+
   const read_spec = createTool({
     id: "read_spec",
     description:
@@ -567,17 +570,14 @@ export function createWikiRunTools(roots: WikiRunToolRoots) {
       "Call when replanning or checking intended page set.",
     inputSchema: z.object({}),
     execute: async () => {
-      if (!analysisRoot) {
+      if (!workspaceRoot || !runId) {
         return { ok: false as const, error: "analysis scratch not configured" };
       }
-      const filePath = path.join(analysisRoot, "spec.json");
-      try {
-        const raw = await readFile(filePath, "utf8");
-        const spec = WikiRunSpecSchema.parse(JSON.parse(raw));
-        return { ok: true as const, spec };
-      } catch {
+      const spec = await readWikiRunSpec(workspaceRoot, runId);
+      if (!spec) {
         return { ok: false as const, error: "spec.json not found or invalid" };
       }
+      return { ok: true as const, spec };
     },
   });
 
@@ -594,7 +594,7 @@ export function createWikiRunTools(roots: WikiRunToolRoots) {
         .describe("Optional short replan note appended to changelog"),
     }),
     execute: async (input) => {
-      if (!analysisRoot) {
+      if (!workspaceRoot || !runId) {
         throw new Error("analysis scratch not configured");
       }
       const base = WikiRunSpecSchema.parse(input.spec);
@@ -605,11 +605,7 @@ export function createWikiRunTools(roots: WikiRunToolRoots) {
           ? [...(base.changelog ?? []), entry.slice(0, 500)].slice(-40)
           : base.changelog,
       });
-      await mkdir(analysisRoot, { recursive: true });
-      const filePath = path.join(analysisRoot, "spec.json");
-      const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-      await writeFile(tempPath, `${JSON.stringify(spec, null, 2)}\n`, "utf8");
-      await rename(tempPath, filePath);
+      await writeWikiRunSpec(workspaceRoot, runId, spec);
       return { ok: true as const, path: "spec.json", pageCount: spec.pages.length };
     },
   });
@@ -624,7 +620,7 @@ export function createWikiRunTools(roots: WikiRunToolRoots) {
     list_wiki,
     read_wiki,
     write_wiki,
-    ...(analysisRoot ? { read_spec, write_spec } : {}),
+    ...(specEnabled ? { read_spec, write_spec } : {}),
   };
 }
 

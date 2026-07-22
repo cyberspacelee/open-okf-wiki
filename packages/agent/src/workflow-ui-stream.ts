@@ -15,42 +15,15 @@
  *
  * Conversion logic is only toAISdkStream — do not copy or invent a second protocol.
  * Opening/abort bind lives in wiki-run-orchestrator (not stream conversion).
+ * This file is the sole toAISdkStream call site for live wiki-run UI/job streams.
  */
 
 import { toAISdkStream } from "@mastra/ai-sdk";
 import type { UIMessageChunk } from "ai";
-import type { WikiRunPlan, WorkspaceConfig } from "@okf-wiki/contract";
 import {
   openWikiRunWorkflow,
   type WikiRunOpenParams,
 } from "./wiki-run-orchestrator.js";
-
-export type WikiWorkflowUiStart = {
-  kind: "start";
-  runId: string;
-  workspace: WorkspaceConfig;
-  autoApprove?: boolean;
-  skipPlanConfirm?: boolean;
-  forcePlanConfirm?: boolean;
-  plan?: WikiRunPlan;
-  /** Product cancel signal (server abortRun). Bound for workflow steps. */
-  abortSignal?: AbortSignal;
-};
-
-export type WikiWorkflowUiResume = {
-  kind: "resume";
-  runId: string;
-  step: string;
-  resumeData: {
-    action: "approve" | "deny" | "revise";
-    plan?: WikiRunPlan;
-    feedback?: string;
-  };
-  /** Product cancel signal (server abortRun). Bound for workflow steps. */
-  abortSignal?: AbortSignal;
-};
-
-export type WikiWorkflowUiParams = WikiWorkflowUiStart | WikiWorkflowUiResume;
 
 export type WikiWorkflowUiHandle = {
   /** Raw AI SDK UIMessageChunk stream (no nested message framing). */
@@ -60,33 +33,14 @@ export type WikiWorkflowUiHandle = {
 };
 
 /**
- * Open wiki-run as a framework UI chunk stream + result() for Session finalize.
- * P1 shell name; sole Mastra→UI conversion call site for Session.
+ * Open wiki-run as a framework UI chunk stream + result() for Session finalize
+ * and Run console job timeline (via uiChunkToJobEvent).
+ * Sole Mastra→UI conversion call site for live wiki-run streams.
  */
 export async function openWikiRunUiProjection(
-  params: WikiWorkflowUiParams,
+  params: WikiRunOpenParams,
 ): Promise<WikiWorkflowUiHandle> {
-  const openParams: WikiRunOpenParams =
-    params.kind === "resume"
-      ? {
-          kind: "resume",
-          runId: params.runId,
-          step: params.step,
-          resumeData: params.resumeData,
-          abortSignal: params.abortSignal,
-        }
-      : {
-          kind: "start",
-          runId: params.runId,
-          workspace: params.workspace,
-          autoApprove: params.autoApprove,
-          skipPlanConfirm: params.skipPlanConfirm,
-          forcePlanConfirm: params.forcePlanConfirm,
-          plan: params.plan,
-          abortSignal: params.abortSignal,
-        };
-
-  const handle = await openWikiRunWorkflow(openParams);
+  const handle = await openWikiRunWorkflow(params);
 
   // Same conversion options as handleWorkflowStream internals (@mastra/ai-sdk).
   // Raw chunks — no nested createUIMessageStream (avoids duplicate assistant ids).

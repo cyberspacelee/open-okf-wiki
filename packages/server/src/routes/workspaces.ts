@@ -1,7 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { rm } from "node:fs/promises";
 import path from "node:path";
-import { resolveSkillSource } from "@okf-wiki/agent";
 import {
   addSource,
   cloneIntoWorkspace,
@@ -18,6 +17,7 @@ import {
   registerWorkspaceInAppIndex,
   removeSource,
   removeWorkspaceFromAppIndex,
+  resolveSkillSource,
   saveWorkspace,
   skillForkDir,
   slugFromPath,

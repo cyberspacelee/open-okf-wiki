@@ -22,6 +22,7 @@ import type {
   WikiRunRecordStatus,
   WorkspaceConfig,
   WorkspaceSource,
+  WorkspaceSummary,
   SourceOrigin,
 } from "@okf-wiki/contract";
 
@@ -43,6 +44,7 @@ export type {
   WikiRunRecordStatus,
   WorkspaceConfig,
   WorkspaceSource,
+  WorkspaceSummary,
   SourceOrigin,
 };
 
@@ -68,15 +70,6 @@ function resolveApiBase(): string {
 }
 
 const API_BASE = resolveApiBase();
-
-/** App-index list row (not the full WorkspaceConfig document). */
-export type WorkspaceSummary = {
-  id: string;
-  name: string;
-  rootPath: string;
-  lastOpenedAt?: string;
-  sourceCount: number;
-};
 
 export type HealthResponse = {
   ok: boolean;

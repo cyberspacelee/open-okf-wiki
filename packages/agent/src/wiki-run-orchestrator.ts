@@ -2,8 +2,8 @@
  * Product open path for the single wiki-run workflow (ADR 0025 / 0027).
  * Owns: createRun, product abort bind/unbind, stream / resumeStream with
  * closeOnSuspend. Stream conversion (toAISdkStream) is NOT owned here —
- * Session UI uses the thin projection shell in workflow-ui-stream.ts;
- * headless/job uses fullStream + mapWorkflowResult (wiki-run.ts).
+ * Session and Run console both use openWikiRunUiProjection (workflow-ui-stream)
+ * then map to UI chunks or job events.
  */
 
 import type { WikiRunPlan, WorkspaceConfig } from "@okf-wiki/contract";
@@ -38,12 +38,13 @@ export type WikiRunResumeParams = {
   abortSignal?: AbortSignal;
 };
 
+/** Single open-params type for Session UI and Run console projections. */
 export type WikiRunOpenParams = WikiRunStartParams | WikiRunResumeParams;
 
-/** Raw Mastra workflow stream handle used by job and UI projections. */
+/** Raw Mastra workflow stream handle used by UI projection. */
 export type WikiRunWorkflowHandle = {
   runId: string;
-  /** Mastra stream output (fullStream + result). */
+  /** Mastra stream output (framework stream + result). */
   output: {
     fullStream?: AsyncIterable<unknown>;
     result: Promise<unknown>;

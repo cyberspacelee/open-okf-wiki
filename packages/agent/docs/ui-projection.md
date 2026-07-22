@@ -2,7 +2,7 @@
 
 Model tool loops keep **full fidelity** inside Mastra. What operators see and
 what is persisted on `OperatorSession.messages` is shaped by
-`packages/agent/src/ui-projection.ts` and applied in `session-stream.ts`.
+`packages/agent/src/ui-projection.ts` and applied in `session-turn/`.
 
 ## Tool payload rules
 
@@ -15,20 +15,21 @@ what is persisted on `OperatorSession.messages` is shaped by
 | `search_source` | Cap `matches`; truncate match text; set `matchCount`, `truncated` |
 | unknown | JSON-bounded + secret redaction |
 
-Server chat turns project tool parts via `sessionMessagesToUIMessages` / `projectSessionToolPart` before streaming.
-On-disk sessions require `schemaVersion: 2` (unsupported versions are rejected — no migrate).
+Server chat turns project tool parts via `projectSessionMessages` on load (structural bridge is `sessionMessagesToUIMessages`); live stream uses `projectUiMessageChunk` / `projectSessionToolPart` in `session-turn/`.
+On-disk sessions require `schemaVersion: 3` (unsupported versions are rejected — no migrate; wipe `.okf-wiki/sessions/*.json`).
 
 ## Product data parts
 
-| Part | When | Purpose |
-|------|------|---------|
-| `data-plan` | Plan gate | Full `WikiRunPlan` for PlanViewer |
-| `data-gate` | Plan / publish HITL | Decision chips only |
-| `data-run` | Run start / resume | Linked run id badge |
-| `data-progress` | Phase changes | Human phase chip (`planning` → … → `done`) |
-| `data-plan-progress` | After plan + each `write_wiki` | Page checklist status |
+| Part | When | Who emits | Purpose |
+|------|------|-----------|---------|
+| `data-plan` | Plan gate | Session shell / Produce | Full `WikiRunPlan` for PlanViewer |
+| `data-gate` | Plan / publish HITL | Session shell | Decision chips only (sole HITL part type) |
+| `data-run` | Run start / resume | Session shell | Linked run id badge |
+| `data-progress` | Phase changes | **Produce only** | Human phase chip (`planning` → … → `done`) |
+| `data-plan-progress` | Spec queue + each write | **Produce only** | Page checklist status |
 
-Do **not** invent fake `tool-request_user_decision` for HITL (ADR 0025/0026).
+Do **not** invent fake tool HITL parts or `data-choice` for gates (ADR 0025/0026/0029).
+Session **must not** synthesize business progress (`data-progress` / `data-plan-progress` / defects / spans / sources) — see operator-event contract + ADR 0029.
 
 ## Non-goals
 

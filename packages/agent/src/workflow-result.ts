@@ -13,7 +13,7 @@ import {
   isDurableRunStatus as coreIsDurableRunStatus,
   sessionViewFromRunStatus,
 } from "@okf-wiki/core";
-import { redactErrorMessage } from "./run.js";
+import { redactErrorMessage } from "./run-redact.js";
 import type { WikiRunWorkflowOutput } from "./wiki-workflow.js";
 
 /** Re-export Run Boundary durable-status rule for agent call sites. */

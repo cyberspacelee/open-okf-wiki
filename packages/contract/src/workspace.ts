@@ -237,6 +237,20 @@ export const WorkspaceConfigSchema = z.object({
 
 export type WorkspaceConfig = z.infer<typeof WorkspaceConfigSchema>;
 
+/**
+ * App-index list row (not the full WorkspaceConfig document).
+ * Shared by API, Web, and core listWorkspaceSummaries.
+ */
+export const WorkspaceSummarySchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  rootPath: z.string().min(1),
+  lastOpenedAt: z.string().datetime().optional(),
+  sourceCount: z.number().int().nonnegative(),
+});
+
+export type WorkspaceSummary = z.infer<typeof WorkspaceSummarySchema>;
+
 /** Result of probing a local Git path (no network). */
 export const GitProbeSchema = z.object({
   path: z.string(),

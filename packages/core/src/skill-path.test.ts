@@ -40,7 +40,7 @@ test("resolvePackageSkillPath finds @okf-wiki/skill package assets", async () =>
 
 test("ensureHomeProducerSkill skips package resolve when home skill exists", async () => {
   const appHome = await isolateAppState();
-  const { setLoadHomeSkills } = await import("@okf-wiki/core");
+  const { setLoadHomeSkills } = await import("./workspace-store.js");
   await setLoadHomeSkills(true, path.join(appHome, "app.json"));
 
   const fakeHome = await mkdtemp(path.join(tmpdir(), "okf-existing-home-"));
@@ -81,7 +81,7 @@ test("resolveSkillSource prefers explicit skillPath", async () => {
 test("resolveSkillSource prefers workspace .agents/skills over home", async () => {
   const appHome = await isolateAppState();
   // Enable home skills via app.json
-  const { setLoadHomeSkills } = await import("@okf-wiki/core");
+  const { setLoadHomeSkills } = await import("./workspace-store.js");
   await setLoadHomeSkills(true, path.join(appHome, "app.json"));
 
   const fakeHome = await mkdtemp(path.join(tmpdir(), "okf-user-home-"));
@@ -107,7 +107,7 @@ test("resolveSkillSource prefers workspace .agents/skills over home", async () =
 
 test("resolveSkillSource uses ~/.agents/skills when enabled and seeds from package", async () => {
   const appHome = await isolateAppState();
-  const { setLoadHomeSkills } = await import("@okf-wiki/core");
+  const { setLoadHomeSkills } = await import("./workspace-store.js");
   await setLoadHomeSkills(true, path.join(appHome, "app.json"));
 
   const fakeHome = await mkdtemp(path.join(tmpdir(), "okf-seed-home-"));
@@ -127,7 +127,7 @@ test("resolveSkillSource uses ~/.agents/skills when enabled and seeds from packa
 
 test("resolveSkillSource uses package when home skills disabled in Settings", async () => {
   const appHome = await isolateAppState();
-  const { setLoadHomeSkills } = await import("@okf-wiki/core");
+  const { setLoadHomeSkills } = await import("./workspace-store.js");
   await setLoadHomeSkills(false, path.join(appHome, "app.json"));
 
   const fakeHome = await mkdtemp(path.join(tmpdir(), "okf-home-off-"));

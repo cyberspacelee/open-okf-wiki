@@ -436,7 +436,7 @@ export function transition(
 
 /**
  * Convenience: build SessionTerminalView-shaped fields from a product terminal
- * status (agent/session-stream adapter). Pure — uses transition only.
+ * status (agent SessionTurn adapter). Pure — uses transition only.
  */
 export function sessionViewFromRunStatus(input: {
   status: WikiRunRecordStatus;

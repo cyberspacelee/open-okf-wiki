@@ -3,13 +3,13 @@
  * Root may replan during produce; Host scorers read the same file.
  */
 
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   WikiRunSpecSchema,
   type WikiRunSpec,
 } from "@okf-wiki/contract";
-import { analysisScratchDir } from "@okf-wiki/core";
+import { analysisScratchDir, atomicWriteJson } from "@okf-wiki/core";
 
 export const SPEC_FILE_NAME = "spec.json";
 export const DEFECTS_FILE_NAME = "defects.json";
@@ -24,13 +24,6 @@ export function specPath(workspaceRoot: string, runId: string): string {
 
 export function defectsPath(workspaceRoot: string, runId: string): string {
   return path.join(runAnalysisDir(workspaceRoot, runId), DEFECTS_FILE_NAME);
-}
-
-async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
-  await mkdir(path.dirname(filePath), { recursive: true });
-  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  await rename(tempPath, filePath);
 }
 
 export async function writeWikiRunSpec(

@@ -1,13 +1,13 @@
 # TypeScript monorepo
 
-Primary product implementation for OKF Wiki. Current ADRs: [0020](../docs/adr/0020-typescript-mastra-web-workspace.md) (stack), [0021](../docs/adr/0021-retire-python-primary-path.md) (no Python path), [0025](../docs/adr/0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) (single workflow + AI SDK bridge), [0028](../docs/adr/0028-supervisor-tree-and-thin-workflow-shell.md) (Supervisor produce + thin shell). Full index: [docs/adr/README.md](../docs/adr/README.md).
+Primary product implementation for OKF Wiki. Current ADRs: [0020](../docs/adr/0020-typescript-mastra-web-workspace.md) (stack), [0021](../docs/adr/0021-retire-python-primary-path.md) (no Python path), [0025](../docs/adr/0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) (single workflow + AI SDK bridge), [0028](../docs/adr/0028-supervisor-tree-and-thin-workflow-shell.md) (Supervisor produce + thin shell), [0029](../docs/adr/0029-architecture-cleanup-no-compat.md) (single Produce Operator Event emit; no durable-produce stub). Full index: [docs/adr/README.md](../docs/adr/README.md). Operator Event ownership: [operator-event-contract.md](../docs/design/operator-event-contract.md).
 
 | Package | Role |
 |---|---|
-| `@okf-wiki/contract` | Zod schemas (Workspace, WikiRunSpec, defects, Run, Session, events, receipts) |
+| `@okf-wiki/contract` | Zod schemas (Workspace, WikiRunSpec, defects, Run, Session, events, receipts); SessionTurn policy helpers |
 | `@okf-wiki/core` | Run Boundary: path policy, publish, session/run stores, git probe (no Mastra) |
-| `@okf-wiki/agent` | Thin wiki-run workflow shell + Supervisor produce (Domain/Leaf/review council) + Session stream |
-| `@okf-wiki/server` | Localhost HTTP API; starts/resumes workflow; thin Session chat adapter |
+| `@okf-wiki/agent` | Thin wiki-run workflow shell + **Produce** (Supervisor Domain/Leaf/review council; sole business Operator Event emit) + SessionTurn stream shell (forward only; no progress synthesis; no durable-produce stub) |
+| `@okf-wiki/server` | Localhost HTTP API; SessionTurn chat adapter; Run REST automation adapter (not human HITL center) |
 | `@okf-wiki/web` | Operator Web UI (Vite + React + Session `useChat`); types from contract |
 | `@okf-wiki/cli` | Headless CLI helpers |
 | `@okf-wiki/skill` | Bundled Producer Skill assets |

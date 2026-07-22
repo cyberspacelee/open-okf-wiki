@@ -45,10 +45,11 @@ Cursor’s 2026 agent-swarm results favor a **dynamic Planner–Worker tree** ov
   - **`data-defects`** after each council round
   - **Checkpoint** visual separators only (no message restore / run rollback)
 - Produce uses **soft** `onIterationComplete` write nudges only — **not** `isTaskComplete` score-0 forced loops.
-- Optional **`OKF_WIKI_DURABLE_PRODUCE=1`** is reserved; DurableAgent stream shape is not yet wired to Session projection.
+- ~~Optional `OKF_WIKI_DURABLE_PRODUCE=1` reserved for DurableAgent.~~ **Deleted / superseded by [ADR 0029](0029-architecture-cleanup-no-compat.md)** — single Operator Event emit from Produce only; do not reintroduce a durable-produce path.
 
 ## Non-goals
 
 - Self-driving multi-writer VCS coordination.
 - Agent Networks (deprecated in Mastra).
 - Compatibility with `adaptive`/`reviewer` workspace fields.
+- Durable-produce / second Produce implementation (ADR 0029).
