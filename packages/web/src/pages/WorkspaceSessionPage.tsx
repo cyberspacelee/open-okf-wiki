@@ -73,6 +73,11 @@ import {
   tabCompleteSlashInput,
   type SessionCommandDef,
 } from "../lib/session-commands";
+import {
+  appendEphemeralRunLiveLine,
+  classifyRunSseForSessionCatchUp,
+  mergeSessionCatchUpTimeline,
+} from "../lib/session-catchup";
 import { workspaceHref } from "../lib/workspace-path";
 import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button";
@@ -1096,23 +1101,14 @@ function SessionChatPanel({
         setGateStep("plan-gate");
       }
       // Catch-up timeline when server journal advanced (refresh / mid-flight).
+      // Ephemeral run-live SSE bubbles must not block durable journal updates.
       const next = sessionMessagesToUI(fresh);
-      setMessages((prev) => {
-        if (next.length === 0) {
-          return prev;
-        }
-        // Prefer the longer durable timeline; never shrink mid-flight to empty.
-        if (next.length < prev.length) {
-          const mid =
-            fresh.status === "running" ||
-            fresh.workflow?.phase === "planning" ||
-            fresh.workflow?.phase === "writing";
-          if (mid) {
-            return prev;
-          }
-        }
-        return next;
-      });
+      setMessages((prev) =>
+        mergeSessionCatchUpTimeline(prev, next, {
+          status: fresh.status,
+          workflow: fresh.workflow,
+        }),
+      );
     },
     [onSessionMetaChange, setMessages],
   );
@@ -1260,51 +1256,30 @@ function SessionChatPanel({
               status?: string;
               text?: string;
             };
-            const line =
-              event.message ||
-              event.text ||
-              (event.status ? `status: ${event.status}` : "");
-            if (!line || event.type === "done") {
-              if (event.type === "done" || event.status) {
-                void tick();
-              }
+            const classified = classifyRunSseForSessionCatchUp(event);
+            if (classified.action === "ignore") {
               return;
             }
-            // Append a lightweight progress bubble (not persisted until poll).
-            setMessages((prev) => {
-              const id = `run-live-${Date.now()}`;
-              const last = prev[prev.length - 1];
-              if (
-                last?.role === "assistant" &&
-                last.id.startsWith("run-live-") &&
-                last.parts.some(
-                  (p) =>
-                    p.type === "text" &&
-                    "text" in p &&
-                    String(p.text).endsWith(line),
-                )
-              ) {
-                return prev;
-              }
-              return [
-                ...prev,
-                {
-                  id,
-                  role: "assistant" as const,
-                  parts: [{ type: "text" as const, text: line }],
-                },
-              ];
-            });
-            if (
-              event.type === "done" ||
-              event.status === "awaiting_plan" ||
-              event.status === "awaiting_publication" ||
-              event.status === "published" ||
-              event.status === "failed" ||
-              event.status === "cancelled"
-            ) {
+            if (classified.action === "tick") {
+              // Status/done/terminal: poll journal only — never chat bubbles.
+              // Empty-bus reconnect always sends status "Wiki Run in progress";
+              // treating that as a message froze mid-flight catch-up.
               void tick();
+              return;
             }
+            // Concrete log/part progress (optional; Session path rarely emits).
+            setMessages((prev) =>
+              appendEphemeralRunLiveLine(
+                prev,
+                classified.line,
+                (id, line) =>
+                  ({
+                    id,
+                    role: "assistant" as const,
+                    parts: [{ type: "text" as const, text: line }],
+                  }) as UIMessage,
+              ),
+            );
           } catch {
             // ignore malformed SSE
           }

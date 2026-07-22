@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
     "lint": "eslint . --max-warnings 0",
-    "test": "node --experimental-strip-types --test src/lib/session-commands.test.ts src/components/session/tool-render.test.ts src/components/session/session-tool-utils.test.ts",
+    "test": "node --experimental-strip-types --test src/lib/session-commands.test.ts src/lib/session-catchup.test.ts src/components/session/tool-render.test.ts src/components/session/session-tool-utils.test.ts",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui"
   },
