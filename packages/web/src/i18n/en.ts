@@ -575,12 +575,16 @@ export const en = {
     stop: "Stop",
     statusReady: "Ready",
     statusBusy: "Working…",
+    statusError: "Error",
     roleUser: "You",
     roleAssistant: "Agent",
     roleSystem: "System",
     roleTool: "Tool",
     toolInput: "Input",
     toolOutput: "Output",
+    thinking: "Thinking",
+    thinkingStreaming: "Thinking…",
+    jumpToLatest: "Jump to latest",
   },
 } as const;
 

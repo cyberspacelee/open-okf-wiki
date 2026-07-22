@@ -9,7 +9,9 @@ import { describe, it } from "node:test";
 import {
   applyPiEvent,
   applyProductEvent,
+  extractAssistantError,
   extractMessageText,
+  extractMessageThinking,
   isTerminalOrWaitingPhase,
   type AgentMessage,
   type StreamingRefs,
@@ -47,6 +49,33 @@ describe("extractMessageText", () => {
       }),
       "Hello world",
     );
+  });
+});
+
+describe("extractMessageThinking / extractAssistantError", () => {
+  it("joins thinking blocks", () => {
+    assert.equal(
+      extractMessageThinking({
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "hmm" },
+          { type: "text", text: "hi" },
+          { type: "thinking", thinking: " more" },
+        ],
+      }),
+      "hmm more",
+    );
+  });
+
+  it("detects stopReason error + errorMessage", () => {
+    const err = extractAssistantError({
+      role: "assistant",
+      content: [],
+      stopReason: "error",
+      errorMessage: "OpenAI API error (403): blocked",
+    });
+    assert.equal(err.isError, true);
+    assert.equal(err.errorMessage, "OpenAI API error (403): blocked");
   });
 });
 
@@ -280,6 +309,118 @@ describe("applyPiEvent — single turn with tools", () => {
 
     assert.equal(assistantCount(messages), 1);
     assert.equal(messages[0]!.tools?.[0]?.name, "read");
+  });
+
+  it("surfaces assistant stopReason errorMessage instead of empty done bubble", () => {
+    const messages = applyAll([
+      {
+        kind: "message_start",
+        payload: {
+          type: "message_start",
+          message: {
+            role: "assistant",
+            content: [],
+            stopReason: "error",
+            errorMessage: "OpenAI API error (403): 403 Your request was blocked.",
+          },
+        },
+      },
+      {
+        kind: "message_end",
+        payload: {
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [],
+            stopReason: "error",
+            errorMessage: "OpenAI API error (403): 403 Your request was blocked.",
+          },
+        },
+      },
+      { kind: "agent_end", payload: { type: "agent_end", messages: [] } },
+    ]);
+
+    assert.equal(assistantCount(messages), 1);
+    assert.equal(messages[0]!.status, "error");
+    assert.match(messages[0]!.content, /403/);
+    assert.match(messages[0]!.errorMessage ?? "", /blocked/);
+  });
+
+  it("streams thinking_delta into assistant.thinking", () => {
+    const r = refs();
+    let messages: AgentMessage[] = [];
+    messages = applyPiEvent(
+      messages,
+      "message_start",
+      {
+        type: "message_start",
+        message: { role: "assistant", content: [] },
+      },
+      r,
+    );
+    messages = applyPiEvent(
+      messages,
+      "message_update",
+      {
+        type: "message_update",
+        message: {
+          role: "assistant",
+          content: [{ type: "thinking", thinking: "Let" }],
+        },
+        assistantMessageEvent: { type: "thinking_delta", delta: "Let" },
+      },
+      r,
+    );
+    messages = applyPiEvent(
+      messages,
+      "message_update",
+      {
+        type: "message_update",
+        message: {
+          role: "assistant",
+          content: [{ type: "thinking", thinking: "Let me" }],
+        },
+        assistantMessageEvent: { type: "thinking_delta", delta: " me" },
+      },
+      r,
+    );
+    messages = applyPiEvent(
+      messages,
+      "message_update",
+      {
+        type: "message_update",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "Let me" },
+            { type: "text", text: "Hi" },
+          ],
+        },
+        assistantMessageEvent: { type: "text_delta", delta: "Hi" },
+      },
+      r,
+    );
+    messages = applyPiEvent(
+      messages,
+      "message_end",
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "Let me" },
+            { type: "text", text: "Hi" },
+          ],
+          stopReason: "stop",
+        },
+      },
+      r,
+    );
+
+    assert.equal(messages[0]!.thinking, "Let me");
+    assert.equal(messages[0]!.thinkingStatus, "done");
+    assert.equal(messages[0]!.content, "Hi");
+    assert.equal(messages[0]!.status, "done");
   });
 });
 

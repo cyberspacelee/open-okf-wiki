@@ -720,6 +720,37 @@ export async function dispatchAgentCommand(
   }
 }
 
+/**
+ * Pi may complete session.prompt() without throwing while the last assistant
+ * message has stopReason "error" (e.g. gateway 403). Surface that to HTTP + SSE.
+ */
+function lastAssistantProviderError(
+  messages: readonly unknown[],
+): string | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i];
+    if (!msg || typeof msg !== "object") continue;
+    const m = msg as {
+      role?: string;
+      stopReason?: string;
+      errorMessage?: string;
+    };
+    if (m.role !== "assistant") continue;
+    if (
+      m.stopReason === "error" ||
+      m.stopReason === "aborted" ||
+      (typeof m.errorMessage === "string" && m.errorMessage.trim())
+    ) {
+      return (
+        (typeof m.errorMessage === "string" && m.errorMessage.trim()) ||
+        `assistant stopReason=${m.stopReason ?? "error"}`
+      );
+    }
+    return null;
+  }
+  return null;
+}
+
 async function handlePrompt(
   entry: RegisteredAgentSession,
   workspace: WorkspaceConfig,
@@ -732,10 +763,10 @@ async function handlePrompt(
     const message = err instanceof Error ? err.message : String(err);
     emitPi(entry.workspaceId, entry.sessionId, "error", { message });
     return {
-      ok: true,
+      ok: false,
       sessionId: entry.sessionId,
       command: "prompt",
-      status: "accepted",
+      status: "failed",
       message: `prompt failed: ${message}`,
     };
   }
@@ -762,6 +793,21 @@ async function handlePrompt(
   entry.busy = true;
   try {
     await handle.session.prompt(text);
+    const providerError = lastAssistantProviderError(handle.session.messages);
+    if (providerError) {
+      // SSE already carried message_end with errorMessage; also emit kind:error
+      // so clients that only watch top-level errors still light up.
+      emitPi(entry.workspaceId, entry.sessionId, "error", {
+        message: providerError,
+      });
+      return {
+        ok: false,
+        sessionId: entry.sessionId,
+        command: "prompt",
+        status: "failed",
+        message: `prompt failed: ${providerError}`,
+      };
+    }
     return {
       ok: true,
       sessionId: entry.sessionId,
@@ -773,10 +819,10 @@ async function handlePrompt(
     const message = err instanceof Error ? err.message : String(err);
     emitPi(entry.workspaceId, entry.sessionId, "error", { message });
     return {
-      ok: true,
+      ok: false,
       sessionId: entry.sessionId,
       command: "prompt",
-      status: "accepted",
+      status: "failed",
       message: `prompt failed: ${message}`,
     };
   } finally {

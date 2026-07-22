@@ -845,6 +845,9 @@ export type AgentSessionHistoryMessage = {
   id: string;
   role: "user" | "assistant" | "system";
   text: string;
+  thinking?: string;
+  status?: "done" | "error" | string;
+  errorMessage?: string;
   createdAt?: string;
   tools?: Array<{ id: string; name: string; status: "running" | "done" | "error" }>;
 };

@@ -313,7 +313,12 @@ export type CreatePiAgentSessionResponse = z.infer<
 >;
 
 export const AgentCommandResponseSchema = z.object({
-  ok: z.literal(true),
+  /**
+   * `true` when the command was accepted and completed without a known failure.
+   * `false` when the command ran but the agent/provider reported an error
+   * (e.g. assistant stopReason "error") or dispatch failed.
+   */
+  ok: z.boolean(),
   sessionId: z.string().min(1),
   command: z.enum([
     "prompt",
@@ -324,10 +329,11 @@ export const AgentCommandResponseSchema = z.object({
     "resume_gate",
   ]),
   /**
-   * `accepted` = validated and queued/stubbed.
+   * `accepted` = validated and ran (or queued).
    * `stub` = AgentSession factory not ready; command parsed only.
+   * `failed` = ran or attempted, but provider/agent reported failure.
    */
-  status: z.enum(["accepted", "stub"]),
+  status: z.enum(["accepted", "stub", "failed"]),
   message: z.string().optional(),
   runId: z.string().optional(),
 });

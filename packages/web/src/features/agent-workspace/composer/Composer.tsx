@@ -1,7 +1,7 @@
 /**
- * Agent Workspace composer — textarea + send + Start wiki run.
+ * Agent Workspace composer — InputGroup + send + Start wiki run.
  * Optional model picker for multi-model wiki generation.
- * No AI SDK PromptInput; plain shadcn Textarea / Button.
+ * Chat send is primary; wiki run is secondary (outline).
  */
 
 import {
@@ -11,7 +11,12 @@ import {
 } from "react";
 import { PlayIcon, SendIcon, SquareIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupTextarea,
+} from "@/components/ui/input-group";
 import {
   Select,
   SelectContent,
@@ -19,6 +24,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { useI18n } from "../../../i18n";
 import type { ModelProfilePublic } from "../../../api";
@@ -58,6 +64,7 @@ export function Composer({
 }: ComposerProps) {
   const { t } = useI18n();
   const busy = status === "sending" || status === "streaming";
+  const isError = status === "error";
   const canSend = !disabled && !busy && input.trim().length > 0;
   const showModelSelect = models.length > 0 && onWikiModelProfileIdChange;
 
@@ -93,97 +100,109 @@ export function Composer({
       )}
     >
       <div className="flex flex-col gap-2">
-        <Textarea
-          data-testid="agent-composer-input"
-          value={input}
-          onChange={(e) => onInputChange(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={t.agentWorkspace.placeholder}
-          disabled={disabled || busy}
-          rows={2}
-          className="min-h-[2.75rem] resize-none text-sm"
-        />
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-1.5">
-            {showModelSelect ? (
-              <Select
-                value={wikiModelProfileId || null}
-                onValueChange={(next) => {
-                  if (typeof next === "string") {
-                    onWikiModelProfileIdChange(next);
-                  }
-                }}
-                items={models.map((m) => ({
-                  value: m.id,
-                  label: m.name,
-                }))}
-                disabled={disabled || busy}
-              >
-                <SelectTrigger
-                  className="h-8 w-[min(100%,12rem)] text-xs"
-                  data-testid="agent-wiki-model-select"
-                  aria-label={t.agentWorkspace.wikiModel}
+        <InputGroup>
+          <InputGroupTextarea
+            data-testid="agent-composer-input"
+            value={input}
+            onChange={(e) => onInputChange(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder={t.agentWorkspace.placeholder}
+            disabled={disabled || busy}
+            rows={2}
+            className="min-h-[2.75rem] resize-none text-sm"
+          />
+          <InputGroupAddon align="block-end" className="justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {showModelSelect ? (
+                <Select
+                  value={wikiModelProfileId || null}
+                  onValueChange={(next) => {
+                    if (typeof next === "string") {
+                      onWikiModelProfileIdChange(next);
+                    }
+                  }}
+                  items={models.map((m) => ({
+                    value: m.id,
+                    label: m.name,
+                  }))}
+                  disabled={disabled || busy}
                 >
-                  <SelectValue placeholder={t.agentWorkspace.wikiModel} />
-                </SelectTrigger>
-                <SelectContent>
-                  {models.map((m) => {
-                    const isDefault = defaultModelProfileId === m.id;
-                    return (
-                      <SelectItem key={m.id} value={m.id}>
-                        {m.name}
-                        {isDefault ? ` ${t.modelSelect.defaultSuffix}` : ""}
-                        {" · "}
-                        <span className="font-mono text-[10px] text-muted-foreground">
-                          {m.modelId}
-                        </span>
-                      </SelectItem>
-                    );
-                  })}
-                </SelectContent>
-              </Select>
-            ) : null}
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              data-testid="agent-start-wiki-run"
-              disabled={disabled || busy}
-              onClick={() => onStartWikiRun()}
-            >
-              <PlayIcon data-icon="inline-start" />
-              {t.agentWorkspace.startWikiRun}
-            </Button>
-            {busy ? (
+                  <SelectTrigger
+                    className="h-8 w-[min(100%,12rem)] text-xs"
+                    data-testid="agent-wiki-model-select"
+                    aria-label={t.agentWorkspace.wikiModel}
+                  >
+                    <SelectValue placeholder={t.agentWorkspace.wikiModel} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {models.map((m) => {
+                      const isDefault = defaultModelProfileId === m.id;
+                      return (
+                        <SelectItem key={m.id} value={m.id}>
+                          {m.name}
+                          {isDefault ? ` ${t.modelSelect.defaultSuffix}` : ""}
+                          {" · "}
+                          <span className="font-mono text-[10px] text-muted-foreground">
+                            {m.modelId}
+                          </span>
+                        </SelectItem>
+                      );
+                    })}
+                  </SelectContent>
+                </Select>
+              ) : null}
               <Button
                 type="button"
                 size="sm"
                 variant="outline"
-                data-testid="agent-abort"
-                onClick={() => onAbort()}
+                data-testid="agent-start-wiki-run"
+                disabled={disabled || busy}
+                onClick={() => onStartWikiRun()}
               >
-                <SquareIcon data-icon="inline-start" />
-                {t.agentWorkspace.stop}
+                <PlayIcon data-icon="inline-start" />
+                {t.agentWorkspace.startWikiRun}
               </Button>
-            ) : null}
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-[11px] text-muted-foreground">
-              {busy
-                ? t.agentWorkspace.statusBusy
-                : t.agentWorkspace.statusReady}
-            </span>
-            <Button
-              type="submit"
-              size="sm"
-              data-testid="agent-send"
-              disabled={!canSend}
-            >
-              <SendIcon data-icon="inline-start" />
-              {t.agentWorkspace.send}
-            </Button>
-          </div>
-        </div>
+              {busy ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  data-testid="agent-abort"
+                  onClick={() => onAbort()}
+                >
+                  <SquareIcon data-icon="inline-start" />
+                  {t.agentWorkspace.stop}
+                </Button>
+              ) : null}
+            </div>
+            <div className="flex items-center gap-2">
+              <span
+                className={cn(
+                  "text-[11px] text-muted-foreground",
+                  isError && "text-destructive",
+                  busy && "inline-flex items-center gap-1",
+                )}
+              >
+                {busy ? <Spinner className="size-3" /> : null}
+                {busy
+                  ? t.agentWorkspace.statusBusy
+                  : isError
+                    ? t.agentWorkspace.statusError
+                    : t.agentWorkspace.statusReady}
+              </span>
+              <InputGroupButton
+                type="submit"
+                size="sm"
+                variant="default"
+                data-testid="agent-send"
+                disabled={!canSend}
+              >
+                <SendIcon data-icon="inline-start" />
+                {t.agentWorkspace.send}
+              </InputGroupButton>
+            </div>
+          </InputGroupAddon>
+        </InputGroup>
       </div>
     </form>
   );

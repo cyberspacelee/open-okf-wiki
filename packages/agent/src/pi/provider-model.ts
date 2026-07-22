@@ -173,7 +173,10 @@ export async function resolvePiModelFromProvider(
         name: displayName,
         api,
         ...(baseUrl ? { baseUrl } : {}),
-        reasoning: false,
+        // Allow thinking/reasoning streams when the gateway/model supports them
+        // (Pi emits thinking_delta; operator UI projects them). Non-thinking
+        // models simply ignore the flag.
+        reasoning: true,
         input: ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow,

@@ -1,6 +1,9 @@
 /**
  * Cold-read Pi session history for Operator UI reload (pi-web pattern).
  * Uses SessionManager only — does not create a live AgentSession.
+ *
+ * Aligns with pi-ai content blocks: text, thinking, toolCall.
+ * Failed assistant turns (stopReason error) are kept so the UI can show them.
  */
 
 import path from "node:path";
@@ -12,6 +15,9 @@ export type ProjectedHistoryMessage = {
   id: string;
   role: "user" | "assistant" | "system";
   text: string;
+  thinking?: string;
+  status?: "done" | "error";
+  errorMessage?: string;
   createdAt?: string;
   tools?: Array<{
     id: string;
@@ -36,6 +42,19 @@ function textFromContent(content: unknown): string {
     const b = block as { type?: string; text?: string };
     if (b.type === "text" && typeof b.text === "string") {
       parts.push(b.text);
+    }
+  }
+  return parts.join("");
+}
+
+function thinkingFromContent(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const b = block as { type?: string; thinking?: string };
+    if (b.type === "thinking" && typeof b.thinking === "string") {
+      parts.push(b.thinking);
     }
   }
   return parts.join("");
@@ -77,6 +96,9 @@ function projectPiMessages(
       role?: string;
       content?: unknown;
       toolCallId?: string;
+      stopReason?: string;
+      errorMessage?: string;
+      timestamp?: number;
     };
     const role = m.role;
     if (role !== "user" && role !== "assistant" && role !== "system") {
@@ -87,12 +109,37 @@ function projectPiMessages(
       return;
     }
     const text = textFromContent(m.content);
+    const thinking = thinkingFromContent(m.content);
     const tools = role === "assistant" ? toolsFromContent(m.content) : undefined;
-    if (!text.trim() && !tools?.length) return;
+    const stopReason = typeof m.stopReason === "string" ? m.stopReason : undefined;
+    const errorMessage =
+      typeof m.errorMessage === "string" && m.errorMessage.trim()
+        ? m.errorMessage.trim()
+        : undefined;
+    const isError =
+      role === "assistant" &&
+      (stopReason === "error" ||
+        stopReason === "aborted" ||
+        Boolean(errorMessage));
+    // Keep error / thinking-only / tool-only turns — never drop silent failures.
+    if (!text.trim() && !tools?.length && !thinking.trim() && !isError) {
+      return;
+    }
+    const displayText =
+      text.trim() ||
+      (isError && errorMessage ? errorMessage : "") ||
+      "";
     out.push({
       id: entryIds?.[i] ?? `hist_${i}`,
       role,
-      text,
+      text: displayText,
+      thinking: thinking.trim() || undefined,
+      status: isError ? "error" : "done",
+      errorMessage: isError ? errorMessage : undefined,
+      createdAt:
+        typeof m.timestamp === "number"
+          ? new Date(m.timestamp).toISOString()
+          : undefined,
       tools,
     });
   });

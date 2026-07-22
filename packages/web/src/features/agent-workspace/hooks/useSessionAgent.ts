@@ -174,7 +174,11 @@ export function useSessionAgent({
           id: m.id,
           role: m.role === "system" ? "system" : m.role,
           content: m.text,
+          thinking: m.thinking,
+          thinkingStatus: m.thinking ? ("done" as const) : undefined,
           createdAt: m.createdAt ?? nowIso(),
+          status: m.status === "error" ? "error" : m.status,
+          errorMessage: m.errorMessage,
           tools: m.tools?.map((t) => ({
             id: t.id,
             name: t.name,
@@ -292,6 +296,26 @@ export function useSessionAgent({
             : "Agent error";
         setError(message);
         setStatus("error");
+      } else if (kind === "message_end") {
+        // Also catch in-message provider errors (stopReason error) for banner.
+        const payload = event.payload;
+        const msg =
+          isRecord(payload) && isRecord(payload.message)
+            ? payload.message
+            : null;
+        if (
+          msg &&
+          (msg.stopReason === "error" ||
+            msg.stopReason === "aborted" ||
+            (typeof msg.errorMessage === "string" && msg.errorMessage.trim()))
+        ) {
+          const message =
+            typeof msg.errorMessage === "string" && msg.errorMessage.trim()
+              ? msg.errorMessage.trim()
+              : "Agent response failed";
+          setError(message);
+          setStatus("error");
+        }
       }
 
       setMessages((prev) =>
@@ -420,8 +444,18 @@ export function useSessionAgent({
 
       try {
         setStatus("streaming");
-        await runCommand({ type: "prompt", text: body });
-        // Stay streaming until agent_end / terminal product phase.
+        const res = await runCommand({ type: "prompt", text: body });
+        // Provider may finish the HTTP command with ok:false while SSE already
+        // projected an error bubble — surface banner either way.
+        if (res && (res.ok === false || res.status === "failed")) {
+          const msg =
+            res.message?.trim() ||
+            "Agent prompt failed (see transcript for details)";
+          setError(msg);
+          setStatus("error");
+          return;
+        }
+        // Stay streaming until agent_end / terminal product phase when ok.
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         setError(message);

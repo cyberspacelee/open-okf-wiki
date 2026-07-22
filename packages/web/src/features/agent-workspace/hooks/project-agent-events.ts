@@ -1,11 +1,12 @@
 /**
  * Pure projection of Pi AgentSession events → transcript rows.
  *
- * Protocol (aligned with pi-web / @earendil-works/pi-agent-core):
+ * Protocol (aligned with pi-web / @earendil-works/pi-agent-core + pi-ai):
  * - message_start / message_update / message_end carry `message.role`
  * - user messages: ignored (UI already optimistically appended)
  * - toolResult messages: ignored as cards (tool_execution_* owns tool chrome)
- * - assistant: one bubble per assistant message; text_delta streams into it
+ * - assistant: one bubble per assistant message; text_delta + thinking_delta stream in
+ * - stopReason "error" / errorMessage surface as status "error" (never silent empty)
  * - tool_execution_*: attach to the **last assistant** bubble (never invent a new one)
  *
  * Server wraps Pi events as `{ source:"pi", kind, payload }` where payload is
@@ -49,9 +50,14 @@ export type AgentMessage = {
   id: string;
   role: AgentMessageRole;
   content: string;
+  /** Streamed / final thinking (Pi type:"thinking" blocks + thinking_delta). */
+  thinking?: string;
+  thinkingStatus?: "streaming" | "done";
   createdAt: string;
   tools?: AgentToolCall[];
   status?: string;
+  /** Provider / agent error when status is "error". */
+  errorMessage?: string;
   product?: AgentProductMeta;
 };
 
@@ -131,6 +137,44 @@ export function extractMessageText(message: unknown): string {
   return parts.join("");
 }
 
+/** Extract thinking blocks from a Pi assistant message content array. */
+export function extractMessageThinking(message: unknown): string {
+  if (!isRecord(message)) return "";
+  const content = message.content;
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const block of content) {
+    if (!isRecord(block)) continue;
+    if (block.type === "thinking" && typeof block.thinking === "string") {
+      parts.push(block.thinking);
+    }
+  }
+  return parts.join("");
+}
+
+/**
+ * Pi assistant error fields (stopReason + errorMessage).
+ * Used when the provider fails without throwing from session.prompt().
+ */
+export function extractAssistantError(message: unknown): {
+  isError: boolean;
+  errorMessage?: string;
+  stopReason?: string;
+} {
+  if (!isRecord(message)) return { isError: false };
+  const stopReason =
+    typeof message.stopReason === "string" ? message.stopReason : undefined;
+  const errorMessage =
+    typeof message.errorMessage === "string" && message.errorMessage.trim()
+      ? message.errorMessage.trim()
+      : undefined;
+  const isError =
+    stopReason === "error" ||
+    stopReason === "aborted" ||
+    Boolean(errorMessage);
+  return { isError, errorMessage, stopReason };
+}
+
 function messageRole(message: unknown): string | null {
   if (!isRecord(message) || typeof message.role !== "string") return null;
   return message.role;
@@ -181,6 +225,20 @@ function ensureAssistantBubble(
   };
 }
 
+function finalizeAssistantContent(input: {
+  text: string;
+  existing: string;
+  fixtureNote?: string;
+  errorMessage?: string;
+  isError: boolean;
+}): string {
+  if (input.text) return input.text;
+  if (input.existing) return input.existing;
+  if (input.isError && input.errorMessage) return input.errorMessage;
+  if (input.fixtureNote) return input.fixtureNote;
+  return "";
+}
+
 /**
  * Project one Pi event into transcript mutations.
  * Mutates `refs` in place (streaming ids).
@@ -196,7 +254,7 @@ export function applyPiEvent(
   const role = messageRole(message);
   const ts = nowIso();
 
-  // --- message_update: stream text into the current assistant bubble --------
+  // --- message_update: stream text / thinking into the current assistant ----
   if (kind === "message_update") {
     // Only assistant messages stream; ignore anything else.
     if (role && role !== "assistant") return prev;
@@ -204,6 +262,7 @@ export function applyPiEvent(
     const ame = isRecord(body.assistantMessageEvent)
       ? body.assistantMessageEvent
       : null;
+
     if (ame?.type === "text_delta" && typeof ame.delta === "string") {
       const delta = ame.delta;
       const ensured = ensureAssistantBubble(prev, refs, ts);
@@ -214,16 +273,79 @@ export function applyPiEvent(
       );
     }
 
+    if (ame?.type === "thinking_start") {
+      const ensured = ensureAssistantBubble(prev, refs, ts);
+      return ensured.messages.map((m) =>
+        m.id === ensured.assistantId
+          ? {
+              ...m,
+              thinking: m.thinking ?? "",
+              thinkingStatus: "streaming" as const,
+              status: "streaming",
+            }
+          : m,
+      );
+    }
+
+    if (ame?.type === "thinking_delta" && typeof ame.delta === "string") {
+      const delta = ame.delta;
+      const ensured = ensureAssistantBubble(prev, refs, ts);
+      return ensured.messages.map((m) =>
+        m.id === ensured.assistantId
+          ? {
+              ...m,
+              thinking: (m.thinking ?? "") + delta,
+              thinkingStatus: "streaming" as const,
+              status: "streaming",
+            }
+          : m,
+      );
+    }
+
+    if (ame?.type === "thinking_end") {
+      const ensured = ensureAssistantBubble(prev, refs, ts);
+      const endContent =
+        typeof ame.content === "string" ? ame.content : undefined;
+      return ensured.messages.map((m) =>
+        m.id === ensured.assistantId
+          ? {
+              ...m,
+              thinking:
+                endContent && endContent.length > 0
+                  ? endContent
+                  : (m.thinking ?? ""),
+              thinkingStatus: "done" as const,
+              status: "streaming",
+            }
+          : m,
+      );
+    }
+
     // Snapshot path (pi-web style): replace content from partial message.
     if (message) {
       const text = extractMessageText(message);
-      if (text.length === 0 && !refs.streamingAssistantId) return prev;
+      const thinking = extractMessageThinking(message);
+      if (
+        text.length === 0 &&
+        thinking.length === 0 &&
+        !refs.streamingAssistantId
+      ) {
+        return prev;
+      }
       const ensured = ensureAssistantBubble(prev, refs, ts);
       return ensured.messages.map((m) =>
         m.id === ensured.assistantId
           ? {
               ...m,
               content: text.length > 0 ? text : m.content,
+              thinking:
+                thinking.length > 0
+                  ? thinking
+                  : m.thinking,
+              thinkingStatus:
+                thinking.length > 0
+                  ? ("streaming" as const)
+                  : m.thinkingStatus,
               status: "streaming",
             }
           : m,
@@ -240,20 +362,35 @@ export function applyPiEvent(
     if (role === "toolResult" || role === "tool") return prev;
 
     // Assistant (or unknown role with assistant-shaped content): new bubble.
-    // Each assistant message in a multi-step turn gets its own card — matching
-    // pi-web's append-on-message_end model — but we open it here so deltas land.
     const id = makeId("asst");
     refs.streamingAssistantId = id;
     refs.lastAssistantId = id;
     const initial = extractMessageText(message);
+    const thinking = extractMessageThinking(message);
+    const err = extractAssistantError(message);
+    const isError = err.isError;
     return [
       ...prev,
       {
         id,
         role: "assistant",
-        content: initial,
+        content: isError
+          ? finalizeAssistantContent({
+              text: initial,
+              existing: "",
+              errorMessage: err.errorMessage,
+              isError: true,
+            })
+          : initial,
+        thinking: thinking || undefined,
+        thinkingStatus: thinking
+          ? isError
+            ? ("done" as const)
+            : ("streaming" as const)
+          : undefined,
         createdAt: ts,
-        status: "streaming",
+        status: isError ? "error" : "streaming",
+        errorMessage: err.errorMessage,
         tools: [],
       },
     ];
@@ -279,31 +416,62 @@ export function applyPiEvent(
           : undefined;
 
     const finalText = extractMessageText(message);
+    const finalThinking = extractMessageThinking(message);
+    const err = extractAssistantError(message);
+    const isError = err.isError;
+    const status = isError ? "error" : "done";
+
     const id = refs.streamingAssistantId;
     if (id) {
       refs.streamingAssistantId = null;
       // Keep lastAssistantId so tools that arrive after message_end still nest.
       return prev.map((m) => {
         if (m.id !== id) return m;
-        const content =
-          finalText ||
-          m.content ||
-          (typeof fixtureNote === "string" ? fixtureNote : m.content);
-        return { ...m, content, status: "done" };
+        const content = finalizeAssistantContent({
+          text: finalText,
+          existing: m.content,
+          fixtureNote,
+          errorMessage: err.errorMessage,
+          isError,
+        });
+        const thinking =
+          finalThinking ||
+          m.thinking ||
+          undefined;
+        return {
+          ...m,
+          content,
+          thinking,
+          thinkingStatus: thinking
+            ? ("done" as const)
+            : m.thinkingStatus,
+          status,
+          errorMessage: err.errorMessage ?? m.errorMessage,
+        };
       });
     }
 
-    if (fixtureNote || finalText) {
+    if (fixtureNote || finalText || finalThinking || isError) {
       const newId = makeId("asst");
       refs.lastAssistantId = newId;
+      const content = finalizeAssistantContent({
+        text: finalText,
+        existing: "",
+        fixtureNote,
+        errorMessage: err.errorMessage,
+        isError,
+      });
       return [
         ...prev,
         {
           id: newId,
           role: "assistant",
-          content: finalText || fixtureNote || "",
+          content,
+          thinking: finalThinking || undefined,
+          thinkingStatus: finalThinking ? ("done" as const) : undefined,
           createdAt: ts,
-          status: "done",
+          status,
+          errorMessage: err.errorMessage,
         },
       ];
     }
@@ -410,12 +578,14 @@ export function applyPiEvent(
         content: errMessage,
         createdAt: ts,
         status: "error",
+        errorMessage: errMessage,
       },
     ];
   }
 
   if (kind === "agent_end" || kind === "agent_settled") {
     // Clear streaming cursor; leave lastAssistant for any late tool events.
+    // Do not clobber status "error" on failed assistant turns.
     refs.streamingAssistantId = null;
     return prev.map((m) =>
       m.status === "streaming" ? { ...m, status: "done" } : m,
@@ -597,4 +767,15 @@ export function isTerminalOrWaitingPhase(phase: string | undefined): boolean {
     phase === "awaiting_plan" ||
     phase === "awaiting_publish"
   );
+}
+
+/** True when the latest projected messages include an assistant error. */
+export function lastAssistantIsError(messages: AgentMessage[]): boolean {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const m = messages[i]!;
+    if (m.role === "assistant") {
+      return m.status === "error" || Boolean(m.errorMessage);
+    }
+  }
+  return false;
 }
