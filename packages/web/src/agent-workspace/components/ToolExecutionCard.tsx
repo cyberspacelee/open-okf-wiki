@@ -59,9 +59,9 @@ export function ToolExecutionCard({ tool, settled }: ToolExecutionCardProps) {
           {tool.status}
         </Badge>
       </CollapsibleTrigger>
-      <CollapsibleContent className="min-w-0 border-t border-border/60 px-2.5 py-2">
+      <CollapsibleContent className="min-w-0 overflow-hidden border-t border-border/60 px-2.5 py-2">
         {input ? (
-          <div className="mb-2 flex min-w-0 flex-col gap-0.5">
+          <div className="mb-2 flex min-w-0 max-w-full flex-col gap-0.5">
             <div className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
               {t.agentWorkspace.toolInput}
             </div>
@@ -69,7 +69,7 @@ export function ToolExecutionCard({ tool, settled }: ToolExecutionCardProps) {
           </div>
         ) : null}
         {output ? (
-          <div className="flex min-w-0 flex-col gap-0.5">
+          <div className="flex min-w-0 max-w-full flex-col gap-0.5">
             <div className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
               {t.agentWorkspace.toolOutput}
             </div>

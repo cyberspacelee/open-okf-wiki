@@ -228,6 +228,7 @@ export function useSessionAgent({
   const streamRefs = useRef<StreamingRefs>({
     streamingAssistantId: null,
     lastAssistantId: null,
+    turnActive: false,
   });
   /** Generation counter so stale reconnects do not reopen closed sessions. */
   const streamGenRef = useRef(0);
@@ -377,6 +378,7 @@ export function useSessionAgent({
     streamRefs.current = {
       streamingAssistantId: null,
       lastAssistantId: null,
+      turnActive: false,
     };
 
     if (esRef.current) {
@@ -752,6 +754,7 @@ export function useSessionAgent({
     streamRefs.current = {
       streamingAssistantId: null,
       lastAssistantId: streamRefs.current.lastAssistantId,
+      turnActive: false,
     };
     setMessages((prev) => [
       ...prev,

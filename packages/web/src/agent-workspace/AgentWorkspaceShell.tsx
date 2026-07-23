@@ -221,6 +221,7 @@ export function AgentWorkspaceShell({
             onResumeGate={onResumeGate}
             workspaceId={workspaceId}
             rootPath={rootPath}
+            units={units}
             onOpenAgent={openAgent}
           />
           <Composer

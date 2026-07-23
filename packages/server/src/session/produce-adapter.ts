@@ -11,7 +11,7 @@ import type {
   WorkUnitRole,
   WorkUnitStatus,
 } from "@okf-wiki/contract";
-import type { WikiRunShellState } from "@okf-wiki/agent";
+import type { WikiRunShellState, WikiSessionHandle } from "@okf-wiki/agent";
 import { emitAgentSessionEvent } from "../agent-session-events.ts";
 import {
   emitGate,
@@ -22,6 +22,48 @@ import {
   type ProductPhase,
 } from "./product-inject.ts";
 import { createWorkUnitCoalescer } from "./work-unit-coalesce.ts";
+
+/** Pi custom entry type for settle-only PVU summaries (not in LLM context). */
+export const OKF_WORK_UNIT_CUSTOM_TYPE = "okf.work_unit" as const;
+
+/**
+ * Persist a compact PVU summary on the parent Pi JSONL via appendCustomEntry.
+ * Not in convertToLlm context — safe for next operator prompt quality.
+ * Does NOT invent toolCall/tool_execution bodies (ADR 0031 U3).
+ */
+export function appendParentWorkUnitCustomEntry(
+  handle: WikiSessionHandle | undefined,
+  unit: Pick<
+    ProductWorkUnitEvent,
+    | "unitId"
+    | "role"
+    | "status"
+    | "runId"
+    | "task"
+    | "summary"
+    | "receiptPath"
+    | "error"
+    | "parentId"
+  >,
+): void {
+  if (!handle?.session?.sessionManager) return;
+  if (unit.status !== "settled" && unit.status !== "failed") return;
+  try {
+    handle.session.sessionManager.appendCustomEntry(OKF_WORK_UNIT_CUSTOM_TYPE, {
+      unitId: unit.unitId,
+      role: unit.role,
+      status: unit.status,
+      runId: unit.runId,
+      task: unit.task?.slice(0, 500),
+      summary: unit.summary?.slice(0, 2000),
+      receiptPath: unit.receiptPath,
+      error: unit.error?.slice(0, 1000),
+      parentId: unit.parentId,
+    });
+  } catch {
+    // best-effort; trajectory remains authority for live UI
+  }
+}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -116,6 +158,8 @@ type ParentUnitLike = {
 
 export type ProduceAdapterEntry = ProductInjectTarget & {
   shell?: WikiRunShellState;
+  /** Live parent Operator Session handle (for settle-only custom entries). */
+  handle?: WikiSessionHandle;
 };
 
 /**
@@ -288,6 +332,10 @@ export function mapOrchestratorOnEvent(
       };
       // Coalesce pure message streaming; assertProductInject still on emit path.
       workUnitCoalesce.push(product);
+      // Settle/fail: durable parent Pi custom entry (not LLM context; not fake tools).
+      if (product.status === "settled" || product.status === "failed") {
+        appendParentWorkUnitCustomEntry(entry.handle, product);
+      }
       return;
     }
     if (event.type === "defects") {

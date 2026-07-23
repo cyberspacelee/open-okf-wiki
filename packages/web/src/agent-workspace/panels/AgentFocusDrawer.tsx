@@ -168,11 +168,14 @@ export function AgentFocusDrawer({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        className={cn("flex w-full flex-col sm:max-w-lg", className)}
+        className={cn(
+          "flex w-full min-w-0 flex-col overflow-hidden sm:max-w-lg",
+          className,
+        )}
         data-testid="work-unit-drawer"
       >
-        <SheetHeader>
-          <SheetTitle className="flex flex-wrap items-center gap-2 font-mono text-sm">
+        <SheetHeader className="min-w-0">
+          <SheetTitle className="flex min-w-0 flex-wrap items-center gap-2 font-mono text-sm">
             <span className="min-w-0 break-all">
               {title || t.agentWorkspace.roleAssistant}
             </span>
@@ -189,12 +192,12 @@ export function AgentFocusDrawer({
               {status}
             </Badge>
           </SheetTitle>
-          <SheetDescription>
+          <SheetDescription className="min-w-0 break-words">
             {task || unit?.task || t.agentWorkspace.subagentPreviewHint}
           </SheetDescription>
         </SheetHeader>
-        <ScrollArea className="min-h-0 flex-1 px-4 pb-4">
-          <div className="min-w-0 pr-2">
+        <ScrollArea className="min-h-0 min-w-0 flex-1 px-4 pb-4">
+          <div className="min-w-0 max-w-full pr-2">
             <AgentUnitBody unit={unit} fallbackDetail={fallbackDetail} />
           </div>
         </ScrollArea>

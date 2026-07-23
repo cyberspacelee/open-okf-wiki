@@ -47,7 +47,12 @@ function ensureAssistantBubble(
     return { messages: prev, assistantId: prev[streamingIdx]!.id };
   }
   const lastIdx = findMessageIndex(prev, cursor.lastAssistantId);
-  if (lastIdx >= 0 && prev[lastIdx]!.status === "streaming") {
+  // Reuse the turn's assistant while streaming OR while the parent turn is
+  // still open (post-tool text_delta after message_end must not open a peer).
+  if (
+    lastIdx >= 0 &&
+    (prev[lastIdx]!.status === "streaming" || cursor.turnActive)
+  ) {
     cursor.streamingAssistantId = prev[lastIdx]!.id;
     return { messages: prev, assistantId: prev[lastIdx]!.id };
   }
@@ -70,6 +75,27 @@ function ensureAssistantBubble(
   };
 }
 
+/**
+ * Merge a final segment into existing bubble content.
+ * Same-segment streaming partials supersede; later turn segments append.
+ */
+function mergeTurnSegment(existing: string, finalText: string): string {
+  if (!finalText) return existing;
+  if (!existing) return finalText;
+  if (existing === finalText) return existing;
+  // Same segment: streaming partial replaced by full final text.
+  if (finalText.startsWith(existing) || existing.startsWith(finalText)) {
+    return finalText.length >= existing.length ? finalText : existing;
+  }
+  // Post-tool deltas already appended the segment.
+  if (existing.endsWith(finalText)) return existing;
+  // message_start may have left a segment boundary separator.
+  if (existing.endsWith("\n\n") || existing.endsWith("\n")) {
+    return existing + finalText;
+  }
+  return `${existing}\n\n${finalText}`;
+}
+
 function finalizeAssistantContent(input: {
   text: string;
   existing: string;
@@ -77,11 +103,30 @@ function finalizeAssistantContent(input: {
   errorMessage?: string;
   isError: boolean;
 }): string {
+  if (input.isError) {
+    if (input.text) return input.text;
+    if (input.errorMessage) return input.errorMessage;
+    if (input.existing) return input.existing;
+    return "";
+  }
+  if (input.text && input.existing) {
+    return mergeTurnSegment(input.existing, input.text);
+  }
   if (input.text) return input.text;
   if (input.existing) return input.existing;
-  if (input.isError && input.errorMessage) return input.errorMessage;
   if (input.fixtureNote) return input.fixtureNote;
   return "";
+}
+
+/** Prepare bubble content when a later segment of the same turn reopens it. */
+function continueTurnContent(existing: string, initial: string): string {
+  if (!existing.trim()) return initial || existing;
+  if (!initial) {
+    return existing.endsWith("\n") ? existing : `${existing}\n\n`;
+  }
+  if (existing.endsWith(initial)) return existing;
+  const sep = existing.endsWith("\n") ? "" : "\n\n";
+  return `${existing}${sep}${initial}`;
 }
 
 /**
@@ -220,9 +265,10 @@ export function applyPiEvent(
     // Reuse an in-flight assistant bubble (e.g. early thinking_delta opened one
     // via ensureAssistantBubble before message_start). Creating a second card
     // here is what users see as duplicated thinking + answer after the turn.
-    // Also reuse when the previous assistant is still open for tools (status
-    // done after message_end but tools still running) so mid-turn tool loops
-    // do not spam empty assistant cards before the next text segment.
+    //
+    // Within an active parent turn (agent_start … agent_end), always reuse the
+    // turn's last assistant — pre-tool and post-tool text share one bubble so
+    // tool loops do not project multi-card mid-stream (Pi TUI aligned).
     let reuseId: string | null = null;
     const streamingIdx = findMessageIndex(prev, cursor.streamingAssistantId);
     if (streamingIdx >= 0) {
@@ -231,15 +277,19 @@ export function applyPiEvent(
       const lastIdx = findMessageIndex(prev, cursor.lastAssistantId);
       if (lastIdx >= 0) {
         const last = prev[lastIdx]!;
-        const toolsRunning = last.tools?.some(
-          (t) => t.status === "running" || t.status === "pending",
-        );
-        if (last.status === "streaming" || toolsRunning) {
-          // Only reuse empty/streaming shells — not a finished text segment
-          // that should stay as its own card (pre-tool vs post-tool).
+        if (cursor.turnActive) {
+          reuseId = last.id;
+        } else {
+          // Outside a known turn: only reuse empty/streaming shells or when
+          // tools are still nesting (legacy / missing agent_start).
+          const toolsRunning = last.tools?.some(
+            (t) => t.status === "running" || t.status === "pending",
+          );
           if (
             last.status === "streaming" ||
-            (!last.content?.trim() && !last.thinking?.trim())
+            (toolsRunning &&
+              !last.content?.trim() &&
+              !last.thinking?.trim())
           ) {
             reuseId = last.id;
           }
@@ -252,6 +302,11 @@ export function applyPiEvent(
       cursor.lastAssistantId = reuseId;
       return prev.map((m) => {
         if (m.id !== reuseId) return m;
+        const continuing =
+          cursor.turnActive &&
+          Boolean(m.content?.trim()) &&
+          m.status !== "streaming" &&
+          !isError;
         return {
           ...m,
           content: isError
@@ -261,7 +316,9 @@ export function applyPiEvent(
                 errorMessage: err.errorMessage,
                 isError: true,
               })
-            : initial || m.content,
+            : continuing
+              ? continueTurnContent(m.content, initial)
+              : initial || m.content,
           thinking: thinking || m.thinking,
           thinkingStatus: thinking
             ? isError
@@ -538,15 +595,26 @@ export function applyPiEvent(
   }
 
   if (kind === "agent_end" || kind === "agent_settled") {
-    // Clear streaming cursor; leave lastAssistant for late tools.
+    // End the turn; leave lastAssistant for late tools / late message_end.
     // Do not clobber status "error" on failed assistant turns.
     cursor.streamingAssistantId = null;
+    cursor.turnActive = false;
     return prev.map((m) => {
       if (m.status !== "streaming") return m;
       return { ...m, status: "done" };
     });
   }
 
-  // agent_start / prompt / session_ready / turn_* — no transcript rows.
+  if (kind === "agent_start") {
+    // New parent turn: do not reuse the previous turn's assistant bubble.
+    // Clear lastAssistant so the first message_start of this turn opens a card;
+    // late tools from the prior turn already attached before this event.
+    cursor.turnActive = true;
+    cursor.streamingAssistantId = null;
+    cursor.lastAssistantId = null;
+    return prev;
+  }
+
+  // prompt / session_ready / turn_* — no transcript rows.
   return prev;
 }

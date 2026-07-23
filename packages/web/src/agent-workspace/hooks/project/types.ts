@@ -110,6 +110,11 @@ export type StreamCursor = {
   streamingAssistantId: string | null;
   /** Last assistant bubble in the current turn (tools attach here). */
   lastAssistantId: string | null;
+  /**
+   * True between agent_start and agent_end/agent_settled.
+   * While active, pre-tool and post-tool assistant segments share one bubble.
+   */
+  turnActive: boolean;
 };
 
 export type StreamingRefs = StreamCursor;

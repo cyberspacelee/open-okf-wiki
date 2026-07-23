@@ -48,6 +48,11 @@ import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { useI18n } from "../../i18n";
 import { ToolExecutionCard } from "../components/ToolExecutionCard";
+import {
+  workUnitToolsToAgentTools,
+  type WorkUnits,
+  type WorkUnitView,
+} from "../hooks/project-agent-events";
 import type {
   AgentMessage,
   AgentProductMeta,
@@ -67,9 +72,11 @@ export type TranscriptProps = {
   /** Optional: load full receipts when previewing spans. */
   workspaceId?: string;
   rootPath?: string;
+  /** Produce work_unit fold — tool-shaped rows on work_run cards. */
+  units?: WorkUnits;
   /**
    * Open Work surface for a produce agent (planner / leaf).
-   * Main timeline only shows chips — streams live in the focus drawer.
+   * Main timeline shows tool-shaped unit rows; full stream in focus drawer.
    */
   onOpenAgent?: (input: {
     agentId: string;
@@ -90,9 +97,9 @@ function ThinkingBlock({
   return (
     <Collapsible
       defaultOpen={streaming}
-      className="rounded-md border border-border/70 bg-muted/20"
+      className="w-full min-w-0 rounded-md border border-border/70 bg-muted/20"
     >
-      <CollapsibleTrigger className="group flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted/50">
+      <CollapsibleTrigger className="group flex w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted/50">
         <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-data-panel-open:rotate-90" />
         <SparklesIcon className="size-3.5 shrink-0" />
         <span className="min-w-0 flex-1 font-medium">
@@ -102,7 +109,7 @@ function ThinkingBlock({
         </span>
         {streaming ? <Spinner className="size-3" /> : null}
       </CollapsibleTrigger>
-      <CollapsibleContent className="border-t border-border/50 px-2.5 py-2">
+      <CollapsibleContent className="min-w-0 border-t border-border/50 px-2.5 py-2">
         <pre className="okf-code-snippet text-muted-foreground">{thinking}</pre>
       </CollapsibleContent>
     </Collapsible>
@@ -132,11 +139,142 @@ function productBadgeLabel(product: AgentProductMeta): string {
   }
 }
 
+/**
+ * Parent-visible produce unit — tool-shaped chrome on the operator timeline.
+ * Body is product work_unit fold (not synthetic parent Pi tool_execution).
+ */
+function WorkUnitToolRow({
+  chip,
+  unit,
+  onOpenAgent,
+}: {
+  chip: {
+    agentId: string;
+    role: string;
+    status: string;
+    task?: string;
+    detail?: string;
+  };
+  unit?: WorkUnitView | null;
+  onOpenAgent?: TranscriptProps["onOpenAgent"];
+}) {
+  const { t } = useI18n();
+  const isRunning = chip.status === "running" || chip.status === "pending";
+  const isFailed = chip.status === "failed";
+  const settled =
+    chip.status === "settled" ||
+    chip.status === "complete" ||
+    chip.status === "done";
+  const tools = unit ? workUnitToolsToAgentTools(unit.tools) : [];
+  const summary =
+    unit?.summary?.trim() ||
+    unit?.message?.text?.trim() ||
+    chip.detail?.trim() ||
+    chip.task?.trim() ||
+    "";
+  const waiting =
+    isRunning &&
+    !unit?.message?.thinking?.trim() &&
+    !unit?.message?.text?.trim() &&
+    tools.length === 0;
+
+  return (
+    <Collapsible
+      defaultOpen={isRunning || isFailed}
+      className="w-full min-w-0 rounded-md border border-border/80 bg-muted/20"
+      data-testid="work-unit-tool-row"
+      data-unit-id={chip.agentId}
+    >
+      <CollapsibleTrigger className="group flex w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-xs hover:bg-muted/50">
+        <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-data-panel-open:rotate-90" />
+        {isRunning ? (
+          <Spinner className="size-3 shrink-0 text-primary" />
+        ) : (
+          <span
+            className={cn(
+              "size-2.5 shrink-0 rounded-full",
+              isFailed ? "bg-destructive" : "bg-muted-foreground/40",
+            )}
+          />
+        )}
+        <Badge variant="outline" className="shrink-0 text-[10px] normal-case">
+          {chip.role}
+        </Badge>
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
+          {chip.task || chip.agentId}
+        </span>
+        <Badge
+          variant={
+            isFailed
+              ? "destructive"
+              : settled
+                ? "secondary"
+                : "default"
+          }
+          className="shrink-0 text-[10px] normal-case"
+        >
+          {chip.status}
+        </Badge>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="min-w-0 space-y-2 border-t border-border/60 px-2.5 py-2">
+        {waiting ? (
+          <p
+            className="text-[11px] text-muted-foreground"
+            data-testid="waiting-for-events"
+          >
+            {t.agentWorkspace.waitingForEvents}
+          </p>
+        ) : null}
+        {unit?.message?.thinking ? (
+          <pre className="okf-code-snippet text-muted-foreground">
+            {unit.message.thinking}
+          </pre>
+        ) : null}
+        {summary && !waiting ? (
+          <p className="min-w-0 text-[11px] leading-relaxed break-words whitespace-pre-wrap">
+            {summary}
+          </p>
+        ) : null}
+        {tools.length > 0 ? (
+          <div className="flex min-w-0 flex-col gap-1.5">
+            {tools.map((tool) => (
+              <ToolExecutionCard
+                key={tool.id}
+                tool={tool}
+                settled={settled}
+              />
+            ))}
+          </div>
+        ) : null}
+        {onOpenAgent ? (
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+            onClick={() =>
+              onOpenAgent({
+                agentId: chip.agentId,
+                role: chip.role,
+                task: chip.task,
+                detail: chip.detail,
+              })
+            }
+          >
+            <EyeIcon className="size-3" />
+            Open
+          </button>
+        ) : null}
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
 function WorkRunCard({
   product,
+  units,
   onOpenAgent,
 }: {
   product: AgentProductMeta;
+  units?: WorkUnits;
   onOpenAgent?: TranscriptProps["onOpenAgent"];
 }) {
   const agents = product.agents ?? [];
@@ -161,70 +299,16 @@ function WorkRunCard({
           </span>
         ) : null}
       </div>
-      <ul className="flex min-w-0 flex-col gap-1">
-        {agents.map((a) => {
-          const isRunning =
-            a.status === "running" || a.status === "pending";
-          return (
-            <li key={a.agentId}>
-              <button
-                type="button"
-                className={cn(
-                  "flex w-full min-w-0 items-start gap-2 rounded-md border px-2 py-1.5 text-left text-xs transition-colors",
-                  isRunning
-                    ? "border-primary/30 bg-primary/5 hover:bg-primary/10"
-                    : "border-border/70 bg-background/60 hover:bg-muted/50",
-                )}
-                onClick={() =>
-                  onOpenAgent?.({
-                    agentId: a.agentId,
-                    role: a.role,
-                    task: a.task,
-                    detail: a.detail,
-                  })
-                }
-                data-testid="work-run-agent"
-                data-agent-id={a.agentId}
-              >
-                {isRunning ? (
-                  <Spinner className="mt-0.5 size-3 shrink-0 text-primary" />
-                ) : (
-                  <span className="mt-0.5 size-3 shrink-0 rounded-full bg-muted-foreground/40" />
-                )}
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <Badge variant="outline" className="text-[10px] normal-case">
-                      {a.role}
-                    </Badge>
-                    <Badge
-                      variant={
-                        a.status === "failed"
-                          ? "destructive"
-                          : a.status === "settled" ||
-                              a.status === "complete" ||
-                              a.status === "done"
-                            ? "secondary"
-                            : "default"
-                      }
-                      className="text-[10px] normal-case"
-                    >
-                      {a.status}
-                    </Badge>
-                    <span className="truncate font-mono text-[10px] text-muted-foreground">
-                      {a.agentId}
-                    </span>
-                  </div>
-                  {a.task ? (
-                    <p className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground">
-                      {a.task}
-                    </p>
-                  ) : null}
-                </div>
-                <EyeIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-              </button>
-            </li>
-          );
-        })}
+      <ul className="flex min-w-0 flex-col gap-1.5">
+        {agents.map((a) => (
+          <li key={a.agentId} className="min-w-0" data-testid="work-run-agent" data-agent-id={a.agentId}>
+            <WorkUnitToolRow
+              chip={a}
+              unit={units?.[a.agentId] ?? null}
+              onOpenAgent={onOpenAgent}
+            />
+          </li>
+        ))}
       </ul>
       {agents.length === 0 ? (
         <p className="text-[11px] text-muted-foreground">Waiting for units…</p>
@@ -254,6 +338,7 @@ function MessageCard({
   gateBusy,
   onResumeGate,
   onOpenAgent,
+  units,
 }: {
   message: AgentMessage;
   showGateActions: boolean;
@@ -261,6 +346,7 @@ function MessageCard({
   gateBusy: boolean;
   onResumeGate?: (input: ResumeGateInput) => void | Promise<void>;
   onOpenAgent?: TranscriptProps["onOpenAgent"];
+  units?: WorkUnits;
 }) {
   const { t } = useI18n();
   const isUser = message.role === "user";
@@ -297,11 +383,11 @@ function MessageCard({
         data-role={message.role}
         data-product-kind={product?.kind}
         data-status={message.status}
-        className="flex flex-col items-center gap-1.5"
+        className="flex min-w-0 w-full flex-col items-center gap-1.5"
       >
         <div
           className={cn(
-            "w-full max-w-[min(100%,42rem)] rounded-lg border px-2.5 py-2 text-xs",
+            "w-full min-w-0 max-w-[min(100%,42rem)] rounded-lg border px-2.5 py-2 text-xs",
             product
               ? "border-border/70 bg-muted/30"
               : "border-dashed border-border bg-muted/40 text-muted-foreground",
@@ -353,7 +439,11 @@ function MessageCard({
             ) : null}
           </div>
           {product?.kind === "work_run" ? (
-            <WorkRunCard product={product} onOpenAgent={onOpenAgent} />
+            <WorkRunCard
+              product={product}
+              units={units}
+              onOpenAgent={onOpenAgent}
+            />
           ) : message.content ? (
             <div className="whitespace-pre-wrap break-words">{message.content}</div>
           ) : null}
@@ -474,10 +564,11 @@ export function Transcript({
   gateBusy = false,
   onResumeGate,
   onOpenAgent,
+  units = {},
 }: TranscriptProps) {
   const { t } = useI18n();
 
-  // Main timeline: parent Pi + product cards only (work units live in drawer).
+  // Main timeline: parent Pi + product cards; work_unit bodies via units fold.
   const timeline = messages;
 
   // Only the latest matching gate card shows actions (avoid stale buttons).
@@ -540,6 +631,7 @@ export function Transcript({
                   gateBusy={gateBusy}
                   onResumeGate={onResumeGate}
                   onOpenAgent={onOpenAgent}
+                  units={units}
                 />
               </MessageScrollerItem>
             ))}

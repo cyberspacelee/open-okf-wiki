@@ -21,7 +21,11 @@ import {
 } from "./project-agent-events.ts";
 
 function refs(): StreamingRefs {
-  return { streamingAssistantId: null, lastAssistantId: null };
+  return {
+    streamingAssistantId: null,
+    lastAssistantId: null,
+    turnActive: false,
+  };
 }
 
 function assistantCount(messages: AgentMessage[]): number {
@@ -83,7 +87,7 @@ describe("extractMessageThinking / extractAssistantError", () => {
 });
 
 describe("applyPiEvent — single turn with tools", () => {
-  it("does not create cards for user or toolResult message_* events", () => {
+  it("keeps text → tool → text as one assistant bubble (no multi-card)", () => {
     const messages = applyAll([
       { kind: "agent_start" },
       {
@@ -206,16 +210,87 @@ describe("applyPiEvent — single turn with tools", () => {
       { kind: "agent_end", payload: { type: "agent_end", messages: [] } },
     ]);
 
-    // Exactly two assistant bubbles: pre-tool and post-tool. No empties for
-    // user / toolResult / tool-only invent.
-    assert.equal(assistantCount(messages), 2);
+    // One assistant bubble for the whole turn: pre-tool + post-tool text,
+    // tools nested. No empties for user / toolResult.
+    assert.equal(assistantCount(messages), 1);
     assert.equal(messages[0]!.role, "assistant");
-    assert.equal(messages[0]!.content, "Working");
+    assert.match(messages[0]!.content, /Working/);
+    assert.match(messages[0]!.content, /Done\./);
     assert.equal(messages[0]!.tools?.length, 1);
     assert.equal(messages[0]!.tools?.[0]?.name, "ls");
     assert.equal(messages[0]!.tools?.[0]?.status, "done");
-    assert.equal(messages[1]!.content, "Done.");
-    assert.equal(messages[1]!.status, "done");
+    assert.equal(messages[0]!.status, "done");
+  });
+
+  it("opens a new assistant card on the next turn after agent_end", () => {
+    const messages = applyAll([
+      { kind: "agent_start" },
+      {
+        kind: "message_start",
+        payload: {
+          type: "message_start",
+          message: { role: "assistant", content: [] },
+        },
+      },
+      {
+        kind: "message_update",
+        payload: {
+          type: "message_update",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "first" }],
+          },
+          assistantMessageEvent: { type: "text_delta", delta: "first" },
+        },
+      },
+      {
+        kind: "message_end",
+        payload: {
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "first" }],
+            stopReason: "stop",
+          },
+        },
+      },
+      { kind: "agent_end", payload: { type: "agent_end", messages: [] } },
+      { kind: "agent_start" },
+      {
+        kind: "message_start",
+        payload: {
+          type: "message_start",
+          message: { role: "assistant", content: [] },
+        },
+      },
+      {
+        kind: "message_update",
+        payload: {
+          type: "message_update",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "second" }],
+          },
+          assistantMessageEvent: { type: "text_delta", delta: "second" },
+        },
+      },
+      {
+        kind: "message_end",
+        payload: {
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "second" }],
+            stopReason: "stop",
+          },
+        },
+      },
+      { kind: "agent_end", payload: { type: "agent_end", messages: [] } },
+    ]);
+
+    assert.equal(assistantCount(messages), 2);
+    assert.equal(messages[0]!.content, "first");
+    assert.equal(messages[1]!.content, "second");
   });
 
   it("streams text_delta into a single assistant bubble", () => {
@@ -543,6 +618,7 @@ describe("applyPiEvent — single turn with tools", () => {
 
   it("reuses streaming bubble when thinking_delta arrives before message_start", () => {
     const messages = applyAll([
+      { kind: "agent_start" },
       {
         kind: "message_update",
         payload: {
@@ -589,6 +665,7 @@ describe("applyPiEvent — single turn with tools", () => {
           },
         },
       },
+      { kind: "agent_end", payload: { type: "agent_end", messages: [] } },
     ]);
 
     assert.equal(assistantCount(messages), 1);
@@ -821,6 +898,26 @@ describe("formatPayloadText", () => {
     const out = formatPayloadText('{"a":1,"b":[2]}');
     assert.match(out, /\n/);
     assert.match(out, /"a": 1/);
+  });
+
+  it("pretty-prints JSON arrays", () => {
+    const out = formatPayloadText("[1,2,3]");
+    assert.equal(out, "[\n  1,\n  2,\n  3\n]");
+  });
+
+  it("leaves non-JSON and incomplete braces alone", () => {
+    assert.equal(formatPayloadText("not json"), "not json");
+    assert.equal(formatPayloadText("{not-closed"), "{not-closed");
+    assert.equal(formatPayloadText(""), "");
+    assert.equal(formatPayloadText(undefined), "");
+  });
+
+  it("truncates overlong payloads with a clear marker", () => {
+    const body = JSON.stringify({ x: "y".repeat(200) });
+    const out = formatPayloadText(body, 80);
+    assert.ok(out.length < body.length + 40);
+    assert.match(out, /…\[truncated \d+ chars\]$/);
+    assert.ok(out.startsWith("{\n"));
   });
 });
 

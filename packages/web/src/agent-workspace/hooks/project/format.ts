@@ -81,19 +81,34 @@ export function extractAssistantError(message: unknown): {
   return { isError, errorMessage, stopReason };
 }
 
-/** Pretty-print JSON strings for tool / payload surfaces. */
-export function formatPayloadText(raw: string | undefined): string {
+/** Default cap for tool / payload surfaces (pretty JSON can grow fast). */
+export const PAYLOAD_TEXT_MAX = 12_000;
+
+/**
+ * Pretty-print complete JSON object/array strings for tool / payload surfaces.
+ * Incomplete or non-JSON text is returned as-is. Overlong results are truncated
+ * with a clear marker (avoids crushing the layout with multi-MB blobs).
+ */
+export function formatPayloadText(
+  raw: string | undefined,
+  max = PAYLOAD_TEXT_MAX,
+): string {
   if (!raw) return "";
   const trimmed = raw.trim();
+  let out = raw;
   if (
     (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
     (trimmed.startsWith("[") && trimmed.endsWith("]"))
   ) {
     try {
-      return JSON.stringify(JSON.parse(trimmed), null, 2);
+      out = JSON.stringify(JSON.parse(trimmed), null, 2);
     } catch {
-      // keep original
+      // keep original (incomplete stream, non-JSON braces, etc.)
     }
   }
-  return raw;
+  if (max > 0 && out.length > max) {
+    const omitted = out.length - max;
+    return `${out.slice(0, max)}\n…[truncated ${omitted} chars]`;
+  }
+  return out;
 }

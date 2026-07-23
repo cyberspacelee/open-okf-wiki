@@ -336,6 +336,14 @@ export async function handleStartWikiRun(
   }
 
   entry.runId = frozen.runId;
+  // Ensure parent Operator Session exists so settle PVUs can appendCustomEntry
+  // onto parent Pi JSONL (not in LLM context). Live chat handle is optional
+  // for produce itself but required for parent-visible durability.
+  try {
+    await ensureLiveHandle(entry, workspace, "operator_chat");
+  } catch {
+    // produce still runs; trajectory remains the live body channel
+  }
   // Shell snapshot before startWikiRun returns — cold-load can still see a run.
   entry.shell = startShell({ skipPlanConfirm: true });
   emitRunLink(entry, "running");

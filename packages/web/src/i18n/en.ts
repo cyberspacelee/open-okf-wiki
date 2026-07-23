@@ -496,6 +496,7 @@ export const en = {
     thinkingStreaming: "Thinking…",
     /** Empty running work unit (no message/tools yet) — never "Thinking". */
     waitingForEvents: "Waiting for events…",
+    focusAgent: "Open focus",
     jumpToLatest: "Jump to latest",
     viewSubagent: "View output",
     subagentPreviewHint:

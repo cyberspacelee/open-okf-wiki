@@ -261,6 +261,7 @@ export function createPiChat(): CreatePiChat {
       const refs: StreamingRefs = {
         streamingAssistantId: null,
         lastAssistantId: null,
+        turnActive: false,
       };
       let messages: AgentMessage[] = [];
       for (const e of events) {

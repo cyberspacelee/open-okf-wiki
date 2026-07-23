@@ -210,10 +210,12 @@
 /**
  * Shared mono payload surface (tool I/O, thinking, sheet peeks).
  * Matches Streamdown code density without nested borders.
+ *
+ * Width chain: every flex ancestor up to this pre needs min-w-0, otherwise
+ * long JSON/code expands the bubble and "crushes" into one horizontal line
+ * with no wrap and no local scroll. Prefer CSS over measuring in JS.
  */
 .okf-code-snippet {
-  /* Full-width payload surface: wrap long lines, still allow horizontal scroll
-     for unbreakable tokens. Always min-w-0 so flex parents cannot crush to one line. */
   @apply m-0 block max-h-64 min-w-0 w-full max-w-full overflow-x-auto overflow-y-auto rounded-md border border-border/70 bg-muted/40 p-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere];
 }
 
@@ -425,7 +427,7 @@ code.mono {
 .wiki-markdown [data-streamdown="code-block"],
 .session-markdown [data-streamdown="code-block"],
 .agent-markdown [data-streamdown="code-block"] {
-  @apply my-3 gap-0 overflow-hidden rounded-lg border border-border bg-muted/30 p-0;
+  @apply my-3 min-w-0 max-w-full gap-0 overflow-hidden rounded-lg border border-border bg-muted/30 p-0;
 }
 
 .wiki-markdown [data-streamdown="code-block-header"],
@@ -438,7 +440,7 @@ code.mono {
 .session-markdown [data-streamdown="code-block-body"],
 .agent-markdown [data-streamdown="code-block-body"] {
   /* Kill Streamdown's second border/radius on the body shell */
-  @apply rounded-none border-0 bg-transparent p-3 text-[0.8125rem] leading-relaxed shadow-none;
+  @apply min-w-0 max-w-full overflow-x-auto rounded-none border-0 bg-transparent p-3 text-[0.8125rem] leading-relaxed shadow-none;
 }
 
 .wiki-markdown [data-streamdown="code-block"] pre,
@@ -447,7 +449,13 @@ code.mono {
 .wiki-markdown [data-streamdown="code-block"] code,
 .session-markdown [data-streamdown="code-block"] code,
 .agent-markdown [data-streamdown="code-block"] code {
-  @apply m-0 border-0 bg-transparent p-0 shadow-none;
+  @apply m-0 max-w-full min-w-0 border-0 bg-transparent p-0 shadow-none;
+}
+
+/* Fenced code: keep horizontal scroll for unbreakable tokens inside bubbles. */
+.session-markdown [data-streamdown="code-block"] pre,
+.agent-markdown [data-streamdown="code-block"] pre {
+  @apply overflow-x-auto whitespace-pre;
 }
 
 /* Inline code only (not fenced blocks) */
@@ -464,7 +472,7 @@ code.mono {
 .wiki-markdown pre,
 .session-markdown pre,
 .agent-markdown pre {
-  @apply my-3 overflow-x-auto rounded-lg border border-border bg-muted p-3 text-[0.85em];
+  @apply my-3 max-w-full min-w-0 overflow-x-auto rounded-lg border border-border bg-muted p-3 text-[0.85em];
 }
 
 .wiki-markdown pre code,
@@ -489,7 +497,7 @@ code.mono {
 
 .session-markdown,
 .agent-markdown {
-  @apply text-sm leading-relaxed;
+  @apply min-w-0 max-w-full break-words text-sm leading-relaxed;
 }
 
 .session-markdown h1,

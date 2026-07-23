@@ -486,6 +486,7 @@ export const zh: MessageTree = {
     thinkingStreaming: "思考中…",
     /** 空 running 工作单元（尚无 message/tools）— 禁止显示「思考中」。 */
     waitingForEvents: "等待事件…",
+    focusAgent: "打开聚焦",
     jumpToLatest: "跳到最新",
     viewSubagent: "查看输出",
     subagentPreviewHint:
