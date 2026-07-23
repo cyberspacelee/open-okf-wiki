@@ -97,25 +97,40 @@ describe("provider-model bridge", () => {
     await writeFile(
       file,
       JSON.stringify({
-        version: 2,
+        version: 3,
         defaultModelProfileId: "p1",
-        models: [
+        providers: [
           {
-            id: "p1",
-            name: "Primary",
-            modelId: "openai/served-a",
+            id: "prov-a",
+            name: "A",
+            kind: "openai-compatible",
             baseUrl: "https://a.example/v1",
             apiKey: "sk-aaa",
             apiShape: "completions",
+            headers: { "User-Agent": "node" },
+            models: [
+              {
+                id: "p1",
+                name: "Primary",
+                modelId: "openai/served-a",
+              },
+            ],
           },
           {
-            id: "p2",
-            name: "Secondary",
-            modelId: "openai/served-b",
+            id: "prov-b",
+            name: "B",
+            kind: "openai-compatible",
             baseUrl: "https://b.example/v1",
             apiKey: "sk-bbb",
             apiShape: "responses",
-            maxContextTokens: 32_000,
+            models: [
+              {
+                id: "p2",
+                name: "Secondary",
+                modelId: "openai/served-b",
+                maxContextTokens: 32_000,
+              },
+            ],
           },
         ],
       }),
@@ -131,6 +146,11 @@ describe("provider-model bridge", () => {
     assert.equal(selected.model.api, "openai-responses");
     assert.equal(selected.model.baseUrl, "https://b.example/v1");
     assert.equal(selected.model.contextWindow, 32_000);
+    // Third-party gateways reject role "developer"; product forces system.
+    const compat = selected.model.compat as
+      | { supportsDeveloperRole?: boolean }
+      | undefined;
+    assert.equal(compat?.supportsDeveloperRole, false);
 
     const defaulted = await resolveWorkspacePiModel({
       providerPath: file,
@@ -138,5 +158,6 @@ describe("provider-model bridge", () => {
     });
     assert.equal(defaulted.servedModelId, "served-a");
     assert.equal(defaulted.providerId, "okf-p1");
+    assert.equal(defaulted.model.headers?.["User-Agent"], "node");
   });
 });

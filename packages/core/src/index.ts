@@ -189,8 +189,6 @@ export {
   getModelProfile,
   flattenModels,
   mergeHeaders,
-  migrateProviderConfigV1,
-  migrateProviderConfigV2,
   maskSecret,
   toModelProfilePublic,
   toProviderEntryPublic,

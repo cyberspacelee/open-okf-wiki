@@ -6,10 +6,7 @@ import {
   CatalogModelSchema,
   ModelProfileSchema,
   ProviderConfigSchema,
-  ProviderConfigV1Schema,
-  ProviderConfigV2Schema,
   ProviderEntrySchema,
-  type CatalogModel,
   type ModelProfile,
   type ModelProfilePublic,
   type ModelProfileWrite,
@@ -37,11 +34,10 @@ export function defaultProviderPath(): string {
   return path.join(homedir(), WORKSPACE_DIR_NAME, PROVIDER_FILE_NAME);
 }
 
-const emptyProvider = (): ProviderConfig =>
-  ProviderConfigSchema.parse({
-    version: 3,
-    providers: [],
-  });
+const emptyProvider = (): ProviderConfig => ({
+  version: 3,
+  providers: [],
+});
 
 function slugifyId(raw: string): string {
   const base = raw
@@ -119,187 +115,20 @@ function allProviderIds(config: ProviderConfig): Set<string> {
   return new Set((config.providers ?? []).map((p) => p.id));
 }
 
-/** Migrate legacy v1 single-endpoint file into a provider with one model. */
-export function migrateProviderConfigV1(raw: unknown): ProviderConfig | null {
-  const parsed = ProviderConfigV1Schema.safeParse(raw);
-  if (!parsed.success) {
-    return null;
-  }
-  const asRecord =
-    raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-  if (asRecord.version === 2 || asRecord.version === 3) {
-    return null;
-  }
-  if (Array.isArray(asRecord.models) || Array.isArray(asRecord.providers)) {
-    return null;
-  }
-  if (
-    asRecord.version !== 1 &&
-    asRecord.version !== undefined &&
-    !("baseUrl" in asRecord) &&
-    !("apiKey" in asRecord)
-  ) {
-    return null;
-  }
-
-  const v1 = parsed.data;
-  const hasAny =
-    Boolean(v1.baseUrl?.trim()) ||
-    Boolean(v1.apiKey?.trim()) ||
-    Boolean(v1.defaultModelId?.trim());
-  if (!hasAny) {
-    return emptyProvider();
-  }
-
-  const modelId = v1.defaultModelId?.trim() || "openai/default";
-  const headers = normalizeHeaders(v1.headers);
-  const provider = ProviderEntrySchema.parse({
-    id: "default",
-    name: "Default",
-    kind: "openai-compatible",
-    baseUrl: v1.baseUrl?.trim() ?? "",
-    apiKey: v1.apiKey ?? "",
-    apiShape: v1.apiShape ?? "completions",
-    ...(headers ? { headers } : {}),
-    models: [
-      {
-        id: "default",
-        name: "Default",
-        modelId,
-      },
-    ],
-  });
-  return ProviderConfigSchema.parse({
-    version: 3,
-    defaultModelProfileId: "default",
-    providers: [provider],
-  });
-}
-
-/** Migrate v2 flat models[] into provider tree (group by endpoint). */
-export function migrateProviderConfigV2(raw: unknown): ProviderConfig | null {
-  const parsed = ProviderConfigV2Schema.safeParse(raw);
-  if (!parsed.success) return null;
-
-  const v2 = parsed.data;
-  const groups = new Map<
-    string,
-    {
-      baseUrl: string;
-      apiKey: string;
-      apiShape: ProviderApiShape;
-      headers?: Record<string, string>;
-      models: CatalogModel[];
-      nameHint: string;
-    }
-  >();
-
-  for (const m of v2.models) {
-    const baseUrl = (m.baseUrl ?? "").trim();
-    const apiKey = m.apiKey ?? "";
-    const apiShape = m.apiShape ?? "completions";
-    const headers = normalizeHeaders(m.headers);
-    const key = `${baseUrl}\0${apiShape}\0${apiKey}`;
-    let g = groups.get(key);
-    if (!g) {
-      g = {
-        baseUrl,
-        apiKey,
-        apiShape,
-        headers,
-        models: [],
-        nameHint: m.name || baseUrl || "Provider",
-      };
-      groups.set(key, g);
-    }
-    g.models.push(
-      CatalogModelSchema.parse({
-        id: m.id,
-        name: m.name,
-        modelId: m.modelId,
-        ...(m.maxContextTokens !== undefined
-          ? { maxContextTokens: m.maxContextTokens }
-          : {}),
-      }),
-    );
-  }
-
-  const usedProviderIds = new Set<string>();
-  const providers: ProviderEntry[] = [];
-  let i = 0;
-  for (const g of groups.values()) {
-    i += 1;
-    const preferred =
-      groups.size === 1
-        ? "default"
-        : slugifyId(g.nameHint) || `provider-${i}`;
-    const id = uniqueId(preferred, usedProviderIds);
-    usedProviderIds.add(id);
-    providers.push(
-      ProviderEntrySchema.parse({
-        id,
-        name: groups.size === 1 ? "Default" : g.nameHint.slice(0, 120),
-        kind: "openai-compatible",
-        baseUrl: g.baseUrl,
-        apiKey: g.apiKey,
-        apiShape: g.apiShape,
-        ...(g.headers ? { headers: g.headers } : {}),
-        models: g.models,
-      }),
-    );
-  }
-
-  return ProviderConfigSchema.parse({
-    version: 3,
-    ...(v2.defaultModelProfileId
-      ? { defaultModelProfileId: v2.defaultModelProfileId }
-      : {}),
-    providers,
-  });
-}
-
+/** Parse on-disk catalog (v3 only). Invalid/legacy files yield empty catalog. */
 function normalizeLoaded(data: unknown): ProviderConfig {
-  const v1 = migrateProviderConfigV1(data);
-  if (v1) return v1;
-
-  const asRecord =
-    data && typeof data === "object" ? (data as Record<string, unknown>) : {};
-
-  // Explicit v2 or models without providers.
-  if (
-    asRecord.version === 2 ||
-    (Array.isArray(asRecord.models) && !Array.isArray(asRecord.providers))
-  ) {
-    const v2 = migrateProviderConfigV2(data);
-    if (v2) return v2;
-  }
-
-  // v3 (or already providers[])
-  if (Array.isArray(asRecord.providers) || asRecord.version === 3) {
-    const parsed = ProviderConfigSchema.parse({
-      ...asRecord,
-      version: 3,
-    });
-    // Drop default if dangling.
-    if (
-      parsed.defaultModelProfileId &&
-      !flattenModels(parsed).some((m) => m.id === parsed.defaultModelProfileId)
-    ) {
-      delete parsed.defaultModelProfileId;
-    }
-    return parsed;
-  }
-
-  // Empty / unknown → empty catalog.
-  if (!asRecord || Object.keys(asRecord).length === 0) {
+  const parsed = ProviderConfigSchema.safeParse(data);
+  if (!parsed.success) {
     return emptyProvider();
   }
-
-  // Last resort: try v2 migrate on anything with models
-  const v2 = migrateProviderConfigV2({ version: 2, ...asRecord });
-  if (v2) return v2;
-
-  return emptyProvider();
+  const config = parsed.data;
+  if (
+    config.defaultModelProfileId &&
+    !flattenModels(config).some((m) => m.id === config.defaultModelProfileId)
+  ) {
+    delete config.defaultModelProfileId;
+  }
+  return config;
 }
 
 /** Load stored provider config; missing file yields empty catalog. */

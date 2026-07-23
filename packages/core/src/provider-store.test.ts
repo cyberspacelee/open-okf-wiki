@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -12,10 +12,7 @@ import {
   hasProviderCredentials,
   loadProviderConfig,
   maskSecret,
-  migrateProviderConfigV1,
-  migrateProviderConfigV2,
   resolveProviderRuntime,
-  saveProviderConfig,
   setDefaultModelProfile,
   toProviderPublic,
   updateModelProfile,
@@ -32,113 +29,6 @@ test("maskSecret never returns full key", () => {
   assert.ok(masked);
   assert.notEqual(masked, "sk-proj-abcdefghijklmnop");
   assert.match(masked!, /…/);
-});
-
-test("migrate v1 single endpoint into provider tree", () => {
-  const migrated = migrateProviderConfigV1({
-    version: 1,
-    baseUrl: "https://gateway.example/v1",
-    apiKey: "sk-secret",
-    apiShape: "responses",
-    defaultModelId: "openai/corp",
-  });
-  assert.ok(migrated);
-  assert.equal(migrated!.version, 3);
-  assert.equal(migrated!.providers.length, 1);
-  assert.equal(migrated!.providers[0]!.models.length, 1);
-  assert.equal(migrated!.providers[0]!.models[0]!.modelId, "openai/corp");
-  assert.equal(migrated!.providers[0]!.apiShape, "responses");
-  assert.equal(migrated!.defaultModelProfileId, "default");
-});
-
-test("migrate v2 flat models groups same endpoint", () => {
-  const migrated = migrateProviderConfigV2({
-    version: 2,
-    defaultModelProfileId: "a",
-    models: [
-      {
-        id: "a",
-        name: "A",
-        modelId: "m1",
-        baseUrl: "https://gw/v1",
-        apiKey: "k",
-        apiShape: "completions",
-      },
-      {
-        id: "b",
-        name: "B",
-        modelId: "m2",
-        baseUrl: "https://gw/v1",
-        apiKey: "k",
-        apiShape: "completions",
-      },
-      {
-        id: "c",
-        name: "C",
-        modelId: "m3",
-        baseUrl: "https://other/v1",
-        apiKey: "k2",
-        apiShape: "responses",
-      },
-    ],
-  });
-  assert.ok(migrated);
-  assert.equal(migrated!.version, 3);
-  assert.equal(migrated!.providers.length, 2);
-  const gw = migrated!.providers.find((p) => p.baseUrl.includes("gw"));
-  assert.ok(gw);
-  assert.equal(gw!.models.length, 2);
-  assert.equal(flattenModels(migrated!).length, 3);
-});
-
-test("load migrates v1 file on disk", async () => {
-  const home = await tempHome();
-  const file = path.join(home, "provider.json");
-  await writeFile(
-    file,
-    JSON.stringify({
-      version: 1,
-      baseUrl: "https://old/v1",
-      apiKey: "old-key-value",
-      apiShape: "completions",
-      defaultModelId: "openai/legacy",
-    }),
-    "utf8",
-  );
-  const loaded = await loadProviderConfig(file);
-  assert.equal(loaded.version, 3);
-  assert.equal(loaded.providers[0]!.baseUrl, "https://old/v1");
-  assert.equal(loaded.providers[0]!.apiKey, "old-key-value");
-});
-
-test("load migrates v2 file and saves as v3", async () => {
-  const home = await tempHome();
-  const file = path.join(home, "provider.json");
-  await writeFile(
-    file,
-    JSON.stringify({
-      version: 2,
-      defaultModelProfileId: "default",
-      models: [
-        {
-          id: "default",
-          name: "Default",
-          modelId: "grok-4.5",
-          baseUrl: "https://www.fkcodex.com/v1",
-          apiKey: "sk-test",
-          apiShape: "responses",
-        },
-      ],
-    }),
-    "utf8",
-  );
-  const loaded = await loadProviderConfig(file);
-  assert.equal(loaded.version, 3);
-  assert.equal(flattenModels(loaded)[0]!.modelId, "grok-4.5");
-  await saveProviderConfig(loaded, file);
-  const again = await loadProviderConfig(file);
-  assert.equal(again.version, 3);
-  assert.ok(again.providers.length >= 1);
 });
 
 test("create update delete model profiles under providers", async () => {
@@ -183,7 +73,6 @@ test("create update delete model profiles under providers", async () => {
       modelId: "openai/gpt-4o",
       baseUrl: "https://gw/v1",
       apiShape: "completions",
-      // omit apiKey → keep
     },
     file,
   );
@@ -226,6 +115,32 @@ test("createProviderEntry then add model by providerId", async () => {
   assert.equal(profile.providerId, provider.id);
   assert.equal(profile.baseUrl, "https://cch.example/v1");
   assert.equal(profile.apiKey, "sk-x");
+});
+
+test("legacy v2 file is rejected (empty catalog)", async () => {
+  const home = await tempHome();
+  const file = path.join(home, "provider.json");
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(
+    file,
+    JSON.stringify({
+      version: 2,
+      models: [
+        {
+          id: "default",
+          name: "Default",
+          modelId: "x",
+          baseUrl: "https://x/v1",
+          apiKey: "k",
+          apiShape: "completions",
+        },
+      ],
+    }),
+    "utf8",
+  );
+  const loaded = await loadProviderConfig(file);
+  assert.equal(loaded.version, 3);
+  assert.equal(loaded.providers.length, 0);
 });
 
 test("resolveProviderRuntime includes headers default", async () => {
