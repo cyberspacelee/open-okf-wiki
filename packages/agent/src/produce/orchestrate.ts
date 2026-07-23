@@ -208,6 +208,8 @@ export async function produceWiki(
         workspaceRoot: input.workspace.rootPath,
         sourceIgnores: input.sourceIgnores,
         abortSignal: input.abortSignal,
+        agentId: "planner",
+        onPiEvent: events.childPiEvent,
       });
       spec = planned.spec;
     }
@@ -285,6 +287,7 @@ export async function produceWiki(
             leafNodeId,
             input: {
               role: "leaf" as const,
+              agentId: leafNodeId,
               runWorkDir: input.runWorkDir,
               task: leafResearchPrompt({
                 domainId: d.id,
@@ -301,6 +304,7 @@ export async function produceWiki(
               workspaceRoot: input.workspace.rootPath,
               sourceIgnores: input.sourceIgnores,
               abortSignal: input.abortSignal,
+              onPiEvent: events.childPiEvent,
             },
           };
         });
@@ -358,6 +362,7 @@ export async function produceWiki(
       try {
         const domainResult = await runChildSession({
           role: "domain",
+          agentId: domainNodeId,
           runWorkDir: input.runWorkDir,
           task: domainResearchPrompt({
             domainId: d.id,
@@ -375,6 +380,7 @@ export async function produceWiki(
           workspaceRoot: input.workspace.rootPath,
           sourceIgnores: input.sourceIgnores,
           abortSignal: input.abortSignal,
+          onPiEvent: events.childPiEvent,
         });
         const persisted = await persistResearchReceipt({
           workspaceRoot: input.workspace.rootPath,
@@ -564,6 +570,7 @@ export async function produceWiki(
           try {
             const child = await runChildSession({
               role: "reviewer",
+              agentId: `reviewer-${i + 1}`,
               runWorkDir: input.runWorkDir,
               task: reviewerPrompt({ pages: produced.pages, lens }),
               model: input.models.reviewer.model,
@@ -573,6 +580,7 @@ export async function produceWiki(
               workspaceRoot: input.workspace.rootPath,
               sourceIgnores: input.sourceIgnores,
               abortSignal: input.abortSignal,
+              onPiEvent: events.childPiEvent,
             });
             reviewers.push({ id: `reviewer-${i + 1}`, text: child.summary });
             events.agentSpan?.({

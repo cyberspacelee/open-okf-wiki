@@ -463,6 +463,8 @@ function MessageCard({
       data-testid="agent-message"
       data-role={message.role}
       data-status={message.status}
+      data-stream-agent={message.streamAgent?.agentId}
+      data-stream-role={message.streamAgent?.role}
       align={isUser ? "end" : "start"}
       className="max-w-full"
     >
@@ -476,9 +478,18 @@ function MessageCard({
           ) : (
             <>
               <BotIcon className="size-3.5" />
-              <span>{t.agentWorkspace.roleAssistant}</span>
+              <span>
+                {message.streamAgent?.role
+                  ? message.streamAgent.role
+                  : t.agentWorkspace.roleAssistant}
+              </span>
             </>
           )}
+          {message.streamAgent?.agentId ? (
+            <Badge variant="secondary" className="normal-case tracking-normal font-mono text-[10px]">
+              {message.streamAgent.agentId}
+            </Badge>
+          ) : null}
           {isStreaming ? (
             <Badge variant="outline" className="normal-case tracking-normal">
               streaming

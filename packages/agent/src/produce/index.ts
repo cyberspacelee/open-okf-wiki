@@ -22,6 +22,8 @@ export {
   recordingProduceEvents,
   type ProduceEventSink,
   type ProduceProgressPhase,
+  type ProduceAgentRole,
+  type ProduceChildPiEvent,
 } from "./events.js";
 export { parsePlanFromAgentText } from "./plan-parse.js";
 export { planWikiSpec, type PlanWikiSpecInput, type PlanWikiSpecResult } from "./plan.js";

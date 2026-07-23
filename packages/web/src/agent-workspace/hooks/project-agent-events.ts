@@ -11,9 +11,12 @@
  * - message_start reuses an already-streaming bubble (early deltas before start)
  * - stopReason "error" / errorMessage surface as status "error" (never silent empty)
  * - tool_execution_*: attach to the **last assistant** bubble (never invent a new one)
+ * - produce child sessions (planner / leaf / …) carry `okfAgent` on the payload and
+ *   stream into separate bubbles keyed by agentId (concurrent leaves safe)
  *
  * Server wraps Pi events as `{ source:"pi", kind, payload }` where payload is
- * the raw AgentEvent (type + message + assistantMessageEvent + …).
+ * the raw AgentEvent (type + message + assistantMessageEvent + …) plus optional
+ * `okfAgent: { agentId, role }` for child produce streams.
  */
 
 export type AgentMessageRole = "user" | "assistant" | "tool" | "system";
@@ -61,6 +64,12 @@ export type AgentProductMeta = {
   round?: number;
 };
 
+/** Tag for produce child streams (planner / leaf / domain / reviewer). */
+export type StreamAgentTag = {
+  agentId: string;
+  role: string;
+};
+
 export type AgentMessage = {
   id: string;
   role: AgentMessageRole;
@@ -74,13 +83,20 @@ export type AgentMessage = {
   /** Provider / agent error when status is "error". */
   errorMessage?: string;
   product?: AgentProductMeta;
+  /** Child produce agent stream (planner / leaf / …). */
+  streamAgent?: StreamAgentTag;
 };
 
-export type StreamingRefs = {
+export type StreamCursor = {
   /** In-flight assistant bubble id (null between assistant messages). */
   streamingAssistantId: string | null;
   /** Last assistant bubble in the current turn (tools attach here). */
   lastAssistantId: string | null;
+};
+
+export type StreamingRefs = StreamCursor & {
+  /** Per child-agent stream cursors (keyed by agentId). */
+  agents?: Map<string, StreamCursor>;
 };
 
 export type ProductSseLike = {
@@ -139,6 +155,40 @@ export function safeStringify(value: unknown, max = 4000): string | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Extract produce-child agent tag from a Pi SSE payload (`okfAgent`). */
+export function extractOkfAgent(payload: unknown): StreamAgentTag | null {
+  if (!isRecord(payload)) return null;
+  const okf = payload.okfAgent;
+  if (!isRecord(okf)) return null;
+  if (typeof okf.agentId !== "string" || !okf.agentId.trim()) return null;
+  return {
+    agentId: okf.agentId.trim(),
+    role:
+      typeof okf.role === "string" && okf.role.trim()
+        ? okf.role.trim()
+        : "agent",
+  };
+}
+
+/** True when this Pi payload belongs to a produce child stream. */
+export function isChildPiPayload(payload: unknown): boolean {
+  return extractOkfAgent(payload) !== null;
+}
+
+function cursorFor(
+  refs: StreamingRefs,
+  agent: StreamAgentTag | null,
+): StreamCursor {
+  if (!agent) return refs;
+  if (!refs.agents) refs.agents = new Map();
+  let c = refs.agents.get(agent.agentId);
+  if (!c) {
+    c = { streamingAssistantId: null, lastAssistantId: null };
+    refs.agents.set(agent.agentId, c);
+  }
+  return c;
 }
 
 /** Extract plain text from a Pi assistant/user message content array or string. */
@@ -205,30 +255,42 @@ function findMessageIndex(messages: AgentMessage[], id: string | null): number {
   return messages.findIndex((m) => m.id === id);
 }
 
-function lastAssistantIndex(messages: AgentMessage[]): number {
+function lastAssistantIndex(
+  messages: AgentMessage[],
+  streamAgent?: StreamAgentTag | null,
+): number {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (messages[i]?.role === "assistant") return i;
+    const m = messages[i];
+    if (m?.role !== "assistant") continue;
+    if (streamAgent) {
+      if (m.streamAgent?.agentId === streamAgent.agentId) return i;
+      continue;
+    }
+    // Operator chat: ignore child produce bubbles.
+    if (m.streamAgent) continue;
+    return i;
   }
   return -1;
 }
 
 function ensureAssistantBubble(
   prev: AgentMessage[],
-  refs: StreamingRefs,
+  cursor: StreamCursor,
   ts: string,
+  streamAgent?: StreamAgentTag | null,
 ): { messages: AgentMessage[]; assistantId: string } {
-  const streamingIdx = findMessageIndex(prev, refs.streamingAssistantId);
+  const streamingIdx = findMessageIndex(prev, cursor.streamingAssistantId);
   if (streamingIdx >= 0) {
     return { messages: prev, assistantId: prev[streamingIdx]!.id };
   }
-  const lastIdx = findMessageIndex(prev, refs.lastAssistantId);
+  const lastIdx = findMessageIndex(prev, cursor.lastAssistantId);
   if (lastIdx >= 0 && prev[lastIdx]!.status === "streaming") {
-    refs.streamingAssistantId = prev[lastIdx]!.id;
+    cursor.streamingAssistantId = prev[lastIdx]!.id;
     return { messages: prev, assistantId: prev[lastIdx]!.id };
   }
-  const id = makeId("asst");
-  refs.streamingAssistantId = id;
-  refs.lastAssistantId = id;
+  const id = makeId(streamAgent ? `asst_${streamAgent.role}` : "asst");
+  cursor.streamingAssistantId = id;
+  cursor.lastAssistantId = id;
   return {
     messages: [
       ...prev,
@@ -239,6 +301,7 @@ function ensureAssistantBubble(
         createdAt: ts,
         status: "streaming",
         tools: [],
+        ...(streamAgent ? { streamAgent } : {}),
       },
     ],
     assistantId: id,
@@ -273,6 +336,8 @@ export function applyPiEvent(
   const message = "message" in body ? body.message : undefined;
   const role = messageRole(message);
   const ts = nowIso();
+  const streamAgent = extractOkfAgent(payload);
+  const cursor = cursorFor(refs, streamAgent);
 
   // --- message_update: stream text / thinking into the current assistant ----
   if (kind === "message_update") {
@@ -285,16 +350,21 @@ export function applyPiEvent(
 
     if (ame?.type === "text_delta" && typeof ame.delta === "string") {
       const delta = ame.delta;
-      const ensured = ensureAssistantBubble(prev, refs, ts);
+      const ensured = ensureAssistantBubble(prev, cursor, ts, streamAgent);
       return ensured.messages.map((m) =>
         m.id === ensured.assistantId
-          ? { ...m, content: m.content + delta, status: "streaming" }
+          ? {
+              ...m,
+              content: m.content + delta,
+              status: "streaming",
+              ...(streamAgent ? { streamAgent } : {}),
+            }
           : m,
       );
     }
 
     if (ame?.type === "thinking_start") {
-      const ensured = ensureAssistantBubble(prev, refs, ts);
+      const ensured = ensureAssistantBubble(prev, cursor, ts, streamAgent);
       return ensured.messages.map((m) =>
         m.id === ensured.assistantId
           ? {
@@ -302,6 +372,7 @@ export function applyPiEvent(
               thinking: m.thinking ?? "",
               thinkingStatus: "streaming" as const,
               status: "streaming",
+              ...(streamAgent ? { streamAgent } : {}),
             }
           : m,
       );
@@ -309,7 +380,7 @@ export function applyPiEvent(
 
     if (ame?.type === "thinking_delta" && typeof ame.delta === "string") {
       const delta = ame.delta;
-      const ensured = ensureAssistantBubble(prev, refs, ts);
+      const ensured = ensureAssistantBubble(prev, cursor, ts, streamAgent);
       return ensured.messages.map((m) =>
         m.id === ensured.assistantId
           ? {
@@ -317,13 +388,14 @@ export function applyPiEvent(
               thinking: (m.thinking ?? "") + delta,
               thinkingStatus: "streaming" as const,
               status: "streaming",
+              ...(streamAgent ? { streamAgent } : {}),
             }
           : m,
       );
     }
 
     if (ame?.type === "thinking_end") {
-      const ensured = ensureAssistantBubble(prev, refs, ts);
+      const ensured = ensureAssistantBubble(prev, cursor, ts, streamAgent);
       const endContent =
         typeof ame.content === "string" ? ame.content : undefined;
       return ensured.messages.map((m) =>
@@ -336,6 +408,7 @@ export function applyPiEvent(
                   : (m.thinking ?? ""),
               thinkingStatus: "done" as const,
               status: "streaming",
+              ...(streamAgent ? { streamAgent } : {}),
             }
           : m,
       );
@@ -350,11 +423,11 @@ export function applyPiEvent(
       if (
         text.length === 0 &&
         thinking.length === 0 &&
-        !refs.streamingAssistantId
+        !cursor.streamingAssistantId
       ) {
         return prev;
       }
-      const ensured = ensureAssistantBubble(prev, refs, ts);
+      const ensured = ensureAssistantBubble(prev, cursor, ts, streamAgent);
       return ensured.messages.map((m) =>
         m.id === ensured.assistantId
           ? {
@@ -367,6 +440,7 @@ export function applyPiEvent(
                   ? ("streaming" as const)
                   : m.thinkingStatus,
               status: "streaming",
+              ...(streamAgent ? { streamAgent } : {}),
             }
           : m,
       );
@@ -390,19 +464,19 @@ export function applyPiEvent(
     // via ensureAssistantBubble before message_start). Creating a second card
     // here is what users see as duplicated thinking + answer after the turn.
     let reuseId: string | null = null;
-    const streamingIdx = findMessageIndex(prev, refs.streamingAssistantId);
+    const streamingIdx = findMessageIndex(prev, cursor.streamingAssistantId);
     if (streamingIdx >= 0) {
       reuseId = prev[streamingIdx]!.id;
     } else {
-      const lastIdx = findMessageIndex(prev, refs.lastAssistantId);
+      const lastIdx = findMessageIndex(prev, cursor.lastAssistantId);
       if (lastIdx >= 0 && prev[lastIdx]!.status === "streaming") {
         reuseId = prev[lastIdx]!.id;
       }
     }
 
     if (reuseId) {
-      refs.streamingAssistantId = reuseId;
-      refs.lastAssistantId = reuseId;
+      cursor.streamingAssistantId = reuseId;
+      cursor.lastAssistantId = reuseId;
       return prev.map((m) => {
         if (m.id !== reuseId) return m;
         return {
@@ -424,14 +498,15 @@ export function applyPiEvent(
           status: isError ? "error" : "streaming",
           errorMessage: err.errorMessage ?? m.errorMessage,
           tools: m.tools ?? [],
+          ...(streamAgent ? { streamAgent } : {}),
         };
       });
     }
 
     // Assistant (or unknown role with assistant-shaped content): new bubble.
-    const id = makeId("asst");
-    refs.streamingAssistantId = id;
-    refs.lastAssistantId = id;
+    const id = makeId(streamAgent ? `asst_${streamAgent.role}` : "asst");
+    cursor.streamingAssistantId = id;
+    cursor.lastAssistantId = id;
     return [
       ...prev,
       {
@@ -455,6 +530,7 @@ export function applyPiEvent(
         status: isError ? "error" : "streaming",
         errorMessage: err.errorMessage,
         tools: [],
+        ...(streamAgent ? { streamAgent } : {}),
       },
     ];
   }
@@ -487,12 +563,12 @@ export function applyPiEvent(
     // Prefer the streaming cursor; fall back to lastAssistant so that
     // agent_end/agent_settled (which clear streamingAssistantId) or a
     // duplicate message_end cannot invent a second thinking+answer card.
-    let id = refs.streamingAssistantId;
+    let id = cursor.streamingAssistantId;
     if (!id || findMessageIndex(prev, id) < 0) {
-      id = refs.lastAssistantId;
+      id = cursor.lastAssistantId;
     }
     if (!id || findMessageIndex(prev, id) < 0) {
-      const idx = lastAssistantIndex(prev);
+      const idx = lastAssistantIndex(prev, streamAgent);
       if (idx >= 0) id = prev[idx]!.id;
     }
 
@@ -509,8 +585,8 @@ export function applyPiEvent(
         existing.status !== "streaming";
 
       if (!fixtureOnlyOnSettled) {
-        refs.streamingAssistantId = null;
-        refs.lastAssistantId = existing.id;
+        cursor.streamingAssistantId = null;
+        cursor.lastAssistantId = existing.id;
         // Keep lastAssistantId so tools that arrive after message_end still nest.
         return prev.map((m) => {
           if (m.id !== existing.id) return m;
@@ -529,15 +605,16 @@ export function applyPiEvent(
             thinkingStatus: thinking ? ("done" as const) : m.thinkingStatus,
             status,
             errorMessage: err.errorMessage ?? m.errorMessage,
+            ...(streamAgent ? { streamAgent } : {}),
           };
         });
       }
     }
 
     if (fixtureNote || finalText || finalThinking || isError) {
-      const newId = makeId("asst");
-      refs.lastAssistantId = newId;
-      refs.streamingAssistantId = null;
+      const newId = makeId(streamAgent ? `asst_${streamAgent.role}` : "asst");
+      cursor.lastAssistantId = newId;
+      cursor.streamingAssistantId = null;
       const content = finalizeAssistantContent({
         text: finalText,
         existing: "",
@@ -556,6 +633,7 @@ export function applyPiEvent(
           createdAt: ts,
           status,
           errorMessage: err.errorMessage,
+          ...(streamAgent ? { streamAgent } : {}),
         },
       ];
     }
@@ -577,26 +655,31 @@ export function applyPiEvent(
     };
 
     // Prefer streaming assistant, then last assistant, then create once.
-    let assistantId = refs.streamingAssistantId;
+    let assistantId = cursor.streamingAssistantId;
     if (!assistantId || findMessageIndex(prev, assistantId) < 0) {
-      assistantId = refs.lastAssistantId;
+      assistantId = cursor.lastAssistantId;
     }
     if (!assistantId || findMessageIndex(prev, assistantId) < 0) {
-      const idx = lastAssistantIndex(prev);
+      const idx = lastAssistantIndex(prev, streamAgent);
       if (idx >= 0) assistantId = prev[idx]!.id;
     }
 
     if (!assistantId || findMessageIndex(prev, assistantId) < 0) {
       // No assistant yet (tool-only edge case) — open one bubble.
-      const ensured = ensureAssistantBubble(prev, refs, ts);
+      const ensured = ensureAssistantBubble(prev, cursor, ts, streamAgent);
       return ensured.messages.map((m) =>
         m.id === ensured.assistantId
-          ? { ...m, tools: [tool], status: "streaming" }
+          ? {
+              ...m,
+              tools: [tool],
+              status: "streaming",
+              ...(streamAgent ? { streamAgent } : {}),
+            }
           : m,
       );
     }
 
-    refs.lastAssistantId = assistantId;
+    cursor.lastAssistantId = assistantId;
     return prev.map((m) => {
       if (m.id !== assistantId) return m;
       const tools = [...(m.tools ?? [])];
@@ -606,7 +689,11 @@ export function applyPiEvent(
       } else {
         tools.push(tool);
       }
-      return { ...m, tools };
+      return {
+        ...m,
+        tools,
+        ...(streamAgent ? { streamAgent: m.streamAgent ?? streamAgent } : {}),
+      };
     });
   }
 
@@ -684,12 +771,19 @@ export function applyPiEvent(
   }
 
   if (kind === "agent_end" || kind === "agent_settled") {
-    // Clear streaming cursor; leave lastAssistant for any late tool events.
+    // Clear streaming cursor for this stream only; leave lastAssistant for late tools.
     // Do not clobber status "error" on failed assistant turns.
-    refs.streamingAssistantId = null;
-    return prev.map((m) =>
-      m.status === "streaming" ? { ...m, status: "done" } : m,
-    );
+    cursor.streamingAssistantId = null;
+    return prev.map((m) => {
+      if (m.status !== "streaming") return m;
+      if (streamAgent) {
+        if (m.streamAgent?.agentId !== streamAgent.agentId) return m;
+      } else if (m.streamAgent) {
+        // Operator chat settle must not finalize concurrent child streams.
+        return m;
+      }
+      return { ...m, status: "done" };
+    });
   }
 
   // agent_start / prompt / session_ready / turn_* — no transcript rows.

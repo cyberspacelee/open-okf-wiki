@@ -29,6 +29,7 @@ import { isCommandFailed } from "./command-result";
 import {
   applyPiEvent,
   applyProductEvent,
+  isChildPiPayload,
   isTerminalOrWaitingPhase,
   type AgentMessage,
   type StreamingRefs,
@@ -334,9 +335,11 @@ export function useSessionAgent({
       if (streamGenRef.current !== gen || !eventsUrl) return;
       if (typeof EventSource === "undefined") return;
 
-      // Bootstrap: ignore ring buffer content until first heartbeat.
+      // Bootstrap: skip operator-chat Pi frames that would double history, but
+      // still apply product injects + produce-child Pi streams from the ring
+      // buffer so refresh mid-wiki-run restores phase / planner / leaf UI.
       // Reconnect: apply buffer; sequence filter drops already-seen frames.
-      let skipUntilHello = mode === "bootstrap";
+      let skipChatPiUntilHello = mode === "bootstrap";
 
       const es = new EventSource(eventsUrl);
       esRef.current = es;
@@ -347,16 +350,35 @@ export function useSessionAgent({
           const parsed: unknown = JSON.parse(msg.data);
           if (!isRecord(parsed)) return;
 
-          if (skipUntilHello) {
-            const seq = eventSequence(parsed as AgentSseEvent);
-            if (seq !== undefined && seq > lastSequenceRef.current) {
-              lastSequenceRef.current = seq;
-            }
+          if (skipChatPiUntilHello) {
             if (
               parsed.source === "server" &&
               parsed.kind === "heartbeat"
             ) {
-              skipUntilHello = false;
+              const seq = eventSequence(parsed as AgentSseEvent);
+              if (seq !== undefined && seq > lastSequenceRef.current) {
+                lastSequenceRef.current = seq;
+              }
+              skipChatPiUntilHello = false;
+              return;
+            }
+            // Product timeline + child produce streams are not in Pi JSONL history.
+            // handleSseEvent owns sequence advancement so we do not double-skip.
+            if (parsed.source === "product") {
+              handleSseEvent(parsed);
+              return;
+            }
+            if (
+              parsed.source === "pi" &&
+              isChildPiPayload(parsed.payload)
+            ) {
+              handleSseEvent(parsed);
+              return;
+            }
+            // Operator-chat Pi frames: advance sequence only (history already has them).
+            const seq = eventSequence(parsed as AgentSseEvent);
+            if (seq !== undefined && seq > lastSequenceRef.current) {
+              lastSequenceRef.current = seq;
             }
             return;
           }
@@ -398,6 +420,26 @@ export function useSessionAgent({
             plan: snap.product.pendingGate.plan,
             pages: snap.product.pendingGate.pages,
           });
+        }
+        // Restore streaming chrome when a wiki run / produce is still live.
+        const phase = snap.product?.phase;
+        const runStatus = snap.product?.runStatus;
+        const busy = snap.product?.busy === true;
+        const phaseBusy =
+          Boolean(phase) && !isTerminalOrWaitingPhase(phase);
+        const runBusy =
+          runStatus === "running" ||
+          runStatus === "awaiting_plan" ||
+          runStatus === "awaiting_publication";
+        if (busy || phaseBusy) {
+          setStatus("streaming");
+        } else if (runBusy && phase && !isTerminalOrWaitingPhase(phase)) {
+          setStatus("streaming");
+        } else if (
+          runStatus === "running" &&
+          (!phase || phase === "planning" || phase === "writing")
+        ) {
+          setStatus("streaming");
         }
       } catch (err) {
         if (cancelled || streamGenRef.current !== gen) return;

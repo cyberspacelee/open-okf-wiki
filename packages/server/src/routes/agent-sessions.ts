@@ -240,6 +240,28 @@ export async function handleGetAgentSession(
     }
   }
 
+  // Prefer live product phase (updated on every emitPhase) over shell snapshot,
+  // which lags during planner / mid-produce until the job returns.
+  const livePhase = reg?.livePhase;
+  const shellPhase = reg?.shell?.phase;
+  const productPhase =
+    livePhase ??
+    (shellPhase === "awaiting_plan"
+      ? "awaiting_plan"
+      : shellPhase === "awaiting_publish"
+        ? "awaiting_publish"
+        : shellPhase === "producing" || shellPhase === "hard_validate"
+          ? "writing"
+          : shellPhase === "published" || shellPhase === "publication_declined"
+            ? "done"
+            : shellPhase === "failed"
+              ? "failed"
+              : shellPhase === "cancelled"
+                ? "cancelled"
+                : shellPhase === "idle"
+                  ? "idle"
+                  : undefined);
+
   sendJson(res, 200, {
     session: {
       id: sessionId,
@@ -251,7 +273,8 @@ export async function handleGetAgentSession(
     product: {
       runId: reg?.runId,
       runStatus,
-      phase: reg?.shell?.phase,
+      phase: productPhase,
+      busy: reg?.busy === true,
       pendingGate: reg?.shell?.pendingGate
         ? {
             gate: reg.shell.pendingGate === "publish" ? "publication" : "plan",

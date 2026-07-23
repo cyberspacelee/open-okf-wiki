@@ -695,3 +695,116 @@ describe("isTerminalOrWaitingPhase", () => {
     assert.equal(isTerminalOrWaitingPhase("done"), true);
   });
 });
+
+describe("applyPiEvent — produce child streams (planner / leaf)", () => {
+  it("streams thinking + text under okfAgent without colliding leaves", () => {
+    const r = refs();
+    let messages: AgentMessage[] = [];
+
+    messages = applyPiEvent(
+      messages,
+      "message_update",
+      {
+        type: "message_update",
+        message: {
+          role: "assistant",
+          content: [{ type: "thinking", thinking: "plan A" }],
+        },
+        assistantMessageEvent: { type: "thinking_delta", delta: "plan A" },
+        okfAgent: { agentId: "planner", role: "planner" },
+      },
+      r,
+    );
+    messages = applyPiEvent(
+      messages,
+      "message_update",
+      {
+        type: "message_update",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "leaf1" }],
+        },
+        assistantMessageEvent: { type: "text_delta", delta: "leaf1" },
+        okfAgent: { agentId: "leaf-d1-1", role: "leaf" },
+      },
+      r,
+    );
+    messages = applyPiEvent(
+      messages,
+      "message_update",
+      {
+        type: "message_update",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "leaf2" }],
+        },
+        assistantMessageEvent: { type: "text_delta", delta: "leaf2" },
+        okfAgent: { agentId: "leaf-d1-2", role: "leaf" },
+      },
+      r,
+    );
+    messages = applyPiEvent(
+      messages,
+      "tool_execution_start",
+      {
+        type: "tool_execution_start",
+        toolCallId: "t-leaf1",
+        toolName: "read",
+        args: { path: "sources/a/x.ts" },
+        okfAgent: { agentId: "leaf-d1-1", role: "leaf" },
+      },
+      r,
+    );
+
+    const planner = messages.find((m) => m.streamAgent?.agentId === "planner");
+    const leaf1 = messages.find((m) => m.streamAgent?.agentId === "leaf-d1-1");
+    const leaf2 = messages.find((m) => m.streamAgent?.agentId === "leaf-d1-2");
+    assert.ok(planner);
+    assert.ok(leaf1);
+    assert.ok(leaf2);
+    assert.equal(planner!.thinking, "plan A");
+    assert.equal(leaf1!.content, "leaf1");
+    assert.equal(leaf2!.content, "leaf2");
+    assert.equal(leaf1!.tools?.length, 1);
+    assert.equal(leaf1!.tools?.[0]?.name, "read");
+    assert.equal(leaf2!.tools?.length ?? 0, 0);
+    assert.equal(assistantCount(messages), 3);
+  });
+
+  it("agent_end on one leaf does not finalize the other leaf stream", () => {
+    const r = refs();
+    let messages: AgentMessage[] = [];
+    messages = applyPiEvent(
+      messages,
+      "message_update",
+      {
+        type: "message_update",
+        message: { role: "assistant", content: [{ type: "text", text: "a" }] },
+        assistantMessageEvent: { type: "text_delta", delta: "a" },
+        okfAgent: { agentId: "leaf-a", role: "leaf" },
+      },
+      r,
+    );
+    messages = applyPiEvent(
+      messages,
+      "message_update",
+      {
+        type: "message_update",
+        message: { role: "assistant", content: [{ type: "text", text: "b" }] },
+        assistantMessageEvent: { type: "text_delta", delta: "b" },
+        okfAgent: { agentId: "leaf-b", role: "leaf" },
+      },
+      r,
+    );
+    messages = applyPiEvent(
+      messages,
+      "agent_end",
+      { type: "agent_end", okfAgent: { agentId: "leaf-a", role: "leaf" } },
+      r,
+    );
+    const a = messages.find((m) => m.streamAgent?.agentId === "leaf-a");
+    const b = messages.find((m) => m.streamAgent?.agentId === "leaf-b");
+    assert.equal(a?.status, "done");
+    assert.equal(b?.status, "streaming");
+  });
+});

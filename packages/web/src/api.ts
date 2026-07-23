@@ -927,6 +927,8 @@ export type AgentSessionSnapshot = {
     runId?: string;
     runStatus?: string;
     phase?: string;
+    /** True while server registry has an in-flight prompt/produce. */
+    busy?: boolean;
     pendingGate?: {
       gate: "plan" | "publication";
       plan?: WikiRunPlan;

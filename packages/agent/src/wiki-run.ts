@@ -173,6 +173,7 @@ function produceEventsFromJob(
     planProgress: (p) => emit(onEvent, "plan_progress", undefined, p),
     agentSpan: (p) => emit(onEvent, "agent_span", p.status, p),
     defects: (p) => emit(onEvent, "defects", p.summary, p),
+    childPiEvent: (p) => emit(onEvent, "child_pi", p.kind, p),
   };
 }
 
@@ -284,6 +285,8 @@ async function discoverWikiPlan(input: {
       workspaceRoot: input.workspace.rootPath,
       abortSignal: input.abortSignal,
       useDefaultSpec: fixture,
+      agentId: "planner",
+      onPiEvent: (p) => emit(input.onEvent, "child_pi", p.kind, p),
     });
 
     let spec = planned.spec;

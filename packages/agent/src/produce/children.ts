@@ -4,6 +4,9 @@
  *
  * Provider failures often complete session.prompt() without throwing
  * (stopReason "error"). We fail closed instead of inventing empty success.
+ *
+ * Live operator UI: every relevant Pi event is forwarded via `onPiEvent` so
+ * thinking / text / tools stream under the parent Operator Session.
  */
 
 import type { Model } from "@earendil-works/pi-ai/compat";
@@ -15,11 +18,19 @@ import {
 import { resolveAssistantSummary } from "../pi/assistant-outcome.js";
 import type { WikiAgentRole } from "../pi/tool-policy.js";
 import type { SourceIgnoreInput } from "../pi/tool-operations.js";
+import type { ProduceAgentRole, ProduceChildPiEvent } from "./events.js";
 
 export type ChildRole = Extract<
   WikiAgentRole,
   "domain" | "leaf" | "reviewer" | "root_research" | "plan"
 >;
+
+/** Map child session role → operator-visible produce role. */
+export function produceRoleForChild(role: ChildRole): ProduceAgentRole {
+  if (role === "plan") return "planner";
+  if (role === "root_research") return "root";
+  return role;
+}
 
 export type RunChildSessionInput = {
   role: ChildRole;
@@ -37,6 +48,16 @@ export type RunChildSessionInput = {
   abortSignal?: AbortSignal;
   /** Soft timeout in ms (host abort via session.abort). */
   timeoutMs?: number;
+  /**
+   * Stable operator-visible agent id (matches agent_span.agentId).
+   * Defaults to the child role name when omitted.
+   */
+  agentId?: string;
+  /**
+   * Forward live Pi events (thinking / text / tools) to the Operator Session.
+   * Callers wire this to ProduceEventSink.childPiEvent.
+   */
+  onPiEvent?: (event: ProduceChildPiEvent) => void;
 };
 
 export type RunChildSessionResult = {
@@ -44,6 +65,26 @@ export type RunChildSessionResult = {
   summary: string;
   mode: "fixture" | "live";
 };
+
+/** Pi event kinds that carry operator-visible stream content. */
+const FORWARDED_KINDS = new Set([
+  "agent_start",
+  "agent_end",
+  "agent_settled",
+  "message_start",
+  "message_update",
+  "message_end",
+  "tool_execution_start",
+  "tool_execution_update",
+  "tool_execution_end",
+  "turn_start",
+  "turn_end",
+  "error",
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 /**
  * Run a read-only child agent for research/review/plan.
@@ -72,6 +113,23 @@ export async function runChildSession(
       `Child session (${input.role}) live mode requires a model, or pass fixture: true / OKF_WIKI_AGENT_MODE=fixture for smoke only`,
     );
   }
+
+  const agentId = input.agentId?.trim() || input.role;
+  const produceRole = produceRoleForChild(input.role);
+  const forward = (kind: string, payload: unknown): void => {
+    if (!input.onPiEvent) return;
+    if (!FORWARDED_KINDS.has(kind)) return;
+    try {
+      input.onPiEvent({
+        agentId,
+        role: produceRole,
+        kind,
+        payload,
+      });
+    } catch {
+      // Never let a bad subscriber break the child session.
+    }
+  };
 
   let handle: WikiSessionHandle | undefined;
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -114,8 +172,19 @@ export async function runChildSession(
 
     let text = "";
     const unsub = handle.session.subscribe((event) => {
-      if (event.type !== "message_update") return;
-      const ame = event.assistantMessageEvent;
+      const kind =
+        event && typeof event === "object" && "type" in event
+          ? String((event as { type: unknown }).type)
+          : "event";
+      forward(kind, event);
+
+      if (kind !== "message_update") return;
+      // Narrow via unknown — Pi event unions omit assistantMessageEvent on some arms.
+      const raw = event as unknown;
+      if (!isRecord(raw)) return;
+      const ame = isRecord(raw.assistantMessageEvent)
+        ? raw.assistantMessageEvent
+        : null;
       if (!ame) return;
       if (ame.type === "text_delta" && typeof ame.delta === "string") {
         text += ame.delta;

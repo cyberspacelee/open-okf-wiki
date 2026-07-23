@@ -40,6 +40,7 @@ export {
 export {
   runChildSession,
   runChildrenParallel,
+  produceRoleForChild,
   type ChildRole,
   type RunChildSessionInput,
   type RunChildSessionResult,

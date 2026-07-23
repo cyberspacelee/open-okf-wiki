@@ -12,6 +12,28 @@ export type ProduceProgressPhase =
   | "done"
   | "failed";
 
+/** Operator-visible supervisor role for agent_span / child stream tags. */
+export type ProduceAgentRole =
+  | "domain"
+  | "leaf"
+  | "reviewer"
+  | "root"
+  | "planner";
+
+/**
+ * Live Pi event from a produce child session (planner / domain / leaf / reviewer).
+ * Server fans these out as `source:"pi"` with `okfAgent` metadata so the UI can
+ * stream thinking / text / tools under the correct span.
+ */
+export type ProduceChildPiEvent = {
+  agentId: string;
+  role: ProduceAgentRole;
+  /** Pi AgentSession event type (`message_update`, `tool_execution_start`, …). */
+  kind: string;
+  /** Full Pi event payload (type + message + assistantMessageEvent + …). */
+  payload: unknown;
+};
+
 export type ProduceEventSink = {
   progress?: (p: {
     phase: ProduceProgressPhase;
@@ -26,7 +48,7 @@ export type ProduceEventSink = {
   agentSpan?: (p: {
     spanId: string;
     agentId: string;
-    role: "domain" | "leaf" | "reviewer" | "root" | "planner";
+    role: ProduceAgentRole;
     status: "running" | "complete" | "failed";
     promptSummary?: string;
     /** Expandable preview body (capped). */
@@ -44,6 +66,8 @@ export type ProduceEventSink = {
     defectCount: number;
     summary?: string;
   }) => void;
+  /** Stream child Pi session events (thinking / text / tools) to the operator. */
+  childPiEvent?: (p: ProduceChildPiEvent) => void;
 };
 
 /** No-op sink for tests / CLI silence. */
@@ -62,6 +86,7 @@ export function recordingProduceEvents(): {
       planProgress: (p) => events.push({ kind: "plan_progress", payload: p }),
       agentSpan: (p) => events.push({ kind: "agent_span", payload: p }),
       defects: (p) => events.push({ kind: "defects", payload: p }),
+      childPiEvent: (p) => events.push({ kind: "child_pi", payload: p }),
     },
   };
 }

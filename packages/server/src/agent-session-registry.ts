@@ -21,6 +21,7 @@ import {
   resolveWorkspacePiModel,
   resumeWikiRun,
   shouldUsePiFixtureMode,
+  startShell,
   startWikiRun,
   type ResolvedPiModel,
   type WikiModelRole,
@@ -85,6 +86,12 @@ export type RegisteredAgentSession = {
   abortController?: AbortController;
   /** True while prompt/produce is running. */
   busy: boolean;
+  /**
+   * Last product run_phase emitted on the live bus.
+   * Source of truth for cold-load while shell is lagging (e.g. planner phase
+   * before startWikiRun returns a shell snapshot).
+   */
+  livePhase?: ProductPhase;
 };
 
 type SessionMetaDisk = {
@@ -225,6 +232,7 @@ function emitPhase(
   message?: string,
   status?: WikiRunRecordStatus,
 ): void {
+  entry.livePhase = phase;
   emitProductAgentEvent(entry.workspaceId, {
     source: "product",
     kind: "run_phase",
@@ -235,6 +243,14 @@ function emitPhase(
     message,
     timestamp: nowIso(),
   });
+  // Keep durable Run Record in sync so cold-load after refresh shows running.
+  if (status && entry.runId) {
+    void updateRunRecord(entry.workspaceRoot, entry.runId, { status }).catch(
+      () => {
+        // best-effort; SSE still carries status
+      },
+    );
+  }
 }
 
 function emitGate(
@@ -771,6 +787,40 @@ function mapOrchestratorOnEvent(
       });
       return;
     }
+    if (event.type === "child_pi") {
+      // Produce child sessions (planner / leaf / domain / reviewer) stream here.
+      const data = (event.data ?? {}) as {
+        agentId?: string;
+        role?: string;
+        kind?: string;
+        payload?: unknown;
+      };
+      const kind =
+        (typeof data.kind === "string" && data.kind) ||
+        event.message ||
+        "event";
+      const agentId =
+        typeof data.agentId === "string" && data.agentId.trim()
+          ? data.agentId.trim()
+          : "child";
+      const role =
+        typeof data.role === "string" && data.role.trim()
+          ? data.role.trim()
+          : "leaf";
+      const raw = data.payload;
+      const payload =
+        raw && typeof raw === "object" && !Array.isArray(raw)
+          ? {
+              ...(raw as Record<string, unknown>),
+              okfAgent: { agentId, role },
+            }
+          : {
+              okfAgent: { agentId, role },
+              value: raw,
+            };
+      emitPi(entry.workspaceId, entry.sessionId, kind, payload);
+      return;
+    }
     if (event.type === "error") {
       emitPi(entry.workspaceId, entry.sessionId, "error", {
         message: event.message,
@@ -1162,6 +1212,9 @@ async function handleStartWikiRun(
   }
 
   entry.runId = frozen.runId;
+  // Shell snapshot before startWikiRun returns — cold-load can still see a run.
+  entry.shell = startShell({ skipPlanConfirm: true });
+  entry.livePhase = "planning";
   emitRunLink(entry, "running");
   emitPhase(
     entry,
@@ -1268,6 +1321,13 @@ async function handleResumeGate(
   const controller = new AbortController();
   entry.abortController = controller;
   entry.busy = true;
+  if (command.gate === "plan" && command.action === "approve") {
+    // Surface writing/busy for cold-load + UI before resumeWikiRun returns.
+    // Keep shell at awaiting_plan until resumeGate transitions it — mutating
+    // shell here would break resumeGate's phase assertions.
+    entry.livePhase = "writing";
+    emitPhase(entry, "writing", "plan approved — producing", "running");
+  }
 
   try {
     const result = await resumeWikiRun({

@@ -10,6 +10,7 @@ import {
   type WikiRunSpec,
 } from "@okf-wiki/contract";
 import { runChildSession } from "./children.js";
+import type { ProduceChildPiEvent } from "./events.js";
 import { parsePlanFromAgentText } from "./plan-parse.js";
 import { plannerPrompt } from "./prompts.js";
 import type { SourceIgnoreInput } from "../pi/tool-operations.js";
@@ -30,6 +31,10 @@ export type PlanWikiSpecInput = {
   abortSignal?: AbortSignal;
   /** When true, skip LLM and return defaultWikiRunSpec. */
   useDefaultSpec?: boolean;
+  /** Forward planner Pi events (thinking / text / tools) to the operator stream. */
+  onPiEvent?: (event: ProduceChildPiEvent) => void;
+  /** Operator-visible agent id (default: "planner"). */
+  agentId?: string;
 };
 
 export type PlanWikiSpecResult = {
@@ -60,6 +65,7 @@ export async function planWikiSpec(
 
   const child = await runChildSession({
     role: "plan",
+    agentId: input.agentId ?? "planner",
     runWorkDir: input.runWorkDir,
     task: plannerPrompt({
       layout: input.layout,
@@ -75,6 +81,7 @@ export async function planWikiSpec(
     maxContextTokens: input.maxContextTokens,
     contextTargetTokens: input.contextTargetTokens,
     abortSignal: input.abortSignal,
+    onPiEvent: input.onPiEvent,
   });
 
   // Prefer structured parse from plan-parse helpers / JSON extract.
