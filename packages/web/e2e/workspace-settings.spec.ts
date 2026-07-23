@@ -30,8 +30,9 @@ test.describe("workspace settings", () => {
     await page.getByTestId("workspace-root-input").fill(rootPath);
     await chooseOption(page, "model-profile-select", /Beta Model/);
     await page.getByTestId("workspace-create-submit").click();
-    await expect(page.getByTestId("workspace-detail")).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByTestId("workspace-detail")).toContainText("openai/beta-model");
+    await expect(page.getByTestId("agent-workspace-page")).toBeVisible({
+      timeout: 20_000,
+    });
 
     // 3. Switch to Alpha in workspace settings
     await page.getByTestId("workspace-subnav-settings").click();

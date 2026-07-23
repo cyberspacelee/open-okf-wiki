@@ -27,8 +27,8 @@ import {
   listRunReceipts,
   type AnalysisReceiptDetail,
   type AnalysisReceiptSummary,
-} from "../../../api";
-import { useI18n } from "../../../i18n";
+} from "../../api";
+import { useI18n } from "../../i18n";
 import type { AgentMessage } from "../hooks/useSessionAgent";
 
 export type AgentTreeNode = {

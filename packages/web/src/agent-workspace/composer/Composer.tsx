@@ -26,8 +26,8 @@ import {
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { useI18n } from "../../../i18n";
-import type { ModelProfilePublic } from "../../../api";
+import { useI18n } from "../../i18n";
+import type { ModelProfilePublic } from "../../api";
 import type { AgentStatus } from "../hooks/useSessionAgent";
 
 export type ComposerProps = {

@@ -16,7 +16,7 @@ import {
 import { LoadingState } from "../components/LoadingState";
 import { WorkspaceShell } from "../components/WorkspaceShell";
 import { useI18n } from "../i18n";
-import { workspaceHref } from "../lib/workspace-path";
+import { agentWorkspaceHref } from "../lib/workspace-path";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -308,10 +308,11 @@ export function WorkspaceWikiPage() {
                 </EmptyHeader>
                 <EmptyContent>
                   <Link
-                    to={workspaceHref(id, "/session", rootPathHint)}
+                    to={agentWorkspaceHref(id, rootPathHint)}
                     className={cn(buttonVariants())}
+                    data-testid="wiki-open-agent"
                   >
-                    {t.wiki.goToSession}
+                    {t.wiki.goToAgent}
                   </Link>
                 </EmptyContent>
               </Empty>

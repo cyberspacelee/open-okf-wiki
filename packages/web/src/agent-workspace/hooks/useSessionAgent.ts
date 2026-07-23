@@ -24,7 +24,7 @@ import {
   agentSessionEventsUrl,
   getAgentSession,
   type AgentSessionHistoryMessage,
-} from "../../../api";
+} from "../../api";
 import { isCommandFailed } from "./command-result";
 import {
   applyPiEvent,

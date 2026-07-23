@@ -1,6 +1,7 @@
 /**
  * Markdown body for agent transcript cards.
- * Reuses Streamdown (same stack as Wiki browse) with session-density styles.
+ * Streamdown + @streamdown/code (Shiki). Code chrome is styled via
+ * data-streamdown selectors in index.css (single outer border).
  */
 
 import { memo } from "react";
@@ -39,6 +40,13 @@ export const AgentMarkdown = memo(function AgentMarkdown({
         mode={streaming ? "streaming" : "static"}
         parseIncompleteMarkdown={streaming}
         plugins={streamdownPlugins}
+        /* Chat density: no line numbers; copy only (download is noisy in timeline). */
+        lineNumbers={false}
+        controls={{
+          code: { copy: true, download: false },
+          table: true,
+          mermaid: true,
+        }}
         className="size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
       >
         {content}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   cancelRun,
   createRun,
@@ -15,8 +15,8 @@ import { LoadingState } from "../components/LoadingState";
 import { RunStatusBadge } from "../components/RunStatusBadge";
 import { WorkspaceShell } from "../components/WorkspaceShell";
 import { useI18n } from "../i18n";
-import { workspaceHref } from "../lib/workspace-path";
-import { Button } from "@/components/ui/button";
+import { agentWorkspaceHref, workspaceHref } from "../lib/workspace-path";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Collapsible,
@@ -32,6 +32,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ChevronDownIcon } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 function formatTime(iso: string): string {
   try {
@@ -44,7 +45,6 @@ function formatTime(iso: string): string {
 export function WorkspaceRunPage() {
   const { t } = useI18n();
   const { id = "" } = useParams<{ id: string }>();
-  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const rootPathHint = searchParams.get("rootPath") ?? undefined;
   const [workspace, setWorkspace] = useState<WorkspaceConfig | null>(null);
@@ -295,15 +295,7 @@ export function WorkspaceRunPage() {
     lastRun!.status !== "awaiting_publication" &&
     lastRun!.status !== "needs_input";
 
-  /** Session-first interactive generate (plan negotiation + HITL in chat). */
-  function handleStartInSession() {
-    if (!id) {
-      return;
-    }
-    navigate(workspaceHref(id, "/session", rootPathHint, { kickoff: "1" }));
-  }
-
-  /** Headless job start (no Session chat UI). Kept for audit / e2e / auto paths. */
+  /** Headless job start (no Agent chat UI). Kept for audit / e2e / auto paths. */
   async function handleStartHeadless() {
     if (!id) {
       return;
@@ -389,7 +381,7 @@ export function WorkspaceRunPage() {
       description={
         <>
           {t.runs.descriptionBefore}
-          <Link to={workspaceHref(id, "/session", rootPathHint)}>
+          <Link to={agentWorkspaceHref(id, rootPathHint)}>
             {t.runs.descriptionLink}
           </Link>
           {t.runs.descriptionAfter}
@@ -405,38 +397,15 @@ export function WorkspaceRunPage() {
           <>
             <Card>
               <CardHeader className="row-between items-center">
-                <CardTitle>{t.runs.generateTitle}</CardTitle>
+                <CardTitle>{t.runs.auditTitle}</CardTitle>
                 <div className="row-actions">
-                  {canCancel ? (
-                    <Button
-                      type="button"
-                      variant="destructive"
-                      onClick={() => void handleCancel()}
-                      disabled={cancelling}
-                      data-testid="run-cancel"
-                    >
-                      {cancelling ? t.runs.cancelling : t.runs.cancel}
-                    </Button>
-                  ) : null}
-                  {canRetry ? (
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      onClick={() => void handleRetry()}
-                      disabled={retrying || starting}
-                      data-testid="run-retry"
-                    >
-                      {retrying ? t.runs.retrying : t.runs.retry}
-                    </Button>
-                  ) : null}
-                  <Button
-                    type="button"
-                    onClick={() => handleStartInSession()}
-                    disabled={!canStart || canCancel}
-                    data-testid="run-start-session"
+                  <Link
+                    to={agentWorkspaceHref(id, rootPathHint)}
+                    className={cn(buttonVariants())}
+                    data-testid="run-open-agent"
                   >
-                    {t.runs.generateInSession}
-                  </Button>
+                    {t.runs.openAgent}
+                  </Link>
                 </div>
               </CardHeader>
               <CardContent className="flex flex-col gap-4">
@@ -448,35 +417,6 @@ export function WorkspaceRunPage() {
                     </Link>
                   </p>
                 ) : null}
-
-                <Collapsible defaultOpen className="rounded-lg border">
-                  <CollapsibleTrigger className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm font-medium hover:bg-muted/50">
-                    <span>
-                      {t.runs.advancedTitle}
-                      <span className="ml-2 font-normal text-muted-foreground">
-                        {t.runs.advancedHint}
-                      </span>
-                    </span>
-                    <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground" />
-                  </CollapsibleTrigger>
-                  <CollapsibleContent
-                    keepMounted
-                    className="border-t px-3 py-3"
-                  >
-                    <div className="row-actions">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={() => void handleStartHeadless()}
-                        disabled={starting || !canStart || canCancel}
-                        data-testid="run-start"
-                        title={t.runs.startHeadlessTitle}
-                      >
-                        {starting ? t.runs.starting : t.runs.startHeadless}
-                      </Button>
-                    </div>
-                  </CollapsibleContent>
-                </Collapsible>
 
                 {lastRun ? (
                   <div className="run-last" data-testid="run-last">
@@ -541,7 +481,7 @@ export function WorkspaceRunPage() {
                         >
                           <p className="muted small mb-2">
                             {t.runs.jobEventsHintBefore}
-                            <Link to={workspaceHref(id, "/session", rootPathHint)}>
+                            <Link to={agentWorkspaceHref(id, rootPathHint)}>
                               {t.runs.jobEventsHintLink}
                             </Link>
                             {t.runs.jobEventsHintAfter}
@@ -577,7 +517,7 @@ export function WorkspaceRunPage() {
                         </p>
                         <div className="mt-2">
                           <Link
-                            to={workspaceHref(id, "/session", rootPathHint, {
+                            to={agentWorkspaceHref(id, rootPathHint, {
                               ...(lastRun.sessionId
                                 ? { sessionId: lastRun.sessionId }
                                 : {}),
@@ -594,6 +534,57 @@ export function WorkspaceRunPage() {
                 ) : (
                   <p className="muted">{t.runs.noRuns}</p>
                 )}
+
+                <Collapsible className="rounded-lg border">
+                  <CollapsibleTrigger className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm font-medium hover:bg-muted/50">
+                    <span>
+                      {t.runs.advancedTitle}
+                      <span className="ml-2 font-normal text-muted-foreground">
+                        {t.runs.advancedHint}
+                      </span>
+                    </span>
+                    <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground" />
+                  </CollapsibleTrigger>
+                  <CollapsibleContent
+                    keepMounted
+                    className="border-t px-3 py-3"
+                  >
+                    <div className="row-actions flex flex-wrap gap-2">
+                      {canCancel ? (
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          onClick={() => void handleCancel()}
+                          disabled={cancelling}
+                          data-testid="run-cancel"
+                        >
+                          {cancelling ? t.runs.cancelling : t.runs.cancel}
+                        </Button>
+                      ) : null}
+                      {canRetry ? (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          onClick={() => void handleRetry()}
+                          disabled={retrying || starting}
+                          data-testid="run-retry"
+                        >
+                          {retrying ? t.runs.retrying : t.runs.retry}
+                        </Button>
+                      ) : null}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => void handleStartHeadless()}
+                        disabled={starting || !canStart || canCancel}
+                        data-testid="run-start"
+                        title={t.runs.startHeadlessTitle}
+                      >
+                        {starting ? t.runs.starting : t.runs.startHeadless}
+                      </Button>
+                    </div>
+                  </CollapsibleContent>
+                </Collapsible>
               </CardContent>
             </Card>
 

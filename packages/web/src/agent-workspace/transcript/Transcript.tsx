@@ -57,8 +57,8 @@ import {
 } from "@/components/ui/message-scroller";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { useI18n } from "../../../i18n";
-import { getRunReceipt } from "../../../api";
+import { useI18n } from "../../i18n";
+import { getRunReceipt } from "../../api";
 import type {
   AgentMessage,
   AgentProductMeta,

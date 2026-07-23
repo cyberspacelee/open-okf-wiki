@@ -8,7 +8,7 @@ import { CheckIcon, PencilIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { useI18n } from "../../../i18n";
+import { useI18n } from "../../i18n";
 import type { PendingGate, ResumeGateInput } from "../hooks/useSessionAgent";
 
 export type GateActionsProps = {

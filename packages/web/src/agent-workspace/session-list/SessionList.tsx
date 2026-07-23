@@ -7,8 +7,8 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import type { PiSessionSummary } from "../../../api";
-import { useI18n } from "../../../i18n";
+import type { PiSessionSummary } from "../../api";
+import { useI18n } from "../../i18n";
 
 export type SessionListProps = {
   sessions: PiSessionSummary[];

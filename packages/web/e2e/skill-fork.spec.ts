@@ -11,7 +11,7 @@ test.describe("skill fork settings", () => {
     await page.getByTestId("workspace-name-input").fill(name);
     await page.getByTestId("workspace-root-input").fill(rootPath);
     await page.getByTestId("workspace-create-submit").click();
-    await expect(page.getByTestId("workspace-detail")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId("agent-workspace-page")).toBeVisible({ timeout: 20_000 });
 
     await page.getByTestId("workspace-subnav-settings").click();
     await expect(page.getByTestId("settings-page")).toBeVisible();

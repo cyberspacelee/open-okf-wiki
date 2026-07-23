@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/breadcrumb";
 import { cn } from "@/lib/utils";
 import { useI18n } from "../i18n";
-import { workspaceHref } from "../lib/workspace-path";
+import { agentWorkspaceHref } from "../lib/workspace-path";
 import { ErrorBanner } from "./ErrorBanner";
 import { Layout } from "./Layout";
 import { WorkspaceSubnav } from "./WorkspaceSubnav";
@@ -18,7 +18,7 @@ import { WorkspaceSubnav } from "./WorkspaceSubnav";
 export type WorkspaceShellProps = {
   workspaceId: string;
   workspaceName?: string;
-  /** Final breadcrumb segment (omit on overview so the workspace name is current). */
+  /** Final breadcrumb segment (workspace name links to Agent Workspace). */
   breadcrumbLabel?: string;
   title: ReactNode;
   description?: ReactNode;
@@ -80,7 +80,7 @@ export function WorkspaceShell({
                 {breadcrumbLabel ? (
                   <BreadcrumbLink
                     render={
-                      <Link to={workspaceHref(workspaceId, "", rootPath)} />
+                      <Link to={agentWorkspaceHref(workspaceId, rootPath)} />
                     }
                   >
                     {displayName}

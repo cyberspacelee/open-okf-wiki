@@ -22,8 +22,9 @@ import {
 } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { useI18n } from "../../i18n";
-import { ErrorBanner } from "../../components/ErrorBanner";
+import { useI18n } from "../i18n";
+import { workspaceHref } from "../lib/workspace-path";
+import { ErrorBanner } from "../components/ErrorBanner";
 import { Composer } from "./composer/Composer";
 import { ContextPanels } from "./panels/ContextPanels";
 import { SessionList } from "./session-list/SessionList";
@@ -40,7 +41,7 @@ import type {
   StoredRunRecord,
   WikiRunPlan,
   WorkspaceConfig,
-} from "../../api";
+} from "../api";
 
 export type AgentWorkspaceShellProps = {
   workspaceId: string;
@@ -63,6 +64,7 @@ export type AgentWorkspaceShellProps = {
   plan?: WikiRunPlan | null;
   linkedRunId?: string | null;
   phase?: string | null;
+  /** HITL only on Transcript — still needed for gate cards there. */
   pendingGate?: PendingGate | null;
   gateBusy?: boolean;
   onResumeGate?: (input: ResumeGateInput) => void | Promise<void>;
@@ -133,9 +135,6 @@ export function AgentWorkspaceShell({
       linkedRunId={linkedRunId}
       messages={messages}
       phase={phase}
-      pendingGate={pendingGate}
-      gateBusy={gateBusy}
-      onResumeGate={onResumeGate}
       recentRuns={recentRuns}
     />
   );
@@ -175,13 +174,7 @@ export function AgentWorkspaceShell({
           variant="ghost"
           nativeButton={false}
           render={
-            <Link
-              to={`/workspaces/${encodeURIComponent(workspaceId)}/settings${
-                rootPath
-                  ? `?${new URLSearchParams({ rootPath }).toString()}`
-                  : ""
-              }`}
-            />
+            <Link to={workspaceHref(workspaceId, "/settings", rootPath)} />
           }
         >
           <SettingsIcon data-icon="inline-start" />

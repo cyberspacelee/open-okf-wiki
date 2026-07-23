@@ -1,14 +1,14 @@
 /**
- * Build a workspace-scoped path, preserving optional rootPath query when present.
- * Extra query params (e.g. kickoff=1) are merged after rootPath.
+ * Workspace-scoped paths.
+ * Agent Workspace (primary operate surface) lives at `/w/:id`.
+ * Secondary config/audit pages stay under `/workspaces/:id/...`.
  */
-export function workspaceHref(
-  workspaceId: string,
-  suffix = "",
+
+function withQuery(
+  base: string,
   rootPath?: string | null,
   extraQuery?: Record<string, string>,
 ): string {
-  const base = `/workspaces/${encodeURIComponent(workspaceId)}${suffix}`;
   const params = new URLSearchParams();
   if (rootPath) {
     params.set("rootPath", rootPath);
@@ -22,4 +22,38 @@ export function workspaceHref(
   }
   const qs = params.toString();
   return qs ? `${base}?${qs}` : base;
+}
+
+/** Primary operate surface — Agent Workspace (`/w/:id`). */
+export function agentWorkspaceHref(
+  workspaceId: string,
+  rootPath?: string | null,
+  extraQuery?: Record<string, string>,
+): string {
+  return withQuery(
+    `/w/${encodeURIComponent(workspaceId)}`,
+    rootPath,
+    extraQuery,
+  );
+}
+
+/**
+ * Secondary workspace pages under `/workspaces/:id{suffix}`.
+ * Prefer `agentWorkspaceHref` for the operate surface (not `/session` or bare id).
+ */
+export function workspaceHref(
+  workspaceId: string,
+  suffix = "",
+  rootPath?: string | null,
+  extraQuery?: Record<string, string>,
+): string {
+  // Legacy callers sometimes used "" or "/session" for the operate surface.
+  if (suffix === "" || suffix === "/session") {
+    return agentWorkspaceHref(workspaceId, rootPath, extraQuery);
+  }
+  return withQuery(
+    `/workspaces/${encodeURIComponent(workspaceId)}${suffix}`,
+    rootPath,
+    extraQuery,
+  );
 }

@@ -1,6 +1,7 @@
 /**
- * Right-pane context tabs: Sources | Wiki | Plan | Run (audit).
- * Lightweight projections — full editors stay on legacy routes for now.
+ * Right-pane context: Plan (read-only) | Agents tree | Run status.
+ * HITL actions live only on the Transcript (ADR 0026 / 0030).
+ * Full Sources / Wiki / Run editors stay on secondary routes.
  */
 
 import { Link } from "react-router-dom";
@@ -19,30 +20,20 @@ import type {
   StoredRunRecord,
   WikiRunPlan,
   WorkspaceConfig,
-  WorkspaceSource,
-} from "../../../api";
-import { useI18n } from "../../../i18n";
-import { workspaceHref } from "../../../lib/workspace-path";
-import type {
-  AgentMessage,
-  PendingGate,
-  ResumeGateInput,
-} from "../hooks/useSessionAgent";
-import { GateActions } from "../transcript/GateActions";
+} from "../../api";
+import { useI18n } from "../../i18n";
+import { workspaceHref } from "../../lib/workspace-path";
+import type { AgentMessage } from "../hooks/useSessionAgent";
 import { AgentTree } from "./AgentTree";
 
 export type ContextPanelsProps = {
   workspaceId: string;
   rootPath?: string;
   workspace: WorkspaceConfig | null;
-  /** Linked plan when known (from product gate inject or legacy session). */
   plan?: WikiRunPlan | null;
   linkedRunId?: string | null;
   phase?: string | null;
   recentRuns?: StoredRunRecord[];
-  pendingGate?: PendingGate | null;
-  gateBusy?: boolean;
-  onResumeGate?: (input: ResumeGateInput) => void | Promise<void>;
   /** Transcript messages — used to build live subagent tree. */
   messages?: AgentMessage[];
   className?: string;
@@ -89,117 +80,34 @@ export function ContextPanels({
   linkedRunId = null,
   phase = null,
   recentRuns = [],
-  pendingGate = null,
-  gateBusy = false,
-  onResumeGate,
   messages = [],
   className,
 }: ContextPanelsProps) {
   const { t } = useI18n();
-  const sources: WorkspaceSource[] = workspace?.sources ?? [];
-  const showPlanGate =
-    pendingGate?.gate === "plan" && Boolean(onResumeGate);
-  const showPubGate =
-    pendingGate?.gate === "publication" && Boolean(onResumeGate);
+  const sourceCount = workspace?.sources.length ?? 0;
 
   return (
     <div
       data-testid="agent-context-panels"
       className={cn("flex h-full min-h-0 flex-col", className)}
     >
-      <Tabs defaultValue="sources" className="flex min-h-0 flex-1 flex-col gap-0">
+      <Tabs defaultValue="plan" className="flex min-h-0 flex-1 flex-col gap-0">
         <div className="shrink-0 border-b border-border px-2 pt-2 pb-0">
           <TabsList
             variant="line"
             className="h-8 w-full justify-start gap-0 overflow-x-auto"
           >
-            <TabsTrigger value="sources" className="text-xs">
-              {t.agentWorkspace.panelSources}
-            </TabsTrigger>
-            <TabsTrigger value="wiki" className="text-xs">
-              {t.agentWorkspace.panelWiki}
-            </TabsTrigger>
             <TabsTrigger value="plan" className="text-xs">
               {t.agentWorkspace.panelPlan}
             </TabsTrigger>
-            <TabsTrigger value="run" className="text-xs">
+            <TabsTrigger value="agents" className="text-xs">
+              {t.agentWorkspace.panelAgents}
+            </TabsTrigger>
+            <TabsTrigger value="status" className="text-xs">
               {t.agentWorkspace.panelRun}
             </TabsTrigger>
           </TabsList>
         </div>
-
-        <TabsContent
-          value="sources"
-          className="mt-0 flex min-h-0 flex-1 flex-col data-hidden:hidden"
-        >
-          <PanelShell>
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-semibold tracking-wide uppercase">
-                {t.agentWorkspace.panelSources}
-              </span>
-              <OpenFullLink
-                to={workspaceHref(workspaceId, "/sources", rootPath)}
-                label={t.agentWorkspace.openFull}
-              />
-            </div>
-            {sources.length === 0 ? (
-              <EmptyHint text={t.agentWorkspace.sourcesEmpty} />
-            ) : (
-              <ul className="flex flex-col gap-1.5">
-                {sources.map((source) => (
-                  <li
-                    key={source.id}
-                    className="rounded-md border border-border/80 px-2 py-1.5"
-                  >
-                    <div className="font-mono text-xs font-medium">
-                      {source.id}
-                    </div>
-                    <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
-                      {source.path}
-                    </div>
-                    <Badge variant="outline" className="mt-1 text-[10px]">
-                      {source.origin?.type ?? "path"}
-                    </Badge>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </PanelShell>
-        </TabsContent>
-
-        <TabsContent
-          value="wiki"
-          className="mt-0 flex min-h-0 flex-1 flex-col data-hidden:hidden"
-        >
-          <PanelShell>
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-semibold tracking-wide uppercase">
-                {t.agentWorkspace.panelWiki}
-              </span>
-              <OpenFullLink
-                to={workspaceHref(workspaceId, "/wiki", rootPath)}
-                label={t.agentWorkspace.openFull}
-              />
-            </div>
-            <dl className="grid gap-2 text-xs">
-              <div>
-                <dt className="text-muted-foreground">
-                  {t.agentWorkspace.publicationPath}
-                </dt>
-                <dd className="mt-0.5 break-all font-mono">
-                  {workspace?.publicationPath ?? "—"}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-muted-foreground">
-                  {t.agentWorkspace.wikiLanguage}
-                </dt>
-                <dd className="mt-0.5">{workspace?.wikiLanguage ?? "—"}</dd>
-              </div>
-            </dl>
-            <EmptyHint text={t.agentWorkspace.wikiHint} />
-          </PanelShell>
-        </TabsContent>
 
         <TabsContent
           value="plan"
@@ -209,13 +117,6 @@ export function ContextPanels({
             <span className="text-xs font-semibold tracking-wide uppercase">
               {t.agentWorkspace.panelPlan}
             </span>
-            {showPlanGate && pendingGate && onResumeGate ? (
-              <GateActions
-                pending={pendingGate}
-                busy={gateBusy}
-                onResume={onResumeGate}
-              />
-            ) : null}
             {!plan ? (
               <EmptyHint text={t.agentWorkspace.planEmpty} />
             ) : (
@@ -247,7 +148,10 @@ export function ContextPanels({
                         >
                           <span className="font-mono font-medium">{d.id}</span>
                           {d.title ? (
-                            <span className="text-muted-foreground"> — {d.title}</span>
+                            <span className="text-muted-foreground">
+                              {" "}
+                              — {d.title}
+                            </span>
                           ) : null}
                           {d.scope ? (
                             <span className="mt-0.5 block text-muted-foreground">
@@ -281,11 +185,26 @@ export function ContextPanels({
                 </ul>
               </div>
             )}
+            <EmptyHint text={t.agentWorkspace.planActionsHint} />
           </PanelShell>
         </TabsContent>
 
         <TabsContent
-          value="run"
+          value="agents"
+          className="mt-0 flex min-h-0 flex-1 flex-col data-hidden:hidden"
+        >
+          <PanelShell>
+            <AgentTree
+              workspaceId={workspaceId}
+              rootPath={rootPath}
+              runId={linkedRunId}
+              messages={messages}
+            />
+          </PanelShell>
+        </TabsContent>
+
+        <TabsContent
+          value="status"
           className="mt-0 flex min-h-0 flex-1 flex-col data-hidden:hidden"
         >
           <PanelShell>
@@ -314,19 +233,6 @@ export function ContextPanels({
                 </dd>
               </div>
             </dl>
-            {showPubGate && pendingGate && onResumeGate ? (
-              <GateActions
-                pending={pendingGate}
-                busy={gateBusy}
-                onResume={onResumeGate}
-              />
-            ) : null}
-            <AgentTree
-              workspaceId={workspaceId}
-              rootPath={rootPath}
-              runId={linkedRunId}
-              messages={messages}
-            />
             {recentRuns.length === 0 ? (
               <EmptyHint text={t.agentWorkspace.runsEmpty} />
             ) : (
@@ -345,6 +251,21 @@ export function ContextPanels({
           </PanelShell>
         </TabsContent>
       </Tabs>
+
+      <div className="flex shrink-0 flex-wrap items-center gap-1 border-t border-border px-2 py-1.5">
+        <OpenFullLink
+          to={workspaceHref(workspaceId, "/sources", rootPath)}
+          label={`${t.agentWorkspace.panelSources}${sourceCount ? ` (${sourceCount})` : ""}`}
+        />
+        <OpenFullLink
+          to={workspaceHref(workspaceId, "/wiki", rootPath)}
+          label={t.agentWorkspace.panelWiki}
+        />
+        <OpenFullLink
+          to={workspaceHref(workspaceId, "/settings", rootPath)}
+          label={t.agentWorkspace.workspaceSettings}
+        />
+      </div>
     </div>
   );
 }

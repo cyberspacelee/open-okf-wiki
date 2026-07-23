@@ -44,9 +44,6 @@ test.describe("workspace delete, wiki language, ignore rules", () => {
       "zh",
     );
 
-    await page.getByTestId("workspace-subnav-overview").click();
-    await expect(page.getByTestId("detail-wiki-language")).toContainText(/Chinese|中文/i);
-
     await addSourceViaUi(page, gitRepo, "appsrc");
     await page.getByTestId("source-edit-ignores-appsrc").click();
     await expect(page.getByTestId("source-ignore-editor")).toBeVisible();

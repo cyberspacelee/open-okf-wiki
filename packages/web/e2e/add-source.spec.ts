@@ -14,7 +14,7 @@ test.describe("add git source", () => {
     await page.getByTestId("workspace-name-input").fill(name);
     await page.getByTestId("workspace-root-input").fill(rootPath);
     await page.getByTestId("workspace-create-submit").click();
-    await expect(page.getByTestId("workspace-detail")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId("agent-workspace-page")).toBeVisible({ timeout: 20_000 });
 
     // Navigate to sources
     await page.getByTestId("workspace-subnav-sources").click();

@@ -20,7 +20,7 @@ React + TypeScript UI for open-okf-wiki (Vite). Talks to `@okf-wiki/server` over
 - **Forms:** `FieldGroup` / `Field` / `FieldLabel` / `FieldDescription` + shadcn controls (`Select`, `Switch`, `Checkbox`, `RadioGroup`, `Textarea`)
 - **Destructive actions:** `ConfirmDialog` (AlertDialog) — do not use `window.confirm`
 - **Toasts:** `sonner` via `<Toaster />` in `main.tsx`
-- **Agent Workspace (primary operate surface, ADR 0030):** `src/features/agent-workspace/`
+- **Agent Workspace (primary operate surface, ADR 0030):** `src/agent-workspace/`
   - Live transport: Pi session SSE + product injects (`run_phase` / `gate` / `run_link`) via `useSessionAgent` + `project-agent-events`.
   - Conversation truth: Pi JSONL under `.okf-wiki/pi-sessions/` (not UIMessage Session files).
   - HITL: structured `resume_gate` commands only (no free-text approve).
@@ -36,9 +36,10 @@ React + TypeScript UI for open-okf-wiki (Vite). Talks to `@okf-wiki/server` over
 
 ### Product paths
 
-- **Primary generate path:** Agent Workspace (`/w/:id` or workspace agent route)
-- **Runs:** audit / headless automation (`run-start`); humans operate via Agent Workspace gates
-- **Wiki empty CTA:** Agent Workspace, not Run console timeline
+- **Primary operate surface:** Agent Workspace (`/w/:id`) — chat, tools, subagent spans, plan/publish gates
+- **Secondary routes:** Sources / Wiki / Jobs (audit + headless) / Workspace settings under `/workspaces/:id/...`
+- **HITL:** only on Agent transcript (`agent-gate-*`); Jobs page is read-mostly + Advanced headless controls
+- **Wiki empty CTA:** Agent Workspace, not Jobs console
 
 ## End-to-end tests
 
@@ -71,11 +72,11 @@ Key contract surface:
 | --- | --- |
 | Shell | `app-sidebar`, `sidebar-toggle`, `locale-switch`, `nav-workspaces`, `nav-settings` |
 | Workspaces | `workspaces-page`, `workspace-create-form`, `workspace-name-input`, `workspace-root-input`, `workspace-create-submit`, `workspace-list`, `workspace-row`, `workspace-delete`, `workspace-delete-dialog`, `workspace-delete-meta`, `workspace-delete-confirm` |
-| Workspace chrome | `workspace-detail`, `workspace-breadcrumb`, `workspace-subnav-{overview,sources,session,run,wiki,settings}` |
+| Workspace chrome | `workspace-breadcrumb`, `workspace-subnav`, `workspace-subnav-{agent,sources,wiki,run,settings}` |
 | Sources | `sources-page`, `source-list`, `source-path-input`, `source-id-input`, `source-add-submit`, `source-remote-input`, `source-clone-submit`, `source-ignore-editor`, `source-ignore-text`, `source-ignore-save`, `source-edit-ignores-*`, `preset-*` |
-| Session | `session-chat-page`, `session-conversation`, `session-input`, `session-send`, `session-prompt`, `session-list`, `session-select`, `session-new`, `session-delete`, `session-slash-*`, `session-decision`, `session-choice-*`, `session-plan-*`, `session-plan-pages`, `session-plan-pages-count`, `session-plan-progress`, `session-phase-progress`, `session-tool-part`, `session-tool-batch`, `session-subagent-part`, `session-workflow-progress`, `session-composer-locked` |
-| Run | `run-page`, `run-start`, `run-start-session`, `run-last-status` (`data-status`), `run-list`, `run-event-log`, `run-publish-actions`, `run-approve`, `run-deny`, `run-cancel`, `run-retry` |
-| Wiki | `wiki-page`, `wiki-empty`, `wiki-page-list`, `wiki-page-link`, `wiki-page-content`, `wiki-page-title`, `wiki-markdown` |
+| Agent Workspace | `agent-workspace-page`, `agent-workspace-shell`, `agent-composer`, `agent-composer-input`, `agent-send`, `agent-start-wiki-run`, `agent-abort`, `agent-gate-actions`, `agent-gate-approve`, `agent-gate-revise`, `agent-gate-deny`, `agent-context-panels`, `agent-tree` |
+| Jobs (Run audit) | `run-page`, `run-open-agent`, `run-start` (headless, Advanced), `run-last-status` (`data-status`), `run-list`, `run-event-log`, `run-cancel`, `run-retry` |
+| Wiki | `wiki-page`, `wiki-empty`, `wiki-open-agent`, `wiki-page-list`, `wiki-page-link`, `wiki-page-content`, `wiki-page-title`, `wiki-markdown` |
 | Workspace settings | `settings-page`, `settings-tab-{general,skill,danger}`, `settings-*`, skill panel / danger zone |
 | Global settings | `global-settings-page`, `settings-tab-{models,app,diagnostics}`, `model-*`, `doctor-*`, `health-*`, `home-skills-panel`, `provider-panel`, `models-table`, `settings-status` |
 | Shared | `error-banner` |

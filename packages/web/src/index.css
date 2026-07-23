@@ -2,8 +2,9 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
-/* Streamdown (AI Elements MessageResponse) styles */
+/* Streamdown + code plugin (Shiki shells) — keep Tailwind scanning package sources */
 @source "../node_modules/streamdown/dist/*.js";
+@source "../node_modules/@streamdown/code/dist/*.js";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -399,18 +400,6 @@ code.mono {
   @apply list-decimal;
 }
 
-.wiki-markdown code {
-  @apply rounded bg-muted px-1 py-0.5 font-mono text-[0.85em];
-}
-
-.wiki-markdown pre {
-  @apply my-3 overflow-x-auto rounded-lg bg-muted p-3;
-}
-
-.wiki-markdown pre code {
-  @apply bg-transparent p-0;
-}
-
 .wiki-markdown table {
   @apply my-3 w-full border-collapse text-sm;
 }
@@ -424,93 +413,160 @@ code.mono {
   @apply my-3 border-l-2 border-border pl-3 text-muted-foreground;
 }
 
-/* Streamdown Mermaid diagrams (```mermaid fences) */
-.wiki-markdown [data-streamdown="mermaid"],
-.wiki-markdown .mermaid {
-  @apply my-4 overflow-x-auto;
+/* ------------------------------------------------------------------ */
+/* Streamdown code / mermaid — single outer chrome (no nested borders) */
+/* Structure: [code-block] > header + [code-block-body] > pre > code   */
+/* Streamdown paints border on BOTH outer + body; we keep only outer.  */
+/* Best practice: style container once; reset inner pre/code.          */
+/* ------------------------------------------------------------------ */
+
+.wiki-markdown [data-streamdown="code-block"],
+.session-markdown [data-streamdown="code-block"],
+.agent-markdown [data-streamdown="code-block"] {
+  @apply my-3 gap-0 overflow-hidden rounded-lg border border-border bg-muted/30 p-0;
 }
 
-/* Session timeline (AI SDK–style parts) */
+.wiki-markdown [data-streamdown="code-block-header"],
+.session-markdown [data-streamdown="code-block-header"],
+.agent-markdown [data-streamdown="code-block-header"] {
+  @apply rounded-none border-b border-border bg-muted/50 px-3 py-1.5;
+}
+
+.wiki-markdown [data-streamdown="code-block-body"],
+.session-markdown [data-streamdown="code-block-body"],
+.agent-markdown [data-streamdown="code-block-body"] {
+  /* Kill Streamdown's second border/radius on the body shell */
+  @apply rounded-none border-0 bg-transparent p-3 text-[0.8125rem] leading-relaxed shadow-none;
+}
+
+.wiki-markdown [data-streamdown="code-block"] pre,
+.session-markdown [data-streamdown="code-block"] pre,
+.agent-markdown [data-streamdown="code-block"] pre,
+.wiki-markdown [data-streamdown="code-block"] code,
+.session-markdown [data-streamdown="code-block"] code,
+.agent-markdown [data-streamdown="code-block"] code {
+  @apply m-0 border-0 bg-transparent p-0 shadow-none;
+}
+
+/* Inline code only (not fenced blocks) */
+.wiki-markdown [data-streamdown="inline-code"],
+.wiki-markdown :not(pre) > code,
+.session-markdown [data-streamdown="inline-code"],
+.session-markdown :not(pre) > code,
+.agent-markdown [data-streamdown="inline-code"],
+.agent-markdown :not(pre) > code {
+  @apply rounded-md border-0 bg-muted px-1.5 py-0.5 font-mono text-[0.85em];
+}
+
+/* Bare <pre> fallbacks — overridden inside Streamdown code-block (more specific). */
+.wiki-markdown pre,
+.session-markdown pre,
+.agent-markdown pre {
+  @apply my-3 overflow-x-auto rounded-lg border border-border bg-muted p-3 text-[0.85em];
+}
+
+.wiki-markdown pre code,
+.session-markdown pre code,
+.agent-markdown pre code {
+  @apply border-0 bg-transparent p-0;
+}
+
+/* Streamdown Mermaid diagrams (```mermaid fences) */
+.wiki-markdown [data-streamdown="mermaid-block"],
+.session-markdown [data-streamdown="mermaid-block"],
+.agent-markdown [data-streamdown="mermaid-block"] {
+  @apply my-4 overflow-hidden rounded-lg border border-border;
+}
+
+.wiki-markdown [data-streamdown="mermaid"],
+.wiki-markdown .mermaid,
+.session-markdown [data-streamdown="mermaid"],
+.agent-markdown [data-streamdown="mermaid"] {
+  @apply my-0 overflow-x-auto;
+}
+
+/* Session timeline leftovers (legacy class hooks) */
 .session-timeline {
-  @apply flex flex-col gap-3 max-h-[28rem] overflow-y-auto rounded-md border p-3;
+  @apply flex max-h-[28rem] flex-col gap-3 overflow-y-auto rounded-md border p-3;
 }
 
 .session-timeline__item {
   @apply min-w-0;
 }
 
-.session-markdown {
+.session-markdown,
+.agent-markdown {
   @apply text-sm leading-relaxed;
 }
 
 .session-markdown h1,
 .session-markdown h2,
 .session-markdown h3,
-.session-markdown h4 {
-  @apply font-semibold mt-2 mb-1 tracking-tight;
+.session-markdown h4,
+.agent-markdown h1,
+.agent-markdown h2,
+.agent-markdown h3,
+.agent-markdown h4 {
+  @apply mt-2 mb-1 font-semibold tracking-tight;
 }
 
-.session-markdown h1 {
+.session-markdown h1,
+.agent-markdown h1 {
   @apply text-lg;
 }
 
-.session-markdown h2 {
+.session-markdown h2,
+.agent-markdown h2 {
   @apply text-base;
 }
 
-.session-markdown h3 {
+.session-markdown h3,
+.agent-markdown h3 {
   @apply text-sm;
 }
 
-.session-markdown p {
+.session-markdown p,
+.agent-markdown p {
   @apply mb-2;
 }
 
 .session-markdown ul,
-.session-markdown ol {
+.session-markdown ol,
+.agent-markdown ul,
+.agent-markdown ol {
   @apply my-2 pl-5;
 }
 
-.session-markdown ul {
+.session-markdown ul,
+.agent-markdown ul {
   @apply list-disc;
 }
 
-.session-markdown ol {
+.session-markdown ol,
+.agent-markdown ol {
   @apply list-decimal;
 }
 
-.session-markdown a {
+.session-markdown a,
+.agent-markdown a {
   @apply text-primary underline underline-offset-2;
 }
 
-.session-markdown code {
-  @apply font-mono text-xs rounded bg-muted px-1;
-}
-
-.session-markdown pre {
-  @apply overflow-x-auto rounded bg-muted p-2 text-xs mb-2;
-}
-
-.session-markdown pre code {
-  @apply bg-transparent p-0;
-}
-
-.session-markdown blockquote {
+.session-markdown blockquote,
+.agent-markdown blockquote {
   @apply my-2 border-l-2 border-border pl-3 text-muted-foreground;
 }
 
-.session-markdown table {
+.session-markdown table,
+.agent-markdown table {
   @apply my-2 w-full border-collapse text-xs;
 }
 
 .session-markdown th,
-.session-markdown td {
+.session-markdown td,
+.agent-markdown th,
+.agent-markdown td {
   @apply border border-border px-2 py-1 text-left;
-}
-
-/* Agent Workspace transcript (Streamdown density) */
-.agent-markdown {
-  @apply text-sm leading-relaxed;
 }
 
 .session-tool-card {
