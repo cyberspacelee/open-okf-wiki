@@ -79,6 +79,10 @@ describe("produceWiki fixture", () => {
     const kinds = events.map((e) => e.kind);
     assert.ok(kinds.includes("progress"));
     assert.ok(kinds.includes("defects"));
+    assert.ok(kinds.includes("plan_progress"));
     assert.ok(result.metrics.domainStarts >= 1);
+    // Default Spec domain has questions → Host leaf fan-out runs.
+    assert.ok(result.metrics.leafStarts >= 1);
+    assert.ok(result.pages.includes("index.md"));
   });
 });

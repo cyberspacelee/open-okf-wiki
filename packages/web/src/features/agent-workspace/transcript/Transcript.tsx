@@ -160,6 +160,8 @@ function productBadgeLabel(product: AgentProductMeta): string {
       return "run";
     case "progress":
       return product.phase ?? "progress";
+    case "plan_progress":
+      return "spec pages";
     case "agent_span":
       return product.role ?? "agent";
     case "defects":
@@ -257,11 +259,13 @@ function MessageCard({
                     ? "Run phase"
                     : product.kind === "progress"
                       ? "Progress"
-                      : product.kind === "agent_span"
-                        ? "Agent"
-                        : product.kind === "defects"
-                          ? "Review"
-                          : "Run link"
+                      : product.kind === "plan_progress"
+                        ? "Spec queue"
+                        : product.kind === "agent_span"
+                          ? "Agent"
+                          : product.kind === "defects"
+                            ? "Review"
+                            : "Run link"
                 : isTool
                   ? t.agentWorkspace.roleTool
                   : t.agentWorkspace.roleSystem}

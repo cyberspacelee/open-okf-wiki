@@ -1,5 +1,7 @@
 # Module template
 
+Frontmatter: `type: Module` plus non-empty `title`.
+
 Use for a cohesive implementation area that deserves its own navigation target:
 
 - responsibility and public surface

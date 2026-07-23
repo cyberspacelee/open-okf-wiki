@@ -1,5 +1,5 @@
 /**
- * In-process Pi child sessions for Domain / Leaf / Reviewer (ADR 0030).
+ * In-process Pi child sessions for Domain / Leaf / Reviewer / Plan (ADR 0030).
  * Prefer SDK embedding over spawning the `pi` CLI.
  *
  * Provider failures often complete session.prompt() without throwing
@@ -18,7 +18,7 @@ import type { SourceIgnoreInput } from "../pi/tool-operations.js";
 
 export type ChildRole = Extract<
   WikiAgentRole,
-  "domain" | "leaf" | "reviewer" | "root_research"
+  "domain" | "leaf" | "reviewer" | "root_research" | "plan"
 >;
 
 export type RunChildSessionInput = {
@@ -30,9 +30,13 @@ export type RunChildSessionInput = {
   modelRuntime?: ModelRuntime;
   workspaceRoot?: string;
   sourceIgnores?: SourceIgnoreInput;
+  maxContextTokens?: number;
+  contextTargetTokens?: number;
   /** When true, skip LLM and return a fixture summary. */
   fixture?: boolean;
   abortSignal?: AbortSignal;
+  /** Soft timeout in ms (host abort via session.abort). */
+  timeoutMs?: number;
 };
 
 export type RunChildSessionResult = {
@@ -42,7 +46,7 @@ export type RunChildSessionResult = {
 };
 
 /**
- * Run a read-only child agent for research/review.
+ * Run a read-only child agent for research/review/plan.
  * Always uses role allowlist (no write, no bash).
  */
 export async function runChildSession(
@@ -70,6 +74,15 @@ export async function runChildSession(
   }
 
   let handle: WikiSessionHandle | undefined;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const onAbort = () => {
+    try {
+      handle?.session.abort();
+    } catch {
+      // best-effort
+    }
+  };
+
   try {
     handle = await createWikiSession({
       role: input.role,
@@ -81,9 +94,23 @@ export async function runChildSession(
         input.systemPrompt ??
         `You are a ${input.role} researcher. Use only read tools (ls, find, grep, read). Do not write files. Return a concise evidence summary with source paths.`,
       sourceIgnores: input.sourceIgnores,
-      // Children never write — scoped tools still apply read guards.
+      maxContextTokens: input.maxContextTokens,
+      contextTargetTokens: input.contextTargetTokens,
       scopedTools: true,
     });
+
+    if (input.abortSignal) {
+      if (input.abortSignal.aborted) {
+        onAbort();
+        const err = new Error("Wiki Run cancelled");
+        err.name = "AbortError";
+        throw err;
+      }
+      input.abortSignal.addEventListener("abort", onAbort, { once: true });
+    }
+    if (input.timeoutMs && input.timeoutMs > 0) {
+      timeoutId = setTimeout(onAbort, input.timeoutMs);
+    }
 
     let text = "";
     const unsub = handle.session.subscribe((event) => {
@@ -99,6 +126,12 @@ export async function runChildSession(
       await handle.session.prompt(input.task);
     } finally {
       unsub();
+    }
+
+    if (input.abortSignal?.aborted) {
+      const err = new Error("Wiki Run cancelled");
+      err.name = "AbortError";
+      throw err;
     }
 
     const resolved = resolveAssistantSummary({
@@ -118,6 +151,10 @@ export async function runChildSession(
       summary: resolved.summary,
     };
   } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+    if (input.abortSignal) {
+      input.abortSignal.removeEventListener("abort", onAbort);
+    }
     handle?.dispose();
   }
 }

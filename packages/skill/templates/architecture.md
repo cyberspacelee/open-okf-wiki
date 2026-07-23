@@ -1,5 +1,7 @@
 # Architecture template
 
+Frontmatter: `type: Architecture` plus non-empty `title`.
+
 Use when readers need a system-level map. Adapt or omit any prompt:
 
 - external boundary and responsibilities

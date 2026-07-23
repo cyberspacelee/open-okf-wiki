@@ -24,6 +24,17 @@ export {
   type ProduceProgressPhase,
 } from "./events.js";
 export { parsePlanFromAgentText } from "./plan-parse.js";
+export { planWikiSpec, type PlanWikiSpecInput, type PlanWikiSpecResult } from "./plan.js";
+export {
+  rootWritePrompt,
+  rootWriteSystemPrompt,
+  plannerPrompt,
+  type WikiLanguage,
+} from "./prompts.js";
+export {
+  persistResearchReceipt,
+  buildReceiptIndex,
+} from "./receipts.js";
 export {
   stagingWikiDirForRun,
   buildSourceMap,

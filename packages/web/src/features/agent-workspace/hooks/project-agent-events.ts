@@ -26,12 +26,18 @@ export type AgentToolCall = {
   status: "pending" | "running" | "done" | "error";
 };
 
+export type PlanProgressPage = {
+  path: string;
+  status: "pending" | "writing" | "done" | string;
+};
+
 export type AgentProductMeta = {
   kind:
     | "run_phase"
     | "gate"
     | "run_link"
     | "progress"
+    | "plan_progress"
     | "agent_span"
     | "defects";
   phase?: string;
@@ -40,13 +46,16 @@ export type AgentProductMeta = {
   status?: string;
   question?: string;
   /** Publication gate page paths (when known). */
-  pages?: string[];
+  pages?: string[] | PlanProgressPage[];
   label?: string;
   spanId?: string;
   agentId?: string;
   role?: string;
+  parentId?: string;
+  receiptPath?: string;
   defectCount?: number;
   clean?: boolean;
+  round?: number;
 };
 
 export type AgentMessage = {
@@ -77,6 +86,7 @@ export type ProductSseLike = {
     | "gate"
     | "run_link"
     | "progress"
+    | "plan_progress"
     | "agent_span"
     | "defects";
   phase?: string;
@@ -85,13 +95,15 @@ export type ProductSseLike = {
   status?: string;
   question?: string;
   message?: string;
-  pages?: string[];
+  pages?: string[] | PlanProgressPage[];
   plan?: unknown;
   timestamp?: string;
   label?: string;
   spanId?: string;
   agentId?: string;
   role?: string;
+  parentId?: string;
+  receiptPath?: string;
   promptSummary?: string;
   round?: number;
   clean?: boolean;
@@ -707,12 +719,33 @@ export function productCardContent(event: ProductSseLike): string {
       if (event.label) bits.push(event.label);
       return bits.join(" · ");
     }
+    case "plan_progress": {
+      const pages = Array.isArray(event.pages) ? event.pages : [];
+      const done = pages.filter(
+        (p) =>
+          typeof p === "object" &&
+          p &&
+          "status" in p &&
+          (p as PlanProgressPage).status === "done",
+      ).length;
+      const total = pages.length;
+      const lines = pages.slice(0, 12).map((p) => {
+        if (typeof p === "string") return `· ${p}`;
+        const pg = p as PlanProgressPage;
+        return `· [${pg.status}] ${pg.path}`;
+      });
+      const more =
+        pages.length > 12 ? `\n… +${pages.length - 12} more` : "";
+      return [`Spec pages ${done}/${total}`, ...lines].join("\n") + more;
+    }
     case "agent_span": {
       const bits = [
         `Agent ${event.role ?? "?"}`,
         event.agentId ?? "",
         event.status ?? "",
       ].filter(Boolean);
+      if (event.parentId) bits.push(`parent=${event.parentId}`);
+      if (event.receiptPath) bits.push(event.receiptPath);
       if (event.promptSummary) bits.push(event.promptSummary);
       return bits.join(" · ");
     }
@@ -757,6 +790,12 @@ export function productMeta(event: ProductSseLike): AgentProductMeta {
         runId: event.runId,
         label: event.label,
       };
+    case "plan_progress":
+      return {
+        kind: "plan_progress",
+        runId: event.runId,
+        pages: event.pages,
+      };
     case "agent_span":
       return {
         kind: "agent_span",
@@ -765,6 +804,8 @@ export function productMeta(event: ProductSseLike): AgentProductMeta {
         agentId: event.agentId,
         role: event.role,
         status: event.status,
+        parentId: event.parentId,
+        receiptPath: event.receiptPath,
         label: event.promptSummary,
       };
     case "defects":
@@ -773,6 +814,7 @@ export function productMeta(event: ProductSseLike): AgentProductMeta {
         runId: event.runId,
         clean: event.clean,
         defectCount: event.defectCount,
+        round: event.round,
         label: event.summary,
       };
     default: {
@@ -806,6 +848,24 @@ export function applyProductEvent(
     for (let i = prev.length - 1; i >= 0; i -= 1) {
       const m = prev[i]!;
       if (m.product?.kind !== "run_phase") continue;
+      if (
+        event.runId &&
+        m.product.runId &&
+        m.product.runId !== event.runId
+      ) {
+        break;
+      }
+      const next = prev.slice();
+      next[i] = { ...card, id: m.id };
+      return next;
+    }
+  }
+
+  if (event.kind === "plan_progress") {
+    // Upsert Spec queue card so page statuses refresh in place.
+    for (let i = prev.length - 1; i >= 0; i -= 1) {
+      const m = prev[i]!;
+      if (m.product?.kind !== "plan_progress") continue;
       if (
         event.runId &&
         m.product.runId &&

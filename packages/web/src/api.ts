@@ -139,6 +139,10 @@ export type PatchWorkspaceInput = {
   skillPath?: string | null;
   /** Full workspace limits document (server replaces the limits object). */
   limits?: WorkspaceConfig["limits"];
+  /** Hybrid model economics: planner / worker / writer / reviewers. */
+  roleModels?: WorkspaceConfig["roleModels"];
+  /** Supervisor tree budgets. */
+  orchestration?: WorkspaceConfig["orchestration"];
 };
 
 export type UpdateSourceInput = {

@@ -16,7 +16,7 @@ Live transport is **Pi `AgentSession` events + thin product SSE injects** (not A
 | Channel | Content | Who |
 |---------|---------|-----|
 | Pi events (`source: "pi"`) | text deltas, thinking, tool_execution_*, agent lifecycle | Pi AgentSession |
-| Product injects (`source: "product"`) | `run_phase`, `gate`, `run_link`, `progress`, `agent_span`, `defects` | WikiRunShell / registry / Produce sink |
+| Product injects (`source: "product"`) | `run_phase`, `gate`, `run_link`, `progress`, `plan_progress`, `agent_span`, `defects` | WikiRunShell / registry / Produce sink |
 | Server heartbeat | keep-alive | server only |
 
 Durable conversation = **Pi JSONL** under `.okf-wiki/pi-sessions/` (cold-load via `GET …/agent/sessions/:id`).  

@@ -77,6 +77,11 @@ export {
 export {
   validateWikiTree,
   hasNonEmptyTitleFrontmatter,
+  hasNonEmptyTypeFrontmatter,
+  hasConceptFrontmatter,
+  isReservedWikiPath,
+  extractYamlFrontmatterBody,
+  RESERVED_WIKI_BASENAMES,
   WIKI_VALIDATE_MAX_FILES,
   WIKI_VALIDATE_MAX_FILE_BYTES,
   type ValidateWikiResult,

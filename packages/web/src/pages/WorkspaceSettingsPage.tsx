@@ -68,6 +68,12 @@ export function WorkspaceSettingsPage() {
   const [wikiLanguage, setWikiLanguage] = useState<WikiLanguage>("en");
   /** Empty string means unset (derive from model max context). */
   const [contextTargetTokens, setContextTargetTokens] = useState("");
+  const [maxDomainFanOut, setMaxDomainFanOut] = useState("4");
+  const [maxLeafFanOut, setMaxLeafFanOut] = useState("6");
+  const [reviewCouncilSize, setReviewCouncilSize] = useState("1");
+  const [plannerProfileId, setPlannerProfileId] = useState("");
+  const [workerProfileId, setWorkerProfileId] = useState("");
+  const [writerProfileId, setWriterProfileId] = useState("");
   const [skill, setSkill] = useState<SkillInfo | null>(null);
   const [skillBusy, setSkillBusy] = useState(false);
   const [skillFilePath, setSkillFilePath] = useState("SKILL.md");
@@ -86,6 +92,12 @@ export function WorkspaceSettingsPage() {
           ? String(ws.limits.contextTargetTokens)
           : "",
       );
+      setMaxDomainFanOut(String(ws.orchestration?.maxDomainFanOut ?? 4));
+      setMaxLeafFanOut(String(ws.orchestration?.maxLeafFanOut ?? 6));
+      setReviewCouncilSize(String(ws.orchestration?.reviewCouncilSize ?? 1));
+      setPlannerProfileId(ws.roleModels?.planner?.profileId ?? "");
+      setWorkerProfileId(ws.roleModels?.worker?.profileId ?? "");
+      setWriterProfileId(ws.roleModels?.writer?.profileId ?? "");
 
       // Prefer profileId; else match denormalized model id; else keep empty.
       if (ws.model.profileId && catalog.some((m) => m.id === ws.model.profileId)) {
@@ -187,6 +199,38 @@ export function WorkspaceSettingsPage() {
           ? { contextTargetTokens: nextContextTarget }
           : {}),
       };
+      const profileToRef = (profileId: string) => {
+        const m = models.find((x) => x.id === profileId);
+        if (!m) return undefined;
+        return { id: m.modelId, profileId: m.id };
+      };
+      const roleModels = {
+        ...(profileToRef(plannerProfileId)
+          ? { planner: profileToRef(plannerProfileId) }
+          : {}),
+        ...(profileToRef(workerProfileId)
+          ? { worker: profileToRef(workerProfileId) }
+          : {}),
+        ...(profileToRef(writerProfileId)
+          ? { writer: profileToRef(writerProfileId) }
+          : {}),
+        reviewers: workspace?.roleModels?.reviewers ?? [],
+      };
+      const baseOrch = workspace?.orchestration;
+      const orchestration = {
+        maxDepth: baseOrch?.maxDepth ?? 2,
+        maxDomainFanOut: Math.max(1, Number(maxDomainFanOut) || 4),
+        maxLeafFanOut: Math.max(1, Number(maxLeafFanOut) || 6),
+        rootMaxSteps: baseOrch?.rootMaxSteps ?? 96,
+        domainMaxSteps: baseOrch?.domainMaxSteps ?? 12,
+        leafMaxSteps: baseOrch?.leafMaxSteps ?? 8,
+        reviewerMaxSteps: baseOrch?.reviewerMaxSteps ?? 8,
+        planMaxSteps: baseOrch?.planMaxSteps ?? 24,
+        reviewCouncilSize: Math.min(
+          4,
+          Math.max(1, Number(reviewCouncilSize) || 1),
+        ),
+      };
       const result = await patchWorkspace(
         id,
         {
@@ -196,6 +240,8 @@ export function WorkspaceSettingsPage() {
           planConfirm,
           wikiLanguage,
           limits: nextLimits,
+          roleModels,
+          orchestration,
         },
         workspace?.rootPath ?? rootPathHint,
       );
@@ -424,6 +470,120 @@ export function WorkspaceSettingsPage() {
                         </>
                       ) : null}
                     </FieldDescription>
+                  </Field>
+
+                  <Field>
+                    <FieldLabel>{t.settings.orchestrationTitle}</FieldLabel>
+                    <FieldDescription>
+                      {t.settings.orchestrationHint}
+                    </FieldDescription>
+                    <div className="mt-2 flex flex-wrap gap-3">
+                      <div className="flex flex-col gap-1">
+                        <span className="text-xs text-muted-foreground">
+                          {t.settings.maxDomainFanOut}
+                        </span>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={16}
+                          value={maxDomainFanOut}
+                          onChange={(e) => {
+                            setMaxDomainFanOut(e.target.value);
+                            setSaved(false);
+                          }}
+                          className="font-mono w-24"
+                          data-testid="settings-max-domain-fanout"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <span className="text-xs text-muted-foreground">
+                          {t.settings.maxLeafFanOut}
+                        </span>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={16}
+                          value={maxLeafFanOut}
+                          onChange={(e) => {
+                            setMaxLeafFanOut(e.target.value);
+                            setSaved(false);
+                          }}
+                          className="font-mono w-24"
+                          data-testid="settings-max-leaf-fanout"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <span className="text-xs text-muted-foreground">
+                          {t.settings.reviewCouncilSize}
+                        </span>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={4}
+                          value={reviewCouncilSize}
+                          onChange={(e) => {
+                            setReviewCouncilSize(e.target.value);
+                            setSaved(false);
+                          }}
+                          className="font-mono w-24"
+                          data-testid="settings-review-council-size"
+                        />
+                      </div>
+                    </div>
+                  </Field>
+
+                  <Field>
+                    <FieldLabel>{t.settings.roleModelsTitle}</FieldLabel>
+                    <FieldDescription>
+                      {t.settings.roleModelsHint}
+                    </FieldDescription>
+                    <div className="mt-2 flex flex-col gap-3">
+                      <div className="flex flex-col gap-1">
+                        <span className="text-xs text-muted-foreground">
+                          {t.settings.rolePlanner}
+                        </span>
+                        <ModelSelect
+                          models={models}
+                          value={plannerProfileId}
+                          onChange={(next) => {
+                            setPlannerProfileId(next);
+                            setSaved(false);
+                          }}
+                          defaultModelProfileId={defaultModelProfileId}
+                          data-testid="settings-role-planner"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <span className="text-xs text-muted-foreground">
+                          {t.settings.roleWorker}
+                        </span>
+                        <ModelSelect
+                          models={models}
+                          value={workerProfileId}
+                          onChange={(next) => {
+                            setWorkerProfileId(next);
+                            setSaved(false);
+                          }}
+                          defaultModelProfileId={defaultModelProfileId}
+                          data-testid="settings-role-worker"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <span className="text-xs text-muted-foreground">
+                          {t.settings.roleWriter}
+                        </span>
+                        <ModelSelect
+                          models={models}
+                          value={writerProfileId}
+                          onChange={(next) => {
+                            setWriterProfileId(next);
+                            setSaved(false);
+                          }}
+                          defaultModelProfileId={defaultModelProfileId}
+                          data-testid="settings-role-writer"
+                        />
+                      </div>
+                    </div>
                   </Field>
 
                   <div className="form-actions">

@@ -29,6 +29,8 @@ import {
   IGNORE_PRESETS,
   WikiLanguageSchema,
   WorkspaceLimitsSchema,
+  WorkspaceOrchestrationSchema,
+  WorkspaceRoleModelsSchema,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
 import {
@@ -224,6 +226,34 @@ export async function handlePatchWorkspace(
       return;
     }
     next.wikiLanguage = parsed.data;
+  }
+
+  if (body.roleModels !== undefined) {
+    try {
+      next.roleModels = WorkspaceRoleModelsSchema.parse(body.roleModels);
+    } catch (error) {
+      sendError(
+        res,
+        400,
+        "invalid roleModels",
+        error instanceof Error ? error.message : String(error),
+      );
+      return;
+    }
+  }
+
+  if (body.orchestration !== undefined) {
+    try {
+      next.orchestration = WorkspaceOrchestrationSchema.parse(body.orchestration);
+    } catch (error) {
+      sendError(
+        res,
+        400,
+        "invalid orchestration",
+        error instanceof Error ? error.message : String(error),
+      );
+      return;
+    }
   }
 
   // rootPath and id are immutable via PATCH

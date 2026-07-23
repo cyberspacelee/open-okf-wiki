@@ -163,6 +163,7 @@ export {
   HandoffRefSchema,
   type AnalysisReceipt,
   type HandoffRef,
+  type ReceiptStatus,
 } from "./receipt.js";
 
 export {

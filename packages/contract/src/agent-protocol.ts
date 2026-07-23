@@ -202,9 +202,30 @@ export const ProductAgentSpanEventSchema = z.object({
   runId: z.string().min(1).optional(),
   spanId: z.string().min(1),
   agentId: z.string().min(1),
-  role: z.enum(["domain", "leaf", "reviewer", "root"]),
+  role: z.enum(["domain", "leaf", "reviewer", "root", "planner"]),
   status: z.enum(["running", "complete", "failed"]),
   promptSummary: z.string().max(500).optional(),
+  parentId: z.string().max(120).optional(),
+  receiptPath: z.string().max(500).optional(),
+  sequence: z.number().int().nonnegative().optional(),
+  timestamp: z.string().datetime().optional(),
+});
+
+/** Spec page queue progress (Produce-owned; truthful file-backed statuses). */
+export const ProductPlanProgressEventSchema = z.object({
+  source: z.literal("product"),
+  kind: z.literal("plan_progress"),
+  sessionId: z.string().min(1),
+  runId: z.string().min(1).optional(),
+  pages: z
+    .array(
+      z.object({
+        path: z.string().min(1).max(200),
+        status: z.enum(["pending", "writing", "done"]),
+      }),
+    )
+    .max(200)
+    .default([]),
   sequence: z.number().int().nonnegative().optional(),
   timestamp: z.string().datetime().optional(),
 });
@@ -228,6 +249,7 @@ export const ProductSseEventSchema = z.discriminatedUnion("kind", [
   ProductGateEventSchema,
   ProductRunLinkEventSchema,
   ProductProgressEventSchema,
+  ProductPlanProgressEventSchema,
   ProductAgentSpanEventSchema,
   ProductDefectsEventSchema,
 ]);
@@ -236,6 +258,9 @@ export type ProductRunPhaseEvent = z.infer<typeof ProductRunPhaseEventSchema>;
 export type ProductGateEvent = z.infer<typeof ProductGateEventSchema>;
 export type ProductRunLinkEvent = z.infer<typeof ProductRunLinkEventSchema>;
 export type ProductProgressEvent = z.infer<typeof ProductProgressEventSchema>;
+export type ProductPlanProgressEvent = z.infer<
+  typeof ProductPlanProgressEventSchema
+>;
 export type ProductAgentSpanEvent = z.infer<typeof ProductAgentSpanEventSchema>;
 export type ProductDefectsEvent = z.infer<typeof ProductDefectsEventSchema>;
 export type ProductSseEvent = z.infer<typeof ProductSseEventSchema>;

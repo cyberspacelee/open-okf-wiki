@@ -1,6 +1,15 @@
 # Overview template
 
-Adapt this into `index.md`; it is guidance, not a mandatory section list.
+Adapt this into **`overview.md`** (concept page). Frontmatter example:
+
+```yaml
+---
+type: Overview
+title: Repository name
+---
+```
+
+`index.md` is a reserved listing only — not this narrative.
 
 - What the repository does and for whom
 - The smallest useful mental model

@@ -48,7 +48,14 @@ function resolveModelForWorkspace(
   return async (role) => {
     const selection = resolveModelSelection({
       workspace,
-      role: role === "planner" ? "planner" : "writer",
+      role:
+        role === "planner"
+          ? "planner"
+          : role === "worker"
+            ? "worker"
+            : role === "reviewer"
+              ? "reviewer"
+              : "writer",
     });
     const resolved = await resolveWorkspacePiModel({
       profileId: selection.profileId,

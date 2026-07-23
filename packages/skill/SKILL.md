@@ -91,12 +91,32 @@ Return to an earlier step whenever later evidence breaks its gate. The Host alwa
 
 ## Core output contract
 
-Begin every page with unique-key YAML frontmatter containing a non-empty `title`; keep internal Wiki
-links relative and ending in `.md`. For one repository, write Source Citations as
+### Concept pages (all `.md` except reserved names)
+
+Begin every **concept** page with YAML frontmatter containing non-empty **`type`** and **`title`**
+(OKF v0.1 + product UI). Suggested `type` values: `Overview`, `Architecture`, `Module`, `Flow`,
+`Concept`. Keep internal Wiki links relative and ending in `.md`.
+
+For one repository, write Source Citations as
 `[Source](repo:path/to/file.py#L10-L20)`. For multiple repositories, prefix the path with the
 repository ID: `[Source](repo:repository-id/path/to/file.py#L10-L20)`. Use repository-relative POSIX
 paths and one-based inclusive line ranges. Line numbers must come from `read` or `grep` results —
 never invent or estimate ranges.
+
+### Reserved files (OKF)
+
+| File | Role |
+|------|------|
+| `index.md` | Directory listing only (progressive disclosure). No concept frontmatter; no Source Citations required. Link to concept pages with short descriptions. |
+| `log.md` | Optional change history (newest first). |
+
+Do **not** put the narrative overview only in `index.md` — use `overview.md` (or the Spec path) for prose.
+
+### Host research receipts
+
+Domain/Leaf research is Host-orchestrated. Evidence lands under `analysis/receipts/*.json`.
+Root writer synthesizes from Spec + receipts and re-opens load-bearing source spans; never treat a
+child summary alone as proof.
 
 Return Needs Input only when missing external information makes a trustworthy Wiki impossible;
 resolve routine uncertainty by continuing the semantic loop.

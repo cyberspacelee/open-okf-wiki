@@ -141,6 +141,18 @@ export const zh: MessageTree = {
       "Wiki 生成时的上下文压缩预算（Observational Memory + 硬 token 上限）。留空则在模型配置了最大上下文时使用其 85%。",
     contextTargetTokensPlaceholder: "例如 100000",
     contextTargetDerived: "当前由模型最大上下文推导：{n} tokens（85%）。",
+    orchestrationTitle: "监督树预算",
+    orchestrationHint:
+      "Host 强制的 Domain/Leaf 扇出与审查委员会规模。小仓库可保持默认。",
+    maxDomainFanOut: "最大 Domain 数",
+    maxLeafFanOut: "每 Domain 最大 Leaf 数",
+    reviewCouncilSize: "审查委员会规模",
+    roleModelsTitle: "角色模型（混合经济学）",
+    roleModelsHint:
+      "可选：强规划 + 便宜研究。留空则回退到上方工作区默认模型。各角色 Pi 会话在接近上下文目标时自动压缩。",
+    rolePlanner: "规划（Planner）",
+    roleWorker: "研究（Worker）",
+    roleWriter: "写作（Writer）",
     langEn: "English（英文）",
     langZh: "中文（简体）",
     save: "保存更改",

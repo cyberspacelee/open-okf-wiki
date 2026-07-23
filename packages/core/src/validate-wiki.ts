@@ -36,42 +36,89 @@ export type ValidateWikiResult = {
   citationCount?: number;
 };
 
+/** Reserved OKF filenames (SPEC §3.1) — listing/history, not concept pages. */
+export const RESERVED_WIKI_BASENAMES = new Set(["index.md", "log.md"]);
+
+/**
+ * True when the relative path is an OKF reserved file at any directory level
+ * (`index.md` / `log.md`). Reserved files are not concept documents.
+ */
+export function isReservedWikiPath(relPath: string): boolean {
+  const base = relPath.replace(/\\/g, "/").split("/").pop()?.toLowerCase() ?? "";
+  return RESERVED_WIKI_BASENAMES.has(base);
+}
+
+/**
+ * Extract a YAML frontmatter block body (between the opening/closing `---`),
+ * or null when the file does not start with a well-formed frontmatter fence.
+ */
+export function extractYamlFrontmatterBody(content: string): string | null {
+  const trimmed = content.replace(/^\uFEFF/, "");
+  if (!trimmed.startsWith("---")) {
+    return null;
+  }
+  const firstNl = trimmed.indexOf("\n");
+  if (firstNl < 0) {
+    return null;
+  }
+  if (trimmed.slice(0, firstNl).trim() !== "---") {
+    return null;
+  }
+  const rest = trimmed.slice(firstNl + 1);
+  const close = rest.search(/^---\s*$/m);
+  if (close < 0) {
+    return null;
+  }
+  return rest.slice(0, close);
+}
+
+function unquoteYamlScalar(raw: string): string {
+  const t = raw.trim();
+  if (
+    (t.startsWith('"') && t.endsWith('"')) ||
+    (t.startsWith("'") && t.endsWith("'"))
+  ) {
+    return t.slice(1, -1).trim();
+  }
+  return t;
+}
+
+function frontmatterScalar(
+  front: string,
+  key: string,
+): string | undefined {
+  const re = new RegExp(`^\\s*${key}\\s*:\\s*(.+?)\\s*$`, "m");
+  const match = front.match(re);
+  if (!match) return undefined;
+  const value = unquoteYamlScalar(match[1]!);
+  return value.length > 0 ? value : undefined;
+}
+
 /**
  * Minimal frontmatter check: file starts with `---` and a YAML block that
  * contains a non-empty `title:` key (simple regex — not a full YAML parser).
  */
 export function hasNonEmptyTitleFrontmatter(content: string): boolean {
-  const trimmed = content.replace(/^\uFEFF/, "");
-  if (!trimmed.startsWith("---")) {
-    return false;
-  }
-  // First line must be exactly --- (optional trailing spaces)
-  const firstNl = trimmed.indexOf("\n");
-  if (firstNl < 0) {
-    return false;
-  }
-  if (trimmed.slice(0, firstNl).trim() !== "---") {
-    return false;
-  }
-  const rest = trimmed.slice(firstNl + 1);
-  const close = rest.search(/^---\s*$/m);
-  if (close < 0) {
-    return false;
-  }
-  const front = rest.slice(0, close);
-  // title: value  — value must be non-empty after optional quotes
-  const match = front.match(/^\s*title\s*:\s*(.+?)\s*$/m);
-  if (!match) {
-    return false;
-  }
-  const raw = match[1]!.trim();
-  // Strip surrounding single/double quotes if present
-  const unquoted =
-    (raw.startsWith('"') && raw.endsWith('"')) ||
-    (raw.startsWith("'") && raw.endsWith("'"))
-      ? raw.slice(1, -1).trim()
-      : raw;
-  return unquoted.length > 0;
+  const front = extractYamlFrontmatterBody(content);
+  if (front === null) return false;
+  return frontmatterScalar(front, "title") !== undefined;
+}
+
+/**
+ * OKF v0.1 hard rule: concept pages need a non-empty `type` field.
+ */
+export function hasNonEmptyTypeFrontmatter(content: string): boolean {
+  const front = extractYamlFrontmatterBody(content);
+  if (front === null) return false;
+  return frontmatterScalar(front, "type") !== undefined;
+}
+
+/**
+ * Concept page frontmatter: parseable YAML with non-empty `type` and `title`
+ * (product keeps `title` for UI; OKF requires `type`).
+ */
+export function hasConceptFrontmatter(content: string): boolean {
+  return hasNonEmptyTypeFrontmatter(content) && hasNonEmptyTitleFrontmatter(content);
 }
 
 type WalkEntry = {
@@ -138,8 +185,9 @@ async function walkTreeNoFollow(
  * Checks:
  * - Absolute path, real directory, no symlink components
  * - At least one `.md` file
- * - Each `.md` starts with YAML frontmatter containing non-empty `title:`
- * - Source Citations present (format + optional Snapshot resolve) — ADR 0008
+ * - Concept `.md` pages: YAML frontmatter with non-empty `type` + `title` (OKF + product)
+ * - Reserved `index.md` / `log.md`: exempt from concept frontmatter and citations
+ * - Source Citations on concept pages (format + optional Snapshot resolve) — ADR 0008
  * - No symlinks inside the tree
  * - Soft caps: ≤ {@link WIKI_VALIDATE_MAX_FILES} files, each ≤ 1MB
  */
@@ -150,6 +198,7 @@ export async function validateWikiTree(
   const errors: string[] = [];
   // Citations required when Snapshot sources are supplied (publish path) unless
   // explicitly disabled. Pure frontmatter/caps checks omit sources.
+  // Reserved OKF files (index.md / log.md) never require citations.
   const requireCitations =
     options.requireCitations ?? Boolean(options.sources?.length);
   const sourceMap: SourceRootMap | undefined = options.sources
@@ -265,10 +314,25 @@ export async function validateWikiTree(
       );
       continue;
     }
-    if (!hasNonEmptyTitleFrontmatter(content)) {
-      errors.push(
-        `${md.relPath}: missing YAML frontmatter with non-empty title`,
-      );
+    const reserved = isReservedWikiPath(md.relPath);
+    if (reserved) {
+      // OKF reserved listing/history files: no concept frontmatter or citations.
+      continue;
+    }
+    if (!hasConceptFrontmatter(content)) {
+      if (!hasNonEmptyTypeFrontmatter(content) && !hasNonEmptyTitleFrontmatter(content)) {
+        errors.push(
+          `${md.relPath}: missing YAML frontmatter with non-empty type and title`,
+        );
+      } else if (!hasNonEmptyTypeFrontmatter(content)) {
+        errors.push(
+          `${md.relPath}: missing YAML frontmatter with non-empty type`,
+        );
+      } else {
+        errors.push(
+          `${md.relPath}: missing YAML frontmatter with non-empty title`,
+        );
+      }
     }
     const citations = parseSourceCitations(content);
     citationCount += citations.length;

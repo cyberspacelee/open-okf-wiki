@@ -1,5 +1,7 @@
 # Flow template
 
+Frontmatter: `type: Flow` plus non-empty `title`.
+
 Use for an important runtime, request, build, or data sequence:
 
 - trigger and observable outcome

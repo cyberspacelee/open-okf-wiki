@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import {
+  hasConceptFrontmatter,
   hasNonEmptyTitleFrontmatter,
+  hasNonEmptyTypeFrontmatter,
+  isReservedWikiPath,
   validateWikiTree,
   WIKI_VALIDATE_MAX_FILE_BYTES,
 } from "./validate-wiki.js";
@@ -19,8 +22,13 @@ async function writeMd(root: string, rel: string, body: string): Promise<void> {
   await writeFile(full, body, "utf8");
 }
 
-const goodPage = (title: string, body = "Hello.") =>
-  `---\ntitle: ${title}\n---\n\n# ${title}\n\n${body}\n`;
+const goodPage = (title: string, body = "Hello.", type = "Concept") =>
+  `---\ntype: ${type}\ntitle: ${title}\n---\n\n# ${title}\n\n${body}\n`;
+
+const listingIndex = `# Pages
+
+* [Overview](overview.md) - Repository overview
+`;
 
 test("hasNonEmptyTitleFrontmatter accepts quoted and plain titles", () => {
   assert.equal(hasNonEmptyTitleFrontmatter("---\ntitle: Hello\n---\n\n# H\n"), true);
@@ -42,14 +50,51 @@ test("hasNonEmptyTitleFrontmatter rejects missing or empty title", () => {
   assert.equal(hasNonEmptyTitleFrontmatter('---\ntitle: ""\n---\n\nx\n'), false);
 });
 
+test("hasNonEmptyTypeFrontmatter and hasConceptFrontmatter", () => {
+  assert.equal(hasNonEmptyTypeFrontmatter("---\ntype: Overview\ntitle: X\n---\n"), true);
+  assert.equal(hasNonEmptyTypeFrontmatter("---\ntitle: X\n---\n"), false);
+  assert.equal(hasConceptFrontmatter("---\ntype: Overview\ntitle: X\n---\n"), true);
+  assert.equal(hasConceptFrontmatter("---\ntitle: X\n---\n"), false);
+  assert.equal(isReservedWikiPath("index.md"), true);
+  assert.equal(isReservedWikiPath("modules/index.md"), true);
+  assert.equal(isReservedWikiPath("log.md"), true);
+  assert.equal(isReservedWikiPath("overview.md"), false);
+});
+
 test("validateWikiTree accepts a minimal valid tree", async () => {
   const root = await tempDir("okf-val-ok-");
-  await writeMd(root, "overview.md", goodPage("Overview"));
-  await writeMd(root, "modules/core.md", goodPage("Core"));
+  await writeMd(root, "overview.md", goodPage("Overview", "Hello.", "Overview"));
+  await writeMd(root, "modules/core.md", goodPage("Core", "Hello.", "Module"));
+  await writeMd(root, "index.md", listingIndex);
   const result = await validateWikiTree(root);
   assert.equal(result.ok, true);
   assert.deepEqual(result.errors, []);
-  assert.equal(result.pageCount, 2);
+  assert.equal(result.pageCount, 3);
+});
+
+test("validateWikiTree rejects concept page without type", async () => {
+  const root = await tempDir("okf-val-type-");
+  await writeMd(
+    root,
+    "overview.md",
+    "---\ntitle: Overview\n---\n\n# Overview\n\nBody.\n",
+  );
+  const result = await validateWikiTree(root);
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join(" "), /type/i);
+});
+
+test("validateWikiTree exempts index.md from title/type and citations", async () => {
+  const root = await tempDir("okf-val-idx-");
+  await writeMd(root, "overview.md", goodPage("Overview", "Note [Source](repo:README.md#L1).", "Overview"));
+  await writeMd(root, "index.md", listingIndex);
+  // Sources supplied → concept pages need citations; index does not.
+  const srcRoot = await tempDir("okf-val-src-");
+  await writeFile(path.join(srcRoot, "README.md"), "# R\n");
+  const result = await validateWikiTree(root, {
+    sources: [{ id: "main", path: srcRoot }],
+  });
+  assert.equal(result.ok, true, result.errors.join("; "));
 });
 
 test("validateWikiTree rejects relative path", async () => {
@@ -106,7 +151,7 @@ test("validateWikiTree rejects oversized file", async () => {
   await writeMd(
     root,
     "huge.md",
-    `---\ntitle: Huge\n---\n\n${big}\n`,
+    `---\ntype: Concept\ntitle: Huge\n---\n\n${big}\n`,
   );
   const result = await validateWikiTree(root);
   assert.equal(result.ok, false);

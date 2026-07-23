@@ -36,6 +36,7 @@ export const AnalysisReceiptSchema = z.object({
 });
 
 export type AnalysisReceipt = z.infer<typeof AnalysisReceiptSchema>;
+export type ReceiptStatus = z.infer<typeof ReceiptStatusSchema>;
 
 export const HandoffRefSchema = z.object({
   taskId: z.string(),

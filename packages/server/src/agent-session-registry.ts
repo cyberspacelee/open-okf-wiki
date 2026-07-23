@@ -590,10 +590,20 @@ function makeResolveModel(
   workspace: WorkspaceConfig,
   entry: RegisteredAgentSession,
 ): WikiRunModelFactory {
-  return async () => {
+  return async (role) => {
+    const piRole =
+      role === "planner"
+        ? "planner"
+        : role === "worker"
+          ? "worker"
+          : role === "reviewer"
+            ? "reviewer"
+            : "writer";
     const piModel = await resolvePiModelForWorkspace(workspace, {
-      role: "writer",
-      overrideProfileId: entry.produceModelProfileId,
+      role: piRole,
+      // Operator override applies to writer path; other roles keep roleModels.
+      overrideProfileId:
+        piRole === "writer" ? entry.produceModelProfileId : undefined,
     });
     emitPi(entry.workspaceId, entry.sessionId, "produce_model", {
       providerId: piModel.providerId,
@@ -602,6 +612,7 @@ function makeResolveModel(
       profileId: piModel.runtime.profileId,
       maxContextTokens: piModel.runtime.maxContextTokens,
       overrideProfileId: entry.produceModelProfileId,
+      role: piRole,
     });
     return {
       model: piModel.model,
@@ -684,14 +695,30 @@ function mapOrchestratorOnEvent(
       }
       return;
     }
+    if (event.type === "plan_progress") {
+      const data = (event.data ?? {}) as {
+        pages?: Array<{ path: string; status: "pending" | "writing" | "done" }>;
+      };
+      emitProductAgentEvent(entry.workspaceId, {
+        source: "product",
+        kind: "plan_progress",
+        sessionId: entry.sessionId,
+        runId: entry.runId,
+        pages: data.pages ?? [],
+        timestamp: ts,
+      });
+      return;
+    }
     if (event.type === "agent_span") {
       const data = (event.data ?? {}) as {
         spanId?: string;
         agentId?: string;
-        role?: "domain" | "leaf" | "reviewer" | "root";
+        role?: "domain" | "leaf" | "reviewer" | "root" | "planner";
         status?: "running" | "complete" | "failed";
         promptSummary?: string;
         runId?: string;
+        receiptPath?: string;
+        parentId?: string;
       };
       if (data.spanId && data.agentId && data.role && data.status) {
         emitProductAgentEvent(entry.workspaceId, {
@@ -704,6 +731,8 @@ function mapOrchestratorOnEvent(
           role: data.role,
           status: data.status,
           promptSummary: data.promptSummary,
+          receiptPath: data.receiptPath,
+          parentId: data.parentId,
           timestamp: ts,
         });
       }

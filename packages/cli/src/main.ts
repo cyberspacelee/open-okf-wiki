@@ -8,7 +8,10 @@ import {
   startWikiRun,
   shellPhaseLabel,
   shouldUsePiFixtureMode,
+  resolveWorkspacePiModel,
+  resolveModelSelection,
   type WikiRunShellPhase,
+  type WikiRunModelFactory,
 } from "@okf-wiki/agent";
 import { defaultWikiRunSpec, type WorkspaceConfig } from "@okf-wiki/contract";
 import {
@@ -451,10 +454,12 @@ async function cmdWikiRun(argv: string[]): Promise<void> {
   // Prefer saved workspace when present; otherwise ephemeral headless config.
   let workspaceName = args.name?.trim() || path.basename(rootPath) || "wiki";
   let skillPath: string | undefined;
+  let loadedWorkspace: WorkspaceConfig | null = null;
   const sourceMap = new Map<string, string>();
 
   try {
     const ws = await loadWorkspace(rootPath);
+    loadedWorkspace = ws;
     workspaceName = args.name?.trim() || ws.name;
     skillPath = ws.skillPath;
     for (const src of ws.sources) {
@@ -487,27 +492,71 @@ async function cmdWikiRun(argv: string[]): Promise<void> {
   }));
 
   // Minimal WorkspaceConfig for startWikiRun (Pi shell + produce + optional publish).
-  const workspace = {
-    version: 1 as const,
-    id: "cli",
-    name: workspaceName,
-    rootPath,
-    sources: sources.map((s) => ({
-      id: s.id,
-      path: s.path,
-      applyDefaultIgnores: true,
-      ignore: [] as string[],
-      origin: { type: "path" as const },
-    })),
-    skillPath,
-    publicationPath: path.join(rootPath, "wiki"),
-    planConfirm: args.planConfirm,
-    model: { provider: "openai", modelId: "unused" },
-    limits: {},
-    roleModels: {},
-    orchestration: {},
-    wikiLanguage: "en" as const,
-  } as unknown as WorkspaceConfig;
+  const workspace = (loadedWorkspace
+    ? {
+        ...loadedWorkspace,
+        name: workspaceName,
+        rootPath,
+        sources: sources.map((s) => ({
+          id: s.id,
+          path: s.path,
+          applyDefaultIgnores: true,
+          ignore: [] as string[],
+          origin: { type: "path" as const },
+        })),
+        skillPath: skillPath ?? loadedWorkspace.skillPath,
+        publicationPath:
+          loadedWorkspace.publicationPath || path.join(rootPath, "wiki"),
+        planConfirm: args.planConfirm,
+      }
+    : {
+        version: 1 as const,
+        id: "cli",
+        name: workspaceName,
+        rootPath,
+        sources: sources.map((s) => ({
+          id: s.id,
+          path: s.path,
+          applyDefaultIgnores: true,
+          ignore: [] as string[],
+          origin: { type: "path" as const },
+        })),
+        skillPath,
+        publicationPath: path.join(rootPath, "wiki"),
+        planConfirm: args.planConfirm,
+        model: { id: "openai/gpt-4o" },
+        limits: {},
+        roleModels: {},
+        orchestration: {},
+        wikiLanguage: "en" as const,
+        createdAt: new Date().toISOString(),
+      }) as WorkspaceConfig;
+
+  const resolveModel: WikiRunModelFactory | undefined = useFixture
+    ? undefined
+    : async (role) => {
+        const selection = resolveModelSelection({
+          workspace,
+          role:
+            role === "planner"
+              ? "planner"
+              : role === "worker"
+                ? "worker"
+                : role === "reviewer"
+                  ? "reviewer"
+                  : "writer",
+        });
+        const resolved = await resolveWorkspacePiModel({
+          profileId: selection.profileId,
+          modelId: selection.id,
+        });
+        return {
+          model: resolved.model,
+          modelRuntime: resolved.modelRuntime,
+          maxContextTokens: resolved.runtime.maxContextTokens,
+          profileId: resolved.runtime.profileId,
+        };
+      };
 
   emitPhase(
     "planning",
@@ -522,6 +571,7 @@ async function cmdWikiRun(argv: string[]): Promise<void> {
       forcePlanConfirm: args.planConfirm,
       skipPlanConfirm: !args.planConfirm,
       autoApprove: args.autoPublish || !args.planConfirm,
+      resolveModel,
       onEvent: (ev) => {
         if (ev.type === "phase" || ev.type === "gate") {
           emitPhase(

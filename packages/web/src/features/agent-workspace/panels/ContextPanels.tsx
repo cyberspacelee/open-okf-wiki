@@ -218,6 +218,42 @@ export function ContextPanels({
                 {plan.summary ? (
                   <p className="text-xs whitespace-pre-wrap">{plan.summary}</p>
                 ) : null}
+                {"domains" in plan &&
+                Array.isArray((plan as { domains?: unknown }).domains) &&
+                ((plan as { domains: Array<{ id: string; title?: string; scope?: string }> })
+                  .domains?.length ?? 0) > 0 ? (
+                  <div className="flex flex-col gap-1">
+                    <span className="text-[10px] font-semibold tracking-wide text-muted-foreground uppercase">
+                      Domains
+                    </span>
+                    <ul className="flex flex-col gap-1">
+                      {(
+                        plan as {
+                          domains: Array<{
+                            id: string;
+                            title?: string;
+                            scope?: string;
+                          }>;
+                        }
+                      ).domains.map((d) => (
+                        <li
+                          key={d.id}
+                          className="rounded border border-border/70 px-2 py-1 text-[11px]"
+                        >
+                          <span className="font-mono font-medium">{d.id}</span>
+                          {d.title ? (
+                            <span className="text-muted-foreground"> — {d.title}</span>
+                          ) : null}
+                          {d.scope ? (
+                            <span className="mt-0.5 block text-muted-foreground">
+                              {d.scope}
+                            </span>
+                          ) : null}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
                 {plan.notes ? (
                   <p className="text-xs text-muted-foreground whitespace-pre-wrap">
                     {plan.notes}

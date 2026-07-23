@@ -26,12 +26,13 @@ export type ProduceEventSink = {
   agentSpan?: (p: {
     spanId: string;
     agentId: string;
-    role: "domain" | "leaf" | "reviewer" | "root";
+    role: "domain" | "leaf" | "reviewer" | "root" | "planner";
     status: "running" | "complete" | "failed";
     promptSummary?: string;
     parentId?: string;
     runId: string;
     error?: string;
+    receiptPath?: string;
   }) => void;
   defects?: (p: {
     round: number;

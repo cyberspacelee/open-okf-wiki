@@ -40,7 +40,13 @@ export type WikiWorkflowJobEvent = {
   data?: unknown;
 };
 
-export type WikiRunModelFactory = (role: "writer" | "planner") => Promise<{
+export type WikiModelRoleName =
+  | "writer"
+  | "planner"
+  | "worker"
+  | "reviewer";
+
+export type WikiRunModelFactory = (role: WikiModelRoleName) => Promise<{
   model: Model<any>;
   modelRuntime?: ModelRuntime;
   maxContextTokens?: number;
@@ -191,23 +197,33 @@ async function runProducePhase(input: {
   const fixture = shouldUsePiFixtureMode({});
   emit(input.onEvent, "phase", "producing", { runWorkDir, fixture });
 
-  let writerModel:
-    | { model: Model<any>; modelRuntime?: ModelRuntime; maxContextTokens?: number }
-    | undefined;
-  let workerModel = writerModel;
+  type RoleModel = {
+    model: Model<any>;
+    modelRuntime?: ModelRuntime;
+    maxContextTokens?: number;
+  };
+  let writerModel: RoleModel | undefined;
+  let plannerModel: RoleModel | undefined;
+  let workerModel: RoleModel | undefined;
+  let reviewerModel: RoleModel | undefined;
   if (!fixture) {
     if (!input.resolveModel) {
       throw new Error(
         "Live produce requires resolveModel factory (or OKF_WIKI_AGENT_MODE=fixture)",
       );
     }
-    const resolved = await input.resolveModel("writer");
-    writerModel = {
-      model: resolved.model,
-      modelRuntime: resolved.modelRuntime,
-      maxContextTokens: resolved.maxContextTokens,
+    const resolve = async (role: WikiModelRoleName): Promise<RoleModel> => {
+      const resolved = await input.resolveModel!(role);
+      return {
+        model: resolved.model,
+        modelRuntime: resolved.modelRuntime,
+        maxContextTokens: resolved.maxContextTokens,
+      };
     };
-    workerModel = writerModel;
+    writerModel = await resolve("writer");
+    plannerModel = await resolve("planner").catch(() => writerModel!);
+    workerModel = await resolve("worker").catch(() => writerModel!);
+    reviewerModel = await resolve("reviewer").catch(() => writerModel!);
   }
 
   const skillPaths = await resolveWikiSkillPaths({
@@ -219,7 +235,9 @@ async function runProducePhase(input: {
     runId: input.runId,
     workspace: input.workspace,
     runWorkDir,
+    // Plan already approved / defaulted at shell — do not re-plan unless missing.
     spec: input.plan,
+    skipPlan: true,
     materialize: {
       sources,
       skillRoot,
@@ -229,8 +247,9 @@ async function runProducePhase(input: {
     abortSignal: input.abortSignal,
     models: {
       writer: writerModel,
+      planner: plannerModel,
       worker: workerModel,
-      reviewer: writerModel,
+      reviewer: reviewerModel,
     },
     maxContextTokens: writerModel?.maxContextTokens,
     contextTargetTokens: input.workspace.limits?.contextTargetTokens,

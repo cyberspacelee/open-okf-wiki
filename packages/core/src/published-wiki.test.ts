@@ -21,8 +21,8 @@ async function writeMd(root: string, rel: string, body: string): Promise<void> {
   await writeFile(full, body, "utf8");
 }
 
-const page = (title: string, body = "Hello.") =>
-  `---\ntitle: ${title}\n---\n\n# ${title}\n\n${body}\n`;
+const page = (title: string, body = "Hello.", type = "Concept") =>
+  `---\ntype: ${type}\ntitle: ${title}\n---\n\n# ${title}\n\n${body}\n`;
 
 test("extractTitleFromFrontmatter reads plain and quoted titles", () => {
   assert.equal(extractTitleFromFrontmatter("---\ntitle: Hello\n---\n\n# H\n"), "Hello");

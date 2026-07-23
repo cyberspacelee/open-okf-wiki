@@ -79,7 +79,7 @@ test("evaluateWikiPublishable passes with page + clean defects", async () => {
   await mkdir(wikiRoot, { recursive: true });
   await writeFile(
     path.join(wikiRoot, "overview.md"),
-    "---\ntitle: Overview\n---\n\n# Overview\n\nHello ([Source](repo:README.md#L1-L1)).\n",
+    "---\ntype: Overview\ntitle: Overview\n---\n\n# Overview\n\nHello ([Source](repo:README.md#L1-L1)).\n",
     "utf8",
   );
   const sourcePath = path.join(root, "src");

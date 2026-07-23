@@ -24,9 +24,9 @@ async function writeMd(root: string, rel: string, body: string): Promise<void> {
   await writeFile(full, body, "utf8");
 }
 
-/** Valid wiki page with required YAML frontmatter title. */
-function page(title: string, body = "Hello."): string {
-  return `---\ntitle: ${title}\n---\n\n# ${title}\n\n${body}\n`;
+/** Valid wiki page with required YAML frontmatter type + title (OKF + product). */
+function page(title: string, body = "Hello.", type = "Concept"): string {
+  return `---\ntype: ${type}\ntitle: ${title}\n---\n\n# ${title}\n\n${body}\n`;
 }
 
 test("countMarkdownFiles counts nested .md files and ignores non-md", async () => {

@@ -142,6 +142,18 @@ export const en = {
       "Operational budget for Wiki Run context compaction (Observational Memory + hard token limit). Leave blank to use 85% of the selected model’s max context when that is configured.",
     contextTargetTokensPlaceholder: "e.g. 100000",
     contextTargetDerived: "Currently derived from model max: {n} tokens (85%).",
+    orchestrationTitle: "Supervisor tree budgets",
+    orchestrationHint:
+      "Host-enforced fan-out for Domain/Leaf research and review council size. Leave defaults for small repos.",
+    maxDomainFanOut: "Max domains",
+    maxLeafFanOut: "Max leaves / domain",
+    reviewCouncilSize: "Review council size",
+    roleModelsTitle: "Role models (hybrid economics)",
+    roleModelsHint:
+      "Optional: frontier planner + cheaper workers. Empty roles fall back to the workspace default model above. Pi auto-compacts each role session near the context target.",
+    rolePlanner: "Planner",
+    roleWorker: "Worker (research)",
+    roleWriter: "Writer",
     langEn: "English",
     langZh: "Chinese (Simplified)",
     save: "Save changes",

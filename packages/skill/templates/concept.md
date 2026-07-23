@@ -1,5 +1,7 @@
 # Concept template
 
+Frontmatter: `type: Concept` plus non-empty `title`.
+
 Use when repository-specific language or an invariant needs explanation:
 
 - concise definition and reader relevance

@@ -62,7 +62,7 @@ test("validateWikiTree with sources requires resolvable citations", async () => 
   await writeFile(path.join(src, "README.md"), "# hi\n", "utf8");
   await writeFile(
     path.join(wiki, "overview.md"),
-    "---\ntitle: Overview\n---\n\n# Overview\n\nBody without cite.\n",
+    "---\ntype: Overview\ntitle: Overview\n---\n\n# Overview\n\nBody without cite.\n",
     "utf8",
   );
   const fail = await validateWikiTree(wiki, {
@@ -73,7 +73,7 @@ test("validateWikiTree with sources requires resolvable citations", async () => 
 
   await writeFile(
     path.join(wiki, "overview.md"),
-    "---\ntitle: Overview\n---\n\n# Overview\n\nNote [Source](repo:README.md#L1).\n",
+    "---\ntype: Overview\ntitle: Overview\n---\n\n# Overview\n\nNote [Source](repo:README.md#L1).\n",
     "utf8",
   );
   const pass = await validateWikiTree(wiki, {
