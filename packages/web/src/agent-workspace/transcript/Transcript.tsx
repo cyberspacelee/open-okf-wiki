@@ -11,7 +11,6 @@ import {
   EyeIcon,
   SparklesIcon,
   UserIcon,
-  WrenchIcon,
 } from "lucide-react";
 import {
   Collapsible,
@@ -48,14 +47,13 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { useI18n } from "../../i18n";
+import { ToolExecutionCard } from "../components/ToolExecutionCard";
 import type {
   AgentMessage,
   AgentProductMeta,
-  AgentToolCall,
   PendingGate,
   ResumeGateInput,
 } from "../hooks/useSessionAgent";
-import { formatPayloadText } from "../hooks/project-agent-events";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { GateActions } from "./GateActions";
 
@@ -80,56 +78,6 @@ export type TranscriptProps = {
     detail?: string;
   }) => void;
 };
-
-function ToolCard({ tool }: { tool: AgentToolCall }) {
-  const { t } = useI18n();
-  const input = formatPayloadText(tool.input);
-  const output = formatPayloadText(tool.output);
-  return (
-    <Collapsible
-      defaultOpen={tool.status === "running" || tool.status === "error"}
-      className="w-full min-w-0 rounded-md border border-border/80 bg-muted/30"
-    >
-      <CollapsibleTrigger className="group flex w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-xs hover:bg-muted/60">
-        <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-data-panel-open:rotate-90" />
-        <WrenchIcon className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate font-mono font-medium">
-          {tool.name}
-        </span>
-        <Badge
-          variant={
-            tool.status === "error"
-              ? "destructive"
-              : tool.status === "done"
-                ? "secondary"
-                : "outline"
-          }
-          className="shrink-0"
-        >
-          {tool.status}
-        </Badge>
-      </CollapsibleTrigger>
-      <CollapsibleContent className="min-w-0 border-t border-border/60 px-2.5 py-2">
-        {input ? (
-          <div className="mb-2 flex min-w-0 flex-col gap-0.5">
-            <div className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-              {t.agentWorkspace.toolInput}
-            </div>
-            <pre className="okf-code-snippet">{input}</pre>
-          </div>
-        ) : null}
-        {output ? (
-          <div className="flex min-w-0 flex-col gap-0.5">
-            <div className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-              {t.agentWorkspace.toolOutput}
-            </div>
-            <pre className="okf-code-snippet">{output}</pre>
-          </div>
-        ) : null}
-      </CollapsibleContent>
-    </Collapsible>
-  );
-}
 
 function ThinkingBlock({
   thinking,
@@ -196,7 +144,7 @@ function WorkRunCard({
     (a) => a.status === "running" || a.status === "pending",
   ).length;
   return (
-    <div className="flex min-w-0 flex-col gap-2" data-testid="work-run-card">
+    <div className="flex min-w-0 flex-col gap-2" data-testid="work-run-chip">
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span className="font-medium">
           Work · Wiki Run {(product.runId ?? "—").slice(0, 8)}
@@ -506,7 +454,7 @@ function MessageCard({
                 {message.tools && message.tools.length > 0 ? (
                   <div className="mt-2 flex min-w-0 w-full flex-col gap-1.5">
                     {message.tools.map((tool) => (
-                      <ToolCard key={tool.id} tool={tool} />
+                      <ToolExecutionCard key={tool.id} tool={tool} />
                     ))}
                   </div>
                 ) : null}

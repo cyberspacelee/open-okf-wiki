@@ -21,6 +21,7 @@ import {
   type ProductInjectTarget,
   type ProductPhase,
 } from "./product-inject.ts";
+import { createWorkUnitCoalescer } from "./work-unit-coalesce.ts";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -120,10 +121,18 @@ export type ProduceAdapterEntry = ProductInjectTarget & {
 /**
  * Adapter for startWikiRun / resumeWikiRun `onEvent` callbacks.
  * Maps job events onto whitelist product injects (work_unit, progress, …).
+ *
+ * work_unit body streaming is coalesced per unitId (see work-unit-coalesce.ts)
+ * so high-frequency message_update frames do not spam trajectory + SSE.
+ * Terminal / tool / status structural updates flush immediately.
  */
 export function mapOrchestratorOnEvent(
   entry: ProduceAdapterEntry,
 ): (event: { type: string; message?: string; data?: unknown }) => void {
+  const workUnitCoalesce = createWorkUnitCoalescer({
+    emit: (product) => injectProductEvent(entry, product),
+  });
+
   return (event) => {
     const ts = nowIso();
     if (event.type === "gate") {
@@ -277,7 +286,8 @@ export function mapOrchestratorOnEvent(
             : Date.now(),
         timestamp: ts,
       };
-      injectProductEvent(entry, product);
+      // Coalesce pure message streaming; assertProductInject still on emit path.
+      workUnitCoalesce.push(product);
       return;
     }
     if (event.type === "defects") {

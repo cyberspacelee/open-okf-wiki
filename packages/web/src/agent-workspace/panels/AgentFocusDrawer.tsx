@@ -9,7 +9,6 @@ import {
   ChevronRightIcon,
   Loader2Icon,
   SparklesIcon,
-  WrenchIcon,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -28,7 +27,8 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { useI18n } from "../../i18n";
-import type { AgentToolCall, WorkUnitView } from "../hooks/useSessionAgent";
+import { ToolExecutionCard } from "../components/ToolExecutionCard";
+import type { WorkUnitView } from "../hooks/useSessionAgent";
 import {
   formatPayloadText,
   workUnitHasBody,
@@ -48,67 +48,6 @@ export type AgentFocusDrawerProps = {
   fallbackDetail?: string;
   className?: string;
 };
-
-function ToolBlock({
-  tool,
-  settled,
-}: {
-  tool: AgentToolCall;
-  /** When parent unit is settled, keep completed tools collapsed. */
-  settled?: boolean;
-}) {
-  const { t } = useI18n();
-  const input = formatPayloadText(tool.input);
-  const output = formatPayloadText(tool.output);
-  const openDefault =
-    tool.status === "running" ||
-    tool.status === "error" ||
-    (!settled && tool.status !== "done");
-  return (
-    <Collapsible
-      defaultOpen={openDefault}
-      className="w-full min-w-0 rounded-md border border-border/80 bg-muted/30"
-    >
-      <CollapsibleTrigger className="group flex w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-xs hover:bg-muted/60">
-        <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-data-panel-open:rotate-90" />
-        <WrenchIcon className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate font-mono font-medium">
-          {tool.name}
-        </span>
-        <Badge
-          variant={
-            tool.status === "error"
-              ? "destructive"
-              : tool.status === "done"
-                ? "secondary"
-                : "outline"
-          }
-          className="shrink-0"
-        >
-          {tool.status}
-        </Badge>
-      </CollapsibleTrigger>
-      <CollapsibleContent className="min-w-0 border-t border-border/60 px-2.5 py-2">
-        {input ? (
-          <div className="mb-2 flex min-w-0 flex-col gap-0.5">
-            <div className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-              {t.agentWorkspace.toolInput}
-            </div>
-            <pre className="okf-code-snippet">{input}</pre>
-          </div>
-        ) : null}
-        {output ? (
-          <div className="flex min-w-0 flex-col gap-0.5">
-            <div className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-              {t.agentWorkspace.toolOutput}
-            </div>
-            <pre className="okf-code-snippet">{output}</pre>
-          </div>
-        ) : null}
-      </CollapsibleContent>
-    </Collapsible>
-  );
-}
 
 export function AgentUnitBody({
   unit,
@@ -163,7 +102,11 @@ export function AgentUnitBody({
       {tools.length > 0 ? (
         <div className="flex min-w-0 flex-col gap-1.5">
           {tools.map((tool) => (
-            <ToolBlock key={tool.id} tool={tool} settled={settled} />
+            <ToolExecutionCard
+              key={tool.id}
+              tool={tool}
+              settled={settled}
+            />
           ))}
         </div>
       ) : null}
@@ -186,7 +129,10 @@ export function AgentUnitBody({
 
       {/* Empty running unit: waiting, never "Thinking". */}
       {running && !hasBody && !fallback ? (
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <div
+          className="flex items-center gap-2 text-xs text-muted-foreground"
+          data-testid="waiting-for-events"
+        >
           <Loader2Icon className="size-3.5 animate-spin" />
           {t.agentWorkspace.waitingForEvents}
         </div>
@@ -200,9 +146,6 @@ export function AgentUnitBody({
     </div>
   );
 }
-
-/** @deprecated Prefer AgentUnitBody — alias kept for local sheet previews. */
-export const AgentStreamBody = AgentUnitBody;
 
 export function AgentFocusDrawer({
   open,
@@ -226,7 +169,7 @@ export function AgentFocusDrawer({
       <SheetContent
         side="right"
         className={cn("flex w-full flex-col sm:max-w-lg", className)}
-        data-testid="agent-focus-drawer"
+        data-testid="work-unit-drawer"
       >
         <SheetHeader>
           <SheetTitle className="flex flex-wrap items-center gap-2 font-mono text-sm">
