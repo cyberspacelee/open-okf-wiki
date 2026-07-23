@@ -205,8 +205,14 @@ export const ProductAgentSpanEventSchema = z.object({
   role: z.enum(["domain", "leaf", "reviewer", "root", "planner"]),
   status: z.enum(["running", "complete", "failed"]),
   promptSummary: z.string().max(500).optional(),
+  /**
+   * Full-ish body for click-to-preview (receipt summary / planner output).
+   * Capped for SSE size; UI may still fetch run receipt APIs for more.
+   */
+  detail: z.string().max(12_000).optional(),
   parentId: z.string().max(120).optional(),
   receiptPath: z.string().max(500).optional(),
+  task: z.string().max(2000).optional(),
   sequence: z.number().int().nonnegative().optional(),
   timestamp: z.string().datetime().optional(),
 });

@@ -18,7 +18,9 @@ import {
   resolveSkillPath,
 } from "@okf-wiki/core";
 import { produceWiki } from "./produce/orchestrate.js";
-import { shouldUsePiFixtureMode } from "./produce/live-pi.js";
+import { produceWithPi, shouldUsePiFixtureMode } from "./produce/live-pi.js";
+import { planWikiSpec } from "./produce/plan.js";
+import { writeWikiRunSpec } from "./spec-store.js";
 import type { ProduceEventSink } from "./produce/events.js";
 import { resolveWikiSkillPaths } from "./pi/skill-paths.js";
 import { piRunWorkDir } from "./pi/session-paths.js";
@@ -75,6 +77,14 @@ export type StartWikiRunInput = {
   skipPlanConfirm?: boolean;
   forcePlanConfirm?: boolean;
   plan?: WikiRunPlan;
+  /**
+   * When true (default), always run planner discovery before plan-gate /
+   * produce so the Spec is source-grounded. Set false only when the caller
+   * already supplies a final Spec (e.g. resume after revise).
+   */
+  discoverPlan?: boolean;
+  /** Operator notes folded into Spec during discovery. */
+  notes?: string;
   /** Optional model profile override (Settings). */
   modelProfileId?: string;
   /**
@@ -166,6 +176,168 @@ function produceEventsFromJob(
   };
 }
 
+type RoleModel = {
+  model: Model<any>;
+  modelRuntime?: ModelRuntime;
+  maxContextTokens?: number;
+};
+
+async function resolveRoleModels(
+  resolveModel: WikiRunModelFactory | undefined,
+  fixture: boolean,
+): Promise<{
+  writer?: RoleModel;
+  planner?: RoleModel;
+  worker?: RoleModel;
+  reviewer?: RoleModel;
+}> {
+  if (fixture) return {};
+  if (!resolveModel) {
+    throw new Error(
+      "Live produce requires resolveModel factory (or OKF_WIKI_AGENT_MODE=fixture)",
+    );
+  }
+  const resolve = async (role: WikiModelRoleName): Promise<RoleModel> => {
+    const resolved = await resolveModel(role);
+    return {
+      model: resolved.model,
+      modelRuntime: resolved.modelRuntime,
+      maxContextTokens: resolved.maxContextTokens,
+    };
+  };
+  const writer = await resolve("writer");
+  const planner = await resolve("planner").catch(() => writer);
+  const worker = await resolve("worker").catch(() => writer);
+  const reviewer = await resolve("reviewer").catch(() => writer);
+  return { writer, planner, worker, reviewer };
+}
+
+/**
+ * Materialize run workdir + run Planner before plan gate / produce.
+ * Emits planning progress and a planner agent_span with previewable detail.
+ */
+async function discoverWikiPlan(input: {
+  runId: string;
+  workspace: WorkspaceConfig;
+  abortSignal?: AbortSignal;
+  onEvent?: StartWikiRunInput["onEvent"];
+  resolveModel?: WikiRunModelFactory;
+  skillRoot?: string;
+  sourcePathMap?: Map<string, string>;
+  /** Operator notes to fold into Spec changelog. */
+  notes?: string;
+}): Promise<WikiRunPlan> {
+  const fixture = shouldUsePiFixtureMode({});
+  const runWorkDir = piRunWorkDir(input.workspace.rootPath, input.runId);
+  await mkdir(runWorkDir, { recursive: true });
+  const skillRoot =
+    input.skillRoot ??
+    (await resolveSkillPath({
+      workspaceRoot: input.workspace.rootPath,
+      skillPath: input.workspace.skillPath,
+    }));
+  const sources = sourcesMap(input.workspace, input.sourcePathMap);
+  if (sources.size === 0) {
+    throw new Error(
+      "Wiki Run plan discovery requires at least one frozen source mount",
+    );
+  }
+
+  emit(input.onEvent, "phase", "planning", {
+    label: "materialize + analyze sources",
+  });
+
+  const seeded = await produceWithPi({
+    runWorkDir,
+    role: "root_research",
+    materialize: { sources, skillRoot, reset: true },
+    fixture: true,
+    title: input.workspace.name,
+    abortSignal: input.abortSignal,
+    workspaceRoot: input.workspace.rootPath,
+  });
+
+  const models = await resolveRoleModels(input.resolveModel, fixture);
+  const spanId = `${input.runId}-planner`;
+  emit(input.onEvent, "agent_span", "running", {
+    spanId,
+    agentId: "planner",
+    role: "planner",
+    status: "running",
+    promptSummary: "Analyze sources and draft WikiRunSpec",
+    task: "Discover domains, pages, and acceptance criteria from sources/",
+    parentId: "root",
+    runId: input.runId,
+  });
+
+  try {
+    const planned = await planWikiSpec({
+      runWorkDir,
+      layout: seeded.layout,
+      workspaceName: input.workspace.name,
+      wikiLanguage: input.workspace.wikiLanguage,
+      fixture,
+      model: models.planner?.model,
+      modelRuntime: models.planner?.modelRuntime,
+      maxContextTokens: models.planner?.maxContextTokens,
+      contextTargetTokens: input.workspace.limits?.contextTargetTokens,
+      workspaceRoot: input.workspace.rootPath,
+      abortSignal: input.abortSignal,
+      useDefaultSpec: fixture,
+    });
+
+    let spec = planned.spec;
+    if (input.notes?.trim()) {
+      spec = {
+        ...spec,
+        notes: [spec.notes, input.notes.trim()].filter(Boolean).join("\n\n"),
+        changelog: [
+          ...(spec.changelog ?? []),
+          "Operator notes on start",
+        ].slice(-40),
+      };
+    }
+    await writeWikiRunSpec(input.workspace.rootPath, input.runId, spec);
+
+    emit(input.onEvent, "agent_span", "complete", {
+      spanId,
+      agentId: "planner",
+      role: "planner",
+      status: "complete",
+      promptSummary: spec.summary.slice(0, 120),
+      task: "Discover domains, pages, and acceptance criteria from sources/",
+      detail: [
+        planned.rawSummary?.slice(0, 10_000) ||
+          `Planned ${spec.pages?.length ?? 0} page(s), ${spec.domains?.length ?? 0} domain(s).`,
+        "",
+        `summary: ${spec.summary}`,
+        `pages: ${(spec.pages ?? []).map((p) => p.path).join(", ")}`,
+        `domains: ${(spec.domains ?? []).map((d) => d.id).join(", ")}`,
+      ].join("\n"),
+      parentId: "root",
+      runId: input.runId,
+    });
+    emit(input.onEvent, "phase", "planning", {
+      label: `plan ready (${spec.pages?.length ?? 0} pages)`,
+    });
+    return spec;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    emit(input.onEvent, "agent_span", "failed", {
+      spanId,
+      agentId: "planner",
+      role: "planner",
+      status: "failed",
+      promptSummary: msg.slice(0, 120),
+      detail: msg.slice(0, 4000),
+      parentId: "root",
+      runId: input.runId,
+      error: msg,
+    });
+    throw err;
+  }
+}
+
 async function runProducePhase(input: {
   runId: string;
   workspace: WorkspaceConfig;
@@ -175,6 +347,8 @@ async function runProducePhase(input: {
   resolveModel?: WikiRunModelFactory;
   skillRoot?: string;
   sourcePathMap?: Map<string, string>;
+  /** When true, keep existing run workdir (after pre-gate plan discovery). */
+  preserveWorkdir?: boolean;
 }): Promise<
   | { ok: true; pages: string[]; summary: string; wikiDir: string }
   | { ok: false; pages: string[]; summary: string; wikiDir: string; reasons: string[] }
@@ -197,34 +371,7 @@ async function runProducePhase(input: {
   const fixture = shouldUsePiFixtureMode({});
   emit(input.onEvent, "phase", "producing", { runWorkDir, fixture });
 
-  type RoleModel = {
-    model: Model<any>;
-    modelRuntime?: ModelRuntime;
-    maxContextTokens?: number;
-  };
-  let writerModel: RoleModel | undefined;
-  let plannerModel: RoleModel | undefined;
-  let workerModel: RoleModel | undefined;
-  let reviewerModel: RoleModel | undefined;
-  if (!fixture) {
-    if (!input.resolveModel) {
-      throw new Error(
-        "Live produce requires resolveModel factory (or OKF_WIKI_AGENT_MODE=fixture)",
-      );
-    }
-    const resolve = async (role: WikiModelRoleName): Promise<RoleModel> => {
-      const resolved = await input.resolveModel!(role);
-      return {
-        model: resolved.model,
-        modelRuntime: resolved.modelRuntime,
-        maxContextTokens: resolved.maxContextTokens,
-      };
-    };
-    writerModel = await resolve("writer");
-    plannerModel = await resolve("planner").catch(() => writerModel!);
-    workerModel = await resolve("worker").catch(() => writerModel!);
-    reviewerModel = await resolve("reviewer").catch(() => writerModel!);
-  }
+  const models = await resolveRoleModels(input.resolveModel, fixture);
 
   const skillPaths = await resolveWikiSkillPaths({
     workspaceRoot: input.workspace.rootPath,
@@ -235,23 +382,24 @@ async function runProducePhase(input: {
     runId: input.runId,
     workspace: input.workspace,
     runWorkDir,
-    // Plan already approved / defaulted at shell — do not re-plan unless missing.
+    // Plan already approved / discovered — do not re-plan inside produce.
     spec: input.plan,
     skipPlan: true,
     materialize: {
       sources,
       skillRoot,
-      reset: true,
+      // Preserve analysis/receipts when plan discovery already materialised.
+      reset: input.preserveWorkdir ? false : true,
     },
     fixture,
     abortSignal: input.abortSignal,
     models: {
-      writer: writerModel,
-      planner: plannerModel,
-      worker: workerModel,
-      reviewer: reviewerModel,
+      writer: models.writer,
+      planner: models.planner,
+      worker: models.worker,
+      reviewer: models.reviewer,
     },
-    maxContextTokens: writerModel?.maxContextTokens,
+    maxContextTokens: models.writer?.maxContextTokens,
     contextTargetTokens: input.workspace.limits?.contextTargetTokens,
     additionalSkillPaths: skillPaths,
     onEvent: produceEventsFromJob(input.onEvent),
@@ -390,22 +538,49 @@ async function afterProduce(input: {
 }
 
 /**
- * Start a Wiki Run: plan gate or produce → hard-validate → publish gate/auto.
+ * Start a Wiki Run:
+ * 1) Discover Spec from sources (planner) unless caller disables it
+ * 2) Optional plan-gate HITL
+ * 3) produce → hard-validate → publish gate/auto
  */
 export async function startWikiRun(
   input: StartWikiRunInput,
 ): Promise<WikiRunOrchestrationResult> {
   if (input.abortSignal?.aborted) return cancelledResult();
 
-  const plan = input.plan ?? defaultWikiRunSpec(input.workspace.name);
   const skipPlan = resolveSkipPlanConfirm(input);
+  const shouldDiscover = input.discoverPlan !== false;
   let shell = startShell({
-    plan,
-    skipPlanConfirm: skipPlan,
+    plan: undefined,
+    skipPlanConfirm: true,
   });
+  let preserveWorkdir = false;
 
   try {
-    if (shell.phase === "awaiting_plan") {
+    let plan: WikiRunPlan;
+    if (shouldDiscover) {
+      // Analyze first — never show a blank default Spec at the plan gate.
+      plan = await discoverWikiPlan({
+        runId: input.runId,
+        workspace: input.workspace,
+        abortSignal: input.abortSignal,
+        onEvent: input.onEvent,
+        resolveModel: input.resolveModel,
+        skillRoot: input.skillRoot,
+        sourcePathMap: input.sourcePathMap,
+        notes: input.notes,
+      });
+      preserveWorkdir = true;
+    } else {
+      plan = input.plan ?? defaultWikiRunSpec(input.workspace.name);
+    }
+
+    if (!skipPlan) {
+      shell = startShell({
+        plan,
+        skipPlanConfirm: false,
+        summary: "Awaiting plan confirmation after source analysis",
+      });
       emit(input.onEvent, "gate", "awaiting_plan", { plan: shell.plan });
       return {
         status: "awaiting_plan",
@@ -417,6 +592,7 @@ export async function startWikiRun(
       };
     }
 
+    shell = startShell({ plan, skipPlanConfirm: true });
     shell = markProducing(shell);
     const produced = await runProducePhase({
       runId: input.runId,
@@ -427,6 +603,7 @@ export async function startWikiRun(
       resolveModel: input.resolveModel,
       skillRoot: input.skillRoot,
       sourcePathMap: input.sourcePathMap,
+      preserveWorkdir,
     });
     return afterProduce({
       runId: input.runId,
@@ -523,7 +700,7 @@ export async function resumeWikiRun(
       };
     }
 
-    // Plan approved → produce
+    // Plan approved → produce (workdir already materialised during discovery)
     if (gate === "plan" && shell.phase === "idle" && shell.plan) {
       shell = markProducing(shell);
       const produced = await runProducePhase({
@@ -535,6 +712,7 @@ export async function resumeWikiRun(
         resolveModel: input.resolveModel,
         skillRoot: input.skillRoot,
         sourcePathMap: input.sourcePathMap,
+        preserveWorkdir: true,
       });
       return afterProduce({
         runId: input.runId,

@@ -29,6 +29,10 @@ export type ProduceEventSink = {
     role: "domain" | "leaf" | "reviewer" | "root" | "planner";
     status: "running" | "complete" | "failed";
     promptSummary?: string;
+    /** Expandable preview body (capped). */
+    detail?: string;
+    /** Short task description for the span card. */
+    task?: string;
     parentId?: string;
     runId: string;
     error?: string;

@@ -53,6 +53,9 @@ export type AgentProductMeta = {
   role?: string;
   parentId?: string;
   receiptPath?: string;
+  /** Full-ish subagent output for click-to-preview. */
+  detail?: string;
+  task?: string;
   defectCount?: number;
   clean?: boolean;
   round?: number;
@@ -105,6 +108,8 @@ export type ProductSseLike = {
   parentId?: string;
   receiptPath?: string;
   promptSummary?: string;
+  detail?: string;
+  task?: string;
   round?: number;
   clean?: boolean;
   defectCount?: number;
@@ -745,8 +750,9 @@ export function productCardContent(event: ProductSseLike): string {
         event.status ?? "",
       ].filter(Boolean);
       if (event.parentId) bits.push(`parent=${event.parentId}`);
+      if (event.task) bits.push(event.task);
+      else if (event.promptSummary) bits.push(event.promptSummary);
       if (event.receiptPath) bits.push(event.receiptPath);
-      if (event.promptSummary) bits.push(event.promptSummary);
       return bits.join(" · ");
     }
     case "defects": {
@@ -806,6 +812,8 @@ export function productMeta(event: ProductSseLike): AgentProductMeta {
         status: event.status,
         parentId: event.parentId,
         receiptPath: event.receiptPath,
+        detail: event.detail,
+        task: event.task,
         label: event.promptSummary,
       };
     case "defects":
@@ -875,6 +883,27 @@ export function applyProductEvent(
       }
       const next = prev.slice();
       next[i] = { ...card, id: m.id };
+      return next;
+    }
+  }
+
+  if (event.kind === "agent_span" && event.spanId) {
+    // Upsert by spanId so running → complete keeps one card with detail.
+    for (let i = prev.length - 1; i >= 0; i -= 1) {
+      const m = prev[i]!;
+      if (m.product?.kind !== "agent_span") continue;
+      if (m.product.spanId !== event.spanId) continue;
+      const next = prev.slice();
+      next[i] = {
+        ...card,
+        id: m.id,
+        product: {
+          ...productMeta(event),
+          // Keep earlier detail if complete event omitted it.
+          detail: event.detail ?? m.product.detail,
+          task: event.task ?? m.product.task,
+        },
+      };
       return next;
     }
   }

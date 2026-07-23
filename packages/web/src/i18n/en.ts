@@ -608,6 +608,10 @@ export const en = {
     thinking: "Thinking",
     thinkingStreaming: "Thinking…",
     jumpToLatest: "Jump to latest",
+    viewSubagent: "View output",
+    subagentPreviewHint:
+      "Subagent preview (planner / domain / leaf / reviewer). Full body when available.",
+    subagentNoDetail: "No detailed output captured for this span yet.",
   },
 } as const;
 

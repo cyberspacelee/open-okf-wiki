@@ -30,7 +30,7 @@ import {
   type WikiWorkflowTerminal,
 } from "@okf-wiki/agent";
 import {
-  defaultWikiRunSpec,
+
   type AgentCommand,
   type AgentCommandResponse,
   type ProductSseEvent,
@@ -680,7 +680,16 @@ function mapOrchestratorOnEvent(
           timestamp: ts,
         });
       }
-      if (msg === "producing" || msg === "writing" || msg === "researching") {
+      if (msg === "planning") {
+        emitPhase(entry, "planning", data.label ?? msg, "running");
+        emitRunLink(entry, "running");
+      } else if (
+        msg === "producing" ||
+        msg === "writing" ||
+        msg === "researching" ||
+        msg === "reviewing" ||
+        msg === "repairing"
+      ) {
         emitPhase(entry, "writing", data.label ?? msg, "running");
         emitRunLink(entry, "running");
       } else if (msg === "hard_validate") {
@@ -716,6 +725,8 @@ function mapOrchestratorOnEvent(
         role?: "domain" | "leaf" | "reviewer" | "root" | "planner";
         status?: "running" | "complete" | "failed";
         promptSummary?: string;
+        detail?: string;
+        task?: string;
         runId?: string;
         receiptPath?: string;
         parentId?: string;
@@ -731,6 +742,8 @@ function mapOrchestratorOnEvent(
           role: data.role,
           status: data.status,
           promptSummary: data.promptSummary,
+          detail: data.detail?.slice(0, 12_000),
+          task: data.task?.slice(0, 2000),
           receiptPath: data.receiptPath,
           parentId: data.parentId,
           timestamp: ts,
@@ -1122,20 +1135,6 @@ async function handleStartWikiRun(
 
   entry.produceModelProfileId = command.modelProfileId?.trim() || undefined;
 
-  const plan = defaultWikiRunSpec(workspace.name);
-  if (command.notes?.trim()) {
-    plan.notes = [plan.notes, command.notes.trim()].filter(Boolean).join("\n\n");
-    plan.changelog = [...(plan.changelog ?? []), "Operator notes on start"].slice(
-      -20,
-    );
-  }
-  if (entry.produceModelProfileId) {
-    plan.changelog = [
-      ...(plan.changelog ?? []),
-      `Model profile: ${entry.produceModelProfileId}`,
-    ].slice(-20);
-  }
-
   let frozen;
   try {
     frozen = await freezeWikiRun({
@@ -1185,7 +1184,9 @@ async function handleStartWikiRun(
   const runOpts = {
     runId: frozen.runId,
     workspace,
-    plan,
+    // Discover Spec from sources first (do not pass a blank default plan).
+    discoverPlan: true,
+    notes: command.notes,
     autoApprove: command.autoApprove === true,
     skipPlanConfirm,
     resolveModel: preferPiFixture()
@@ -1197,39 +1198,8 @@ async function handleStartWikiRun(
     onEvent: mapOrchestratorOnEvent(entry),
   };
 
-  // Plan gate: await (returns quickly). Skip-plan produce: background so SSE can stream.
-  if (!skipPlanConfirm) {
-    try {
-      const result = await startWikiRun(runOpts);
-      if (result.shell) entry.shell = result.shell;
-      await persistTerminal(entry, workspace, result);
-      entry.abortController = undefined;
-      return {
-        ok: true,
-        sessionId: entry.sessionId,
-        command: "start_wiki_run",
-        status: "accepted",
-        message:
-          result.suspendGate === "plan"
-            ? "Wiki run started — awaiting plan gate"
-            : `Wiki run ${result.status}`,
-        runId: frozen.runId,
-      };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      emitPi(entry.workspaceId, entry.sessionId, "error", { message });
-      entry.abortController = undefined;
-      return {
-        ok: false,
-        sessionId: entry.sessionId,
-        command: "start_wiki_run",
-        status: "failed",
-        message: `start failed: ${message}`,
-        runId: frozen.runId,
-      };
-    }
-  }
-
+  // Always background so planner SSE streams before plan-gate / produce.
+  // (Previously planConfirm awaited and returned instantly with a default Spec.)
   entry.busy = true;
   void startWikiRun(runOpts)
     .then(async (result) => {
@@ -1255,9 +1225,11 @@ async function handleStartWikiRun(
     sessionId: entry.sessionId,
     command: "start_wiki_run",
     status: "accepted",
-    message: preferPiFixture()
-      ? "Wiki run produce started (fixture mode)"
-      : "Wiki run produce started",
+    message: skipPlanConfirm
+      ? preferPiFixture()
+        ? "Wiki run produce started (fixture mode)"
+        : "Wiki run: analyzing sources then producing"
+      : "Wiki run: analyzing sources before plan approval",
     runId: frozen.runId,
   };
 }

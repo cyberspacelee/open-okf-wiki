@@ -4,10 +4,12 @@
  * Projects Pi text, thinking, tools, and provider errors (never silent empty).
  */
 
+import { useState } from "react";
 import {
   BotIcon,
   ChevronRightIcon,
   CircleAlertIcon,
+  EyeIcon,
   SparklesIcon,
   UserIcon,
   WrenchIcon,
@@ -18,6 +20,15 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Bubble,
   BubbleContent,
@@ -173,6 +184,80 @@ function productBadgeLabel(product: AgentProductMeta): string {
   }
 }
 
+/** Click-to-preview subagent card (Claude Code / pi-subagent-ui style peek). */
+function AgentSpanCard({
+  product,
+  content,
+}: {
+  product: AgentProductMeta;
+  content: string;
+}) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const preview =
+    product.detail?.trim() ||
+    product.task?.trim() ||
+    product.label?.trim() ||
+    content;
+  const title = [
+    product.role ?? "agent",
+    product.agentId,
+    product.status,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  return (
+    <>
+      <div className="flex flex-col gap-1.5">
+        <div className="whitespace-pre-wrap">{content}</div>
+        {product.parentId ? (
+          <div className="text-[10px] text-muted-foreground">
+            parent: <span className="font-mono">{product.parentId}</span>
+          </div>
+        ) : null}
+        {product.receiptPath ? (
+          <div className="truncate font-mono text-[10px] text-muted-foreground">
+            {product.receiptPath}
+          </div>
+        ) : null}
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-7 self-start px-2 text-xs"
+          onClick={() => setOpen(true)}
+          data-testid="agent-span-preview"
+        >
+          <EyeIcon data-icon="inline-start" />
+          {t.agentWorkspace.viewSubagent}
+        </Button>
+      </div>
+      <Sheet open={open} onOpenChange={setOpen}>
+        <SheetContent
+          side="right"
+          className="flex w-full flex-col sm:max-w-lg"
+          data-testid="agent-span-sheet"
+        >
+          <SheetHeader>
+            <SheetTitle className="font-mono text-sm">{title}</SheetTitle>
+            <SheetDescription>
+              {product.task ||
+                product.label ||
+                t.agentWorkspace.subagentPreviewHint}
+            </SheetDescription>
+          </SheetHeader>
+          <ScrollArea className="min-h-0 flex-1 px-4 pb-4">
+            <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">
+              {preview || t.agentWorkspace.subagentNoDetail}
+            </pre>
+          </ScrollArea>
+        </SheetContent>
+      </Sheet>
+    </>
+  );
+}
+
 function productBadgeVariant(
   product: AgentProductMeta,
 ): "default" | "secondary" | "destructive" | "outline" {
@@ -289,7 +374,9 @@ function MessageCard({
               </Badge>
             ) : null}
           </div>
-          {message.content ? (
+          {product?.kind === "agent_span" ? (
+            <AgentSpanCard product={product} content={message.content ?? ""} />
+          ) : message.content ? (
             <div className="whitespace-pre-wrap">{message.content}</div>
           ) : null}
           {showGateActions && pendingGate && onResumeGate ? (
