@@ -118,8 +118,8 @@ Fan-in of raw child events onto the operator SSE bus is an **adapter detail**. I
 
 ### Negative / work
 
-- Existing `workStreams` + `agent_span`-as-body-channel paths are **non-conformant** and must be redesigned toward parent-visible units (follow-up implementation ADRs or issues, not silent permanent dual path).  
-- Child isolation remains; wiring cost moves into a correct adapter, not deleted.
+- Child isolation remains; wiring cost lives in the produce adapter (`work_unit` PVUs), not deleted.  
+- **UI cut (2026-07):** web finished the surface cut — timeline Work block + units fold only; no Focus drawer / dual body host; Agents tree is nav-only.
 
 ### Invariants
 

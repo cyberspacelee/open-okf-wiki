@@ -495,6 +495,19 @@ export async function handleAgentSessionEvents(
     "X-Accel-Buffering": "no",
   });
 
+  // Clients pass afterSequence on reconnect so the ring dump does not
+  // re-project already-applied (or cold-loaded) Pi turns as peer bubbles.
+  const afterRaw =
+    url.searchParams.get("afterSequence") ??
+    (typeof _req.headers["last-event-id"] === "string"
+      ? _req.headers["last-event-id"]
+      : undefined);
+  const afterSequence = (() => {
+    if (afterRaw == null || afterRaw === "") return -1;
+    const n = Number(afterRaw);
+    return Number.isFinite(n) ? n : -1;
+  })();
+
   const writeEvent = (event: AgentSseEvent): void => {
     if (res.writableEnded) return;
     const seq =
@@ -505,6 +518,11 @@ export async function handleAgentSessionEvents(
   };
 
   for (const event of getRecentAgentSessionEvents(workspace.id, sessionId)) {
+    const seq =
+      "sequence" in event && typeof event.sequence === "number"
+        ? event.sequence
+        : undefined;
+    if (seq !== undefined && seq <= afterSequence) continue;
     writeEvent(event);
   }
 

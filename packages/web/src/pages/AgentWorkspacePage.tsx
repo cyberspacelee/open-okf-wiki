@@ -67,25 +67,26 @@ export function AgentWorkspacePage() {
     [setSearchParams],
   );
 
-  // Deep-link Work surface: ?focusAgent=planner | leaf-…
-  const focusAgentFromUrl = searchParams.get("focusAgent");
+  // Deep-link expand: ?unit=planner | leaf-… (timeline expand, not a drawer).
+  const unitFromUrl = searchParams.get("unit");
   useEffect(() => {
     if (!activeSessionId) return;
-    if (focusAgentFromUrl && focusAgentFromUrl !== agent.focusAgentId) {
-      agent.setFocusAgentId(focusAgentFromUrl);
+    if (unitFromUrl && unitFromUrl !== agent.expandedUnitId) {
+      agent.setExpandedUnitId(unitFromUrl);
     }
-    // Only seed from URL when opening; do not fight user closing drawer.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional one-way seed
-  }, [activeSessionId, focusAgentFromUrl]);
+  }, [activeSessionId, unitFromUrl]);
 
-  const handleFocusAgentIdChange = useCallback(
-    (agentId: string | null) => {
-      agent.setFocusAgentId(agentId);
+  const handleExpandedUnitIdChange = useCallback(
+    (unitId: string | null) => {
+      agent.setExpandedUnitId(unitId);
       setSearchParams(
         (prev) => {
           const next = new URLSearchParams(prev);
-          if (agentId) next.set("focusAgent", agentId);
-          else next.delete("focusAgent");
+          // Drop legacy focusAgent if present
+          next.delete("focusAgent");
+          if (unitId) next.set("unit", unitId);
+          else next.delete("unit");
           return next;
         },
         { replace: true },
@@ -288,7 +289,7 @@ export function AgentWorkspacePage() {
       title={t.agentWorkspace.title}
       error={bootError}
       onDismissError={() => setBootError(null)}
-      compact
+      immersive
       testId="agent-workspace-page"
     >
       {loading || !workspace ? (
@@ -334,9 +335,8 @@ export function AgentWorkspacePage() {
             workspace.model?.profileId ?? defaultModelProfileId
           }
           units={agent.units}
-          focusAgentId={agent.focusAgentId}
-          onFocusAgentIdChange={handleFocusAgentIdChange}
-          focusedUnit={agent.focusedUnit}
+          expandedUnitId={agent.expandedUnitId}
+          onExpandedUnitIdChange={handleExpandedUnitIdChange}
         />
       )}
     </WorkspaceShell>

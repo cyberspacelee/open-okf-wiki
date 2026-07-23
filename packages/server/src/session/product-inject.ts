@@ -92,12 +92,25 @@ export function emitGate(
   });
 }
 
-/** Emit run_link product inject. */
+/** Last emitted run_link status per session+run (avoid spam on every phase tick). */
+const lastRunLinkStatus = new Map<string, string>();
+
+function runLinkKey(sessionId: string, runId: string): string {
+  return `${sessionId}\0${runId}`;
+}
+
+/** Emit run_link product inject (deduped when status unchanged). */
 export function emitRunLink(
   entry: ProductInjectTarget,
   status?: WikiRunRecordStatus,
 ): void {
   if (!entry.runId) return;
+  const key = runLinkKey(entry.sessionId, entry.runId);
+  const statusKey = status ?? "";
+  if (lastRunLinkStatus.get(key) === statusKey) {
+    return;
+  }
+  lastRunLinkStatus.set(key, statusKey);
   injectProductEvent(entry, {
     source: "product",
     kind: "run_link",
@@ -106,4 +119,9 @@ export function emitRunLink(
     status,
     timestamp: nowIso(),
   });
+}
+
+/** Test helper: clear run_link emit dedupe (process-local). */
+export function resetRunLinkDedupeForTests(): void {
+  lastRunLinkStatus.clear();
 }

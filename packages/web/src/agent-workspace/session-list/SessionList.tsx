@@ -79,7 +79,7 @@ export function SessionList({
       className={cn("flex h-full min-h-0 flex-col", className)}
     >
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-2.5 py-2">
-        <span className="text-xs font-semibold tracking-wide uppercase">
+        <span className="text-xs font-medium">
           {t.agentWorkspace.sessions}
         </span>
         <Button
@@ -143,9 +143,8 @@ export function SessionList({
                       disabled={deleting}
                       className={cn(
                         "absolute top-1.5 right-1.5 rounded p-1 text-muted-foreground",
-                        "opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100",
-                        "hover:bg-destructive/10 hover:text-destructive",
-                        active && "opacity-70",
+                        "opacity-80 transition-opacity focus-visible:opacity-100",
+                        "hover:bg-destructive/10 hover:text-destructive hover:opacity-100",
                       )}
                       onClick={(e) => {
                         e.stopPropagation();

@@ -1,11 +1,10 @@
 /**
- * Agent Workspace composer — InputGroup + send + Start wiki run.
- * Optional model picker for multi-model wiki generation.
- * Chat send is primary; wiki run is secondary (outline).
+ * Agent Workspace composer — mode: Chat | Wiki run (one primary action).
  */
 
 import {
   useCallback,
+  useState,
   type FormEvent,
   type KeyboardEvent,
 } from "react";
@@ -30,6 +29,8 @@ import { useI18n } from "../../i18n";
 import type { ModelProfilePublic } from "../../api";
 import type { AgentStatus } from "../hooks/useSessionAgent";
 
+export type ComposerMode = "chat" | "wikiRun";
+
 export type ComposerProps = {
   input: string;
   onInputChange: (value: string) => void;
@@ -39,12 +40,9 @@ export type ComposerProps = {
   status: AgentStatus;
   disabled?: boolean;
   className?: string;
-  /** Settings catalog models for wiki-run selection. */
   models?: ModelProfilePublic[];
-  /** Selected model profile id for the next wiki run. */
   wikiModelProfileId?: string;
   onWikiModelProfileIdChange?: (profileId: string) => void;
-  /** Workspace default profile (shown in labels). */
   defaultModelProfileId?: string;
 };
 
@@ -63,36 +61,39 @@ export function Composer({
   defaultModelProfileId,
 }: ComposerProps) {
   const { t } = useI18n();
+  const [mode, setMode] = useState<ComposerMode>("chat");
   const busy = status === "sending" || status === "streaming";
   const isError = status === "error";
   const canSend = !disabled && !busy && input.trim().length > 0;
-  const showModelSelect = models.length > 0 && onWikiModelProfileIdChange;
+  const showModelSelect =
+    mode === "wikiRun" && models.length > 0 && onWikiModelProfileIdChange;
 
   const handleSubmit = useCallback(
     (event: FormEvent) => {
       event.preventDefault();
-      if (canSend) {
+      if (mode === "chat" && canSend) {
         onSend();
       }
     },
-    [canSend, onSend],
+    [mode, canSend, onSend],
   );
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
-        if (canSend) {
+        if (mode === "chat" && canSend) {
           onSend();
         }
       }
     },
-    [canSend, onSend],
+    [mode, canSend, onSend],
   );
 
   return (
     <form
       data-testid="agent-composer"
+      data-mode={mode}
       onSubmit={handleSubmit}
       className={cn(
         "shrink-0 border-t border-border bg-background/95 px-3 py-2.5 md:px-4",
@@ -100,19 +101,48 @@ export function Composer({
       )}
     >
       <div className="flex flex-col gap-2">
-        <InputGroup>
-          <InputGroupTextarea
-            data-testid="agent-composer-input"
-            value={input}
-            onChange={(e) => onInputChange(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={t.agentWorkspace.placeholder}
+        <div
+          className="flex items-center gap-1"
+          role="tablist"
+          aria-label={t.agentWorkspace.modeChat}
+          data-testid="agent-composer-mode"
+        >
+          <Button
+            type="button"
+            size="xs"
+            variant={mode === "chat" ? "secondary" : "ghost"}
+            data-testid="agent-mode-chat"
             disabled={disabled || busy}
-            rows={2}
-            className="min-h-[2.75rem] resize-none text-sm"
-          />
-          <InputGroupAddon align="block-end" className="justify-between gap-2">
-            <div className="flex flex-wrap items-center gap-1.5">
+            onClick={() => setMode("chat")}
+          >
+            {t.agentWorkspace.modeChat}
+          </Button>
+          <Button
+            type="button"
+            size="xs"
+            variant={mode === "wikiRun" ? "secondary" : "ghost"}
+            data-testid="agent-mode-wiki"
+            disabled={disabled || busy}
+            onClick={() => setMode("wikiRun")}
+          >
+            {t.agentWorkspace.modeWikiRun}
+          </Button>
+        </div>
+
+        <InputGroup>
+          {mode === "chat" ? (
+            <InputGroupTextarea
+              data-testid="agent-composer-input"
+              value={input}
+              onChange={(e) => onInputChange(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={t.agentWorkspace.placeholder}
+              disabled={disabled || busy}
+              rows={2}
+              className="min-h-[2.75rem] resize-none text-sm"
+            />
+          ) : (
+            <div className="flex min-h-[2.75rem] w-full flex-wrap items-center gap-2 px-2 py-2 text-xs text-muted-foreground">
               {showModelSelect ? (
                 <Select
                   value={wikiModelProfileId || null}
@@ -128,7 +158,7 @@ export function Composer({
                   disabled={disabled || busy}
                 >
                   <SelectTrigger
-                    className="h-8 w-[min(100%,12rem)] text-xs"
+                    className="h-8 w-[min(100%,14rem)] text-xs"
                     data-testid="agent-wiki-model-select"
                     aria-label={t.agentWorkspace.wikiModel}
                   >
@@ -150,18 +180,13 @@ export function Composer({
                     })}
                   </SelectContent>
                 </Select>
-              ) : null}
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                data-testid="agent-start-wiki-run"
-                disabled={disabled || busy}
-                onClick={() => onStartWikiRun()}
-              >
-                <PlayIcon data-icon="inline-start" />
-                {t.agentWorkspace.startWikiRun}
-              </Button>
+              ) : (
+                <span>{t.agentWorkspace.wikiModelHint}</span>
+              )}
+            </div>
+          )}
+          <InputGroupAddon align="block-end" className="justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-1.5">
               {busy ? (
                 <Button
                   type="button"
@@ -190,16 +215,30 @@ export function Composer({
                     ? t.agentWorkspace.statusError
                     : t.agentWorkspace.statusReady}
               </span>
-              <InputGroupButton
-                type="submit"
-                size="sm"
-                variant="default"
-                data-testid="agent-send"
-                disabled={!canSend}
-              >
-                <SendIcon data-icon="inline-start" />
-                {t.agentWorkspace.send}
-              </InputGroupButton>
+              {mode === "chat" ? (
+                <InputGroupButton
+                  type="submit"
+                  size="sm"
+                  variant="default"
+                  data-testid="agent-send"
+                  disabled={!canSend}
+                >
+                  <SendIcon data-icon="inline-start" />
+                  {t.agentWorkspace.send}
+                </InputGroupButton>
+              ) : (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="default"
+                  data-testid="agent-start-wiki-run"
+                  disabled={disabled || busy}
+                  onClick={() => onStartWikiRun()}
+                >
+                  <PlayIcon data-icon="inline-start" />
+                  {t.agentWorkspace.startWikiRun}
+                </Button>
+              )}
             </div>
           </InputGroupAddon>
         </InputGroup>

@@ -38,6 +38,15 @@ function lastAssistantIndex(messages: AgentMessage[]): number {
   return -1;
 }
 
+/** Last user or assistant row (ignore product/system strips). */
+function lastChatIndex(messages: AgentMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const m = messages[i];
+    if (m?.role === "user" || m?.role === "assistant") return i;
+  }
+  return -1;
+}
+
 function ensureAssistantBubble(
   prev: AgentMessage[],
   cursor: StreamCursor,
@@ -151,6 +160,21 @@ export function applyPiEvent(
   if (kind === "message_update") {
     // Only assistant messages stream; ignore anything else.
     if (role && role !== "assistant") return prev;
+
+    // Same-turn replay onto a completed hist_* assistant: ignore stream deltas.
+    if (
+      cursor.turnActive &&
+      cursor.lastAssistantId &&
+      !cursor.streamingAssistantId
+    ) {
+      const idx = findMessageIndex(prev, cursor.lastAssistantId);
+      if (
+        idx >= 0 &&
+        (prev[idx]!.status === "done" || prev[idx]!.status === "error")
+      ) {
+        return prev;
+      }
+    }
 
     const ame = isRecord(body.assistantMessageEvent)
       ? body.assistantMessageEvent
@@ -298,6 +322,27 @@ export function applyPiEvent(
       }
     }
 
+    // Replay guard: cold JSONL already has a completed assistant as the last
+    // chat row; ring-buffer re-sends the same turn after agent_start cleared
+    // cursors. Live multi-turn always inserts a user row after the prior asst
+    // (optimistic send), so a trailing done-assistant means "replay, not turn 2".
+    if (!reuseId && cursor.turnActive) {
+      const chatIdx = lastChatIndex(prev);
+      if (chatIdx >= 0) {
+        const lastChat = prev[chatIdx]!;
+        if (
+          lastChat.role === "assistant" &&
+          (lastChat.status === "done" || lastChat.status === "error")
+        ) {
+          // Point cursors at hist_* but leave status done and body untouched.
+          // streamingAssistantId stays null so message_update also no-ops.
+          cursor.streamingAssistantId = null;
+          cursor.lastAssistantId = lastChat.id;
+          return prev;
+        }
+      }
+    }
+
     if (reuseId) {
       cursor.streamingAssistantId = reuseId;
       cursor.lastAssistantId = reuseId;
@@ -373,6 +418,21 @@ export function applyPiEvent(
     }
     if (role === "toolResult" || role === "tool") {
       return prev;
+    }
+
+    // Replay onto completed hist_*: keep body, just clear streaming cursor.
+    if (
+      cursor.turnActive &&
+      cursor.lastAssistantId &&
+      !cursor.streamingAssistantId
+    ) {
+      const idx = findMessageIndex(prev, cursor.lastAssistantId);
+      if (
+        idx >= 0 &&
+        (prev[idx]!.status === "done" || prev[idx]!.status === "error")
+      ) {
+        return prev;
+      }
     }
 
     // Fixture mode: server emits note without prior streaming deltas.

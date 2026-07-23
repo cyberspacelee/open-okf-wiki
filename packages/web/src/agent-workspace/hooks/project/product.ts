@@ -1,55 +1,29 @@
 /**
- * Product inject projection: phase/gate cards + work_run chips.
+ * Product inject projection: phase/gate/progress strips + work_block anchors.
+ *
+ * work_unit body never lands as a message card — it updates the units fold
+ * (applyWorkUnit). Timeline only gets a thin work_block anchor per runId so
+ * the Work block has a stable scroll position (ADR 0031 UI cut).
  */
 
-import {
-  isRecord,
-  makeId,
-  nowIso,
-} from "./format.ts";
+import { makeId, nowIso } from "./format.ts";
 import type {
   AgentMessage,
   AgentProductMeta,
   PlanProgressPage,
   ProductSseLike,
-  WorkAgentChip,
+  WorkUnits,
+  WorkUnitView,
 } from "./types.ts";
 
-/** Human phase labels for operator timeline (not protocol enums). */
-function phaseLabel(phase: string | undefined): string {
-  switch (phase) {
-    case "idle":
-      return "Ready";
-    case "planning":
-      return "Planning wiki structure";
-    case "awaiting_plan":
-      return "Waiting for plan approval";
-    case "writing":
-    case "producing":
-      return "Writing wiki pages";
-    case "awaiting_publish":
-    case "awaiting_publication":
-      return "Waiting for publish approval";
-    case "publishing":
-      return "Publishing";
-    case "done":
-    case "published":
-      return "Published";
-    case "failed":
-      return "Failed";
-    case "cancelled":
-      return "Cancelled";
-    case "publication_declined":
-      return "Publication declined";
-    default:
-      return phase?.replace(/_/g, " ") || "Working";
-  }
-}
-
+/**
+ * English fallback body for product cards (tests / cold-load dump).
+ * Live UI formats via formatProductCardContent + i18n (see product-copy.ts).
+ */
 export function productCardContent(event: ProductSseLike): string {
   switch (event.kind) {
     case "run_phase": {
-      const head = phaseLabel(event.phase);
+      const head = event.phase?.replace(/_/g, " ") || "phase";
       if (typeof event.message === "string" && event.message.trim()) {
         return `${head} — ${event.message.trim()}`;
       }
@@ -59,23 +33,21 @@ export function productCardContent(event: ProductSseLike): string {
       if (event.gate === "plan") {
         const n = event.pages?.length;
         return n
-          ? `Plan ready — ${n} page(s). Approve, revise, or deny below.`
-          : "Plan ready. Approve, revise, or deny below.";
+          ? `plan gate · ${n} page(s)`
+          : "plan gate";
       }
-      if (event.gate === "publication") {
-        return "Wiki ready to publish. Approve or deny below.";
-      }
-      return event.question?.trim() || "Input needed";
+      if (event.gate === "publication") return "publication gate";
+      return event.question?.trim() || "gate";
     }
     case "run_link": {
       const short = event.runId ? event.runId.slice(0, 8) : "—";
       if (event.status) {
-        return `Linked job ${short} · ${String(event.status).replace(/_/g, " ")}`;
+        return `run ${short} · ${String(event.status).replace(/_/g, " ")}`;
       }
-      return `Linked job ${short}`;
+      return `run ${short}`;
     }
     case "progress": {
-      const head = phaseLabel(event.phase);
+      const head = event.phase?.replace(/_/g, " ") || "progress";
       return event.label?.trim() ? `${head} — ${event.label.trim()}` : head;
     }
     case "plan_progress": {
@@ -87,49 +59,13 @@ export function productCardContent(event: ProductSseLike): string {
           "status" in p &&
           (p as PlanProgressPage).status === "done",
       ).length;
-      const total = pages.length;
-      const lines = pages.slice(0, 12).map((p) => {
-        if (typeof p === "string") return `· ${p}`;
-        const pg = p as PlanProgressPage;
-        const mark =
-          pg.status === "done" ? "✓" : pg.status === "writing" ? "…" : "·";
-        return `${mark} ${pg.path}`;
-      });
-      const more =
-        pages.length > 12 ? `\n… +${pages.length - 12} more` : "";
-      return [`Writing pages ${done}/${total}`, ...lines].join("\n") + more;
+      return `pages ${done}/${pages.length}`;
     }
-    case "work_unit": {
-      const role = event.role ?? "agent";
-      const task = event.task?.trim();
-      const status = event.status?.replace(/_/g, " ") ?? "";
-      if (task) return `${role}: ${task}${status ? ` (${status})` : ""}`;
-      return `${role}${status ? ` · ${status}` : ""}`;
-    }
-    case "work_run": {
-      const agents = event.agents ?? [];
-      const running = agents.filter(
-        (a) => a.status === "running" || a.status === "pending",
-      ).length;
-      const done = agents.filter(
-        (a) =>
-          a.status === "settled" ||
-          a.status === "complete" ||
-          a.status === "done",
-      ).length;
-      const bits = [
-        "Wiki work",
-        running ? `${running} running` : null,
-        done ? `${done} done` : null,
-        agents.length ? `${agents.length} unit(s)` : null,
-      ].filter(Boolean);
-      return bits.join(" · ");
-    }
+    case "work_unit":
+      return "";
     case "defects": {
-      if (event.clean) {
-        return `Review passed (round ${event.round ?? 1})`;
-      }
-      return `Review found ${event.defectCount ?? 0} issue(s) (round ${event.round ?? 1})`;
+      if (event.clean) return `review clean · round ${event.round ?? 1}`;
+      return `review defects ${event.defectCount ?? 0} · round ${event.round ?? 1}`;
     }
     default: {
       const _exhaustive: never = event.kind;
@@ -138,7 +74,7 @@ export function productCardContent(event: ProductSseLike): string {
   }
 }
 
-export function productMeta(event: ProductSseLike): AgentProductMeta {
+export function productMeta(event: ProductSseLike): AgentProductMeta | null {
   switch (event.kind) {
     case "run_phase":
       return {
@@ -146,6 +82,10 @@ export function productMeta(event: ProductSseLike): AgentProductMeta {
         phase: event.phase,
         runId: event.runId,
         status: event.status,
+        label:
+          typeof event.message === "string" && event.message.trim()
+            ? event.message.trim()
+            : undefined,
       };
     case "gate":
       return {
@@ -175,20 +115,7 @@ export function productMeta(event: ProductSseLike): AgentProductMeta {
         pages: event.pages,
       };
     case "work_unit":
-      // work_unit folds into work_run chips; meta is not used as a card kind.
-      return {
-        kind: "work_run",
-        runId: event.runId,
-        agents: [],
-      };
-    case "work_run":
-      return {
-        kind: "work_run",
-        runId: event.runId,
-        phase: event.phase,
-        agents: event.agents ?? [],
-        status: event.status,
-      };
+      return null;
     case "defects":
       return {
         kind: "defects",
@@ -205,255 +132,197 @@ export function productMeta(event: ProductSseLike): AgentProductMeta {
   }
 }
 
-/** Upsert one unit into a Work chip agent list (pure). agentId === unitId.
- * First-seen order is preserved: updates stay in place; new units append.
- * (Never unshift — newest must not jump above historical agents.)
- */
-export function upsertWorkAgentChip(
-  agents: WorkAgentChip[],
-  chip: WorkAgentChip,
-): WorkAgentChip[] {
-  const next = [...agents];
-  const idx = next.findIndex((a) => a.agentId === chip.agentId);
-  if (idx >= 0) {
-    next[idx] = {
-      ...next[idx],
-      ...chip,
-      detail: chip.detail ?? next[idx]!.detail,
-      task: chip.task ?? next[idx]!.task,
-      parentId: chip.parentId ?? next[idx]!.parentId,
-      receiptPath: chip.receiptPath ?? next[idx]!.receiptPath,
-    };
-  } else {
-    next.push(chip);
-  }
-  return next;
-}
-
-/**
- * Find the work_run card for `runId` searching newest-first.
- * Different-run cards are skipped (not a hard stop) so late units for an
- * earlier run still attach to the original Work chip.
- */
-export function findWorkRunIndex(
+/** Find work_block anchor for runId (newest-first). */
+export function findWorkBlockIndex(
   messages: readonly AgentMessage[],
   runId?: string,
 ): number {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const m = messages[i]!;
-    if (m.product?.kind !== "work_run") continue;
-    if (runId && m.product.runId && m.product.runId !== runId) {
-      continue;
-    }
+    if (m.product?.kind !== "work_block") continue;
+    if (runId && m.product.runId && m.product.runId !== runId) continue;
     return i;
   }
   return -1;
 }
 
-function chipFromWorkUnit(event: ProductSseLike): WorkAgentChip | null {
-  if (event.kind !== "work_unit" || !event.unitId) return null;
-  const msg = isRecord(event.message) ? event.message : undefined;
-  const detail =
-    (typeof event.summary === "string" && event.summary) ||
-    (typeof msg?.text === "string" && msg.text) ||
-    (typeof event.error === "string" && event.error) ||
-    undefined;
-  return {
-    agentId: event.unitId,
-    role: event.role ?? "agent",
-    status: String(event.status ?? "pending"),
-    parentId: event.parentId,
-    task: event.task,
-    detail,
-    receiptPath: event.receiptPath,
-  };
+function ensureWorkBlockAnchor(
+  prev: AgentMessage[],
+  runId: string | undefined,
+  timestamp?: string,
+): AgentMessage[] {
+  if (!runId?.trim()) return prev;
+  if (findWorkBlockIndex(prev, runId) >= 0) return prev;
+  return [
+    ...prev,
+    {
+      id: makeId("work_block"),
+      role: "system",
+      content: "",
+      createdAt: typeof timestamp === "string" ? timestamp : nowIso(),
+      product: { kind: "work_block", runId },
+      status: "work_block",
+    },
+  ];
 }
 
 /**
- * Apply a product inject. Phase cards upsert the latest run_phase row so the
- * transcript does not spam one card per phase transition for a single run.
- * Gate cards upsert the latest open gate of the same kind (plan/publication).
- * work_unit folds into a single work_run chip per run (timeline index).
+ * Upsert the latest product strip of `kind` for a run (newest-first match).
+ * Prevents run_link / progress spam when server re-emits or cold+SSE reapply.
+ */
+function upsertProductStrip(
+  prev: AgentMessage[],
+  card: AgentMessage,
+  kind: AgentProductMeta["kind"],
+  runId: string | undefined,
+  match?: (m: AgentMessage) => boolean,
+): AgentMessage[] | null {
+  for (let i = prev.length - 1; i >= 0; i -= 1) {
+    const m = prev[i]!;
+    if (m.product?.kind !== kind) continue;
+    if (runId && m.product.runId && m.product.runId !== runId) continue;
+    if (match && !match(m)) continue;
+    const next = prev.slice();
+    next[i] = { ...card, id: m.id };
+    return next;
+  }
+  return null;
+}
+
+/**
+ * Apply a product inject to the timeline.
+ * work_unit only ensures a work_block anchor (body → units fold).
+ *
+ * Stateful strips (phase / gate / progress / run_link / plan_progress / defects)
+ * upsert in place per run so the scroller never stacks identical job cards.
  */
 export function applyProductEvent(
   prev: AgentMessage[],
   event: ProductSseLike,
 ): AgentMessage[] {
+  if (event.kind === "work_unit") {
+    return ensureWorkBlockAnchor(prev, event.runId, event.timestamp);
+  }
+
+  const meta = productMeta(event);
+  if (!meta) return prev;
+
   const card: AgentMessage = {
     id: makeId(`product_${event.kind}`),
     role: "system",
     content: productCardContent(event),
     createdAt:
       typeof event.timestamp === "string" ? event.timestamp : nowIso(),
-    product: productMeta(event),
+    product: meta,
     status: event.kind,
   };
 
   if (event.kind === "run_phase") {
-    // Keep Work chip phase in sync, then upsert the phase strip card.
-    let base = prev;
-    const workIdx = findWorkRunIndex(prev, event.runId);
-    if (workIdx >= 0) {
-      const m = prev[workIdx]!;
-      const agents = m.product?.agents ?? [];
-      const next = prev.slice();
-      next[workIdx] = {
-        ...m,
-        content: productCardContent({
-          kind: "work_run",
-          runId: m.product?.runId,
-          phase: event.phase,
-          agents,
-        }),
-        product: { ...m.product!, phase: event.phase },
-      };
-      base = next;
+    // Session bootstrap noise — keep phase state on the wire, but do not paint
+    // a transcript strip ("agent session created") that looks like a chat card.
+    const bootstrapIdle =
+      event.phase === "idle" &&
+      typeof event.message === "string" &&
+      /agent session created/i.test(event.message);
+    if (bootstrapIdle) {
+      return prev;
     }
-    for (let i = base.length - 1; i >= 0; i -= 1) {
-      const m = base[i]!;
-      if (m.product?.kind !== "run_phase") continue;
-      if (
-        event.runId &&
-        m.product.runId &&
-        m.product.runId !== event.runId
-      ) {
-        continue;
-      }
-      const next = base.slice();
-      next[i] = { ...card, id: m.id };
-      return next;
-    }
-    return base === prev ? [...prev, card] : [...base, card];
+    const base = ensureWorkBlockAnchor(prev, event.runId, event.timestamp);
+    const upserted = upsertProductStrip(base, card, "run_phase", event.runId);
+    return upserted ?? [...base, card];
   }
 
   if (event.kind === "plan_progress") {
-    // Upsert Spec pages card so page statuses refresh in place.
-    for (let i = prev.length - 1; i >= 0; i -= 1) {
-      const m = prev[i]!;
-      if (m.product?.kind !== "plan_progress") continue;
-      if (
-        event.runId &&
-        m.product.runId &&
-        m.product.runId !== event.runId
-      ) {
-        continue;
-      }
-      const next = prev.slice();
-      next[i] = { ...card, id: m.id };
-      return next;
-    }
-  }
-
-  if (event.kind === "work_unit") {
-    const chip = chipFromWorkUnit(event);
-    if (!chip) return prev;
-    const workIdx = findWorkRunIndex(prev, event.runId);
-    if (workIdx >= 0) {
-      const m = prev[workIdx]!;
-      const agents = upsertWorkAgentChip(m.product?.agents ?? [], chip);
-      const next = prev.slice();
-      next[workIdx] = {
-        ...m,
-        content: productCardContent({
-          kind: "work_run",
-          runId: event.runId ?? m.product?.runId,
-          phase: m.product?.phase,
-          agents,
-        }),
-        product: {
-          kind: "work_run",
-          runId: event.runId ?? m.product?.runId,
-          phase: m.product?.phase,
-          agents,
-        },
-        status: "work_run",
-      };
-      return next;
-    }
-    const agents = [chip];
-    return [
-      ...prev,
-      {
-        id: makeId("product_work_run"),
-        role: "system",
-        content: productCardContent({
-          kind: "work_run",
-          runId: event.runId,
-          agents,
-        }),
-        createdAt:
-          typeof event.timestamp === "string" ? event.timestamp : nowIso(),
-        product: {
-          kind: "work_run",
-          runId: event.runId,
-          agents,
-        },
-        status: "work_run",
-      },
-    ];
+    const upserted = upsertProductStrip(
+      prev,
+      card,
+      "plan_progress",
+      event.runId,
+    );
+    return upserted ?? [...prev, card];
   }
 
   if (event.kind === "gate" && event.gate) {
-    for (let i = prev.length - 1; i >= 0; i -= 1) {
-      const m = prev[i]!;
-      if (m.product?.kind !== "gate") continue;
-      if (m.product.gate !== event.gate) continue;
-      if (
-        event.runId &&
-        m.product.runId &&
-        m.product.runId !== event.runId
-      ) {
-        continue;
-      }
-      const next = prev.slice();
-      next[i] = { ...card, id: m.id };
-      return next;
-    }
+    const gate = event.gate;
+    const upserted = upsertProductStrip(
+      prev,
+      card,
+      "gate",
+      event.runId,
+      (m) => m.product?.gate === gate,
+    );
+    return upserted ?? [...prev, card];
+  }
+
+  if (event.kind === "run_link") {
+    const base = ensureWorkBlockAnchor(prev, event.runId, event.timestamp);
+    const upserted = upsertProductStrip(base, card, "run_link", event.runId);
+    return upserted ?? [...base, card];
+  }
+
+  if (event.kind === "progress") {
+    const upserted = upsertProductStrip(prev, card, "progress", event.runId);
+    return upserted ?? [...prev, card];
+  }
+
+  if (event.kind === "defects") {
+    const upserted = upsertProductStrip(prev, card, "defects", event.runId);
+    return upserted ?? [...prev, card];
   }
 
   return [...prev, card];
 }
 
 /**
- * Ensure every folded work unit appears on its Work chip (cold-load safety net).
- * Trajectory replay is primary; this fills gaps without reordering first-seen agents.
+ * Cold-load: ensure every runId in the units fold has a work_block anchor.
+ * Does not invent agent chips on the timeline.
  */
-export function mergeWorkUnitsIntoTimeline(
+export function ensureWorkBlockAnchors(
   messages: AgentMessage[],
-  units: Record<
-    string,
-    {
-      unitId: string;
-      role: string;
-      status: string;
-      runId?: string;
-      task?: string;
-      parentId?: string;
-      summary?: string;
-      receiptPath?: string;
-      error?: string;
-      message?: { thinking?: string; text?: string };
-    }
-  >,
+  units: WorkUnits,
 ): AgentMessage[] {
   let next = messages;
+  const seen = new Set<string>();
   for (const unit of Object.values(units)) {
-    if (!unit.unitId) continue;
-    next = applyProductEvent(next, {
-      kind: "work_unit",
-      unitId: unit.unitId,
-      role: unit.role,
-      status: unit.status,
-      runId: unit.runId,
-      task: unit.task,
-      parentId: unit.parentId,
-      summary: unit.summary,
-      receiptPath: unit.receiptPath,
-      error: unit.error,
-      message: unit.message,
-    });
+    const runId = unit.runId?.trim();
+    if (!runId || seen.has(runId)) continue;
+    seen.add(runId);
+    next = ensureWorkBlockAnchor(next, runId);
   }
   return next;
+}
+
+/** Units for a run, stable order (parent-before-child when parentId known). */
+export function unitsForRun(
+  units: WorkUnits,
+  runId?: string | null,
+): WorkUnitView[] {
+  const list = Object.values(units).filter((u) => {
+    if (!runId) return true;
+    return !u.runId || u.runId === runId;
+  });
+  const byId = new Map(list.map((u) => [u.unitId, u]));
+  const roots = list.filter(
+    (u) => !u.parentId || u.parentId === "root" || !byId.has(u.parentId),
+  );
+  const out: WorkUnitView[] = [];
+  const visit = (u: WorkUnitView) => {
+    out.push(u);
+    for (const child of list
+      .filter((c) => c.parentId === u.unitId)
+      .sort((a, b) => a.unitId.localeCompare(b.unitId))) {
+      visit(child);
+    }
+  };
+  for (const r of roots.sort((a, b) => a.unitId.localeCompare(b.unitId))) {
+    visit(r);
+  }
+  // Orphans already visited as roots; dedupe
+  const seen = new Set(out.map((u) => u.unitId));
+  for (const u of list) {
+    if (!seen.has(u.unitId)) out.push(u);
+  }
+  return out;
 }
 
 /** Whether a product run_phase should clear the busy/streaming chrome. */

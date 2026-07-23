@@ -29,19 +29,38 @@ test.describe("published wiki browse", () => {
     // Publish via Agent Workspace (ADR 0026 — sole human HITL surface)
     await page.getByTestId("workspace-subnav-agent").click();
     await expect(page.getByTestId("agent-workspace-page")).toBeVisible();
+    await page.getByTestId("agent-mode-wiki").click();
     await page.getByTestId("agent-start-wiki-run").click();
-    await expect(page.getByTestId("agent-gate-approve")).toBeVisible({
-      timeout: 45_000,
-    });
-    await page.getByTestId("agent-gate-approve").click();
-    // Second gate: publication
-    await expect(page.getByTestId("agent-gate-approve")).toBeVisible({
-      timeout: 90_000,
-    });
-    await page.getByTestId("agent-gate-approve").click();
+
+    // Fixture may present plan and/or publication gates (workspace planConfirm).
+    // Approve every gate that appears until publish completes or wiki is ready.
+    for (let i = 0; i < 4; i += 1) {
+      const approve = page.getByTestId("agent-gate-approve");
+      const published = page.getByText(
+        /Published Wiki|published|atomically|completed|done/i,
+      );
+      const state = await Promise.race([
+        approve
+          .first()
+          .waitFor({ state: "visible", timeout: 45_000 })
+          .then(() => "gate" as const)
+          .catch(() => "none" as const),
+        published
+          .first()
+          .waitFor({ state: "visible", timeout: 45_000 })
+          .then(() => "published" as const)
+          .catch(() => "none" as const),
+      ]);
+      if (state === "published") break;
+      if (state === "gate") {
+        await approve.first().click();
+        continue;
+      }
+      break;
+    }
     await expect(
       page
-        .getByText(/Published Wiki|published|atomically|completed/i)
+        .getByText(/Published Wiki|published|atomically|completed|done/i)
         .first(),
     ).toBeVisible({
       timeout: 90_000,

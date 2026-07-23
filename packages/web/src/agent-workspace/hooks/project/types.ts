@@ -1,7 +1,8 @@
 /**
- * Shared types for Operator Session projection (transcript + Work surface).
+ * Shared types for Operator Session projection (transcript + work units).
  *
- * ADR 0031 Wave 3: pure fold types only — no dual-path child streams.
+ * ADR 0031: pure fold types only. work_unit body lives in WorkUnits fold;
+ * timeline may carry a thin work_block anchor (UI-only, not a product inject).
  */
 
 import type { WorkUnitStatus, WorkUnitToolState } from "@okf-wiki/contract";
@@ -21,17 +22,10 @@ export type PlanProgressPage = {
   status: "pending" | "writing" | "done" | string;
 };
 
-/** One unit row inside a Work chip (planner / leaf / …). unitId is canonical. */
-export type WorkAgentChip = {
-  agentId: string;
-  role: string;
-  status: string;
-  parentId?: string;
-  task?: string;
-  detail?: string;
-  receiptPath?: string;
-};
-
+/**
+ * Product / view meta on a timeline row.
+ * `work_block` is a client-only anchor for the Work block (not an SSE inject kind).
+ */
 export type AgentProductMeta = {
   kind:
     | "run_phase"
@@ -39,8 +33,8 @@ export type AgentProductMeta = {
     | "run_link"
     | "progress"
     | "plan_progress"
-    | "work_run"
-    | "defects";
+    | "defects"
+    | "work_block";
   phase?: string;
   gate?: "plan" | "publication";
   runId?: string;
@@ -51,14 +45,11 @@ export type AgentProductMeta = {
   label?: string;
   parentId?: string;
   receiptPath?: string;
-  /** Full-ish subagent output for click-to-preview. */
   detail?: string;
   task?: string;
   defectCount?: number;
   clean?: boolean;
   round?: number;
-  /** Aggregated Work surface agents (one chip per run). */
-  agents?: WorkAgentChip[];
 };
 
 /**
@@ -127,7 +118,6 @@ export type ProductSseLike = {
     | "run_link"
     | "progress"
     | "plan_progress"
-    | "work_run"
     | "defects"
     | "work_unit";
   phase?: string;
@@ -148,7 +138,6 @@ export type ProductSseLike = {
   clean?: boolean;
   defectCount?: number;
   summary?: string;
-  agents?: WorkAgentChip[];
   /** work_unit fields */
   unitId?: string;
   role?: string;

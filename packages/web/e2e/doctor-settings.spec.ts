@@ -36,12 +36,16 @@ test.describe("doctor / global settings", () => {
     await expect(page.getByTestId("settings-status")).toContainText(/model added/i, {
       timeout: 10_000,
     });
-    await expect(page.getByTestId("models-table")).toContainText(name);
-    await expect(page.getByTestId("models-table")).toContainText("openai/e2e-probe-model");
+    // Models render under providers-list / model-row (flat models-table is fallback only).
+    const modelRow = page.getByTestId("model-row").filter({ hasText: name });
+    await expect(modelRow).toBeVisible({ timeout: 10_000 });
+    await expect(modelRow).toContainText("openai/e2e-probe-model");
 
     await page.reload();
-    await expect(page.getByTestId("models-table")).toContainText(name);
-    await expect(page.getByTestId("models-table")).toContainText("responses");
+    await expect(
+      page.getByTestId("model-row").filter({ hasText: name }),
+    ).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByTestId("provider-panel")).toContainText(/responses/i);
   });
 
   test("sidebar can collapse and expand", async ({ page }) => {

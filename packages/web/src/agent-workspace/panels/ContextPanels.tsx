@@ -1,7 +1,6 @@
 /**
- * Right-pane context: Plan (read-only) | Agents tree | Run status.
- * HITL actions live only on the Transcript (ADR 0026 / 0030).
- * Full Sources / Wiki / Run editors stay on secondary routes.
+ * Right-pane context: Plan | Agents tree (nav) | Run status.
+ * HITL actions live only on the Transcript. Nav to Sources/Wiki/Settings is Subnav.
  */
 
 import { Link } from "react-router-dom";
@@ -34,15 +33,10 @@ export type ContextPanelsProps = {
   linkedRunId?: string | null;
   phase?: string | null;
   recentRuns?: StoredRunRecord[];
-  /** Transcript messages — used to build live unit tree. */
   messages?: AgentMessage[];
   units?: WorkUnits;
-  onOpenAgent?: (input: {
-    agentId: string;
-    role?: string;
-    task?: string;
-    detail?: string;
-  }) => void;
+  selectedUnitId?: string | null;
+  onSelectUnit?: (unitId: string) => void;
   className?: string;
 };
 
@@ -64,36 +58,19 @@ function EmptyHint({ text }: { text: string }) {
   return <p className="text-xs text-muted-foreground">{text}</p>;
 }
 
-function OpenFullLink({ to, label }: { to: string; label: string }) {
-  return (
-    <Link
-      to={to}
-      className={cn(
-        buttonVariants({ size: "xs", variant: "ghost" }),
-        "no-underline",
-      )}
-    >
-      <ExternalLinkIcon data-icon="inline-start" />
-      {label}
-    </Link>
-  );
-}
-
 export function ContextPanels({
   workspaceId,
   rootPath,
-  workspace,
   plan = null,
   linkedRunId = null,
   phase = null,
   recentRuns = [],
-  messages = [],
   units = {},
-  onOpenAgent,
+  selectedUnitId = null,
+  onSelectUnit,
   className,
 }: ContextPanelsProps) {
   const { t } = useI18n();
-  const sourceCount = workspace?.sources.length ?? 0;
 
   return (
     <div
@@ -123,7 +100,7 @@ export function ContextPanels({
           className="mt-0 flex min-h-0 flex-1 flex-col data-hidden:hidden"
         >
           <PanelShell>
-            <span className="text-xs font-semibold tracking-wide uppercase">
+            <span className="text-xs font-medium">
               {t.agentWorkspace.panelPlan}
             </span>
             {!plan ? (
@@ -138,8 +115,8 @@ export function ContextPanels({
                 ((plan as { domains: Array<{ id: string; title?: string; scope?: string }> })
                   .domains?.length ?? 0) > 0 ? (
                   <div className="flex flex-col gap-1">
-                    <span className="text-[10px] font-semibold tracking-wide text-muted-foreground uppercase">
-                      Domains
+                    <span className="text-[11px] font-medium text-muted-foreground">
+                      {t.agentWorkspace.domains}
                     </span>
                     <ul className="flex flex-col gap-1">
                       {(
@@ -153,7 +130,7 @@ export function ContextPanels({
                       ).domains.map((d) => (
                         <li
                           key={d.id}
-                          className="rounded border border-border/70 px-2 py-1 text-[11px]"
+                          className="rounded border border-border/60 px-2 py-1 text-[11px]"
                         >
                           <span className="font-mono font-medium">{d.id}</span>
                           {d.title ? (
@@ -181,7 +158,7 @@ export function ContextPanels({
                   {(plan.pages ?? []).map((page) => (
                     <li
                       key={page.path}
-                      className="rounded border border-border/70 px-2 py-1 font-mono text-[11px]"
+                      className="rounded border border-border/60 px-2 py-1 font-mono text-[11px]"
                     >
                       {page.path}
                       {page.purpose ? (
@@ -194,7 +171,7 @@ export function ContextPanels({
                 </ul>
               </div>
             )}
-            <EmptyHint text={t.agentWorkspace.planActionsHint} />
+            <EmptyHint text={t.agentWorkspace.planJumpToGate} />
           </PanelShell>
         </TabsContent>
 
@@ -204,12 +181,10 @@ export function ContextPanels({
         >
           <PanelShell>
             <AgentTree
-              workspaceId={workspaceId}
-              rootPath={rootPath}
-              runId={linkedRunId}
-              messages={messages}
               units={units}
-              onOpenAgent={onOpenAgent}
+              selectedUnitId={selectedUnitId}
+              onSelectUnit={onSelectUnit}
+              hasRun={Boolean(linkedRunId)}
             />
           </PanelShell>
         </TabsContent>
@@ -220,13 +195,19 @@ export function ContextPanels({
         >
           <PanelShell>
             <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-semibold tracking-wide uppercase">
+              <span className="text-xs font-medium">
                 {t.agentWorkspace.panelRun}
               </span>
-              <OpenFullLink
+              <Link
                 to={workspaceHref(workspaceId, "/run", rootPath)}
-                label={t.agentWorkspace.openFull}
-              />
+                className={cn(
+                  buttonVariants({ size: "xs", variant: "ghost" }),
+                  "no-underline",
+                )}
+              >
+                <ExternalLinkIcon data-icon="inline-start" />
+                {t.agentWorkspace.openFull}
+              </Link>
             </div>
             <dl className="grid gap-2 text-xs">
               <div>
@@ -240,7 +221,13 @@ export function ContextPanels({
                   {t.agentWorkspace.phase}
                 </dt>
                 <dd className="mt-0.5">
-                  <Badge variant="secondary">{phase ?? "idle"}</Badge>
+                  <Badge variant="secondary">
+                    {phase
+                      ? (t.agentWorkspace.phases[
+                          phase as keyof typeof t.agentWorkspace.phases
+                        ] ?? phase)
+                      : "idle"}
+                  </Badge>
                 </dd>
               </div>
             </dl>
@@ -251,7 +238,7 @@ export function ContextPanels({
                 {recentRuns.slice(0, 8).map((run) => (
                   <li
                     key={run.runId}
-                    className="flex items-center justify-between gap-2 rounded border border-border/70 px-2 py-1 text-[11px]"
+                    className="flex items-center justify-between gap-2 rounded border border-border/60 px-2 py-1 text-[11px]"
                   >
                     <span className="truncate font-mono">{run.runId}</span>
                     <Badge variant="outline">{run.status}</Badge>
@@ -262,21 +249,6 @@ export function ContextPanels({
           </PanelShell>
         </TabsContent>
       </Tabs>
-
-      <div className="flex shrink-0 flex-wrap items-center gap-1 border-t border-border px-2 py-1.5">
-        <OpenFullLink
-          to={workspaceHref(workspaceId, "/sources", rootPath)}
-          label={`${t.agentWorkspace.panelSources}${sourceCount ? ` (${sourceCount})` : ""}`}
-        />
-        <OpenFullLink
-          to={workspaceHref(workspaceId, "/wiki", rootPath)}
-          label={t.agentWorkspace.panelWiki}
-        />
-        <OpenFullLink
-          to={workspaceHref(workspaceId, "/settings", rootPath)}
-          label={t.agentWorkspace.workspaceSettings}
-        />
-      </div>
     </div>
   );
 }

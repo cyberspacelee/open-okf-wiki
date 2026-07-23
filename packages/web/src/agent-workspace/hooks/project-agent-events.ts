@@ -1,14 +1,10 @@
 /**
- * Pure projection of Operator Session → transcript + Work surface.
+ * Pure projection of Operator Session → transcript + work units fold.
  *
- * ADR 0031 Wave 3:
+ * ADR 0031:
  * - Parent Pi events → main timeline (applyPiEvent)
- * - Product whitelist (incl. work_unit) → cards + units fold cache
+ * - Product whitelist → cards + work_block anchors; work_unit → units fold only
  * - WorkUnits is a fold cache only (last-by-unitId), not durability authority
- * - No dual-path child streams or span body channels (ADR 0031)
- *
- * Implementation is split under `./project/` for maintainability.
- * This module re-exports the public API so existing imports keep working.
  */
 
 export type {
@@ -20,7 +16,6 @@ export type {
   ProductSseLike,
   StreamCursor,
   StreamingRefs,
-  WorkAgentChip,
   WorkUnitEventLike,
   WorkUnits,
   WorkUnitView,
@@ -42,6 +37,8 @@ export {
 
 export {
   applyWorkUnit,
+  unitRecentActivity,
+  workBlockProgress,
   workUnitHasBody,
   workUnitsFromList,
   workUnitToolsToAgentTools,
@@ -51,11 +48,13 @@ export { applyPiEvent } from "./project/pi.ts";
 
 export {
   applyProductEvent,
+  ensureWorkBlockAnchors,
+  findWorkBlockIndex,
   isTerminalOrWaitingPhase,
   lastAssistantIsError,
   productCardContent,
   productMeta,
-  upsertWorkAgentChip,
-  findWorkRunIndex,
-  mergeWorkUnitsIntoTimeline,
+  unitsForRun,
 } from "./project/product.ts";
+
+export { formatProductCardContent } from "./project/product-copy.ts";

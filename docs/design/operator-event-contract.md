@@ -97,6 +97,13 @@ Cold load: `project(Pi history) + project(trajectory fold)`. Ring buffer is catc
 In-process child `AgentSession`s remain allowed as **implementation**.  
 Operator contract: expandable **parent-visible `work_unit`** on the session trajectory; not a second peer chat timeline as truth.
 
+## Web projection (UI cut)
+
+- `work_unit` fold (`WorkUnits` last-by-unitId) is the **only** body authority for produce units.
+- Timeline shows a thin **work_block** anchor per `runId` (client-derived, not an SSE inject kind) and renders unit rows from the fold.
+- Agents tree is **navigation only** (select → expand timeline row). No second drawer body host.
+- Empty running units show **waiting for events**, never model “thinking” without thinking content.
+
 ## Wipe
 
 Old `.okf-wiki/sessions/*.json` (UIMessage) and Mastra stores remain non-migrated.  

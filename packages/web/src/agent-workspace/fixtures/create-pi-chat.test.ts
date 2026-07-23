@@ -29,7 +29,7 @@ describe("createPiChat fixtures", () => {
     assert.equal(messages[0]!.status, "done");
   });
 
-  it("projects product failed phase", () => {
+  it("projects product failed phase with work_block anchor", () => {
     const messages = createPiChat()
       .product({
         kind: "run_phase",
@@ -39,9 +39,13 @@ describe("createPiChat fixtures", () => {
         message: "freeze failed: dirty worktree",
       })
       .project();
-    assert.equal(messages.length, 1);
-    assert.equal(messages[0]!.product?.kind, "run_phase");
-    assert.match(messages[0]!.content, /failed/);
+    // run_phase with runId also ensures a work_block anchor for that run.
+    assert.equal(messages.length, 2);
+    assert.ok(messages.some((m) => m.product?.kind === "work_block"));
+    const phase = messages.find((m) => m.product?.kind === "run_phase");
+    assert.ok(phase);
+    assert.equal(phase!.product?.phase, "failed");
+    assert.match(phase!.product?.label ?? "", /freeze failed/);
   });
 });
 

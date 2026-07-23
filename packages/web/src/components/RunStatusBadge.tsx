@@ -28,11 +28,12 @@ export function RunStatusBadge({ status, className, ...rest }: Props) {
     <Badge
       variant={variant}
       className={cn(
-        tone === "running" && "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300",
+        tone === "running" &&
+          "border-info/40 bg-info/10 text-info",
         tone === "success" &&
-          "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+          "border-success/40 bg-success/10 text-success",
         tone === "warning" &&
-          "border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-300",
+          "border-warning/40 bg-warning/10 text-warning",
         tone === "muted" && "text-muted-foreground",
         className,
       )}

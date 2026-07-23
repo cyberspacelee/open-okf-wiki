@@ -148,3 +148,71 @@ export function workUnitsFromList(
   }
   return units;
 }
+
+function clipLine(text: string, max = 56): string {
+  const one = text.replace(/\s+/g, " ").trim();
+  if (one.length <= max) return one;
+  return `${one.slice(0, Math.max(0, max - 1))}…`;
+}
+
+/**
+ * One-line progress for collapsed unit rows (Pi subagent pattern).
+ * Main timeline tracks subagent work without expanding every unit.
+ */
+export function unitRecentActivity(unit: WorkUnitView | null | undefined): string | undefined {
+  if (!unit) return undefined;
+
+  const tools = unit.tools;
+  if (tools && tools.length > 0) {
+    const last = tools[tools.length - 1]!;
+    const name = last.toolName?.trim() || "tool";
+    if (last.state === "output-error") return `${name} ✗`;
+    if (last.state === "output-available") return `${name} ✓`;
+    return `${name}…`;
+  }
+
+  if (unit.summary?.trim() && (unit.status === "settled" || unit.status === "failed")) {
+    return clipLine(unit.summary);
+  }
+
+  if (unit.message?.text?.trim()) {
+    return clipLine(unit.message.text);
+  }
+
+  if (unit.message?.thinking?.trim()) {
+    return clipLine(unit.message.thinking);
+  }
+
+  if (unit.error?.trim()) {
+    return clipLine(unit.error);
+  }
+
+  return undefined;
+}
+
+/** Aggregate counts for a Work block header (main agent progress strip). */
+export function workBlockProgress(units: readonly WorkUnitView[]): {
+  total: number;
+  running: number;
+  settled: number;
+  failed: number;
+  pending: number;
+} {
+  let running = 0;
+  let settled = 0;
+  let failed = 0;
+  let pending = 0;
+  for (const u of units) {
+    if (u.status === "running") running += 1;
+    else if (u.status === "settled") settled += 1;
+    else if (u.status === "failed") failed += 1;
+    else pending += 1;
+  }
+  return {
+    total: units.length,
+    running,
+    settled,
+    failed,
+    pending,
+  };
+}

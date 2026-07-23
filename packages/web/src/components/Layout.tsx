@@ -4,6 +4,7 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar";
+import { cn } from "@/lib/utils";
 import { useI18n } from "../i18n";
 import { AppSidebar } from "./app-sidebar";
 
@@ -26,7 +27,14 @@ function writeOpen(open: boolean) {
   }
 }
 
-export function Layout({ children }: { children: ReactNode }) {
+export function Layout({
+  children,
+  immersive = false,
+}: {
+  children: ReactNode;
+  /** Agent workspace: no outer page padding; full-height flex chain. */
+  immersive?: boolean;
+}) {
   const { t } = useI18n();
   const [open, setOpen] = useState(readOpen);
 
@@ -43,17 +51,18 @@ export function Layout({ children }: { children: ReactNode }) {
     >
       <AppSidebar />
       <SidebarInset className="min-h-0 overflow-hidden">
-        {/* Mobile: open the offcanvas Sheet (desktop uses icon collapse + footer toggle). */}
         <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4 md:hidden">
           <SidebarTrigger />
           <span className="text-sm font-medium tracking-tight">{t.app.brand}</span>
         </header>
-        {/*
-          Viewport-height flex chain: Provider h-svh → Inset min-h-0 flex-1 →
-          this scrollport. Session compact mode uses flex-1 min-h-0 to fill;
-          other pages grow and scroll here.
-        */}
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-5 overflow-y-auto p-4 md:p-6 lg:p-8">
+        <div
+          className={cn(
+            "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
+            immersive
+              ? "gap-0 p-0"
+              : "gap-5 overflow-y-auto p-4 md:p-6 lg:p-8",
+          )}
+        >
           {children}
         </div>
       </SidebarInset>

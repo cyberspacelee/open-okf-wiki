@@ -1,8 +1,8 @@
 /**
- * Agent Workspace 3-pane shell (ADR 0030).
+ * Agent Workspace 3-pane shell (ADR 0030 / 0031 UI cut).
  *
  * left: session list · center: transcript + composer · right: context panels
- * Page-level Subnav owns workspace chrome; this shell only toggles panes on mobile.
+ * Work unit body lives only on the timeline Work block (expand).
  */
 
 import { useState } from "react";
@@ -28,7 +28,6 @@ import type {
   PendingGate,
   ResumeGateInput,
   WorkUnits,
-  WorkUnitView,
 } from "./hooks/useSessionAgent";
 import type {
   ModelProfilePublic,
@@ -37,7 +36,6 @@ import type {
   WikiRunPlan,
   WorkspaceConfig,
 } from "../api";
-import { AgentFocusDrawer } from "./panels/AgentFocusDrawer";
 
 export type AgentWorkspaceShellProps = {
   workspaceId: string;
@@ -62,22 +60,18 @@ export type AgentWorkspaceShellProps = {
   plan?: WikiRunPlan | null;
   linkedRunId?: string | null;
   phase?: string | null;
-  /** HITL only on Transcript — still needed for gate cards there. */
   pendingGate?: PendingGate | null;
   gateBusy?: boolean;
   onResumeGate?: (input: ResumeGateInput) => void | Promise<void>;
   recentRuns?: StoredRunRecord[];
   className?: string;
-  /** Settings model catalog for wiki-run picker. */
   models?: ModelProfilePublic[];
   wikiModelProfileId?: string;
   onWikiModelProfileIdChange?: (profileId: string) => void;
   defaultModelProfileId?: string;
-  /** Produce work units fold cache (Work surface). */
   units?: WorkUnits;
-  focusAgentId?: string | null;
-  onFocusAgentIdChange?: (agentId: string | null) => void;
-  focusedUnit?: WorkUnitView | null;
+  expandedUnitId?: string | null;
+  onExpandedUnitIdChange?: (unitId: string | null) => void;
 };
 
 export function AgentWorkspaceShell({
@@ -113,19 +107,13 @@ export function AgentWorkspaceShell({
   onWikiModelProfileIdChange,
   defaultModelProfileId,
   units = {},
-  focusAgentId = null,
-  onFocusAgentIdChange,
-  focusedUnit = null,
+  expandedUnitId = null,
+  onExpandedUnitIdChange,
 }: AgentWorkspaceShellProps) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
   const [leftOpen, setLeftOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
-  const [focusMeta, setFocusMeta] = useState<{
-    role?: string;
-    task?: string;
-    detail?: string;
-  }>({});
 
   const sessionList = (
     <SessionList
@@ -142,20 +130,6 @@ export function AgentWorkspaceShell({
     />
   );
 
-  const openAgent = (input: {
-    agentId: string;
-    role?: string;
-    task?: string;
-    detail?: string;
-  }) => {
-    setFocusMeta({
-      role: input.role,
-      task: input.task,
-      detail: input.detail,
-    });
-    onFocusAgentIdChange?.(input.agentId);
-  };
-
   const contextPanels = (
     <ContextPanels
       workspaceId={workspaceId}
@@ -167,7 +141,11 @@ export function AgentWorkspaceShell({
       phase={phase}
       recentRuns={recentRuns}
       units={units}
-      onOpenAgent={openAgent}
+      selectedUnitId={expandedUnitId}
+      onSelectUnit={(unitId) => {
+        onExpandedUnitIdChange?.(unitId);
+        setRightOpen(false);
+      }}
     />
   );
 
@@ -175,11 +153,10 @@ export function AgentWorkspaceShell({
     <div
       data-testid="agent-workspace-shell"
       className={cn(
-        "flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border bg-background",
+        "flex min-h-0 flex-1 flex-col overflow-hidden bg-background",
         className,
       )}
     >
-      {/* Mobile-only pane toggles — desktop chrome lives in page Subnav. */}
       {isMobile ? (
         <header className="flex shrink-0 items-center gap-2 border-b border-border px-2 py-1">
           <Button
@@ -214,7 +191,7 @@ export function AgentWorkspaceShell({
 
       <div className="flex min-h-0 flex-1">
         {!isMobile ? (
-          <aside className="flex w-56 shrink-0 flex-col border-r border-border md:w-60">
+          <aside className="flex w-52 shrink-0 flex-col border-r border-border md:w-56">
             {sessionList}
           </aside>
         ) : null}
@@ -225,10 +202,11 @@ export function AgentWorkspaceShell({
             pendingGate={pendingGate}
             gateBusy={gateBusy}
             onResumeGate={onResumeGate}
-            workspaceId={workspaceId}
-            rootPath={rootPath}
             units={units}
-            onOpenAgent={openAgent}
+            phase={phase}
+            expandedUnitId={expandedUnitId}
+            onExpandedUnitIdChange={onExpandedUnitIdChange}
+            onStartWikiRun={onStartWikiRun}
           />
           <Composer
             input={input}
@@ -246,7 +224,7 @@ export function AgentWorkspaceShell({
         </main>
 
         {!isMobile ? (
-          <aside className="flex w-64 shrink-0 flex-col border-l border-border lg:w-72">
+          <aside className="flex w-60 shrink-0 flex-col border-l border-border lg:w-64">
             {contextPanels}
           </aside>
         ) : null}
@@ -272,18 +250,6 @@ export function AgentWorkspaceShell({
           </Sheet>
         </>
       ) : null}
-
-      <AgentFocusDrawer
-        open={Boolean(focusAgentId)}
-        onOpenChange={(open) => {
-          if (!open) onFocusAgentIdChange?.(null);
-        }}
-        unitId={focusAgentId}
-        role={focusMeta.role ?? focusedUnit?.role}
-        task={focusMeta.task ?? focusedUnit?.task}
-        unit={focusedUnit}
-        fallbackDetail={focusMeta.detail}
-      />
     </div>
   );
 }

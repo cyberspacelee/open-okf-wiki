@@ -30,8 +30,8 @@ import {
   applyPiEvent,
   applyProductEvent,
   applyWorkUnit,
+  ensureWorkBlockAnchors,
   isTerminalOrWaitingPhase,
-  mergeWorkUnitsIntoTimeline,
   workUnitsFromList,
   type AgentMessage,
   type ProductSseLike,
@@ -106,15 +106,15 @@ export type UseSessionAgentResult = {
   /** True while a resume_gate command is in flight. */
   gateBusy: boolean;
   /**
-   * Produce work units (planner / leaf / …) fold cache for the Work surface.
-   * Not rendered as peer bubbles on the main chat timeline.
+   * Produce work units fold cache (last-by-unitId).
+   * Body authority for Work block rows on the timeline.
    */
   units: WorkUnits;
-  /** Focused produce unit id (opens Work drawer). */
-  focusAgentId: string | null;
-  setFocusAgentId: (agentId: string | null) => void;
-  /** Convenience: unit for the focused id, if any. */
-  focusedUnit: WorkUnitView | null;
+  /** Expanded unit id (timeline expand + tree nav scroll target). */
+  expandedUnitId: string | null;
+  setExpandedUnitId: (unitId: string | null) => void;
+  /** Convenience: unit for the expanded id, if any. */
+  expandedUnit: WorkUnitView | null;
 };
 
 const RECONNECT_MS = 1500;
@@ -218,7 +218,7 @@ export function useSessionAgent({
   const [pendingGate, setPendingGate] = useState<PendingGate | null>(null);
   const [gateBusy, setGateBusy] = useState(false);
   const [units, setUnits] = useState<WorkUnits>({});
-  const [focusAgentId, setFocusAgentId] = useState<string | null>(null);
+  const [expandedUnitId, setExpandedUnitId] = useState<string | null>(null);
 
   const sendInFlight = useRef(false);
   const planRef = useRef<WikiRunPlan | null>(null);
@@ -375,7 +375,7 @@ export function useSessionAgent({
     setPendingGate(null);
     setGateBusy(false);
     setUnits({});
-    setFocusAgentId(null);
+    setExpandedUnitId(null);
     sendInFlight.current = false;
     lastSequenceRef.current = -1;
     streamRefs.current = {
@@ -407,12 +407,22 @@ export function useSessionAgent({
       if (streamGenRef.current !== gen || !eventsUrl) return;
       if (typeof EventSource === "undefined") return;
 
-      // Bootstrap: skip parent-chat Pi frames that would double history, but
-      // still apply product injects (work_unit / phase / gate) from the ring.
-      // Reconnect: apply buffer; sequence filter drops already-seen frames.
-      let skipChatPiUntilHello = mode === "bootstrap";
+      // Bootstrap: skip parent-chat Pi frames that would double JSONL history.
+      // Reconnect: prefer sequence filter; if lastSequence was never seeded
+      // (empty bus at first connect) treat the ring dump like bootstrap so we
+      // do not re-project a completed turn on top of hist_* rows.
+      let skipChatPiUntilHello =
+        mode === "bootstrap" ||
+        (mode === "reconnect" && lastSequenceRef.current < 0);
 
-      const es = new EventSource(eventsUrl);
+      // Ask the server to omit already-seen bus frames when possible.
+      const after = lastSequenceRef.current;
+      const streamUrl =
+        after >= 0
+          ? `${eventsUrl}${eventsUrl.includes("?") ? "&" : "?"}afterSequence=${after}`
+          : eventsUrl;
+
+      const es = new EventSource(streamUrl);
       esRef.current = es;
 
       es.onmessage = (msg) => {
@@ -527,9 +537,8 @@ export function useSessionAgent({
         );
         setUnits(coldUnits);
 
-        // Project product trajectory for cards (work_run / phase / gate / …).
-        // Always merge cold units afterwards so every unit appears on the Work
-        // chip and Agents tree after refresh / re-entry.
+        // Project product trajectory for phase/gate/… strips + work_block anchors.
+        // Unit bodies live in coldUnits fold only (not timeline chips).
         if (Array.isArray(trajectory) && trajectory.length > 0) {
           for (const row of trajectory) {
             if (!isRecord(row) || typeof row.kind !== "string") continue;
@@ -537,7 +546,7 @@ export function useSessionAgent({
           }
         }
         if (Object.keys(coldUnits).length > 0) {
-          timeline = mergeWorkUnitsIntoTimeline(timeline, coldUnits);
+          timeline = ensureWorkBlockAnchors(timeline, coldUnits);
         }
         if (
           snap.product?.phase &&
@@ -793,10 +802,10 @@ export function useSessionAgent({
 
   const clearError = useCallback(() => setError(null), []);
 
-  const focusedUnit = useMemo(() => {
-    if (!focusAgentId) return null;
-    return units[focusAgentId] ?? null;
-  }, [focusAgentId, units]);
+  const expandedUnit = useMemo(() => {
+    if (!expandedUnitId) return null;
+    return units[expandedUnitId] ?? null;
+  }, [expandedUnitId, units]);
 
   return {
     messages,
@@ -817,8 +826,8 @@ export function useSessionAgent({
     pendingGate,
     gateBusy,
     units,
-    focusAgentId,
-    setFocusAgentId,
-    focusedUnit,
+    expandedUnitId,
+    setExpandedUnitId,
+    expandedUnit,
   };
 }

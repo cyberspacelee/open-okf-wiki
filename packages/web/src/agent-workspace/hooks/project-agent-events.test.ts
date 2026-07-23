@@ -14,14 +14,21 @@ import {
   formatPayloadText,
   formatToolDisplay,
   formatToolResultText,
+  ensureWorkBlockAnchors,
+  formatProductCardContent,
   isTerminalOrWaitingPhase,
-  mergeWorkUnitsIntoTimeline,
+  unitRecentActivity,
+  unitsForRun,
+  workBlockProgress,
   workUnitHasBody,
   workUnitsFromList,
   type AgentMessage,
   type StreamingRefs,
   type WorkUnits,
+  type WorkUnitView,
 } from "./project-agent-events.ts";
+import { en } from "../../i18n/en.ts";
+import { zh } from "../../i18n/zh.ts";
 
 function refs(): StreamingRefs {
   return {
@@ -38,8 +45,9 @@ function assistantCount(messages: AgentMessage[]): number {
 function applyAll(
   events: Array<{ kind: string; payload?: unknown }>,
   r: StreamingRefs = refs(),
+  seed: AgentMessage[] = [],
 ): AgentMessage[] {
-  let messages: AgentMessage[] = [];
+  let messages: AgentMessage[] = seed.slice();
   for (const e of events) {
     messages = applyPiEvent(messages, e.kind, e.payload, r);
   }
@@ -226,74 +234,95 @@ describe("applyPiEvent — single turn with tools", () => {
   });
 
   it("opens a new assistant card on the next turn after agent_end", () => {
-    const messages = applyAll([
-      { kind: "agent_start" },
-      {
-        kind: "message_start",
-        payload: {
-          type: "message_start",
-          message: { role: "assistant", content: [] },
-        },
-      },
-      {
-        kind: "message_update",
-        payload: {
-          type: "message_update",
-          message: {
-            role: "assistant",
-            content: [{ type: "text", text: "first" }],
-          },
-          assistantMessageEvent: { type: "text_delta", delta: "first" },
-        },
-      },
-      {
-        kind: "message_end",
-        payload: {
-          type: "message_end",
-          message: {
-            role: "assistant",
-            content: [{ type: "text", text: "first" }],
-            stopReason: "stop",
+    // Production always has a user row between turns (optimistic send).
+    const r = refs();
+    let messages = applyAll(
+      [
+        { kind: "agent_start" },
+        {
+          kind: "message_start",
+          payload: {
+            type: "message_start",
+            message: { role: "assistant", content: [] },
           },
         },
-      },
-      { kind: "agent_end", payload: { type: "agent_end", messages: [] } },
-      { kind: "agent_start" },
-      {
-        kind: "message_start",
-        payload: {
-          type: "message_start",
-          message: { role: "assistant", content: [] },
-        },
-      },
-      {
-        kind: "message_update",
-        payload: {
-          type: "message_update",
-          message: {
-            role: "assistant",
-            content: [{ type: "text", text: "second" }],
-          },
-          assistantMessageEvent: { type: "text_delta", delta: "second" },
-        },
-      },
-      {
-        kind: "message_end",
-        payload: {
-          type: "message_end",
-          message: {
-            role: "assistant",
-            content: [{ type: "text", text: "second" }],
-            stopReason: "stop",
+        {
+          kind: "message_update",
+          payload: {
+            type: "message_update",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "first" }],
+            },
+            assistantMessageEvent: { type: "text_delta", delta: "first" },
           },
         },
+        {
+          kind: "message_end",
+          payload: {
+            type: "message_end",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "first" }],
+              stopReason: "stop",
+            },
+          },
+        },
+        { kind: "agent_end", payload: { type: "agent_end", messages: [] } },
+      ],
+      r,
+    );
+    messages = [
+      ...messages,
+      {
+        id: "user_2",
+        role: "user",
+        content: "again",
+        createdAt: "2026-01-01T00:00:02.000Z",
       },
-      { kind: "agent_end", payload: { type: "agent_end", messages: [] } },
-    ]);
+    ];
+    messages = applyAll(
+      [
+        { kind: "agent_start" },
+        {
+          kind: "message_start",
+          payload: {
+            type: "message_start",
+            message: { role: "assistant", content: [] },
+          },
+        },
+        {
+          kind: "message_update",
+          payload: {
+            type: "message_update",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "second" }],
+            },
+            assistantMessageEvent: { type: "text_delta", delta: "second" },
+          },
+        },
+        {
+          kind: "message_end",
+          payload: {
+            type: "message_end",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "second" }],
+              stopReason: "stop",
+            },
+          },
+        },
+        { kind: "agent_end", payload: { type: "agent_end", messages: [] } },
+      ],
+      r,
+      messages,
+    );
 
     assert.equal(assistantCount(messages), 2);
-    assert.equal(messages[0]!.content, "first");
-    assert.equal(messages[1]!.content, "second");
+    const assts = messages.filter((m) => m.role === "assistant");
+    assert.equal(assts[0]!.content, "first");
+    assert.equal(assts[1]!.content, "second");
   });
 
   it("streams text_delta into a single assistant bubble", () => {
@@ -576,6 +605,139 @@ describe("applyPiEvent — single turn with tools", () => {
     assert.equal(messages[0]!.status, "done");
   });
 
+  it("does not open a peer assistant when replaying a turn on top of cold history", () => {
+    // Cold JSONL already has the completed turn (hist_*), then the SSE ring
+    // re-sends agent_start → message_start → … → message_end for the same turn.
+    const r = refs();
+    let messages: AgentMessage[] = [
+      {
+        id: "hist_0",
+        role: "user",
+        content: "hi hi",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        id: "hist_1",
+        role: "assistant",
+        content: "Hi! What can I help you with?",
+        thinking: "casual greeting",
+        createdAt: "2026-01-01T00:00:01.000Z",
+        status: "done",
+      },
+    ];
+    messages = applyAll(
+      [
+        { kind: "agent_start", payload: { type: "agent_start" } },
+        {
+          kind: "message_start",
+          payload: {
+            type: "message_start",
+            message: { role: "assistant", content: [] },
+          },
+        },
+        {
+          kind: "message_update",
+          payload: {
+            type: "message_update",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "Hi! What can I help you with?" }],
+            },
+            assistantMessageEvent: {
+              type: "text_delta",
+              delta: "Hi! What can I help you with?",
+            },
+          },
+        },
+        {
+          kind: "message_end",
+          payload: {
+            type: "message_end",
+            message: {
+              role: "assistant",
+              content: [
+                { type: "text", text: "Hi! What can I help you with?" },
+              ],
+              stopReason: "stop",
+            },
+          },
+        },
+        { kind: "agent_end", payload: { type: "agent_end", messages: [] } },
+      ],
+      r,
+      messages,
+    );
+    assert.equal(assistantCount(messages), 1);
+    assert.equal(messages.find((m) => m.role === "assistant")?.id, "hist_1");
+    assert.equal(
+      messages.find((m) => m.role === "assistant")?.content,
+      "Hi! What can I help you with?",
+    );
+  });
+
+  it("still opens a new assistant after a new user turn (multi-turn)", () => {
+    const r = refs();
+    let messages: AgentMessage[] = [
+      {
+        id: "hist_0",
+        role: "user",
+        content: "hi",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        id: "hist_1",
+        role: "assistant",
+        content: "Hello!",
+        createdAt: "2026-01-01T00:00:01.000Z",
+        status: "done",
+      },
+      {
+        id: "user_opt",
+        role: "user",
+        content: "next",
+        createdAt: "2026-01-01T00:00:02.000Z",
+      },
+    ];
+    messages = applyAll(
+      [
+        { kind: "agent_start", payload: { type: "agent_start" } },
+        {
+          kind: "message_start",
+          payload: {
+            type: "message_start",
+            message: { role: "assistant", content: [] },
+          },
+        },
+        {
+          kind: "message_update",
+          payload: {
+            type: "message_update",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "Sure." }],
+            },
+            assistantMessageEvent: { type: "text_delta", delta: "Sure." },
+          },
+        },
+        {
+          kind: "message_end",
+          payload: {
+            type: "message_end",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "Sure." }],
+              stopReason: "stop",
+            },
+          },
+        },
+      ],
+      r,
+      messages,
+    );
+    assert.equal(assistantCount(messages), 2);
+    assert.equal(messages.filter((m) => m.role === "assistant")[1]?.content, "Sure.");
+  });
+
   it("is idempotent on duplicate message_end (no second thinking/answer card)", () => {
     const finalPayload = {
       type: "message_end",
@@ -742,9 +904,14 @@ describe("applyProductEvent", () => {
     });
 
     const phaseCards = messages.filter((m) => m.product?.kind === "run_phase");
+    // work_block anchor + single upserted phase card
     assert.equal(phaseCards.length, 1);
     assert.equal(phaseCards[0]!.product?.phase, "awaiting_publish");
-    assert.match(phaseCards[0]!.content, /publish approval|awaiting_publish/i);
+    assert.equal(phaseCards[0]!.product?.status, "awaiting_publication");
+    assert.ok(
+      messages.some((m) => m.product?.kind === "work_block"),
+      "run_phase with runId should open a work_block anchor",
+    );
   });
 
   it("upserts consecutive gate cards of the same kind", () => {
@@ -766,6 +933,72 @@ describe("applyProductEvent", () => {
     const gates = messages.filter((m) => m.product?.kind === "gate");
     assert.equal(gates.length, 1);
     assert.equal(gates[0]!.product?.pages?.length, 2);
+  });
+
+  it("skips idle agent-session-created bootstrap strip", () => {
+    let messages: AgentMessage[] = [];
+    messages = applyProductEvent(messages, {
+      kind: "run_phase",
+      phase: "idle",
+      message: "agent session created",
+    });
+    assert.equal(messages.length, 0);
+    messages = applyProductEvent(messages, {
+      kind: "run_phase",
+      phase: "planning",
+      runId: "run-1",
+      message: "planning",
+    });
+    assert.equal(
+      messages.filter((m) => m.product?.kind === "run_phase").length,
+      1,
+    );
+  });
+
+  it("upserts run_link and progress strips (no scroller spam)", () => {
+    let messages: AgentMessage[] = [];
+    messages = applyProductEvent(messages, {
+      kind: "run_link",
+      runId: "run-1",
+      status: "running",
+    });
+    messages = applyProductEvent(messages, {
+      kind: "run_link",
+      runId: "run-1",
+      status: "running",
+    });
+    messages = applyProductEvent(messages, {
+      kind: "run_link",
+      runId: "run-1",
+      status: "cancelled",
+    });
+    messages = applyProductEvent(messages, {
+      kind: "progress",
+      runId: "run-1",
+      phase: "planning",
+      label: "materialize",
+    });
+    messages = applyProductEvent(messages, {
+      kind: "progress",
+      runId: "run-1",
+      phase: "planning",
+      label: "materialize + analyze sources",
+    });
+    messages = applyProductEvent(messages, {
+      kind: "progress",
+      runId: "run-1",
+      phase: "writing",
+      label: "domain research",
+    });
+
+    const links = messages.filter((m) => m.product?.kind === "run_link");
+    assert.equal(links.length, 1);
+    assert.equal(links[0]!.product?.status, "cancelled");
+
+    const progress = messages.filter((m) => m.product?.kind === "progress");
+    assert.equal(progress.length, 1);
+    assert.equal(progress[0]!.product?.phase, "writing");
+    assert.equal(progress[0]!.product?.label, "domain research");
   });
 });
 
@@ -888,9 +1121,9 @@ describe("main timeline isolation", () => {
     );
     assert.equal(assistantCount(messages), 1);
     assert.equal(messages[0]!.content, "parent");
-    // No product work_run chip from Pi alone.
+    // No work_block from Pi alone.
     assert.equal(
-      messages.filter((m) => m.product?.kind === "work_run").length,
+      messages.filter((m) => m.product?.kind === "work_block").length,
       0,
     );
   });
@@ -986,10 +1219,110 @@ describe("formatToolDisplay", () => {
   });
 });
 
-describe("applyProductEvent — work_run chip from work_unit", () => {
-  it("folds multiple work_unit into one work_run card", () => {
+describe("formatProductCardContent i18n", () => {
+  it("localizes gate and failed phase for en and zh", () => {
+    const failed = formatProductCardContent(
+      {
+        kind: "run_phase",
+        phase: "failed",
+        label: "freeze failed: dirty worktree",
+      },
+      en.agentWorkspace,
+    );
+    assert.match(failed, /Failed|freeze failed/);
+
+    const failedZh = formatProductCardContent(
+      {
+        kind: "run_phase",
+        phase: "failed",
+        label: "freeze failed: dirty worktree",
+      },
+      zh.agentWorkspace,
+    );
+    assert.match(failedZh, /失败/);
+    assert.match(failedZh, /freeze failed/);
+
+    const gateEn = formatProductCardContent(
+      { kind: "gate", gate: "plan", pages: ["a.md", "b.md"] },
+      en.agentWorkspace,
+    );
+    assert.match(gateEn, /2 page/);
+
+    const gateZh = formatProductCardContent(
+      { kind: "gate", gate: "plan", pages: ["a.md", "b.md"] },
+      zh.agentWorkspace,
+    );
+    assert.match(gateZh, /2 个页面|计划已就绪/);
+  });
+});
+
+describe("unitRecentActivity + workBlockProgress (main tracks subagents)", () => {
+  it("prefers last tool name for live progress line", () => {
+    const unit: WorkUnitView = {
+      unitId: "leaf-1",
+      role: "leaf",
+      status: "running",
+      tools: [
+        {
+          toolCallId: "t1",
+          toolName: "read",
+          state: "output-available",
+        },
+        {
+          toolCallId: "t2",
+          toolName: "grep",
+          state: "input-available",
+        },
+      ],
+    };
+    assert.equal(unitRecentActivity(unit), "grep…");
+  });
+
+  it("falls back to summary when settled", () => {
+    const unit: WorkUnitView = {
+      unitId: "planner",
+      role: "planner",
+      status: "settled",
+      summary: "Planned 12 pages for the repo overview",
+    };
+    assert.match(unitRecentActivity(unit) ?? "", /Planned 12 pages/);
+  });
+
+  it("aggregates work block progress counts", () => {
+    const p = workBlockProgress([
+      { unitId: "a", role: "planner", status: "settled" },
+      { unitId: "b", role: "leaf", status: "running" },
+      { unitId: "c", role: "leaf", status: "pending" },
+      { unitId: "d", role: "reviewer", status: "failed" },
+    ]);
+    assert.deepEqual(p, {
+      total: 4,
+      running: 1,
+      settled: 1,
+      failed: 1,
+      pending: 1,
+    });
+  });
+});
+
+describe("applyProductEvent — work_block anchors + units fold", () => {
+  it("multiple work_unit for one run share one work_block anchor", () => {
     let messages: AgentMessage[] = [];
-    messages = applyProductEvent(messages, {
+    let units: WorkUnits = {};
+    const applyUnit = (ev: {
+      kind: "work_unit";
+      runId: string;
+      unitId: string;
+      role: string;
+      status: string;
+      task?: string;
+      parentId?: string;
+      summary?: string;
+    }) => {
+      messages = applyProductEvent(messages, ev);
+      units = applyWorkUnit(units, ev);
+    };
+    applyUnit({
       kind: "work_unit",
       runId: "run-1",
       unitId: "planner",
@@ -997,7 +1330,7 @@ describe("applyProductEvent — work_run chip from work_unit", () => {
       status: "running",
       task: "draft spec",
     });
-    messages = applyProductEvent(messages, {
+    applyUnit({
       kind: "work_unit",
       runId: "run-1",
       unitId: "leaf-d1-1",
@@ -1006,7 +1339,7 @@ describe("applyProductEvent — work_run chip from work_unit", () => {
       parentId: "domain-1",
       task: "q1",
     });
-    messages = applyProductEvent(messages, {
+    applyUnit({
       kind: "work_unit",
       runId: "run-1",
       unitId: "planner",
@@ -1014,71 +1347,68 @@ describe("applyProductEvent — work_run chip from work_unit", () => {
       status: "settled",
       summary: "done planning",
     });
-    const works = messages.filter((m) => m.product?.kind === "work_run");
-    assert.equal(works.length, 1);
-    assert.equal(works[0]!.product?.agents?.length, 2);
-    // First-seen order: planner then leaf (newest does not jump above history).
-    assert.deepEqual(
-      works[0]!.product?.agents?.map((a) => a.agentId),
-      ["planner", "leaf-d1-1"],
-    );
-    const planner = works[0]!.product?.agents?.find(
-      (a) => a.agentId === "planner",
-    );
-    assert.equal(planner?.status, "settled");
-    assert.equal(planner?.detail, "done planning");
-    // work_unit must not emit standalone product cards of kind work_unit.
+    const blocks = messages.filter((m) => m.product?.kind === "work_block");
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0]!.product?.runId, "run-1");
+    const list = unitsForRun(units, "run-1");
+    assert.equal(list.length, 2);
+    assert.equal(units.planner?.status, "settled");
+    assert.equal(units.planner?.summary, "done planning");
     assert.equal(
       messages.filter((m) => m.status === "work_unit").length,
       0,
     );
   });
 
-  it("late unit for an earlier run attaches to that run, not a new Work chip", () => {
+  it("two runs get two work_block anchors; units fold stays per runId", () => {
     let messages: AgentMessage[] = [];
-    messages = applyProductEvent(messages, {
+    let units: WorkUnits = {};
+    const applyUnit = (ev: {
+      kind: "work_unit";
+      runId: string;
+      unitId: string;
+      role: string;
+      status: string;
+    }) => {
+      messages = applyProductEvent(messages, ev);
+      units = applyWorkUnit(units, ev);
+    };
+    // unitId is global fold key — must be unique across concurrent runs.
+    applyUnit({
       kind: "work_unit",
       runId: "run-1",
-      unitId: "planner",
+      unitId: "run-1/planner",
       role: "planner",
       status: "settled",
     });
-    messages = applyProductEvent(messages, {
+    applyUnit({
       kind: "work_unit",
       runId: "run-1",
-      unitId: "leaf-1",
+      unitId: "run-1/leaf-1",
       role: "leaf",
       status: "settled",
     });
-    messages = applyProductEvent(messages, {
+    applyUnit({
       kind: "work_unit",
       runId: "run-2",
-      unitId: "planner",
+      unitId: "run-2/planner",
       role: "planner",
       status: "running",
     });
-    // Late leaf for run-1 after run-2 Work chip exists — must not open a 3rd card.
-    messages = applyProductEvent(messages, {
+    applyUnit({
       kind: "work_unit",
       runId: "run-1",
-      unitId: "leaf-2",
+      unitId: "run-1/leaf-2",
       role: "leaf",
       status: "running",
     });
-    const works = messages.filter((m) => m.product?.kind === "work_run");
-    assert.equal(works.length, 2);
-    const r1 = works.find((m) => m.product?.runId === "run-1");
-    const r2 = works.find((m) => m.product?.runId === "run-2");
-    assert.ok(r1 && r2);
-    assert.deepEqual(
-      r1!.product?.agents?.map((a) => a.agentId),
-      ["planner", "leaf-1", "leaf-2"],
-    );
-    assert.deepEqual(r2!.product?.agents?.map((a) => a.agentId), ["planner"]);
+    const blocks = messages.filter((m) => m.product?.kind === "work_block");
+    assert.equal(blocks.length, 2);
+    assert.equal(unitsForRun(units, "run-1").length, 3);
+    assert.equal(unitsForRun(units, "run-2").length, 1);
   });
 
-  it("mergeWorkUnitsIntoTimeline restores all cold units onto one Work chip", () => {
-    // Simulate sparse trajectory (only last unit) + full fold cache after refresh.
+  it("ensureWorkBlockAnchors restores anchors from cold units fold", () => {
     let messages: AgentMessage[] = [];
     messages = applyProductEvent(messages, {
       kind: "work_unit",
@@ -1114,16 +1444,12 @@ describe("applyProductEvent — work_run chip from work_unit", () => {
         summary: "NO_DEFECTS",
       },
     ]);
-    messages = mergeWorkUnitsIntoTimeline(messages, units);
-    const works = messages.filter((m) => m.product?.kind === "work_run");
-    assert.equal(works.length, 1);
-    assert.equal(works[0]!.product?.agents?.length, 3);
-    assert.ok(
-      works[0]!.product?.agents?.some((a) => a.agentId === "planner"),
-    );
-    assert.ok(works[0]!.product?.agents?.some((a) => a.agentId === "leaf-1"));
-    assert.ok(
-      works[0]!.product?.agents?.some((a) => a.agentId === "reviewer-1"),
-    );
+    messages = ensureWorkBlockAnchors(messages, units);
+    const blocks = messages.filter((m) => m.product?.kind === "work_block");
+    assert.equal(blocks.length, 1);
+    assert.equal(unitsForRun(units, "run-1").length, 3);
+    assert.ok(units.planner);
+    assert.ok(units["leaf-1"]);
+    assert.ok(units["reviewer-1"]);
   });
 });

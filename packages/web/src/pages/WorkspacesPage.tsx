@@ -112,15 +112,20 @@ export function WorkspacesPage() {
     setSubmitting(true);
     setError(null);
     try {
+      const root = rootPath.trim();
       const { workspace } = await createWorkspace({
         name: name.trim(),
-        rootPath: rootPath.trim(),
+        rootPath: root,
         ...(modelProfileId ? { modelProfileId } : {}),
       });
       setName("");
       setRootPath("");
       setShowForm(false);
-      navigate(`/w/${encodeURIComponent(workspace.id)}`);
+      // Keep rootPath in the URL so Agent Workspace can load without a second lookup race.
+      const params = new URLSearchParams({ rootPath: root });
+      navigate(
+        `/w/${encodeURIComponent(workspace.id)}?${params.toString()}`,
+      );
     } catch (err) {
       setError(err);
     } finally {

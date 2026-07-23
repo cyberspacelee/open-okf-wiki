@@ -6,6 +6,7 @@
  * Live transport = AgentSession commands + SSE (pi + whitelist product).
  *
  * No UIMessage history. No agent_span body channel. No child_pi / okfAgent side path.
+ * `work_run` is not a product inject — web may derive a Work block from work_unit fold.
  */
 
 import { z } from "zod";

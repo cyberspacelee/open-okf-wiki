@@ -70,7 +70,7 @@ function StatusGlyph({ status }: { status: AgentToolCall["status"] }) {
   }
   if (status === "done") {
     return (
-      <CheckIcon className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-500" />
+      <CheckIcon className="size-3.5 shrink-0 text-success" />
     );
   }
   return null;

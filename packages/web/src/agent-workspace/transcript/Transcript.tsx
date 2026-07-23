@@ -1,15 +1,12 @@
 /**
- * Agent Workspace transcript — user / assistant / tool / product cards.
- * shadcn chat primitives: MessageScroller + Message + Bubble (ADR 0030 UI).
- * Projects Pi text, thinking, tools, and provider errors (never silent empty).
+ * Agent Workspace transcript — chat track + product strips + Work blocks.
+ * Two visual languages only (ADR 0031 UI cut / Hallmark audit).
  */
 
 import {
   BotIcon,
   ChevronRightIcon,
   CircleAlertIcon,
-  EyeIcon,
-  SparklesIcon,
   UserIcon,
 } from "lucide-react";
 import {
@@ -17,7 +14,6 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { Badge } from "@/components/ui/badge";
 import {
   Bubble,
   BubbleContent,
@@ -45,13 +41,14 @@ import {
   MessageScrollerViewport,
 } from "@/components/ui/message-scroller";
 import { Spinner } from "@/components/ui/spinner";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useI18n } from "../../i18n";
 import { ToolExecutionCard } from "../components/ToolExecutionCard";
+import { WorkBlock } from "../components/WorkBlock";
 import {
-  workUnitToolsToAgentTools,
+  formatProductCardContent,
   type WorkUnits,
-  type WorkUnitView,
 } from "../hooks/project-agent-events";
 import type {
   AgentMessage,
@@ -65,25 +62,15 @@ import { GateActions } from "./GateActions";
 export type TranscriptProps = {
   messages: AgentMessage[];
   className?: string;
-  /** Active HITL gate — actions render on the matching product gate card. */
   pendingGate?: PendingGate | null;
   gateBusy?: boolean;
   onResumeGate?: (input: ResumeGateInput) => void | Promise<void>;
-  /** Optional: load full receipts when previewing spans. */
-  workspaceId?: string;
-  rootPath?: string;
-  /** Produce work_unit fold — tool-shaped rows on work_run cards. */
   units?: WorkUnits;
-  /**
-   * Open Work surface for a produce agent (planner / leaf).
-   * Main timeline shows tool-shaped unit rows; full stream in focus drawer.
-   */
-  onOpenAgent?: (input: {
-    agentId: string;
-    role?: string;
-    task?: string;
-    detail?: string;
-  }) => void;
+  phase?: string | null;
+  expandedUnitId?: string | null;
+  onExpandedUnitIdChange?: (unitId: string | null) => void;
+  onStartWikiRun?: () => void;
+  emptyActions?: boolean;
 };
 
 function ThinkingBlock({
@@ -97,11 +84,10 @@ function ThinkingBlock({
   return (
     <Collapsible
       defaultOpen={streaming}
-      className="w-full min-w-0 rounded-md border border-border/70 bg-muted/20"
+      className="w-full min-w-0 rounded-md border border-border/60 bg-muted/15"
     >
-      <CollapsibleTrigger className="group flex w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted/50">
+      <CollapsibleTrigger className="group flex w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted/40">
         <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-data-panel-open:rotate-90" />
-        <SparklesIcon className="size-3.5 shrink-0" />
         <span className="min-w-0 flex-1 font-medium">
           {streaming
             ? t.agentWorkspace.thinkingStreaming
@@ -109,303 +95,145 @@ function ThinkingBlock({
         </span>
         {streaming ? <Spinner className="size-3" /> : null}
       </CollapsibleTrigger>
-      <CollapsibleContent className="min-w-0 border-t border-border/50 px-2.5 py-2">
+      <CollapsibleContent className="min-w-0 border-t border-border/40 px-2.5 py-2">
         <pre className="okf-code-snippet text-muted-foreground">{thinking}</pre>
       </CollapsibleContent>
     </Collapsible>
   );
 }
 
-function productBadgeLabel(product: AgentProductMeta): string {
-  switch (product.kind) {
-    case "run_phase": {
-      const p = product.phase ?? "phase";
-      if (p === "awaiting_plan") return "needs plan OK";
-      if (p === "awaiting_publish" || p === "awaiting_publication") {
-        return "needs publish OK";
-      }
-      if (p === "writing" || p === "producing") return "writing";
-      if (p === "done" || p === "published") return "done";
-      return p.replace(/_/g, " ");
-    }
-    case "gate":
-      return product.gate === "plan"
-        ? "plan"
-        : product.gate === "publication"
-          ? "publish"
-          : "gate";
-    case "run_link":
-      return "job";
-    case "progress":
-      return "progress";
-    case "plan_progress":
-      return "pages";
-    case "work_run":
-      return "work";
-    case "defects":
-      return product.clean ? "clean" : "issues";
-    default: {
-      const _exhaustive: never = product.kind;
-      return String(_exhaustive);
-    }
-  }
-}
-
-function unitStatusLabel(status: string): string {
-  switch (status) {
-    case "running":
-      return "running";
-    case "pending":
-      return "queued";
-    case "settled":
-    case "complete":
-    case "done":
-      return "done";
-    case "failed":
-      return "failed";
-    default:
-      return status.replace(/_/g, " ");
-  }
-}
-
-function unitRoleLabel(role: string): string {
-  switch (role) {
-    case "planner":
-    case "plan":
-      return "Planner";
-    case "domain":
-      return "Domain";
-    case "leaf":
-      return "Leaf";
-    case "reviewer":
-    case "review":
-      return "Reviewer";
-    case "root_research":
-      return "Research";
-    case "root_write":
-      return "Writer";
-    default:
-      return role;
-  }
-}
-
-/**
- * Parent-visible produce unit — tool-shaped chrome on the operator timeline.
- * Body is product work_unit fold (not synthetic parent Pi tool_execution).
- */
-function WorkUnitToolRow({
-  chip,
-  unit,
-  onOpenAgent,
-}: {
-  chip: {
-    agentId: string;
-    role: string;
-    status: string;
-    task?: string;
-    detail?: string;
-  };
-  unit?: WorkUnitView | null;
-  onOpenAgent?: TranscriptProps["onOpenAgent"];
-}) {
-  const { t } = useI18n();
-  const isRunning = chip.status === "running" || chip.status === "pending";
-  const isFailed = chip.status === "failed";
-  const settled =
-    chip.status === "settled" ||
-    chip.status === "complete" ||
-    chip.status === "done";
-  const tools = unit ? workUnitToolsToAgentTools(unit.tools) : [];
-  const summary =
-    unit?.summary?.trim() ||
-    unit?.message?.text?.trim() ||
-    chip.detail?.trim() ||
-    chip.task?.trim() ||
-    "";
-  const waiting =
-    isRunning &&
-    !unit?.message?.thinking?.trim() &&
-    !unit?.message?.text?.trim() &&
-    tools.length === 0;
-
-  const title =
-    chip.task?.trim() ||
-    unit?.task?.trim() ||
-    unitRoleLabel(chip.role);
-
-  return (
-    <Collapsible
-      defaultOpen={isRunning || isFailed}
-      className="w-full min-w-0 rounded-md border border-border/80 bg-muted/20"
-      data-testid="work-unit-tool-row"
-      data-unit-id={chip.agentId}
-    >
-      <CollapsibleTrigger className="group flex w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-xs hover:bg-muted/50">
-        <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-data-panel-open:rotate-90" />
-        {isRunning ? (
-          <Spinner className="size-3 shrink-0 text-primary" />
-        ) : (
-          <span
-            className={cn(
-              "size-2.5 shrink-0 rounded-full",
-              isFailed ? "bg-destructive" : "bg-muted-foreground/40",
-            )}
-          />
-        )}
-        <Badge variant="outline" className="shrink-0 text-[10px] normal-case">
-          {unitRoleLabel(chip.role)}
-        </Badge>
-        <span className="min-w-0 flex-1 truncate text-[12px] font-medium">
-          {title}
-        </span>
-        <Badge
-          variant={
-            isFailed
-              ? "destructive"
-              : settled
-                ? "secondary"
-                : "default"
-          }
-          className="shrink-0 text-[10px] normal-case"
-        >
-          {unitStatusLabel(chip.status)}
-        </Badge>
-      </CollapsibleTrigger>
-      <CollapsibleContent className="min-w-0 space-y-2 border-t border-border/60 px-2.5 py-2">
-        {waiting ? (
-          <p
-            className="text-[11px] text-muted-foreground"
-            data-testid="waiting-for-events"
-          >
-            {t.agentWorkspace.waitingForEvents}
-          </p>
-        ) : null}
-        {unit?.message?.thinking ? (
-          <pre className="okf-code-snippet text-muted-foreground">
-            {unit.message.thinking}
-          </pre>
-        ) : null}
-        {summary && !waiting ? (
-          <p className="min-w-0 text-[11px] leading-relaxed break-words whitespace-pre-wrap">
-            {summary}
-          </p>
-        ) : null}
-        {tools.length > 0 ? (
-          <div className="flex min-w-0 flex-col gap-1.5">
-            {tools.map((tool) => (
-              <ToolExecutionCard
-                key={tool.id}
-                tool={tool}
-                settled={settled}
-              />
-            ))}
-          </div>
-        ) : null}
-        {onOpenAgent ? (
-          <button
-            type="button"
-            className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
-            onClick={() =>
-              onOpenAgent({
-                agentId: chip.agentId,
-                role: chip.role,
-                task: chip.task,
-                detail: chip.detail,
-              })
-            }
-          >
-            <EyeIcon className="size-3" />
-            {t.agentWorkspace.openFull}
-          </button>
-        ) : null}
-      </CollapsibleContent>
-    </Collapsible>
-  );
-}
-
-function WorkRunCard({
-  product,
-  units,
-  onOpenAgent,
-}: {
-  product: AgentProductMeta;
-  units?: WorkUnits;
-  onOpenAgent?: TranscriptProps["onOpenAgent"];
-}) {
-  const agents = product.agents ?? [];
-  const running = agents.filter(
-    (a) => a.status === "running" || a.status === "pending",
-  ).length;
-  return (
-    <div className="flex min-w-0 flex-col gap-2" data-testid="work-run-chip">
-      <div className="flex flex-wrap items-center gap-2 text-xs">
-        <span className="font-medium">Wiki work</span>
-        {product.phase ? (
-          <Badge variant="outline" className="normal-case text-[10px]">
-            {productBadgeLabel({ ...product, kind: "run_phase", phase: product.phase })}
-          </Badge>
-        ) : null}
-        {running > 0 ? (
-          <span className="inline-flex items-center gap-1 text-muted-foreground">
-            <Spinner className="size-3" />
-            {running} running
-          </span>
-        ) : null}
-      </div>
-      <ul className="flex min-w-0 flex-col gap-1.5">
-        {agents.map((a) => (
-          <li key={a.agentId} className="min-w-0" data-testid="work-run-agent" data-agent-id={a.agentId}>
-            <WorkUnitToolRow
-              chip={a}
-              unit={units?.[a.agentId] ?? null}
-              onOpenAgent={onOpenAgent}
-            />
-          </li>
-        ))}
-      </ul>
-      {agents.length === 0 ? (
-        <p className="text-[11px] text-muted-foreground">Waiting for units…</p>
-      ) : null}
-    </div>
-  );
-}
-
-function productBadgeVariant(
+function productKindLabel(
   product: AgentProductMeta,
-): "default" | "secondary" | "destructive" | "outline" {
-  if (product.kind === "gate") return "default";
-  if (product.kind === "run_phase") {
-    if (product.phase === "failed") return "destructive";
-    if (product.phase === "done" || product.phase === "cancelled") {
-      return "secondary";
-    }
-    return "outline";
+  t: ReturnType<typeof useI18n>["t"],
+): string {
+  switch (product.kind) {
+    case "gate":
+      return t.agentWorkspace.cardGate;
+    case "run_phase":
+      return t.agentWorkspace.cardPhase;
+    case "progress":
+      return t.agentWorkspace.cardProgress;
+    case "plan_progress":
+      return t.agentWorkspace.cardPages;
+    case "defects":
+      return t.agentWorkspace.cardReview;
+    case "run_link":
+      return t.agentWorkspace.cardRun;
+    case "work_block":
+      return t.agentWorkspace.cardWork;
+    default:
+      return t.agentWorkspace.cardRun;
   }
-  return "secondary";
 }
 
-function MessageCard({
+function ProductStrip({
   message,
   showGateActions,
   pendingGate,
   gateBusy,
   onResumeGate,
-  onOpenAgent,
   units,
+  phase,
+  expandedUnitId,
+  onExpandedUnitIdChange,
 }: {
   message: AgentMessage;
   showGateActions: boolean;
   pendingGate: PendingGate | null;
   gateBusy: boolean;
   onResumeGate?: (input: ResumeGateInput) => void | Promise<void>;
-  onOpenAgent?: TranscriptProps["onOpenAgent"];
-  units?: WorkUnits;
+  units: WorkUnits;
+  phase?: string | null;
+  expandedUnitId?: string | null;
+  onExpandedUnitIdChange?: (unitId: string | null) => void;
 }) {
   const { t } = useI18n();
-  const isUser = message.role === "user";
-  const isSystem = message.role === "system";
-  const isTool = message.role === "tool";
   const product = message.product;
+  if (!product) return null;
+
+  if (product.kind === "work_block") {
+    return (
+      <div className="flex w-full min-w-0 justify-center">
+        <WorkBlock
+          runId={product.runId}
+          phase={phase ?? product.phase}
+          units={units}
+          expandedUnitId={expandedUnitId}
+          onExpandedUnitIdChange={onExpandedUnitIdChange}
+        />
+      </div>
+    );
+  }
+
+  const isError =
+    message.status === "error" ||
+    (product.kind === "run_phase" && product.phase === "failed");
+  const isGate = product.kind === "gate";
+
+  return (
+    <div
+      data-testid="agent-message"
+      data-role="system"
+      data-product-kind={product.kind}
+      data-status={message.status}
+      className="flex min-w-0 w-full flex-col items-center gap-1.5"
+    >
+      <div
+        className={cn(
+          "w-full min-w-0 max-w-[min(100%,42rem)] rounded-lg border px-2.5 py-2 text-xs",
+          isGate
+            ? "border-primary/35 bg-primary/5"
+            : isError
+              ? "border-destructive/40 bg-destructive/5"
+              : "border-border/60 bg-muted/20",
+        )}
+      >
+        <div className="mb-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+          <span className="font-medium text-foreground/80">
+            {productKindLabel(product, t)}
+          </span>
+          {product.kind === "run_phase" && product.phase ? (
+            <span>
+              {t.agentWorkspace.phases[
+                product.phase as keyof typeof t.agentWorkspace.phases
+              ] ?? product.phase.replace(/_/g, " ")}
+            </span>
+          ) : null}
+          {isGate && product.gate ? (
+            <span>
+              {product.gate === "plan"
+                ? t.agentWorkspace.gatePlan
+                : t.agentWorkspace.gatePublish}
+            </span>
+          ) : null}
+        </div>
+        {(() => {
+          const body = formatProductCardContent(
+            product,
+            t.agentWorkspace,
+            message.content,
+          );
+          return body ? (
+            <div className="whitespace-pre-wrap break-words">{body}</div>
+          ) : null;
+        })()}
+        {showGateActions && pendingGate && onResumeGate ? (
+          <GateActions
+            pending={pendingGate}
+            busy={gateBusy}
+            onResume={onResumeGate}
+            compact
+            className="mt-2 border-t border-border/40 pt-2"
+          />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ChatMessage({ message }: { message: AgentMessage }) {
+  const { t } = useI18n();
+  const isUser = message.role === "user";
   const isError =
     message.status === "error" || Boolean(message.errorMessage);
   const isStreaming = message.status === "streaming";
@@ -415,7 +243,7 @@ function MessageCard({
     Boolean(message.tools?.length) ||
     isError;
 
-  if (isSystem && !product && message.status === "aborted") {
+  if (message.role === "system" && message.status === "aborted") {
     return (
       <Marker
         data-testid="agent-message"
@@ -429,82 +257,16 @@ function MessageCard({
     );
   }
 
-  if (isSystem || isTool) {
+  if (message.role === "system" || message.role === "tool") {
     return (
       <div
         data-testid="agent-message"
         data-role={message.role}
-        data-product-kind={product?.kind}
-        data-status={message.status}
-        className="flex min-w-0 w-full flex-col items-center gap-1.5"
+        className="flex w-full justify-center"
       >
-        <div
-          className={cn(
-            "w-full min-w-0 max-w-[min(100%,42rem)] rounded-lg border px-2.5 py-2 text-xs",
-            product
-              ? "border-border/70 bg-muted/30"
-              : "border-dashed border-border bg-muted/40 text-muted-foreground",
-            product?.kind === "gate" && "border-primary/30 bg-primary/5",
-            isError && "border-destructive/40 bg-destructive/5 text-destructive",
-            product?.kind === "run_phase" &&
-              product.phase === "failed" &&
-              "border-destructive/40 bg-destructive/5",
-            product?.kind === "work_run" && "border-primary/25 bg-primary/5",
-          )}
-        >
-          <div className="mb-1 flex flex-wrap items-center gap-2 text-[10px] font-medium tracking-wide opacity-70">
-            <span className="uppercase">
-              {product
-                ? product.kind === "gate"
-                  ? t.agentWorkspace.cardGate
-                  : product.kind === "run_phase"
-                    ? t.agentWorkspace.cardPhase
-                    : product.kind === "progress"
-                      ? t.agentWorkspace.cardProgress
-                      : product.kind === "plan_progress"
-                        ? t.agentWorkspace.cardPages
-                        : product.kind === "work_run"
-                          ? t.agentWorkspace.cardWork
-                          : product.kind === "defects"
-                            ? t.agentWorkspace.cardReview
-                            : t.agentWorkspace.cardRun
-                : isTool
-                  ? t.agentWorkspace.roleTool
-                  : t.agentWorkspace.roleSystem}
-            </span>
-            {product ? (
-              <Badge
-                variant={productBadgeVariant(product)}
-                className="normal-case tracking-normal"
-              >
-                {productBadgeLabel(product)}
-              </Badge>
-            ) : null}
-            {isError ? (
-              <Badge variant="destructive" className="normal-case tracking-normal">
-                {t.agentWorkspace.statusError}
-              </Badge>
-            ) : null}
-          </div>
-          {product?.kind === "work_run" ? (
-            <WorkRunCard
-              product={product}
-              units={units}
-              onOpenAgent={onOpenAgent}
-            />
-          ) : message.content ? (
-            <div className="whitespace-pre-wrap break-words">{message.content}</div>
-          ) : null}
-          {showGateActions && pendingGate && onResumeGate ? (
-            <GateActions
-              pending={pendingGate}
-              busy={gateBusy}
-              onResume={onResumeGate}
-              compact
-              className="mt-2 border-t border-border/50 pt-2"
-            />
-          ) : null}
-        </div>
+        <p className="max-w-[min(100%,42rem)] text-center text-xs text-muted-foreground">
+          {message.content}
+        </p>
       </div>
     );
   }
@@ -531,15 +293,13 @@ function MessageCard({
             </>
           )}
           {isStreaming ? (
-            <Badge variant="outline" className="normal-case tracking-normal">
-              streaming
-            </Badge>
+            <Spinner className="size-3 text-muted-foreground" />
           ) : null}
           {isError ? (
-            <Badge variant="destructive" className="normal-case tracking-normal">
-              <CircleAlertIcon data-icon="inline-start" />
+            <span className="inline-flex items-center gap-1 text-destructive">
+              <CircleAlertIcon className="size-3" />
               {t.agentWorkspace.statusError}
-            </Badge>
+            </span>
           ) : null}
         </MessageHeader>
 
@@ -590,7 +350,7 @@ function MessageCard({
                 ) : null}
 
                 {message.tools && message.tools.length > 0 ? (
-                  <div className="mt-2 flex min-w-0 w-full flex-col gap-1.5">
+                  <div className="mt-2 flex min-w-0 w-full flex-col gap-1">
                     {message.tools.map((tool) => (
                       <ToolExecutionCard key={tool.id} tool={tool} />
                     ))}
@@ -611,19 +371,19 @@ export function Transcript({
   pendingGate = null,
   gateBusy = false,
   onResumeGate,
-  onOpenAgent,
   units = {},
+  phase = null,
+  expandedUnitId = null,
+  onExpandedUnitIdChange,
+  onStartWikiRun,
+  emptyActions = true,
 }: TranscriptProps) {
   const { t } = useI18n();
 
-  // Main timeline: parent Pi + product cards; work_unit bodies via units fold.
-  const timeline = messages;
-
-  // Only the latest matching gate card shows actions (avoid stale buttons).
   let activeGateMessageId: string | null = null;
   if (pendingGate) {
-    for (let i = timeline.length - 1; i >= 0; i -= 1) {
-      const m = timeline[i]!;
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i]!;
       if (
         m.product?.kind === "gate" &&
         m.product.gate === pendingGate.gate
@@ -634,12 +394,12 @@ export function Transcript({
     }
   }
 
-  if (timeline.length === 0) {
+  if (messages.length === 0) {
     return (
       <div
         data-testid="agent-transcript-empty"
         className={cn(
-          "flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4",
+          "flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-4",
           className,
         )}
       >
@@ -654,6 +414,16 @@ export function Transcript({
             </EmptyDescription>
           </EmptyHeader>
         </Empty>
+        {emptyActions && onStartWikiRun ? (
+          <Button
+            type="button"
+            size="sm"
+            data-testid="agent-empty-start-wiki"
+            onClick={() => onStartWikiRun()}
+          >
+            {t.agentWorkspace.startWikiRun}
+          </Button>
+        ) : null}
       </div>
     );
   }
@@ -666,21 +436,27 @@ export function Transcript({
       >
         <MessageScrollerViewport>
           <MessageScrollerContent className="gap-3 px-3 py-3 md:px-4">
-            {timeline.map((m) => (
+            {messages.map((m) => (
               <MessageScrollerItem
                 key={m.id}
                 messageId={m.id}
                 scrollAnchor={m.role === "user"}
               >
-                <MessageCard
-                  message={m}
-                  showGateActions={m.id === activeGateMessageId}
-                  pendingGate={pendingGate}
-                  gateBusy={gateBusy}
-                  onResumeGate={onResumeGate}
-                  onOpenAgent={onOpenAgent}
-                  units={units}
-                />
+                {m.product ? (
+                  <ProductStrip
+                    message={m}
+                    showGateActions={m.id === activeGateMessageId}
+                    pendingGate={pendingGate}
+                    gateBusy={gateBusy}
+                    onResumeGate={onResumeGate}
+                    units={units}
+                    phase={phase}
+                    expandedUnitId={expandedUnitId}
+                    onExpandedUnitIdChange={onExpandedUnitIdChange}
+                  />
+                ) : (
+                  <ChatMessage message={m} />
+                )}
               </MessageScrollerItem>
             ))}
           </MessageScrollerContent>
