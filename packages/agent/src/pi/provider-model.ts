@@ -18,6 +18,7 @@ import {
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { ProviderApiShape } from "@okf-wiki/contract";
 import {
+  flattenModels,
   hasProviderCredentials,
   loadProviderConfig,
   resolveProviderRuntime,
@@ -44,6 +45,11 @@ export type ResolvePiModelInput = {
    * Defaults to openai-compatible.
    */
   providerKind?: OkfProviderKind;
+  /**
+   * Extra HTTP headers (User-Agent, etc.) from provider settings.
+   * Merged over the product default User-Agent: node.
+   */
+  headers?: Record<string, string>;
 };
 
 export type ResolvedPiModel = {
@@ -161,6 +167,12 @@ export async function resolvePiModelFromProvider(
 
   const displayName = input.profileName?.trim() || servedModelId;
 
+  // Default UA for WAF-sensitive OpenAI-compatible gateways; settings headers win.
+  const headers: Record<string, string> = {
+    "User-Agent": "node",
+    ...(input.headers ?? {}),
+  };
+
   modelRuntime.registerProvider(providerId, {
     name: displayName,
     ...(baseUrl ? { baseUrl } : {}),
@@ -181,14 +193,7 @@ export async function resolvePiModelFromProvider(
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow,
         maxTokens,
-        // Pi uses the official OpenAI JS SDK, which defaults to User-Agent
-        // "OpenAI/JS …" + X-Stainless-* headers. Some OpenAI-compatible
-        // gateways (Cloudflare WAF) return 403 "request was blocked" for that
-        // signature while plain node fetch works. Override UA so agent turns
-        // match a simple HTTP client.
-        headers: {
-          "User-Agent": "node",
-        },
+        headers,
       },
     ],
   });
@@ -209,7 +214,7 @@ export async function resolvePiModelFromProvider(
     model.headers && typeof model.headers === "object" ? model.headers : {};
   (model as { headers: Record<string, string> }).headers = {
     ...existingHeaders,
-    "User-Agent": "node",
+    ...headers,
   };
 
   // Synthetic runtime snapshot for callers that log source (not from store).
@@ -222,6 +227,7 @@ export async function resolvePiModelFromProvider(
     profileId: input.profileId,
     profileName: input.profileName,
     maxContextTokens: input.maxContextTokens,
+    headers,
     source: {
       baseUrl: baseUrl ? "stored" : "none",
       apiKey: apiKey ? "stored" : "none",
@@ -251,9 +257,10 @@ export async function resolveWorkspacePiModel(input: {
   const config = await loadProviderConfig(input.providerPath);
   const env = input.env ?? process.env;
 
+  const flat = flattenModels(config);
   if (
     !hasProviderCredentials(config, env) &&
-    !config.models.some((m) => Boolean(m.modelId?.trim()))
+    !flat.some((m) => Boolean(m.modelId?.trim()))
   ) {
     throw new Error(missingCredentialsMessage());
   }
@@ -287,5 +294,6 @@ export async function resolveWorkspacePiModel(input: {
     profileName: runtime.profileName,
     maxContextTokens: runtime.maxContextTokens,
     providerKind: runtime.providerKind,
+    headers: runtime.headers,
   });
 }

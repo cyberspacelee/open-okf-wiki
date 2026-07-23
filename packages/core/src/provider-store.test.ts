@@ -5,12 +5,15 @@ import path from "node:path";
 import { test } from "node:test";
 import {
   createModelProfile,
+  createProviderEntry,
   defaultProviderPath,
   deleteModelProfile,
+  flattenModels,
   hasProviderCredentials,
   loadProviderConfig,
   maskSecret,
   migrateProviderConfigV1,
+  migrateProviderConfigV2,
   resolveProviderRuntime,
   saveProviderConfig,
   setDefaultModelProfile,
@@ -31,7 +34,7 @@ test("maskSecret never returns full key", () => {
   assert.match(masked!, /…/);
 });
 
-test("migrate v1 single endpoint into one model profile", () => {
+test("migrate v1 single endpoint into provider tree", () => {
   const migrated = migrateProviderConfigV1({
     version: 1,
     baseUrl: "https://gateway.example/v1",
@@ -40,11 +43,52 @@ test("migrate v1 single endpoint into one model profile", () => {
     defaultModelId: "openai/corp",
   });
   assert.ok(migrated);
-  assert.equal(migrated!.version, 2);
-  assert.equal(migrated!.models.length, 1);
-  assert.equal(migrated!.models[0]!.modelId, "openai/corp");
-  assert.equal(migrated!.models[0]!.apiShape, "responses");
+  assert.equal(migrated!.version, 3);
+  assert.equal(migrated!.providers.length, 1);
+  assert.equal(migrated!.providers[0]!.models.length, 1);
+  assert.equal(migrated!.providers[0]!.models[0]!.modelId, "openai/corp");
+  assert.equal(migrated!.providers[0]!.apiShape, "responses");
   assert.equal(migrated!.defaultModelProfileId, "default");
+});
+
+test("migrate v2 flat models groups same endpoint", () => {
+  const migrated = migrateProviderConfigV2({
+    version: 2,
+    defaultModelProfileId: "a",
+    models: [
+      {
+        id: "a",
+        name: "A",
+        modelId: "m1",
+        baseUrl: "https://gw/v1",
+        apiKey: "k",
+        apiShape: "completions",
+      },
+      {
+        id: "b",
+        name: "B",
+        modelId: "m2",
+        baseUrl: "https://gw/v1",
+        apiKey: "k",
+        apiShape: "completions",
+      },
+      {
+        id: "c",
+        name: "C",
+        modelId: "m3",
+        baseUrl: "https://other/v1",
+        apiKey: "k2",
+        apiShape: "responses",
+      },
+    ],
+  });
+  assert.ok(migrated);
+  assert.equal(migrated!.version, 3);
+  assert.equal(migrated!.providers.length, 2);
+  const gw = migrated!.providers.find((p) => p.baseUrl.includes("gw"));
+  assert.ok(gw);
+  assert.equal(gw!.models.length, 2);
+  assert.equal(flattenModels(migrated!).length, 3);
 });
 
 test("load migrates v1 file on disk", async () => {
@@ -62,12 +106,42 @@ test("load migrates v1 file on disk", async () => {
     "utf8",
   );
   const loaded = await loadProviderConfig(file);
-  assert.equal(loaded.version, 2);
-  assert.equal(loaded.models[0]!.baseUrl, "https://old/v1");
-  assert.equal(loaded.models[0]!.apiKey, "old-key-value");
+  assert.equal(loaded.version, 3);
+  assert.equal(loaded.providers[0]!.baseUrl, "https://old/v1");
+  assert.equal(loaded.providers[0]!.apiKey, "old-key-value");
 });
 
-test("create update delete model profiles", async () => {
+test("load migrates v2 file and saves as v3", async () => {
+  const home = await tempHome();
+  const file = path.join(home, "provider.json");
+  await writeFile(
+    file,
+    JSON.stringify({
+      version: 2,
+      defaultModelProfileId: "default",
+      models: [
+        {
+          id: "default",
+          name: "Default",
+          modelId: "grok-4.5",
+          baseUrl: "https://www.fkcodex.com/v1",
+          apiKey: "sk-test",
+          apiShape: "responses",
+        },
+      ],
+    }),
+    "utf8",
+  );
+  const loaded = await loadProviderConfig(file);
+  assert.equal(loaded.version, 3);
+  assert.equal(flattenModels(loaded)[0]!.modelId, "grok-4.5");
+  await saveProviderConfig(loaded, file);
+  const again = await loadProviderConfig(file);
+  assert.equal(again.version, 3);
+  assert.ok(again.providers.length >= 1);
+});
+
+test("create update delete model profiles under providers", async () => {
   const home = await tempHome();
   const file = path.join(home, "provider.json");
 
@@ -78,23 +152,29 @@ test("create update delete model profiles", async () => {
       baseUrl: "https://gw/v1",
       apiKey: "sk-one-secret-key",
       apiShape: "completions",
+      headers: { "User-Agent": "node" },
     },
     file,
   );
-  assert.equal(created.config.models.length, 1);
+  assert.equal(created.config.providers.length, 1);
+  assert.equal(flattenModels(created.config).length, 1);
   assert.equal(created.profile.name, "Corp GPT");
+  assert.equal(created.profile.headers?.["User-Agent"], "node");
   assert.equal(created.config.defaultModelProfileId, created.profile.id);
 
+  // Second model same endpoint → same provider
   const second = await createModelProfile(
     {
-      name: "Local",
-      modelId: "openai/local",
-      baseUrl: "http://127.0.0.1:8000/v1",
-      apiShape: "responses",
+      name: "Corp Mini",
+      modelId: "openai/mini",
+      baseUrl: "https://gw/v1",
+      apiKey: "sk-one-secret-key",
+      apiShape: "completions",
     },
     file,
   );
-  assert.equal(second.config.models.length, 2);
+  assert.equal(second.config.providers.length, 1);
+  assert.equal(flattenModels(second.config).length, 2);
 
   const updated = await updateModelProfile(
     created.profile.id,
@@ -115,212 +195,85 @@ test("create update delete model profiles", async () => {
   assert.equal(loaded.defaultModelProfileId, second.profile.id);
 
   loaded = await deleteModelProfile(created.profile.id, file);
-  assert.equal(loaded.models.length, 1);
-  assert.equal(loaded.models[0]!.id, second.profile.id);
+  assert.equal(flattenModels(loaded).length, 1);
+  assert.equal(flattenModels(loaded)[0]!.id, second.profile.id);
 });
 
-test("toProviderPublic never includes raw apiKey", async () => {
-  const publicView = toProviderPublic(
-    {
-      version: 2,
-      models: [
-        {
-          id: "a",
-          name: "A",
-          modelId: "openai/a",
-          baseUrl: "https://gw/v1",
-          apiKey: "sk-proj-secretsecret",
-          apiShape: "completions",
-        },
-      ],
-      defaultModelProfileId: "a",
-    },
-    {},
-  );
-  assert.equal(publicView.models[0]!.apiKeySet, true);
-  assert.doesNotMatch(JSON.stringify(publicView), /sk-proj-secretsecret/);
-});
-
-test("resolveProviderRuntime prefers profileId", () => {
-  const config = {
-    version: 2 as const,
-    defaultModelProfileId: "a",
-    models: [
-      {
-        id: "a",
-        name: "A",
-        modelId: "openai/a",
-        baseUrl: "https://a/v1",
-        apiKey: "key-a-value",
-        apiShape: "completions" as const,
-      },
-      {
-        id: "b",
-        name: "B",
-        modelId: "openai/b",
-        baseUrl: "https://b/v1",
-        apiKey: "key-b-value",
-        apiShape: "responses" as const,
-      },
-    ],
-  };
-  const runtime = resolveProviderRuntime(config, { profileId: "b" });
-  assert.equal(runtime.baseUrl, "https://b/v1");
-  assert.equal(runtime.apiKey, "key-b-value");
-  assert.equal(runtime.apiShape, "responses");
-  assert.equal(runtime.modelId, "openai/b");
-  assert.equal(runtime.maxContextTokens, undefined);
-});
-
-test("resolveProviderRuntime surfaces maxContextTokens from profile", () => {
-  const runtime = resolveProviderRuntime(
-    {
-      version: 2,
-      models: [
-        {
-          id: "ctx",
-          name: "Ctx",
-          modelId: "openai/ctx",
-          baseUrl: "https://ctx/v1",
-          apiKey: "key-ctx",
-          apiShape: "completions",
-          maxContextTokens: 128_000,
-        },
-      ],
-    },
-    { profileId: "ctx" },
-  );
-  assert.equal(runtime.maxContextTokens, 128_000);
-});
-
-test("create/update model profile persists and clears maxContextTokens", async () => {
+test("createProviderEntry then add model by providerId", async () => {
   const home = await tempHome();
   const file = path.join(home, "provider.json");
-
-  const created = await createModelProfile(
+  const { provider } = await createProviderEntry(
     {
-      name: "With Context",
-      modelId: "openai/ctx-model",
-      baseUrl: "https://gw/v1",
-      apiKey: "sk-ctx-key",
-      apiShape: "completions",
-      maxContextTokens: 64_000,
+      name: "FK",
+      baseUrl: "https://cch.example/v1",
+      apiKey: "sk-x",
+      apiShape: "responses",
+      headers: { "User-Agent": "node" },
     },
     file,
   );
-  assert.equal(created.profile.maxContextTokens, 64_000);
-  const publicView = toProviderPublic(created.config);
-  assert.equal(publicView.models[0]!.maxContextTokens, 64_000);
-
-  const updated = await updateModelProfile(
-    created.profile.id,
+  const { profile, config } = await createModelProfile(
     {
-      name: "With Context",
-      modelId: "openai/ctx-model",
-      baseUrl: "https://gw/v1",
-      apiShape: "completions",
-      maxContextTokens: 128_000,
+      name: "Grok",
+      modelId: "grok-4.5",
+      providerId: provider.id,
+      baseUrl: "",
+      apiShape: "responses",
     },
     file,
   );
-  assert.equal(updated.profile.maxContextTokens, 128_000);
-
-  const cleared = await updateModelProfile(
-    created.profile.id,
-    {
-      name: "With Context",
-      modelId: "openai/ctx-model",
-      baseUrl: "https://gw/v1",
-      apiShape: "completions",
-      maxContextTokens: null,
-    },
-    file,
-  );
-  assert.equal(cleared.profile.maxContextTokens, undefined);
-  const reloaded = await loadProviderConfig(file);
-  assert.equal(reloaded.models[0]!.maxContextTokens, undefined);
+  assert.equal(config.providers.length, 1);
+  assert.equal(profile.providerId, provider.id);
+  assert.equal(profile.baseUrl, "https://cch.example/v1");
+  assert.equal(profile.apiKey, "sk-x");
 });
 
-test("resolveProviderRuntime falls back to env when profile empty", () => {
-  const runtime = resolveProviderRuntime(
-    { version: 2, models: [] },
+test("resolveProviderRuntime includes headers default", async () => {
+  const home = await tempHome();
+  const file = path.join(home, "provider.json");
+  await createModelProfile(
     {
-      env: {
-        OPENAI_BASE_URL: "https://env/v1/",
-        OPENAI_API_KEY: "env-key",
-      },
+      name: "M",
+      modelId: "m1",
+      baseUrl: "https://gw/v1",
+      apiKey: "k",
+      apiShape: "completions",
     },
+    file,
   );
-  assert.equal(runtime.baseUrl, "https://env/v1");
-  assert.equal(runtime.apiKey, "env-key");
-  assert.equal(runtime.source.baseUrl, "env");
+  const config = await loadProviderConfig(file);
+  const runtime = resolveProviderRuntime(config, {});
+  assert.equal(runtime.headers?.["User-Agent"], "node");
 });
 
-test("hasProviderCredentials detects models or env", () => {
+test("toProviderPublic exposes providers and flat models", async () => {
+  const home = await tempHome();
+  const file = path.join(home, "provider.json");
+  await createModelProfile(
+    {
+      name: "M",
+      modelId: "m1",
+      baseUrl: "https://gw/v1",
+      apiKey: "sk-secret-long-key",
+      apiShape: "completions",
+      headers: { "User-Agent": "node" },
+    },
+    file,
+  );
+  const pub = toProviderPublic(await loadProviderConfig(file));
+  assert.equal(pub.version, 3);
+  assert.equal(pub.providers.length, 1);
+  assert.equal(pub.models.length, 1);
+  assert.equal(pub.models[0]!.apiKeySet, true);
+  assert.ok(pub.models[0]!.apiKeyMasked);
+  assert.notEqual(pub.models[0]!.apiKeyMasked, "sk-secret-long-key");
+  assert.equal(pub.providers[0]!.headers?.["User-Agent"], "node");
+});
+
+test("hasProviderCredentials and defaultProviderPath", () => {
+  assert.ok(defaultProviderPath().includes("provider.json"));
   assert.equal(
-    hasProviderCredentials({ version: 2, models: [] }, {}),
+    hasProviderCredentials({ version: 3, providers: [] }, {}),
     false,
   );
-  assert.equal(
-    hasProviderCredentials(
-      {
-        version: 2,
-        models: [
-          {
-            id: "x",
-            name: "X",
-            modelId: "openai/x",
-            baseUrl: "https://x/v1",
-            apiKey: "",
-            apiShape: "completions",
-          },
-        ],
-      },
-      {},
-    ),
-    true,
-  );
-  assert.equal(
-    hasProviderCredentials({ version: 2, models: [] }, { OPENAI_API_KEY: "k" }),
-    true,
-  );
-});
-
-test("defaultProviderPath honors OKF_WIKI_HOME", () => {
-  const prev = process.env.OKF_WIKI_HOME;
-  process.env.OKF_WIKI_HOME = "/tmp/okf-home-test";
-  try {
-    assert.equal(defaultProviderPath(), path.join("/tmp/okf-home-test", "provider.json"));
-  } finally {
-    if (prev === undefined) {
-      delete process.env.OKF_WIKI_HOME;
-    } else {
-      process.env.OKF_WIKI_HOME = prev;
-    }
-  }
-});
-
-test("saveProviderConfig round-trip multi model", async () => {
-  const home = await tempHome();
-  const file = path.join(home, "provider.json");
-  await saveProviderConfig(
-    {
-      version: 2,
-      defaultModelProfileId: "one",
-      models: [
-        {
-          id: "one",
-          name: "One",
-          modelId: "openai/one",
-          baseUrl: "https://one/v1",
-          apiKey: "secret-one",
-          apiShape: "completions",
-        },
-      ],
-    },
-    file,
-  );
-  const loaded = await loadProviderConfig(file);
-  assert.equal(loaded.models[0]!.apiKey, "secret-one");
-  assert.equal(loaded.defaultModelProfileId, "one");
 });

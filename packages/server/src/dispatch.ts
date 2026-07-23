@@ -17,12 +17,15 @@ import {
 } from "./routes/app-settings.ts";
 import {
   handleCreateModel,
+  handleCreateProvider,
   handleDeleteModel,
+  handleDeleteProvider,
   handleGetProvider,
   handleGitProbe,
   handleSetDefaultModel,
   handleTestProvider,
   handleUpdateModel,
+  handleUpdateProvider,
 } from "./routes/provider.ts";
 import {
   handleAddSource,
@@ -110,6 +113,23 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
     if (method === "PUT" && pathname === "/api/provider/default") {
       await handleSetDefaultModel(req, res);
       return;
+    }
+    if (method === "POST" && pathname === "/api/provider/providers") {
+      await handleCreateProvider(req, res);
+      return;
+    }
+    {
+      const params = matchRoute(pathname, "/api/provider/providers/:id");
+      if (params) {
+        if (method === "PUT") {
+          await handleUpdateProvider(req, res, params.id!);
+          return;
+        }
+        if (method === "DELETE") {
+          await handleDeleteProvider(req, res, params.id!);
+          return;
+        }
+      }
     }
     if (method === "POST" && pathname === "/api/provider/models") {
       await handleCreateModel(req, res);

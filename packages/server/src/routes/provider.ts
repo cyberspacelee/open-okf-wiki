@@ -1,7 +1,10 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   createModelProfile,
+  createProviderEntry,
   deleteModelProfile,
+  deleteProviderEntry,
+  flattenModels,
   getModelProfile,
   loadProviderConfig,
   probeLocalGit,
@@ -10,10 +13,12 @@ import {
   testProviderConnection,
   toProviderPublic,
   updateModelProfile,
+  updateProviderEntry,
 } from "@okf-wiki/core";
 import {
   ModelProfileWriteSchema,
   ProviderApiShapeSchema,
+  ProviderEntryWriteSchema,
 } from "@okf-wiki/contract";
 import {
   readJsonBody,
@@ -24,6 +29,78 @@ import {
 export async function handleGetProvider(_req: IncomingMessage, res: ServerResponse): Promise<void> {
   const config = await loadProviderConfig();
   sendJson(res, 200, { provider: toProviderPublic(config) });
+}
+
+export async function handleCreateProvider(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  const body = (await readJsonBody(req)) as unknown;
+  const parsed = ProviderEntryWriteSchema.safeParse(body);
+  if (!parsed.success) {
+    sendError(res, 400, "invalid provider", parsed.error.flatten());
+    return;
+  }
+  try {
+    const { config, provider } = await createProviderEntry(parsed.data);
+    const pub = toProviderPublic(config);
+    sendJson(res, 201, {
+      provider: pub,
+      entry: pub.providers.find((p) => p.id === provider.id),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendError(res, 400, message);
+  }
+}
+
+export async function handleUpdateProvider(
+  req: IncomingMessage,
+  res: ServerResponse,
+  providerId: string,
+): Promise<void> {
+  const body = (await readJsonBody(req)) as unknown;
+  const parsed = ProviderEntryWriteSchema.safeParse(body);
+  if (!parsed.success) {
+    sendError(res, 400, "invalid provider", parsed.error.flatten());
+    return;
+  }
+  try {
+    const { config, provider } = await updateProviderEntry(
+      providerId,
+      parsed.data,
+    );
+    const pub = toProviderPublic(config);
+    sendJson(res, 200, {
+      provider: pub,
+      entry: pub.providers.find((p) => p.id === provider.id),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith("provider not found")) {
+      sendError(res, 404, message);
+      return;
+    }
+    sendError(res, 400, message);
+  }
+}
+
+export async function handleDeleteProvider(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  providerId: string,
+): Promise<void> {
+  try {
+    const config = await deleteProviderEntry(providerId);
+    sendJson(res, 200, { provider: toProviderPublic(config) });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith("provider not found")) {
+      sendError(res, 404, message);
+      return;
+    }
+    sendError(res, 400, message);
+  }
 }
 
 export async function handleCreateModel(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -166,6 +243,16 @@ export async function handleTestProvider(req: IncomingMessage, res: ServerRespon
     return;
   }
 
+  const extraHeaders =
+    body &&
+    typeof body === "object" &&
+    "headers" in body &&
+    body.headers &&
+    typeof body.headers === "object" &&
+    !Array.isArray(body.headers)
+      ? (body.headers as Record<string, string>)
+      : runtime.headers;
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15_000);
   try {
@@ -174,6 +261,7 @@ export async function handleTestProvider(req: IncomingMessage, res: ServerRespon
       apiKey,
       apiShape,
       modelId,
+      headers: extraHeaders,
       signal: controller.signal,
     });
     sendJson(res, 200, { result });
@@ -204,8 +292,9 @@ export async function resolveWorkspaceModelSelection(input: {
     const profile = getModelProfile(catalog, catalog.defaultModelProfileId);
     return { id: profile.modelId, profileId: profile.id };
   }
-  if (catalog.models.length === 1) {
-    const profile = catalog.models[0]!;
+  const flat = flattenModels(catalog);
+  if (flat.length === 1) {
+    const profile = flat[0]!;
     return { id: profile.modelId, profileId: profile.id };
   }
 

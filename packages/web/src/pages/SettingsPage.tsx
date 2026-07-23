@@ -62,6 +62,10 @@ const emptyForm = {
   apiShape: "completions" as ProviderApiShape,
   /** Empty string means unset; digits-only string when set. */
   maxContextTokens: "",
+  /** Provider-level User-Agent (default node for gateway WAF). */
+  userAgent: "node",
+  /** When adding under an existing provider. */
+  providerId: "",
   clearApiKey: false,
 };
 
@@ -153,7 +157,22 @@ export function SettingsPage() {
         model.maxContextTokens !== undefined
           ? String(model.maxContextTokens)
           : "",
+      userAgent: model.headers?.["User-Agent"] ?? model.headers?.["user-agent"] ?? "node",
+      providerId: model.providerId ?? "",
       clearApiKey: false,
+    });
+    setTestResult(null);
+    setStatusMsg(null);
+  }
+
+  function openCreateUnderProvider(providerId: string, baseUrl: string, apiShape: ProviderApiShape) {
+    setEditorMode("create");
+    setEditingId(null);
+    setForm({
+      ...emptyForm,
+      providerId,
+      baseUrl,
+      apiShape,
     });
     setTestResult(null);
     setStatusMsg(null);
@@ -200,17 +219,23 @@ export function SettingsPage() {
         }
         maxContextTokens = parsed;
       }
+      const ua = form.userAgent.trim();
+      const headers = ua ? { "User-Agent": ua } : null;
       const payload = {
         name: form.name.trim(),
         modelId: form.modelId.trim(),
         baseUrl: form.baseUrl.trim(),
         apiShape: form.apiShape,
+        ...(form.providerId.trim()
+          ? { providerId: form.providerId.trim() }
+          : {}),
         ...(form.clearApiKey
           ? { apiKey: null as null }
           : form.apiKey.trim()
             ? { apiKey: form.apiKey.trim() }
             : {}),
         ...(maxContextTokens !== undefined ? { maxContextTokens } : {}),
+        headers,
       };
       const result =
         editorMode === "edit" && editingId
@@ -270,12 +295,14 @@ export function SettingsPage() {
     setError(null);
     setTestResult(null);
     try {
+      const ua = form.userAgent.trim();
       const result = await testProvider({
         modelProfileId: editingId ?? undefined,
         baseUrl: form.baseUrl.trim() || undefined,
         apiKey: form.clearApiKey ? "" : form.apiKey.trim() || undefined,
         apiShape: form.apiShape,
         modelId: form.modelId.trim() || undefined,
+        ...(ua ? { headers: { "User-Agent": ua } } : {}),
       });
       setTestResult(result.result);
     } catch (err) {
@@ -394,8 +421,13 @@ export function SettingsPage() {
             <TabsContent value="models" className="flex flex-col gap-4 outline-none">
             <Card data-testid="provider-panel">
               <CardHeader className="row-between items-center">
-                <CardTitle>{t.globalSettings.modelsTitle}</CardTitle>
-                <span className="muted small">
+                <div className="flex flex-col gap-1">
+                  <CardTitle>{t.globalSettings.modelsTitle}</CardTitle>
+                  <p className="muted small max-w-2xl">
+                    {t.globalSettings.providersHint}
+                  </p>
+                </div>
+                <span className="muted small shrink-0">
                   {formatMessage(t.globalSettings.modelsCount, { n: models.length })}
                   {provider?.defaultModelProfileId
                     ? ` · ${t.globalSettings.defaultSet}`
@@ -410,89 +442,165 @@ export function SettingsPage() {
                     {t.globalSettings.modelsEmpty}
                   </p>
                 ) : (
-                  <Table data-testid="models-table">
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>{t.globalSettings.colName}</TableHead>
-                        <TableHead>{t.globalSettings.colModelId}</TableHead>
-                        <TableHead>{t.globalSettings.colShape}</TableHead>
-                        <TableHead>{t.globalSettings.colBaseUrl}</TableHead>
-                        <TableHead>{t.globalSettings.colKey}</TableHead>
-                        <TableHead>{t.globalSettings.colMaxContext}</TableHead>
-                        <TableHead className="text-right">{t.globalSettings.colActions}</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {models.map((model) => {
-                        const isDefault = provider?.defaultModelProfileId === model.id;
-                        return (
-                          <TableRow key={model.id} data-testid="model-row" data-model-id={model.id}>
-                            <TableCell>
-                              <span className="font-medium">{model.name}</span>
-                              {isDefault ? (
-                                <Badge variant="secondary" className="ml-2">
-                                  {t.globalSettings.defaultBadge}
-                                </Badge>
-                              ) : null}
-                            </TableCell>
-                            <TableCell className="mono small">{model.modelId}</TableCell>
-                            <TableCell className="small">{model.apiShape}</TableCell>
-                            <TableCell className="mono small muted whitespace-normal">
-                              {model.baseUrl || "—"}
-                            </TableCell>
-                            <TableCell className="mono small">
-                              {model.apiKeySet ? model.apiKeyMasked ?? t.globalSettings.keySet : "—"}
-                            </TableCell>
-                            <TableCell
-                              className="mono small"
-                              data-testid="model-max-context-cell"
-                            >
-                              {model.maxContextTokens !== undefined
-                                ? model.maxContextTokens.toLocaleString()
+                  <div className="flex flex-col gap-4" data-testid="providers-list">
+                    {(provider?.providers?.length
+                      ? provider.providers
+                      : []
+                    ).map((entry) => (
+                      <Card key={entry.id} className="border-border/80" data-testid="provider-card" data-provider-id={entry.id}>
+                        <CardHeader className="row-between items-start py-3">
+                          <div className="min-w-0 flex flex-col gap-0.5">
+                            <CardTitle className="text-base">{entry.name}</CardTitle>
+                            <p className="mono small muted truncate">{entry.baseUrl || "—"}</p>
+                            <p className="small muted">
+                              {entry.apiShape}
+                              {" · "}
+                              {entry.apiKeySet
+                                ? entry.apiKeyMasked ?? t.globalSettings.keySet
                                 : "—"}
-                            </TableCell>
-                            <TableCell className="actions-cell">
-                              <div className="row-actions justify-end">
-                                {!isDefault ? (
-                                  <Button
-                                    type="button"
-                                    size="sm"
-                                    variant="ghost"
-                                    onClick={() => void handleSetDefault(model)}
-                                    data-testid="model-set-default"
+                              {entry.headers?.["User-Agent"]
+                                ? ` · UA=${entry.headers["User-Agent"]}`
+                                : ""}
+                            </p>
+                          </div>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              openCreateUnderProvider(
+                                entry.id,
+                                entry.baseUrl,
+                                entry.apiShape,
+                              )
+                            }
+                            data-testid="provider-add-model"
+                          >
+                            {t.globalSettings.addModelUnderProvider}
+                          </Button>
+                        </CardHeader>
+                        <CardContent className="pt-0">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>{t.globalSettings.colName}</TableHead>
+                                <TableHead>{t.globalSettings.colModelId}</TableHead>
+                                <TableHead>{t.globalSettings.colMaxContext}</TableHead>
+                                <TableHead className="text-right">
+                                  {t.globalSettings.colActions}
+                                </TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {entry.models.map((m) => {
+                                const model = models.find((x) => x.id === m.id);
+                                if (!model) return null;
+                                const isDefault =
+                                  provider?.defaultModelProfileId === model.id;
+                                return (
+                                  <TableRow
+                                    key={model.id}
+                                    data-testid="model-row"
+                                    data-model-id={model.id}
                                   >
-                                    {t.globalSettings.setDefault}
-                                  </Button>
-                                ) : null}
+                                    <TableCell>
+                                      <span className="font-medium">{model.name}</span>
+                                      {isDefault ? (
+                                        <Badge variant="secondary" className="ml-2">
+                                          {t.globalSettings.defaultBadge}
+                                        </Badge>
+                                      ) : null}
+                                    </TableCell>
+                                    <TableCell className="mono small">
+                                      {model.modelId}
+                                    </TableCell>
+                                    <TableCell className="mono small">
+                                      {model.maxContextTokens !== undefined
+                                        ? model.maxContextTokens.toLocaleString()
+                                        : "—"}
+                                    </TableCell>
+                                    <TableCell className="actions-cell">
+                                      <div className="row-actions justify-end">
+                                        {!isDefault ? (
+                                          <Button
+                                            type="button"
+                                            size="sm"
+                                            variant="ghost"
+                                            onClick={() => void handleSetDefault(model)}
+                                            data-testid="model-set-default"
+                                          >
+                                            {t.globalSettings.setDefault}
+                                          </Button>
+                                        ) : null}
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          variant="outline"
+                                          onClick={() => openEdit(model)}
+                                          data-testid="model-edit"
+                                        >
+                                          {t.globalSettings.edit}
+                                        </Button>
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          variant="destructive"
+                                          disabled={deletingId === model.id}
+                                          onClick={() => setDeleteTarget(model)}
+                                          data-testid="model-delete"
+                                        >
+                                          {deletingId === model.id ? (
+                                            <Spinner data-icon="inline-start" />
+                                          ) : null}
+                                          {deletingId === model.id
+                                            ? "…"
+                                            : t.globalSettings.delete}
+                                        </Button>
+                                      </div>
+                                    </TableCell>
+                                  </TableRow>
+                                );
+                              })}
+                            </TableBody>
+                          </Table>
+                        </CardContent>
+                      </Card>
+                    ))}
+                    {/* Fallback flat table if providers empty but models exist */}
+                    {!provider?.providers?.length && models.length > 0 ? (
+                      <Table data-testid="models-table">
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>{t.globalSettings.colName}</TableHead>
+                            <TableHead>{t.globalSettings.colModelId}</TableHead>
+                            <TableHead>{t.globalSettings.colBaseUrl}</TableHead>
+                            <TableHead className="text-right">
+                              {t.globalSettings.colActions}
+                            </TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {models.map((model) => (
+                            <TableRow key={model.id} data-testid="model-row">
+                              <TableCell>{model.name}</TableCell>
+                              <TableCell className="mono small">{model.modelId}</TableCell>
+                              <TableCell className="mono small">{model.baseUrl}</TableCell>
+                              <TableCell className="text-right">
                                 <Button
                                   type="button"
                                   size="sm"
                                   variant="outline"
                                   onClick={() => openEdit(model)}
-                                  data-testid="model-edit"
                                 >
                                   {t.globalSettings.edit}
                                 </Button>
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="destructive"
-                                  disabled={deletingId === model.id}
-                                  onClick={() => setDeleteTarget(model)}
-                                  data-testid="model-delete"
-                                >
-                                  {deletingId === model.id ? (
-                                    <Spinner data-icon="inline-start" />
-                                  ) : null}
-                                  {deletingId === model.id ? "…" : t.globalSettings.delete}
-                                </Button>
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    ) : null}
+                  </div>
                 )}
 
                 {provider ? (
@@ -686,6 +794,35 @@ export function SettingsPage() {
                           {t.globalSettings.maxContextTokensHint}
                         </FieldDescription>
                       </Field>
+                      <Field>
+                        <FieldLabel htmlFor="model-user-agent">
+                          {t.globalSettings.userAgent}
+                        </FieldLabel>
+                        <Input
+                          id="model-user-agent"
+                          value={form.userAgent}
+                          onChange={(e) =>
+                            setForm((f) => ({
+                              ...f,
+                              userAgent: e.target.value,
+                            }))
+                          }
+                          placeholder="node"
+                          className="font-mono"
+                          data-testid="model-user-agent"
+                          autoComplete="off"
+                        />
+                        <FieldDescription>
+                          {t.globalSettings.userAgentHint}
+                        </FieldDescription>
+                      </Field>
+                      {form.providerId ? (
+                        <p className="muted small" data-testid="model-provider-hint">
+                          {formatMessage(t.globalSettings.addingUnderProvider, {
+                            id: form.providerId,
+                          })}
+                        </p>
+                      ) : null}
                       <div className="form-actions">
                         <Button
                           type="submit"

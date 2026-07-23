@@ -65,7 +65,10 @@ export async function handleDoctor(_req: IncomingMessage, res: ServerResponse): 
     },
     provider: {
       configured: hasProviderCredentials(provider),
-      modelCount: provider.models.length,
+      modelCount: (provider.providers ?? []).reduce(
+        (n, p) => n + (p.models?.length ?? 0),
+        0,
+      ),
       defaultModelProfileId: provider.defaultModelProfileId ?? null,
       baseUrlSet: runtime.source.baseUrl !== "none",
       apiKeySet: runtime.source.apiKey !== "none",

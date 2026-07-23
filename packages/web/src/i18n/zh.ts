@@ -254,11 +254,15 @@ export const zh: MessageTree = {
     skillsSaving: "保存中…",
     skillsSaved: "已保存",
     appSettingsUnavailable: "无法加载应用设置。",
-    modelsTitle: "模型",
-    modelsCount: "已配置 {n} 个",
+    modelsTitle: "Provider 与模型",
+    providersHint:
+      "对齐 OpenCode：一个网关（Base URL + 密钥 + Headers）下可挂多个模型。User-Agent 默认 node，避免网关拦截 OpenAI SDK 指纹。",
+    modelsCount: "{n} 个模型",
     defaultSet: "已设默认",
     noDefault: "无默认",
-    modelsEmpty: "还没有模型。请至少添加一个 OpenAI 兼容模型，创建工作区时再选择。",
+    modelsEmpty:
+      "还没有 Provider。请添加 OpenAI 兼容网关与模型，创建工作区时再选择。",
+    addModelUnderProvider: "添加模型",
     colName: "名称",
     colModelId: "模型 ID",
     colShape: "接口形态",
@@ -275,7 +279,7 @@ export const zh: MessageTree = {
     envUnset: "未设置",
     keySet: "已设置",
     editorCreateTitle: "添加模型",
-    editorEditTitle: "编辑模型",
+    editorEditTitle: "编辑模型 / Provider 连接",
     displayName: "显示名称",
     displayNamePlaceholder: "企业 GPT-4o",
     modelIdLabel: "模型 ID",
@@ -291,6 +295,10 @@ export const zh: MessageTree = {
     apiShape: "API 形态",
     shapeCompletions: "Chat Completions",
     shapeResponses: "Responses",
+    userAgent: "User-Agent（Provider）",
+    userAgentHint:
+      "Agent 请求（Pi/OpenAI SDK）使用。若网关拦截 OpenAI/JS，请用 node。同一 endpoint 下所有模型共享。",
+    addingUnderProvider: "正在添加到 Provider {id}",
     maxContextTokens: "最大上下文（tokens）",
     maxContextTokensHint:
       "该模型的提供方硬上下文窗口。生成 Wiki 时占用约 85%（或工作区上下文目标）会自动压缩历史。",

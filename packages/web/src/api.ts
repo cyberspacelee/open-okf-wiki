@@ -13,6 +13,7 @@ import type {
   ModelProfileWrite,
   PiSessionSummary,
   ProviderApiShape,
+  ProviderEntryPublic,
   ProviderPublic,
   ProviderTestResult,
   RunSseEvent,
@@ -39,6 +40,7 @@ export type {
   ModelProfilePublic,
   PiSessionSummary,
   ProviderApiShape,
+  ProviderEntryPublic,
   ProviderPublic,
   ProviderTestResult,
   RunSseEvent,
@@ -328,6 +330,7 @@ export function testProvider(input?: {
   apiKey?: string;
   apiShape?: ProviderApiShape;
   modelId?: string;
+  headers?: Record<string, string>;
 }): Promise<{ result: ProviderTestResult }> {
   return request<{ result: ProviderTestResult }>("/api/provider/test", {
     method: "POST",

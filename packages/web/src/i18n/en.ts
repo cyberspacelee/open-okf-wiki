@@ -258,12 +258,15 @@ export const en = {
     skillsSaving: "Saving…",
     skillsSaved: "Saved",
     appSettingsUnavailable: "App settings unavailable.",
-    modelsTitle: "Models",
-    modelsCount: "{n} configured",
+    modelsTitle: "Providers & models",
+    providersHint:
+      "OpenCode-style: one gateway (base URL + key + headers) can host many models. User-Agent defaults to node for gateways that block the OpenAI SDK fingerprint.",
+    modelsCount: "{n} models",
     defaultSet: "default set",
     noDefault: "no default",
     modelsEmpty:
-      "No models yet. Add at least one OpenAI-compatible model, then select it when creating a workspace.",
+      "No providers yet. Add an OpenAI-compatible gateway + model, then select it when creating a workspace.",
+    addModelUnderProvider: "Add model",
     colName: "Name",
     colModelId: "Model id",
     colShape: "Shape",
@@ -280,7 +283,7 @@ export const en = {
     envUnset: "unset",
     keySet: "set",
     editorCreateTitle: "Add model",
-    editorEditTitle: "Edit model",
+    editorEditTitle: "Edit model / provider connection",
     displayName: "Display name",
     displayNamePlaceholder: "Corp GPT-4o",
     modelIdLabel: "Model id",
@@ -296,6 +299,10 @@ export const en = {
     apiShape: "API shape",
     shapeCompletions: "Chat Completions",
     shapeResponses: "Responses",
+    userAgent: "User-Agent (provider)",
+    userAgentHint:
+      "Sent on agent requests (Pi/OpenAI SDK). Use node if the gateway blocks OpenAI/JS. Shared by all models on this endpoint.",
+    addingUnderProvider: "Adding under provider {id}",
     maxContextTokens: "Max context (tokens)",
     maxContextTokensHint:
       "Provider hard context window for this model. Wiki Runs auto-compact when usage reaches about 85% of this value (or the workspace context target).",
