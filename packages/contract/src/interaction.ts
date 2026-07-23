@@ -15,11 +15,7 @@ export const InteractionOptionSchema = z.object({
 export type InteractionOption = z.infer<typeof InteractionOptionSchema>;
 
 /** How the UI collects the user's answer. */
-export const InteractionModeSchema = z.enum([
-  "choice_only",
-  "input_only",
-  "choice_or_input",
-]);
+export const InteractionModeSchema = z.enum(["choice_only", "input_only", "choice_or_input"]);
 
 export type InteractionMode = z.infer<typeof InteractionModeSchema>;
 

@@ -1,16 +1,14 @@
-import { defineConfig, devices } from "@playwright/test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { defineConfig, devices } from "@playwright/test";
 
 const webRoot = path.dirname(fileURLToPath(import.meta.url));
 const monorepoRoot = path.resolve(webRoot, "../..");
 
 // Fresh home per config load so parallel CI jobs / re-runs don't share index state.
-const pwHome =
-  process.env.OKF_WIKI_HOME ??
-  mkdtempSync(path.join(tmpdir(), "okf-wiki-pw-home-"));
+const pwHome = process.env.OKF_WIKI_HOME ?? mkdtempSync(path.join(tmpdir(), "okf-wiki-pw-home-"));
 
 export default defineConfig({
   testDir: "./e2e",
@@ -26,10 +24,7 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   // Serial until the app has safe concurrent index locking.
   workers: 1,
-  reporter: [
-    ["list"],
-    ["html", { open: "never", outputFolder: "playwright-report" }],
-  ],
+  reporter: [["list"], ["html", { open: "never", outputFolder: "playwright-report" }]],
   timeout: 60_000,
   expect: {
     timeout: 15_000,

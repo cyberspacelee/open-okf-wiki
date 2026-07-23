@@ -25,6 +25,8 @@ jobs:
         run: pnpm typecheck
       - name: ESLint
         run: pnpm lint
+      - name: Format (Biome)
+        run: pnpm format:check
 
   web-e2e:
     runs-on: ubuntu-latest

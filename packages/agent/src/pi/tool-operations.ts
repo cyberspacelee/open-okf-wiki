@@ -13,14 +13,9 @@
  * when an ignore list is provided.
  */
 
-import { access, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
+import { access, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import {
-  isPathInside,
-  pathMatchesIgnore,
-  resolveContainedPath,
-} from "@okf-wiki/core";
 import {
   createEditToolDefinition,
   createFindToolDefinition,
@@ -35,6 +30,7 @@ import {
   type ToolDefinition,
   type WriteOperations,
 } from "@earendil-works/pi-coding-agent";
+import { isPathInside, pathMatchesIgnore, resolveContainedPath } from "@okf-wiki/core";
 
 /** Relative trees writable by write roles (trailing slash for prefix match). */
 export const WRITE_SCOPE_PREFIXES = ["wiki/", "analysis/"] as const;
@@ -44,9 +40,7 @@ export const READ_ONLY_PREFIXES = ["sources/", "skill/"] as const;
 
 export type PathAccessMode = "read" | "write";
 
-export type SourceIgnoreInput =
-  | ReadonlyMap<string, readonly string[]>
-  | readonly string[];
+export type SourceIgnoreInput = ReadonlyMap<string, readonly string[]> | readonly string[];
 
 export type AssertPathAllowedOptions = {
   mode: PathAccessMode;
@@ -190,14 +184,10 @@ export function assertPathAllowed(
       throw new Error("write path must be under wiki/ or analysis/");
     }
     if (isReadOnlyTreeRel(norm)) {
-      throw new Error(
-        `write denied: sources/ and skill/ are read-only (${norm})`,
-      );
+      throw new Error(`write denied: sources/ and skill/ are read-only (${norm})`);
     }
     if (!isWriteScopeRel(norm)) {
-      throw new Error(
-        `write denied: path must be under wiki/ or analysis/ (got ${norm})`,
-      );
+      throw new Error(`write denied: path must be under wiki/ or analysis/ (got ${norm})`);
     }
     return abs;
   }
@@ -247,9 +237,7 @@ function guardAbs(
 }
 
 /** Read Operations: contain to runWorkDir + optional source ignores. */
-export function createWikiReadOperations(
-  options: WikiToolOperationsOptions,
-): ReadOperations {
+export function createWikiReadOperations(options: WikiToolOperationsOptions): ReadOperations {
   const { runWorkDir, sourceIgnores } = options;
   return {
     async readFile(absolutePath) {
@@ -264,9 +252,7 @@ export function createWikiReadOperations(
 }
 
 /** Write Operations: only wiki/ + analysis/. */
-export function createWikiWriteOperations(
-  options: WikiToolOperationsOptions,
-): WriteOperations {
+export function createWikiWriteOperations(options: WikiToolOperationsOptions): WriteOperations {
   const { runWorkDir } = options;
   return {
     async writeFile(absolutePath, content) {
@@ -281,9 +267,7 @@ export function createWikiWriteOperations(
 }
 
 /** Edit Operations: read+write under write scope only. */
-export function createWikiEditOperations(
-  options: WikiToolOperationsOptions,
-): EditOperations {
+export function createWikiEditOperations(options: WikiToolOperationsOptions): EditOperations {
   const { runWorkDir } = options;
   return {
     async readFile(absolutePath) {
@@ -303,9 +287,7 @@ export function createWikiEditOperations(
 }
 
 /** Ls Operations: contain + hide ignored source entries when listing. */
-export function createWikiLsOperations(
-  options: WikiToolOperationsOptions,
-): LsOperations {
+export function createWikiLsOperations(options: WikiToolOperationsOptions): LsOperations {
   const { runWorkDir, sourceIgnores } = options;
   const root = path.resolve(runWorkDir);
   return {
@@ -338,9 +320,7 @@ export function createWikiLsOperations(
 }
 
 /** Grep Operations: path containment + ignore on readFile. */
-export function createWikiGrepOperations(
-  options: WikiToolOperationsOptions,
-): GrepOperations {
+export function createWikiGrepOperations(options: WikiToolOperationsOptions): GrepOperations {
   const { runWorkDir, sourceIgnores } = options;
   return {
     async isDirectory(absolutePath) {

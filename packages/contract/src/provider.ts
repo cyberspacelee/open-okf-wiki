@@ -172,9 +172,7 @@ export const ModelProfileWriteSchema = z.object({
   apiKey: z.union([z.string(), z.null()]).optional(),
   apiShape: ProviderApiShapeSchema.default("completions"),
   id: z.string().trim().min(1).max(64).optional(),
-  maxContextTokens: z
-    .union([z.number().int().positive().max(10_000_000), z.null()])
-    .optional(),
+  maxContextTokens: z.union([z.number().int().positive().max(10_000_000), z.null()]).optional(),
   headers: z.union([z.record(z.string(), z.string()), z.null()]).optional(),
   /** Provider-level; omit on update to keep. Default false on create. */
   supportsDeveloperRole: z.boolean().optional(),

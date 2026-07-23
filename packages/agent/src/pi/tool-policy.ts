@@ -4,13 +4,7 @@
  */
 
 /** Pi coding-agent built-in tool names we may enable. */
-export type PiFsToolName =
-  | "read"
-  | "grep"
-  | "find"
-  | "ls"
-  | "write"
-  | "edit";
+export type PiFsToolName = "read" | "grep" | "find" | "ls" | "write" | "edit";
 
 /** Semantic roles that own a tool allowlist. */
 export type WikiAgentRole =
@@ -22,12 +16,7 @@ export type WikiAgentRole =
   | "reviewer"
   | "operator_chat";
 
-const READ_ONLY: readonly PiFsToolName[] = [
-  "read",
-  "grep",
-  "find",
-  "ls",
-] as const;
+const READ_ONLY: readonly PiFsToolName[] = ["read", "grep", "find", "ls"] as const;
 
 const READ_WRITE: readonly PiFsToolName[] = [
   "read",
@@ -90,7 +79,5 @@ export function assertSafeWikiToolList(
 }
 
 export function isReadOnlyToolList(tools: readonly string[]): boolean {
-  return tools.every(
-    (t) => t === "read" || t === "grep" || t === "find" || t === "ls",
-  );
+  return tools.every((t) => t === "read" || t === "grep" || t === "find" || t === "ls");
 }

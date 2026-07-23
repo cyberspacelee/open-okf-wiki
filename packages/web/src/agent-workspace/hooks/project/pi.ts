@@ -13,12 +13,7 @@ import {
   makeId,
   nowIso,
 } from "./format.ts";
-import type {
-  AgentMessage,
-  AgentToolCall,
-  StreamCursor,
-  StreamingRefs,
-} from "./types.ts";
+import type { AgentMessage, AgentToolCall, StreamCursor, StreamingRefs } from "./types.ts";
 
 function messageRole(message: unknown): string | null {
   if (!isRecord(message) || typeof message.role !== "string") return null;
@@ -59,10 +54,7 @@ function ensureAssistantBubble(
   const lastIdx = findMessageIndex(prev, cursor.lastAssistantId);
   // Reuse the turn's assistant while streaming OR while the parent turn is
   // still open (post-tool text_delta after message_end must not open a peer).
-  if (
-    lastIdx >= 0 &&
-    (prev[lastIdx]!.status === "streaming" || cursor.turnActive)
-  ) {
+  if (lastIdx >= 0 && (prev[lastIdx]!.status === "streaming" || cursor.turnActive)) {
     cursor.streamingAssistantId = prev[lastIdx]!.id;
     return { messages: prev, assistantId: prev[lastIdx]!.id };
   }
@@ -162,23 +154,14 @@ export function applyPiEvent(
     if (role && role !== "assistant") return prev;
 
     // Same-turn replay onto a completed hist_* assistant: ignore stream deltas.
-    if (
-      cursor.turnActive &&
-      cursor.lastAssistantId &&
-      !cursor.streamingAssistantId
-    ) {
+    if (cursor.turnActive && cursor.lastAssistantId && !cursor.streamingAssistantId) {
       const idx = findMessageIndex(prev, cursor.lastAssistantId);
-      if (
-        idx >= 0 &&
-        (prev[idx]!.status === "done" || prev[idx]!.status === "error")
-      ) {
+      if (idx >= 0 && (prev[idx]!.status === "done" || prev[idx]!.status === "error")) {
         return prev;
       }
     }
 
-    const ame = isRecord(body.assistantMessageEvent)
-      ? body.assistantMessageEvent
-      : null;
+    const ame = isRecord(body.assistantMessageEvent) ? body.assistantMessageEvent : null;
 
     if (ame?.type === "text_delta" && typeof ame.delta === "string") {
       const delta = ame.delta;
@@ -225,16 +208,12 @@ export function applyPiEvent(
 
     if (ame?.type === "thinking_end") {
       const ensured = ensureAssistantBubble(prev, cursor, ts);
-      const endContent =
-        typeof ame.content === "string" ? ame.content : undefined;
+      const endContent = typeof ame.content === "string" ? ame.content : undefined;
       return ensured.messages.map((m) =>
         m.id === ensured.assistantId
           ? {
               ...m,
-              thinking:
-                endContent && endContent.length > 0
-                  ? endContent
-                  : (m.thinking ?? ""),
+              thinking: endContent && endContent.length > 0 ? endContent : (m.thinking ?? ""),
               thinkingStatus: "done" as const,
               status: "streaming",
             }
@@ -248,11 +227,7 @@ export function applyPiEvent(
     if (message && !ame) {
       const text = extractMessageText(message);
       const thinking = extractMessageThinking(message);
-      if (
-        text.length === 0 &&
-        thinking.length === 0 &&
-        !cursor.streamingAssistantId
-      ) {
+      if (text.length === 0 && thinking.length === 0 && !cursor.streamingAssistantId) {
         return prev;
       }
       const ensured = ensureAssistantBubble(prev, cursor, ts);
@@ -263,10 +238,7 @@ export function applyPiEvent(
               // Replace (not append) — snapshot is the full partial message.
               content: text.length > 0 ? text : m.content,
               thinking: thinking.length > 0 ? thinking : m.thinking,
-              thinkingStatus:
-                thinking.length > 0
-                  ? ("streaming" as const)
-                  : m.thinkingStatus,
+              thinkingStatus: thinking.length > 0 ? ("streaming" as const) : m.thinkingStatus,
               status: "streaming",
             }
           : m,
@@ -312,9 +284,7 @@ export function applyPiEvent(
           );
           if (
             last.status === "streaming" ||
-            (toolsRunning &&
-              !last.content?.trim() &&
-              !last.thinking?.trim())
+            (toolsRunning && !last.content?.trim() && !last.thinking?.trim())
           ) {
             reuseId = last.id;
           }
@@ -349,10 +319,7 @@ export function applyPiEvent(
       return prev.map((m) => {
         if (m.id !== reuseId) return m;
         const continuing =
-          cursor.turnActive &&
-          Boolean(m.content?.trim()) &&
-          m.status !== "streaming" &&
-          !isError;
+          cursor.turnActive && Boolean(m.content?.trim()) && m.status !== "streaming" && !isError;
         return {
           ...m,
           content: isError
@@ -421,16 +388,9 @@ export function applyPiEvent(
     }
 
     // Replay onto completed hist_*: keep body, just clear streaming cursor.
-    if (
-      cursor.turnActive &&
-      cursor.lastAssistantId &&
-      !cursor.streamingAssistantId
-    ) {
+    if (cursor.turnActive && cursor.lastAssistantId && !cursor.streamingAssistantId) {
       const idx = findMessageIndex(prev, cursor.lastAssistantId);
-      if (
-        idx >= 0 &&
-        (prev[idx]!.status === "done" || prev[idx]!.status === "error")
-      ) {
+      if (idx >= 0 && (prev[idx]!.status === "done" || prev[idx]!.status === "error")) {
         return prev;
       }
     }
@@ -529,10 +489,8 @@ export function applyPiEvent(
 
   // --- tool_execution_start -------------------------------------------------
   if (kind === "tool_execution_start") {
-    const toolCallId =
-      typeof body.toolCallId === "string" ? body.toolCallId : makeId("tool");
-    const toolName =
-      typeof body.toolName === "string" ? body.toolName : "tool";
+    const toolCallId = typeof body.toolCallId === "string" ? body.toolCallId : makeId("tool");
+    const toolName = typeof body.toolName === "string" ? body.toolName : "tool";
     const input = compactToolInput(body.args);
     const tool: AgentToolCall = {
       id: toolCallId,
@@ -583,8 +541,7 @@ export function applyPiEvent(
   }
 
   if (kind === "tool_execution_update") {
-    const toolCallId =
-      typeof body.toolCallId === "string" ? body.toolCallId : null;
+    const toolCallId = typeof body.toolCallId === "string" ? body.toolCallId : null;
     if (!toolCallId) return prev;
     const partial = formatToolResultText(body.partialResult);
     return prev.map((m) => {
@@ -601,8 +558,7 @@ export function applyPiEvent(
   }
 
   if (kind === "tool_execution_end") {
-    const toolCallId =
-      typeof body.toolCallId === "string" ? body.toolCallId : null;
+    const toolCallId = typeof body.toolCallId === "string" ? body.toolCallId : null;
     if (!toolCallId) return prev;
     const output = formatToolResultText(body.result);
     const isError = body.isError === true;
@@ -624,16 +580,12 @@ export function applyPiEvent(
   }
 
   if (kind === "error") {
-    const errMessage =
-      typeof body.message === "string" ? body.message : "Agent error";
+    const errMessage = typeof body.message === "string" ? body.message : "Agent error";
     // Dedupe: assistant bubble already carries the same provider error.
     for (let i = prev.length - 1; i >= 0; i -= 1) {
       const m = prev[i]!;
       if (m.role === "assistant") {
-        if (
-          m.status === "error" &&
-          (m.errorMessage === errMessage || m.content === errMessage)
-        ) {
+        if (m.status === "error" && (m.errorMessage === errMessage || m.content === errMessage)) {
           return prev;
         }
         break;

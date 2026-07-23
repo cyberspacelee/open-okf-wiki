@@ -4,19 +4,14 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { WorkspaceRunPage } from "./pages/WorkspaceRunPage";
 import { WorkspaceSettingsPage } from "./pages/WorkspaceSettingsPage";
 import { WorkspaceSourcesPage } from "./pages/WorkspaceSourcesPage";
-import { WorkspaceWikiPage } from "./pages/WorkspaceWikiPage";
 import { WorkspacesPage } from "./pages/WorkspacesPage";
+import { WorkspaceWikiPage } from "./pages/WorkspaceWikiPage";
 
 /** Redirect legacy `/workspaces/:id` and `/session` paths → `/w/:id` (preserve query). */
 function LegacyWorkspaceRedirect() {
   const { id = "" } = useParams<{ id: string }>();
   const location = useLocation();
-  return (
-    <Navigate
-      to={`/w/${encodeURIComponent(id)}${location.search}`}
-      replace
-    />
-  );
+  return <Navigate to={`/w/${encodeURIComponent(id)}${location.search}`} replace />;
 }
 
 export default function App() {

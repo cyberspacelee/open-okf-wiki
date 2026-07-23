@@ -1,9 +1,12 @@
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 
 test.describe("relative path rejected", () => {
   test("create with relative rootPath shows error banner", async ({ page }) => {
     await page.goto("/workspaces");
-    await page.getByRole("button", { name: /^create( workspace)?$/i }).first().click();
+    await page
+      .getByRole("button", { name: /^create( workspace)?$/i })
+      .first()
+      .click();
     await expect(page.getByTestId("workspace-create-form")).toBeVisible();
 
     await page.getByTestId("workspace-name-input").fill("Relative Root WS");

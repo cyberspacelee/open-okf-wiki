@@ -5,6 +5,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
+import { AgentWorkspaceShell } from "../agent-workspace/AgentWorkspaceShell";
+import { useSessionAgent } from "../agent-workspace/hooks/useSessionAgent";
 import {
   createAgentSession,
   deleteAgentSession,
@@ -19,8 +21,6 @@ import {
 } from "../api";
 import { LoadingState } from "../components/LoadingState";
 import { WorkspaceShell } from "../components/WorkspaceShell";
-import { AgentWorkspaceShell } from "../agent-workspace/AgentWorkspaceShell";
-import { useSessionAgent } from "../agent-workspace/hooks/useSessionAgent";
 import { useI18n } from "../i18n";
 
 export function AgentWorkspacePage() {
@@ -40,9 +40,7 @@ export function AgentWorkspacePage() {
   const [creating, setCreating] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [models, setModels] = useState<ModelProfilePublic[]>([]);
-  const [defaultModelProfileId, setDefaultModelProfileId] = useState<
-    string | undefined
-  >();
+  const [defaultModelProfileId, setDefaultModelProfileId] = useState<string | undefined>();
   const [wikiModelProfileId, setWikiModelProfileId] = useState("");
 
   const rootPath = workspace?.rootPath ?? rootPathHint;
@@ -116,17 +114,11 @@ export function AgentWorkspacePage() {
       setDefaultModelProfileId(providerRes?.provider.defaultModelProfileId);
       // Prefer workspace selection, then catalog default, then first model.
       const initialProfile =
-        ws.model?.profileId ||
-        providerRes?.provider.defaultModelProfileId ||
-        catalog[0]?.id ||
-        "";
+        ws.model?.profileId || providerRes?.provider.defaultModelProfileId || catalog[0]?.id || "";
       setWikiModelProfileId(initialProfile);
 
       let list = sessRes.sessions ?? [];
-      let sessionId =
-        searchParams.get("sessionId") ??
-        list[0]?.id ??
-        null;
+      let sessionId = searchParams.get("sessionId") ?? list[0]?.id ?? null;
 
       if (sessionId && !list.some((s) => s.id === sessionId)) {
         // URL id missing on disk — fall through to create/latest.
@@ -210,8 +202,7 @@ export function AgentWorkspacePage() {
       try {
         await deleteAgentSession(id, sessionId, rootPath);
         let nextList = sessions.filter((s) => s.id !== sessionId);
-        let nextActive =
-          activeSessionId === sessionId ? null : activeSessionId;
+        let nextActive = activeSessionId === sessionId ? null : activeSessionId;
 
         if (nextList.length === 0) {
           const created = await createAgentSession(id, {}, rootPath);
@@ -238,19 +229,11 @@ export function AgentWorkspacePage() {
         setDeletingId(null);
       }
     },
-    [
-      id,
-      deletingId,
-      rootPath,
-      sessions,
-      activeSessionId,
-      syncSessionIdInUrl,
-    ],
+    [id, deletingId, rootPath, sessions, activeSessionId, syncSessionIdInUrl],
   );
 
   // Refresh session list titles after first prompt auto-titles the active session.
-  const activeListTitle =
-    sessions.find((s) => s.id === activeSessionId)?.title ?? "";
+  const activeListTitle = sessions.find((s) => s.id === activeSessionId)?.title ?? "";
   const activeTitleLooksDefault =
     !activeListTitle ||
     activeListTitle.startsWith("Wiki Agent · ") ||
@@ -274,13 +257,7 @@ export function AgentWorkspacePage() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [
-    id,
-    activeSessionId,
-    rootPath,
-    userMessageCount,
-    activeTitleLooksDefault,
-  ]);
+  }, [id, activeSessionId, rootPath, userMessageCount, activeTitleLooksDefault]);
 
   return (
     <WorkspaceShell
@@ -331,9 +308,7 @@ export function AgentWorkspacePage() {
           models={models}
           wikiModelProfileId={wikiModelProfileId}
           onWikiModelProfileIdChange={setWikiModelProfileId}
-          defaultModelProfileId={
-            workspace.model?.profileId ?? defaultModelProfileId
-          }
+          defaultModelProfileId={workspace.model?.profileId ?? defaultModelProfileId}
           units={agent.units}
           expandedUnitId={agent.expandedUnitId}
           onExpandedUnitIdChange={handleExpandedUnitIdChange}

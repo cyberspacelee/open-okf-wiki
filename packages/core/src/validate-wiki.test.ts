@@ -32,14 +32,8 @@ const listingIndex = `# Pages
 
 test("hasNonEmptyTitleFrontmatter accepts quoted and plain titles", () => {
   assert.equal(hasNonEmptyTitleFrontmatter("---\ntitle: Hello\n---\n\n# H\n"), true);
-  assert.equal(
-    hasNonEmptyTitleFrontmatter('---\ntitle: "Quoted Title"\n---\n\nx\n'),
-    true,
-  );
-  assert.equal(
-    hasNonEmptyTitleFrontmatter("---\ntitle: 'Also Fine'\n---\n\nx\n"),
-    true,
-  );
+  assert.equal(hasNonEmptyTitleFrontmatter('---\ntitle: "Quoted Title"\n---\n\nx\n'), true);
+  assert.equal(hasNonEmptyTitleFrontmatter("---\ntitle: 'Also Fine'\n---\n\nx\n"), true);
 });
 
 test("hasNonEmptyTitleFrontmatter rejects missing or empty title", () => {
@@ -74,11 +68,7 @@ test("validateWikiTree accepts a minimal valid tree", async () => {
 
 test("validateWikiTree rejects concept page without type", async () => {
   const root = await tempDir("okf-val-type-");
-  await writeMd(
-    root,
-    "overview.md",
-    "---\ntitle: Overview\n---\n\n# Overview\n\nBody.\n",
-  );
+  await writeMd(root, "overview.md", "---\ntitle: Overview\n---\n\n# Overview\n\nBody.\n");
   const result = await validateWikiTree(root);
   assert.equal(result.ok, false);
   assert.match(result.errors.join(" "), /type/i);
@@ -86,7 +76,11 @@ test("validateWikiTree rejects concept page without type", async () => {
 
 test("validateWikiTree exempts index.md from title/type and citations", async () => {
   const root = await tempDir("okf-val-idx-");
-  await writeMd(root, "overview.md", goodPage("Overview", "Note [Source](repo:README.md#L1).", "Overview"));
+  await writeMd(
+    root,
+    "overview.md",
+    goodPage("Overview", "Note [Source](repo:README.md#L1).", "Overview"),
+  );
   await writeMd(root, "index.md", listingIndex);
   // Sources supplied → concept pages need citations; index does not.
   const srcRoot = await tempDir("okf-val-src-");
@@ -148,11 +142,7 @@ test("validateWikiTree rejects symlink entries inside tree", async () => {
 test("validateWikiTree rejects oversized file", async () => {
   const root = await tempDir("okf-val-size-");
   const big = "x".repeat(WIKI_VALIDATE_MAX_FILE_BYTES + 10);
-  await writeMd(
-    root,
-    "huge.md",
-    `---\ntype: Concept\ntitle: Huge\n---\n\n${big}\n`,
-  );
+  await writeMd(root, "huge.md", `---\ntype: Concept\ntitle: Huge\n---\n\n${big}\n`);
   const result = await validateWikiTree(root);
   assert.equal(result.ok, false);
   assert.match(result.errors.join(" "), /max file size/i);

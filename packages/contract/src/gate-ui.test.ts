@@ -71,8 +71,7 @@ test("mapRunGateToGateUi mirrors suspend map options", () => {
   const fromRun = mapRunGateToGateUi({ gate: "plan", plan: samplePlan });
   assert.deepEqual(fromRun?.pending.options, fromSuspend?.pending.options);
   assert.deepEqual(
-    mapRunGateToGateUi({ gate: "publication", pages: ["a.md"] })?.pending
-      .options,
+    mapRunGateToGateUi({ gate: "publication", pages: ["a.md"] })?.pending.options,
     optionsForPublishGate(),
   );
 });

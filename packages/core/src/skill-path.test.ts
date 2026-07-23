@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, test } from "node:test";
@@ -45,12 +45,7 @@ test("ensureHomeProducerSkill skips package resolve when home skill exists", asy
 
   const fakeHome = await mkdtemp(path.join(tmpdir(), "okf-existing-home-"));
   process.env.HOME = fakeHome;
-  const skillDir = path.join(
-    fakeHome,
-    ".agents",
-    "skills",
-    "repository-wiki-producer",
-  );
+  const skillDir = path.join(fakeHome, ".agents", "skills", "repository-wiki-producer");
   await mkdir(skillDir, { recursive: true });
   await writeFile(
     path.join(skillDir, "SKILL.md"),
@@ -88,12 +83,7 @@ test("resolveSkillSource prefers workspace .agents/skills over home", async () =
   process.env.HOME = fakeHome;
 
   const workspace = await mkdtemp(path.join(tmpdir(), "okf-ws-"));
-  const projectSkill = path.join(
-    workspace,
-    ".agents",
-    "skills",
-    "repository-wiki-producer",
-  );
+  const projectSkill = path.join(workspace, ".agents", "skills", "repository-wiki-producer");
   await mkdir(projectSkill, { recursive: true });
   await writeFile(
     path.join(projectSkill, "SKILL.md"),

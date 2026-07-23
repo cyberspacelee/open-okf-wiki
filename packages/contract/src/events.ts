@@ -47,16 +47,7 @@ export type ToolPartState = z.infer<typeof ToolPartStateSchema>;
  * Includes coarse status events and AI-SDK-style parts (text / tool / subagent).
  */
 export const RunSseEventSchema = z.object({
-  type: z.enum([
-    "status",
-    "log",
-    "error",
-    "done",
-    "text",
-    "tool",
-    "tool_result",
-    "part",
-  ]),
+  type: z.enum(["status", "log", "error", "done", "text", "tool", "tool_result", "part"]),
   runId: z.string().min(1),
   sequence: z.number().int().nonnegative(),
   status: WikiRunRecordStatusSchema.optional(),

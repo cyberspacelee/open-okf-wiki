@@ -1,10 +1,8 @@
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { uniqueWorkspaceRoot } from "./helpers";
 
 test.describe("create workspace", () => {
-  test("creates workspace with absolute root and lands on agent workspace", async ({
-    page,
-  }) => {
+  test("creates workspace with absolute root and lands on agent workspace", async ({ page }) => {
     const rootPath = uniqueWorkspaceRoot();
     const name = `E2E Workspace ${Date.now()}`;
 
@@ -12,9 +10,7 @@ test.describe("create workspace", () => {
     await expect(page.getByTestId("workspaces-page")).toBeVisible();
 
     // Open create form (header Create or empty-state button)
-    const createToggle = page
-      .getByRole("button", { name: /^create( workspace)?$/i })
-      .first();
+    const createToggle = page.getByRole("button", { name: /^create( workspace)?$/i }).first();
     await createToggle.click();
     await expect(page.getByTestId("workspace-create-form")).toBeVisible();
 

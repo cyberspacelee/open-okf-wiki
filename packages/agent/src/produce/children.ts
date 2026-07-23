@@ -11,13 +11,10 @@
 
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import {
-  createWikiSession,
-  type WikiSessionHandle,
-} from "../pi/create-wiki-session.js";
 import { resolveAssistantSummary } from "../pi/assistant-outcome.js";
-import type { WikiAgentRole } from "../pi/tool-policy.js";
+import { createWikiSession, type WikiSessionHandle } from "../pi/create-wiki-session.js";
 import type { SourceIgnoreInput } from "../pi/tool-operations.js";
+import type { WikiAgentRole } from "../pi/tool-policy.js";
 import type { ProduceAgentRole } from "./events.js";
 
 export type ChildRole = Extract<
@@ -90,9 +87,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * Run a read-only child agent for research/review/plan.
  * Always uses role allowlist (no write, no bash).
  */
-export async function runChildSession(
-  input: RunChildSessionInput,
-): Promise<RunChildSessionResult> {
+export async function runChildSession(input: RunChildSessionInput): Promise<RunChildSessionResult> {
   if (input.abortSignal?.aborted) {
     const err = new Error("Wiki Run cancelled");
     err.name = "AbortError";
@@ -175,9 +170,7 @@ export async function runChildSession(
       // Narrow via unknown — Pi event unions omit assistantMessageEvent on some arms.
       const raw = event as unknown;
       if (!isRecord(raw)) return;
-      const ame = isRecord(raw.assistantMessageEvent)
-        ? raw.assistantMessageEvent
-        : null;
+      const ame = isRecord(raw.assistantMessageEvent) ? raw.assistantMessageEvent : null;
       if (!ame) return;
       if (ame.type === "text_delta" && typeof ame.delta === "string") {
         text += ame.delta;
@@ -240,10 +233,7 @@ export async function runChildrenParallel(
     }
   }
 
-  const workers = Array.from(
-    { length: Math.min(concurrency, tasks.length) },
-    () => worker(),
-  );
+  const workers = Array.from({ length: Math.min(concurrency, tasks.length) }, () => worker());
   await Promise.all(workers);
   return results;
 }

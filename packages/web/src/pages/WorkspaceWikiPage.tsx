@@ -1,10 +1,21 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { cjk } from "@streamdown/cjk";
 import { code } from "@streamdown/code";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
-import { Streamdown, type Components } from "streamdown";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { type Components, Streamdown } from "streamdown";
+import { buttonVariants } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
+} from "@/components/ui/empty";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { cn } from "@/lib/utils";
 import {
   ApiError,
   getWikiPage,
@@ -17,17 +28,6 @@ import { LoadingState } from "../components/LoadingState";
 import { WorkspaceShell } from "../components/WorkspaceShell";
 import { useI18n } from "../i18n";
 import { agentWorkspaceHref } from "../lib/workspace-path";
-import { buttonVariants } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Empty,
-  EmptyContent,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyTitle,
-} from "@/components/ui/empty";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { cn } from "@/lib/utils";
 
 const streamdownPlugins = { cjk, code, math, mermaid };
 
@@ -129,7 +129,9 @@ export function WorkspaceWikiPage() {
       }
       // Prefer path segment for nested pages; keep rootPath as query.
       const query = params.toString();
-      navigate(`${baseWikiPath}/${nextPath.split("/").map(encodeURIComponent).join("/")}${query ? `?${query}` : ""}`);
+      navigate(
+        `${baseWikiPath}/${nextPath.split("/").map(encodeURIComponent).join("/")}${query ? `?${query}` : ""}`,
+      );
     },
     [baseWikiPath, navigate, rootPathHint],
   );
@@ -249,11 +251,7 @@ export function WorkspaceWikiPage() {
               : "Source";
           const target = href.replace(/^repo:/i, "");
           return (
-            <span
-              className="wiki-source-cite"
-              title={href}
-              data-testid="wiki-source-cite"
-            >
+            <span className="wiki-source-cite" title={href} data-testid="wiki-source-cite">
               <span className="wiki-source-cite__label">{label}</span>
               <span className="wiki-source-cite__target">{target}</span>
             </span>
@@ -296,92 +294,92 @@ export function WorkspaceWikiPage() {
       onDismissError={() => setError(null)}
       testId="wiki-page"
     >
-        {loading ? (
-          <LoadingState label={t.wiki.loading} />
-        ) : empty ? (
-          <Card data-testid="wiki-empty">
-            <CardContent className="pt-0">
-              <Empty className="border-0 p-6">
-                <EmptyHeader>
-                  <EmptyTitle className="text-base">{t.wiki.emptyTitle}</EmptyTitle>
-                  <EmptyDescription>{t.wiki.emptyDescription}</EmptyDescription>
-                </EmptyHeader>
-                <EmptyContent>
-                  <Link
-                    to={agentWorkspaceHref(id, rootPathHint)}
-                    className={cn(buttonVariants())}
-                    data-testid="wiki-open-agent"
-                  >
-                    {t.wiki.goToAgent}
-                  </Link>
-                </EmptyContent>
-              </Empty>
+      {loading ? (
+        <LoadingState label={t.wiki.loading} />
+      ) : empty ? (
+        <Card data-testid="wiki-empty">
+          <CardContent className="pt-0">
+            <Empty className="border-0 p-6">
+              <EmptyHeader>
+                <EmptyTitle className="text-base">{t.wiki.emptyTitle}</EmptyTitle>
+                <EmptyDescription>{t.wiki.emptyDescription}</EmptyDescription>
+              </EmptyHeader>
+              <EmptyContent>
+                <Link
+                  to={agentWorkspaceHref(id, rootPathHint)}
+                  className={cn(buttonVariants())}
+                  data-testid="wiki-open-agent"
+                >
+                  {t.wiki.goToAgent}
+                </Link>
+              </EmptyContent>
+            </Empty>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="wiki-layout">
+          <Card className="h-fit" aria-label={t.wiki.pagesAria}>
+            <CardHeader>
+              <CardTitle>{t.wiki.pages}</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ScrollArea className="max-h-[28rem]">
+                <ul className="wiki-page-list" data-testid="wiki-page-list">
+                  {pages.map((p) => {
+                    const active = p === pageFromRoute;
+                    return (
+                      <li key={p}>
+                        <button
+                          type="button"
+                          className={active ? "wiki-page-link active" : "wiki-page-link"}
+                          data-testid="wiki-page-link"
+                          data-page={p}
+                          aria-current={active ? "page" : undefined}
+                          onClick={() => selectPage(p)}
+                        >
+                          {p}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </ScrollArea>
             </CardContent>
           </Card>
-        ) : (
-          <div className="wiki-layout">
-            <Card className="h-fit" aria-label={t.wiki.pagesAria}>
-              <CardHeader>
-                <CardTitle>{t.wiki.pages}</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ScrollArea className="max-h-[28rem]">
-                  <ul className="wiki-page-list" data-testid="wiki-page-list">
-                    {pages.map((p) => {
-                      const active = p === pageFromRoute;
-                      return (
-                        <li key={p}>
-                          <button
-                            type="button"
-                            className={active ? "wiki-page-link active" : "wiki-page-link"}
-                            data-testid="wiki-page-link"
-                            data-page={p}
-                            aria-current={active ? "page" : undefined}
-                            onClick={() => selectPage(p)}
-                          >
-                            {p}
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </ScrollArea>
-              </CardContent>
-            </Card>
 
-            <Card data-testid="wiki-page-content">
-              <CardContent>
-                {pageLoading && !page ? (
-                  <LoadingState label={t.wiki.loadingPage} />
-                ) : page ? (
-                  <>
-                    {page.title ? (
-                      <h2 className="wiki-page-title" data-testid="wiki-page-title">
-                        {page.title}
-                      </h2>
-                    ) : (
-                      <h2 className="wiki-page-title muted">{page.path}</h2>
-                    )}
-                    <p className="muted small mono wiki-page-path">{page.path}</p>
-                    <div className="wiki-markdown" data-testid="wiki-markdown">
-                      <Streamdown
-                        key={page.path}
-                        mode="static"
-                        components={markdownComponents}
-                        plugins={streamdownPlugins}
-                        className="size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
-                      >
-                        {bodyMarkdown}
-                      </Streamdown>
-                    </div>
-                  </>
-                ) : (
-                  <p className="muted">{t.wiki.selectPage}</p>
-                )}
-              </CardContent>
-            </Card>
-          </div>
-        )}
+          <Card data-testid="wiki-page-content">
+            <CardContent>
+              {pageLoading && !page ? (
+                <LoadingState label={t.wiki.loadingPage} />
+              ) : page ? (
+                <>
+                  {page.title ? (
+                    <h2 className="wiki-page-title" data-testid="wiki-page-title">
+                      {page.title}
+                    </h2>
+                  ) : (
+                    <h2 className="wiki-page-title muted">{page.path}</h2>
+                  )}
+                  <p className="muted small mono wiki-page-path">{page.path}</p>
+                  <div className="wiki-markdown" data-testid="wiki-markdown">
+                    <Streamdown
+                      key={page.path}
+                      mode="static"
+                      components={markdownComponents}
+                      plugins={streamdownPlugins}
+                      className="size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
+                    >
+                      {bodyMarkdown}
+                    </Streamdown>
+                  </div>
+                </>
+              ) : (
+                <p className="muted">{t.wiki.selectPage}</p>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
     </WorkspaceShell>
   );
 }

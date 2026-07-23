@@ -90,7 +90,8 @@ export const en = {
     breadcrumbWorkspaces: "Workspaces",
     breadcrumbSettings: "Settings",
     title: "Workspace settings",
-    descriptionPrefix: "Project options for this workspace. Models and credentials are configured only under",
+    descriptionPrefix:
+      "Project options for this workspace. Models and credentials are configured only under",
     descriptionLink: "Settings",
     descriptionSuffix: ".",
     loading: "Loading settings…",
@@ -127,8 +128,7 @@ export const en = {
     save: "Save changes",
     saving: "Saving…",
     saved: "Saved",
-    orphanModel:
-      "Previous model id is no longer in Settings. Pick a configured model above.",
+    orphanModel: "Previous model id is no longer in Settings. Pick a configured model above.",
     skillTitle: "Producer Skill",
     skillDescription:
       "Global method package for wiki generation. Defaults follow Agent Skills paths: project `.agents/skills`, then user `~/.agents/skills` (Settings), then the product package. Create a workspace fork to customize templates and guidance; each Wiki Run freezes the skill content digest.",
@@ -369,8 +369,7 @@ export const en = {
     noEvents: "No events yet.",
     skillDigest: "skill digest",
     publishReadyBefore: "Staging is ready for review. Approve to publish to ",
-    publishReadyAfter:
-      ", or decline to keep staging without changing the Published Wiki.",
+    publishReadyAfter: ", or decline to keep staging without changing the Published Wiki.",
     approvePublish: "Approve publish",
     working: "Working…",
     decline: "Decline",
@@ -473,8 +472,7 @@ export const en = {
     panelRun: "Status",
     openFull: "Open",
     planEmpty: "No plan yet. Start a wiki run to propose pages.",
-    planActionsHint:
-      "Approve, revise, or deny plan gates from the transcript — not this panel.",
+    planActionsHint: "Approve, revise, or deny plan gates from the transcript — not this panel.",
     linkedRun: "Linked run",
     phase: "Phase",
     runsEmpty: "No jobs yet for this workspace.",
@@ -516,8 +514,7 @@ export const en = {
     workProgressDone: "{done}/{total} done",
     jumpToLatest: "Jump to latest",
     viewSubagent: "View output",
-    subagentPreviewHint:
-      "Work unit preview (planner / domain / leaf / reviewer).",
+    subagentPreviewHint: "Work unit preview (planner / domain / leaf / reviewer).",
     subagentNoDetail: "No detailed output captured for this unit yet.",
     agentTreeTitle: "Agents",
     agentTreeEmpty: "No work units yet. Start a wiki run to see planner / research units.",
@@ -531,8 +528,7 @@ export const en = {
       working: "Working",
       withDetail: "{head} — {detail}",
       gatePlan: "Plan ready. Approve, revise, or deny below.",
-      gatePlanPages:
-        "Plan ready — {n} page(s). Approve, revise, or deny below.",
+      gatePlanPages: "Plan ready — {n} page(s). Approve, revise, or deny below.",
       gatePublish: "Wiki ready to publish. Approve or deny below.",
       gateInput: "Input needed",
       runLink: "Linked job {id}",

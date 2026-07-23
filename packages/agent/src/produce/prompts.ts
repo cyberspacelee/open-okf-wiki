@@ -29,18 +29,13 @@ function domainList(spec: WikiRunSpec): string {
     .map(
       (d) =>
         `- ${d.id}: ${d.title} — scope: ${d.scope}` +
-        (d.questions?.length
-          ? `\n  questions: ${d.questions.join("; ")}`
-          : ""),
+        (d.questions?.length ? `\n  questions: ${d.questions.join("; ")}` : ""),
     )
     .join("\n");
 }
 
 /** Type values aligned with skill templates + OKF. */
-export function typeForTemplate(
-  template?: string,
-  path?: string,
-): string {
+export function typeForTemplate(template?: string, path?: string): string {
   if (template === "overview" || path === "overview.md") return "Overview";
   if (template === "architecture") return "Architecture";
   if (template === "module") return "Module";
@@ -215,14 +210,10 @@ export function reviewerPrompt(input: {
   lens: "grounding" | "coverage" | "consistency" | "general";
 }): string {
   const lensHint = {
-    grounding:
-      "Focus on claims without resolvable Source Citations or invented APIs.",
-    coverage:
-      "Focus on Spec questions unanswered and missing critical pages.",
-    consistency:
-      "Focus on contradictions across pages and term drift.",
-    general:
-      "Review Staging Wiki under wiki/ against sources/ and skill/references/review.md.",
+    grounding: "Focus on claims without resolvable Source Citations or invented APIs.",
+    coverage: "Focus on Spec questions unanswered and missing critical pages.",
+    consistency: "Focus on contradictions across pages and term drift.",
+    general: "Review Staging Wiki under wiki/ against sources/ and skill/references/review.md.",
   }[input.lens];
 
   return [

@@ -3,9 +3,7 @@ import { describe, it } from "node:test";
 import type { WorkspaceConfig } from "@okf-wiki/contract";
 import { modelRefForRole, resolveModelSelection } from "./role-model.js";
 
-function baseWorkspace(
-  overrides: Partial<WorkspaceConfig> = {},
-): WorkspaceConfig {
+function baseWorkspace(overrides: Partial<WorkspaceConfig> = {}): WorkspaceConfig {
   return {
     version: 1,
     id: "ws1",

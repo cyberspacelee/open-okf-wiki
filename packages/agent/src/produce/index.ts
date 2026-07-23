@@ -5,53 +5,53 @@
  */
 
 export {
-  produceWithPi,
-  shouldUsePiFixtureMode,
-  hasModelCredentials,
-  type ProduceWithPiInput,
-  type ProduceWithPiResult,
-  type LivePiRole,
-} from "./live-pi.js";
-export {
-  produceWiki,
-  type ProduceWikiInput,
-  type ProduceWikiResult,
-  type ProduceWikiModels,
-} from "./orchestrate.js";
-export {
-  silentProduceEvents,
-  recordingProduceEvents,
+  type ProduceAgentRole,
   type ProduceEventSink,
   type ProduceProgressPhase,
-  type ProduceAgentRole,
+  recordingProduceEvents,
+  silentProduceEvents,
 } from "./events.js";
 export {
-  createParentVisibilityReducer,
-  attachWorkUnitSink,
-  messageFromPiContent,
-  type ParentUnitUpdate,
-  type ParentUnitStatus,
-  type ParentUnitMessage,
-  type ParentUnitToolState,
-  type ParentVisibilityReducer,
-  type CreateParentVisibilityReducerOpts,
-} from "./parent-visibility.js";
-export { parsePlanFromAgentText } from "./plan-parse.js";
-export { planWikiSpec, type PlanWikiSpecInput, type PlanWikiSpecResult } from "./plan.js";
+  hasModelCredentials,
+  type LivePiRole,
+  type ProduceWithPiInput,
+  type ProduceWithPiResult,
+  produceWithPi,
+  shouldUsePiFixtureMode,
+} from "./live-pi.js";
 export {
+  type ProduceWikiInput,
+  type ProduceWikiModels,
+  type ProduceWikiResult,
+  produceWiki,
+} from "./orchestrate.js";
+export {
+  attachWorkUnitSink,
+  type CreateParentVisibilityReducerOpts,
+  createParentVisibilityReducer,
+  messageFromPiContent,
+  type ParentUnitMessage,
+  type ParentUnitStatus,
+  type ParentUnitToolState,
+  type ParentUnitUpdate,
+  type ParentVisibilityReducer,
+} from "./parent-visibility.js";
+export { type PlanWikiSpecInput, type PlanWikiSpecResult, planWikiSpec } from "./plan.js";
+export { parsePlanFromAgentText } from "./plan-parse.js";
+export {
+  plannerPrompt,
   rootWritePrompt,
   rootWriteSystemPrompt,
-  plannerPrompt,
   type WikiLanguage,
 } from "./prompts.js";
 export {
-  persistResearchReceipt,
   buildReceiptIndex,
+  persistResearchReceipt,
 } from "./receipts.js";
 export {
-  stagingWikiDirForRun,
   buildSourceMap,
   normalizeWikiPath,
+  stagingWikiDirForRun,
   type WikiRunAgentInput,
   type WikiRunAgentPhase,
   type WikiRunAgentResult,

@@ -32,9 +32,7 @@ export function homeSkillsDir(): string {
  * User-level Producer Skill path:
  * `~/.agents/skills/repository-wiki-producer`.
  */
-export function homeProducerSkillPath(
-  skillName: string = DEFAULT_PRODUCER_SKILL_NAME,
-): string {
+export function homeProducerSkillPath(skillName: string = DEFAULT_PRODUCER_SKILL_NAME): string {
   const name = skillName.trim() || DEFAULT_PRODUCER_SKILL_NAME;
   return path.join(homeSkillsDir(), name);
 }
@@ -66,10 +64,7 @@ export function isUnderHomeSkills(candidate: string): boolean {
 }
 
 /** True when `candidate` is under `{workspaceRoot}/.agents/skills`. */
-export function isUnderWorkspaceSkills(
-  workspaceRoot: string,
-  candidate: string,
-): boolean {
+export function isUnderWorkspaceSkills(workspaceRoot: string, candidate: string): boolean {
   const root = path.resolve(workspaceSkillsDir(workspaceRoot));
   const resolved = path.resolve(candidate);
   return resolved === root || resolved.startsWith(root + path.sep);

@@ -1,12 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
-import {
-  produceWithPi,
-  shouldUsePiFixtureMode,
-} from "./live-pi.js";
+import { produceWithPi, shouldUsePiFixtureMode } from "./live-pi.js";
 
 const temps: string[] = [];
 
@@ -23,20 +20,14 @@ describe("produce/live-pi fixture mode", () => {
       shouldUsePiFixtureMode({ fixture: false }, { OKF_WIKI_AGENT_MODE: "fixture" }),
       false,
     );
-    assert.equal(
-      shouldUsePiFixtureMode({}, { OKF_WIKI_AGENT_MODE: "fixture" }),
-      true,
-    );
+    assert.equal(shouldUsePiFixtureMode({}, { OKF_WIKI_AGENT_MODE: "fixture" }), true);
     assert.equal(
       shouldUsePiFixtureMode({}, { OKF_WIKI_AGENT_MODE: "live", OPENAI_API_KEY: "x" }),
       false,
     );
     // Default is live even with no credentials (caller must fail clearly).
     assert.equal(shouldUsePiFixtureMode({}, {}), false);
-    assert.equal(
-      shouldUsePiFixtureMode({}, { OPENAI_API_KEY: "", OPENAI_BASE_URL: "" }),
-      false,
-    );
+    assert.equal(shouldUsePiFixtureMode({}, { OPENAI_API_KEY: "", OPENAI_BASE_URL: "" }), false);
   });
 
   it("writes wiki overview + index without LLM", async () => {
@@ -63,10 +54,7 @@ describe("produce/live-pi fixture mode", () => {
 
     assert.equal(result.mode, "fixture");
     assert.deepEqual([...result.pages].sort(), ["index.md", "overview.md"]);
-    const body = await readFile(
-      path.join(result.layout.wikiDir, "overview.md"),
-      "utf8",
-    );
+    const body = await readFile(path.join(result.layout.wikiDir, "overview.md"), "utf8");
     assert.match(body, /Fixture Wiki/);
     assert.match(body, /Pi fixture mode/);
     assert.match(body, /repo:README\.md/);

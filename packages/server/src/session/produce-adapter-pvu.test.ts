@@ -3,11 +3,8 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  appendParentWorkUnitCustomEntry,
-  OKF_WORK_UNIT_CUSTOM_TYPE,
-} from "./produce-adapter.ts";
 import type { WikiSessionHandle } from "@okf-wiki/agent";
+import { appendParentWorkUnitCustomEntry, OKF_WORK_UNIT_CUSTOM_TYPE } from "./produce-adapter.ts";
 
 test("appendParentWorkUnitCustomEntry writes settle-only custom entries", () => {
   const calls: Array<{ type: string; data: unknown }> = [];

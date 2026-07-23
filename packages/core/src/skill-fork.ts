@@ -1,16 +1,14 @@
 import { cp, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { SkillFileContent, SkillFileEntry, SkillInfo, SkillSourceKind } from "@okf-wiki/contract";
+import type {
+  SkillFileContent,
+  SkillFileEntry,
+  SkillInfo,
+  SkillSourceKind,
+} from "@okf-wiki/contract";
 import { SkillInfoSchema } from "@okf-wiki/contract";
-import {
-  listSkillFiles,
-  readSkillFrontmatter,
-  skillDigest,
-} from "./skill-digest.js";
-import {
-  isUnderWorkspaceSkills,
-  workspaceProducerSkillPath,
-} from "./product-home.js";
+import { isUnderWorkspaceSkills, workspaceProducerSkillPath } from "./product-home.js";
+import { listSkillFiles, readSkillFrontmatter, skillDigest } from "./skill-digest.js";
 import { isPathInside } from "./workspace-store.js";
 
 /**

@@ -3,10 +3,9 @@ import { test } from "node:test";
 import {
   assertProductInject,
   isProductInjectKind,
-  parseAgentCommand,
   PRODUCT_INJECT_KINDS,
   ProductSseEventSchema,
-  ProductWorkUnitEventSchema,
+  parseAgentCommand,
   safeParseAgentCommand,
 } from "./agent-protocol.js";
 import { defaultWikiRunSpec } from "./run.js";
@@ -126,7 +125,7 @@ test("parseAgentCommand: rejects unknown type and empty prompt", () => {
   assert.equal(safeParseAgentCommand({}).success, false);
 });
 
-test("ProductSseEventSchema: run_phase | gate | run_link", () => {
+test("ProductSseEventSchema: whitelist run_link | run_phase | gate | plan_progress | defects", () => {
   const phase = ProductSseEventSchema.parse({
     source: "product",
     kind: "run_phase",
@@ -155,10 +154,30 @@ test("ProductSseEventSchema: run_phase | gate | run_link", () => {
     status: "running",
   });
   assert.equal(link.kind, "run_link");
+
+  const planProgress = ProductSseEventSchema.parse({
+    source: "product",
+    kind: "plan_progress",
+    sessionId: "s1",
+    runId: "r1",
+    pages: [{ path: "overview.md", status: "writing" }],
+  });
+  assert.equal(planProgress.kind, "plan_progress");
+
+  const defects = ProductSseEventSchema.parse({
+    source: "product",
+    kind: "defects",
+    sessionId: "s1",
+    runId: "r1",
+    round: 1,
+    clean: true,
+    defectCount: 0,
+  });
+  assert.equal(defects.kind, "defects");
 });
 
-test("ProductSseEventSchema: work_unit accepted; agent_span rejected", () => {
-  const unit = ProductWorkUnitEventSchema.parse({
+test("ProductSseEventSchema: rejects work_unit, progress, agent_span body channels", () => {
+  const workUnit = ProductSseEventSchema.safeParse({
     source: "product",
     kind: "work_unit",
     sessionId: "s1",
@@ -168,20 +187,17 @@ test("ProductSseEventSchema: work_unit accepted; agent_span rejected", () => {
     status: "running",
     task: "Explore domain",
     message: { text: "reading sources…" },
-    tools: [
-      {
-        toolCallId: "t1",
-        toolName: "read",
-        state: "output-available",
-        input: { path: "src/a.ts" },
-      },
-    ],
   });
-  assert.equal(unit.kind, "work_unit");
-  assert.equal(unit.unitId, "leaf-1");
+  assert.equal(workUnit.success, false);
 
-  const viaUnion = ProductSseEventSchema.parse(unit);
-  assert.equal(viaUnion.kind, "work_unit");
+  const progress = ProductSseEventSchema.safeParse({
+    source: "product",
+    kind: "progress",
+    sessionId: "s1",
+    phase: "writing",
+    label: "writing pages",
+  });
+  assert.equal(progress.success, false);
 
   const legacySpan = ProductSseEventSchema.safeParse({
     source: "product",
@@ -196,12 +212,23 @@ test("ProductSseEventSchema: work_unit accepted; agent_span rejected", () => {
 });
 
 test("assertProductInject: whitelist only", () => {
+  assert.deepEqual([...PRODUCT_INJECT_KINDS], [
+    "run_link",
+    "run_phase",
+    "gate",
+    "plan_progress",
+    "defects",
+  ]);
   for (const kind of PRODUCT_INJECT_KINDS) {
     assert.equal(isProductInjectKind(kind), true);
     assertProductInject(kind);
   }
+  assert.equal(isProductInjectKind("work_unit"), false);
+  assert.equal(isProductInjectKind("progress"), false);
   assert.equal(isProductInjectKind("agent_span"), false);
   assert.equal(isProductInjectKind("child_pi"), false);
+  assert.throws(() => assertProductInject("work_unit"), /whitelist/);
+  assert.throws(() => assertProductInject("progress"), /whitelist/);
   assert.throws(() => assertProductInject("agent_span"), /whitelist/);
   assert.throws(() => assertProductInject("child_pi"), /whitelist/);
 });

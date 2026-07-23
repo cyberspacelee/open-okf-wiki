@@ -3,8 +3,8 @@
  * Projection stores structure + optional English fallback content; UI formats here.
  */
 
-import { formatMessage } from "../../../i18n/format.ts";
 import type { MessageTree } from "../../../i18n/en.ts";
+import { formatMessage } from "../../../i18n/format.ts";
 import type { AgentProductMeta, PlanProgressPage } from "./types.ts";
 
 type AgentWorkspaceCopy = MessageTree["agentWorkspace"];
@@ -65,27 +65,18 @@ export function formatProductCardContent(
       const pages = Array.isArray(product.pages) ? product.pages : [];
       const done = pages.filter(
         (p) =>
-          typeof p === "object" &&
-          p &&
-          "status" in p &&
-          (p as PlanProgressPage).status === "done",
+          typeof p === "object" && p && "status" in p && (p as PlanProgressPage).status === "done",
       ).length;
       const total = pages.length;
       const lines = pages.slice(0, 12).map((p) => {
         if (typeof p === "string") return `· ${p}`;
         const pg = p as PlanProgressPage;
-        const mark =
-          pg.status === "done" ? "✓" : pg.status === "writing" ? "…" : "·";
+        const mark = pg.status === "done" ? "✓" : pg.status === "writing" ? "…" : "·";
         return `${mark} ${pg.path}`;
       });
       const more =
-        pages.length > 12
-          ? `\n${formatMessage(c.pagesMore, { n: pages.length - 12 })}`
-          : "";
-      return (
-        [formatMessage(c.writingPages, { done, total }), ...lines].join("\n") +
-        more
-      );
+        pages.length > 12 ? `\n${formatMessage(c.pagesMore, { n: pages.length - 12 })}` : "";
+      return [formatMessage(c.writingPages, { done, total }), ...lines].join("\n") + more;
     }
     case "defects": {
       const round = product.round ?? 1;

@@ -69,9 +69,7 @@ export async function countMarkdownFiles(dir: string): Promise<number> {
 export async function publishStagingToPublication(
   input: PublishStagingInput,
 ): Promise<PublishStagingResult> {
-  const stagingDir = path.resolve(
-    assertAbsolutePath(input.stagingDir, "stagingDir"),
-  );
+  const stagingDir = path.resolve(assertAbsolutePath(input.stagingDir, "stagingDir"));
   const publicationPath = path.resolve(
     assertAbsolutePath(input.publicationPath, "publicationPath"),
   );
@@ -113,9 +111,7 @@ export async function publishStagingToPublication(
     ...(input.sources?.length ? { sources: input.sources } : {}),
   });
   if (!validation.ok) {
-    throw new Error(
-      `staging failed wiki validation: ${validation.errors.join("; ")}`,
-    );
+    throw new Error(`staging failed wiki validation: ${validation.errors.join("; ")}`);
   }
   const pageCount = validation.pageCount ?? (await countMarkdownFiles(stagingDir));
   if (pageCount < 1) {

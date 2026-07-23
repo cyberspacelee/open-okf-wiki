@@ -2,11 +2,17 @@
  * Pi agent harness protocol (ADR 0030 / 0031).
  *
  * Operator conversation truth = Pi JSONL under `.okf-wiki/pi-sessions/`.
- * Product injects + work_unit PVUs = `operator-trajectory.jsonl` (session-scoped).
+ * Product injects (thin strip only) = `operator-trajectory.jsonl` (session-scoped).
  * Live transport = AgentSession commands + SSE (pi + whitelist product).
  *
- * No UIMessage history. No agent_span body channel. No child_pi / okfAgent side path.
- * `work_run` is not a product inject — web may derive a Work block from work_unit fold.
+ * No UIMessage history. No agent_span / work_unit body channel. No child_pi / okfAgent side path.
+ * Produce child visibility lands on the parent Session as framework-shaped units
+ * (tool result / parent-visible card), not a second product body inject.
+ *
+ * `source:"pi"` events are opaque parent AgentSession events: the contract only
+ * freezes envelope shape (`source`, `kind`, `sessionId`, optional `payload` /
+ * `sequence` / `timestamp`). Kind strings and payload internals are owned by Pi;
+ * product code must not invent parallel body channels beside this stream.
  */
 
 import { z } from "zod";
@@ -100,9 +106,7 @@ export type AgentPromptCommand = z.infer<typeof AgentPromptCommandSchema>;
 export type AgentSteerCommand = z.infer<typeof AgentSteerCommandSchema>;
 export type AgentAbortCommand = z.infer<typeof AgentAbortCommandSchema>;
 export type AgentCompactCommand = z.infer<typeof AgentCompactCommandSchema>;
-export type AgentStartWikiRunCommand = z.infer<
-  typeof AgentStartWikiRunCommandSchema
->;
+export type AgentStartWikiRunCommand = z.infer<typeof AgentStartWikiRunCommandSchema>;
 export type AgentResumeGateCommand = z.infer<typeof AgentResumeGateCommandSchema>;
 export type AgentCommand = z.infer<typeof AgentCommandSchema>;
 
@@ -114,9 +118,7 @@ export function parseAgentCommand(input: unknown): AgentCommand {
 /** Safe parse helper for HTTP adapters. */
 export function safeParseAgentCommand(
   input: unknown,
-):
-  | { success: true; data: AgentCommand }
-  | { success: false; error: z.ZodError } {
+): { success: true; data: AgentCommand } | { success: false; error: z.ZodError } {
   const result = AgentCommandSchema.safeParse(input);
   if (result.success) {
     return { success: true, data: result.data };
@@ -126,7 +128,7 @@ export function safeParseAgentCommand(
 
 // ---------------------------------------------------------------------------
 // Product SSE injects (server → client, beside Pi agent events)
-// ADR 0031 whitelist only — no agent_span body channel, no child_pi.
+// ADR 0031 whitelist only — thin strip; no body channel (no agent_span / work_unit).
 // ---------------------------------------------------------------------------
 
 /** Canonical product inject kinds (assert at emit boundaries). */
@@ -136,8 +138,6 @@ export const PRODUCT_INJECT_KINDS = [
   "gate",
   "plan_progress",
   "defects",
-  "progress",
-  "work_unit",
 ] as const;
 
 export type ProductInjectKind = (typeof PRODUCT_INJECT_KINDS)[number];
@@ -209,26 +209,6 @@ export const ProductRunLinkEventSchema = z.object({
   timestamp: z.string().datetime().optional(),
 });
 
-/** Produce-owned thin progress label (not a full tool trail). */
-export const ProductProgressEventSchema = z.object({
-  source: z.literal("product"),
-  kind: z.literal("progress"),
-  sessionId: z.string().min(1),
-  runId: z.string().min(1).optional(),
-  phase: z.enum([
-    "planning",
-    "researching",
-    "writing",
-    "reviewing",
-    "repairing",
-    "done",
-    "failed",
-  ]),
-  label: z.string().max(2000).optional(),
-  sequence: z.number().int().nonnegative().optional(),
-  timestamp: z.string().datetime().optional(),
-});
-
 /** Spec page queue progress (Produce-owned; file-backed statuses). */
 export const ProductPlanProgressEventSchema = z.object({
   source: z.literal("product"),
@@ -262,97 +242,18 @@ export const ProductDefectsEventSchema = z.object({
   timestamp: z.string().datetime().optional(),
 });
 
-// ---------------------------------------------------------------------------
-// work_unit — parent-visible produce unit (ADR 0031 PVU)
-// ---------------------------------------------------------------------------
-
-export const WorkUnitRoleSchema = z.enum([
-  "planner",
-  "domain",
-  "leaf",
-  "reviewer",
-  "root",
-]);
-
-export type WorkUnitRole = z.infer<typeof WorkUnitRoleSchema>;
-
-export const WorkUnitStatusSchema = z.enum([
-  "pending",
-  "running",
-  "settled",
-  "failed",
-]);
-
-export type WorkUnitStatus = z.infer<typeof WorkUnitStatusSchema>;
-
-/** Assistant body subset projected from child Pi message snapshots. */
-export const WorkUnitMessageSchema = z.object({
-  thinking: z.string().max(64_000).optional(),
-  text: z.string().max(64_000).optional(),
-});
-
-export type WorkUnitMessage = z.infer<typeof WorkUnitMessageSchema>;
-
-export const WorkUnitToolStateSchema = z.object({
-  toolCallId: z.string().min(1).max(120),
-  toolName: z.string().min(1).max(120),
-  state: z.enum([
-    "input-streaming",
-    "input-available",
-    "output-available",
-    "output-error",
-  ]),
-  input: z.unknown().optional(),
-  output: z.unknown().optional(),
-  errorText: z.string().max(4000).optional(),
-});
-
-export type WorkUnitToolState = z.infer<typeof WorkUnitToolStateSchema>;
-
-/**
- * Parent-visible unit for produce child work.
- * Fold last-by-unitId on cold load. Empty running (no message/tools) must not
- * be labeled as model "thinking" in the UI.
- */
-export const ProductWorkUnitEventSchema = z.object({
-  source: z.literal("product"),
-  kind: z.literal("work_unit"),
-  sessionId: z.string().min(1),
-  runId: z.string().min(1),
-  unitId: z.string().min(1).max(120),
-  role: WorkUnitRoleSchema,
-  status: WorkUnitStatusSchema,
-  task: z.string().max(2000).optional(),
-  parentId: z.string().max(120).optional(),
-  message: WorkUnitMessageSchema.optional(),
-  tools: z.array(WorkUnitToolStateSchema).max(200).optional(),
-  summary: z.string().max(4000).optional(),
-  receiptPath: z.string().max(500).optional(),
-  error: z.string().max(4000).optional(),
-  updatedAt: z.number().int().nonnegative().optional(),
-  sequence: z.number().int().nonnegative().optional(),
-  timestamp: z.string().datetime().optional(),
-});
-
-export type ProductWorkUnitEvent = z.infer<typeof ProductWorkUnitEventSchema>;
-
 export const ProductSseEventSchema = z.discriminatedUnion("kind", [
   ProductRunPhaseEventSchema,
   ProductGateEventSchema,
   ProductRunLinkEventSchema,
-  ProductProgressEventSchema,
   ProductPlanProgressEventSchema,
   ProductDefectsEventSchema,
-  ProductWorkUnitEventSchema,
 ]);
 
 export type ProductRunPhaseEvent = z.infer<typeof ProductRunPhaseEventSchema>;
 export type ProductGateEvent = z.infer<typeof ProductGateEventSchema>;
 export type ProductRunLinkEvent = z.infer<typeof ProductRunLinkEventSchema>;
-export type ProductProgressEvent = z.infer<typeof ProductProgressEventSchema>;
-export type ProductPlanProgressEvent = z.infer<
-  typeof ProductPlanProgressEventSchema
->;
+export type ProductPlanProgressEvent = z.infer<typeof ProductPlanProgressEventSchema>;
 export type ProductDefectsEvent = z.infer<typeof ProductDefectsEventSchema>;
 export type ProductSseEvent = z.infer<typeof ProductSseEventSchema>;
 
@@ -369,7 +270,9 @@ export type AgentSseHeartbeat = z.infer<typeof AgentSseHeartbeatSchema>;
 /**
  * Envelope for the Pi agent SSE channel.
  * - `product` / `server` injects are fully typed here
- * - `pi` carries opaque parent AgentSession events only (no okfAgent side path)
+ * - `pi` carries opaque parent AgentSession events only (no okfAgent side path).
+ *   Shape: `{ source:"pi", kind, sessionId, payload?, sequence?, timestamp? }`.
+ *   `kind` / `payload` are Pi-owned; do not re-type them as a product body channel.
  */
 export const AgentSseEventSchema = z.union([
   ProductSseEventSchema,
@@ -413,9 +316,7 @@ export const CreatePiAgentSessionBodySchema = z.object({
   title: z.string().min(1).max(200).optional(),
 });
 
-export type CreatePiAgentSessionBody = z.infer<
-  typeof CreatePiAgentSessionBodySchema
->;
+export type CreatePiAgentSessionBody = z.infer<typeof CreatePiAgentSessionBodySchema>;
 
 export const CreatePiAgentSessionResponseSchema = z.object({
   session: z.object({
@@ -429,9 +330,7 @@ export const CreatePiAgentSessionResponseSchema = z.object({
   }),
 });
 
-export type CreatePiAgentSessionResponse = z.infer<
-  typeof CreatePiAgentSessionResponseSchema
->;
+export type CreatePiAgentSessionResponse = z.infer<typeof CreatePiAgentSessionResponseSchema>;
 
 export const AgentCommandResponseSchema = z.object({
   /**
@@ -441,14 +340,7 @@ export const AgentCommandResponseSchema = z.object({
    */
   ok: z.boolean(),
   sessionId: z.string().min(1),
-  command: z.enum([
-    "prompt",
-    "steer",
-    "abort",
-    "compact",
-    "start_wiki_run",
-    "resume_gate",
-  ]),
+  command: z.enum(["prompt", "steer", "abort", "compact", "start_wiki_run", "resume_gate"]),
   /**
    * `accepted` = validated and ran (or queued).
    * `stub` = AgentSession factory not ready; command parsed only.

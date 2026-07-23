@@ -55,21 +55,12 @@ describe("assertPathAllowed read", () => {
     const abs = assertPathAllowed(runWorkDir, "sources/repo/src/Main.java", {
       mode: "read",
     });
-    assert.equal(
-      abs,
-      path.join(runWorkDir, "sources", "repo", "src", "Main.java"),
-    );
+    assert.equal(abs, path.join(runWorkDir, "sources", "repo", "src", "Main.java"));
   });
 
   it("allows empty / . as workdir root for read", () => {
-    assert.equal(
-      assertPathAllowed(runWorkDir, "", { mode: "read" }),
-      runWorkDir,
-    );
-    assert.equal(
-      assertPathAllowed(runWorkDir, ".", { mode: "read" }),
-      runWorkDir,
-    );
+    assert.equal(assertPathAllowed(runWorkDir, "", { mode: "read" }), runWorkDir);
+    assert.equal(assertPathAllowed(runWorkDir, ".", { mode: "read" }), runWorkDir);
   });
 
   it("rejects parent traversal and absolute paths", () => {
@@ -104,19 +95,15 @@ describe("assertPathAllowed read", () => {
       /ignored/i,
     );
     // Production path still allowed
-    const abs = assertPathAllowed(
-      runWorkDir,
-      "sources/repo/src/main/java/App.java",
-      { mode: "read", sourceIgnores: ignores },
-    );
+    const abs = assertPathAllowed(runWorkDir, "sources/repo/src/main/java/App.java", {
+      mode: "read",
+      sourceIgnores: ignores,
+    });
     assert.ok(abs.endsWith(path.join("sources", "repo", "src", "main", "java", "App.java")));
   });
 
   it("flat ignore array applies to every source", () => {
-    assert.equal(
-      isIgnoredSourceRel("sources/a/dist/out.js", ["dist/**"]),
-      true,
-    );
+    assert.equal(isIgnoredSourceRel("sources/a/dist/out.js", ["dist/**"]), true);
     assert.throws(
       () =>
         assertPathAllowed(runWorkDir, "sources/a/dist/out.js", {
@@ -144,13 +131,11 @@ describe("assertPathAllowed write", () => {
 
   it("denies sources/, skill/, and other trees", () => {
     assert.throws(
-      () =>
-        assertPathAllowed(runWorkDir, "sources/repo/x.ts", { mode: "write" }),
+      () => assertPathAllowed(runWorkDir, "sources/repo/x.ts", { mode: "write" }),
       /read-only|denied/i,
     );
     assert.throws(
-      () =>
-        assertPathAllowed(runWorkDir, "skill/SKILL.md", { mode: "write" }),
+      () => assertPathAllowed(runWorkDir, "skill/SKILL.md", { mode: "write" }),
       /read-only|denied/i,
     );
     assert.throws(
@@ -167,16 +152,12 @@ describe("assertPathAllowed write", () => {
 describe("assertAbsolutePathAllowed", () => {
   it("accepts absolute under workdir write scope", () => {
     const abs = path.join(runWorkDir, "wiki", "a.md");
-    assert.equal(
-      assertAbsolutePathAllowed(runWorkDir, abs, { mode: "write" }),
-      path.resolve(abs),
-    );
+    assert.equal(assertAbsolutePathAllowed(runWorkDir, abs, { mode: "write" }), path.resolve(abs));
   });
 
   it("rejects absolute outside workdir", () => {
     assert.throws(
-      () =>
-        assertAbsolutePathAllowed(runWorkDir, "/etc/passwd", { mode: "read" }),
+      () => assertAbsolutePathAllowed(runWorkDir, "/etc/passwd", { mode: "read" }),
       /escapes/i,
     );
   });

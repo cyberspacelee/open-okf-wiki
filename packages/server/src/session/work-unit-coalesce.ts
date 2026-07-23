@@ -69,11 +69,7 @@ export function isCoalesceableWorkUnitUpdate(
   prev: ProductWorkUnitEvent | undefined,
   next: ProductWorkUnitEvent,
 ): boolean {
-  if (
-    next.status === "pending" ||
-    next.status === "settled" ||
-    next.status === "failed"
-  ) {
+  if (next.status === "pending" || next.status === "settled" || next.status === "failed") {
     return false;
   }
   if (!prev) return false;
@@ -102,9 +98,7 @@ export type CreateWorkUnitCoalescerOpts = {
  * Per-session coalescer: Map unitId → pending timer + latest snapshot.
  * Create one instance per `mapOrchestratorOnEvent` handler (one run stream).
  */
-export function createWorkUnitCoalescer(
-  opts: CreateWorkUnitCoalescerOpts,
-): WorkUnitCoalescer {
+export function createWorkUnitCoalescer(opts: CreateWorkUnitCoalescerOpts): WorkUnitCoalescer {
   const windowMs = opts.windowMs ?? WORK_UNIT_COALESCE_MS;
   const timers: WorkUnitCoalesceTimers = opts.timers ?? {
     setTimeout: (fn, ms) => setTimeout(fn, ms),

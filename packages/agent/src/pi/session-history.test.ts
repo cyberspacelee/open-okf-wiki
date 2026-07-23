@@ -24,15 +24,9 @@ describe("isPiSessionJsonlName", () => {
       ),
       true,
     );
+    assert.equal(isPiSessionJsonlName("product-session-abc.jsonl", "product-session-abc"), true);
     assert.equal(
-      isPiSessionJsonlName("product-session-abc.jsonl", "product-session-abc"),
-      true,
-    );
-    assert.equal(
-      isPiSessionJsonlName(
-        "2026-07-23T01-36-23-175Z_other-id.jsonl",
-        "product-session-abc",
-      ),
+      isPiSessionJsonlName("2026-07-23T01-36-23-175Z_other-id.jsonl", "product-session-abc"),
       false,
     );
   });
@@ -93,9 +87,7 @@ describe("projectPiMessages", () => {
 
   it("drops empty non-error assistant", () => {
     assert.equal(
-      projectPiMessages([
-        { role: "assistant", content: [], stopReason: "stop" },
-      ]).length,
+      projectPiMessages([{ role: "assistant", content: [], stopReason: "stop" }]).length,
       0,
     );
   });
@@ -215,11 +207,7 @@ describe("findPiSessionFile / loadPiSessionHistory", () => {
           content: [{ type: "text", text: "from preferred" }],
         },
       };
-      await writeFile(
-        preferred,
-        `${JSON.stringify(header)}\n${JSON.stringify(entry)}\n`,
-        "utf8",
-      );
+      await writeFile(preferred, `${JSON.stringify(header)}\n${JSON.stringify(entry)}\n`, "utf8");
 
       const found = await findPiSessionFile(root, "other-id", {
         preferredPath: preferred,

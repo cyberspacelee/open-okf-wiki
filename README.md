@@ -123,9 +123,10 @@ Model identity stays provider-prefixed (for example `openai:<served-model-name>`
 |---|---|---|
 | `pnpm dev` | Build libs once + API/Web/lib watch | Day-to-day development |
 | `pnpm build` | Build all packages | Release / packaging |
-| `pnpm typecheck` | `tsc --noEmit` across packages | Local before PR; **CI** |
+| `pnpm typecheck` | Root solution `tsc -b` (project references) | Local before PR; **CI** |
 | `pnpm lint` / `pnpm lint:fix` | ESLint flat config (`eslint.config.mjs`) | Local; staged pre-commit; **CI** |
-| `pnpm check` | `typecheck` + `lint` + forbidden-deps guard | Convenient full static check |
+| `pnpm format` / `pnpm format:check` | Biome format (+ import assist); lint stays ESLint | Local; staged pre-commit; **CI** |
+| `pnpm check` | `typecheck` + `lint` + `format:check` + domain guards | Convenient full static check |
 | `pnpm check:deps` | Fail if `@mastra/*` / `ai` / `@ai-sdk/*` reappear | Local; part of `check` |
 | `pnpm test` | Package unit tests (`node:test` where present) | Local; **CI** |
 | `pnpm test:e2e` | Playwright Web e2e (`@okf-wiki/web`) | Local when touching UI/API; **CI job** |
@@ -134,7 +135,7 @@ Model identity stays provider-prefixed (for example `openai:<served-model-name>`
 ```bash
 pnpm install
 pnpm test
-pnpm check          # typecheck + eslint + dep guard
+pnpm check          # typecheck + eslint + biome format + dep guards
 ```
 
 ### Pre-commit (optional, recommended)
@@ -144,9 +145,9 @@ pre-commit install
 pre-commit run -a   # full tree
 ```
 
-Hooks stay **fast**: trailing whitespace / YAML hygiene + ESLint on **staged** `*.{ts,tsx,js,jsx}` only. Full typecheck and Playwright stay in **CI** so commits are not blocked by multi-minute runs.
+Hooks stay **fast**: trailing whitespace / YAML hygiene + Biome format + ESLint on **staged** files only. Full typecheck and Playwright stay in **CI** so commits are not blocked by multi-minute runs.
 
-Config: [`.pre-commit-config.yaml`](.pre-commit-config.yaml) · ESLint: [`eslint.config.mjs`](eslint.config.mjs).
+Config: [`.pre-commit-config.yaml`](.pre-commit-config.yaml) · ESLint: [`eslint.config.mjs`](eslint.config.mjs) · Biome: [`biome.json`](biome.json).
 
 ### End-to-end (Playwright)
 
@@ -161,7 +162,7 @@ Legacy Session/UIMessage e2e specs are ignored; Agent Workspace smoke lives unde
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
 
-1. **typescript** — unit tests (contract / core / agent) + `pnpm typecheck` + `pnpm lint`
+1. **typescript** — unit tests (contract / core / agent) + `pnpm typecheck` + `pnpm lint` + `pnpm format:check`
 2. **web-e2e** — Playwright Chromium against the local dev stack
 
 ## Manual verification

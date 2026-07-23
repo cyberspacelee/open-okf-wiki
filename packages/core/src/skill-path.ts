@@ -16,12 +16,12 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SkillSourceKind } from "@okf-wiki/contract";
-import { copySkillTree } from "./skill-fork.js";
 import {
   homeProducerSkillPath,
   homeSkillsDir,
   workspaceProducerSkillPath,
 } from "./product-home.js";
+import { copySkillTree } from "./skill-fork.js";
 import { getLoadHomeSkills } from "./workspace-store.js";
 
 export type ResolveSkillSourceOptions = {
@@ -84,9 +84,7 @@ export async function resolvePackageSkillPath(): Promise<string> {
     }
     errors.push(`import.meta.resolve path missing SKILL.md: ${root}`);
   } catch (error) {
-    errors.push(
-      `import.meta.resolve: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    errors.push(`import.meta.resolve: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   // 3) Monorepo sibling (no install link required when repo is checked out)
@@ -163,9 +161,7 @@ export async function resolveSkillSource(
 }
 
 /** Resolve skill root path only. */
-export async function resolveSkillPath(
-  options: ResolveSkillSourceOptions = {},
-): Promise<string> {
+export async function resolveSkillPath(options: ResolveSkillSourceOptions = {}): Promise<string> {
   const source = await resolveSkillSource(options);
   return source.path;
 }

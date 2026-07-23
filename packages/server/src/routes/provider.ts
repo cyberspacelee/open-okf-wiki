@@ -1,5 +1,10 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
+  ModelProfileWriteSchema,
+  ProviderApiShapeSchema,
+  ProviderEntryWriteSchema,
+} from "@okf-wiki/contract";
+import {
   createModelProfile,
   createProviderEntry,
   deleteModelProfile,
@@ -15,16 +20,7 @@ import {
   updateModelProfile,
   updateProviderEntry,
 } from "@okf-wiki/core";
-import {
-  ModelProfileWriteSchema,
-  ProviderApiShapeSchema,
-  ProviderEntryWriteSchema,
-} from "@okf-wiki/contract";
-import {
-  readJsonBody,
-  sendError,
-  sendJson,
-} from "../http-util.ts";
+import { readJsonBody, sendError, sendJson } from "../http-util.ts";
 
 export async function handleGetProvider(_req: IncomingMessage, res: ServerResponse): Promise<void> {
   const config = await loadProviderConfig();
@@ -66,10 +62,7 @@ export async function handleUpdateProvider(
     return;
   }
   try {
-    const { config, provider } = await updateProviderEntry(
-      providerId,
-      parsed.data,
-    );
+    const { config, provider } = await updateProviderEntry(providerId, parsed.data);
     const pub = toProviderPublic(config);
     sendJson(res, 200, {
       provider: pub,
@@ -167,7 +160,10 @@ export async function handleDeleteModel(
   }
 }
 
-export async function handleSetDefaultModel(req: IncomingMessage, res: ServerResponse): Promise<void> {
+export async function handleSetDefaultModel(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
   const body = (await readJsonBody(req)) as { defaultModelProfileId?: unknown };
   const id =
     body.defaultModelProfileId === null
@@ -214,7 +210,7 @@ export async function handleTestProvider(req: IncomingMessage, res: ServerRespon
   const baseUrl =
     typeof body.baseUrl === "string" && body.baseUrl.trim()
       ? body.baseUrl.trim()
-      : runtime.baseUrl ?? "";
+      : (runtime.baseUrl ?? "");
 
   let apiKey: string;
   if (typeof body.apiKey === "string") {
@@ -234,9 +230,7 @@ export async function handleTestProvider(req: IncomingMessage, res: ServerRespon
   }
 
   const modelId =
-    typeof body.modelId === "string" && body.modelId.trim()
-      ? body.modelId.trim()
-      : runtime.modelId;
+    typeof body.modelId === "string" && body.modelId.trim() ? body.modelId.trim() : runtime.modelId;
 
   if (!baseUrl) {
     sendError(res, 400, "base URL is required to test the connection");

@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
 import { WorkspaceConfigSchema } from "@okf-wiki/contract";
-import { produceWiki } from "./orchestrate.js";
 import { recordingProduceEvents } from "./events.js";
+import { produceWiki } from "./orchestrate.js";
 
 const temps: string[] = [];
 
@@ -28,9 +28,7 @@ async function makeWorkspace(root: string) {
       id: "ws",
       name: "Produce WS",
       rootPath: root,
-      sources: [
-        { id: "main", path: src, applyDefaultIgnores: true, ignore: [] },
-      ],
+      sources: [{ id: "main", path: src, applyDefaultIgnores: true, ignore: [] }],
       skillPath: skill,
       model: { id: "openai/test" },
       publicationPath: path.join(root, "out"),
@@ -82,12 +80,7 @@ describe("produceWiki fixture", () => {
     assert.ok(kinds.includes("plan_progress"));
     assert.ok(kinds.includes("work_unit"));
     // ADR 0031: only whitelist product inject kinds from produce sink
-    const allowed = new Set([
-      "progress",
-      "defects",
-      "plan_progress",
-      "work_unit",
-    ]);
+    const allowed = new Set(["progress", "defects", "plan_progress", "work_unit"]);
     assert.ok(kinds.every((k) => allowed.has(k)));
     const workUnits = events.filter((e) => e.kind === "work_unit");
     assert.ok(workUnits.length >= 2);

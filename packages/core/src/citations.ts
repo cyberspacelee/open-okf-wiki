@@ -26,8 +26,7 @@ export type SourceCitation = {
  * Match Skill Source Citation links.
  * Line range is optional; when present must be #Lstart or #Lstart-Lend.
  */
-export const SOURCE_CITATION_RE =
-  /\[Source\]\(repo:([^)\s#]+)(?:#L(\d+)(?:-L(\d+))?)?\)/g;
+export const SOURCE_CITATION_RE = /\[Source\]\(repo:([^)\s#]+)(?:#L(\d+)(?:-L(\d+))?)?\)/g;
 
 /**
  * Parse all Source Citations from Markdown page content.
@@ -46,9 +45,7 @@ export function parseSourceCitations(content: string): SourceCitation[] {
     out.push({
       raw: match[0],
       target,
-      ...(lineStart !== undefined && Number.isFinite(lineStart)
-        ? { lineStart }
-        : {}),
+      ...(lineStart !== undefined && Number.isFinite(lineStart) ? { lineStart } : {}),
       ...(lineEnd !== undefined && Number.isFinite(lineEnd) ? { lineEnd } : {}),
       index: match.index,
     });
@@ -59,10 +56,7 @@ export function parseSourceCitations(content: string): SourceCitation[] {
 /**
  * Format-only validation (no filesystem). Returns error strings.
  */
-export function validateCitationFormat(
-  citations: SourceCitation[],
-  pageLabel: string,
-): string[] {
+export function validateCitationFormat(citations: SourceCitation[], pageLabel: string): string[] {
   const errors: string[] = [];
   for (const c of citations) {
     if (c.target.includes("..") || c.target.startsWith("/")) {
@@ -73,14 +67,8 @@ export function validateCitationFormat(
     if (c.lineStart !== undefined && c.lineStart < 1) {
       errors.push(`${pageLabel}: citation line start must be ≥ 1 (${c.raw})`);
     }
-    if (
-      c.lineStart !== undefined &&
-      c.lineEnd !== undefined &&
-      c.lineEnd < c.lineStart
-    ) {
-      errors.push(
-        `${pageLabel}: citation line end before start (${c.raw})`,
-      );
+    if (c.lineStart !== undefined && c.lineEnd !== undefined && c.lineEnd < c.lineStart) {
+      errors.push(`${pageLabel}: citation line end before start (${c.raw})`);
     }
   }
   return errors;
@@ -214,29 +202,21 @@ export async function validateCitationResolve(
       resolved.absPath !== rootResolved &&
       !resolved.absPath.startsWith(rootResolved + path.sep)
     ) {
-      errors.push(
-        `${pageLabel}: citation escapes source root (${c.raw})`,
-      );
+      errors.push(`${pageLabel}: citation escapes source root (${c.raw})`);
       continue;
     }
     try {
       const st = await lstat(resolved.absPath);
       if (st.isSymbolicLink()) {
-        errors.push(
-          `${pageLabel}: citation target is a symlink (${c.raw})`,
-        );
+        errors.push(`${pageLabel}: citation target is a symlink (${c.raw})`);
         continue;
       }
       if (!st.isFile()) {
-        errors.push(
-          `${pageLabel}: citation target is not a file (${c.raw})`,
-        );
+        errors.push(`${pageLabel}: citation target is not a file (${c.raw})`);
         continue;
       }
     } catch {
-      errors.push(
-        `${pageLabel}: citation target not found in Snapshot (${c.raw})`,
-      );
+      errors.push(`${pageLabel}: citation target not found in Snapshot (${c.raw})`);
       continue;
     }
     if (c.lineStart !== undefined) {
@@ -250,9 +230,7 @@ export async function validateCitationResolve(
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        errors.push(
-          `${pageLabel}: cannot read citation target (${c.raw}): ${message}`,
-        );
+        errors.push(`${pageLabel}: cannot read citation target (${c.raw}): ${message}`);
       }
     }
   }

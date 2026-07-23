@@ -26,8 +26,7 @@ async function buildPublic(): Promise<AppSettingsPublic> {
   const layout = skillLayoutPaths();
   return {
     loadHomeSkills: resolveLoadHomeSkills(state),
-    loadHomeSkillsStored:
-      typeof state.loadHomeSkills === "boolean" ? state.loadHomeSkills : null,
+    loadHomeSkillsStored: typeof state.loadHomeSkills === "boolean" ? state.loadHomeSkills : null,
     homeSkillsDir: layout.homeSkillsDir,
     homeProducerSkill: layout.homeProducerSkill,
     workspaceSkillsRelative: layout.workspaceSkillsRelative,

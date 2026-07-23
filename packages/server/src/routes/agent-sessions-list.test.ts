@@ -38,13 +38,10 @@ test("mergePiSessionEntries dedupes meta json + workdir for the same id", () => 
   ]);
 
   assert.equal(sessions.length, 2);
-  assert.deepEqual(
-    sessions.map((s) => s.id).sort(),
-    [
-      "2b029ada-6042-4cf1-9998-0b4f1e39d20e",
-      "729f9b3a-71aa-4961-8074-0d104cfdf6e2",
-    ],
-  );
+  assert.deepEqual(sessions.map((s) => s.id).sort(), [
+    "2b029ada-6042-4cf1-9998-0b4f1e39d20e",
+    "729f9b3a-71aa-4961-8074-0d104cfdf6e2",
+  ]);
   for (const s of sessions) {
     assert.equal(s.name.endsWith(".json"), true);
     assert.equal(s.placeholder, true);

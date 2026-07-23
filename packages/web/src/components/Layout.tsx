@@ -1,9 +1,5 @@
-import { useCallback, useState, type ReactNode } from "react";
-import {
-  SidebarInset,
-  SidebarProvider,
-  SidebarTrigger,
-} from "@/components/ui/sidebar";
+import { type ReactNode, useCallback, useState } from "react";
+import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 import { useI18n } from "../i18n";
 import { AppSidebar } from "./app-sidebar";
@@ -44,11 +40,7 @@ export function Layout({
   }, []);
 
   return (
-    <SidebarProvider
-      open={open}
-      onOpenChange={handleOpenChange}
-      className="h-svh overflow-hidden"
-    >
+    <SidebarProvider open={open} onOpenChange={handleOpenChange} className="h-svh overflow-hidden">
       <AppSidebar />
       <SidebarInset className="min-h-0 overflow-hidden">
         <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4 md:hidden">
@@ -58,9 +50,7 @@ export function Layout({
         <div
           className={cn(
             "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
-            immersive
-              ? "gap-0 p-0"
-              : "gap-5 overflow-y-auto p-4 md:p-6 lg:p-8",
+            immersive ? "gap-0 p-0" : "gap-5 overflow-y-auto p-4 md:p-6 lg:p-8",
           )}
         >
           {children}

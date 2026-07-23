@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { recordingProduceEvents } from "./events.js";
 import {
   attachWorkUnitSink,
   createParentVisibilityReducer,
   messageFromPiContent,
 } from "./parent-visibility.js";
-import { recordingProduceEvents } from "./events.js";
 
 describe("parent-visibility", () => {
   it("extracts thinking/text from Pi content blocks", () => {

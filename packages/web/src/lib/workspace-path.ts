@@ -30,11 +30,7 @@ export function agentWorkspaceHref(
   rootPath?: string | null,
   extraQuery?: Record<string, string>,
 ): string {
-  return withQuery(
-    `/w/${encodeURIComponent(workspaceId)}`,
-    rootPath,
-    extraQuery,
-  );
+  return withQuery(`/w/${encodeURIComponent(workspaceId)}`, rootPath, extraQuery);
 }
 
 /**
@@ -51,9 +47,5 @@ export function workspaceHref(
   if (suffix === "" || suffix === "/session") {
     return agentWorkspaceHref(workspaceId, rootPath, extraQuery);
   }
-  return withQuery(
-    `/workspaces/${encodeURIComponent(workspaceId)}${suffix}`,
-    rootPath,
-    extraQuery,
-  );
+  return withQuery(`/workspaces/${encodeURIComponent(workspaceId)}${suffix}`, rootPath, extraQuery);
 }

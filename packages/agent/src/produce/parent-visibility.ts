@@ -13,11 +13,7 @@ export type ParentUnitStatus = "pending" | "running" | "settled" | "failed";
 export type ParentUnitToolState = {
   toolCallId: string;
   toolName: string;
-  state:
-    | "input-streaming"
-    | "input-available"
-    | "output-available"
-    | "output-error";
+  state: "input-streaming" | "input-available" | "output-available" | "output-error";
   input?: unknown;
   output?: unknown;
   errorText?: string;
@@ -58,10 +54,7 @@ export type ParentVisibilityReducer = {
   getUnit(): ParentUnitUpdate;
   /** Mark unit running (host open before/while child runs). */
   open(extra?: { task?: string; parentId?: string }): ParentUnitUpdate;
-  settle(
-    summary?: string,
-    extra?: { receiptPath?: string },
-  ): ParentUnitUpdate;
+  settle(summary?: string, extra?: { receiptPath?: string }): ParentUnitUpdate;
   fail(error?: string): ParentUnitUpdate;
 };
 
@@ -70,9 +63,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** Extract thinking/text from a Pi message content array (or string body). */
-export function messageFromPiContent(
-  content: unknown,
-): ParentUnitMessage | undefined {
+export function messageFromPiContent(content: unknown): ParentUnitMessage | undefined {
   if (typeof content === "string") {
     return content.length > 0 ? { text: content } : undefined;
   }
@@ -117,16 +108,12 @@ function toolFields(payload: unknown): {
 } {
   if (!isRecord(payload)) return {};
   return {
-    toolCallId:
-      typeof payload.toolCallId === "string" ? payload.toolCallId : undefined,
-    toolName:
-      typeof payload.toolName === "string" ? payload.toolName : undefined,
+    toolCallId: typeof payload.toolCallId === "string" ? payload.toolCallId : undefined,
+    toolName: typeof payload.toolName === "string" ? payload.toolName : undefined,
     args: "args" in payload ? payload.args : undefined,
-    partialResult:
-      "partialResult" in payload ? payload.partialResult : undefined,
+    partialResult: "partialResult" in payload ? payload.partialResult : undefined,
     result: "result" in payload ? payload.result : undefined,
-    isError:
-      typeof payload.isError === "boolean" ? payload.isError : undefined,
+    isError: typeof payload.isError === "boolean" ? payload.isError : undefined,
   };
 }
 
@@ -154,8 +141,7 @@ export function createParentVisibilityReducer(
   let updatedAt = now();
 
   const snapshot = (): ParentUnitUpdate => {
-    const toolsArr =
-      tools.size > 0 ? Array.from(tools.values()) : undefined;
+    const toolsArr = tools.size > 0 ? Array.from(tools.values()) : undefined;
     return {
       unitId,
       role,
@@ -182,8 +168,7 @@ export function createParentVisibilityReducer(
     // Terminal states stay terminal (ignore late Pi frames after settle/fail).
   };
 
-  const isTerminal = (): boolean =>
-    status === "settled" || status === "failed";
+  const isTerminal = (): boolean => status === "settled" || status === "failed";
 
   return {
     getUnit: snapshot,
@@ -288,10 +273,7 @@ export function createParentVisibilityReducer(
                 : {}),
             ...(isError
               ? {
-                  errorText:
-                    typeof t.result === "string"
-                      ? t.result.slice(0, 4000)
-                      : "tool error",
+                  errorText: typeof t.result === "string" ? t.result.slice(0, 4000) : "tool error",
                 }
               : {}),
           });
@@ -337,10 +319,7 @@ export function attachWorkUnitSink(
 ): {
   open: (extra?: { task?: string; parentId?: string }) => ParentUnitUpdate;
   onPiEvent: (kind: string, payload: unknown) => ParentUnitUpdate;
-  settle: (
-    summary?: string,
-    extra?: { receiptPath?: string },
-  ) => ParentUnitUpdate;
+  settle: (summary?: string, extra?: { receiptPath?: string }) => ParentUnitUpdate;
   fail: (error?: string) => ParentUnitUpdate;
   getUnit: () => ParentUnitUpdate;
 } {

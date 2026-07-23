@@ -9,12 +9,7 @@
 import type { ModelRef, WorkspaceConfig } from "@okf-wiki/contract";
 
 /** Semantic roles that can select a model profile. */
-export type WikiModelRole =
-  | "default"
-  | "planner"
-  | "worker"
-  | "writer"
-  | "reviewer";
+export type WikiModelRole = "default" | "planner" | "worker" | "writer" | "reviewer";
 
 export type ResolvedModelRef = {
   /** Served model id (denormalized). */

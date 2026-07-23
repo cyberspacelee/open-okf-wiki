@@ -1,10 +1,6 @@
 import { lstat, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import {
-  assertContainedPathSafe,
-  resolveContainedPath,
-  toPosixRelative,
-} from "@okf-wiki/core";
+import { assertContainedPathSafe, resolveContainedPath, toPosixRelative } from "@okf-wiki/core";
 
 export type ListEntry = {
   name: string;
@@ -12,10 +8,7 @@ export type ListEntry = {
   type: "file" | "directory" | "other";
 };
 
-export async function listDirContained(
-  root: string,
-  relativePath = "",
-): Promise<ListEntry[]> {
+export async function listDirContained(root: string, relativePath = ""): Promise<ListEntry[]> {
   const dir = resolveContainedPath(root, relativePath);
   await assertContainedPathSafe(root, dir);
   const names = await readdir(dir);

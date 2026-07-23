@@ -3,10 +3,7 @@
  * No Mastra / LLM — product owns plan → produce → hard-validate → publish.
  */
 
-import {
-  defaultWikiRunSpec,
-  type WikiRunPlan,
-} from "@okf-wiki/contract";
+import { defaultWikiRunSpec, type WikiRunPlan } from "@okf-wiki/contract";
 import type { ResumeGateInput, WikiRunGateKind } from "./gates.js";
 import { assertValidResumeGate } from "./gates.js";
 
@@ -51,11 +48,7 @@ export function assertNotTerminal(state: WikiRunShellState): void {
   }
 }
 
-function badTransition(
-  from: WikiRunShellPhase,
-  action: string,
-  detail?: string,
-): never {
+function badTransition(from: WikiRunShellPhase, action: string, detail?: string): never {
   const suffix = detail ? ` (${detail})` : "";
   throw new Error(`invalid shell transition: ${from} + ${action}${suffix}`);
 }
@@ -74,10 +67,7 @@ export function applyPlanRevision(
         .filter(Boolean)
         .join("\n\n")
         .slice(0, 4000),
-      changelog: [
-        ...(prior.changelog ?? []),
-        "Operator requested Spec revision",
-      ].slice(-20),
+      changelog: [...(prior.changelog ?? []), "Operator requested Spec revision"].slice(-20),
     };
   }
   return {
@@ -107,9 +97,7 @@ export function transitionEnterPlanGate(
 }
 
 /** Mark produce phase (after plan approved or skip-confirm). */
-export function transitionMarkProducing(
-  state: WikiRunShellState,
-): WikiRunShellState {
+export function transitionMarkProducing(state: WikiRunShellState): WikiRunShellState {
   assertNotTerminal(state);
   if (state.phase === "producing") {
     return state;
@@ -171,10 +159,7 @@ export function transitionMarkAwaitingPublish(
 }
 
 /** Terminal: published. */
-export function transitionPublished(
-  state: WikiRunShellState,
-  summary?: string,
-): WikiRunShellState {
+export function transitionPublished(state: WikiRunShellState, summary?: string): WikiRunShellState {
   assertNotTerminal(state);
   if (state.phase !== "awaiting_publish" && state.phase !== "hard_validate") {
     // hard_validate + autoApprove may skip awaiting_publish
@@ -189,9 +174,7 @@ export function transitionPublished(
 }
 
 /** Terminal: operator declined publication. */
-export function transitionPublicationDeclined(
-  state: WikiRunShellState,
-): WikiRunShellState {
+export function transitionPublicationDeclined(state: WikiRunShellState): WikiRunShellState {
   assertNotTerminal(state);
   if (state.phase !== "awaiting_publish") {
     badTransition(state.phase, "publication_declined");
@@ -205,10 +188,7 @@ export function transitionPublicationDeclined(
 }
 
 /** Terminal: failed with error message. */
-export function transitionFailed(
-  state: WikiRunShellState,
-  error: string,
-): WikiRunShellState {
+export function transitionFailed(state: WikiRunShellState, error: string): WikiRunShellState {
   if (isTerminalPhase(state.phase) && state.phase !== "failed") {
     badTransition(state.phase, "failed");
   }
@@ -221,10 +201,7 @@ export function transitionFailed(
 }
 
 /** Terminal: cancelled (plan deny or operator stop). */
-export function transitionCancelled(
-  state: WikiRunShellState,
-  summary?: string,
-): WikiRunShellState {
+export function transitionCancelled(state: WikiRunShellState, summary?: string): WikiRunShellState {
   if (isTerminalPhase(state.phase) && state.phase !== "cancelled") {
     badTransition(state.phase, "cancelled");
   }
@@ -258,10 +235,7 @@ export function transitionResumeGate(
 
     if (input.action === "revise") {
       const feedback = input.feedback!.trim();
-      const plan = applyPlanRevision(
-        input.plan ?? state.plan,
-        feedback,
-      );
+      const plan = applyPlanRevision(input.plan ?? state.plan, feedback);
       return {
         ...state,
         phase: "awaiting_plan",

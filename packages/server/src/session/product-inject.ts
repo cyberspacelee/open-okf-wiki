@@ -32,17 +32,12 @@ function nowIso(): string {
 /**
  * Assert whitelist, fan out on the session SSE bus, append trajectory (async).
  */
-export function injectProductEvent(
-  target: ProductInjectTarget,
-  event: ProductSseEvent,
-): void {
+export function injectProductEvent(target: ProductInjectTarget, event: ProductSseEvent): void {
   assertProductInject(event.kind);
   emitProductAgentEvent(target.workspaceId, event);
-  void appendTrajectory(target.workspaceRoot, target.sessionId, event).catch(
-    () => {
-      // best-effort durability; live SSE still delivered
-    },
-  );
+  void appendTrajectory(target.workspaceRoot, target.sessionId, event).catch(() => {
+    // best-effort durability; live SSE still delivered
+  });
 }
 
 /** Emit run_phase product inject (+ optional Run Record status sync). */
@@ -63,11 +58,9 @@ export function emitPhase(
     timestamp: nowIso(),
   });
   if (status && entry.runId) {
-    void updateRunRecord(entry.workspaceRoot, entry.runId, { status }).catch(
-      () => {
-        // best-effort; SSE still carries status
-      },
-    );
+    void updateRunRecord(entry.workspaceRoot, entry.runId, { status }).catch(() => {
+      // best-effort; SSE still carries status
+    });
   }
 }
 
@@ -100,10 +93,7 @@ function runLinkKey(sessionId: string, runId: string): string {
 }
 
 /** Emit run_link product inject (deduped when status unchanged). */
-export function emitRunLink(
-  entry: ProductInjectTarget,
-  status?: WikiRunRecordStatus,
-): void {
+export function emitRunLink(entry: ProductInjectTarget, status?: WikiRunRecordStatus): void {
   if (!entry.runId) return;
   const key = runLinkKey(entry.sessionId, entry.runId);
   const statusKey = status ?? "";

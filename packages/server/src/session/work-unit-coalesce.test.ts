@@ -13,8 +13,7 @@ import {
 } from "./work-unit-coalesce.ts";
 
 function unit(
-  overrides: Partial<ProductWorkUnitEvent> &
-    Pick<ProductWorkUnitEvent, "unitId" | "status">,
+  overrides: Partial<ProductWorkUnitEvent> & Pick<ProductWorkUnitEvent, "unitId" | "status">,
 ): ProductWorkUnitEvent {
   return {
     source: "product",
@@ -338,7 +337,10 @@ test("units are independent; flushAll drains all pending", () => {
 
   c.flushAll();
   assert.equal(emitted.length, 4);
-  const texts = emitted.slice(2).map((e) => e.message?.text).sort();
+  const texts = emitted
+    .slice(2)
+    .map((e) => e.message?.text)
+    .sort();
   assert.deepEqual(texts, ["A", "B"]);
   assert.equal(timers.pendingCount(), 0);
 });

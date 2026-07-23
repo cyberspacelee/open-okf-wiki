@@ -1,15 +1,12 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 import { test } from "node:test";
-import { freezeWikiRun, FreezeWikiRunError } from "./run-boundary.js";
+import { type WorkspaceConfig, WorkspaceConfigSchema } from "@okf-wiki/contract";
+import { FreezeWikiRunError, freezeWikiRun } from "./run-boundary.js";
 import { loadRun } from "./run-store.js";
-import {
-  WorkspaceConfigSchema,
-  type WorkspaceConfig,
-} from "@okf-wiki/contract";
 
 async function makeGitRepo(parent: string, name: string): Promise<string> {
   const dir = path.join(parent, name);
@@ -33,11 +30,7 @@ async function makeWorkspace(opts?: {
   const root = await mkdtemp(path.join(tmpdir(), "okf-freeze-"));
   const skillDir = path.join(root, "skill");
   await mkdir(skillDir, { recursive: true });
-  await writeFile(
-    path.join(skillDir, "SKILL.md"),
-    "---\nname: test-skill\n---\n# skill\n",
-    "utf8",
-  );
+  await writeFile(path.join(skillDir, "SKILL.md"), "---\nname: test-skill\n---\n# skill\n", "utf8");
 
   let sources: WorkspaceConfig["sources"] = [];
   if (!opts?.noSources) {

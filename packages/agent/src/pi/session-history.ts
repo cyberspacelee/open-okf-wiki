@@ -10,8 +10,8 @@
  * Not `{sessionId}.jsonl`. findPiSessionFile must match that pattern.
  */
 
-import path from "node:path";
 import { readdir, stat } from "node:fs/promises";
+import path from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { piSessionsDir } from "./session-paths.js";
 
@@ -141,9 +141,7 @@ function toolsFromContent(
  * Index toolResult rows so assistant toolCall blocks can show args + result
  * on cold load (pi-web nests tools under the assistant turn).
  */
-function indexToolResults(
-  messages: unknown[],
-): Map<string, { text?: string; isError?: boolean }> {
+function indexToolResults(messages: unknown[]): Map<string, { text?: string; isError?: boolean }> {
   const map = new Map<string, { text?: string; isError?: boolean }>();
   for (const msg of messages) {
     if (!msg || typeof msg !== "object") continue;
@@ -199,10 +197,7 @@ export function projectPiMessages(
     }
     const text = textFromContent(m.content);
     const thinking = thinkingFromContent(m.content);
-    const tools =
-      role === "assistant"
-        ? toolsFromContent(m.content, resultByCallId)
-        : undefined;
+    const tools = role === "assistant" ? toolsFromContent(m.content, resultByCallId) : undefined;
     const stopReason = typeof m.stopReason === "string" ? m.stopReason : undefined;
     const errorMessage =
       typeof m.errorMessage === "string" && m.errorMessage.trim()
@@ -210,17 +205,12 @@ export function projectPiMessages(
         : undefined;
     const isError =
       role === "assistant" &&
-      (stopReason === "error" ||
-        stopReason === "aborted" ||
-        Boolean(errorMessage));
+      (stopReason === "error" || stopReason === "aborted" || Boolean(errorMessage));
     // Keep error / thinking-only / tool-only turns — never drop silent failures.
     if (!text.trim() && !tools?.length && !thinking.trim() && !isError) {
       return;
     }
-    const displayText =
-      text.trim() ||
-      (isError && errorMessage ? errorMessage : "") ||
-      "";
+    const displayText = text.trim() || (isError && errorMessage ? errorMessage : "") || "";
     out.push({
       id: entryIds?.[i] ?? `hist_${i}`,
       role,
@@ -228,10 +218,7 @@ export function projectPiMessages(
       thinking: thinking.trim() || undefined,
       status: isError ? "error" : "done",
       errorMessage: isError ? errorMessage : undefined,
-      createdAt:
-        typeof m.timestamp === "number"
-          ? new Date(m.timestamp).toISOString()
-          : undefined,
+      createdAt: typeof m.timestamp === "number" ? new Date(m.timestamp).toISOString() : undefined,
       tools,
     });
   });
@@ -242,10 +229,7 @@ export function projectPiMessages(
  * Whether a filename is Pi's durable session JSONL for `sessionId`.
  * Matches `{timestamp}_{sessionId}.jsonl` and plain `{sessionId}.jsonl`.
  */
-export function isPiSessionJsonlName(
-  fileName: string,
-  sessionId: string,
-): boolean {
+export function isPiSessionJsonlName(fileName: string, sessionId: string): boolean {
   if (!fileName.endsWith(".jsonl")) return false;
   if (fileName === `${sessionId}.jsonl`) return true;
   // Pi SessionManager: `${fileTimestamp}_${sessionId}.jsonl`
@@ -328,8 +312,7 @@ export async function findPiSessionFile(
         s.id === sessionId ||
         s.id === safe ||
         (typeof s.path === "string" &&
-          (s.path.includes(`_${safe}.jsonl`) ||
-            s.path.endsWith(`${safe}.jsonl`))),
+          (s.path.includes(`_${safe}.jsonl`) || s.path.endsWith(`${safe}.jsonl`))),
     );
     if (hit?.path) return hit.path;
   } catch {
@@ -346,11 +329,7 @@ export async function loadPiSessionHistory(
   sessionId: string,
   options?: { preferredPath?: string | null },
 ): Promise<PiSessionHistory> {
-  const sessionFile = await findPiSessionFile(
-    workspaceRoot,
-    sessionId,
-    options,
-  );
+  const sessionFile = await findPiSessionFile(workspaceRoot, sessionId, options);
   if (!sessionFile) {
     return { sessionId, messages: [] };
   }

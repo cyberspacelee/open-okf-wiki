@@ -3,16 +3,8 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import {
-  listDirContained,
-  readFileContained,
-  writeFileContained,
-} from "./fs-ops.js";
-import {
-  assertContainedPathSafe,
-  resolveContainedPath,
-  toPosixRelative,
-} from "@okf-wiki/core";
+import { assertContainedPathSafe, resolveContainedPath, toPosixRelative } from "@okf-wiki/core";
+import { listDirContained, readFileContained, writeFileContained } from "./fs-ops.js";
 import { redactErrorMessage } from "./run-redact.js";
 
 const root = path.resolve("/tmp/okf-wiki-path-policy-root");
@@ -53,24 +45,14 @@ test("assertContainedPathSafe / fs-ops reject symlink escape; normal file works"
       await writeFile(path.join(outside, "secret.txt"), "secret\n", "utf8");
       await symlink(outside, path.join(tempRoot, "escape-link"));
 
-      await assert.rejects(
-        () => readFileContained(tempRoot, "escape-link/secret.txt"),
-        /symlink/i,
-      );
+      await assert.rejects(() => readFileContained(tempRoot, "escape-link/secret.txt"), /symlink/i);
       await assert.rejects(
         () => writeFileContained(tempRoot, "escape-link/pwned.md", "# no\n"),
         /symlink/i,
       );
+      await assert.rejects(() => listDirContained(tempRoot, "escape-link"), /symlink/i);
       await assert.rejects(
-        () => listDirContained(tempRoot, "escape-link"),
-        /symlink/i,
-      );
-      await assert.rejects(
-        () =>
-          assertContainedPathSafe(
-            tempRoot,
-            path.join(tempRoot, "escape-link", "secret.txt"),
-          ),
+        () => assertContainedPathSafe(tempRoot, path.join(tempRoot, "escape-link", "secret.txt")),
         /symlink/i,
       );
 
@@ -100,10 +82,7 @@ test("assertContainedPathSafe rejects intermediate symlink components", async ()
     await writeFile(path.join(realDir, "file.md"), "x\n", "utf8");
     await symlink(realDir, path.join(tempRoot, "via-link"));
 
-    await assert.rejects(
-      () => readFileContained(tempRoot, "via-link/file.md"),
-      /symlink/i,
-    );
+    await assert.rejects(() => readFileContained(tempRoot, "via-link/file.md"), /symlink/i);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -119,10 +98,7 @@ test("redactErrorMessage redacts sk- keys including hyphens", () => {
 });
 
 test("redactErrorMessage never returns [object Object]", () => {
-  assert.doesNotMatch(
-    redactErrorMessage({ message: "timeout" }),
-    /\[object Object\]/,
-  );
+  assert.doesNotMatch(redactErrorMessage({ message: "timeout" }), /\[object Object\]/);
   assert.match(redactErrorMessage({ message: "timeout" }), /timeout/);
   assert.doesNotMatch(redactErrorMessage({ nested: true }), /\[object Object\]/);
 });

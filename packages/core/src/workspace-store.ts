@@ -3,24 +3,21 @@ import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises
 import { homedir } from "node:os";
 import path from "node:path";
 import {
+  type GitProbe,
+  type WorkspaceConfig,
   WorkspaceConfigSchema,
   WorkspaceLimitsSchema,
   WorkspaceOrchestrationSchema,
   WorkspaceRoleModelsSchema,
-  WorkspaceSourceSchema,
-  type GitProbe,
-  type WorkspaceConfig,
   type WorkspaceSource,
+  WorkspaceSourceSchema,
   type WorkspaceSummary,
 } from "@okf-wiki/contract";
 
 export type { WorkspaceSummary };
+
 import { probeLocalGit } from "./git.js";
-import {
-  assertAbsolutePath,
-  isPathInside,
-  resolveExistingDir,
-} from "./paths.js";
+import { assertAbsolutePath, isPathInside, resolveExistingDir } from "./paths.js";
 
 export { isPathInside };
 
@@ -100,10 +97,7 @@ export async function createWorkspace(options: CreateWorkspaceOptions): Promise<
       : path.join(rootPath, "wiki");
   await mkdir(publicationPath, { recursive: true });
 
-  const modelId =
-    options.resolvedModelId?.trim() ||
-    options.modelId?.trim() ||
-    DEFAULT_MODEL_ID;
+  const modelId = options.resolvedModelId?.trim() || options.modelId?.trim() || DEFAULT_MODEL_ID;
   const modelProfileId = options.modelProfileId?.trim() || undefined;
 
   const now = new Date().toISOString();
@@ -311,16 +305,16 @@ export const DEFAULT_LOAD_HOME_SKILLS = true;
  * Whether home skills (`~/.agents/skills`) are used.
  * Reads app.json only (Settings page); no environment override.
  */
-export function resolveLoadHomeSkills(
-  state: Pick<AppState, "loadHomeSkills">,
-): boolean {
+export function resolveLoadHomeSkills(state: Pick<AppState, "loadHomeSkills">): boolean {
   if (typeof state.loadHomeSkills === "boolean") {
     return state.loadHomeSkills;
   }
   return DEFAULT_LOAD_HOME_SKILLS;
 }
 
-export async function readAppState(appStatePath: string = defaultAppStatePath()): Promise<AppState> {
+export async function readAppState(
+  appStatePath: string = defaultAppStatePath(),
+): Promise<AppState> {
   try {
     const raw = await readFile(appStatePath, "utf8");
     const data = JSON.parse(raw) as Partial<AppState>;
@@ -337,10 +331,7 @@ export async function readAppState(appStatePath: string = defaultAppStatePath())
   }
 }
 
-export async function writeAppState(
-  appStatePath: string,
-  state: AppState,
-): Promise<void> {
+export async function writeAppState(appStatePath: string, state: AppState): Promise<void> {
   const dir = path.dirname(appStatePath);
   await mkdir(dir, { recursive: true });
   const tempPath = `${appStatePath}.${process.pid}.${Date.now()}.tmp`;
@@ -400,9 +391,7 @@ export async function registerWorkspaceInAppIndex(
   await writeAppState(appStatePath, {
     version: 1,
     recentRootPaths,
-    ...(typeof state.loadHomeSkills === "boolean"
-      ? { loadHomeSkills: state.loadHomeSkills }
-      : {}),
+    ...(typeof state.loadHomeSkills === "boolean" ? { loadHomeSkills: state.loadHomeSkills } : {}),
   });
 }
 
@@ -420,9 +409,7 @@ export async function removeWorkspaceFromAppIndex(
   await writeAppState(appStatePath, {
     version: 1,
     recentRootPaths: next,
-    ...(typeof state.loadHomeSkills === "boolean"
-      ? { loadHomeSkills: state.loadHomeSkills }
-      : {}),
+    ...(typeof state.loadHomeSkills === "boolean" ? { loadHomeSkills: state.loadHomeSkills } : {}),
   });
   return true;
 }

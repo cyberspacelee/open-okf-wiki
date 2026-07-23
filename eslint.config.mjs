@@ -7,7 +7,8 @@
  *
  * Policy (2026 community-aligned for small TS monorepos):
  * - Lint is fast enough for pre-commit (staged files) and CI.
- * - Typecheck is a separate `pnpm typecheck` / CI step (tsc project graph).
+ * - Format is Biome (`pnpm format` / format:check); ESLint does not format.
+ * - Typecheck is a separate `pnpm typecheck` / CI step (root `tsc -b` solution).
  * - e2e is Playwright + CI job (not a commit gate).
  * - React Compiler-style hooks rules stay off until data-fetch patterns migrate.
  */
@@ -39,10 +40,7 @@ export default defineConfig(
 
   // Shared TypeScript / JS for monorepo packages
   {
-    files: [
-      "packages/**/*.{js,mjs,cjs,ts,tsx}",
-      "apps/**/*.{js,mjs,cjs,ts,tsx}",
-    ],
+    files: ["packages/**/*.{js,mjs,cjs,ts,tsx}", "apps/**/*.{js,mjs,cjs,ts,tsx}"],
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     languageOptions: {
       ecmaVersion: 2022,

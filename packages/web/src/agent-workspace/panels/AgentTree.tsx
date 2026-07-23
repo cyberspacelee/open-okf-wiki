@@ -3,8 +3,8 @@
  * Click selects unit for timeline expand/scroll (no second body host).
  */
 
-import { useMemo, useState } from "react";
 import { ChevronRightIcon, GitBranchIcon } from "lucide-react";
+import { useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 import { useI18n } from "../../i18n";
 import { unitRecentActivity } from "../hooks/project-agent-events";
@@ -26,17 +26,14 @@ function nodesFromUnits(units: WorkUnits): AgentTreeNode[] {
     unitId: u.unitId,
     role: u.role,
     status: u.status,
-    parentId:
-      u.parentId && u.parentId !== "root" ? u.parentId : null,
+    parentId: u.parentId && u.parentId !== "root" ? u.parentId : null,
     task: u.task,
     activity: unitRecentActivity(u),
   }));
 }
 
 function childrenOf(nodes: AgentTreeNode[], parentId: string): AgentTreeNode[] {
-  return nodes
-    .filter((n) => n.parentId === parentId)
-    .sort((a, b) => a.id.localeCompare(b.id));
+  return nodes.filter((n) => n.parentId === parentId).sort((a, b) => a.id.localeCompare(b.id));
 }
 
 function rootsOf(nodes: AgentTreeNode[]): AgentTreeNode[] {
@@ -72,13 +69,10 @@ function TreeNodeRow({
   const selected = selectedId === node.unitId;
   const isRunning = node.status === "running" || node.status === "pending";
   const roleLabel =
-    t.agentWorkspace.roles[
-      node.role as keyof typeof t.agentWorkspace.roles
-    ] ?? node.role;
+    t.agentWorkspace.roles[node.role as keyof typeof t.agentWorkspace.roles] ?? node.role;
   const statusLabel =
-    t.agentWorkspace.unitStatus[
-      node.status as keyof typeof t.agentWorkspace.unitStatus
-    ] ?? node.status;
+    t.agentWorkspace.unitStatus[node.status as keyof typeof t.agentWorkspace.unitStatus] ??
+    node.status;
 
   return (
     <div className="flex flex-col gap-0.5" style={{ paddingLeft: depth * 10 }}>
@@ -91,10 +85,7 @@ function TreeNodeRow({
             aria-expanded={open}
           >
             <ChevronRightIcon
-              className={cn(
-                "size-3.5 transition-transform",
-                open && "rotate-90",
-              )}
+              className={cn("size-3.5 transition-transform", open && "rotate-90")}
             />
           </button>
         ) : (
@@ -169,26 +160,17 @@ export function AgentTree({
   const roots = useMemo(() => rootsOf(nodes), [nodes]);
 
   if (!hasRun && roots.length === 0) {
-    return (
-      <p className="text-xs text-muted-foreground">
-        {t.agentWorkspace.agentTreeNoRun}
-      </p>
-    );
+    return <p className="text-xs text-muted-foreground">{t.agentWorkspace.agentTreeNoRun}</p>;
   }
 
   return (
-    <div
-      className={cn("flex flex-col gap-2", className)}
-      data-testid="agent-tree"
-    >
+    <div className={cn("flex flex-col gap-2", className)} data-testid="agent-tree">
       <div className="flex items-center gap-1.5 text-xs font-medium">
         <GitBranchIcon className="size-3.5" />
         {t.agentWorkspace.agentTreeTitle}
       </div>
       {roots.length === 0 ? (
-        <p className="text-xs text-muted-foreground">
-          {t.agentWorkspace.agentTreeEmpty}
-        </p>
+        <p className="text-xs text-muted-foreground">{t.agentWorkspace.agentTreeEmpty}</p>
       ) : (
         <div className="flex flex-col gap-0.5">
           {roots.map((n) => (

@@ -20,6 +20,7 @@ import type {
   SkillFileContent,
   SkillFileEntry,
   SkillInfo,
+  SourceOrigin,
   StoredRunRecord,
   ToolPartState,
   WikiLanguage,
@@ -28,7 +29,6 @@ import type {
   WorkspaceConfig,
   WorkspaceSource,
   WorkspaceSummary,
-  SourceOrigin,
 } from "@okf-wiki/contract";
 
 export type {
@@ -47,6 +47,7 @@ export type {
   SkillFileContent,
   SkillFileEntry,
   SkillInfo,
+  SourceOrigin,
   StoredRunRecord,
   ToolPartState,
   WikiLanguage,
@@ -55,7 +56,6 @@ export type {
   WorkspaceConfig,
   WorkspaceSource,
   WorkspaceSummary,
-  SourceOrigin,
 };
 
 /** Alias kept for existing call sites (create/update model profile body). */
@@ -189,9 +189,7 @@ function errorMessageFromBody(body: unknown, fallback: string): string {
     if (typeof record.error === "string" && record.error.trim()) {
       if (record.details !== undefined) {
         const details =
-          typeof record.details === "string"
-            ? record.details
-            : JSON.stringify(record.details);
+          typeof record.details === "string" ? record.details : JSON.stringify(record.details);
         return `${record.error}: ${details}`;
       }
       return record.error;
@@ -311,9 +309,7 @@ export function updateModelProfile(
   });
 }
 
-export function deleteModelProfile(
-  profileId: string,
-): Promise<{ provider: ProviderPublic }> {
+export function deleteModelProfile(profileId: string): Promise<{ provider: ProviderPublic }> {
   return request(`/api/provider/models/${encodeURIComponent(profileId)}`, {
     method: "DELETE",
   });
@@ -392,10 +388,7 @@ export function deleteWorkspace(
   deletedMeta: boolean;
   rootPath: string;
 }> {
-  const base = withRootPathQuery(
-    `/api/workspaces/${encodeURIComponent(id)}`,
-    options?.rootPath,
-  );
+  const base = withRootPathQuery(`/api/workspaces/${encodeURIComponent(id)}`, options?.rootPath);
   const sep = base.includes("?") ? "&" : "?";
   const url = options?.deleteFiles ? `${base}${sep}deleteFiles=true` : base;
   return request(url, { method: "DELETE" });
@@ -433,10 +426,7 @@ export function addSource(
   probe: GitProbe;
 }> {
   return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/sources`,
-      rootPath,
-    ),
+    withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/sources`, rootPath),
     {
       method: "POST",
       body: JSON.stringify(input),
@@ -455,10 +445,7 @@ export function cloneSource(
   probe: GitProbe;
 }> {
   return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/sources/clone`,
-      rootPath,
-    ),
+    withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/sources/clone`, rootPath),
     {
       method: "POST",
       body: JSON.stringify(input),
@@ -471,10 +458,7 @@ export function getWorkspaceSkill(
   rootPath?: string,
 ): Promise<{ skill: SkillInfo }> {
   return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/skill`,
-      rootPath,
-    ),
+    withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/skill`, rootPath),
   );
 }
 
@@ -483,10 +467,7 @@ export function createWorkspaceSkillFork(
   rootPath?: string,
 ): Promise<{ workspace: WorkspaceConfig; skill: SkillInfo }> {
   return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/skill/fork`,
-      rootPath,
-    ),
+    withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/skill/fork`, rootPath),
     { method: "POST", body: JSON.stringify({}) },
   );
 }
@@ -496,10 +477,7 @@ export function resetWorkspaceSkill(
   rootPath?: string,
 ): Promise<{ workspace: WorkspaceConfig; skill: SkillInfo }> {
   return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/skill/reset`,
-      rootPath,
-    ),
+    withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/skill/reset`, rootPath),
     { method: "POST", body: JSON.stringify({}) },
   );
 }
@@ -520,9 +498,7 @@ export function listWorkspaceSkillFiles(
   );
   const sep = base.includes("?") ? "&" : "?";
   const url =
-    dirPath && dirPath.trim()
-      ? `${base}${sep}path=${encodeURIComponent(dirPath.trim())}`
-      : base;
+    dirPath && dirPath.trim() ? `${base}${sep}path=${encodeURIComponent(dirPath.trim())}` : base;
   return request(url);
 }
 
@@ -536,9 +512,7 @@ export function readWorkspaceSkillFile(
     rootPath,
   );
   const sep = base.includes("?") ? "&" : "?";
-  return request(
-    `${base}${sep}path=${encodeURIComponent(filePath)}`,
-  );
+  return request(`${base}${sep}path=${encodeURIComponent(filePath)}`);
 }
 
 export function writeWorkspaceSkillFile(
@@ -547,10 +521,7 @@ export function writeWorkspaceSkillFile(
   rootPath?: string,
 ): Promise<{ file: SkillFileContent; skill: SkillInfo }> {
   return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/skill/files`,
-      rootPath,
-    ),
+    withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/skill/files`, rootPath),
     {
       method: "PUT",
       body: JSON.stringify(input),
@@ -577,10 +548,7 @@ export function probeSources(
   rootPath?: string,
 ): Promise<{ workspaceId: string; probes: SourceProbeResult[] }> {
   return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/sources/probe`,
-      rootPath,
-    ),
+    withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/sources/probe`, rootPath),
     { method: "POST" },
   );
 }
@@ -590,10 +558,7 @@ export function listRuns(
   rootPath?: string,
 ): Promise<{ workspaceId: string; runs: StoredRunRecord[] }> {
   return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs`,
-      rootPath,
-    ),
+    withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/runs`, rootPath),
   );
 }
 
@@ -603,10 +568,7 @@ export function createRun(
   rootPath?: string,
 ): Promise<{ run: StoredRunRecord }> {
   return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs`,
-      rootPath,
-    ),
+    withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/runs`, rootPath),
     {
       method: "POST",
       body: JSON.stringify(input ?? {}),
@@ -780,11 +742,7 @@ export function getRunReceipt(
 }
 
 /** Absolute EventSource URL for run progress SSE. */
-export function runEventsUrl(
-  workspaceId: string,
-  runId: string,
-  rootPath?: string,
-): string {
+export function runEventsUrl(workspaceId: string, runId: string, rootPath?: string): string {
   return `${API_BASE}${withRootPathQuery(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/events`,
     rootPath,
@@ -809,10 +767,7 @@ export function listWikiPages(
   rootPath?: string,
 ): Promise<WikiPageListResponse> {
   return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/wiki`,
-      rootPath,
-    ),
+    withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/wiki`, rootPath),
   );
 }
 
@@ -830,9 +785,7 @@ export function getWikiPage(
   if (rootPath) {
     params.set("rootPath", rootPath);
   }
-  return request(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/wiki?${params.toString()}`,
-  );
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/wiki?${params.toString()}`);
 }
 
 // --- Pi Agent Workspace (ADR 0030) ---
@@ -999,4 +952,3 @@ export function getAgentSession(
     ),
   );
 }
-

@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { setChecked } from "./helpers";
 
 test.describe("doctor / global settings", () => {
@@ -42,9 +42,9 @@ test.describe("doctor / global settings", () => {
     await expect(modelRow).toContainText("openai/e2e-probe-model");
 
     await page.reload();
-    await expect(
-      page.getByTestId("model-row").filter({ hasText: name }),
-    ).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByTestId("model-row").filter({ hasText: name })).toBeVisible({
+      timeout: 10_000,
+    });
     await expect(page.getByTestId("provider-panel")).toContainText(/responses/i);
   });
 

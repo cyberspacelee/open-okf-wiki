@@ -7,24 +7,16 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import type {
-  WikiRunPlan,
-  WikiRunRecordStatus,
-  WorkspaceConfig,
-} from "@okf-wiki/contract";
+import type { WikiRunPlan, WikiRunRecordStatus, WorkspaceConfig } from "@okf-wiki/contract";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
-import {
-  publishStagingToPublication,
-  resolveSkillPath,
-} from "@okf-wiki/core";
-import { produceWiki } from "./produce/orchestrate.js";
-import { produceWithPi, shouldUsePiFixtureMode } from "./produce/live-pi.js";
-import { planWikiSpec } from "./produce/plan.js";
-import { writeWikiRunSpec } from "./spec-store.js";
-import type { ProduceEventSink } from "./produce/events.js";
-import { createParentVisibilityReducer } from "./produce/parent-visibility.js";
-import { resolveWikiSkillPaths } from "./pi/skill-paths.js";
+import { publishStagingToPublication, resolveSkillPath } from "@okf-wiki/core";
 import { piRunWorkDir } from "./pi/session-paths.js";
+import { resolveWikiSkillPaths } from "./pi/skill-paths.js";
+import type { ProduceEventSink } from "./produce/events.js";
+import { produceWithPi, shouldUsePiFixtureMode } from "./produce/live-pi.js";
+import { produceWiki } from "./produce/orchestrate.js";
+import { createParentVisibilityReducer } from "./produce/parent-visibility.js";
+import { planWikiSpec } from "./produce/plan.js";
 import { redactErrorMessage } from "./run-redact.js";
 import {
   markAwaitingPublish,
@@ -36,6 +28,7 @@ import {
   startShell,
   type WikiRunShellState,
 } from "./shell/wiki-run-shell.js";
+import { writeWikiRunSpec } from "./spec-store.js";
 
 export type WikiWorkflowJobEvent = {
   type: string;
@@ -43,11 +36,7 @@ export type WikiWorkflowJobEvent = {
   data?: unknown;
 };
 
-export type WikiModelRoleName =
-  | "writer"
-  | "planner"
-  | "worker"
-  | "reviewer";
+export type WikiModelRoleName = "writer" | "planner" | "worker" | "reviewer";
 
 export type WikiRunModelFactory = (role: WikiModelRoleName) => Promise<{
   model: Model<any>;
@@ -160,9 +149,7 @@ function resolveSkipPlanConfirm(input: StartWikiRunInput): boolean {
   return false;
 }
 
-function produceEventsFromJob(
-  onEvent?: StartWikiRunInput["onEvent"],
-): ProduceEventSink {
+function produceEventsFromJob(onEvent?: StartWikiRunInput["onEvent"]): ProduceEventSink {
   return {
     progress: (p) =>
       emit(onEvent, "phase", p.phase, {
@@ -194,9 +181,7 @@ async function resolveRoleModels(
 }> {
   if (fixture) return {};
   if (!resolveModel) {
-    throw new Error(
-      "Live produce requires resolveModel factory (or OKF_WIKI_AGENT_MODE=fixture)",
-    );
+    throw new Error("Live produce requires resolveModel factory (or OKF_WIKI_AGENT_MODE=fixture)");
   }
   const resolve = async (role: WikiModelRoleName): Promise<RoleModel> => {
     const resolved = await resolveModel(role);
@@ -239,9 +224,7 @@ async function discoverWikiPlan(input: {
     }));
   const sources = sourcesMap(input.workspace, input.sourcePathMap);
   if (sources.size === 0) {
-    throw new Error(
-      "Wiki Run plan discovery requires at least one frozen source mount",
-    );
+    throw new Error("Wiki Run plan discovery requires at least one frozen source mount");
   }
 
   emit(input.onEvent, "phase", "planning", {
@@ -266,9 +249,7 @@ async function discoverWikiPlan(input: {
     parentId: "root",
     runId: input.runId,
   });
-  const emitUnit = (
-    u: ReturnType<typeof planner.getUnit>,
-  ): void => {
+  const emitUnit = (u: ReturnType<typeof planner.getUnit>): void => {
     emit(input.onEvent, "work_unit", u.status, { ...u, runId: input.runId });
   };
   emitUnit(planner.open());
@@ -296,10 +277,7 @@ async function discoverWikiPlan(input: {
       spec = {
         ...spec,
         notes: [spec.notes, input.notes.trim()].filter(Boolean).join("\n\n"),
-        changelog: [
-          ...(spec.changelog ?? []),
-          "Operator notes on start",
-        ].slice(-40),
+        changelog: [...(spec.changelog ?? []), "Operator notes on start"].slice(-40),
       };
     }
     await writeWikiRunSpec(input.workspace.rootPath, input.runId, spec);
@@ -349,9 +327,7 @@ async function runProducePhase(input: {
     }));
   const sources = sourcesMap(input.workspace, input.sourcePathMap);
   if (sources.size === 0) {
-    throw new Error(
-      "Wiki Run produce requires at least one frozen source mount (fail-closed)",
-    );
+    throw new Error("Wiki Run produce requires at least one frozen source mount (fail-closed)");
   }
 
   const fixture = shouldUsePiFixtureMode({});
@@ -425,8 +401,7 @@ async function maybePublish(input: {
     return {};
   }
   const publicationPath =
-    input.workspace.publicationPath ??
-    path.join(input.workspace.rootPath, "wiki");
+    input.workspace.publicationPath ?? path.join(input.workspace.rootPath, "wiki");
   const sources = (input.workspace.sources ?? []).map((s) => ({
     id: s.id,
     path: s.path,
@@ -486,11 +461,7 @@ async function afterProduce(input: {
 
   const autoPub = input.autoApprove === true;
   if (!autoPub) {
-    shell = markAwaitingPublish(
-      shell,
-      input.produced.pages,
-      input.produced.summary,
-    );
+    shell = markAwaitingPublish(shell, input.produced.pages, input.produced.summary);
     emit(input.onEvent, "gate", "awaiting_publication", {
       pages: input.produced.pages,
     });
@@ -529,9 +500,7 @@ async function afterProduce(input: {
  * 2) Optional plan-gate HITL
  * 3) produce → hard-validate → publish gate/auto
  */
-export async function startWikiRun(
-  input: StartWikiRunInput,
-): Promise<WikiRunOrchestrationResult> {
+export async function startWikiRun(input: StartWikiRunInput): Promise<WikiRunOrchestrationResult> {
   if (input.abortSignal?.aborted) return cancelledResult();
 
   const skipPlan = resolveSkipPlanConfirm(input);
@@ -602,15 +571,10 @@ export async function startWikiRun(
       abortSignal: input.abortSignal,
     });
   } catch (err) {
-    if (
-      err instanceof Error &&
-      (err.name === "AbortError" || /cancel/i.test(err.message))
-    ) {
+    if (err instanceof Error && (err.name === "AbortError" || /cancel/i.test(err.message))) {
       return cancelledResult(shell);
     }
-    const message = redactErrorMessage(
-      err instanceof Error ? err.message : String(err),
-    );
+    const message = redactErrorMessage(err instanceof Error ? err.message : String(err));
     shell = markFailed(shell, message);
     emit(input.onEvent, "error", message);
     return {
@@ -630,10 +594,7 @@ export async function resumeWikiRun(
 ): Promise<WikiRunOrchestrationResult> {
   if (input.abortSignal?.aborted) return cancelledResult(input.shell);
 
-  const gate =
-    input.step === "publish-gate" || input.step === "publication"
-      ? "publish"
-      : "plan";
+  const gate = input.step === "publish-gate" || input.step === "publication" ? "publish" : "plan";
 
   let shell: WikiRunShellState =
     input.shell ??
@@ -739,15 +700,10 @@ export async function resumeWikiRun(
       shell,
     };
   } catch (err) {
-    if (
-      err instanceof Error &&
-      (err.name === "AbortError" || /cancel/i.test(err.message))
-    ) {
+    if (err instanceof Error && (err.name === "AbortError" || /cancel/i.test(err.message))) {
       return cancelledResult(shell);
     }
-    const message = redactErrorMessage(
-      err instanceof Error ? err.message : String(err),
-    );
+    const message = redactErrorMessage(err instanceof Error ? err.message : String(err));
     shell = markFailed(shell, message);
     return { status: "failed", error: message, summary: message, shell };
   }

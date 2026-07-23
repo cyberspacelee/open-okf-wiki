@@ -103,10 +103,7 @@ export function getRecentRunEvents(runId: string): RunSseEvent[] {
  * Returns an unsubscribe function.
  * Does not replay history — callers should use {@link getRecentRunEvents} first.
  */
-export function subscribeRunEvents(
-  runId: string,
-  listener: RunEventListener,
-): () => void {
+export function subscribeRunEvents(runId: string, listener: RunEventListener): () => void {
   const bus = getOrCreateBus(runId);
   bus.listeners.add(listener);
   return () => {

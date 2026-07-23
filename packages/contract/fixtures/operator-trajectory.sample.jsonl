@@ -1,12 +1,6 @@
 {"source":"product","kind":"run_link","sessionId":"sess-sample","runId":"run-sample","status":"running"}
 {"source":"product","kind":"run_phase","sessionId":"sess-sample","runId":"run-sample","phase":"planning","message":"Discovering plan"}
-{"source":"product","kind":"work_unit","sessionId":"sess-sample","runId":"run-sample","unitId":"planner","role":"planner","status":"running","task":"Draft wiki plan"}
-{"source":"product","kind":"work_unit","sessionId":"sess-sample","runId":"run-sample","unitId":"planner","role":"planner","status":"running","task":"Draft wiki plan","message":{"text":"Scanning repository structure…"}}
-{"source":"product","kind":"work_unit","sessionId":"sess-sample","runId":"run-sample","unitId":"planner","role":"planner","status":"settled","task":"Draft wiki plan","summary":"Plan ready: 3 pages","message":{"text":"Proposed overview, architecture, concepts."}}
 {"source":"product","kind":"gate","sessionId":"sess-sample","runId":"run-sample","gate":"plan","question":"Approve plan?"}
 {"source":"product","kind":"run_phase","sessionId":"sess-sample","runId":"run-sample","phase":"writing","message":"Producing wiki"}
-{"source":"product","kind":"work_unit","sessionId":"sess-sample","runId":"run-sample","unitId":"leaf-core","role":"leaf","status":"running","task":"Research core domain","parentId":"domain-core"}
-{"source":"product","kind":"work_unit","sessionId":"sess-sample","runId":"run-sample","unitId":"leaf-core","role":"leaf","status":"running","task":"Research core domain","parentId":"domain-core","message":{"thinking":"Need entry points","text":""},"tools":[{"toolCallId":"tc1","toolName":"read","state":"output-available","input":{"path":"src/index.ts"}}]}
-{"source":"product","kind":"work_unit","sessionId":"sess-sample","runId":"run-sample","unitId":"leaf-core","role":"leaf","status":"settled","task":"Research core domain","parentId":"domain-core","summary":"Core domain mapped","receiptPath":"analysis/receipts/leaf-core.json"}
 {"source":"product","kind":"plan_progress","sessionId":"sess-sample","runId":"run-sample","pages":[{"path":"overview.md","status":"done"},{"path":"architecture.md","status":"writing"}]}
 {"source":"product","kind":"defects","sessionId":"sess-sample","runId":"run-sample","round":1,"clean":true,"defectCount":0,"summary":"No blocking defects"}

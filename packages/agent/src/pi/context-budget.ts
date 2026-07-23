@@ -56,10 +56,7 @@ export function resolveContextBudget(input: ContextBudgetInput = {}): ContextBud
     Number.isFinite(input.contextTargetTokens) &&
     input.contextTargetTokens > 0
   ) {
-    contextTarget = Math.min(
-      contextWindow - MIN_RESERVE,
-      Math.floor(input.contextTargetTokens),
-    );
+    contextTarget = Math.min(contextWindow - MIN_RESERVE, Math.floor(input.contextTargetTokens));
   } else {
     contextTarget = Math.floor(contextWindow * TARGET_RATIO);
   }

@@ -35,11 +35,7 @@ function nextSequence(bus: SessionBus): number {
   return bus.sequence;
 }
 
-function publish(
-  workspaceId: string,
-  sessionId: string,
-  event: AgentSseEvent,
-): AgentSseEvent {
+function publish(workspaceId: string, sessionId: string, event: AgentSseEvent): AgentSseEvent {
   const bus = getOrCreateBus(workspaceId, sessionId);
   const withSeq: AgentSseEvent =
     "sequence" in event && event.sequence !== undefined
@@ -61,10 +57,7 @@ function publish(
 }
 
 /** Emit a typed product inject (run_phase | gate | run_link). */
-export function emitProductAgentEvent(
-  workspaceId: string,
-  event: ProductSseEvent,
-): AgentSseEvent {
+export function emitProductAgentEvent(workspaceId: string, event: ProductSseEvent): AgentSseEvent {
   return publish(workspaceId, event.sessionId, event);
 }
 

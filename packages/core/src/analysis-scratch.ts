@@ -1,9 +1,6 @@
-import { mkdir, writeFile, rename, readdir, readFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import {
-  AnalysisReceiptSchema,
-  type AnalysisReceipt,
-} from "@okf-wiki/contract";
+import { type AnalysisReceipt, AnalysisReceiptSchema } from "@okf-wiki/contract";
 import { isPathInside, WORKSPACE_DIR_NAME } from "./workspace-store.js";
 
 /**
@@ -15,20 +12,11 @@ import { isPathInside, WORKSPACE_DIR_NAME } from "./workspace-store.js";
  */
 export function analysisScratchDir(workspaceRoot: string, runId: string): string {
   const safe = runId.replace(/[/\\]/g, "_");
-  return path.join(
-    path.resolve(workspaceRoot),
-    WORKSPACE_DIR_NAME,
-    "runs",
-    safe,
-    "analysis",
-  );
+  return path.join(path.resolve(workspaceRoot), WORKSPACE_DIR_NAME, "runs", safe, "analysis");
 }
 
 /** Subdir preferred by Host research fan-out for agent discovery. */
-export function analysisReceiptsDir(
-  workspaceRoot: string,
-  runId: string,
-): string {
+export function analysisReceiptsDir(workspaceRoot: string, runId: string): string {
   return path.join(analysisScratchDir(workspaceRoot, runId), "receipts");
 }
 
@@ -75,9 +63,7 @@ export type AnalysisReceiptSummary = {
   childReceipts: string[];
 };
 
-async function tryReadReceiptFile(
-  absPath: string,
-): Promise<AnalysisReceipt | null> {
+async function tryReadReceiptFile(absPath: string): Promise<AnalysisReceipt | null> {
   try {
     const raw = await readFile(absPath, "utf8");
     return AnalysisReceiptSchema.parse(JSON.parse(raw));
@@ -99,7 +85,7 @@ export async function listAnalysisReceipts(
   const byNode = new Map<string, AnalysisReceiptSummary>();
 
   async function scan(dir: string, relPrefix: string): Promise<void> {
-    let names: string[] = [];
+    let names: string[];
     try {
       names = await readdir(dir);
     } catch {
@@ -129,9 +115,7 @@ export async function listAnalysisReceipts(
   await scan(analysisDir, "");
   await scan(receiptsSub, "receipts/");
 
-  return [...byNode.values()].sort((a, b) =>
-    a.nodeId.localeCompare(b.nodeId),
-  );
+  return [...byNode.values()].sort((a, b) => a.nodeId.localeCompare(b.nodeId));
 }
 
 /**

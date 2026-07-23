@@ -2,13 +2,13 @@
 /**
  * CI guard: product packages must not depend on Mastra or Vercel AI SDK (ADR 0030).
  */
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const packagesDir = path.join(root, "packages");
-const forbidden = ["@mastra/", "\"ai\"", "@ai-sdk/"];
+const forbidden = ["@mastra/", '"ai"', "@ai-sdk/"];
 
 const pkgDirs = readdirSync(packagesDir).filter((name) => {
   try {
@@ -35,11 +35,7 @@ for (const name of pkgDirs) {
     ...pkg.peerDependencies,
   };
   for (const dep of Object.keys(deps ?? {})) {
-    if (
-      dep === "ai" ||
-      dep.startsWith("@mastra/") ||
-      dep.startsWith("@ai-sdk/")
-    ) {
+    if (dep === "ai" || dep.startsWith("@mastra/") || dep.startsWith("@ai-sdk/")) {
       console.error(`FORBIDDEN dep in packages/${name}: ${dep}`);
       failed = true;
     }

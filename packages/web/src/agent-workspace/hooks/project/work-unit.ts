@@ -4,20 +4,10 @@
 
 import type { ProductWorkUnitEvent, WorkUnitStatus } from "@okf-wiki/contract";
 import { compactToolInput, formatToolResultText } from "./format.ts";
-import type {
-  AgentToolCall,
-  WorkUnitEventLike,
-  WorkUnits,
-  WorkUnitView,
-} from "./types.ts";
+import type { AgentToolCall, WorkUnitEventLike, WorkUnits, WorkUnitView } from "./types.ts";
 
 function normalizeWorkUnitStatus(status: string): WorkUnitStatus {
-  if (
-    status === "pending" ||
-    status === "running" ||
-    status === "settled" ||
-    status === "failed"
-  ) {
+  if (status === "pending" || status === "running" || status === "settled" || status === "failed") {
     return status;
   }
   // Defensive map for legacy chip strings if any leak through cold load.
@@ -51,9 +41,7 @@ export function workUnitToolsToAgentTools(
     id: t.toolCallId,
     name: t.toolName,
     input: compactToolInput(t.input),
-    output: t.errorText
-      ? t.errorText
-      : formatToolResultText(t.output),
+    output: t.errorText ? t.errorText : formatToolResultText(t.output),
     status:
       t.state === "output-error"
         ? ("error" as const)
@@ -72,8 +60,7 @@ export function applyWorkUnit(
   units: WorkUnits,
   event: WorkUnitEventLike | ProductWorkUnitEvent,
 ): WorkUnits {
-  const unitId =
-    typeof event.unitId === "string" ? event.unitId.trim() : "";
+  const unitId = typeof event.unitId === "string" ? event.unitId.trim() : "";
   if (!unitId) return units;
 
   const prev = units[unitId];
@@ -85,18 +72,9 @@ export function applyWorkUnit(
         ? event.role.trim()
         : (prev?.role ?? "agent"),
     status,
-    runId:
-      typeof event.runId === "string" && event.runId
-        ? event.runId
-        : prev?.runId,
-    task:
-      typeof event.task === "string"
-        ? event.task
-        : prev?.task,
-    parentId:
-      typeof event.parentId === "string"
-        ? event.parentId
-        : prev?.parentId,
+    runId: typeof event.runId === "string" && event.runId ? event.runId : prev?.runId,
+    task: typeof event.task === "string" ? event.task : prev?.task,
+    parentId: typeof event.parentId === "string" ? event.parentId : prev?.parentId,
     message: event.message
       ? {
           thinking: event.message.thinking ?? prev?.message?.thinking,
@@ -104,14 +82,8 @@ export function applyWorkUnit(
         }
       : prev?.message,
     tools: event.tools !== undefined ? event.tools : prev?.tools,
-    summary:
-      typeof event.summary === "string"
-        ? event.summary
-        : prev?.summary,
-    receiptPath:
-      typeof event.receiptPath === "string"
-        ? event.receiptPath
-        : prev?.receiptPath,
+    summary: typeof event.summary === "string" ? event.summary : prev?.summary,
+    receiptPath: typeof event.receiptPath === "string" ? event.receiptPath : prev?.receiptPath,
     error:
       typeof event.error === "string"
         ? event.error
@@ -121,9 +93,7 @@ export function applyWorkUnit(
             ? undefined
             : prev?.error,
     updatedAt:
-      typeof event.updatedAt === "number"
-        ? event.updatedAt
-        : (prev?.updatedAt ?? Date.now()),
+      typeof event.updatedAt === "number" ? event.updatedAt : (prev?.updatedAt ?? Date.now()),
   };
 
   // When message is partial-patched above, fill missing side from prev if event
@@ -132,9 +102,7 @@ export function applyWorkUnit(
 }
 
 /** Seed units fold cache from durable cold-load workUnits array. */
-export function workUnitsFromList(
-  list: WorkUnitEventLike[] | undefined,
-): WorkUnits {
+export function workUnitsFromList(list: WorkUnitEventLike[] | undefined): WorkUnits {
   if (!list?.length) return {};
   let units: WorkUnits = {};
   for (const row of list) {

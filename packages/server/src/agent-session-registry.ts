@@ -18,7 +18,6 @@ import {
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
 import { isPathInside } from "@okf-wiki/core";
-import { emitPhase } from "./session/product-inject.ts";
 import {
   handleAbort,
   handleCompact,
@@ -33,10 +32,11 @@ import {
   deleteAgentSessionOnDisk,
   ensurePiSessionsDir,
   nowIso,
+  type RegisteredAgentSession,
   readSessionMeta,
   sessionMetaPath,
-  type RegisteredAgentSession,
 } from "./session/parent-session.ts";
+import { emitPhase } from "./session/product-inject.ts";
 
 // ---------------------------------------------------------------------------
 // Public types + path / history helpers (re-exported for routes / tests)
@@ -50,7 +50,10 @@ export {
   resolveSessionHistoryFile,
   sessionMetaPath,
 } from "./session/parent-session.ts";
-
+export {
+  productPhaseFromShell,
+  resolveColdLoadPhase,
+} from "./session/produce-adapter.ts";
 // Re-export session helpers used by routes / tests.
 export {
   foldWorkUnits,
@@ -61,10 +64,6 @@ export {
   loadTrajectory,
   operatorTrajectoryPath,
 } from "./session/trajectory-store.ts";
-export {
-  productPhaseFromShell,
-  resolveColdLoadPhase,
-} from "./session/produce-adapter.ts";
 
 // ---------------------------------------------------------------------------
 // Registry CRUD
@@ -134,8 +133,7 @@ export async function registerAgentSession(input: {
   await mkdir(sessionWorkDir, { recursive: true });
 
   const createdAt = nowIso();
-  const title =
-    input.title?.trim() || defaultSessionTitle(input.workspace.name);
+  const title = input.title?.trim() || defaultSessionTitle(input.workspace.name);
 
   const meta = {
     schema: "okf.pi-session/v1",
@@ -220,8 +218,7 @@ export async function ensureRegistered(
     workspaceId: workspace.id,
     workspaceRoot,
     workspaceName: workspace.name,
-    title:
-      diskMeta?.title?.trim() || defaultSessionTitle(workspace.name),
+    title: diskMeta?.title?.trim() || defaultSessionTitle(workspace.name),
     createdAt: diskMeta?.createdAt ?? nowIso(),
     metaPath,
     sessionWorkDir,

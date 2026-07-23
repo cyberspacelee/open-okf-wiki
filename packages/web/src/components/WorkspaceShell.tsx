@@ -67,9 +67,7 @@ export function WorkspaceShell({
       <div
         data-testid={testId}
         className={cn(
-          tight
-            ? "relative flex min-h-0 flex-1 flex-col overflow-hidden"
-            : "flex flex-col gap-5",
+          tight ? "relative flex min-h-0 flex-1 flex-col overflow-hidden" : "flex flex-col gap-5",
           immersive && "gap-0",
           !immersive && tight && "gap-2",
           className,
@@ -98,9 +96,7 @@ export function WorkspaceShell({
                 {breadcrumbLabel ? (
                   <>
                     <span className="text-muted-foreground/50">·</span>
-                    <span className="text-xs text-muted-foreground">
-                      {breadcrumbLabel}
-                    </span>
+                    <span className="text-xs text-muted-foreground">{breadcrumbLabel}</span>
                   </>
                 ) : (
                   <>
@@ -109,12 +105,8 @@ export function WorkspaceShell({
                   </>
                 )}
               </div>
-              {actions ? (
-                <div className="flex flex-wrap items-center gap-2">{actions}</div>
-              ) : null}
-              {workspaceId ? (
-                <WorkspaceSubnav workspaceId={workspaceId} compact />
-              ) : null}
+              {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
+              {workspaceId ? <WorkspaceSubnav workspaceId={workspaceId} compact /> : null}
             </>
           ) : (
             <>
@@ -129,9 +121,7 @@ export function WorkspaceShell({
                   <BreadcrumbItem>
                     {breadcrumbLabel ? (
                       <BreadcrumbLink
-                        render={
-                          <Link to={agentWorkspaceHref(workspaceId, rootPath)} />
-                        }
+                        render={<Link to={agentWorkspaceHref(workspaceId, rootPath)} />}
                       >
                         {displayName}
                       </BreadcrumbLink>
@@ -152,29 +142,19 @@ export function WorkspaceShell({
 
               {tight ? (
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h1 className="!mb-0 text-xl font-semibold tracking-tight">
-                    {title}
-                  </h1>
+                  <h1 className="!mb-0 text-xl font-semibold tracking-tight">{title}</h1>
                   {actions ? (
-                    <div className="flex flex-wrap items-center gap-2">
-                      {actions}
-                    </div>
+                    <div className="flex flex-wrap items-center gap-2">{actions}</div>
                   ) : null}
                 </div>
               ) : (
-                <div
-                  className={cn(
-                    actions && "flex flex-wrap items-start justify-between gap-2",
-                  )}
-                >
+                <div className={cn(actions && "flex flex-wrap items-start justify-between gap-2")}>
                   <div>
                     <h1>{title}</h1>
                     {description ? <p>{description}</p> : null}
                   </div>
                   {actions ? (
-                    <div className="flex flex-wrap items-center gap-2">
-                      {actions}
-                    </div>
+                    <div className="flex flex-wrap items-center gap-2">{actions}</div>
                   ) : null}
                 </div>
               )}

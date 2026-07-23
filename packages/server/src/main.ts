@@ -3,12 +3,7 @@
  */
 import { createServer } from "node:http";
 import { dispatch } from "./dispatch.ts";
-import {
-  allowLan,
-  assertBindPolicy,
-  host,
-  port,
-} from "./server-config.ts";
+import { allowLan, assertBindPolicy, host, port } from "./server-config.ts";
 
 assertBindPolicy();
 
@@ -33,9 +28,7 @@ server.on("error", (err: NodeJS.ErrnoException) => {
         `Stop the other process or set OKF_WIKI_PORT to a free port.\n`,
     );
   } else {
-    process.stderr.write(
-      `server listen error: ${err.stack ?? err.message}\n`,
-    );
+    process.stderr.write(`server listen error: ${err.stack ?? err.message}\n`);
   }
   process.exit(1);
 });

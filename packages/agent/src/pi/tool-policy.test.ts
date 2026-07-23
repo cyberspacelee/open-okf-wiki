@@ -27,14 +27,7 @@ describe("tool-policy", () => {
 
   it("root_write adds write and edit only", () => {
     const tools = toolNamesForRole("root_write");
-    assert.deepEqual([...tools], [
-      "read",
-      "grep",
-      "find",
-      "ls",
-      "write",
-      "edit",
-    ]);
+    assert.deepEqual([...tools], ["read", "grep", "find", "ls", "write", "edit"]);
     assert.equal(roleMayWrite("root_write"), true);
     assertSafeWikiToolList(tools);
   });

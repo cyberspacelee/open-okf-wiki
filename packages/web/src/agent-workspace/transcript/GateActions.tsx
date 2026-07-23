@@ -3,8 +3,8 @@
  * Sends resume_gate; does not invent free-text approve inference.
  */
 
-import { useCallback, useState } from "react";
 import { CheckIcon, PencilIcon, XIcon } from "lucide-react";
+import { useCallback, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
@@ -34,8 +34,7 @@ export function GateActions({
   const [feedback, setFeedback] = useState("");
   const locked = busy || disabled;
   const isPlan = pending.gate === "plan";
-  const pageCount =
-    pending.plan?.pages?.length ?? pending.pages?.length ?? 0;
+  const pageCount = pending.plan?.pages?.length ?? pending.pages?.length ?? 0;
 
   const run = useCallback(
     async (action: ResumeGateInput["action"], fb?: string) => {
@@ -58,9 +57,7 @@ export function GateActions({
       className={cn("flex flex-col gap-2", className)}
     >
       {pending.question ? (
-        <p className={cn("text-xs", compact && "opacity-90")}>
-          {pending.question}
-        </p>
+        <p className={cn("text-xs", compact && "opacity-90")}>{pending.question}</p>
       ) : null}
 
       {isPlan && pending.plan?.pages && pending.plan.pages.length > 0 ? (
@@ -85,9 +82,7 @@ export function GateActions({
 
       {revising && isPlan ? (
         <div className="flex flex-col gap-1.5">
-          <p className="text-[11px] text-muted-foreground">
-            {t.planConfirm.reviseHint}
-          </p>
+          <p className="text-[11px] text-muted-foreground">{t.planConfirm.reviseHint}</p>
           <Textarea
             data-testid="agent-gate-revise-input"
             value={feedback}
@@ -159,9 +154,7 @@ export function GateActions({
             onClick={() => void run("deny")}
           >
             <XIcon data-icon="inline-start" />
-            {isPlan
-              ? t.planConfirm.chipDeny
-              : t.planConfirm.chipKeepStaging}
+            {isPlan ? t.planConfirm.chipDeny : t.planConfirm.chipKeepStaging}
           </Button>
         </div>
       )}

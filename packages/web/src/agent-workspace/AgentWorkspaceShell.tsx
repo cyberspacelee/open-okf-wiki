@@ -5,30 +5,12 @@
  * Work unit body lives only on the timeline Work block (expand).
  */
 
-import { useState } from "react";
 import { LayoutListIcon, PanelRightIcon } from "lucide-react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
-import { cn } from "@/lib/utils";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { useI18n } from "../i18n";
-import { ErrorBanner } from "../components/ErrorBanner";
-import { Composer } from "./composer/Composer";
-import { ContextPanels } from "./panels/ContextPanels";
-import { SessionList } from "./session-list/SessionList";
-import { Transcript } from "./transcript/Transcript";
-import type {
-  AgentMessage,
-  AgentStatus,
-  PendingGate,
-  ResumeGateInput,
-  WorkUnits,
-} from "./hooks/useSessionAgent";
+import { cn } from "@/lib/utils";
 import type {
   ModelProfilePublic,
   PiSessionSummary,
@@ -36,6 +18,19 @@ import type {
   WikiRunPlan,
   WorkspaceConfig,
 } from "../api";
+import { ErrorBanner } from "../components/ErrorBanner";
+import { useI18n } from "../i18n";
+import { Composer } from "./composer/Composer";
+import type {
+  AgentMessage,
+  AgentStatus,
+  PendingGate,
+  ResumeGateInput,
+  WorkUnits,
+} from "./hooks/useSessionAgent";
+import { ContextPanels } from "./panels/ContextPanels";
+import { SessionList } from "./session-list/SessionList";
+import { Transcript } from "./transcript/Transcript";
 
 export type AgentWorkspaceShellProps = {
   workspaceId: string;
@@ -152,10 +147,7 @@ export function AgentWorkspaceShell({
   return (
     <div
       data-testid="agent-workspace-shell"
-      className={cn(
-        "flex min-h-0 flex-1 flex-col overflow-hidden bg-background",
-        className,
-      )}
+      className={cn("flex min-h-0 flex-1 flex-col overflow-hidden bg-background", className)}
     >
       {isMobile ? (
         <header className="flex shrink-0 items-center gap-2 border-b border-border px-2 py-1">

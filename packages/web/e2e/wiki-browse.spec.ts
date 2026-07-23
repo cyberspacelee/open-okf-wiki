@@ -1,16 +1,17 @@
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { createTempGitRepo, uniqueWorkspaceRoot } from "./helpers";
 
 test.describe("published wiki browse", () => {
-  test("lists overview.md and shows title after Agent Workspace publish", async ({
-    page,
-  }) => {
+  test("lists overview.md and shows title after Agent Workspace publish", async ({ page }) => {
     const rootPath = uniqueWorkspaceRoot();
     const gitRepo = createTempGitRepo("wiki-src");
     const name = `E2E Wiki Browse ${Date.now()}`;
 
     await page.goto("/workspaces");
-    await page.getByRole("button", { name: /^create( workspace)?$/i }).first().click();
+    await page
+      .getByRole("button", { name: /^create( workspace)?$/i })
+      .first()
+      .click();
     await page.getByTestId("workspace-name-input").fill(name);
     await page.getByTestId("workspace-root-input").fill(rootPath);
     await page.getByTestId("workspace-create-submit").click();
@@ -36,9 +37,7 @@ test.describe("published wiki browse", () => {
     // Approve every gate that appears until publish completes or wiki is ready.
     for (let i = 0; i < 4; i += 1) {
       const approve = page.getByTestId("agent-gate-approve");
-      const published = page.getByText(
-        /Published Wiki|published|atomically|completed|done/i,
-      );
+      const published = page.getByText(/Published Wiki|published|atomically|completed|done/i);
       const state = await Promise.race([
         approve
           .first()
@@ -59,9 +58,7 @@ test.describe("published wiki browse", () => {
       break;
     }
     await expect(
-      page
-        .getByText(/Published Wiki|published|atomically|completed|done/i)
-        .first(),
+      page.getByText(/Published Wiki|published|atomically|completed|done/i).first(),
     ).toBeVisible({
       timeout: 90_000,
     });
@@ -86,7 +83,10 @@ test.describe("published wiki browse", () => {
     const name = `E2E Wiki Empty ${Date.now()}`;
 
     await page.goto("/workspaces");
-    await page.getByRole("button", { name: /^create( workspace)?$/i }).first().click();
+    await page
+      .getByRole("button", { name: /^create( workspace)?$/i })
+      .first()
+      .click();
     await page.getByTestId("workspace-name-input").fill(name);
     await page.getByTestId("workspace-root-input").fill(rootPath);
     await page.getByTestId("workspace-create-submit").click();

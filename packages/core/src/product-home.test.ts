@@ -13,14 +13,14 @@ import {
   workspaceProducerSkillPath,
   workspaceSkillsDir,
 } from "./product-home.js";
+import { copySkillTree, skillForkDir } from "./skill-fork.js";
 import {
+  type AppState,
   DEFAULT_LOAD_HOME_SKILLS,
   resolveLoadHomeSkills,
   setLoadHomeSkills,
   writeAppState,
-  type AppState,
 } from "./workspace-store.js";
-import { copySkillTree, skillForkDir } from "./skill-fork.js";
 
 const prevHome = process.env.HOME;
 
@@ -35,10 +35,7 @@ afterEach(() => {
 test("home skills use portable ~/.agents/skills", async () => {
   const fakeHome = await mkdtemp(path.join(tmpdir(), "okf-home-agents-"));
   process.env.HOME = fakeHome;
-  assert.equal(
-    homeSkillsDir(),
-    path.join(fakeHome, AGENTS_DIR_NAME, SKILLS_DIR_NAME),
-  );
+  assert.equal(homeSkillsDir(), path.join(fakeHome, AGENTS_DIR_NAME, SKILLS_DIR_NAME));
   assert.equal(
     homeProducerSkillPath(),
     path.join(fakeHome, ".agents", "skills", "repository-wiki-producer"),

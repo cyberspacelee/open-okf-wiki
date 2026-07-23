@@ -1,3 +1,3 @@
-export { I18nProvider, useI18n, type Locale } from "./context";
-export { formatMessage } from "./format";
+export { I18nProvider, type Locale, useI18n } from "./context";
 export type { MessageTree } from "./en";
+export { formatMessage } from "./format";

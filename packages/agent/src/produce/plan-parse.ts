@@ -2,11 +2,7 @@
  * Parse model plan text into a WikiRunSpec.
  */
 
-import {
-  WikiRunSpecSchema,
-  defaultWikiRunSpec,
-  type WikiRunSpec,
-} from "@okf-wiki/contract";
+import { defaultWikiRunSpec, type WikiRunSpec, WikiRunSpecSchema } from "@okf-wiki/contract";
 
 /**
  * Parse a model plan into a WikiRunSpec.
@@ -31,9 +27,7 @@ export function parsePlanFromAgentText(
       const parsed = JSON.parse(jsonFence[1]!) as Record<string, unknown>;
       const asSpec = WikiRunSpecSchema.safeParse({
         ...parsed,
-        ...(options.prior?.notes && !parsed.notes
-          ? { notes: options.prior.notes }
-          : {}),
+        ...(options.prior?.notes && !parsed.notes ? { notes: options.prior.notes } : {}),
       });
       if (asSpec.success && asSpec.data.pages.length > 0) {
         return asSpec.data;
@@ -43,12 +37,8 @@ export function parsePlanFromAgentText(
           if (!item || typeof item !== "object") {
             continue;
           }
-          const pathVal = String(
-            (item as { path?: unknown }).path ?? "",
-          ).trim();
-          const purposeVal = String(
-            (item as { purpose?: unknown }).purpose ?? "",
-          ).trim();
+          const pathVal = String((item as { path?: unknown }).path ?? "").trim();
+          const purposeVal = String((item as { purpose?: unknown }).purpose ?? "").trim();
           if (!pathVal || !purposeVal || seen.has(pathVal)) {
             continue;
           }
@@ -96,8 +86,7 @@ export function parsePlanFromAgentText(
     }
   }
 
-  const lineRe =
-    /^[\s>*-]*\**`?([A-Za-z0-9_./-]+\.md)`?\**\s*[-—:–]\s+(.+?)\s*$/gm;
+  const lineRe = /^[\s>*-]*\**`?([A-Za-z0-9_./-]+\.md)`?\**\s*[-—:–]\s+(.+?)\s*$/gm;
   let match: RegExpExecArray | null;
   while ((match = lineRe.exec(raw)) !== null) {
     const pathVal = match[1]!.trim();
@@ -132,9 +121,7 @@ export function parsePlanFromAgentText(
     break;
   }
   if (!summary) {
-    summary =
-      options.prior?.summary ||
-      `Proposed wiki plan for ${options.workspaceName}`;
+    summary = options.prior?.summary || `Proposed wiki plan for ${options.workspaceName}`;
   }
 
   if (pages.length === 0 && options.prior?.pages?.length) {

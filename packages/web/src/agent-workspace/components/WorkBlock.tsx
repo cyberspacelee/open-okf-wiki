@@ -5,22 +5,18 @@
  * Expand = full unit body (thinking / tools / text). Body authority = units fold.
  */
 
-import { useEffect, useMemo, useRef } from "react";
 import { ChevronRightIcon } from "lucide-react";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+import { useEffect, useMemo, useRef } from "react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { useI18n } from "../../i18n";
 import {
   unitRecentActivity,
   unitsForRun,
-  workBlockProgress,
   type WorkUnits,
   type WorkUnitView,
+  workBlockProgress,
 } from "../hooks/project-agent-events";
 import { WorkUnitBody } from "./WorkUnitBody";
 
@@ -64,13 +60,10 @@ function UnitRow({
   }, [scrollIntoView]);
 
   const roleLabel =
-    t.agentWorkspace.roles[
-      unit.role as keyof typeof t.agentWorkspace.roles
-    ] ?? unit.role;
+    t.agentWorkspace.roles[unit.role as keyof typeof t.agentWorkspace.roles] ?? unit.role;
   const statusLabel =
-    t.agentWorkspace.unitStatus[
-      unit.status as keyof typeof t.agentWorkspace.unitStatus
-    ] ?? unit.status;
+    t.agentWorkspace.unitStatus[unit.status as keyof typeof t.agentWorkspace.unitStatus] ??
+    unit.status;
   const title = unit.task?.trim() || roleLabel;
 
   return (
@@ -87,12 +80,7 @@ function UnitRow({
           {isRunning ? (
             <Spinner className="size-3 shrink-0 text-primary" />
           ) : (
-            <span
-              className={cn(
-                "size-2 shrink-0 rounded-full",
-                statusDotClass(unit.status),
-              )}
-            />
+            <span className={cn("size-2 shrink-0 rounded-full", statusDotClass(unit.status))} />
           )}
           <span className="min-w-0 flex-1">
             <span className="flex min-w-0 items-baseline gap-1.5">
@@ -145,9 +133,8 @@ export function WorkBlock({
   const list = unitsForRun(units, runId);
   const progress = useMemo(() => workBlockProgress(list), [list]);
   const phaseLabel = phase
-    ? (t.agentWorkspace.phases[
-        phase as keyof typeof t.agentWorkspace.phases
-      ] ?? phase.replace(/_/g, " "))
+    ? (t.agentWorkspace.phases[phase as keyof typeof t.agentWorkspace.phases] ??
+      phase.replace(/_/g, " "))
     : null;
 
   const progressBits: string[] = [];
@@ -160,19 +147,11 @@ export function WorkBlock({
   }
   if (progress.running + progress.pending > 0) {
     progressBits.push(
-      t.agentWorkspace.workRunningCount.replace(
-        "{n}",
-        String(progress.running + progress.pending),
-      ),
+      t.agentWorkspace.workRunningCount.replace("{n}", String(progress.running + progress.pending)),
     );
   }
   if (progress.failed > 0) {
-    progressBits.push(
-      t.agentWorkspace.workFailedCount.replace(
-        "{n}",
-        String(progress.failed),
-      ),
-    );
+    progressBits.push(t.agentWorkspace.workFailedCount.replace("{n}", String(progress.failed)));
   }
 
   return (
@@ -189,25 +168,19 @@ export function WorkBlock({
     >
       <div className="mb-1.5 flex flex-wrap items-center gap-2 text-xs">
         <span className="font-medium">{t.agentWorkspace.workBlockTitle}</span>
-        {phaseLabel ? (
-          <span className="text-muted-foreground">{phaseLabel}</span>
-        ) : null}
+        {phaseLabel ? <span className="text-muted-foreground">{phaseLabel}</span> : null}
         {progressBits.length > 0 ? (
           <span
             className="inline-flex items-center gap-1 text-muted-foreground"
             data-testid="work-block-progress"
           >
-            {progress.running + progress.pending > 0 ? (
-              <Spinner className="size-3" />
-            ) : null}
+            {progress.running + progress.pending > 0 ? <Spinner className="size-3" /> : null}
             {progressBits.join(" · ")}
           </span>
         ) : null}
       </div>
       {list.length === 0 ? (
-        <p className="text-[11px] text-muted-foreground">
-          {t.agentWorkspace.waitingForUnits}
-        </p>
+        <p className="text-[11px] text-muted-foreground">{t.agentWorkspace.waitingForUnits}</p>
       ) : (
         <ul className="flex min-w-0 flex-col gap-0.5">
           {list.map((unit) => {

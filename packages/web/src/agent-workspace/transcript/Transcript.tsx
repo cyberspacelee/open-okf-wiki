@@ -3,22 +3,10 @@
  * Two visual languages only (ADR 0031 UI cut / Hallmark audit).
  */
 
-import {
-  BotIcon,
-  ChevronRightIcon,
-  CircleAlertIcon,
-  UserIcon,
-} from "lucide-react";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
-import {
-  Bubble,
-  BubbleContent,
-  BubbleGroup,
-} from "@/components/ui/bubble";
+import { BotIcon, ChevronRightIcon, CircleAlertIcon, UserIcon } from "lucide-react";
+import { Bubble, BubbleContent, BubbleGroup } from "@/components/ui/bubble";
+import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Empty,
   EmptyDescription,
@@ -26,12 +14,8 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "@/components/ui/empty";
-import {
-  Message,
-  MessageContent,
-  MessageHeader,
-} from "@/components/ui/message";
 import { Marker, MarkerContent } from "@/components/ui/marker";
+import { Message, MessageContent, MessageHeader } from "@/components/ui/message";
 import {
   MessageScroller,
   MessageScrollerButton,
@@ -41,15 +25,11 @@ import {
   MessageScrollerViewport,
 } from "@/components/ui/message-scroller";
 import { Spinner } from "@/components/ui/spinner";
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useI18n } from "../../i18n";
 import { ToolExecutionCard } from "../components/ToolExecutionCard";
 import { WorkBlock } from "../components/WorkBlock";
-import {
-  formatProductCardContent,
-  type WorkUnits,
-} from "../hooks/project-agent-events";
+import { formatProductCardContent, type WorkUnits } from "../hooks/project-agent-events";
 import type {
   AgentMessage,
   AgentProductMeta,
@@ -73,13 +53,7 @@ export type TranscriptProps = {
   emptyActions?: boolean;
 };
 
-function ThinkingBlock({
-  thinking,
-  streaming,
-}: {
-  thinking: string;
-  streaming?: boolean;
-}) {
+function ThinkingBlock({ thinking, streaming }: { thinking: string; streaming?: boolean }) {
   const { t } = useI18n();
   return (
     <Collapsible
@@ -89,9 +63,7 @@ function ThinkingBlock({
       <CollapsibleTrigger className="group flex w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted/40">
         <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-data-panel-open:rotate-90" />
         <span className="min-w-0 flex-1 font-medium">
-          {streaming
-            ? t.agentWorkspace.thinkingStreaming
-            : t.agentWorkspace.thinking}
+          {streaming ? t.agentWorkspace.thinkingStreaming : t.agentWorkspace.thinking}
         </span>
         {streaming ? <Spinner className="size-3" /> : null}
       </CollapsibleTrigger>
@@ -102,10 +74,7 @@ function ThinkingBlock({
   );
 }
 
-function productKindLabel(
-  product: AgentProductMeta,
-  t: ReturnType<typeof useI18n>["t"],
-): string {
+function productKindLabel(product: AgentProductMeta, t: ReturnType<typeof useI18n>["t"]): string {
   switch (product.kind) {
     case "gate":
       return t.agentWorkspace.cardGate;
@@ -166,8 +135,7 @@ function ProductStrip({
   }
 
   const isError =
-    message.status === "error" ||
-    (product.kind === "run_phase" && product.phase === "failed");
+    message.status === "error" || (product.kind === "run_phase" && product.phase === "failed");
   const isGate = product.kind === "gate";
 
   return (
@@ -189,33 +157,22 @@ function ProductStrip({
         )}
       >
         <div className="mb-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-          <span className="font-medium text-foreground/80">
-            {productKindLabel(product, t)}
-          </span>
+          <span className="font-medium text-foreground/80">{productKindLabel(product, t)}</span>
           {product.kind === "run_phase" && product.phase ? (
             <span>
-              {t.agentWorkspace.phases[
-                product.phase as keyof typeof t.agentWorkspace.phases
-              ] ?? product.phase.replace(/_/g, " ")}
+              {t.agentWorkspace.phases[product.phase as keyof typeof t.agentWorkspace.phases] ??
+                product.phase.replace(/_/g, " ")}
             </span>
           ) : null}
           {isGate && product.gate ? (
             <span>
-              {product.gate === "plan"
-                ? t.agentWorkspace.gatePlan
-                : t.agentWorkspace.gatePublish}
+              {product.gate === "plan" ? t.agentWorkspace.gatePlan : t.agentWorkspace.gatePublish}
             </span>
           ) : null}
         </div>
         {(() => {
-          const body = formatProductCardContent(
-            product,
-            t.agentWorkspace,
-            message.content,
-          );
-          return body ? (
-            <div className="whitespace-pre-wrap break-words">{body}</div>
-          ) : null;
+          const body = formatProductCardContent(product, t.agentWorkspace, message.content);
+          return body ? <div className="whitespace-pre-wrap break-words">{body}</div> : null;
         })()}
         {showGateActions && pendingGate && onResumeGate ? (
           <GateActions
@@ -234,8 +191,7 @@ function ProductStrip({
 function ChatMessage({ message }: { message: AgentMessage }) {
   const { t } = useI18n();
   const isUser = message.role === "user";
-  const isError =
-    message.status === "error" || Boolean(message.errorMessage);
+  const isError = message.status === "error" || Boolean(message.errorMessage);
   const isStreaming = message.status === "streaming";
   const hasBody =
     Boolean(message.content?.trim()) ||
@@ -292,9 +248,7 @@ function ChatMessage({ message }: { message: AgentMessage }) {
               <span>{t.agentWorkspace.roleAssistant}</span>
             </>
           )}
-          {isStreaming ? (
-            <Spinner className="size-3 text-muted-foreground" />
-          ) : null}
+          {isStreaming ? <Spinner className="size-3 text-muted-foreground" /> : null}
           {isError ? (
             <span className="inline-flex items-center gap-1 text-destructive">
               <CircleAlertIcon className="size-3" />
@@ -313,35 +267,23 @@ function ChatMessage({ message }: { message: AgentMessage }) {
 
           {hasBody || isStreaming ? (
             <Bubble
-              variant={
-                isUser ? "default" : isError ? "destructive" : "outline"
-              }
+              variant={isUser ? "default" : isError ? "destructive" : "outline"}
               align={isUser ? "end" : "start"}
               className={cn(!isUser && "w-full max-w-full min-w-0")}
             >
               <BubbleContent
-                className={cn(
-                  !isUser && "w-full max-w-full min-w-0",
-                  isError && "w-full",
-                )}
+                className={cn(!isUser && "w-full max-w-full min-w-0", isError && "w-full")}
               >
                 {message.content ? (
                   isUser ? (
-                    <div className="whitespace-pre-wrap break-words">
-                      {message.content}
-                    </div>
+                    <div className="whitespace-pre-wrap break-words">{message.content}</div>
                   ) : (
-                    <AgentMarkdown
-                      content={message.content}
-                      streaming={isStreaming}
-                    />
+                    <AgentMarkdown content={message.content} streaming={isStreaming} />
                   )
                 ) : isStreaming ? (
                   <div className="flex items-center gap-2 text-muted-foreground">
                     <Spinner className="size-3.5" />
-                    <span className="text-xs">
-                      {t.agentWorkspace.statusBusy}
-                    </span>
+                    <span className="text-xs">{t.agentWorkspace.statusBusy}</span>
                   </div>
                 ) : isError ? (
                   <div className="whitespace-pre-wrap">
@@ -384,10 +326,7 @@ export function Transcript({
   if (pendingGate) {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const m = messages[i]!;
-      if (
-        m.product?.kind === "gate" &&
-        m.product.gate === pendingGate.gate
-      ) {
+      if (m.product?.kind === "gate" && m.product.gate === pendingGate.gate) {
         activeGateMessageId = m.id;
         break;
       }
@@ -409,9 +348,7 @@ export function Transcript({
               <BotIcon />
             </EmptyMedia>
             <EmptyTitle>{t.agentWorkspace.emptyTitle}</EmptyTitle>
-            <EmptyDescription>
-              {t.agentWorkspace.emptyDescription}
-            </EmptyDescription>
+            <EmptyDescription>{t.agentWorkspace.emptyDescription}</EmptyDescription>
           </EmptyHeader>
         </Empty>
         {emptyActions && onStartWikiRun ? (
@@ -430,18 +367,11 @@ export function Transcript({
 
   return (
     <MessageScrollerProvider autoScroll>
-      <MessageScroller
-        data-testid="agent-transcript"
-        className={cn("min-h-0 flex-1", className)}
-      >
+      <MessageScroller data-testid="agent-transcript" className={cn("min-h-0 flex-1", className)}>
         <MessageScrollerViewport>
           <MessageScrollerContent className="gap-3 px-3 py-3 md:px-4">
             {messages.map((m) => (
-              <MessageScrollerItem
-                key={m.id}
-                messageId={m.id}
-                scrollAnchor={m.role === "user"}
-              >
+              <MessageScrollerItem key={m.id} messageId={m.id} scrollAnchor={m.role === "user"}>
                 {m.product ? (
                   <ProductStrip
                     message={m}

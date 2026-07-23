@@ -1,11 +1,5 @@
+import { BookOpenIcon, BotIcon, FolderGit2Icon, ListTodoIcon, SettingsIcon } from "lucide-react";
 import { NavLink, useLocation, useSearchParams } from "react-router-dom";
-import {
-  BotIcon,
-  FolderGit2Icon,
-  BookOpenIcon,
-  ListTodoIcon,
-  SettingsIcon,
-} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useI18n } from "../i18n";
 import { agentWorkspaceHref, workspaceHref } from "../lib/workspace-path";

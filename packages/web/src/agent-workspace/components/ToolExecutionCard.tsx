@@ -19,17 +19,13 @@ import {
   TerminalIcon,
   WrenchIcon,
 } from "lucide-react";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import {
+  type AgentToolCall,
   formatToolDisplay,
   formatToolResultText,
-  type AgentToolCall,
 } from "../hooks/project-agent-events";
 
 export type ToolExecutionCardProps = {
@@ -69,9 +65,7 @@ function StatusGlyph({ status }: { status: AgentToolCall["status"] }) {
     return <CircleAlertIcon className="size-3.5 shrink-0 text-destructive" />;
   }
   if (status === "done") {
-    return (
-      <CheckIcon className="size-3.5 shrink-0 text-success" />
-    );
+    return <CheckIcon className="size-3.5 shrink-0 text-success" />;
   }
   return null;
 }
@@ -142,9 +136,7 @@ export function ToolExecutionCard({ tool, settled }: ToolExecutionCardProps) {
 
   // Default open only while running/error — completed tools stay collapsed (OpenCode).
   const openDefault =
-    isRunning ||
-    isError ||
-    (settled === false && tool.status !== "done" && canExpand);
+    isRunning || isError || (settled === false && tool.status !== "done" && canExpand);
 
   const Icon = toolIcon(tool.name);
 
@@ -162,10 +154,7 @@ export function ToolExecutionCard({ tool, settled }: ToolExecutionCardProps) {
       )}
       <StatusGlyph status={tool.status} />
       <Icon
-        className={cn(
-          "size-3.5 shrink-0",
-          isError ? "text-destructive" : "text-muted-foreground",
-        )}
+        className={cn("size-3.5 shrink-0", isError ? "text-destructive" : "text-muted-foreground")}
       />
       <span className="min-w-0 flex-1 truncate leading-5">
         <span
@@ -178,15 +167,10 @@ export function ToolExecutionCard({ tool, settled }: ToolExecutionCardProps) {
           {display.title}
         </span>
         {display.subtitle ? (
-          <span className="ml-1.5 text-muted-foreground">
-            {display.subtitle}
-          </span>
+          <span className="ml-1.5 text-muted-foreground">{display.subtitle}</span>
         ) : null}
         {display.args?.map((arg) => (
-          <span
-            key={arg}
-            className="ml-1.5 font-mono text-[10px] text-muted-foreground/80"
-          >
+          <span key={arg} className="ml-1.5 font-mono text-[10px] text-muted-foreground/80">
             {arg}
           </span>
         ))}

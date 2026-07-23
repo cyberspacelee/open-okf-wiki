@@ -6,217 +6,206 @@
  * Server should prefer importing skill resolve from `@okf-wiki/core`.
  */
 
+/** Re-export single gate UI map (also on @okf-wiki/contract). */
 export {
-  startWikiRun,
-  resumeWikiRun,
-  extractSuspendGate,
-  sessionViewFromTerminal,
-  type StartWikiRunInput,
-  type ResumeWikiRunInput,
-  type WikiRunOrchestrationResult,
-  type WikiWorkflowJobEvent,
-  type WikiWorkflowTerminal,
-  type WikiRunModelFactory,
-} from "./wiki-run.js";
-
-export {
-  produceWithPi,
-  produceWiki,
-  shouldUsePiFixtureMode,
-  hasModelCredentials,
-  parsePlanFromAgentText,
-  stagingWikiDirForRun,
-  createParentVisibilityReducer,
-  attachWorkUnitSink,
-  messageFromPiContent,
-  type ProduceWithPiInput,
-  type ProduceWithPiResult,
-  type ProduceWikiInput,
-  type ProduceWikiResult,
-  type ProduceEventSink,
-  type ProduceAgentRole,
-  type ParentUnitUpdate,
-  type ParentUnitStatus,
-  type ParentVisibilityReducer,
-  type LivePiRole,
-  type WikiRunAgentInput,
-  type WikiRunAgentResult,
-  type WikiRunStreamWriter,
-} from "./produce/index.js";
-
-export {
-  runChildSession,
-  runChildrenParallel,
-  produceRoleForChild,
-  type ChildRole,
-  type RunChildSessionInput,
-  type RunChildSessionResult,
-} from "./produce/children.js";
-
-export { redactErrorMessage, sanitizeSummary, truncate } from "./run-redact.js";
-
+  type GateUiMap,
+  mapRunGateToGateUi,
+  mapSuspendToGateUi,
+  optionsForPlanGate,
+  optionsForPublishGate,
+  type SuspendPayloadForGate,
+} from "@okf-wiki/contract";
 /** Prefer `@okf-wiki/core` — re-export for agent convenience. */
 export {
+  ensureHomeProducerSkill,
+  isDurableRunStatus,
+  type ResolvedSkillSource,
+  type ResolveSkillSourceOptions,
+  resolvePackageSkillPath,
   resolveSkillPath,
   resolveSkillSource,
-  resolvePackageSkillPath,
-  ensureHomeProducerSkill,
   skillLayoutPaths,
-  isDurableRunStatus,
-  type ResolveSkillSourceOptions,
-  type ResolvedSkillSource,
 } from "@okf-wiki/core";
-
-export {
-  DEFAULT_ORCHESTRATION,
-  orchestrationLimitsInstruction,
-  resolveOrchestration,
-} from "./limits.js";
-
 export {
   evaluateWikiPublishable,
   hasBlockingDefects,
   mergeDefectReports,
   parseDefectReportFromText,
-  writeMergedDefects,
   readMergedDefects,
+  writeMergedDefects,
 } from "./defects.js";
-
 export {
-  writeWikiRunSpec,
-  readWikiRunSpec,
-  runAnalysisDir,
-} from "./spec-store.js";
-
+  DEFAULT_ORCHESTRATION,
+  orchestrationLimitsInstruction,
+  resolveOrchestration,
+} from "./limits.js";
 export {
-  runReviewCouncil,
-  type ReviewerOutput,
-} from "./review-council.js";
-
-/** Re-export single gate UI map (also on @okf-wiki/contract). */
+  type AssistantOutcome,
+  lastAssistantOutcome,
+  resolveAssistantSummary,
+} from "./pi/assistant-outcome.js";
 export {
-  mapSuspendToGateUi,
-  mapRunGateToGateUi,
-  optionsForPlanGate,
-  optionsForPublishGate,
-  type SuspendPayloadForGate,
-  type GateUiMap,
-} from "@okf-wiki/contract";
-
-/** Pi harness (ADR 0030) — tool policy + run workdir layout. */
+  type ContextBudget,
+  type ContextBudgetInput,
+  compactionSettingsFromBudget,
+  resolveContextBudget,
+} from "./pi/context-budget.js";
 export {
-  toolNamesForRole,
-  roleMayWrite,
-  assertSafeWikiToolList,
-  isReadOnlyToolList,
-  FORBIDDEN_WIKI_TOOLS,
-  type PiFsToolName,
-  type WikiAgentRole,
-} from "./pi/tool-policy.js";
-export {
-  assertPathAllowed,
-  assertAbsolutePathAllowed,
-  isUnder,
-  isWriteScopeRel,
-  isReadOnlyTreeRel,
-  isIgnoredSourceRel,
-  normalizeRelPath,
-  parseSourceMountPath,
-  buildWikiScopedToolDefinitions,
-  createWikiReadOperations,
-  createWikiWriteOperations,
-  createWikiEditOperations,
-  WRITE_SCOPE_PREFIXES,
-  READ_ONLY_PREFIXES,
-  type PathAccessMode,
-  type SourceIgnoreInput,
-  type AssertPathAllowedOptions,
-  type WikiToolOperationsOptions,
-  type BuildWikiScopedToolsInput,
-} from "./pi/tool-operations.js";
-export {
-  materializeRunWorkdir,
-  runWorkdirPromptPaths,
-  type RunWorkdirLayout,
-  type MaterializeRunWorkdirInput,
-} from "./pi/run-workdir.js";
-export {
-  createWikiSession,
-  resolveWikiSessionTools,
   buildWikiSessionCustomTools,
   type CreateWikiSessionInput,
+  createWikiSession,
+  resolveWikiSessionTools,
   type WikiSessionHandle,
 } from "./pi/create-wiki-session.js";
 export {
-  resolvePiModelFromProvider,
-  resolveWorkspacePiModel,
-  piApiFromShape,
-  servedModelIdFromProfile,
-  okfProviderId,
   hasLiveProviderCredentials,
   OKF_PROVIDER_KINDS,
   type OkfProviderKind,
-  type ResolvePiModelInput,
+  okfProviderId,
+  piApiFromShape,
   type ResolvedPiModel,
+  type ResolvePiModelInput,
+  resolvePiModelFromProvider,
+  resolveWorkspacePiModel,
+  servedModelIdFromProfile,
 } from "./pi/provider-model.js";
 export {
-  resolveContextBudget,
-  compactionSettingsFromBudget,
-  type ContextBudget,
-  type ContextBudgetInput,
-} from "./pi/context-budget.js";
-export {
-  resolveWikiSkillPaths,
-  type ResolveWikiSkillPathsInput,
-} from "./pi/skill-paths.js";
-export {
   modelRefForRole,
+  type ResolvedModelRef,
   resolveModelSelection,
   type WikiModelRole,
-  type ResolvedModelRef,
 } from "./pi/role-model.js";
 export {
-  piSessionsDir,
-  piRunsDir,
-  piSessionPath,
-  piRunWorkDir,
-} from "./pi/session-paths.js";
+  type MaterializeRunWorkdirInput,
+  materializeRunWorkdir,
+  type RunWorkdirLayout,
+  runWorkdirPromptPaths,
+} from "./pi/run-workdir.js";
 export {
-  loadPiSessionHistory,
   findPiSessionFile,
   isPiSessionJsonlName,
-  projectPiMessages,
+  loadPiSessionHistory,
   type PiSessionHistory,
   type ProjectedHistoryMessage,
+  projectPiMessages,
 } from "./pi/session-history.js";
 export {
-  lastAssistantOutcome,
-  resolveAssistantSummary,
-  type AssistantOutcome,
-} from "./pi/assistant-outcome.js";
-
+  piRunsDir,
+  piRunWorkDir,
+  piSessionPath,
+  piSessionsDir,
+} from "./pi/session-paths.js";
+export {
+  type ResolveWikiSkillPathsInput,
+  resolveWikiSkillPaths,
+} from "./pi/skill-paths.js";
+export {
+  type AssertPathAllowedOptions,
+  assertAbsolutePathAllowed,
+  assertPathAllowed,
+  type BuildWikiScopedToolsInput,
+  buildWikiScopedToolDefinitions,
+  createWikiEditOperations,
+  createWikiReadOperations,
+  createWikiWriteOperations,
+  isIgnoredSourceRel,
+  isReadOnlyTreeRel,
+  isUnder,
+  isWriteScopeRel,
+  normalizeRelPath,
+  type PathAccessMode,
+  parseSourceMountPath,
+  READ_ONLY_PREFIXES,
+  type SourceIgnoreInput,
+  type WikiToolOperationsOptions,
+  WRITE_SCOPE_PREFIXES,
+} from "./pi/tool-operations.js";
+/** Pi harness (ADR 0030) — tool policy + run workdir layout. */
+export {
+  assertSafeWikiToolList,
+  FORBIDDEN_WIKI_TOOLS,
+  isReadOnlyToolList,
+  type PiFsToolName,
+  roleMayWrite,
+  toolNamesForRole,
+  type WikiAgentRole,
+} from "./pi/tool-policy.js";
+export {
+  type ChildRole,
+  produceRoleForChild,
+  type RunChildSessionInput,
+  type RunChildSessionResult,
+  runChildrenParallel,
+  runChildSession,
+} from "./produce/children.js";
+export {
+  attachWorkUnitSink,
+  createParentVisibilityReducer,
+  hasModelCredentials,
+  type LivePiRole,
+  messageFromPiContent,
+  type ParentUnitStatus,
+  type ParentUnitUpdate,
+  type ParentVisibilityReducer,
+  type ProduceAgentRole,
+  type ProduceEventSink,
+  type ProduceWikiInput,
+  type ProduceWikiResult,
+  type ProduceWithPiInput,
+  type ProduceWithPiResult,
+  parsePlanFromAgentText,
+  produceWiki,
+  produceWithPi,
+  shouldUsePiFixtureMode,
+  stagingWikiDirForRun,
+  type WikiRunAgentInput,
+  type WikiRunAgentResult,
+  type WikiRunStreamWriter,
+} from "./produce/index.js";
+export {
+  type ReviewerOutput,
+  runReviewCouncil,
+} from "./review-council.js";
+export { redactErrorMessage, sanitizeSummary, truncate } from "./run-redact.js";
 /** WikiRunShell — pure product phase machine (no Mastra). */
 export {
-  startShell,
-  enterPlanGate,
-  resumeGate,
-  markProducing,
-  markHardValidate,
-  markAwaitingPublish,
-  markPublished,
-  markPublicationDeclined,
-  markFailed,
-  markCancelled,
-  shellPhaseLabel,
-  isTerminalPhase,
   applyPlanRevision,
   assertValidResumeGate,
+  enterPlanGate,
+  isTerminalPhase,
   isWikiRunGateAction,
   isWikiRunGateKind,
-  type StartShellInput,
-  type WikiRunShellState,
-  type WikiRunShellPhase,
+  markAwaitingPublish,
+  markCancelled,
+  markFailed,
+  markHardValidate,
+  markProducing,
+  markPublicationDeclined,
+  markPublished,
   type ResumeGateInput,
+  resumeGate,
+  type StartShellInput,
+  shellPhaseLabel,
+  startShell,
   type WikiRunGateAction,
   type WikiRunGateKind,
+  type WikiRunShellPhase,
+  type WikiRunShellState,
 } from "./shell/wiki-run-shell.js";
+export {
+  readWikiRunSpec,
+  runAnalysisDir,
+  writeWikiRunSpec,
+} from "./spec-store.js";
+export {
+  extractSuspendGate,
+  type ResumeWikiRunInput,
+  resumeWikiRun,
+  type StartWikiRunInput,
+  sessionViewFromTerminal,
+  startWikiRun,
+  type WikiRunModelFactory,
+  type WikiRunOrchestrationResult,
+  type WikiWorkflowJobEvent,
+  type WikiWorkflowTerminal,
+} from "./wiki-run.js";

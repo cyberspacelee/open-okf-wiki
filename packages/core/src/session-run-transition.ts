@@ -12,8 +12,8 @@ import type {
   WikiRunRecordStatus,
 } from "@okf-wiki/contract";
 import {
-  canTransitionToCancelled,
   cancelWinsOverPatch,
+  canTransitionToCancelled,
   isDurableRunStatus,
 } from "./run-status-policy.js";
 
@@ -110,9 +110,7 @@ export type SessionRunPatches = {
 };
 
 /** Session status + workflow phase for a product run status (single map). */
-export function sessionProjectionForRunStatus(
-  status: WikiRunRecordStatus | string,
-): {
+export function sessionProjectionForRunStatus(status: WikiRunRecordStatus | string): {
   sessionStatus: OperatorSessionStatus;
   workflowPhase: SessionWorkflowState["phase"];
 } {
@@ -189,10 +187,7 @@ function defaultStatusText(
  * Unique Session–Run transition: event + state → patches.
  * Destructive / no legacy migrate branches.
  */
-export function transition(
-  event: SessionRunEvent,
-  state: SessionRunState,
-): SessionRunPatches {
+export function transition(event: SessionRunEvent, state: SessionRunState): SessionRunPatches {
   switch (event.type) {
     case "TurnStarted": {
       const phase = event.phase ?? "planning";
@@ -210,8 +205,7 @@ export function transition(
           status: "running",
           summary: "Wiki Run started",
         },
-        neutralizeDecisions:
-          isGatePhase(state.workflowPhase) || state.pending != null,
+        neutralizeDecisions: isGatePhase(state.workflowPhase) || state.pending != null,
       };
     }
 
@@ -219,9 +213,7 @@ export function transition(
       const runId = event.runId;
       // Preserve planning mid-flight if TurnStarted already set it and caller
       // did not override; default live phase is writing.
-      const phase =
-        event.phase ??
-        (state.workflowPhase === "planning" ? "planning" : "writing");
+      const phase = event.phase ?? (state.workflowPhase === "planning" ? "planning" : "writing");
       return {
         session: {
           status: "running",
@@ -243,17 +235,12 @@ export function transition(
 
     case "WorkflowSuspended": {
       const runStatus: WikiRunRecordStatus =
-        event.gate === "publication"
-          ? "awaiting_publication"
-          : "awaiting_plan";
-      const { sessionStatus, workflowPhase } =
-        sessionProjectionForRunStatus(runStatus);
+        event.gate === "publication" ? "awaiting_publication" : "awaiting_plan";
+      const { sessionStatus, workflowPhase } = sessionProjectionForRunStatus(runStatus);
       const runId = event.runId ?? state.linkedRunId ?? undefined;
       const summary =
         event.summary ??
-        (event.gate === "plan"
-          ? "Awaiting plan confirmation"
-          : "Awaiting publication approval");
+        (event.gate === "plan" ? "Awaiting plan confirmation" : "Awaiting publication approval");
       const plan = event.plan ?? state.plan;
       const pages = event.pages ?? state.pages;
       return {
@@ -296,9 +283,7 @@ export function transition(
             pending: null,
             workflow: {
               phase: "idle",
-              ...(state.linkedRunId
-                ? { linkedRunId: state.linkedRunId }
-                : {}),
+              ...(state.linkedRunId ? { linkedRunId: state.linkedRunId } : {}),
             },
           },
           run: {
@@ -309,27 +294,22 @@ export function transition(
         };
       }
 
-      const { sessionStatus, workflowPhase } = sessionProjectionForRunStatus(
-        event.status,
-      );
+      const { sessionStatus, workflowPhase } = sessionProjectionForRunStatus(event.status);
       const runId = event.runId ?? state.linkedRunId ?? undefined;
       const plan = event.plan ?? state.plan;
       const pages = event.pages ?? state.pages;
       const summary =
         event.status === "failed"
           ? failedSummary(event.error, event.summary)
-          : (event.summary ??
-            defaultStatusText(event.status, event.summary, event.error));
+          : (event.summary ?? defaultStatusText(event.status, event.summary, event.error));
 
       const leaveGate =
-        !isGateRunStatus(event.status) ||
-        isGatePhase(state.workflowPhase) ||
-        state.pending != null;
+        !isGateRunStatus(event.status) || isGatePhase(state.workflowPhase) || state.pending != null;
 
       return {
         session: {
           status: sessionStatus,
-          pending: isGateRunStatus(event.status) ? state.pending ?? null : null,
+          pending: isGateRunStatus(event.status) ? (state.pending ?? null) : null,
           workflow: {
             ...(runId ? { linkedRunId: runId } : {}),
             phase: workflowPhase,
@@ -397,9 +377,7 @@ export function transition(
     }
 
     case "ReconcileOnLoad": {
-      const { sessionStatus, workflowPhase } = sessionProjectionForRunStatus(
-        event.runStatus,
-      );
+      const { sessionStatus, workflowPhase } = sessionProjectionForRunStatus(event.runStatus);
       const plan = event.plan ?? state.plan;
       const pages = event.pages ?? state.pages;
       const atGate = isGateRunStatus(event.runStatus);
@@ -408,9 +386,7 @@ export function transition(
           status: sessionStatus,
           pending: atGate ? (state.pending ?? null) : null,
           workflow: {
-            ...(state.linkedRunId
-              ? { linkedRunId: state.linkedRunId }
-              : {}),
+            ...(state.linkedRunId ? { linkedRunId: state.linkedRunId } : {}),
             phase: workflowPhase,
             ...(plan ? { plan } : {}),
           },

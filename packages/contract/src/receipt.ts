@@ -1,11 +1,6 @@
 import { z } from "zod";
 
-export const ReceiptStatusSchema = z.enum([
-  "complete",
-  "partial",
-  "failed",
-  "cancelled",
-]);
+export const ReceiptStatusSchema = z.enum(["complete", "partial", "failed", "cancelled"]);
 
 export const ReceiptEvidenceSchema = z.object({
   repositoryId: z.string().min(1),

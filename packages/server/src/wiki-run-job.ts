@@ -17,20 +17,20 @@ import {
   type WikiRunModelFactory,
 } from "@okf-wiki/agent";
 import {
-  applyLateAbortStatus,
-  isDurableRunStatus,
-  loadRun,
-  transition,
-  updateRunRecord,
-  type SessionRunEvent,
-  type SessionRunState,
-} from "@okf-wiki/core";
-import {
   isTerminalRunStatus,
   type WikiRunPlan,
   type WikiRunRecordStatus,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
+import {
+  applyLateAbortStatus,
+  isDurableRunStatus,
+  loadRun,
+  type SessionRunEvent,
+  type SessionRunState,
+  transition,
+  updateRunRecord,
+} from "@okf-wiki/core";
 import {
   abortRun,
   clearRunAbortController,
@@ -41,9 +41,7 @@ import {
 } from "./run-events.ts";
 
 /** Settings-backed model factory for headless/live Wiki Runs. */
-function resolveModelForWorkspace(
-  workspace: WorkspaceConfig,
-): WikiRunModelFactory | undefined {
+function resolveModelForWorkspace(workspace: WorkspaceConfig): WikiRunModelFactory | undefined {
   if (shouldUsePiFixtureMode({})) return undefined;
   return async (role) => {
     const selection = resolveModelSelection({
@@ -139,9 +137,7 @@ export function eventForRunPatch(patch: {
 }
 
 /** Opaque correlation id for headless runs (not a UIMessage session file). */
-export async function ensureWorkspaceSessionId(
-  _workspace: WorkspaceConfig,
-): Promise<string> {
+export async function ensureWorkspaceSessionId(_workspace: WorkspaceConfig): Promise<string> {
   return randomUUID();
 }
 
@@ -179,11 +175,7 @@ export async function finalizeRunStatus(
   }
   if (pure.ignore && pure.ignoreReason === "durable_outcome") {
     if (existing && isTerminalRunStatus(existing.status)) {
-      emitRunDone(
-        runId,
-        existing.status,
-        existing.error ?? existing.summary ?? existing.status,
-      );
+      emitRunDone(runId, existing.status, existing.error ?? existing.summary ?? existing.status);
     }
     return;
   }
@@ -191,8 +183,7 @@ export async function finalizeRunStatus(
   const runFields = pure.run;
   const updated = await updateRunRecord(rootPath, runId, {
     status: runFields?.status ?? patch.status,
-    error:
-      runFields?.error !== undefined ? runFields.error : patch.error,
+    error: runFields?.error !== undefined ? runFields.error : patch.error,
     pages: runFields?.pages ?? patch.pages,
     summary: runFields?.summary ?? patch.summary,
     ...(patch.plan !== undefined || runFields?.plan !== undefined
@@ -206,11 +197,7 @@ export async function finalizeRunStatus(
   }
 
   if (isTerminalRunStatus(updated.status)) {
-    emitRunDone(
-      runId,
-      updated.status,
-      updated.error ?? updated.summary ?? updated.status,
-    );
+    emitRunDone(runId, updated.status, updated.error ?? updated.summary ?? updated.status);
   } else {
     emitRunStatus(runId, updated.status, updated.summary ?? updated.status);
   }
@@ -225,8 +212,7 @@ type ProcessRunOptions = {
 function jobEventsToSse(runId: string) {
   return (event: { type: string; message?: string; data?: unknown }) => {
     const detail =
-      event.message ??
-      (event.data !== undefined ? JSON.stringify(event.data) : event.type);
+      event.message ?? (event.data !== undefined ? JSON.stringify(event.data) : event.type);
     emitRunEvent(runId, {
       type: "log",
       message: detail,
@@ -250,10 +236,7 @@ async function persistWorkflowResult(
   const adjusted = applyLateAbortStatus(result, abortSignal.aborted);
   const status = adjusted.status as WikiRunRecordStatus;
   const plan =
-    ("plan" in adjusted ? adjusted.plan : undefined) ??
-    result.plan ??
-    planFallback ??
-    null;
+    ("plan" in adjusted ? adjusted.plan : undefined) ?? result.plan ?? planFallback ?? null;
 
   if (status === "awaiting_plan") {
     await finalizeRunStatus(rootPath, runId, {
@@ -261,9 +244,7 @@ async function persistWorkflowResult(
       error: null,
       pages: result.pages ?? null,
       summary:
-        ("summary" in adjusted && typeof adjusted.summary === "string"
-          ? adjusted.summary
-          : null) ??
+        ("summary" in adjusted && typeof adjusted.summary === "string" ? adjusted.summary : null) ??
         result.summary ??
         "Awaiting plan confirmation",
       plan,
@@ -295,14 +276,11 @@ async function persistWorkflowResult(
     error:
       status === "cancelled"
         ? "cancelled"
-        : ((("error" in adjusted
-            ? (adjusted as { error?: string }).error
-            : result.error) ?? null) as string | null),
+        : ((("error" in adjusted ? (adjusted as { error?: string }).error : result.error) ??
+            null) as string | null),
     pages: result.pages ?? null,
     summary:
-      ("summary" in adjusted && typeof adjusted.summary === "string"
-        ? adjusted.summary
-        : null) ??
+      ("summary" in adjusted && typeof adjusted.summary === "string" ? adjusted.summary : null) ??
       result.summary ??
       null,
     ...(plan ? { plan } : {}),
@@ -334,9 +312,7 @@ export function processRunInBackground(
     );
     emitRunEvent(runId, {
       type: "log",
-      message: skipPlanConfirm
-        ? "wiki workflow started"
-        : "wiki workflow plan phase started",
+      message: skipPlanConfirm ? "wiki workflow started" : "wiki workflow plan phase started",
     });
 
     try {
@@ -360,35 +336,21 @@ export function processRunInBackground(
         onEvent: jobEventsToSse(runId),
       });
 
-      if (
-        result.status !== "awaiting_plan" &&
-        result.status !== "awaiting_publication"
-      ) {
+      if (result.status !== "awaiting_plan" && result.status !== "awaiting_publication") {
         emitRunEvent(runId, {
           type: "log",
           message: result.summary ?? `workflow finished: ${result.status}`,
         });
       }
 
-      await persistWorkflowResult(
-        workspace.rootPath,
-        runId,
-        result,
-        abortSignal,
-        options.plan,
-      );
+      await persistWorkflowResult(workspace.rootPath, runId, result, abortSignal, options.plan);
     } catch (error) {
-      process.stderr.write(
-        `run ${runId} failed: ${redactErrorMessage(error)}\n`,
-      );
+      process.stderr.write(`run ${runId} failed: ${redactErrorMessage(error)}\n`);
       try {
-        const status: WikiRunRecordStatus = abortSignal.aborted
-          ? "cancelled"
-          : "failed";
+        const status: WikiRunRecordStatus = abortSignal.aborted ? "cancelled" : "failed";
         await finalizeRunStatus(workspace.rootPath, runId, {
           status,
-          error:
-            status === "cancelled" ? "cancelled" : redactErrorMessage(error),
+          error: status === "cancelled" ? "cancelled" : redactErrorMessage(error),
           summary: status === "cancelled" ? "Wiki Run cancelled" : undefined,
         });
       } catch (updateError) {
@@ -453,25 +415,14 @@ export function resumeRunInBackground(
         onEvent: jobEventsToSse(runId),
       });
 
-      await persistWorkflowResult(
-        workspace.rootPath,
-        runId,
-        result,
-        abortSignal,
-        resolvedPlan,
-      );
+      await persistWorkflowResult(workspace.rootPath, runId, result, abortSignal, resolvedPlan);
     } catch (error) {
-      process.stderr.write(
-        `run ${runId} resume failed: ${redactErrorMessage(error)}\n`,
-      );
+      process.stderr.write(`run ${runId} resume failed: ${redactErrorMessage(error)}\n`);
       try {
-        const status: WikiRunRecordStatus = abortSignal.aborted
-          ? "cancelled"
-          : "failed";
+        const status: WikiRunRecordStatus = abortSignal.aborted ? "cancelled" : "failed";
         await finalizeRunStatus(workspace.rootPath, runId, {
           status,
-          error:
-            status === "cancelled" ? "cancelled" : redactErrorMessage(error),
+          error: status === "cancelled" ? "cancelled" : redactErrorMessage(error),
           summary: status === "cancelled" ? "Wiki Run cancelled" : undefined,
         });
       } catch {
@@ -484,4 +435,4 @@ export function resumeRunInBackground(
 }
 
 /** Re-export for cancel-wins policy + abort. */
-export { isDurableRunStatus, abortRun };
+export { abortRun, isDurableRunStatus };

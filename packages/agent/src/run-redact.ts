@@ -12,10 +12,7 @@ export function truncate(value: string, max: number): string {
 }
 
 /** Redact obvious secrets and collapse whitespace for UI summaries. */
-export function sanitizeSummary(
-  raw: unknown,
-  max = MAX_SUMMARY,
-): string | undefined {
+export function sanitizeSummary(raw: unknown, max = MAX_SUMMARY): string | undefined {
   if (raw === undefined || raw === null) {
     return undefined;
   }
@@ -77,10 +74,12 @@ export function redactErrorMessage(error: unknown): string {
   if (raw === "[object Object]") {
     raw = "workflow failed (no message)";
   }
-  return raw
-    // Allow hyphens in key material (e.g. sk-proj-..., sk-svcacct-...).
-    .replace(/\bsk-[a-zA-Z0-9-]{10,}\b/g, "[redacted-key]")
-    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
-    .replace(/api[_-]?key["']?\s*[:=]\s*["']?[^"'\s]+/gi, "api_key=[redacted]")
-    .slice(0, 500);
+  return (
+    raw
+      // Allow hyphens in key material (e.g. sk-proj-..., sk-svcacct-...).
+      .replace(/\bsk-[a-zA-Z0-9-]{10,}\b/g, "[redacted-key]")
+      .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
+      .replace(/api[_-]?key["']?\s*[:=]\s*["']?[^"'\s]+/gi, "api_key=[redacted]")
+      .slice(0, 500)
+  );
 }

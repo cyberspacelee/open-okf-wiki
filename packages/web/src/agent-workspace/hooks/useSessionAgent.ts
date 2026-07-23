@@ -11,7 +11,6 @@
  * Command failures use `ok === false` / `status === "failed"` (not string matching).
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AgentCommand,
   AgentCommandResponse,
@@ -19,26 +18,27 @@ import type {
   ProductSseEvent,
   WikiRunPlan,
 } from "@okf-wiki/contract";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  type AgentSessionHistoryMessage,
   agentSessionCommand,
   agentSessionEventsUrl,
   getAgentSession,
-  type AgentSessionHistoryMessage,
 } from "../../api";
 import { isCommandFailed } from "./command-result";
 import {
+  type AgentMessage,
   applyPiEvent,
   applyProductEvent,
   applyWorkUnit,
   ensureWorkBlockAnchors,
   isTerminalOrWaitingPhase,
-  workUnitsFromList,
-  type AgentMessage,
   type ProductSseLike,
   type StreamingRefs,
   type WorkUnitEventLike,
   type WorkUnits,
   type WorkUnitView,
+  workUnitsFromList,
 } from "./project-agent-events";
 
 export { isCommandFailed } from "./command-result";
@@ -138,9 +138,7 @@ function eventSequence(event: AgentSseEvent): number | undefined {
   return undefined;
 }
 
-function historyToMessages(
-  rows: AgentSessionHistoryMessage[] | undefined,
-): AgentMessage[] {
+function historyToMessages(rows: AgentSessionHistoryMessage[] | undefined): AgentMessage[] {
   return (rows ?? []).map((m) => ({
     id: m.id,
     role: m.role === "system" ? "system" : m.role,
@@ -182,20 +180,13 @@ function coldWorkUnitRow(row: unknown): WorkUnitEventLike | null {
     parentId: typeof row.parentId === "string" ? row.parentId : undefined,
     message: isRecord(row.message)
       ? {
-          thinking:
-            typeof row.message.thinking === "string"
-              ? row.message.thinking
-              : undefined,
-          text:
-            typeof row.message.text === "string" ? row.message.text : undefined,
+          thinking: typeof row.message.thinking === "string" ? row.message.thinking : undefined,
+          text: typeof row.message.text === "string" ? row.message.text : undefined,
         }
       : undefined,
-    tools: Array.isArray(row.tools)
-      ? (row.tools as WorkUnitView["tools"])
-      : undefined,
+    tools: Array.isArray(row.tools) ? (row.tools as WorkUnitView["tools"]) : undefined,
     summary: typeof row.summary === "string" ? row.summary : undefined,
-    receiptPath:
-      typeof row.receiptPath === "string" ? row.receiptPath : undefined,
+    receiptPath: typeof row.receiptPath === "string" ? row.receiptPath : undefined,
     error: typeof row.error === "string" ? row.error : undefined,
     updatedAt: typeof row.updatedAt === "number" ? row.updatedAt : undefined,
   };
@@ -210,8 +201,7 @@ export function useSessionAgent({
   const [status, setStatus] = useState<AgentStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [input, setInput] = useState("");
-  const [lastCommandResponse, setLastCommandResponse] =
-    useState<AgentCommandResponse | null>(null);
+  const [lastCommandResponse, setLastCommandResponse] = useState<AgentCommandResponse | null>(null);
   const [phase, setPhase] = useState<string | null>(null);
   const [linkedRunId, setLinkedRunId] = useState<string | null>(null);
   const [plan, setPlan] = useState<WikiRunPlan | null>(null);
@@ -274,10 +264,7 @@ export function useSessionAgent({
         } else {
           setStatus("streaming");
         }
-        if (
-          product.phase !== "awaiting_plan" &&
-          product.phase !== "awaiting_publish"
-        ) {
+        if (product.phase !== "awaiting_plan" && product.phase !== "awaiting_publish") {
           setPendingGate(null);
         }
         if (product.phase === "failed" && product.message) {
@@ -290,8 +277,7 @@ export function useSessionAgent({
         if (product.runId) setLinkedRunId(product.runId);
         if (product.plan) setPlan(product.plan);
         const isResumeEcho =
-          typeof product.question === "string" &&
-          product.question.startsWith("resume_gate ");
+          typeof product.question === "string" && product.question.startsWith("resume_gate ");
         if (!isResumeEcho && product.gate) {
           setPendingGate({
             gate: product.gate,
@@ -333,10 +319,7 @@ export function useSessionAgent({
         setStatus("error");
       } else if (kind === "message_end") {
         const payload = event.payload;
-        const msg =
-          isRecord(payload) && isRecord(payload.message)
-            ? payload.message
-            : null;
+        const msg = isRecord(payload) && isRecord(payload.message) ? payload.message : null;
         if (
           msg &&
           (msg.stopReason === "error" ||
@@ -352,9 +335,7 @@ export function useSessionAgent({
         }
       }
 
-      setMessages((prev) =>
-        applyPiEvent(prev, kind, event.payload, streamRefs.current),
-      );
+      setMessages((prev) => applyPiEvent(prev, kind, event.payload, streamRefs.current));
     }
   }, []);
 
@@ -412,8 +393,7 @@ export function useSessionAgent({
       // (empty bus at first connect) treat the ring dump like bootstrap so we
       // do not re-project a completed turn on top of hist_* rows.
       let skipChatPiUntilHello =
-        mode === "bootstrap" ||
-        (mode === "reconnect" && lastSequenceRef.current < 0);
+        mode === "bootstrap" || (mode === "reconnect" && lastSequenceRef.current < 0);
 
       // Ask the server to omit already-seen bus frames when possible.
       const after = lastSequenceRef.current;
@@ -432,10 +412,7 @@ export function useSessionAgent({
           if (!isRecord(parsed)) return;
 
           if (skipChatPiUntilHello) {
-            if (
-              parsed.source === "server" &&
-              parsed.kind === "heartbeat"
-            ) {
+            if (parsed.source === "server" && parsed.kind === "heartbeat") {
               const seq = eventSequence(parsed as AgentSseEvent);
               if (seq !== undefined && seq > lastSequenceRef.current) {
                 lastSequenceRef.current = seq;
@@ -487,9 +464,7 @@ export function useSessionAgent({
 
         // Recover plan / runId from durable trajectory when registry shell is cold.
         let restoredRunId =
-          typeof snap.product?.runId === "string"
-            ? snap.product.runId
-            : undefined;
+          typeof snap.product?.runId === "string" ? snap.product.runId : undefined;
         let restoredPlan = snap.product?.plan ?? null;
         if (Array.isArray(trajectory)) {
           for (let i = trajectory.length - 1; i >= 0; i -= 1) {
@@ -506,11 +481,7 @@ export function useSessionAgent({
             ) {
               restoredRunId = row.runId.trim();
             }
-            if (
-              !restoredPlan &&
-              row.kind === "gate" &&
-              isRecord(row.plan)
-            ) {
+            if (!restoredPlan && row.kind === "gate" && isRecord(row.plan)) {
               restoredPlan = row.plan as WikiRunPlan;
             }
             if (restoredRunId && restoredPlan) break;
@@ -548,10 +519,7 @@ export function useSessionAgent({
         if (Object.keys(coldUnits).length > 0) {
           timeline = ensureWorkBlockAnchors(timeline, coldUnits);
         }
-        if (
-          snap.product?.phase &&
-          !timeline.some((m) => m.product?.kind === "run_phase")
-        ) {
+        if (snap.product?.phase && !timeline.some((m) => m.product?.kind === "run_phase")) {
           timeline = applyProductEvent(timeline, {
             kind: "run_phase",
             phase: snap.product.phase as
@@ -572,8 +540,7 @@ export function useSessionAgent({
         const phase = snap.product?.phase;
         const runStatus = snap.product?.runStatus;
         const busy = snap.product?.busy === true;
-        const phaseBusy =
-          Boolean(phase) && !isTerminalOrWaitingPhase(phase);
+        const phaseBusy = Boolean(phase) && !isTerminalOrWaitingPhase(phase);
         const runBusy =
           runStatus === "running" ||
           runStatus === "awaiting_plan" ||
@@ -590,8 +557,7 @@ export function useSessionAgent({
         }
       } catch (err) {
         if (cancelled || streamGenRef.current !== gen) return;
-        const message =
-          err instanceof Error ? err.message : "Failed to load session history";
+        const message = err instanceof Error ? err.message : "Failed to load session history";
         setError(message);
         setMessages([]);
       }
@@ -618,12 +584,7 @@ export function useSessionAgent({
   const runCommand = useCallback(
     async (command: AgentCommand): Promise<AgentCommandResponse | null> => {
       if (!sessionId) return null;
-      const res = await agentSessionCommand(
-        workspaceId,
-        sessionId,
-        command,
-        rootPath,
-      );
+      const res = await agentSessionCommand(workspaceId, sessionId, command, rootPath);
       setLastCommandResponse(res);
       return res;
     },
@@ -662,12 +623,7 @@ export function useSessionAgent({
       try {
         setStatus("streaming");
         const res = await runCommand({ type: "prompt", text: body });
-        if (
-          applyCommandFailure(
-            res,
-            "Agent prompt failed (see transcript for details)",
-          )
-        ) {
+        if (applyCommandFailure(res, "Agent prompt failed (see transcript for details)")) {
           return;
         }
       } catch (err) {
@@ -703,12 +659,7 @@ export function useSessionAgent({
           type: "start_wiki_run",
           ...(profileId ? { modelProfileId: profileId } : {}),
         });
-        if (
-          applyCommandFailure(
-            res,
-            "Failed to start wiki run (see transcript for details)",
-          )
-        ) {
+        if (applyCommandFailure(res, "Failed to start wiki run (see transcript for details)")) {
           return;
         }
         if (res?.runId) {
@@ -734,11 +685,7 @@ export function useSessionAgent({
       setError(null);
       try {
         setStatus("streaming");
-        const runId =
-          input.runId ??
-          pendingGate?.runId ??
-          linkedRunIdRef.current ??
-          undefined;
+        const runId = input.runId ?? pendingGate?.runId ?? linkedRunIdRef.current ?? undefined;
         const planForApprove =
           input.gate === "plan" && input.action === "approve"
             ? (pendingGate?.plan ?? planRef.current ?? undefined)
@@ -747,18 +694,11 @@ export function useSessionAgent({
           type: "resume_gate",
           gate: input.gate,
           action: input.action,
-          ...(input.feedback?.trim()
-            ? { feedback: input.feedback.trim() }
-            : {}),
+          ...(input.feedback?.trim() ? { feedback: input.feedback.trim() } : {}),
           ...(planForApprove ? { plan: planForApprove } : {}),
           ...(runId ? { runId } : {}),
         });
-        if (
-          applyCommandFailure(
-            res,
-            "Gate resume failed (see transcript for details)",
-          )
-        ) {
+        if (applyCommandFailure(res, "Gate resume failed (see transcript for details)")) {
           return;
         }
         if (input.action === "approve" || input.action === "deny") {

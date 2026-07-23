@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { defaultWikiRunSpec, type WikiRunPlan } from "@okf-wiki/contract";
 import {
+  type SessionRunEvent,
+  type SessionRunState,
   sessionProjectionForRunStatus,
   sessionViewFromRunStatus,
   transition,
-  type SessionRunEvent,
-  type SessionRunState,
 } from "./session-run-transition.js";
 
 const samplePlan: WikiRunPlan = defaultWikiRunSpec("test");
@@ -39,10 +39,7 @@ test("sessionProjectionForRunStatus table", () => {
 });
 
 test("TurnStarted → running/planning + linkedRunId", () => {
-  const patches = transition(
-    { type: "TurnStarted", runId: "r1" },
-    idle,
-  );
+  const patches = transition({ type: "TurnStarted", runId: "r1" }, idle);
   assert.equal(patches.session?.status, "running");
   assert.equal(patches.session?.workflow?.phase, "planning");
   assert.equal(patches.session?.workflow?.linkedRunId, "r1");

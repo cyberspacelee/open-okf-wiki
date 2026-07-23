@@ -24,10 +24,7 @@ function rg(pattern, extraArgs = "") {
 
 let failed = false;
 
-const appendHits = rg(
-  "appendSessionMessages",
-  "-g 'server/src/wiki-run-job.ts'",
-);
+const appendHits = rg("appendSessionMessages", "-g 'server/src/wiki-run-job.ts'");
 if (appendHits.trim()) {
   console.error("FAIL: wiki-run-job must not call appendSessionMessages");
   console.error(appendHits);

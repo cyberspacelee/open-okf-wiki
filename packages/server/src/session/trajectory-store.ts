@@ -11,22 +11,16 @@ import { piSessionPath } from "@okf-wiki/agent";
 import {
   assertProductInject,
   OPERATOR_TRAJECTORY_FILE,
-  ProductSseEventSchema,
   type ProductSseEvent,
+  ProductSseEventSchema,
   type ProductWorkUnitEvent,
 } from "@okf-wiki/contract";
 
 const MAX_MESSAGE_CHARS = 64_000;
 
 /** Absolute path for operator-trajectory.jsonl under the session workdir. */
-export function operatorTrajectoryPath(
-  workspaceRoot: string,
-  sessionId: string,
-): string {
-  return path.join(
-    piSessionPath(workspaceRoot, sessionId),
-    OPERATOR_TRAJECTORY_FILE,
-  );
+export function operatorTrajectoryPath(workspaceRoot: string, sessionId: string): string {
+  return path.join(piSessionPath(workspaceRoot, sessionId), OPERATOR_TRAJECTORY_FILE);
 }
 
 function capMessageField(value: string | undefined): string | undefined {
@@ -36,9 +30,7 @@ function capMessageField(value: string | undefined): string | undefined {
 }
 
 /** Cap work_unit message thinking/text before durable write. */
-export function capProductEventForTrajectory(
-  event: ProductSseEvent,
-): ProductSseEvent {
+export function capProductEventForTrajectory(event: ProductSseEvent): ProductSseEvent {
   if (event.kind !== "work_unit" || !event.message) return event;
   const thinking = capMessageField(event.message.thinking);
   const text = capMessageField(event.message.text);
@@ -85,9 +77,7 @@ export async function loadTrajectory(
     raw = await readFile(filePath, "utf8");
   } catch (err) {
     const code =
-      err && typeof err === "object" && "code" in err
-        ? (err as { code?: string }).code
-        : undefined;
+      err && typeof err === "object" && "code" in err ? (err as { code?: string }).code : undefined;
     if (code === "ENOENT") return [];
     throw err;
   }
@@ -137,9 +127,7 @@ export function lastRunPhase(
 }
 
 /** Last linked Wiki Run id from run_link / work_unit / run_phase (cold-load). */
-export function lastLinkedRunId(
-  events: readonly ProductSseEvent[],
-): string | undefined {
+export function lastLinkedRunId(events: readonly ProductSseEvent[]): string | undefined {
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const event = events[i];
     if (!event) continue;
@@ -164,9 +152,7 @@ export function lastLinkedRunId(
 export function lastPlanFromTrajectory(
   events: readonly ProductSseEvent[],
 ): NonNullable<Extract<ProductSseEvent, { kind: "gate" }>["plan"]> | undefined {
-  let anyPlan:
-    | NonNullable<Extract<ProductSseEvent, { kind: "gate" }>["plan"]>
-    | undefined;
+  let anyPlan: NonNullable<Extract<ProductSseEvent, { kind: "gate" }>["plan"]> | undefined;
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const event = events[i];
     if (event?.kind !== "gate" || !event.plan) continue;

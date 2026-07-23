@@ -10,26 +10,24 @@
  * provider kinds are reserved for a later multi-provider catalog.
  */
 
-import {
-  InMemoryCredentialStore,
-  type Api,
-  type Model,
-} from "@earendil-works/pi-ai";
+import { type Api, InMemoryCredentialStore, type Model } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { ProviderApiShape } from "@okf-wiki/contract";
 import {
   flattenModels,
   hasProviderCredentials,
   loadProviderConfig,
-  resolveProviderRuntime,
   type ResolvedProviderRuntime,
+  resolveProviderRuntime,
 } from "@okf-wiki/core";
 import { resolveContextBudget } from "./context-budget.js";
 
 /** Supported product provider kinds. Extend when non-OpenAI APIs land. */
 export type OkfProviderKind = "openai-compatible";
 
-export const OKF_PROVIDER_KINDS = ["openai-compatible"] as const satisfies readonly OkfProviderKind[];
+export const OKF_PROVIDER_KINDS = [
+  "openai-compatible",
+] as const satisfies readonly OkfProviderKind[];
 
 export type ResolvePiModelInput = {
   baseUrl?: string;
@@ -118,9 +116,7 @@ function missingModelMessage(): string {
  * True when live LLM work can proceed (stored profile or env fallback).
  * Prefer this over env-only checks after the provider catalog exists.
  */
-export function hasLiveProviderCredentials(
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
+export function hasLiveProviderCredentials(env: NodeJS.ProcessEnv = process.env): boolean {
   // Sync check: env alone is enough. Full catalog is async — callers that
   // already loaded config should use hasProviderCredentials(config, env).
   return Boolean(env.OPENAI_API_KEY?.trim() || env.OPENAI_BASE_URL?.trim());
@@ -224,8 +220,7 @@ export async function resolvePiModelFromProvider(
   }
 
   // Ensure headers stick even if registerProvider drops unknown fields.
-  const existingHeaders =
-    model.headers && typeof model.headers === "object" ? model.headers : {};
+  const existingHeaders = model.headers && typeof model.headers === "object" ? model.headers : {};
   (model as { headers: Record<string, string> }).headers = {
     ...existingHeaders,
     ...headers,
@@ -273,10 +268,7 @@ export async function resolveWorkspacePiModel(input: {
   const env = input.env ?? process.env;
 
   const flat = flattenModels(config);
-  if (
-    !hasProviderCredentials(config, env) &&
-    !flat.some((m) => Boolean(m.modelId?.trim()))
-  ) {
+  if (!hasProviderCredentials(config, env) && !flat.some((m) => Boolean(m.modelId?.trim()))) {
     throw new Error(missingCredentialsMessage());
   }
 

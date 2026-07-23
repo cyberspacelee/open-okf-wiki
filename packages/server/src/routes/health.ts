@@ -1,10 +1,6 @@
 import { spawn } from "node:child_process";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import {
-  hasProviderCredentials,
-  loadProviderConfig,
-  resolveProviderRuntime,
-} from "@okf-wiki/core";
+import { hasProviderCredentials, loadProviderConfig, resolveProviderRuntime } from "@okf-wiki/core";
 // hasProviderCredentials used by handleDoctor
 import { sendJson } from "../http-util.ts";
 import { allowLan, host, port } from "../server-config.ts";
@@ -65,10 +61,7 @@ export async function handleDoctor(_req: IncomingMessage, res: ServerResponse): 
     },
     provider: {
       configured: hasProviderCredentials(provider),
-      modelCount: (provider.providers ?? []).reduce(
-        (n, p) => n + (p.models?.length ?? 0),
-        0,
-      ),
+      modelCount: (provider.providers ?? []).reduce((n, p) => n + (p.models?.length ?? 0), 0),
       defaultModelProfileId: provider.defaultModelProfileId ?? null,
       baseUrlSet: runtime.source.baseUrl !== "none",
       apiKeySet: runtime.source.apiKey !== "none",

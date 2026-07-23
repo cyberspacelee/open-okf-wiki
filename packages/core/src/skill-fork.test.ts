@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { skillDigest } from "./skill-digest.js";
 import {
   createSkillFork,
   getSkillInfo,
@@ -12,7 +13,6 @@ import {
   skillForkDir,
   writeSkillFile,
 } from "./skill-fork.js";
-import { skillDigest } from "./skill-digest.js";
 
 async function tempDir(prefix: string): Promise<string> {
   return mkdtemp(path.join(tmpdir(), prefix));
@@ -79,8 +79,5 @@ test("writeSkillFile refuses path escape", async () => {
     workspaceRoot: workspace,
     sourceSkillPath: source,
   });
-  await assert.rejects(
-    () => writeSkillFile(forkPath, "../outside.md", "x"),
-    /\.\./,
-  );
+  await assert.rejects(() => writeSkillFile(forkPath, "../outside.md", "x"), /\.\./);
 });

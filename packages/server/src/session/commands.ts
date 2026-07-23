@@ -19,24 +19,9 @@ import {
   type AgentCommandResponse,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
-import {
-  freezeWikiRun,
-  FreezeWikiRunError,
-} from "@okf-wiki/core";
-import {
-  abortRun,
-  registerRunAbortController,
-  clearRunAbortController,
-} from "../run-events.ts";
+import { FreezeWikiRunError, freezeWikiRun } from "@okf-wiki/core";
+import { abortRun, clearRunAbortController, registerRunAbortController } from "../run-events.ts";
 import { finalizeRunStatus } from "../wiki-run-job.ts";
-import {
-  emitPhase,
-  emitRunLink,
-} from "./product-inject.ts";
-import {
-  emitPi,
-  mapOrchestratorOnEvent,
-} from "./produce-adapter.ts";
 import {
   ensureLiveHandle,
   makeResolveModel,
@@ -45,14 +30,14 @@ import {
   preferPiFixture,
   type RegisteredAgentSession,
 } from "./parent-session.ts";
+import { emitPi, mapOrchestratorOnEvent } from "./produce-adapter.ts";
+import { emitPhase, emitRunLink } from "./product-inject.ts";
 
 /**
  * Pi may complete session.prompt() without throwing while the last assistant
  * message has stopReason "error" (e.g. gateway 403). Surface that to HTTP + SSE.
  */
-function lastAssistantProviderError(
-  messages: readonly unknown[],
-): string | null {
+function lastAssistantProviderError(messages: readonly unknown[]): string | null {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const msg = messages[i];
     if (!msg || typeof msg !== "object") continue;
@@ -228,9 +213,7 @@ export async function handleSteer(
  * Mirrors REST cancel (abort signal + durable cancelled status) so "Stop agent"
  * does not leave Jobs stuck at running / awaiting_*.
  */
-export async function handleAbort(
-  entry: RegisteredAgentSession,
-): Promise<AgentCommandResponse> {
+export async function handleAbort(entry: RegisteredAgentSession): Promise<AgentCommandResponse> {
   const runId = entry.runId;
 
   // Signal in-flight produce (session controller and/or run registry).
@@ -394,12 +377,7 @@ export async function handleStartWikiRun(
   // Shell snapshot before startWikiRun returns — cold-load can still see a run.
   entry.shell = startShell({ skipPlanConfirm: true });
   emitRunLink(entry, "running");
-  emitPhase(
-    entry,
-    "planning",
-    command.notes ?? "start_wiki_run",
-    "running",
-  );
+  emitPhase(entry, "planning", command.notes ?? "start_wiki_run", "running");
   if (entry.produceModelProfileId) {
     emitPi(entry.workspaceId, entry.sessionId, "wiki_run_model", {
       modelProfileId: entry.produceModelProfileId,
@@ -407,8 +385,7 @@ export async function handleStartWikiRun(
     });
   }
 
-  const skipPlanConfirm =
-    command.autoApprove === true || workspace.planConfirm === false;
+  const skipPlanConfirm = command.autoApprove === true || workspace.planConfirm === false;
   const controller = new AbortController();
   entry.abortController = controller;
   // Share controller with REST cancel so Jobs cancel and Stop agent both work.
@@ -422,9 +399,7 @@ export async function handleStartWikiRun(
     notes: command.notes,
     autoApprove: command.autoApprove === true,
     skipPlanConfirm,
-    resolveModel: preferPiFixture()
-      ? undefined
-      : makeResolveModel(workspace, entry),
+    resolveModel: preferPiFixture() ? undefined : makeResolveModel(workspace, entry),
     skillRoot: frozen.skillPath,
     sourcePathMap: frozen.sourcePathMap,
     abortSignal: controller.signal,
@@ -497,8 +472,7 @@ export async function handleResumeGate(
     };
   }
 
-  const step =
-    command.gate === "publication" ? "publish-gate" : "plan-gate";
+  const step = command.gate === "publication" ? "publish-gate" : "plan-gate";
   const controller = new AbortController();
   entry.abortController = controller;
   registerRunAbortController(entry.runId, controller);
@@ -524,12 +498,9 @@ export async function handleResumeGate(
       shell: entry.shell,
       pages: entry.shell?.pages,
       plan: command.plan ?? entry.shell?.plan,
-      autoApprove: command.gate === "publication" && command.action === "approve"
-        ? true
-        : undefined,
-      resolveModel: preferPiFixture()
-        ? undefined
-        : makeResolveModel(workspace, entry),
+      autoApprove:
+        command.gate === "publication" && command.action === "approve" ? true : undefined,
+      resolveModel: preferPiFixture() ? undefined : makeResolveModel(workspace, entry),
       abortSignal: controller.signal,
       onEvent: mapOrchestratorOnEvent(entry),
     });

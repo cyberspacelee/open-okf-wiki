@@ -7,6 +7,31 @@
  * - WorkUnits is a fold cache only (last-by-unitId), not durability authority
  */
 
+export {
+  compactToolInput,
+  extractAssistantError,
+  extractMessageText,
+  extractMessageThinking,
+  formatPayloadText,
+  formatToolDisplay,
+  formatToolResultText,
+  makeId,
+  safeStringify,
+  type ToolDisplaySummary,
+  toolPathLabel,
+} from "./project/format.ts";
+export { applyPiEvent } from "./project/pi.ts";
+export {
+  applyProductEvent,
+  ensureWorkBlockAnchors,
+  findWorkBlockIndex,
+  isTerminalOrWaitingPhase,
+  lastAssistantIsError,
+  productCardContent,
+  productMeta,
+  unitsForRun,
+} from "./project/product.ts";
+export { formatProductCardContent } from "./project/product-copy.ts";
 export type {
   AgentMessage,
   AgentMessageRole,
@@ -20,21 +45,6 @@ export type {
   WorkUnits,
   WorkUnitView,
 } from "./project/types.ts";
-
-export {
-  compactToolInput,
-  extractAssistantError,
-  extractMessageText,
-  extractMessageThinking,
-  formatPayloadText,
-  formatToolDisplay,
-  formatToolResultText,
-  makeId,
-  safeStringify,
-  toolPathLabel,
-  type ToolDisplaySummary,
-} from "./project/format.ts";
-
 export {
   applyWorkUnit,
   unitRecentActivity,
@@ -43,18 +53,3 @@ export {
   workUnitsFromList,
   workUnitToolsToAgentTools,
 } from "./project/work-unit.ts";
-
-export { applyPiEvent } from "./project/pi.ts";
-
-export {
-  applyProductEvent,
-  ensureWorkBlockAnchors,
-  findWorkBlockIndex,
-  isTerminalOrWaitingPhase,
-  lastAssistantIsError,
-  productCardContent,
-  productMeta,
-  unitsForRun,
-} from "./project/product.ts";
-
-export { formatProductCardContent } from "./project/product-copy.ts";

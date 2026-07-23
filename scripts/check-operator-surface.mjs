@@ -30,6 +30,18 @@ const FORBIDDEN = [
   "SessionMessagePart",
   "ProduceChildPiEvent",
   "readOperatorWorkSnapshot",
+  // WP0: ban second body channels / PVU / parent-visibility dual path
+  "work_unit",
+  "WorkUnit",
+  "parent-visibility",
+  "parentVisibility",
+  "work-unit-coalesce",
+  "applyPiEvent",
+  "workStreams",
+  "operator-trajectory",
+  "ProjectedHistoryMessage",
+  "attachWorkUnitSink",
+  "ProductWorkUnit",
 ];
 
 function rg(pattern) {

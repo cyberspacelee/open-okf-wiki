@@ -71,10 +71,7 @@ export function extractTitleFromFrontmatter(content: string): string | undefined
   }
   let raw = match[1]!.trim();
   // JSON-style quoted string from fixture agent: title: "Foo"
-  if (
-    (raw.startsWith('"') && raw.endsWith('"')) ||
-    (raw.startsWith("'") && raw.endsWith("'"))
-  ) {
+  if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
     const inner = raw.slice(1, -1);
     try {
       // Prefer JSON unquote when double-quoted so escapes work.
@@ -170,34 +167,22 @@ async function assertPublicationRoot(publicationPath: string): Promise<string> {
   } catch (error) {
     const code = (error as NodeJS.ErrnoException | undefined)?.code;
     if (code === "ENOENT") {
-      throw new PublishedWikiError(
-        "not_found",
-        `publication path does not exist: ${resolved}`,
-      );
+      throw new PublishedWikiError("not_found", `publication path does not exist: ${resolved}`);
     }
-    throw new PublishedWikiError(
-      "io",
-      error instanceof Error ? error.message : String(error),
-    );
+    throw new PublishedWikiError("io", error instanceof Error ? error.message : String(error));
   }
 
   if (rootInfo.isSymbolicLink()) {
     throw new PublishedWikiError("symlink", `publicationPath is a symlink: ${resolved}`);
   }
   if (!rootInfo.isDirectory()) {
-    throw new PublishedWikiError(
-      "invalid_path",
-      `publicationPath is not a directory: ${resolved}`,
-    );
+    throw new PublishedWikiError("invalid_path", `publicationPath is not a directory: ${resolved}`);
   }
 
   try {
     await assertNoSymlinkComponents(resolved, "publicationPath");
   } catch (error) {
-    throw new PublishedWikiError(
-      "symlink",
-      error instanceof Error ? error.message : String(error),
-    );
+    throw new PublishedWikiError("symlink", error instanceof Error ? error.message : String(error));
   }
 
   return resolved;
@@ -259,10 +244,7 @@ export async function listPublishedWikiPages(publicationPath: string): Promise<s
   await walk(root, "");
 
   if (pages.length === 0) {
-    throw new PublishedWikiError(
-      "empty",
-      `published wiki has no markdown pages: ${root}`,
-    );
+    throw new PublishedWikiError("empty", `published wiki has no markdown pages: ${root}`);
   }
 
   pages.sort((a, b) => a.localeCompare(b));
@@ -291,10 +273,7 @@ export async function readPublishedWikiPage(
     if (code === "ENOENT") {
       throw new PublishedWikiError("not_found", `page not found: ${relativePath}`);
     }
-    throw new PublishedWikiError(
-      "io",
-      error instanceof Error ? error.message : String(error),
-    );
+    throw new PublishedWikiError("io", error instanceof Error ? error.message : String(error));
   }
 
   if (info.isSymbolicLink()) {

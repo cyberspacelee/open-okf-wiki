@@ -2,10 +2,10 @@ import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   parseSourceCitations,
+  type SourceRootMap,
   sourceRootMapFromSources,
   validateCitationFormat,
   validateCitationResolve,
-  type SourceRootMap,
 } from "./citations.js";
 import { assertAbsolutePath, assertNoSymlinkComponents } from "./paths.js";
 
@@ -74,19 +74,13 @@ export function extractYamlFrontmatterBody(content: string): string | null {
 
 function unquoteYamlScalar(raw: string): string {
   const t = raw.trim();
-  if (
-    (t.startsWith('"') && t.endsWith('"')) ||
-    (t.startsWith("'") && t.endsWith("'"))
-  ) {
+  if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
     return t.slice(1, -1).trim();
   }
   return t;
 }
 
-function frontmatterScalar(
-  front: string,
-  key: string,
-): string | undefined {
+function frontmatterScalar(front: string, key: string): string | undefined {
   const re = new RegExp(`^\\s*${key}\\s*:\\s*(.+?)\\s*$`, "m");
   const match = front.match(re);
   if (!match) return undefined;
@@ -199,8 +193,7 @@ export async function validateWikiTree(
   // Citations required when Snapshot sources are supplied (publish path) unless
   // explicitly disabled. Pure frontmatter/caps checks omit sources.
   // Reserved OKF files (index.md / log.md) never require citations.
-  const requireCitations =
-    options.requireCitations ?? Boolean(options.sources?.length);
+  const requireCitations = options.requireCitations ?? Boolean(options.sources?.length);
   const sourceMap: SourceRootMap | undefined = options.sources
     ? sourceRootMapFromSources(options.sources)
     : undefined;
@@ -270,9 +263,7 @@ export async function validateWikiTree(
   );
 
   if (fileCount > WIKI_VALIDATE_MAX_FILES) {
-    errors.push(
-      `wiki tree has ${fileCount} files (max ${WIKI_VALIDATE_MAX_FILES})`,
-    );
+    errors.push(`wiki tree has ${fileCount} files (max ${WIKI_VALIDATE_MAX_FILES})`);
   }
 
   if (pageCount < 1) {
@@ -321,31 +312,21 @@ export async function validateWikiTree(
     }
     if (!hasConceptFrontmatter(content)) {
       if (!hasNonEmptyTypeFrontmatter(content) && !hasNonEmptyTitleFrontmatter(content)) {
-        errors.push(
-          `${md.relPath}: missing YAML frontmatter with non-empty type and title`,
-        );
+        errors.push(`${md.relPath}: missing YAML frontmatter with non-empty type and title`);
       } else if (!hasNonEmptyTypeFrontmatter(content)) {
-        errors.push(
-          `${md.relPath}: missing YAML frontmatter with non-empty type`,
-        );
+        errors.push(`${md.relPath}: missing YAML frontmatter with non-empty type`);
       } else {
-        errors.push(
-          `${md.relPath}: missing YAML frontmatter with non-empty title`,
-        );
+        errors.push(`${md.relPath}: missing YAML frontmatter with non-empty title`);
       }
     }
     const citations = parseSourceCitations(content);
     citationCount += citations.length;
     if (requireCitations && citations.length === 0) {
-      errors.push(
-        `${md.relPath}: missing Source Citation ([Source](repo:…#L…))`,
-      );
+      errors.push(`${md.relPath}: missing Source Citation ([Source](repo:…#L…))`);
     }
     errors.push(...validateCitationFormat(citations, md.relPath));
     if (sourceMap) {
-      errors.push(
-        ...(await validateCitationResolve(citations, md.relPath, sourceMap)),
-      );
+      errors.push(...(await validateCitationResolve(citations, md.relPath, sourceMap)));
     }
   }
 

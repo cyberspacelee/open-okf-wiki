@@ -1,5 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { cn } from "@/lib/utils";
 import {
   cancelRun,
   createRun,
@@ -14,17 +25,6 @@ import { RunStatusBadge } from "../components/RunStatusBadge";
 import { WorkspaceShell } from "../components/WorkspaceShell";
 import { useI18n } from "../i18n";
 import { agentWorkspaceHref, workspaceHref } from "../lib/workspace-path";
-import { Button, buttonVariants } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { cn } from "@/lib/utils";
 
 function formatTime(iso: string): string {
   try {
@@ -35,11 +35,7 @@ function formatTime(iso: string): string {
 }
 
 function isActiveJobStatus(status: StoredRunRecord["status"]): boolean {
-  return (
-    status === "running" ||
-    status === "awaiting_plan" ||
-    status === "awaiting_publication"
-  );
+  return status === "running" || status === "awaiting_plan" || status === "awaiting_publication";
 }
 
 export function WorkspaceRunPage() {
@@ -135,10 +131,7 @@ export function WorkspaceRunPage() {
     setError(null);
     try {
       const result = await createRun(id, {}, root);
-      setRuns((prev) => [
-        result.run,
-        ...prev.filter((r) => r.runId !== result.run.runId),
-      ]);
+      setRuns((prev) => [result.run, ...prev.filter((r) => r.runId !== result.run.runId)]);
     } catch (err) {
       setError(err);
     } finally {
@@ -154,10 +147,7 @@ export function WorkspaceRunPage() {
     setError(null);
     try {
       const result = await retryRun(id, lastRun.runId, root);
-      setRuns((prev) => [
-        result.run,
-        ...prev.filter((r) => r.runId !== result.run.runId),
-      ]);
+      setRuns((prev) => [result.run, ...prev.filter((r) => r.runId !== result.run.runId)]);
     } catch (err) {
       setError(err);
     } finally {
@@ -173,9 +163,7 @@ export function WorkspaceRunPage() {
     setError(null);
     try {
       const result = await cancelRun(id, lastRun.runId, root);
-      setRuns((prev) =>
-        prev.map((r) => (r.runId === result.run.runId ? result.run : r)),
-      );
+      setRuns((prev) => prev.map((r) => (r.runId === result.run.runId ? result.run : r)));
     } catch (err) {
       setError(err);
     } finally {
@@ -192,9 +180,7 @@ export function WorkspaceRunPage() {
       description={
         <>
           {t.runs.descriptionBefore}
-          <Link to={agentWorkspaceHref(id, rootPathHint)}>
-            {t.runs.descriptionLink}
-          </Link>
+          <Link to={agentWorkspaceHref(id, rootPathHint)}>{t.runs.descriptionLink}</Link>
           {t.runs.descriptionAfter}
         </>
       }
@@ -210,11 +196,7 @@ export function WorkspaceRunPage() {
             <CardHeader className="row-between items-center">
               <CardTitle>{t.runs.auditTitle}</CardTitle>
               <div className="row-actions flex flex-wrap gap-2">
-                <Link
-                  to={agentHref}
-                  className={cn(buttonVariants())}
-                  data-testid="run-open-agent"
-                >
+                <Link to={agentHref} className={cn(buttonVariants())} data-testid="run-open-agent">
                   {t.runs.openAgent}
                 </Link>
                 {showWikiLink ? (
@@ -232,9 +214,7 @@ export function WorkspaceRunPage() {
               {!canStart ? (
                 <p className="muted">
                   {t.runs.needSource}{" "}
-                  <Link to={workspaceHref(id, "/sources", rootPathHint)}>
-                    {t.runs.openSources}
-                  </Link>
+                  <Link to={workspaceHref(id, "/sources", rootPathHint)}>{t.runs.openSources}</Link>
                 </p>
               ) : null}
 
@@ -293,9 +273,7 @@ export function WorkspaceRunPage() {
                       data-testid="run-session-gate-hint"
                     >
                       <p className="text-sm text-muted-foreground">
-                        {awaitingPlan
-                          ? t.runs.gateOnSessionPlan
-                          : t.runs.gateOnSessionPublish}
+                        {awaitingPlan ? t.runs.gateOnSessionPlan : t.runs.gateOnSessionPublish}
                       </p>
                       <div className="mt-2">
                         <Link
@@ -383,9 +361,7 @@ export function WorkspaceRunPage() {
                         <TableCell className="muted small whitespace-normal">
                           {run.error ?? "—"}
                         </TableCell>
-                        <TableCell className="muted small">
-                          {formatTime(run.createdAt)}
-                        </TableCell>
+                        <TableCell className="muted small">{formatTime(run.createdAt)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>

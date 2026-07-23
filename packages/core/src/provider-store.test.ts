@@ -209,8 +209,5 @@ test("toProviderPublic exposes providers and flat models", async () => {
 
 test("hasProviderCredentials and defaultProviderPath", () => {
   assert.ok(defaultProviderPath().includes("provider.json"));
-  assert.equal(
-    hasProviderCredentials({ version: 3, providers: [] }, {}),
-    false,
-  );
+  assert.equal(hasProviderCredentials({ version: 3, providers: [] }, {}), false);
 });

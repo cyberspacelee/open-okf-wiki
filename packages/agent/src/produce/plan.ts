@@ -4,16 +4,12 @@
 
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import {
-  WikiRunSpecSchema,
-  defaultWikiRunSpec,
-  type WikiRunSpec,
-} from "@okf-wiki/contract";
+import { defaultWikiRunSpec, type WikiRunSpec, WikiRunSpecSchema } from "@okf-wiki/contract";
+import type { RunWorkdirLayout } from "../pi/run-workdir.js";
+import type { SourceIgnoreInput } from "../pi/tool-operations.js";
 import { runChildSession } from "./children.js";
 import { parsePlanFromAgentText } from "./plan-parse.js";
 import { plannerPrompt } from "./prompts.js";
-import type { SourceIgnoreInput } from "../pi/tool-operations.js";
-import type { RunWorkdirLayout } from "../pi/run-workdir.js";
 
 export type PlanWikiSpecInput = {
   runWorkDir: string;
@@ -49,9 +45,7 @@ export type PlanWikiSpecResult = {
  * Produce a WikiRunSpec via Planner child session (RO tools).
  * Fail-closed on live parse failure unless useDefaultSpec is set.
  */
-export async function planWikiSpec(
-  input: PlanWikiSpecInput,
-): Promise<PlanWikiSpecResult> {
+export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSpecResult> {
   if (input.useDefaultSpec || input.fixture) {
     return {
       spec: defaultWikiRunSpec(input.workspaceName),
@@ -60,9 +54,7 @@ export async function planWikiSpec(
   }
 
   if (!input.model) {
-    throw new Error(
-      "Live plan phase requires a model, or pass fixture/useDefaultSpec",
-    );
+    throw new Error("Live plan phase requires a model, or pass fixture/useDefaultSpec");
   }
 
   const child = await runChildSession({
@@ -99,9 +91,7 @@ export async function planWikiSpec(
     return { spec: thin, mode: "live", rawSummary: child.summary };
   }
 
-  throw new Error(
-    "Planner did not return a parseable WikiRunSpec (fail-closed)",
-  );
+  throw new Error("Planner did not return a parseable WikiRunSpec (fail-closed)");
 }
 
 function tryParseSpecJson(text: string): WikiRunSpec | null {

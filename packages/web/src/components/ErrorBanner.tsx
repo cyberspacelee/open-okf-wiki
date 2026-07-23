@@ -1,7 +1,7 @@
-import type { ApiError } from "../api";
-import { useI18n } from "../i18n";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import type { ApiError } from "../api";
+import { useI18n } from "../i18n";
 
 type Props = {
   error: unknown;

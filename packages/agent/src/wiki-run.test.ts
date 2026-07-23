@@ -3,16 +3,13 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
 import test from "node:test";
-import {
-  WorkspaceConfigSchema,
-  type WorkspaceConfig,
-} from "@okf-wiki/contract";
-import { startWikiRun, resumeWikiRun } from "./wiki-run.js";
+import { type WorkspaceConfig, WorkspaceConfigSchema } from "@okf-wiki/contract";
+import { resumeWikiRun, startWikiRun } from "./wiki-run.js";
 
 async function makeWorkspace(root: string): Promise<WorkspaceConfig> {
   const sourcePath = path.join(root, "src-repo");

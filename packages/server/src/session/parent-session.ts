@@ -4,7 +4,7 @@
  * Extracted from agent-session-registry for maintainability (no behavior change).
  */
 
-import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   createWikiSession,
@@ -12,11 +12,11 @@ import {
   isPiSessionJsonlName,
   piSessionPath,
   piSessionsDir,
+  type ResolvedPiModel,
   resolveModelSelection,
   resolveWikiSkillPaths,
   resolveWorkspacePiModel,
   shouldUsePiFixtureMode,
-  type ResolvedPiModel,
   type WikiModelRole,
   type WikiRunModelFactory,
   type WikiRunShellState,
@@ -24,16 +24,9 @@ import {
   type WikiWorkflowTerminal,
 } from "@okf-wiki/agent";
 import { type WorkspaceConfig } from "@okf-wiki/contract";
-import {
-  isPathInside,
-  updateRunRecord,
-} from "@okf-wiki/core";
-import {
-  emitGate,
-  emitPhase,
-  emitRunLink,
-} from "./product-inject.ts";
+import { isPathInside, updateRunRecord } from "@okf-wiki/core";
 import { emitPi } from "./produce-adapter.ts";
+import { emitGate, emitPhase, emitRunLink } from "./product-inject.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -137,9 +130,7 @@ export async function agentSessionExistsOnDisk(
   return false;
 }
 
-export async function readSessionMeta(
-  metaPath: string,
-): Promise<SessionMetaDisk | null> {
+export async function readSessionMeta(metaPath: string): Promise<SessionMetaDisk | null> {
   try {
     const raw = await readFile(metaPath, "utf8");
     const parsed: unknown = JSON.parse(raw);
@@ -198,10 +189,7 @@ export function defaultSessionTitle(workspaceName: string): string {
  * True when the title is still the create-time default and should be
  * replaced by the first user prompt (OpenCode / ChatGPT style).
  */
-export function isDefaultSessionTitle(
-  title: string,
-  workspaceName?: string,
-): boolean {
+export function isDefaultSessionTitle(title: string, workspaceName?: string): boolean {
   const t = title.trim();
   if (!t) return true;
   if (t === "New session" || t === "新会话") return true;
@@ -298,8 +286,7 @@ export async function resolveSessionHistoryFile(
   const preferred =
     reg?.handle?.sessionFile ??
     reg?.sessionFile ??
-    (await readSessionMeta(sessionMetaPath(workspaceRoot, sessionId)))
-      ?.sessionFile;
+    (await readSessionMeta(sessionMetaPath(workspaceRoot, sessionId)))?.sessionFile;
   return findPiSessionFile(workspaceRoot, sessionId, {
     preferredPath: preferred,
   });
@@ -331,9 +318,7 @@ export async function resolvePiModelForWorkspace(
   });
 }
 
-export async function skillPathsForWorkspace(
-  workspace: WorkspaceConfig,
-): Promise<string[]> {
+export async function skillPathsForWorkspace(workspace: WorkspaceConfig): Promise<string[]> {
   return resolveWikiSkillPaths({
     workspaceRoot: workspace.rootPath,
     skillPath: workspace.skillPath,
@@ -376,9 +361,7 @@ export async function ensureLiveHandle(
     contextTargetTokens,
     maxContextTokens,
     additionalSkillPaths: skillPaths,
-    ...(model
-      ? { model: model.model, modelRuntime: model.modelRuntime }
-      : {}),
+    ...(model ? { model: model.model, modelRuntime: model.modelRuntime } : {}),
   });
 
   if (handle.sessionFile) {
@@ -440,8 +423,7 @@ export function makeResolveModel(
     const piModel = await resolvePiModelForWorkspace(workspace, {
       role: piRole,
       // Operator override applies to writer path; other roles keep roleModels.
-      overrideProfileId:
-        piRole === "writer" ? entry.produceModelProfileId : undefined,
+      overrideProfileId: piRole === "writer" ? entry.produceModelProfileId : undefined,
     });
     emitPi(entry.workspaceId, entry.sessionId, "produce_model", {
       providerId: piModel.providerId,
@@ -497,20 +479,10 @@ export async function persistTerminal(
       result.plan ?? entry.shell?.plan,
       result.pages,
     );
-    emitPhase(
-      entry,
-      "awaiting_publish",
-      result.summary,
-      "awaiting_publication",
-    );
+    emitPhase(entry, "awaiting_publish", result.summary, "awaiting_publication");
   } else if (result.status === "published") {
     emitPhase(entry, "done", result.summary ?? "published", "published");
   } else if (result.status === "publication_declined") {
-    emitPhase(
-      entry,
-      "done",
-      result.summary ?? "publication declined",
-      "publication_declined",
-    );
+    emitPhase(entry, "done", result.summary ?? "publication declined", "publication_declined");
   }
 }

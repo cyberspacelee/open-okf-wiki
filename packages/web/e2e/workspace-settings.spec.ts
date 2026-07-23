@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { chooseOption, uniqueWorkspaceRoot } from "./helpers";
 
 test.describe("workspace settings", () => {
@@ -25,7 +25,10 @@ test.describe("workspace settings", () => {
     const updatedName = `${originalName} Renamed`;
 
     await page.goto("/workspaces");
-    await page.getByRole("button", { name: /^create( workspace)?$/i }).first().click();
+    await page
+      .getByRole("button", { name: /^create( workspace)?$/i })
+      .first()
+      .click();
     await page.getByTestId("workspace-name-input").fill(originalName);
     await page.getByTestId("workspace-root-input").fill(rootPath);
     await chooseOption(page, "model-profile-select", /Beta Model/);

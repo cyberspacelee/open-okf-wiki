@@ -83,9 +83,7 @@ export const WikiRunSpecAcceptanceSchema = z.object({
   reviewRequired: z.boolean().default(true),
   maxRepairRounds: z.number().int().min(0).max(8).default(2),
   /** Severities that block publish when present after final review. */
-  blockingSeverities: z
-    .array(z.enum(["blocking", "major", "minor"]))
-    .default(["blocking"]),
+  blockingSeverities: z.array(z.enum(["blocking", "major", "minor"])).default(["blocking"]),
 });
 
 export type WikiRunSpecAcceptance = z.infer<typeof WikiRunSpecAcceptanceSchema>;
@@ -101,9 +99,7 @@ export const WikiRunSpecSchema = z.object({
   domains: z.array(WikiRunSpecDomainSchema).default([]),
   pages: z.array(WikiRunSpecPageSchema).min(1),
   openQuestions: z.array(z.string().max(500)).default([]),
-  acceptance: WikiRunSpecAcceptanceSchema.default(() =>
-    WikiRunSpecAcceptanceSchema.parse({}),
-  ),
+  acceptance: WikiRunSpecAcceptanceSchema.default(() => WikiRunSpecAcceptanceSchema.parse({})),
   /** Operator revision feedback and agent replan notes. */
   notes: z.string().max(4000).optional(),
   /** Chronological replan / discovery trail (stigmergy-lite). */
@@ -197,10 +193,7 @@ export function defaultWikiRunSpec(workspaceName: string): WikiRunSpec {
         title: "Core",
         scope: "Repository entry points, layout, and primary modules",
         critical: true,
-        questions: [
-          "What is this repository for?",
-          "What are the main runtime boundaries?",
-        ],
+        questions: ["What is this repository for?", "What are the main runtime boundaries?"],
       },
     ],
     pages: [

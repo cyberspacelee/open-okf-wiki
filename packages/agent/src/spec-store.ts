@@ -5,10 +5,7 @@
 
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import {
-  WikiRunSpecSchema,
-  type WikiRunSpec,
-} from "@okf-wiki/contract";
+import { type WikiRunSpec, WikiRunSpecSchema } from "@okf-wiki/contract";
 import { analysisScratchDir, atomicWriteJson } from "@okf-wiki/core";
 
 export const SPEC_FILE_NAME = "spec.json";

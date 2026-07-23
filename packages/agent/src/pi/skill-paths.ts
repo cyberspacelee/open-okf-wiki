@@ -65,27 +65,19 @@ export async function resolveWikiSkillPaths(
     out.push(abs);
   };
 
-  let workspaceRootSkills: string | undefined;
   if (input.workspaceRoot?.trim()) {
-    workspaceRootSkills = workspaceSkillsDir(input.workspaceRoot);
+    const workspaceRootSkills = workspaceSkillsDir(input.workspaceRoot);
     if (await dirExists(workspaceRootSkills)) {
       add(workspaceRootSkills);
-    } else {
-      workspaceRootSkills = undefined;
     }
   }
 
   const loadHome =
-    typeof input.loadHomeSkills === "boolean"
-      ? input.loadHomeSkills
-      : await getLoadHomeSkills();
-  let homeRoot: string | undefined;
+    typeof input.loadHomeSkills === "boolean" ? input.loadHomeSkills : await getLoadHomeSkills();
   if (loadHome) {
-    homeRoot = homeSkillsDir();
+    const homeRoot = homeSkillsDir();
     if (await dirExists(homeRoot)) {
       add(homeRoot);
-    } else {
-      homeRoot = undefined;
     }
   }
 
@@ -99,9 +91,7 @@ export async function resolveWikiSkillPaths(
         return out;
       }
       // Skip if already covered by a parent skills root.
-      const underWs =
-        input.workspaceRoot &&
-        isUnderWorkspaceSkills(producer, input.workspaceRoot);
+      const underWs = input.workspaceRoot && isUnderWorkspaceSkills(producer, input.workspaceRoot);
       const underHome = isUnderHomeSkills(producer);
       if (!underWs && !underHome) {
         add(producer);

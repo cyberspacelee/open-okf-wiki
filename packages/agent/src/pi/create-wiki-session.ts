@@ -15,31 +15,28 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { Model } from "@earendil-works/pi-ai/compat";
 import {
+  type AgentSession,
   createAgentSession,
   DefaultResourceLoader,
+  type ModelRuntime,
   SessionManager,
   SettingsManager,
-  type AgentSession,
-  type ModelRuntime,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {
-  assertSafeWikiToolList,
-  roleMayWrite,
-  toolNamesForRole,
-  type PiFsToolName,
-  type WikiAgentRole,
-} from "./tool-policy.js";
-import {
-  buildWikiScopedToolDefinitions,
-  type SourceIgnoreInput,
-} from "./tool-operations.js";
-import { piSessionsDir } from "./session-paths.js";
-import {
+  type ContextBudget,
   compactionSettingsFromBudget,
   resolveContextBudget,
-  type ContextBudget,
 } from "./context-budget.js";
+import { piSessionsDir } from "./session-paths.js";
+import { buildWikiScopedToolDefinitions, type SourceIgnoreInput } from "./tool-operations.js";
+import {
+  assertSafeWikiToolList,
+  type PiFsToolName,
+  roleMayWrite,
+  toolNamesForRole,
+  type WikiAgentRole,
+} from "./tool-policy.js";
 
 export type CreateWikiSessionInput = {
   role: WikiAgentRole;
@@ -122,9 +119,7 @@ export type WikiSessionHandle = {
 };
 
 /** Resolve and assert the tool allowlist for a role (unit-testable). */
-export function resolveWikiSessionTools(
-  role: WikiAgentRole,
-): readonly PiFsToolName[] {
+export function resolveWikiSessionTools(role: WikiAgentRole): readonly PiFsToolName[] {
   const tools = toolNamesForRole(role);
   assertSafeWikiToolList(tools);
   return tools;
@@ -151,9 +146,7 @@ export function buildWikiSessionCustomTools(input: {
  * Create an AgentSession bound to a run workdir with role tool policy.
  * Does not call prompt — safe offline when model is omitted.
  */
-export async function createWikiSession(
-  input: CreateWikiSessionInput,
-): Promise<WikiSessionHandle> {
+export async function createWikiSession(input: CreateWikiSessionInput): Promise<WikiSessionHandle> {
   const tools = resolveWikiSessionTools(input.role);
   // Defensive copy for the SDK (mutable string[]).
   const toolList = [...tools];
@@ -162,9 +155,7 @@ export async function createWikiSession(
   const runWorkDir = path.resolve(input.runWorkDir);
   await mkdir(runWorkDir, { recursive: true });
 
-  const agentDir = path.resolve(
-    input.agentDir ?? path.join(runWorkDir, ".okf-pi-agent"),
-  );
+  const agentDir = path.resolve(input.agentDir ?? path.join(runWorkDir, ".okf-pi-agent"));
   await mkdir(agentDir, { recursive: true });
 
   let sessionManager = input.sessionManager;
@@ -176,11 +167,7 @@ export async function createWikiSession(
       // known; otherwise create with product sessionId (Pi names the file
       // `{timestamp}_{id}.jsonl` — see findPiSessionFile).
       if (input.sessionFile) {
-        sessionManager = SessionManager.open(
-          input.sessionFile,
-          sessionDir,
-          runWorkDir,
-        );
+        sessionManager = SessionManager.open(input.sessionFile, sessionDir, runWorkDir);
       } else {
         sessionManager = SessionManager.create(
           runWorkDir,
@@ -212,9 +199,7 @@ export async function createWikiSession(
     compaction: compactionSettingsFromBudget(budget),
   });
 
-  const skillPaths = (input.additionalSkillPaths ?? [])
-    .map((p) => p.trim())
-    .filter(Boolean);
+  const skillPaths = (input.additionalSkillPaths ?? []).map((p) => p.trim()).filter(Boolean);
 
   const resourceLoader = new DefaultResourceLoader({
     cwd: runWorkDir,

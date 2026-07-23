@@ -6,12 +6,13 @@
 
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import test from "node:test";
-import { randomUUID } from "node:crypto";
+import { promisify } from "node:util";
+import { defaultWikiRunSpec, type WorkspaceConfig } from "@okf-wiki/contract";
 import {
   addSource,
   createRun,
@@ -21,10 +22,6 @@ import {
   saveWorkspace,
   skillDigest,
 } from "@okf-wiki/core";
-import {
-  defaultWikiRunSpec,
-  type WorkspaceConfig,
-} from "@okf-wiki/contract";
 import {
   ensureWorkspaceSessionId,
   finalizeRunStatus,
@@ -56,10 +53,7 @@ async function waitForRunStatus(
   }
 }
 
-async function makeFixtureWorkspace(
-  root: string,
-  planConfirm: boolean,
-): Promise<WorkspaceConfig> {
+async function makeFixtureWorkspace(root: string, planConfirm: boolean): Promise<WorkspaceConfig> {
   const sourcePath = path.join(root, "src-repo");
   await mkdir(sourcePath, { recursive: true });
   await writeFile(path.join(sourcePath, "README.md"), "# fixture\n", "utf8");
@@ -108,11 +102,7 @@ test("job: autoApprove publishes and links Session trajectory", async () => {
     });
 
     processRunInBackground(workspace, run.runId, { autoApprove: true });
-    const finished = await waitForRunStatus(
-      workspace.rootPath,
-      run.runId,
-      "published",
-    );
+    const finished = await waitForRunStatus(workspace.rootPath, run.runId, "published");
     assert.equal(finished.status, "published");
     assert.ok(finished.pages && finished.pages.length >= 1);
   } finally {
@@ -140,20 +130,10 @@ test("job: plan gate → resume approve → publication → approve publish", as
     });
 
     processRunInBackground(workspace, run.runId, { autoApprove: false });
-    const atPlan = await waitForRunStatus(
-      workspace.rootPath,
-      run.runId,
-      "awaiting_plan",
-    );
+    const atPlan = await waitForRunStatus(workspace.rootPath, run.runId, "awaiting_plan");
     assert.ok(atPlan.plan);
 
-    resumeRunInBackground(
-      workspace,
-      run.runId,
-      "plan",
-      "approve",
-      atPlan.plan,
-    );
+    resumeRunInBackground(workspace, run.runId, "plan", "approve", atPlan.plan);
     const atPub = await waitForRunStatus(
       workspace.rootPath,
       run.runId,
@@ -163,12 +143,7 @@ test("job: plan gate → resume approve → publication → approve publish", as
     assert.equal(atPub.status, "awaiting_publication");
 
     resumeRunInBackground(workspace, run.runId, "publication", "approve");
-    const published = await waitForRunStatus(
-      workspace.rootPath,
-      run.runId,
-      "published",
-      60_000,
-    );
+    const published = await waitForRunStatus(workspace.rootPath, run.runId, "published", 60_000);
     assert.equal(published.status, "published");
   } finally {
     await rm(root, { recursive: true, force: true });

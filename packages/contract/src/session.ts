@@ -25,14 +25,7 @@ export const SessionWorkflowStateSchema = z.object({
   plan: WikiRunPlanSchema.optional(),
   linkedRunId: z.string().optional(),
   phase: z
-    .enum([
-      "idle",
-      "planning",
-      "awaiting_plan",
-      "writing",
-      "awaiting_publish",
-      "done",
-    ])
+    .enum(["idle", "planning", "awaiting_plan", "writing", "awaiting_publish", "done"])
     .default("idle"),
   notes: z.string().max(4000).optional(),
 });

@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { createTempGitRepo, uniqueWorkspaceRoot } from "./helpers";
 
 test.describe("add git source", () => {
@@ -10,7 +10,10 @@ test.describe("add git source", () => {
 
     // Create workspace via UI
     await page.goto("/workspaces");
-    await page.getByRole("button", { name: /^create( workspace)?$/i }).first().click();
+    await page
+      .getByRole("button", { name: /^create( workspace)?$/i })
+      .first()
+      .click();
     await page.getByTestId("workspace-name-input").fill(name);
     await page.getByTestId("workspace-root-input").fill(rootPath);
     await page.getByTestId("workspace-create-submit").click();

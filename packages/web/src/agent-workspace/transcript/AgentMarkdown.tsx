@@ -4,11 +4,11 @@
  * data-streamdown selectors in index.css (single outer border).
  */
 
-import { memo } from "react";
 import { cjk } from "@streamdown/cjk";
 import { code } from "@streamdown/code";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
+import { memo } from "react";
 import { Streamdown } from "streamdown";
 import { cn } from "@/lib/utils";
 
@@ -31,10 +31,7 @@ export const AgentMarkdown = memo(function AgentMarkdown({
   return (
     <div
       data-testid="agent-markdown"
-      className={cn(
-        "session-markdown agent-markdown min-w-0 break-words",
-        className,
-      )}
+      className={cn("session-markdown agent-markdown min-w-0 break-words", className)}
     >
       <Streamdown
         mode={streaming ? "streaming" : "static"}

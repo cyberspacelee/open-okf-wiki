@@ -3,15 +3,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
-import {
-  createWikiSession,
-  resolveWikiSessionTools,
-} from "./create-wiki-session.js";
-import {
-  assertSafeWikiToolList,
-  toolNamesForRole,
-} from "./tool-policy.js";
+import { createWikiSession, resolveWikiSessionTools } from "./create-wiki-session.js";
 import { piRunWorkDir, piSessionsDir } from "./session-paths.js";
+import { assertSafeWikiToolList, toolNamesForRole } from "./tool-policy.js";
 
 const temps: string[] = [];
 
@@ -41,14 +35,7 @@ describe("create-wiki-session tool list safety", () => {
 
   it("root_write allowlist is read+write Pi tools only", () => {
     const tools = resolveWikiSessionTools("root_write");
-    assert.deepEqual([...tools], [
-      "read",
-      "grep",
-      "find",
-      "ls",
-      "write",
-      "edit",
-    ]);
+    assert.deepEqual([...tools], ["read", "grep", "find", "ls", "write", "edit"]);
   });
 
   it("createWikiSession offline returns safe tools and dispose works", async () => {
@@ -85,14 +72,7 @@ describe("create-wiki-session tool list safety", () => {
     });
 
     try {
-      assert.deepEqual([...handle.tools], [
-        "read",
-        "grep",
-        "find",
-        "ls",
-        "write",
-        "edit",
-      ]);
+      assert.deepEqual([...handle.tools], ["read", "grep", "find", "ls", "write", "edit"]);
       assert.ok(!handle.tools.includes("bash" as never));
     } finally {
       handle.dispose();
@@ -103,13 +83,7 @@ describe("create-wiki-session tool list safety", () => {
 describe("session-paths", () => {
   it("piSessionsDir and piRunWorkDir under .okf-wiki", () => {
     const root = "/workspace/repo";
-    assert.equal(
-      piSessionsDir(root),
-      path.join(root, ".okf-wiki", "pi-sessions"),
-    );
-    assert.equal(
-      piRunWorkDir(root, "run-1"),
-      path.join(root, ".okf-wiki", "runs", "run-1"),
-    );
+    assert.equal(piSessionsDir(root), path.join(root, ".okf-wiki", "pi-sessions"));
+    assert.equal(piRunWorkDir(root, "run-1"), path.join(root, ".okf-wiki", "runs", "run-1"));
   });
 });

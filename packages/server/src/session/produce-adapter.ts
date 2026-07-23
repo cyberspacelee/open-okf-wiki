@@ -4,6 +4,7 @@
  * ADR 0031: work_unit only for produce child body channel.
  */
 
+import type { WikiRunShellState, WikiSessionHandle } from "@okf-wiki/agent";
 import type {
   ProductSseEvent,
   ProductWorkUnitEvent,
@@ -11,7 +12,6 @@ import type {
   WorkUnitRole,
   WorkUnitStatus,
 } from "@okf-wiki/contract";
-import type { WikiRunShellState, WikiSessionHandle } from "@okf-wiki/agent";
 import { emitAgentSessionEvent } from "../agent-session-events.ts";
 import {
   emitGate,
@@ -99,9 +99,7 @@ export function emitPi(
 }
 
 /** Map WikiRunShell phase → product run_phase enum. */
-export function productPhaseFromShell(
-  phase: WikiRunShellState["phase"],
-): ProductPhase {
+export function productPhaseFromShell(phase: WikiRunShellState["phase"]): ProductPhase {
   switch (phase) {
     case "idle":
       return "idle";
@@ -126,20 +124,9 @@ export function productPhaseFromShell(
   }
 }
 
-const WORK_UNIT_ROLES = new Set<string>([
-  "planner",
-  "domain",
-  "leaf",
-  "reviewer",
-  "root",
-]);
+const WORK_UNIT_ROLES = new Set<string>(["planner", "domain", "leaf", "reviewer", "root"]);
 
-const WORK_UNIT_STATUSES = new Set<string>([
-  "pending",
-  "running",
-  "settled",
-  "failed",
-]);
+const WORK_UNIT_STATUSES = new Set<string>(["pending", "running", "settled", "failed"]);
 
 type ParentUnitLike = {
   unitId?: string;
@@ -181,9 +168,7 @@ export function mapOrchestratorOnEvent(
     const ts = nowIso();
     if (event.type === "gate") {
       const gate =
-        event.message === "awaiting_plan" || event.message === "plan"
-          ? "plan"
-          : "publication";
+        event.message === "awaiting_plan" || event.message === "plan" ? "plan" : "publication";
       const data = (event.data ?? {}) as {
         plan?: WikiRunPlan;
         pages?: string[];
@@ -203,10 +188,7 @@ export function mapOrchestratorOnEvent(
         event.message,
         gate === "plan" ? "awaiting_plan" : "awaiting_publication",
       );
-      emitRunLink(
-        entry,
-        gate === "plan" ? "awaiting_plan" : "awaiting_publication",
-      );
+      emitRunLink(entry, gate === "plan" ? "awaiting_plan" : "awaiting_publication");
       return;
     }
     if (event.type === "phase") {
@@ -251,11 +233,7 @@ export function mapOrchestratorOnEvent(
       } else if (msg === "failed") {
         emitPhase(entry, "failed", data.label ?? msg, "failed");
       } else {
-        emitPhase(
-          entry,
-          productPhaseFromShell(entry.shell?.phase ?? "idle"),
-          msg,
-        );
+        emitPhase(entry, productPhaseFromShell(entry.shell?.phase ?? "idle"), msg);
       }
       return;
     }
@@ -276,9 +254,7 @@ export function mapOrchestratorOnEvent(
     if (event.type === "work_unit") {
       const data = (event.data ?? {}) as ParentUnitLike;
       const unitId =
-        typeof data.unitId === "string" && data.unitId.trim()
-          ? data.unitId.trim()
-          : "";
+        typeof data.unitId === "string" && data.unitId.trim() ? data.unitId.trim() : "";
       const role = data.role;
       const status = data.status;
       if (
@@ -290,10 +266,7 @@ export function mapOrchestratorOnEvent(
       ) {
         return;
       }
-      const runId =
-        (typeof data.runId === "string" && data.runId.trim()) ||
-        entry.runId ||
-        "";
+      const runId = (typeof data.runId === "string" && data.runId.trim()) || entry.runId || "";
       if (!runId) return;
 
       const product: ProductWorkUnitEvent = {
@@ -304,26 +277,14 @@ export function mapOrchestratorOnEvent(
         unitId: unitId.slice(0, 120),
         role: role as WorkUnitRole,
         status: status as WorkUnitStatus,
-        task:
-          typeof data.task === "string" ? data.task.slice(0, 2000) : undefined,
-        parentId:
-          typeof data.parentId === "string"
-            ? data.parentId.slice(0, 120)
-            : undefined,
+        task: typeof data.task === "string" ? data.task.slice(0, 2000) : undefined,
+        parentId: typeof data.parentId === "string" ? data.parentId.slice(0, 120) : undefined,
         message: data.message,
         tools: data.tools,
-        summary:
-          typeof data.summary === "string"
-            ? data.summary.slice(0, 4000)
-            : undefined,
+        summary: typeof data.summary === "string" ? data.summary.slice(0, 4000) : undefined,
         receiptPath:
-          typeof data.receiptPath === "string"
-            ? data.receiptPath.slice(0, 500)
-            : undefined,
-        error:
-          typeof data.error === "string"
-            ? data.error.slice(0, 4000)
-            : undefined,
+          typeof data.receiptPath === "string" ? data.receiptPath.slice(0, 500) : undefined,
+        error: typeof data.error === "string" ? data.error.slice(0, 4000) : undefined,
         updatedAt:
           typeof data.updatedAt === "number" && Number.isFinite(data.updatedAt)
             ? data.updatedAt

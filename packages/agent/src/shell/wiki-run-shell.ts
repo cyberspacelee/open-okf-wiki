@@ -8,8 +8,6 @@
 import type { WikiRunPlan } from "@okf-wiki/contract";
 import type { ResumeGateInput } from "./gates.js";
 import {
-  type WikiRunShellPhase,
-  type WikiRunShellState,
   transitionCancelled,
   transitionEnterPlanGate,
   transitionFailed,
@@ -19,12 +17,10 @@ import {
   transitionPublicationDeclined,
   transitionPublished,
   transitionResumeGate,
+  type WikiRunShellPhase,
+  type WikiRunShellState,
 } from "./transitions.js";
 
-export type {
-  WikiRunShellPhase,
-  WikiRunShellState,
-} from "./transitions.js";
 export type {
   ResumeGateInput,
   WikiRunGateAction,
@@ -35,7 +31,11 @@ export {
   isWikiRunGateAction,
   isWikiRunGateKind,
 } from "./gates.js";
-export { isTerminalPhase, applyPlanRevision } from "./transitions.js";
+export type {
+  WikiRunShellPhase,
+  WikiRunShellState,
+} from "./transitions.js";
+export { applyPlanRevision, isTerminalPhase } from "./transitions.js";
 
 export type StartShellInput = {
   /** Pre-generated or frozen Spec. */
@@ -71,18 +71,12 @@ export function startShell(input: StartShellInput = {}): WikiRunShellState {
 }
 
 /** Suspend at plan gate after external plan generation. */
-export function enterPlanGate(
-  state: WikiRunShellState,
-  plan: WikiRunPlan,
-): WikiRunShellState {
+export function enterPlanGate(state: WikiRunShellState, plan: WikiRunPlan): WikiRunShellState {
   return transitionEnterPlanGate(state, plan);
 }
 
 /** Operator HITL resume for plan or publish gate. */
-export function resumeGate(
-  state: WikiRunShellState,
-  input: ResumeGateInput,
-): WikiRunShellState {
+export function resumeGate(state: WikiRunShellState, input: ResumeGateInput): WikiRunShellState {
   return transitionResumeGate(state, input);
 }
 
@@ -110,33 +104,22 @@ export function markAwaitingPublish(
 }
 
 /** Terminal: published (approve or autoApprove after validate). */
-export function markPublished(
-  state: WikiRunShellState,
-  summary?: string,
-): WikiRunShellState {
+export function markPublished(state: WikiRunShellState, summary?: string): WikiRunShellState {
   return transitionPublished(state, summary);
 }
 
 /** Terminal: publication declined. */
-export function markPublicationDeclined(
-  state: WikiRunShellState,
-): WikiRunShellState {
+export function markPublicationDeclined(state: WikiRunShellState): WikiRunShellState {
   return transitionPublicationDeclined(state);
 }
 
 /** Terminal: failed. */
-export function markFailed(
-  state: WikiRunShellState,
-  error: string,
-): WikiRunShellState {
+export function markFailed(state: WikiRunShellState, error: string): WikiRunShellState {
   return transitionFailed(state, error);
 }
 
 /** Terminal: cancelled. */
-export function markCancelled(
-  state: WikiRunShellState,
-  summary?: string,
-): WikiRunShellState {
+export function markCancelled(state: WikiRunShellState, summary?: string): WikiRunShellState {
   return transitionCancelled(state, summary);
 }
 

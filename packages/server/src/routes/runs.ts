@@ -5,22 +5,19 @@
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { RunSseEvent } from "@okf-wiki/contract";
+import { isTerminalRunStatus, WikiRunPlanSchema } from "@okf-wiki/contract";
 import {
-  freezeWikiRun,
   FreezeWikiRunError,
+  freezeWikiRun,
   listAnalysisReceipts,
   listRuns,
   loadRun,
   loadWorkspaceById,
-  readAnalysisReceipt,
   RunStatusConflictError,
+  readAnalysisReceipt,
   updateRunRecord,
 } from "@okf-wiki/core";
-import {
-  isTerminalRunStatus,
-  WikiRunPlanSchema,
-} from "@okf-wiki/contract";
-import type { RunSseEvent } from "@okf-wiki/contract";
 import { readJsonBody, sendError, sendJson } from "../http-util.ts";
 import {
   emitRunDone,
@@ -43,11 +40,7 @@ export {
   resumeRunInBackground,
 } from "../wiki-run-job.ts";
 
-async function loadWorkspaceOr404(
-  res: ServerResponse,
-  id: string,
-  url: URL,
-) {
+async function loadWorkspaceOr404(res: ServerResponse, id: string, url: URL) {
   const rootPath = url.searchParams.get("rootPath") ?? undefined;
   const workspace = await loadWorkspaceById(id, {
     rootPath: rootPath ?? undefined,
@@ -68,11 +61,7 @@ function sendFreezeError(res: ServerResponse, err: unknown): void {
     });
     return;
   }
-  sendError(
-    res,
-    400,
-    err instanceof Error ? err.message : "failed to freeze wiki run",
-  );
+  sendError(res, 400, err instanceof Error ? err.message : "failed to freeze wiki run");
 }
 
 export async function handleCreateRun(
@@ -85,8 +74,7 @@ export async function handleCreateRun(
   if (!workspace) return;
 
   const body = (await readJsonBody(req)) as { autoApprove?: unknown };
-  const autoApprove =
-    typeof body.autoApprove === "boolean" ? body.autoApprove : undefined;
+  const autoApprove = typeof body.autoApprove === "boolean" ? body.autoApprove : undefined;
 
   const sessionId = await ensureWorkspaceSessionId(workspace);
   let frozen;
@@ -132,16 +120,11 @@ export async function handleRetryRun(
     previous.status === "awaiting_publication" ||
     previous.status === "needs_input"
   ) {
-    sendError(
-      res,
-      409,
-      `cannot retry an in-progress run (status: ${previous.status})`,
-    );
+    sendError(res, 409, `cannot retry an in-progress run (status: ${previous.status})`);
     return;
   }
 
-  const sessionId =
-    previous.sessionId ?? (await ensureWorkspaceSessionId(workspace));
+  const sessionId = previous.sessionId ?? (await ensureWorkspaceSessionId(workspace));
   let frozen;
   try {
     frozen = await freezeWikiRun({
@@ -200,12 +183,7 @@ export async function handleApprovePlan(
     try {
       plan = WikiRunPlanSchema.parse(body.plan);
     } catch (error) {
-      sendError(
-        res,
-        400,
-        "invalid plan",
-        error instanceof Error ? error.message : String(error),
-      );
+      sendError(res, 400, "invalid plan", error instanceof Error ? error.message : String(error));
       return;
     }
   }
@@ -291,17 +269,12 @@ export async function handleRevisePlan(
     return;
   }
   if (existing.status !== "awaiting_plan") {
-    sendError(
-      res,
-      409,
-      `run is not awaiting plan (status: ${existing.status})`,
-    );
+    sendError(res, 409, `run is not awaiting plan (status: ${existing.status})`);
     return;
   }
 
   const body = (await readJsonBody(req)) as { feedback?: unknown };
-  const feedback =
-    typeof body.feedback === "string" ? body.feedback.trim() : "";
+  const feedback = typeof body.feedback === "string" ? body.feedback.trim() : "";
   if (!feedback) {
     sendError(res, 400, "feedback is required to revise the plan");
     return;
@@ -318,14 +291,7 @@ export async function handleRevisePlan(
       error: null,
       plan: existing.plan ?? null,
     });
-    resumeRunInBackground(
-      workspace,
-      runId,
-      "plan",
-      "revise",
-      existing.plan,
-      feedback,
-    );
+    resumeRunInBackground(workspace, runId, "plan", "revise", existing.plan, feedback);
     sendJson(res, 200, { run: updated });
   } catch (error) {
     if (error instanceof RunStatusConflictError) {
@@ -376,11 +342,7 @@ export async function handleGetRunReceipt(
   }
 
   const decoded = decodeURIComponent(nodeId);
-  const receipt = await readAnalysisReceipt(
-    workspace.rootPath,
-    runId,
-    decoded,
-  );
+  const receipt = await readAnalysisReceipt(workspace.rootPath, runId, decoded);
   if (!receipt) {
     sendError(res, 404, `receipt not found: ${decoded}`);
     return;
@@ -434,11 +396,7 @@ export async function handleApprovePublication(
     return;
   }
   if (run.status !== "awaiting_publication") {
-    sendError(
-      res,
-      409,
-      `run is not awaiting publication (status: ${run.status})`,
-    );
+    sendError(res, 409, `run is not awaiting publication (status: ${run.status})`);
     return;
   }
 
@@ -479,11 +437,7 @@ export async function handleDenyPublication(
     return;
   }
   if (run.status !== "awaiting_publication") {
-    sendError(
-      res,
-      409,
-      `run is not awaiting publication (status: ${run.status})`,
-    );
+    sendError(res, 409, `run is not awaiting publication (status: ${run.status})`);
     return;
   }
 
@@ -544,11 +498,7 @@ export async function handleCancelRun(
     });
   } catch (error) {
     if (error instanceof RunStatusConflictError) {
-      sendError(
-        res,
-        409,
-        `run is not running (status: ${error.record.status})`,
-      );
+      sendError(res, 409, `run is not running (status: ${error.record.status})`);
       return;
     }
     throw error;
@@ -631,10 +581,7 @@ export async function handleRunEvents(
       return;
     }
     writeEvent(event);
-    if (
-      event.type === "done" ||
-      (event.status && isTerminalRunStatus(event.status))
-    ) {
+    if (event.type === "done" || (event.status && isTerminalRunStatus(event.status))) {
       cleanup();
       if (!res.writableEnded) {
         res.end();

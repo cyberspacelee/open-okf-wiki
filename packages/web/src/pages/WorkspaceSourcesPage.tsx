@@ -1,22 +1,6 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { useParams, useSearchParams } from "react-router-dom";
 import { IGNORE_PRESETS } from "@okf-wiki/contract";
-import {
-  addSource,
-  cloneSource,
-  deleteSource,
-  getWorkspace,
-  probeSources,
-  updateSource,
-  type GitProbe,
-  type SourceProbeResult,
-  type WorkspaceConfig,
-  type WorkspaceSource,
-} from "../api";
-import { ConfirmDialog } from "../components/ConfirmDialog";
-import { LoadingState } from "../components/LoadingState";
-import { WorkspaceShell } from "../components/WorkspaceShell";
-import { formatMessage, useI18n } from "../i18n";
+import { type FormEvent, useCallback, useEffect, useState } from "react";
+import { useParams, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -46,6 +30,22 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  addSource,
+  cloneSource,
+  deleteSource,
+  type GitProbe,
+  getWorkspace,
+  probeSources,
+  type SourceProbeResult,
+  updateSource,
+  type WorkspaceConfig,
+  type WorkspaceSource,
+} from "../api";
+import { ConfirmDialog } from "../components/ConfirmDialog";
+import { LoadingState } from "../components/LoadingState";
+import { WorkspaceShell } from "../components/WorkspaceShell";
+import { formatMessage, useI18n } from "../i18n";
 
 function probeLabel(probe: GitProbe | undefined): string {
   if (!probe) {
@@ -225,11 +225,7 @@ export function WorkspaceSourcesPage() {
     setDeletingId(sourceIdToDelete);
     setError(null);
     try {
-      const result = await deleteSource(
-        id,
-        sourceIdToDelete,
-        workspace?.rootPath ?? rootPathHint,
-      );
+      const result = await deleteSource(id, sourceIdToDelete, workspace?.rootPath ?? rootPathHint);
       setWorkspace(result.workspace);
       setProbes((prev) => {
         const next = { ...prev };
@@ -286,342 +282,321 @@ export function WorkspaceSourcesPage() {
       onDismissError={() => setError(null)}
       testId="sources-page"
     >
-        <ConfirmDialog
-          open={deleteTargetId != null}
-          onOpenChange={(open) => {
-            if (!open) {
-              setDeleteTargetId(null);
-            }
-          }}
-          title={t.sources.deleteConfirmTitle}
-          description={
-            deleteTargetId
-              ? formatMessage(t.sources.deleteConfirmBody, { id: deleteTargetId })
-              : undefined
+      <ConfirmDialog
+        open={deleteTargetId != null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleteTargetId(null);
           }
-          confirmLabel={
-            deletingId != null ? t.sources.removing : t.sources.deleteSubmit
-          }
-          cancelLabel={t.common.cancel}
-          onConfirm={() => void handleDeleteConfirm()}
-          confirmDisabled={deletingId != null}
-          data-testid="source-delete-dialog"
-          confirmTestId="source-delete-confirm"
-        />
+        }}
+        title={t.sources.deleteConfirmTitle}
+        description={
+          deleteTargetId
+            ? formatMessage(t.sources.deleteConfirmBody, { id: deleteTargetId })
+            : undefined
+        }
+        confirmLabel={deletingId != null ? t.sources.removing : t.sources.deleteSubmit}
+        cancelLabel={t.common.cancel}
+        onConfirm={() => void handleDeleteConfirm()}
+        confirmDisabled={deletingId != null}
+        data-testid="source-delete-dialog"
+        confirmTestId="source-delete-confirm"
+      />
 
-        {loading ? (
-          <LoadingState label={t.sources.loading} />
-        ) : workspace ? (
-          <>
-            <Card>
-              <CardHeader className="row-between items-center">
-                <CardTitle>{t.sources.registered}</CardTitle>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => void handleProbeAll()}
-                  disabled={probing || workspace.sources.length === 0}
-                  data-testid="source-probe-all"
-                >
-                  {probing ? t.sources.probing : t.sources.probeAll}
-                </Button>
-              </CardHeader>
-              <CardContent>
-                {workspace.sources.length === 0 ? (
-                  <div className="py-1">
-                    <p className="muted">{t.sources.empty}</p>
-                  </div>
-                ) : (
-                  <Table data-testid="source-list">
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>{t.sources.colId}</TableHead>
-                        <TableHead>{t.sources.colOrigin}</TableHead>
-                        <TableHead>{t.sources.colPath}</TableHead>
-                        <TableHead>{t.sources.colProbe}</TableHead>
-                        <TableHead>{t.sources.colIgnores}</TableHead>
-                        <TableHead>
-                          <span className="sr-only">{t.common.actions}</span>
-                        </TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {workspace.sources.map((source) => (
-                        <TableRow key={source.id} data-source-id={source.id}>
-                          <TableCell className="mono">{source.id}</TableCell>
-                          <TableCell className="muted small">
-                            {source.origin?.type === "clone"
-                              ? `${t.sources.originClone} · ${source.origin.remoteUrl}`
-                              : t.sources.originPath}
-                          </TableCell>
-                          <TableCell className="mono whitespace-normal">{source.path}</TableCell>
-                          <TableCell className="muted small whitespace-normal">
-                            {probeLabel(probes[source.id])}
-                          </TableCell>
-                          <TableCell className="muted small whitespace-normal">
-                            {ignoreSummary(source)}
-                          </TableCell>
-                          <TableCell className="actions-cell">
-                            <div className="flex flex-wrap gap-2">
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                data-testid={`source-edit-ignores-${source.id}`}
-                                onClick={() => openIgnoreEditor(source)}
-                              >
-                                {t.sources.editIgnores}
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="destructive"
-                                size="sm"
-                                disabled={deletingId === source.id}
-                                onClick={() => setDeleteTargetId(source.id)}
-                                data-testid={`source-delete-${source.id}`}
-                              >
-                                {deletingId === source.id ? (
-                                  <Spinner data-icon="inline-start" />
-                                ) : null}
-                                {deletingId === source.id
-                                  ? t.sources.removing
-                                  : t.sources.delete}
-                              </Button>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                )}
-              </CardContent>
-            </Card>
-
-            <Sheet
-              open={editingSourceId != null}
-              onOpenChange={(open) => {
-                if (!open) {
-                  setEditingSourceId(null);
-                }
-              }}
-            >
-              <SheetContent
-                side="right"
-                className="w-full sm:max-w-lg"
-                data-testid="source-ignore-editor"
+      {loading ? (
+        <LoadingState label={t.sources.loading} />
+      ) : workspace ? (
+        <>
+          <Card>
+            <CardHeader className="row-between items-center">
+              <CardTitle>{t.sources.registered}</CardTitle>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void handleProbeAll()}
+                disabled={probing || workspace.sources.length === 0}
+                data-testid="source-probe-all"
               >
-                <SheetHeader>
-                  <SheetTitle>
-                    {t.sources.ignoreTitle}:{" "}
-                    <code className="mono">{editingSourceId}</code>
-                  </SheetTitle>
-                  <SheetDescription>{t.sources.ignoreDescription}</SheetDescription>
-                </SheetHeader>
-                <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4">
-                  <FieldGroup>
-                    <Field orientation="horizontal">
-                      <FieldContent>
-                        <FieldLabel htmlFor="source-apply-defaults">
-                          {t.sources.applyDefaults}
-                        </FieldLabel>
-                      </FieldContent>
-                      <Switch
-                        id="source-apply-defaults"
-                        checked={editApplyDefaults}
-                        onCheckedChange={setEditApplyDefaults}
-                        data-testid="source-apply-defaults"
-                      />
-                    </Field>
-                    <Field>
-                      <FieldLabel htmlFor="source-ignore-text">
-                        {t.sources.ignorePatterns}
-                      </FieldLabel>
-                      <Textarea
-                        id="source-ignore-text"
-                        className="min-h-32 font-mono text-sm"
-                        value={editIgnoreText}
-                        onChange={(e) => setEditIgnoreText(e.target.value)}
-                        placeholder={t.sources.ignorePlaceholder}
-                        spellCheck={false}
-                        data-testid="source-ignore-text"
-                      />
-                    </Field>
-                  </FieldGroup>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="muted small">{t.sources.presets}:</span>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      data-testid="preset-java-tests"
-                      onClick={() => applyPreset("java-tests")}
-                    >
-                      {t.sources.presetJava}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      data-testid="preset-js-tests"
-                      onClick={() => applyPreset("js-tests")}
-                    >
-                      {t.sources.presetJs}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      data-testid="preset-python-tests"
-                      onClick={() => applyPreset("python-tests")}
-                    >
-                      {t.sources.presetPython}
-                    </Button>
-                  </div>
+                {probing ? t.sources.probing : t.sources.probeAll}
+              </Button>
+            </CardHeader>
+            <CardContent>
+              {workspace.sources.length === 0 ? (
+                <div className="py-1">
+                  <p className="muted">{t.sources.empty}</p>
                 </div>
-                <SheetFooter>
+              ) : (
+                <Table data-testid="source-list">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>{t.sources.colId}</TableHead>
+                      <TableHead>{t.sources.colOrigin}</TableHead>
+                      <TableHead>{t.sources.colPath}</TableHead>
+                      <TableHead>{t.sources.colProbe}</TableHead>
+                      <TableHead>{t.sources.colIgnores}</TableHead>
+                      <TableHead>
+                        <span className="sr-only">{t.common.actions}</span>
+                      </TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {workspace.sources.map((source) => (
+                      <TableRow key={source.id} data-source-id={source.id}>
+                        <TableCell className="mono">{source.id}</TableCell>
+                        <TableCell className="muted small">
+                          {source.origin?.type === "clone"
+                            ? `${t.sources.originClone} · ${source.origin.remoteUrl}`
+                            : t.sources.originPath}
+                        </TableCell>
+                        <TableCell className="mono whitespace-normal">{source.path}</TableCell>
+                        <TableCell className="muted small whitespace-normal">
+                          {probeLabel(probes[source.id])}
+                        </TableCell>
+                        <TableCell className="muted small whitespace-normal">
+                          {ignoreSummary(source)}
+                        </TableCell>
+                        <TableCell className="actions-cell">
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              data-testid={`source-edit-ignores-${source.id}`}
+                              onClick={() => openIgnoreEditor(source)}
+                            >
+                              {t.sources.editIgnores}
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="destructive"
+                              size="sm"
+                              disabled={deletingId === source.id}
+                              onClick={() => setDeleteTargetId(source.id)}
+                              data-testid={`source-delete-${source.id}`}
+                            >
+                              {deletingId === source.id ? (
+                                <Spinner data-icon="inline-start" />
+                              ) : null}
+                              {deletingId === source.id ? t.sources.removing : t.sources.delete}
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+          </Card>
+
+          <Sheet
+            open={editingSourceId != null}
+            onOpenChange={(open) => {
+              if (!open) {
+                setEditingSourceId(null);
+              }
+            }}
+          >
+            <SheetContent
+              side="right"
+              className="w-full sm:max-w-lg"
+              data-testid="source-ignore-editor"
+            >
+              <SheetHeader>
+                <SheetTitle>
+                  {t.sources.ignoreTitle}: <code className="mono">{editingSourceId}</code>
+                </SheetTitle>
+                <SheetDescription>{t.sources.ignoreDescription}</SheetDescription>
+              </SheetHeader>
+              <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4">
+                <FieldGroup>
+                  <Field orientation="horizontal">
+                    <FieldContent>
+                      <FieldLabel htmlFor="source-apply-defaults">
+                        {t.sources.applyDefaults}
+                      </FieldLabel>
+                    </FieldContent>
+                    <Switch
+                      id="source-apply-defaults"
+                      checked={editApplyDefaults}
+                      onCheckedChange={setEditApplyDefaults}
+                      data-testid="source-apply-defaults"
+                    />
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor="source-ignore-text">{t.sources.ignorePatterns}</FieldLabel>
+                    <Textarea
+                      id="source-ignore-text"
+                      className="min-h-32 font-mono text-sm"
+                      value={editIgnoreText}
+                      onChange={(e) => setEditIgnoreText(e.target.value)}
+                      placeholder={t.sources.ignorePlaceholder}
+                      spellCheck={false}
+                      data-testid="source-ignore-text"
+                    />
+                  </Field>
+                </FieldGroup>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="muted small">{t.sources.presets}:</span>
                   <Button
                     type="button"
                     variant="outline"
-                    onClick={() => setEditingSourceId(null)}
+                    size="sm"
+                    data-testid="preset-java-tests"
+                    onClick={() => applyPreset("java-tests")}
                   >
-                    {t.sources.closeEditor}
+                    {t.sources.presetJava}
                   </Button>
                   <Button
                     type="button"
-                    disabled={savingIgnores}
-                    onClick={() => void handleSaveIgnores()}
-                    data-testid="source-ignore-save"
+                    variant="outline"
+                    size="sm"
+                    data-testid="preset-js-tests"
+                    onClick={() => applyPreset("js-tests")}
                   >
-                    {savingIgnores ? t.sources.savingIgnores : t.sources.saveIgnores}
+                    {t.sources.presetJs}
                   </Button>
-                </SheetFooter>
-              </SheetContent>
-            </Sheet>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    data-testid="preset-python-tests"
+                    onClick={() => applyPreset("python-tests")}
+                  >
+                    {t.sources.presetPython}
+                  </Button>
+                </div>
+              </div>
+              <SheetFooter>
+                <Button type="button" variant="outline" onClick={() => setEditingSourceId(null)}>
+                  {t.sources.closeEditor}
+                </Button>
+                <Button
+                  type="button"
+                  disabled={savingIgnores}
+                  onClick={() => void handleSaveIgnores()}
+                  data-testid="source-ignore-save"
+                >
+                  {savingIgnores ? t.sources.savingIgnores : t.sources.saveIgnores}
+                </Button>
+              </SheetFooter>
+            </SheetContent>
+          </Sheet>
 
-            <Card>
-              <CardHeader>
-                <CardTitle>{t.sources.linkTitle}</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <form className="form" onSubmit={(e) => void handleAdd(e)}>
-                  <FieldGroup>
-                    <Field>
-                      <FieldLabel htmlFor="source-path">
-                        {t.sources.pathLabel}
-                      </FieldLabel>
-                      <Input
-                        id="source-path"
-                        type="text"
-                        value={path}
-                        onChange={(e) => setPath(e.target.value)}
-                        placeholder={t.sources.pathPlaceholder}
-                        required
-                        className="font-mono"
-                        data-testid="source-path-input"
-                      />
-                    </Field>
-                    <Field>
-                      <FieldLabel htmlFor="source-id">
-                        {t.sources.sourceIdLabel}{" "}
-                        <span className="muted font-normal">
-                          {t.sources.sourceIdOptional}
-                        </span>
-                      </FieldLabel>
-                      <Input
-                        id="source-id"
-                        type="text"
-                        value={sourceId}
-                        onChange={(e) => setSourceId(e.target.value)}
-                        placeholder={t.sources.sourceIdPlaceholder}
-                        pattern="[a-z][a-z0-9-]{0,62}"
-                        className="font-mono"
-                        data-testid="source-id-input"
-                      />
-                      <FieldDescription>{t.sources.sourceIdHint}</FieldDescription>
-                    </Field>
-                    <div className="form-actions">
-                      <Button
-                        type="submit"
-                        disabled={submitting || !path.trim()}
-                        data-testid="source-add-submit"
-                      >
-                        {submitting ? t.sources.adding : t.sources.addSource}
-                      </Button>
-                    </div>
-                  </FieldGroup>
-                </form>
-              </CardContent>
-            </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>{t.sources.linkTitle}</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <form className="form" onSubmit={(e) => void handleAdd(e)}>
+                <FieldGroup>
+                  <Field>
+                    <FieldLabel htmlFor="source-path">{t.sources.pathLabel}</FieldLabel>
+                    <Input
+                      id="source-path"
+                      type="text"
+                      value={path}
+                      onChange={(e) => setPath(e.target.value)}
+                      placeholder={t.sources.pathPlaceholder}
+                      required
+                      className="font-mono"
+                      data-testid="source-path-input"
+                    />
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor="source-id">
+                      {t.sources.sourceIdLabel}{" "}
+                      <span className="muted font-normal">{t.sources.sourceIdOptional}</span>
+                    </FieldLabel>
+                    <Input
+                      id="source-id"
+                      type="text"
+                      value={sourceId}
+                      onChange={(e) => setSourceId(e.target.value)}
+                      placeholder={t.sources.sourceIdPlaceholder}
+                      pattern="[a-z][a-z0-9-]{0,62}"
+                      className="font-mono"
+                      data-testid="source-id-input"
+                    />
+                    <FieldDescription>{t.sources.sourceIdHint}</FieldDescription>
+                  </Field>
+                  <div className="form-actions">
+                    <Button
+                      type="submit"
+                      disabled={submitting || !path.trim()}
+                      data-testid="source-add-submit"
+                    >
+                      {submitting ? t.sources.adding : t.sources.addSource}
+                    </Button>
+                  </div>
+                </FieldGroup>
+              </form>
+            </CardContent>
+          </Card>
 
-            <Card>
-              <CardHeader>
-                <CardTitle>{t.sources.cloneTitle}</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="muted small mb-4">
-                  {formatMessage(t.sources.cloneHint, { root: workspace.rootPath })}
-                </p>
-                <form className="form" onSubmit={(e) => void handleClone(e)}>
-                  <FieldGroup>
-                    <Field>
-                      <FieldLabel htmlFor="source-remote">
-                        {t.sources.remoteUrl}
-                      </FieldLabel>
-                      <Input
-                        id="source-remote"
-                        type="text"
-                        value={remoteUrl}
-                        onChange={(e) => setRemoteUrl(e.target.value)}
-                        placeholder="https://github.com/org/repo.git"
-                        required
-                        className="font-mono"
-                        data-testid="source-remote-input"
-                      />
-                    </Field>
-                    <Field>
-                      <FieldLabel htmlFor="source-clone-id">
-                        {t.sources.cloneId}
-                      </FieldLabel>
-                      <Input
-                        id="source-clone-id"
-                        type="text"
-                        value={cloneId}
-                        onChange={(e) => setCloneId(e.target.value)}
-                        placeholder="repo"
-                        pattern="[a-z][a-z0-9-]{0,62}"
-                        className="font-mono"
-                        data-testid="source-clone-id-input"
-                      />
-                    </Field>
-                    <Field>
-                      <FieldLabel htmlFor="source-clone-ref">
-                        {t.sources.cloneRef}
-                      </FieldLabel>
-                      <Input
-                        id="source-clone-ref"
-                        type="text"
-                        value={cloneRef}
-                        onChange={(e) => setCloneRef(e.target.value)}
-                        placeholder="main"
-                        className="font-mono"
-                        data-testid="source-clone-ref-input"
-                      />
-                    </Field>
-                    <div className="form-actions">
-                      <Button
-                        type="submit"
-                        disabled={cloning || !remoteUrl.trim()}
-                        data-testid="source-clone-submit"
-                      >
-                        {cloning ? t.sources.cloning : t.sources.cloneSubmit}
-                      </Button>
-                    </div>
-                  </FieldGroup>
-                </form>
-              </CardContent>
-            </Card>
-          </>
-        ) : null}
+          <Card>
+            <CardHeader>
+              <CardTitle>{t.sources.cloneTitle}</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="muted small mb-4">
+                {formatMessage(t.sources.cloneHint, { root: workspace.rootPath })}
+              </p>
+              <form className="form" onSubmit={(e) => void handleClone(e)}>
+                <FieldGroup>
+                  <Field>
+                    <FieldLabel htmlFor="source-remote">{t.sources.remoteUrl}</FieldLabel>
+                    <Input
+                      id="source-remote"
+                      type="text"
+                      value={remoteUrl}
+                      onChange={(e) => setRemoteUrl(e.target.value)}
+                      placeholder="https://github.com/org/repo.git"
+                      required
+                      className="font-mono"
+                      data-testid="source-remote-input"
+                    />
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor="source-clone-id">{t.sources.cloneId}</FieldLabel>
+                    <Input
+                      id="source-clone-id"
+                      type="text"
+                      value={cloneId}
+                      onChange={(e) => setCloneId(e.target.value)}
+                      placeholder="repo"
+                      pattern="[a-z][a-z0-9-]{0,62}"
+                      className="font-mono"
+                      data-testid="source-clone-id-input"
+                    />
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor="source-clone-ref">{t.sources.cloneRef}</FieldLabel>
+                    <Input
+                      id="source-clone-ref"
+                      type="text"
+                      value={cloneRef}
+                      onChange={(e) => setCloneRef(e.target.value)}
+                      placeholder="main"
+                      className="font-mono"
+                      data-testid="source-clone-ref-input"
+                    />
+                  </Field>
+                  <div className="form-actions">
+                    <Button
+                      type="submit"
+                      disabled={cloning || !remoteUrl.trim()}
+                      data-testid="source-clone-submit"
+                    >
+                      {cloning ? t.sources.cloning : t.sources.cloneSubmit}
+                    </Button>
+                  </div>
+                </FieldGroup>
+              </form>
+            </CardContent>
+          </Card>
+        </>
+      ) : null}
     </WorkspaceShell>
   );
 }

@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import {
-  compactionSettingsFromBudget,
-  resolveContextBudget,
-} from "./context-budget.js";
+import { compactionSettingsFromBudget, resolveContextBudget } from "./context-budget.js";
 
 describe("context-budget", () => {
   it("defaults to 128k window and 85% target", () => {

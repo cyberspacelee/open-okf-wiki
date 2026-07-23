@@ -8,7 +8,7 @@
  *   analysis/      → spec + receipts
  */
 
-import { mkdir, symlink, rm, lstat } from "node:fs/promises";
+import { lstat, mkdir, rm, symlink } from "node:fs/promises";
 import path from "node:path";
 
 export type RunWorkdirLayout = {

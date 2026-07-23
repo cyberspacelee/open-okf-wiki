@@ -136,10 +136,7 @@ export function resolveContainedPath(root: string, relativePath: string): string
  * After string resolution, walk root→leaf with `lstat` (no follow).
  * Rejects symlink components so contained ops cannot escape via links.
  */
-export async function assertContainedPathSafe(
-  root: string,
-  absolutePath: string,
-): Promise<void> {
+export async function assertContainedPathSafe(root: string, absolutePath: string): Promise<void> {
   const resolvedRoot = path.resolve(root);
   const resolved = path.resolve(absolutePath);
 

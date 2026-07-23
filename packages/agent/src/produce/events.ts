@@ -17,12 +17,7 @@ export type ProduceProgressPhase =
   | "failed";
 
 /** Operator-visible supervisor role for work_unit tags. */
-export type ProduceAgentRole =
-  | "domain"
-  | "leaf"
-  | "reviewer"
-  | "root"
-  | "planner";
+export type ProduceAgentRole = "domain" | "leaf" | "reviewer" | "root" | "planner";
 
 /**
  * Produce → operator sink.
@@ -39,12 +34,7 @@ export type ProduceEventSink = {
   planProgress?: (p: {
     pages: Array<{ path: string; status: "pending" | "writing" | "done" }>;
   }) => void;
-  defects?: (p: {
-    round: number;
-    clean: boolean;
-    defectCount: number;
-    summary?: string;
-  }) => void;
+  defects?: (p: { round: number; clean: boolean; defectCount: number; summary?: string }) => void;
   /**
    * Parent-visible produce unit (ADR 0031 PVU).
    * Fold last-by-unitId on cold load. Requires runId for trajectory binding.

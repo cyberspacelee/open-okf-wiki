@@ -35,9 +35,7 @@ export async function listSkillFiles(skillRoot: string): Promise<string[]> {
 
   async function walk(absDir: string, relPosix: string): Promise<void> {
     if (files.length >= SKILL_DIGEST_MAX_FILES) {
-      throw new Error(
-        `skill tree exceeds ${SKILL_DIGEST_MAX_FILES} files under ${root}`,
-      );
+      throw new Error(`skill tree exceeds ${SKILL_DIGEST_MAX_FILES} files under ${root}`);
     }
     let entries;
     try {
@@ -63,9 +61,7 @@ export async function listSkillFiles(skillRoot: string): Promise<string[]> {
       if (entry.isFile()) {
         files.push(childRel);
         if (files.length > SKILL_DIGEST_MAX_FILES) {
-          throw new Error(
-            `skill tree exceeds ${SKILL_DIGEST_MAX_FILES} files under ${root}`,
-          );
+          throw new Error(`skill tree exceeds ${SKILL_DIGEST_MAX_FILES} files under ${root}`);
         }
       }
     }
@@ -109,9 +105,7 @@ export async function skillDigest(skillRoot: string): Promise<string> {
       continue;
     }
     if (info.size > SKILL_DIGEST_MAX_FILE_BYTES) {
-      throw new Error(
-        `skill file too large for digest (${info.size} bytes): ${rel}`,
-      );
+      throw new Error(`skill file too large for digest (${info.size} bytes): ${rel}`);
     }
     const body = await readFile(abs);
     hash.update(rel);

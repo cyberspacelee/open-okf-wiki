@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -13,10 +13,7 @@ test("skillDigest is stable for identical trees", async () => {
   const a = await tempDir("okf-skill-a-");
   const b = await tempDir("okf-skill-b-");
   for (const root of [a, b]) {
-    await writeFile(
-      path.join(root, "SKILL.md"),
-      "---\nname: demo\n---\n# Demo\n",
-    );
+    await writeFile(path.join(root, "SKILL.md"), "---\nname: demo\n---\n# Demo\n");
     await mkdir(path.join(root, "references"), { recursive: true });
     await writeFile(path.join(root, "references", "generate.md"), "# gen\n");
   }

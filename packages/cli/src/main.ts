@@ -1,17 +1,17 @@
 #!/usr/bin/env node
-import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  startWikiRun,
+  resolveModelSelection,
+  resolveWorkspacePiModel,
   shellPhaseLabel,
   shouldUsePiFixtureMode,
-  resolveWorkspacePiModel,
-  resolveModelSelection,
-  type WikiRunShellPhase,
+  startWikiRun,
   type WikiRunModelFactory,
+  type WikiRunShellPhase,
 } from "@okf-wiki/agent";
 import { defaultWikiRunSpec, type WorkspaceConfig } from "@okf-wiki/contract";
 import {
@@ -107,16 +107,12 @@ function parseSourceSpec(raw: string): { id: string; path: string } {
   if (eq > 0) sep = eq;
   else if (colon > 0 && !/^[A-Za-z]:[\\/]/.test(raw)) sep = colon;
   if (sep <= 0) {
-    throw new Error(
-      `invalid --source ${JSON.stringify(raw)} (expected id=path)`,
-    );
+    throw new Error(`invalid --source ${JSON.stringify(raw)} (expected id=path)`);
   }
   const id = raw.slice(0, sep).trim();
   const sourcePath = raw.slice(sep + 1).trim();
   if (!id || !sourcePath) {
-    throw new Error(
-      `invalid --source ${JSON.stringify(raw)} (expected id=path)`,
-    );
+    throw new Error(`invalid --source ${JSON.stringify(raw)} (expected id=path)`);
   }
   return { id, path: sourcePath };
 }
@@ -238,10 +234,7 @@ async function cmdDoctor(): Promise<void> {
     arch: process.arch,
     openaiBaseUrlSet: Boolean(process.env.OPENAI_BASE_URL),
     openaiApiKeySet: Boolean(process.env.OPENAI_API_KEY),
-    server:
-      server === null
-        ? { reachable: false, url }
-        : { reachable: true, url, doctor: server },
+    server: server === null ? { reachable: false, url } : { reachable: true, url, doctor: server },
   });
 }
 
@@ -367,20 +360,14 @@ async function cmdServe(argv: string[]): Promise<void> {
   process.stdout.write(`spawning server: node --experimental-strip-types ${serverMain}\n`);
   process.stdout.write(`cwd: ${monorepoRoot}\n`);
   process.stdout.write("API: http://127.0.0.1:8787  (Ctrl+C to stop)\n");
-  process.stdout.write(
-    "Web UI (separate terminal): pnpm --filter @okf-wiki/web dev\n",
-  );
+  process.stdout.write("Web UI (separate terminal): pnpm --filter @okf-wiki/web dev\n");
 
-  const child = spawn(
-    process.execPath,
-    ["--experimental-strip-types", serverMain],
-    {
-      cwd: monorepoRoot,
-      stdio: "inherit",
-      env: process.env,
-      windowsHide: true,
-    },
-  );
+  const child = spawn(process.execPath, ["--experimental-strip-types", serverMain], {
+    cwd: monorepoRoot,
+    stdio: "inherit",
+    env: process.env,
+    windowsHide: true,
+  });
 
   const forward = (signal: NodeJS.Signals) => {
     if (!child.killed) {
@@ -422,9 +409,7 @@ async function cmdWikiRun(argv: string[]): Promise<void> {
   try {
     args = parseWikiRunArgs(argv);
   } catch (error) {
-    process.stderr.write(
-      `${error instanceof Error ? error.message : String(error)}\n`,
-    );
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.stderr.write(
       "usage: okf-wiki wiki-run --root <path> [--source id=path] [--fixture] [--yes]\n",
     );
@@ -434,16 +419,10 @@ async function cmdWikiRun(argv: string[]): Promise<void> {
   const rootPath = path.resolve(args.root);
   const phaseLog: PhaseLine[] = [];
 
-  const emitPhase = (
-    phase: PhaseLine["phase"],
-    detail?: string,
-  ): void => {
-    const label =
-      phase === "planning" ? "Planning" : shellPhaseLabel(phase);
+  const emitPhase = (phase: PhaseLine["phase"], detail?: string): void => {
+    const label = phase === "planning" ? "Planning" : shellPhaseLabel(phase);
     phaseLog.push({ phase, label, detail });
-    const line = detail
-      ? `phase\t${phase}\t${label}\t${detail}\n`
-      : `phase\t${phase}\t${label}\n`;
+    const line = detail ? `phase\t${phase}\t${label}\t${detail}\n` : `phase\t${phase}\t${label}\n`;
     if (args.jsonOnly) {
       process.stderr.write(line);
     } else {
@@ -492,45 +471,46 @@ async function cmdWikiRun(argv: string[]): Promise<void> {
   }));
 
   // Minimal WorkspaceConfig for startWikiRun (Pi shell + produce + optional publish).
-  const workspace = (loadedWorkspace
-    ? {
-        ...loadedWorkspace,
-        name: workspaceName,
-        rootPath,
-        sources: sources.map((s) => ({
-          id: s.id,
-          path: s.path,
-          applyDefaultIgnores: true,
-          ignore: [] as string[],
-          origin: { type: "path" as const },
-        })),
-        skillPath: skillPath ?? loadedWorkspace.skillPath,
-        publicationPath:
-          loadedWorkspace.publicationPath || path.join(rootPath, "wiki"),
-        planConfirm: args.planConfirm,
-      }
-    : {
-        version: 1 as const,
-        id: "cli",
-        name: workspaceName,
-        rootPath,
-        sources: sources.map((s) => ({
-          id: s.id,
-          path: s.path,
-          applyDefaultIgnores: true,
-          ignore: [] as string[],
-          origin: { type: "path" as const },
-        })),
-        skillPath,
-        publicationPath: path.join(rootPath, "wiki"),
-        planConfirm: args.planConfirm,
-        model: { id: "openai/gpt-4o" },
-        limits: {},
-        roleModels: {},
-        orchestration: {},
-        wikiLanguage: "en" as const,
-        createdAt: new Date().toISOString(),
-      }) as WorkspaceConfig;
+  const workspace = (
+    loadedWorkspace
+      ? {
+          ...loadedWorkspace,
+          name: workspaceName,
+          rootPath,
+          sources: sources.map((s) => ({
+            id: s.id,
+            path: s.path,
+            applyDefaultIgnores: true,
+            ignore: [] as string[],
+            origin: { type: "path" as const },
+          })),
+          skillPath: skillPath ?? loadedWorkspace.skillPath,
+          publicationPath: loadedWorkspace.publicationPath || path.join(rootPath, "wiki"),
+          planConfirm: args.planConfirm,
+        }
+      : {
+          version: 1 as const,
+          id: "cli",
+          name: workspaceName,
+          rootPath,
+          sources: sources.map((s) => ({
+            id: s.id,
+            path: s.path,
+            applyDefaultIgnores: true,
+            ignore: [] as string[],
+            origin: { type: "path" as const },
+          })),
+          skillPath,
+          publicationPath: path.join(rootPath, "wiki"),
+          planConfirm: args.planConfirm,
+          model: { id: "openai/gpt-4o" },
+          limits: {},
+          roleModels: {},
+          orchestration: {},
+          wikiLanguage: "en" as const,
+          createdAt: new Date().toISOString(),
+        }
+  ) as WorkspaceConfig;
 
   const resolveModel: WikiRunModelFactory | undefined = useFixture
     ? undefined
@@ -558,10 +538,7 @@ async function cmdWikiRun(argv: string[]): Promise<void> {
         };
       };
 
-  emitPhase(
-    "planning",
-    args.planConfirm ? "plan gate forced" : "plan gate skipped (headless)",
-  );
+  emitPhase("planning", args.planConfirm ? "plan gate forced" : "plan gate skipped (headless)");
 
   try {
     const result = await startWikiRun({

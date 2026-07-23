@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -40,10 +40,7 @@ test("resolveExistingDir rejects empty paths", async () => {
 
 test("resolveExistingDir rejects missing and non-directory paths", async () => {
   const root = await tempDir("okf-wiki-path-");
-  await assert.rejects(
-    () => resolveExistingDir(path.join(root, "missing")),
-    /does not exist/,
-  );
+  await assert.rejects(() => resolveExistingDir(path.join(root, "missing")), /does not exist/);
 
   const filePath = path.join(root, "file.txt");
   await writeFile(filePath, "x\n");
@@ -141,10 +138,7 @@ test("addSource fails for non-git and dirty when requireClean", async () => {
     /not a git|working tree/i,
   );
 
-  await assert.rejects(
-    () => addSource(config, { id: "application", path: dirtyRepo }),
-    /dirty/i,
-  );
+  await assert.rejects(() => addSource(config, { id: "application", path: dirtyRepo }), /dirty/i);
 
   const allowed = await addSource(
     config,
@@ -196,10 +190,7 @@ test("createWorkspace rejects existing workspace.json", async () => {
   const root = await tempDir("okf-wiki-ws-exists-");
   const first = await createWorkspace({ name: "One", rootPath: root });
   await saveWorkspace(first);
-  await assert.rejects(
-    () => createWorkspace({ name: "Two", rootPath: root }),
-    /already exists/,
-  );
+  await assert.rejects(() => createWorkspace({ name: "Two", rootPath: root }), /already exists/);
 });
 
 test("createWorkspace honors custom publicationPath", async () => {
@@ -225,10 +216,7 @@ test("assertAbsolutePath rejects relative and empty paths", () => {
 });
 
 test("createWorkspace rejects relative rootPath", async () => {
-  await assert.rejects(
-    () => createWorkspace({ name: "Rel", rootPath: "relative/ws" }),
-    /absolute/,
-  );
+  await assert.rejects(() => createWorkspace({ name: "Rel", rootPath: "relative/ws" }), /absolute/);
   await assert.rejects(
     () => createWorkspace({ name: "Rel", rootPath: "./relative-ws" }),
     /absolute/,
@@ -256,10 +244,7 @@ test("createWorkspace treats only ENOENT as missing config", async () => {
   assert.equal(config.rootPath, path.resolve(root));
   // After save, access finds the file and createWorkspace must reject.
   await saveWorkspace(config);
-  await assert.rejects(
-    () => createWorkspace({ name: "Again", rootPath: root }),
-    /already exists/,
-  );
+  await assert.rejects(() => createWorkspace({ name: "Again", rootPath: root }), /already exists/);
 });
 
 test("updateSource updates ignore policy", async () => {
@@ -268,11 +253,7 @@ test("updateSource updates ignore policy", async () => {
   await initGitRepo(sourceRoot);
 
   let ws = await createWorkspace({ name: "UpdateSrc", rootPath: root });
-  const added = await addSource(
-    ws,
-    { id: "app", path: sourceRoot },
-    { requireClean: false },
-  );
+  const added = await addSource(ws, { id: "app", path: sourceRoot }, { requireClean: false });
   ws = added.config;
   assert.equal(ws.sources[0]!.applyDefaultIgnores, true);
   assert.deepEqual(ws.sources[0]!.ignore, []);

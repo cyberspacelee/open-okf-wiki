@@ -10,14 +10,14 @@
  * Default is offline: only materialise workdir + assert tool allowlist + list via createReadOnlyTools.
  */
 
-import { mkdir, writeFile, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   createAgentSession,
-  createReadOnlyTools,
   createCodingTools,
+  createReadOnlyTools,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 
@@ -38,11 +38,7 @@ async function materializeFixtureLayout(base) {
   const skill = path.join(base, "skill");
   const runWorkDir = path.join(base, "run");
   await mkdir(path.join(src, "src"), { recursive: true });
-  await writeFile(
-    path.join(src, "src", "hello.ts"),
-    "export const hello = 'world';\n",
-    "utf8",
-  );
+  await writeFile(path.join(src, "src", "hello.ts"), "export const hello = 'world';\n", "utf8");
   await writeFile(path.join(src, "README.md"), "# Fixture\n\nHello.\n", "utf8");
   await mkdir(skill, { recursive: true });
   await writeFile(path.join(skill, "SKILL.md"), "# Producer skill fixture\n", "utf8");
@@ -100,14 +96,15 @@ async function livePromptSmoke(runWorkDir) {
   const available = await modelRuntime.getAvailable();
   console.log(
     "available models:",
-    available.slice(0, 8).map((m) => `${m.provider}/${m.id}`).join(", ") || "(none)",
+    available
+      .slice(0, 8)
+      .map((m) => `${m.provider}/${m.id}`)
+      .join(", ") || "(none)",
   );
 
   const envModel = process.env.OPENAI_MODEL;
   const envProvider = process.env.OKF_SPIKE_PROVIDER ?? "openai";
-  let model = envModel
-    ? modelRuntime.getModel(envProvider, envModel)
-    : available[0];
+  let model = envModel ? modelRuntime.getModel(envProvider, envModel) : available[0];
   if (!model && available[0]) model = available[0];
   if (!model) {
     console.log("live smoke skipped: no model/API key available");
@@ -126,10 +123,7 @@ async function livePromptSmoke(runWorkDir) {
   try {
     let text = "";
     session.subscribe((event) => {
-      if (
-        event.type === "message_update" &&
-        event.assistantMessageEvent?.type === "text_delta"
-      ) {
+      if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
         text += event.assistantMessageEvent.delta;
         process.stdout.write(event.assistantMessageEvent.delta);
       }

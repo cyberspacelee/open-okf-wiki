@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   applyLateAbortStatus,
-  canTransitionToCancelled,
   cancelWinsOverPatch,
+  canTransitionToCancelled,
   isCancellableRunStatus,
   isDurableRunStatus,
 } from "./run-status-policy.js";
@@ -38,10 +38,7 @@ test("canTransitionToCancelled", () => {
 
 test("applyLateAbortStatus preserves durable", () => {
   const published = { status: "published" as const, pages: ["a.md"] };
-  assert.equal(
-    applyLateAbortStatus(published, true),
-    published,
-  );
+  assert.equal(applyLateAbortStatus(published, true), published);
   const running = {
     status: "awaiting_plan" as const,
     plan: {

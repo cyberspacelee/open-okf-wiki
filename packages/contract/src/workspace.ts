@@ -206,15 +206,11 @@ export const WorkspaceConfigSchema = z.object({
    * Optional per-role models (planner / worker / reviewers).
    * Omitted roles use `model`.
    */
-  roleModels: WorkspaceRoleModelsSchema.default(() =>
-    WorkspaceRoleModelsSchema.parse({}),
-  ),
+  roleModels: WorkspaceRoleModelsSchema.default(() => WorkspaceRoleModelsSchema.parse({})),
   /**
    * Supervisor tree budgets and fan-out (Host-enforced where possible).
    */
-  orchestration: WorkspaceOrchestrationSchema.default(() =>
-    WorkspaceOrchestrationSchema.parse({}),
-  ),
+  orchestration: WorkspaceOrchestrationSchema.default(() => WorkspaceOrchestrationSchema.parse({})),
   /**
    * When true, interactive Wiki Runs pause for operator Spec confirmation
    * before produce. Headless/autoApprove skips this gate.

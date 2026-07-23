@@ -4,19 +4,15 @@
  */
 
 import { ChevronRightIcon, Loader2Icon } from "lucide-react";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
 import { useI18n } from "../../i18n";
-import type { WorkUnitView } from "../hooks/useSessionAgent";
 import {
   formatPayloadText,
   workUnitHasBody,
   workUnitToolsToAgentTools,
 } from "../hooks/project-agent-events";
+import type { WorkUnitView } from "../hooks/useSessionAgent";
 import { AgentMarkdown } from "../transcript/AgentMarkdown";
 import { ToolExecutionCard } from "./ToolExecutionCard";
 
@@ -37,11 +33,7 @@ export function WorkUnitBody({ unit, fallbackDetail }: WorkUnitBodyProps) {
   const hasBody = workUnitHasBody(unit);
 
   if (!unit && !fallback) {
-    return (
-      <p className="text-xs text-muted-foreground">
-        {t.agentWorkspace.subagentNoDetail}
-      </p>
-    );
+    return <p className="text-xs text-muted-foreground">{t.agentWorkspace.subagentNoDetail}</p>;
   }
 
   return (
@@ -54,16 +46,12 @@ export function WorkUnitBody({ unit, fallbackDetail }: WorkUnitBodyProps) {
           <CollapsibleTrigger className="group flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted/40">
             <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-data-panel-open:rotate-90" />
             <span className="min-w-0 flex-1 font-medium">
-              {running && !settled
-                ? t.agentWorkspace.thinkingStreaming
-                : t.agentWorkspace.thinking}
+              {running && !settled ? t.agentWorkspace.thinkingStreaming : t.agentWorkspace.thinking}
             </span>
             {running && !settled ? <Spinner className="size-3" /> : null}
           </CollapsibleTrigger>
           <CollapsibleContent className="min-w-0 border-t border-border/40 px-2 py-2">
-            <pre className="okf-code-snippet text-muted-foreground">
-              {thinking}
-            </pre>
+            <pre className="okf-code-snippet text-muted-foreground">{thinking}</pre>
           </CollapsibleContent>
         </Collapsible>
       ) : null}
@@ -71,11 +59,7 @@ export function WorkUnitBody({ unit, fallbackDetail }: WorkUnitBodyProps) {
       {tools.length > 0 ? (
         <div className="flex min-w-0 flex-col gap-1">
           {tools.map((tool) => (
-            <ToolExecutionCard
-              key={tool.id}
-              tool={tool}
-              settled={settled}
-            />
+            <ToolExecutionCard key={tool.id} tool={tool} settled={settled} />
           ))}
         </div>
       ) : null}
@@ -107,9 +91,7 @@ export function WorkUnitBody({ unit, fallbackDetail }: WorkUnitBodyProps) {
       ) : null}
 
       {unit?.status === "failed" && unit.error ? (
-        <p className="text-xs text-destructive whitespace-pre-wrap break-words">
-          {unit.error}
-        </p>
+        <p className="text-xs text-destructive whitespace-pre-wrap break-words">{unit.error}</p>
       ) : null}
     </div>
   );

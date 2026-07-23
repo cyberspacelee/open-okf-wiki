@@ -1,19 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import {
-  createPiChat,
-  scriptProvider403,
-  scriptThinkingThenText,
-} from "./create-pi-chat.ts";
 import { isCommandFailed } from "../hooks/command-result.ts";
+import { createPiChat, scriptProvider403, scriptThinkingThenText } from "./create-pi-chat.ts";
 
 describe("createPiChat fixtures", () => {
   it("projects provider 403 as a single error assistant (no duplicate system)", () => {
     const messages = scriptProvider403().project();
     const assistants = messages.filter((m) => m.role === "assistant");
-    const systems = messages.filter(
-      (m) => m.role === "system" && m.status === "error",
-    );
+    const systems = messages.filter((m) => m.role === "system" && m.status === "error");
     assert.equal(assistants.length, 1);
     assert.equal(assistants[0]!.status, "error");
     assert.match(assistants[0]!.content, /403/);

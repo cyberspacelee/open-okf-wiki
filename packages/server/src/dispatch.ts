@@ -9,12 +9,16 @@ import {
   matchRoute,
   sendError,
 } from "./http-util.ts";
-import { host, port } from "./server-config.ts";
-import { handleDoctor, handleHealth } from "./routes/health.ts";
 import {
-  handleGetAppSettings,
-  handlePatchAppSettings,
-} from "./routes/app-settings.ts";
+  handleAgentSessionCommand,
+  handleAgentSessionEvents,
+  handleCreateAgentSession,
+  handleDeleteAgentSession,
+  handleGetAgentSession,
+  handleListAgentSessions,
+} from "./routes/agent-sessions.ts";
+import { handleGetAppSettings, handlePatchAppSettings } from "./routes/app-settings.ts";
+import { handleDoctor, handleHealth } from "./routes/health.ts";
 import {
   handleCreateModel,
   handleCreateProvider,
@@ -27,6 +31,22 @@ import {
   handleUpdateModel,
   handleUpdateProvider,
 } from "./routes/provider.ts";
+import {
+  handleApprovePlan,
+  handleApprovePublication,
+  handleCancelRun,
+  handleCreateRun,
+  handleDenyPlan,
+  handleDenyPublication,
+  handleGetRun,
+  handleGetRunReceipt,
+  handleListRunReceipts,
+  handleListRuns,
+  handleRetryRun,
+  handleRevisePlan,
+  handleRunEvents,
+} from "./routes/runs.ts";
+import { handleListWiki, handleReadWiki, matchWikiApiRoute } from "./routes/wiki.ts";
 import {
   handleAddSource,
   handleCloneSource,
@@ -46,30 +66,7 @@ import {
   handleUpdateSource,
   handleWriteSkillFile,
 } from "./routes/workspaces.ts";
-import {
-  handleApprovePlan,
-  handleApprovePublication,
-  handleCancelRun,
-  handleCreateRun,
-  handleDenyPlan,
-  handleDenyPublication,
-  handleGetRun,
-  handleGetRunReceipt,
-  handleListRunReceipts,
-  handleListRuns,
-  handleRetryRun,
-  handleRevisePlan,
-  handleRunEvents,
-} from "./routes/runs.ts";
-import {
-  handleAgentSessionCommand,
-  handleAgentSessionEvents,
-  handleDeleteAgentSession,
-  handleGetAgentSession,
-  handleCreateAgentSession,
-  handleListAgentSessions,
-} from "./routes/agent-sessions.ts";
-import { handleListWiki, handleReadWiki, matchWikiApiRoute } from "./routes/wiki.ts";
+import { host, port } from "./server-config.ts";
 
 export async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void> {
   applyCors(req, res);
@@ -239,60 +236,27 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
     // Pi agent sessions (ADR 0030) — conversational entry.
     // Legacy /sessions is list/create meta only; chat returns 410.
     {
-      const params = matchRoute(
-        pathname,
-        "/api/workspaces/:id/agent/sessions/:sessionId/command",
-      );
+      const params = matchRoute(pathname, "/api/workspaces/:id/agent/sessions/:sessionId/command");
       if (params && method === "POST") {
-        await handleAgentSessionCommand(
-          req,
-          res,
-          params.id!,
-          params.sessionId!,
-          url,
-        );
+        await handleAgentSessionCommand(req, res, params.id!, params.sessionId!, url);
         return;
       }
     }
     {
-      const params = matchRoute(
-        pathname,
-        "/api/workspaces/:id/agent/sessions/:sessionId/events",
-      );
+      const params = matchRoute(pathname, "/api/workspaces/:id/agent/sessions/:sessionId/events");
       if (params && method === "GET") {
-        await handleAgentSessionEvents(
-          req,
-          res,
-          params.id!,
-          params.sessionId!,
-          url,
-        );
+        await handleAgentSessionEvents(req, res, params.id!, params.sessionId!, url);
         return;
       }
     }
     {
-      const params = matchRoute(
-        pathname,
-        "/api/workspaces/:id/agent/sessions/:sessionId",
-      );
+      const params = matchRoute(pathname, "/api/workspaces/:id/agent/sessions/:sessionId");
       if (params && method === "GET") {
-        await handleGetAgentSession(
-          req,
-          res,
-          params.id!,
-          params.sessionId!,
-          url,
-        );
+        await handleGetAgentSession(req, res, params.id!, params.sessionId!, url);
         return;
       }
       if (params && method === "DELETE") {
-        await handleDeleteAgentSession(
-          req,
-          res,
-          params.id!,
-          params.sessionId!,
-          url,
-        );
+        await handleDeleteAgentSession(req, res, params.id!, params.sessionId!, url);
         return;
       }
     }
@@ -308,107 +272,70 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
       }
     }
     {
-      const params = matchRoute(
-        pathname,
-        "/api/workspaces/:id/runs/:runId/retry",
-      );
+      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/retry");
       if (params && method === "POST") {
         await handleRetryRun(req, res, params.id!, params.runId!, url);
         return;
       }
     }
     {
-      const params = matchRoute(
-        pathname,
-        "/api/workspaces/:id/runs/:runId/approve-plan",
-      );
+      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/approve-plan");
       if (params && method === "POST") {
         await handleApprovePlan(req, res, params.id!, params.runId!, url);
         return;
       }
     }
     {
-      const params = matchRoute(
-        pathname,
-        "/api/workspaces/:id/runs/:runId/deny-plan",
-      );
+      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/deny-plan");
       if (params && method === "POST") {
         await handleDenyPlan(req, res, params.id!, params.runId!, url);
         return;
       }
     }
     {
-      const params = matchRoute(
-        pathname,
-        "/api/workspaces/:id/runs/:runId/revise-plan",
-      );
+      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/revise-plan");
       if (params && method === "POST") {
         await handleRevisePlan(req, res, params.id!, params.runId!, url);
         return;
       }
     }
     {
-      const params = matchRoute(
-        pathname,
-        "/api/workspaces/:id/runs/:runId/approve-publication",
-      );
+      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/approve-publication");
       if (params && method === "POST") {
         await handleApprovePublication(req, res, params.id!, params.runId!, url);
         return;
       }
     }
     {
-      const params = matchRoute(
-        pathname,
-        "/api/workspaces/:id/runs/:runId/deny-publication",
-      );
+      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/deny-publication");
       if (params && method === "POST") {
         await handleDenyPublication(req, res, params.id!, params.runId!, url);
         return;
       }
     }
     {
-      const params = matchRoute(
-        pathname,
-        "/api/workspaces/:id/runs/:runId/cancel",
-      );
+      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/cancel");
       if (params && method === "POST") {
         await handleCancelRun(req, res, params.id!, params.runId!, url);
         return;
       }
     }
     {
-      const params = matchRoute(
-        pathname,
-        "/api/workspaces/:id/runs/:runId/events",
-      );
+      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/events");
       if (params && method === "GET") {
         await handleRunEvents(req, res, params.id!, params.runId!, url);
         return;
       }
     }
     {
-      const params = matchRoute(
-        pathname,
-        "/api/workspaces/:id/runs/:runId/receipts/:nodeId",
-      );
+      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/receipts/:nodeId");
       if (params && method === "GET") {
-        await handleGetRunReceipt(
-          req,
-          res,
-          params.id!,
-          params.runId!,
-          params.nodeId!,
-          url,
-        );
+        await handleGetRunReceipt(req, res, params.id!, params.runId!, params.nodeId!, url);
         return;
       }
     }
     {
-      const params = matchRoute(
-        pathname,
-        "/api/workspaces/:id/runs/:runId/receipts",
-      );
+      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/receipts");
       if (params && method === "GET") {
         await handleListRunReceipts(req, res, params.id!, params.runId!, url);
         return;
@@ -480,7 +407,7 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
       return;
     }
     process.stderr.write(
-      `request error: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`,
+      `request error: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
     );
     sendError(res, 500, "internal server error");
   }

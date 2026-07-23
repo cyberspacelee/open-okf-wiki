@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { uniqueWorkspaceRoot } from "./helpers";
 
 test.describe("skill fork settings", () => {
@@ -7,7 +7,10 @@ test.describe("skill fork settings", () => {
     const name = `E2E SkillFork ${Date.now()}`;
 
     await page.goto("/workspaces");
-    await page.getByRole("button", { name: /^create( workspace)?$/i }).first().click();
+    await page
+      .getByRole("button", { name: /^create( workspace)?$/i })
+      .first()
+      .click();
     await page.getByTestId("workspace-name-input").fill(name);
     await page.getByTestId("workspace-root-input").fill(rootPath);
     await page.getByTestId("workspace-create-submit").click();
@@ -19,10 +22,9 @@ test.describe("skill fork settings", () => {
     await expect(page.getByTestId("settings-skill-panel")).toBeVisible();
 
     // Default is home (~/.agents/skills) or package when home skills off
-    await expect(page.getByTestId("settings-skill-kind")).toHaveText(
-      /^(home|package)$/,
-      { timeout: 15_000 },
-    );
+    await expect(page.getByTestId("settings-skill-kind")).toHaveText(/^(home|package)$/, {
+      timeout: 15_000,
+    });
     await expect(page.getByTestId("settings-skill-digest")).toBeVisible();
 
     await page.getByTestId("settings-skill-fork").click();
@@ -32,17 +34,16 @@ test.describe("skill fork settings", () => {
     await expect(page.getByTestId("settings-skill-file-editor")).toBeVisible();
 
     // Edit and save SKILL.md
-    await page.getByTestId("settings-skill-file-editor").fill(
-      "---\nname: forked-skill\ndescription: e2e fork\n---\n# Forked\n",
-    );
+    await page
+      .getByTestId("settings-skill-file-editor")
+      .fill("---\nname: forked-skill\ndescription: e2e fork\n---\n# Forked\n");
     await page.getByTestId("settings-skill-save-file").click();
     // Digest should still be shown after save
     await expect(page.getByTestId("settings-skill-digest")).toBeVisible();
 
     await page.getByTestId("settings-skill-reset").click();
-    await expect(page.getByTestId("settings-skill-kind")).toHaveText(
-      /^(home|package)$/,
-      { timeout: 15_000 },
-    );
+    await expect(page.getByTestId("settings-skill-kind")).toHaveText(/^(home|package)$/, {
+      timeout: 15_000,
+    });
   });
 });

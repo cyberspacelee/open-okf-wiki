@@ -73,7 +73,8 @@ Beside the Operator Session’s Pi stream, product may inject **only**:
 | `gate` | shell | Plan / publication HITL |
 | `plan_progress` | Produce | Spec page queue (file-backed) |
 | `defects` | Produce | Review summary |
-| `progress` | Produce | Short produce label (optional; must not duplicate full tool trails) |
+
+**Not on the whitelist (deleted body channels):** `agent_span`, `work_unit` (PVU), `progress` (duplicate of thin `run_phase`).
 
 **`agent_span` (or successor)** may name supervisor topology for trees/chips **only if** it does **not**:
 
@@ -118,8 +119,9 @@ Fan-in of raw child events onto the operator SSE bus is an **adapter detail**. I
 
 ### Negative / work
 
-- Child isolation remains; wiring cost lives in the produce adapter (`work_unit` PVUs), not deleted.  
-- **UI cut (2026-07):** web finished the surface cut — timeline Work block + units fold only; no Focus drawer / dual body host; Agents tree is nav-only.
+- **PVU deleted → parent tool:** the `work_unit` product inject (parent-visible unit / PVU) is removed from the contract. Produce child visibility must re-home onto the **parent Session as framework-shaped tools** (or equivalent parent-visible cards), not a second product body channel.  
+- Child isolation remains; wiring cost lives in the produce adapter that projects into parent tools, not in a dual SSE body path.  
+- **UI cut (2026-07):** web finished an earlier surface cut (timeline Work block + units fold). That fold is superseded by parent-tool projection; no Focus drawer / dual body host; Agents tree is nav-only when present.
 
 ### Invariants
 
@@ -141,10 +143,10 @@ Fan-in of raw child events onto the operator SSE bus is an **adapter detail**. I
 
 ## Implementation guidance (non-normative order)
 
-1. Codify inject whitelist in contract tests / server emit allowlist.  
+1. Codify inject whitelist in contract tests / server emit allowlist (no `work_unit` / `progress` / `agent_span`).  
 2. Re-home produce visibility to parent Session units (tool-shaped preferred).  
 3. Align web projector with Pi snapshot + tool map semantics.  
-4. Demote or delete parallel body true-sources (`workStreams` as authority, empty span shells).  
+4. Demote or delete parallel body true-sources (`workStreams` as authority, empty span shells, PVU fold).  
 5. Keep analysis/Run Record as job artifacts only.
 
 ## References

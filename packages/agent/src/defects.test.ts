@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -44,14 +44,8 @@ test("parseDefectReportFromText parses fenced JSON", () => {
 });
 
 test("mergeDefectReports dedupes and ranks", () => {
-  const a = parseDefectReportFromText(
-    "severity: blocking path: a.md issue one",
-    "a",
-  );
-  const b = parseDefectReportFromText(
-    "severity: minor path: b.md issue two",
-    "b",
-  );
+  const a = parseDefectReportFromText("severity: blocking path: a.md issue one", "a");
+  const b = parseDefectReportFromText("severity: minor path: b.md issue two", "b");
   const m = mergeDefectReports([a, b]);
   assert.equal(m.reviewerIds.length, 2);
   assert.ok(m.defects.length >= 1);

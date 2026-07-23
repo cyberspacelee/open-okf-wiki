@@ -6,8 +6,8 @@
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
-  AnalysisReceiptSchema,
   type AnalysisReceipt,
+  AnalysisReceiptSchema,
   type ReceiptStatus,
 } from "@okf-wiki/contract";
 import { writeAnalysisReceipt } from "@okf-wiki/core";
@@ -100,7 +100,7 @@ export async function persistResearchReceipt(input: {
  */
 export async function buildReceiptIndex(runWorkDir: string): Promise<string> {
   const dir = receiptsDir(runWorkDir);
-  let names: string[] = [];
+  let names: string[];
   try {
     names = (await readdir(dir)).filter((n) => n.endsWith(".json")).sort();
   } catch {

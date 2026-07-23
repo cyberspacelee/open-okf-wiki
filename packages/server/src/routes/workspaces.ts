@@ -1,6 +1,14 @@
-import type { IncomingMessage, ServerResponse } from "node:http";
 import { rm } from "node:fs/promises";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
+import {
+  IGNORE_PRESETS,
+  WikiLanguageSchema,
+  type WorkspaceConfig,
+  WorkspaceLimitsSchema,
+  WorkspaceOrchestrationSchema,
+  WorkspaceRoleModelsSchema,
+} from "@okf-wiki/contract";
 import {
   addSource,
   cloneIntoWorkspace,
@@ -25,27 +33,21 @@ import {
   updateSource,
   writeSkillFile,
 } from "@okf-wiki/core";
-import {
-  IGNORE_PRESETS,
-  WikiLanguageSchema,
-  WorkspaceLimitsSchema,
-  WorkspaceOrchestrationSchema,
-  WorkspaceRoleModelsSchema,
-  type WorkspaceConfig,
-} from "@okf-wiki/contract";
-import {
-  readJsonBody,
-  sendError,
-  sendJson,
-} from "../http-util.ts";
+import { readJsonBody, sendError, sendJson } from "../http-util.ts";
 import { resolveWorkspaceModelSelection } from "./provider.ts";
 
-export async function handleListWorkspaces(_req: IncomingMessage, res: ServerResponse): Promise<void> {
+export async function handleListWorkspaces(
+  _req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
   const workspaces = await listWorkspaceSummaries();
   sendJson(res, 200, { workspaces });
 }
 
-export async function handleCreateWorkspace(req: IncomingMessage, res: ServerResponse): Promise<void> {
+export async function handleCreateWorkspace(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
   const body = (await readJsonBody(req)) as {
     name?: unknown;
     rootPath?: unknown;
@@ -70,8 +72,7 @@ export async function handleCreateWorkspace(req: IncomingMessage, res: ServerRes
     const workspace = await createWorkspace({
       name: body.name,
       rootPath: body.rootPath,
-      publicationPath:
-        typeof body.publicationPath === "string" ? body.publicationPath : undefined,
+      publicationPath: typeof body.publicationPath === "string" ? body.publicationPath : undefined,
       modelProfileId: model.profileId,
       resolvedModelId: model.id,
       modelId: model.id,
@@ -135,11 +136,7 @@ export async function handlePatchWorkspace(
     next.name = body.name.trim();
   }
 
-  if (
-    body.modelProfileId !== undefined ||
-    body.modelId !== undefined ||
-    body.model !== undefined
-  ) {
+  if (body.modelProfileId !== undefined || body.modelId !== undefined || body.model !== undefined) {
     try {
       if (typeof body.modelProfileId === "string" && body.modelProfileId.trim()) {
         const model = await resolveWorkspaceModelSelection({
@@ -330,9 +327,7 @@ export async function handleAddSource(
 
   const sourcePath = path.resolve(body.path.trim());
   const desiredId =
-    typeof body.id === "string" && body.id.trim()
-      ? body.id.trim()
-      : slugFromPath(sourcePath);
+    typeof body.id === "string" && body.id.trim() ? body.id.trim() : slugFromPath(sourcePath);
   const sourceId = uniqueSourceId(desiredId, workspace.sources);
 
   try {
@@ -532,8 +527,7 @@ export async function handleCloneSource(
     typeof body.relativeDir === "string" && body.relativeDir.trim()
       ? body.relativeDir.trim()
       : undefined;
-  const ref =
-    typeof body.ref === "string" && body.ref.trim() ? body.ref.trim() : undefined;
+  const ref = typeof body.ref === "string" && body.ref.trim() ? body.ref.trim() : undefined;
 
   try {
     const cloned = await cloneIntoWorkspace({
@@ -549,9 +543,7 @@ export async function handleCloneSource(
         id: sourceId,
         path: cloned.path,
         applyDefaultIgnores:
-          typeof body.applyDefaultIgnores === "boolean"
-            ? body.applyDefaultIgnores
-            : undefined,
+          typeof body.applyDefaultIgnores === "boolean" ? body.applyDefaultIgnores : undefined,
         ignore: Array.isArray(body.ignore) ? (body.ignore as string[]) : undefined,
         origin: {
           type: "clone",
@@ -757,11 +749,7 @@ export async function handleWriteSkillFile(
     const expectedFork = skillForkDir(workspace.rootPath);
     if (path.resolve(forkPath) !== path.resolve(expectedFork)) {
       // Allow writing only into the canonical project skill directory.
-      sendError(
-        res,
-        400,
-        `skill writes must target the project skill at ${expectedFork}`,
-      );
+      sendError(res, 400, `skill writes must target the project skill at ${expectedFork}`);
       return;
     }
     const file = await writeSkillFile(forkPath, body.path.trim(), body.content);

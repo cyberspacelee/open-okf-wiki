@@ -2,16 +2,13 @@ import { randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import {
-  StoredRunRecordSchema,
   type StoredRunRecord,
+  StoredRunRecordSchema,
   type WikiRunRecordStatus,
 } from "@okf-wiki/contract";
 import { atomicWriteJson } from "./atomic-write.js";
-import {
-  canTransitionToCancelled,
-  cancelWinsOverPatch,
-} from "./run-status-policy.js";
 import { isPathInside } from "./paths.js";
+import { cancelWinsOverPatch, canTransitionToCancelled } from "./run-status-policy.js";
 import { WORKSPACE_DIR_NAME } from "./workspace-store.js";
 
 const RUNS_DIR_NAME = "runs";
@@ -190,10 +187,7 @@ export async function updateRunRecord(
   // Cancel while running or waiting on operator (plan / publish HITL);
   // idempotent if already cancelled.
   if (patch.status === "cancelled" && !canTransitionToCancelled(existing.status)) {
-    throw new RunStatusConflictError(
-      existing,
-      `run is not running (status: ${existing.status})`,
-    );
+    throw new RunStatusConflictError(existing, `run is not running (status: ${existing.status})`);
   }
 
   const next: StoredRunRecord = {
@@ -257,10 +251,7 @@ export async function updateRunRecord(
   return parsed;
 }
 
-export async function loadRun(
-  rootPath: string,
-  runId: string,
-): Promise<StoredRunRecord | null> {
+export async function loadRun(rootPath: string, runId: string): Promise<StoredRunRecord | null> {
   if (!runId || runId.includes("..") || runId.includes("/") || runId.includes("\\")) {
     return null;
   }

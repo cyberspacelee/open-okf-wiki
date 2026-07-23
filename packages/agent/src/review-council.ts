@@ -4,12 +4,8 @@
  */
 
 import type { MergedDefectReport } from "@okf-wiki/contract";
-import {
-  mergeDefectReports,
-  parseDefectReportFromText,
-  writeMergedDefects,
-} from "./defects.js";
 import { writeAnalysisReceipt } from "@okf-wiki/core";
+import { mergeDefectReports, parseDefectReportFromText, writeMergedDefects } from "./defects.js";
 
 export type ReviewerOutput = {
   id: string;
@@ -46,9 +42,7 @@ export async function runReviewCouncil(input: {
           summary: report.summary ?? (report.clean ? "NO_DEFECTS" : "defects"),
           findings: report.clean
             ? ["NO_DEFECTS"]
-            : report.defects.map(
-                (d) => `[${d.severity}] ${d.path ?? "?"}: ${d.issue}`,
-              ),
+            : report.defects.map((d) => `[${d.severity}] ${d.path ?? "?"}: ${d.issue}`),
           evidence: [],
           childReceipts: [],
           openQuestions: [],

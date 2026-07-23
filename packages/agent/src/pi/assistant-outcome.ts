@@ -43,22 +43,16 @@ export type AssistantOutcome = {
 /**
  * Scan messages newest-first for the last assistant row and extract text/error.
  */
-export function lastAssistantOutcome(
-  messages: readonly unknown[],
-): AssistantOutcome | null {
+export function lastAssistantOutcome(messages: readonly unknown[]): AssistantOutcome | null {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const msg = messages[i];
     if (!isRecord(msg) || msg.role !== "assistant") continue;
-    const stopReason =
-      typeof msg.stopReason === "string" ? msg.stopReason : undefined;
+    const stopReason = typeof msg.stopReason === "string" ? msg.stopReason : undefined;
     const errorMessage =
       typeof msg.errorMessage === "string" && msg.errorMessage.trim()
         ? msg.errorMessage.trim()
         : undefined;
-    const isError =
-      stopReason === "error" ||
-      stopReason === "aborted" ||
-      Boolean(errorMessage);
+    const isError = stopReason === "error" || stopReason === "aborted" || Boolean(errorMessage);
     return {
       text: textFromContent(msg.content),
       thinking: thinkingFromContent(msg.content),
@@ -77,14 +71,10 @@ export function resolveAssistantSummary(input: {
   roleLabel: string;
 }): { summary: string; isError: boolean; errorMessage?: string } {
   const outcome = lastAssistantOutcome(input.messages);
-  const text =
-    input.streamedText.trim() ||
-    outcome?.text.trim() ||
-    "";
+  const text = input.streamedText.trim() || outcome?.text.trim() || "";
   if (outcome?.isError) {
     const errorMessage =
-      outcome.errorMessage ||
-      `assistant stopReason=${outcome.stopReason ?? "error"}`;
+      outcome.errorMessage || `assistant stopReason=${outcome.stopReason ?? "error"}`;
     return {
       summary: text || errorMessage,
       isError: true,

@@ -6,12 +6,8 @@
  *
  * E2E webServer always sets OKF_WIKI_AGENT_MODE=fixture (see playwright.config.ts).
  */
-import { test, expect, type Page } from "@playwright/test";
-import {
-  addSourceViaUi,
-  createTempGitRepo,
-  createWorkspaceViaUi,
-} from "./helpers";
+import { expect, type Page, test } from "@playwright/test";
+import { addSourceViaUi, createTempGitRepo, createWorkspaceViaUi } from "./helpers";
 
 /** Assert unit expand empty-state is not mislabeled as model "Thinking" / 「思考中」. */
 async function expectUnitEmptyStateNotThinking(page: Page): Promise<void> {
@@ -28,8 +24,7 @@ async function expectUnitEmptyStateNotThinking(page: Page): Promise<void> {
   }
 
   const text = (await row.innerText()).replace(/\s+/g, " ").trim();
-  const thinkingOnly =
-    /^(Thinking…?|思考中…?|Reasoning…?|推理中…?)$/i.test(text);
+  const thinkingOnly = /^(Thinking…?|思考中…?|Reasoning…?|推理中…?)$/i.test(text);
   expect(
     thinkingOnly,
     `work-unit empty state must not be Thinking/Reasoning alone; got: ${JSON.stringify(text.slice(0, 200))}`,
@@ -80,14 +75,10 @@ test.describe("agent workspace operator surface (ADR 0031)", () => {
       timeout: 15_000,
     });
 
-    const active = page.locator(
-      '[data-testid="agent-session-item"][data-active="true"]',
-    );
+    const active = page.locator('[data-testid="agent-session-item"][data-active="true"]');
     await expect(active).toHaveCount(1);
 
-    const inactive = page.locator(
-      '[data-testid="agent-session-item"][data-active="false"]',
-    );
+    const inactive = page.locator('[data-testid="agent-session-item"][data-active="false"]');
     if ((await inactive.count()) > 0) {
       await inactive.first().click();
       await expect(
@@ -138,9 +129,7 @@ test.describe("agent workspace operator surface (ADR 0031)", () => {
     await expectUnitEmptyStateNotThinking(page);
   });
 
-  test("workspaces picker loads and can open agent workspace route", async ({
-    page,
-  }) => {
+  test("workspaces picker loads and can open agent workspace route", async ({ page }) => {
     await page.goto("/workspaces");
     await expect(page.locator("body")).toBeVisible();
     await page.goto("/w/nonexistent-id");

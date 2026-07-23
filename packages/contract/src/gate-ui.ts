@@ -6,8 +6,8 @@
  * Pure domain: no I/O, no Mastra.
  */
 
-import type { WikiRunPlan } from "./run.js";
 import type { InteractionOption, PendingInteraction } from "./interaction.js";
+import type { WikiRunPlan } from "./run.js";
 
 /** Minimal suspend payload shape (plan-gate / publish-gate suspendSchema). */
 export type SuspendPayloadForGate = {
@@ -89,8 +89,7 @@ export function mapSuspendToGateUi(
         mode: "choice_or_input",
         selectionMode: "single",
         options: optionsForPlanGate(plan),
-        inputPlaceholder:
-          "Describe plan changes (e.g. add concepts.md, drop architecture.md)…",
+        inputPlaceholder: "Describe plan changes (e.g. add concepts.md, drop architecture.md)…",
       },
     };
   }

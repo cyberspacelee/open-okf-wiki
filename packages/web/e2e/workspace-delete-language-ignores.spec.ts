@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import {
   addSourceViaUi,
   chooseOption,
@@ -39,10 +39,7 @@ test.describe("workspace delete, wiki language, ignore rules", () => {
     await expect(page.getByRole("status")).toContainText(/saved|已保存/i);
 
     await page.reload();
-    await expect(page.getByTestId("settings-wiki-language")).toHaveAttribute(
-      "data-value",
-      "zh",
-    );
+    await expect(page.getByTestId("settings-wiki-language")).toHaveAttribute("data-value", "zh");
 
     await addSourceViaUi(page, gitRepo, "appsrc");
     await page.getByTestId("source-edit-ignores-appsrc").click();

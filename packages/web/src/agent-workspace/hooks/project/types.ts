@@ -27,14 +27,7 @@ export type PlanProgressPage = {
  * `work_block` is a client-only anchor for the Work block (not an SSE inject kind).
  */
 export type AgentProductMeta = {
-  kind:
-    | "run_phase"
-    | "gate"
-    | "run_link"
-    | "progress"
-    | "plan_progress"
-    | "defects"
-    | "work_block";
+  kind: "run_phase" | "gate" | "run_link" | "progress" | "plan_progress" | "defects" | "work_block";
   phase?: string;
   gate?: "plan" | "publication";
   runId?: string;
@@ -112,14 +105,7 @@ export type StreamingRefs = StreamCursor;
 
 /** Loose product SSE / trajectory row accepted by projectors. */
 export type ProductSseLike = {
-  kind:
-    | "run_phase"
-    | "gate"
-    | "run_link"
-    | "progress"
-    | "plan_progress"
-    | "defects"
-    | "work_unit";
+  kind: "run_phase" | "gate" | "run_link" | "progress" | "plan_progress" | "defects" | "work_unit";
   phase?: string;
   gate?: "plan" | "publication";
   runId?: string;

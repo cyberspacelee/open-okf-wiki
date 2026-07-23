@@ -1,8 +1,8 @@
-# Repo hygiene + fast staged lint. Install: pre-commit install
+# Repo hygiene + fast staged format/lint. Install: pre-commit install
 # Run all:  pre-commit run -a
 #
 # Policy (aligned with 2025–2026 monorepo practice):
-# - pre-commit stays fast: whitespace + ESLint on staged TS/JS only.
+# - pre-commit stays fast: whitespace + Biome format + ESLint on staged files only.
 # - Full typecheck and unit tests run in CI (`pnpm check` / `pnpm test`).
 # - Playwright e2e runs in the CI web-e2e job (optional locally).
 # - Do NOT put full-repo typecheck or e2e here — slow hooks get --no-verify'd.
@@ -26,6 +26,13 @@ repos:
 
   - repo: local
     hooks:
+      - id: biome-format
+        name: biome format (staged)
+        entry: pnpm exec biome check --write --formatter-enabled=true --linter-enabled=false --assist-enabled=true --no-errors-on-unmatched --files-ignore-unknown=true
+        language: system
+        types_or: [javascript, jsx, ts, tsx, json, css]
+        pass_filenames: true
+        exclude: ^(refs/|\.scratch/)
       - id: eslint
         name: eslint (staged)
         entry: pnpm exec eslint --max-warnings 0

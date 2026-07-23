@@ -1,6 +1,6 @@
+import { FolderKanban, PanelLeftClose, PanelLeftOpen, Settings } from "lucide-react";
 import type { ComponentProps } from "react";
 import { NavLink, useLocation } from "react-router-dom";
-import { FolderKanban, PanelLeftClose, PanelLeftOpen, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Sidebar,
@@ -17,7 +17,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
-import { useI18n, type Locale } from "../i18n";
+import { type Locale, useI18n } from "../i18n";
 
 function navIsActive(pathname: string, to: string, end: boolean): boolean {
   if (end) return pathname === to;
@@ -88,13 +88,7 @@ export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
                     <SidebarMenuButton
                       isActive={isActive}
                       tooltip={item.label}
-                      render={
-                        <NavLink
-                          to={item.to}
-                          end={item.end}
-                          data-testid={item.testId}
-                        />
-                      }
+                      render={<NavLink to={item.to} end={item.end} data-testid={item.testId} />}
                     >
                       <Icon />
                       <span>{item.label}</span>
@@ -118,20 +112,14 @@ export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
           data-testid="locale-switch"
           className={cn(!collapsed && "w-full justify-start gap-2")}
         >
-          <span className="text-xs font-medium tabular-nums">
-            {locale === "en" ? "EN" : "中"}
-          </span>
+          <span className="text-xs font-medium tabular-nums">{locale === "en" ? "EN" : "中"}</span>
           {!collapsed ? (
-            <span className="truncate">
-              {locale === "en" ? t.locale.en : t.locale.zh}
-            </span>
+            <span className="truncate">{locale === "en" ? t.locale.en : t.locale.zh}</span>
           ) : null}
         </Button>
 
         {!collapsed ? (
-          <p className="px-2 text-xs leading-relaxed text-muted-foreground">
-            {t.app.sidebarFoot}
-          </p>
+          <p className="px-2 text-xs leading-relaxed text-muted-foreground">{t.app.sidebarFoot}</p>
         ) : null}
 
         <Button
@@ -142,9 +130,7 @@ export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
           aria-label={collapsed ? t.app.expandSidebar : t.app.collapseSidebar}
           aria-expanded={!collapsed}
           title={
-            collapsed
-              ? `${t.app.expandSidebar} (Ctrl+B)`
-              : `${t.app.collapseSidebar} (Ctrl+B)`
+            collapsed ? `${t.app.expandSidebar} (Ctrl+B)` : `${t.app.collapseSidebar} (Ctrl+B)`
           }
           data-testid="sidebar-toggle"
           className={cn(

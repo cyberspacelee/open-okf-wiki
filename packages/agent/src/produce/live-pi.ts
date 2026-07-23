@@ -5,22 +5,22 @@
  * Fixture/offline: write OKF-aligned wiki pages without an LLM.
  */
 
-import { mkdir, writeFile, readdir } from "node:fs/promises";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { createWikiSession } from "../pi/create-wiki-session.js";
-import { lastAssistantOutcome } from "../pi/assistant-outcome.js";
-import {
-  materializeRunWorkdir,
-  runWorkdirPromptPaths,
-  type MaterializeRunWorkdirInput,
-  type RunWorkdirLayout,
-} from "../pi/run-workdir.js";
-import type { WikiAgentRole } from "../pi/tool-policy.js";
-import type { SourceIgnoreInput } from "../pi/tool-operations.js";
-import { rootWritePrompt, rootWriteSystemPrompt } from "./prompts.js";
 import type { WikiRunSpec } from "@okf-wiki/contract";
+import { lastAssistantOutcome } from "../pi/assistant-outcome.js";
+import { createWikiSession } from "../pi/create-wiki-session.js";
+import {
+  type MaterializeRunWorkdirInput,
+  materializeRunWorkdir,
+  type RunWorkdirLayout,
+  runWorkdirPromptPaths,
+} from "../pi/run-workdir.js";
+import type { SourceIgnoreInput } from "../pi/tool-operations.js";
+import type { WikiAgentRole } from "../pi/tool-policy.js";
+import { rootWritePrompt, rootWriteSystemPrompt } from "./prompts.js";
 
 export type LivePiRole = Extract<WikiAgentRole, "root_write" | "root_research">;
 
@@ -91,9 +91,7 @@ export function shouldUsePiFixtureMode(
 /**
  * True when env hints at an OpenAI-compatible credential.
  */
-export function hasModelCredentials(
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
+export function hasModelCredentials(env: NodeJS.ProcessEnv = process.env): boolean {
   return Boolean(env.OPENAI_API_KEY?.trim() || env.OPENAI_BASE_URL?.trim());
 }
 
@@ -124,10 +122,7 @@ export async function listWikiMarkdown(wikiDir: string): Promise<string[]> {
 /**
  * Fixture wiki: concept overview with type+title+citation; listing-only index.md.
  */
-async function writeFixtureWiki(
-  layout: RunWorkdirLayout,
-  title: string,
-): Promise<string[]> {
+async function writeFixtureWiki(layout: RunWorkdirLayout, title: string): Promise<string[]> {
   await mkdir(layout.wikiDir, { recursive: true });
   const overview = [
     "---",
@@ -206,9 +201,7 @@ function defaultLivePrompt(role: LivePiRole, layout: RunWorkdirLayout): string {
  * Produce wiki content via Pi (or fixture write).
  * Prefer Pi built-ins; never enables bash.
  */
-export async function produceWithPi(
-  input: ProduceWithPiInput,
-): Promise<ProduceWithPiResult> {
+export async function produceWithPi(input: ProduceWithPiInput): Promise<ProduceWithPiResult> {
   throwIfAborted(input.abortSignal);
 
   let layout: RunWorkdirLayout;
@@ -337,14 +330,9 @@ export async function produceWithPi(
       );
     }
 
-    const pages =
-      input.role === "root_write"
-        ? await listWikiMarkdown(layout.wikiDir)
-        : [];
+    const pages = input.role === "root_write" ? await listWikiMarkdown(layout.wikiDir) : [];
     if (input.role === "root_write" && pages.length === 0) {
-      throw new Error(
-        "Pi live produce finished without writing any wiki markdown pages",
-      );
+      throw new Error("Pi live produce finished without writing any wiki markdown pages");
     }
     return {
       mode: "live",

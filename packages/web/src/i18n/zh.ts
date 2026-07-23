@@ -5,8 +5,7 @@ export const zh: MessageTree = {
     brand: "okf-wiki",
     operator: "操作台",
     sidebarAria: "主导航",
-    sidebarFoot:
-      "本地 Web 操作界面。模型密钥仅保存在本机，不会写入 workspace.json。",
+    sidebarFoot: "本地 Web 操作界面。模型密钥仅保存在本机，不会写入 workspace.json。",
     expandSidebar: "展开侧栏",
     collapseSidebar: "收起侧栏",
     collapse: "收起",
@@ -52,8 +51,7 @@ export const zh: MessageTree = {
   },
   workspaces: {
     title: "工作区",
-    descriptionBefore:
-      "工作区是本地项目：Git 源码、所选模型与 Wiki 输出路径。模型与凭证在",
+    descriptionBefore: "工作区是本地项目：Git 源码、所选模型与 Wiki 输出路径。模型与凭证在",
     descriptionAfter: "中管理。",
     settingsLink: "设置",
     create: "创建",
@@ -79,8 +77,7 @@ export const zh: MessageTree = {
     colActions: "操作",
     delete: "删除",
     deleteConfirmTitle: "删除工作区？",
-    deleteConfirmBody:
-      "将「{name}」从最近列表移除。除非同时删除元数据，磁盘上的项目文件会保留。",
+    deleteConfirmBody: "将「{name}」从最近列表移除。除非同时删除元数据，磁盘上的项目文件会保留。",
     deleteMetaLabel: "同时删除根目录下的 .okf-wiki/（运行记录、会话、暂存）",
     deleteSubmit: "删除工作区",
     deleting: "删除中…",
@@ -99,8 +96,7 @@ export const zh: MessageTree = {
     name: "名称",
     publicationPath: "发布路径（绝对路径）",
     planConfirm: "计划确认",
-    planConfirmHint:
-      "交互运行在 produce 前暂停，等待操作者批准 Wiki Spec（域 + 页面）。",
+    planConfirmHint: "交互运行在 produce 前暂停，等待操作者批准 Wiki Spec（域 + 页面）。",
     wikiLanguage: "Wiki 语言",
     wikiLanguageHint: "生成 Wiki 页面标题与正文使用的语言（与操作界面语言无关）。",
     contextTargetTokens: "上下文目标（tokens）",
@@ -109,8 +105,7 @@ export const zh: MessageTree = {
     contextTargetTokensPlaceholder: "例如 100000",
     contextTargetDerived: "当前由模型最大上下文推导：{n} tokens（85%）。",
     orchestrationTitle: "监督树预算",
-    orchestrationHint:
-      "Host 强制的 Domain/Leaf 扇出与审查委员会规模。小仓库可保持默认。",
+    orchestrationHint: "Host 强制的 Domain/Leaf 扇出与审查委员会规模。小仓库可保持默认。",
     maxDomainFanOut: "最大 Domain 数",
     maxLeafFanOut: "每 Domain 最大 Leaf 数",
     reviewCouncilSize: "审查委员会规模",
@@ -239,8 +234,7 @@ export const zh: MessageTree = {
     modelsCount: "{n} 个模型",
     defaultSet: "已设默认",
     noDefault: "无默认",
-    modelsEmpty:
-      "还没有 Provider。请添加 OpenAI 兼容网关与模型，创建工作区时再选择。",
+    modelsEmpty: "还没有 Provider。请添加 OpenAI 兼容网关与模型，创建工作区时再选择。",
     addModelUnderProvider: "添加模型",
     colName: "名称",
     colModelId: "模型 ID",
@@ -315,8 +309,7 @@ export const zh: MessageTree = {
     doctorModelsConfigured: "已配置 {n} 个",
     doctorNoCredentials: "无凭证",
     deleteConfirmTitle: "删除模型？",
-    deleteConfirmBody:
-      "删除模型「{name}」？已选择该模型的工作区会保留最后已知的模型 ID。",
+    deleteConfirmBody: "删除模型「{name}」？已选择该模型的工作区会保留最后已知的模型 ID。",
     deleteSubmit: "删除模型",
     deleting: "删除中…",
     statusModelAdded: "Model added",
@@ -332,8 +325,7 @@ export const zh: MessageTree = {
     breadcrumbWorkspaces: "工作区",
     breadcrumb: "任务",
     title: "任务",
-    descriptionBefore:
-      "Wiki Run 任务审计：查看状态、取消与重试。交互式生成、计划协商与发布决策在",
+    descriptionBefore: "Wiki Run 任务审计：查看状态、取消与重试。交互式生成、计划协商与发布决策在",
     descriptionLink: "智能体工作区",
     descriptionAfter: "。",
     loading: "加载任务…",
@@ -357,8 +349,7 @@ export const zh: MessageTree = {
     runId: "任务 ID",
     created: "创建时间",
     jobEvents: "任务事件",
-    jobEventsHintBefore:
-      "状态与 wiki-run 工作流步骤。详细工具/token 流在",
+    jobEventsHintBefore: "状态与 wiki-run 工作流步骤。详细工具/token 流在",
     jobEventsHintLink: "智能体工作区",
     jobEventsHintAfter: "查看。",
     noEvents: "暂无事件。",
@@ -368,10 +359,8 @@ export const zh: MessageTree = {
     approvePublish: "批准发布",
     working: "处理中…",
     decline: "拒绝",
-    gateOnSessionPlan:
-      "此任务等待计划确认。请在智能体工作区时间线中批准、修订或拒绝。",
-    gateOnSessionPublish:
-      "暂存已就绪。请在智能体工作区时间线中发布或保留暂存。",
+    gateOnSessionPlan: "此任务等待计划确认。请在智能体工作区时间线中批准、修订或拒绝。",
+    gateOnSessionPublish: "暂存已就绪。请在智能体工作区时间线中发布或保留暂存。",
     openSessionToDecide: "打开智能体工作区进行决策",
     noRuns: "此工作区还没有任务记录。",
     recentTitle: "最近任务",
@@ -468,8 +457,7 @@ export const zh: MessageTree = {
     phase: "阶段",
     runsEmpty: "此工作区尚无任务。",
     emptyTitle: "从这里开始",
-    emptyDescription:
-      "向智能体发消息，或启动 Wiki 运行。工具、工作单元与门控会出现在此时间线。",
+    emptyDescription: "向智能体发消息，或启动 Wiki 运行。工具、工作单元与门控会出现在此时间线。",
     placeholder: "给智能体发消息…（Enter 发送，Shift+Enter 换行）",
     startWikiRun: "启动 Wiki 运行",
     wikiModel: "Wiki 模型",

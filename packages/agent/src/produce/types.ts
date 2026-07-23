@@ -3,11 +3,7 @@
  */
 
 import path from "node:path";
-import type {
-  WikiRunPlan,
-  WikiRunRecordStatus,
-  WorkspaceConfig,
-} from "@okf-wiki/contract";
+import type { WikiRunPlan, WikiRunRecordStatus, WorkspaceConfig } from "@okf-wiki/contract";
 import { WORKSPACE_DIR_NAME } from "@okf-wiki/core";
 
 export type WikiRunAgentPhase = "plan" | "write";
@@ -37,11 +33,7 @@ export type WikiRunAgentInput = {
 export type WikiRunAgentResult = {
   status: Extract<
     WikiRunRecordStatus,
-    | "awaiting_publication"
-    | "awaiting_plan"
-    | "published"
-    | "failed"
-    | "cancelled"
+    "awaiting_publication" | "awaiting_plan" | "published" | "failed" | "cancelled"
   >;
   pages?: string[];
   summary?: string;
@@ -64,9 +56,7 @@ export function throwIfAborted(signal?: AbortSignal): void {
  * owned by the server: HITL approve/deny APIs, or automatic publish when the
  * run record has `autoApprove: true`. The agent must not claim `published`.
  */
-export function successStatus(
-  _autoApprove: boolean | undefined,
-): "awaiting_publication" {
+export function successStatus(_autoApprove: boolean | undefined): "awaiting_publication" {
   return "awaiting_publication";
 }
 
@@ -76,13 +66,7 @@ export function successStatus(
  */
 export function stagingWikiDirForRun(workspaceRoot: string, runId: string): string {
   const safe = runId.replace(/[/\\]/g, "_");
-  return path.join(
-    path.resolve(workspaceRoot),
-    WORKSPACE_DIR_NAME,
-    "runs",
-    safe,
-    "wiki",
-  );
+  return path.join(path.resolve(workspaceRoot), WORKSPACE_DIR_NAME, "runs", safe, "wiki");
 }
 
 export function buildSourceMap(workspace: WorkspaceConfig): Map<string, string> {

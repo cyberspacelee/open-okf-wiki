@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { randomBytes } from "node:crypto";
 import { expect, type Locator, type Page } from "@playwright/test";
 
 /** Unique absolute workspace root under /tmp for parallel-safe e2e runs. */
@@ -36,7 +36,10 @@ export async function createWorkspaceViaUi(
   const rootPath = uniqueWorkspaceRoot();
   const name = `${namePrefix} ${Date.now()}`;
   await page.goto("/workspaces");
-  await page.getByRole("button", { name: /^create( workspace)?$/i }).first().click();
+  await page
+    .getByRole("button", { name: /^create( workspace)?$/i })
+    .first()
+    .click();
   await page.getByTestId("workspace-name-input").fill(name);
   await page.getByTestId("workspace-root-input").fill(rootPath);
   await page.getByTestId("workspace-create-submit").click();
@@ -135,16 +138,19 @@ export async function chooseOption(
       return;
     }
 
-    const matched = await control.evaluate((el, pattern) => {
-      const select = el as HTMLSelectElement;
-      const re = new RegExp(pattern.source, pattern.flags);
-      for (const opt of Array.from(select.options)) {
-        if (re.test(opt.text) || re.test(opt.label) || re.test(opt.value)) {
-          return { value: opt.value };
+    const matched = await control.evaluate(
+      (el, pattern) => {
+        const select = el as HTMLSelectElement;
+        const re = new RegExp(pattern.source, pattern.flags);
+        for (const opt of Array.from(select.options)) {
+          if (re.test(opt.text) || re.test(opt.label) || re.test(opt.value)) {
+            return { value: opt.value };
+          }
         }
-      }
-      return null;
-    }, { source: optionText.source, flags: optionText.flags });
+        return null;
+      },
+      { source: optionText.source, flags: optionText.flags },
+    );
     if (!matched) {
       throw new Error(
         `chooseOption: no <option> matching ${optionText} on [data-testid="${testId}"]`,
@@ -166,11 +172,7 @@ export async function chooseOption(
  * Set checked state on native checkbox/radio **or** ARIA checkbox/switch/radio
  * (shadcn Checkbox / Switch / RadioGroup item).
  */
-export async function setChecked(
-  page: Page,
-  testId: string,
-  checked: boolean,
-): Promise<void> {
+export async function setChecked(page: Page, testId: string, checked: boolean): Promise<void> {
   const control = page.getByTestId(testId);
   await expect(control).toBeVisible();
 
@@ -183,10 +185,7 @@ export async function setChecked(
     const dataChecked = el.hasAttribute("data-checked");
     const dataState = el.getAttribute("data-state");
     const isChecked =
-      ariaChecked === "true" ||
-      dataChecked ||
-      dataState === "checked" ||
-      dataState === "on";
+      ariaChecked === "true" || dataChecked || dataState === "checked" || dataState === "on";
     return {
       native: false as const,
       role,

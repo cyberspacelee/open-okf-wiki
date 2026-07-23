@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
 import {
   enterPlanGate,
+  isTerminalPhase,
   markAwaitingPublish,
   markCancelled,
   markFailed,
@@ -12,7 +13,6 @@ import {
   resumeGate,
   shellPhaseLabel,
   startShell,
-  isTerminalPhase,
 } from "./wiki-run-shell.js";
 
 function samplePlan() {
@@ -118,10 +118,7 @@ describe("WikiRunShell phase machine", () => {
   it("rejects illegal transitions", () => {
     const s = startShell();
     assert.throws(() => markProducing(s), /plan required|invalid/);
-    assert.throws(
-      () => resumeGate(s, { step: "plan", action: "approve" }),
-      /invalid/,
-    );
+    assert.throws(() => resumeGate(s, { step: "plan", action: "approve" }), /invalid/);
     assert.throws(
       () =>
         resumeGate(startShell({ plan: samplePlan() }), {

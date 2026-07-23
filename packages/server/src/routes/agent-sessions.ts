@@ -6,21 +6,21 @@
  * (createWikiSession, WikiRunShell via startWikiRun / resumeWikiRun).
  */
 
-import type { IncomingMessage, ServerResponse } from "node:http";
 import { readdir, stat } from "node:fs/promises";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 import { loadPiSessionHistory, piSessionsDir } from "@okf-wiki/agent";
 import {
-  CreatePiAgentSessionBodySchema,
-  safeParseAgentCommand,
   type AgentSseEvent,
+  CreatePiAgentSessionBodySchema,
   type PiSessionSummary,
+  safeParseAgentCommand,
 } from "@okf-wiki/contract";
+import { isPathInside, loadRun, loadWorkspaceById } from "@okf-wiki/core";
 import {
-  isPathInside,
-  loadRun,
-  loadWorkspaceById,
-} from "@okf-wiki/core";
+  getRecentAgentSessionEvents,
+  subscribeAgentSessionEvents,
+} from "../agent-session-events.ts";
 import {
   agentSessionExistsOnDisk,
   deleteAgentSession,
@@ -38,12 +38,8 @@ import {
   resolveColdLoadPhase,
   resolveSessionHistoryFile,
 } from "../agent-session-registry.ts";
-import {
-  getRecentAgentSessionEvents,
-  subscribeAgentSessionEvents,
-} from "../agent-session-events.ts";
-import { readSessionMeta } from "../session/parent-session.ts";
 import { readJsonBody, sendError, sendJson } from "../http-util.ts";
+import { readSessionMeta } from "../session/parent-session.ts";
 
 const HEARTBEAT_MS = 15_000;
 
@@ -112,11 +108,7 @@ export function mergePiSessionEntries(
     .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
 }
 
-async function loadWorkspaceOr404(
-  res: ServerResponse,
-  id: string,
-  url: URL,
-) {
+async function loadWorkspaceOr404(res: ServerResponse, id: string, url: URL) {
   const rootPath = url.searchParams.get("rootPath") ?? undefined;
   const workspace = await loadWorkspaceById(id, {
     rootPath: rootPath ?? undefined,
@@ -305,11 +297,7 @@ export async function handleGetAgentSession(
 
   // Prefer live / meta sessionFile so cold history matches the JSONL Pi writes
   // (`{timestamp}_{id}.jsonl`, not `{id}.jsonl` — see pi-web SessionManager).
-  const preferredPath = await resolveSessionHistoryFile(
-    workspace.rootPath,
-    sessionId,
-    reg,
-  );
+  const preferredPath = await resolveSessionHistoryFile(workspace.rootPath, sessionId, reg);
   const history = await loadPiSessionHistory(workspace.rootPath, sessionId, {
     preferredPath,
   });
@@ -328,8 +316,7 @@ export async function handleGetAgentSession(
 
   let runStatus: string | undefined;
   let plan = reg?.shell?.plan ?? trajPlan ?? null;
-  let runPages: string[] | undefined =
-    reg?.shell?.pages ?? trajGate?.pages ?? undefined;
+  let runPages: string[] | undefined = reg?.shell?.pages ?? trajGate?.pages ?? undefined;
 
   if (runId) {
     try {
@@ -381,8 +368,7 @@ export async function handleGetAgentSession(
 
   const pendingGateFromShell = reg?.shell?.pendingGate
     ? {
-        gate:
-          reg.shell.pendingGate === "publish" ? "publication" : ("plan" as const),
+        gate: reg.shell.pendingGate === "publish" ? "publication" : ("plan" as const),
         plan: reg.shell.plan ?? plan ?? undefined,
         pages: reg.shell.pages ?? runPages,
       }
@@ -399,10 +385,7 @@ export async function handleGetAgentSession(
         }
       : productPhase === "awaiting_plan" || productPhase === "awaiting_publish"
         ? {
-            gate:
-              productPhase === "awaiting_plan"
-                ? ("plan" as const)
-                : ("publication" as const),
+            gate: productPhase === "awaiting_plan" ? ("plan" as const) : ("publication" as const),
             plan: plan ?? undefined,
             pages: runPages,
           }
@@ -458,11 +441,7 @@ export async function handleAgentSessionCommand(
   }
 
   try {
-    const response = await dispatchAgentCommand(
-      workspace,
-      sessionId,
-      parsed.data,
-    );
+    const response = await dispatchAgentCommand(workspace, sessionId, parsed.data);
     sendJson(res, 202, response);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -499,9 +478,7 @@ export async function handleAgentSessionEvents(
   // re-project already-applied (or cold-loaded) Pi turns as peer bubbles.
   const afterRaw =
     url.searchParams.get("afterSequence") ??
-    (typeof _req.headers["last-event-id"] === "string"
-      ? _req.headers["last-event-id"]
-      : undefined);
+    (typeof req.headers["last-event-id"] === "string" ? req.headers["last-event-id"] : undefined);
   const afterSequence = (() => {
     if (afterRaw == null || afterRaw === "") return -1;
     const n = Number(afterRaw);
@@ -511,17 +488,13 @@ export async function handleAgentSessionEvents(
   const writeEvent = (event: AgentSseEvent): void => {
     if (res.writableEnded) return;
     const seq =
-      "sequence" in event && typeof event.sequence === "number"
-        ? event.sequence
-        : Date.now();
+      "sequence" in event && typeof event.sequence === "number" ? event.sequence : Date.now();
     res.write(`id: ${seq}\ndata: ${JSON.stringify(event)}\n\n`);
   };
 
   for (const event of getRecentAgentSessionEvents(workspace.id, sessionId)) {
     const seq =
-      "sequence" in event && typeof event.sequence === "number"
-        ? event.sequence
-        : undefined;
+      "sequence" in event && typeof event.sequence === "number" ? event.sequence : undefined;
     if (seq !== undefined && seq <= afterSequence) continue;
     writeEvent(event);
   }
@@ -534,11 +507,7 @@ export async function handleAgentSessionEvents(
     timestamp: new Date().toISOString(),
   });
 
-  const unsubscribe = subscribeAgentSessionEvents(
-    workspace.id,
-    sessionId,
-    writeEvent,
-  );
+  const unsubscribe = subscribeAgentSessionEvents(workspace.id, sessionId, writeEvent);
 
   const heartbeat = setInterval(() => {
     writeEvent({

@@ -1,24 +1,7 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import {
-  createWorkspace,
-  deleteWorkspace,
-  getProvider,
-  listWorkspaces,
-  type ModelProfilePublic,
-  type WorkspaceSummary,
-} from "../api";
-import { ConfirmDialog } from "../components/ConfirmDialog";
-import { ErrorBanner } from "../components/ErrorBanner";
-import { Layout } from "../components/Layout";
-import { LoadingState } from "../components/LoadingState";
-import { ModelSelect } from "../components/ModelSelect";
-import { formatMessage, useI18n } from "../i18n";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-} from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -34,12 +17,7 @@ import {
   EmptyHeader,
   EmptyTitle,
 } from "@/components/ui/empty";
-import {
-  Field,
-  FieldDescription,
-  FieldGroup,
-  FieldLabel,
-} from "@/components/ui/field";
+import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -50,6 +28,20 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  createWorkspace,
+  deleteWorkspace,
+  getProvider,
+  listWorkspaces,
+  type ModelProfilePublic,
+  type WorkspaceSummary,
+} from "../api";
+import { ConfirmDialog } from "../components/ConfirmDialog";
+import { ErrorBanner } from "../components/ErrorBanner";
+import { Layout } from "../components/Layout";
+import { LoadingState } from "../components/LoadingState";
+import { ModelSelect } from "../components/ModelSelect";
+import { formatMessage, useI18n } from "../i18n";
 
 export function WorkspacesPage() {
   const { t } = useI18n();
@@ -85,7 +77,7 @@ export function WorkspacesPage() {
         catalog?.defaultModelProfileId &&
         catalogModels.some((m) => m.id === catalog.defaultModelProfileId)
           ? catalog.defaultModelProfileId
-          : catalogModels[0]?.id ?? "";
+          : (catalogModels[0]?.id ?? "");
       setModelProfileId((prev) => prev || preferred);
     } catch (err) {
       setError(err);
@@ -123,9 +115,7 @@ export function WorkspacesPage() {
       setShowForm(false);
       // Keep rootPath in the URL so Agent Workspace can load without a second lookup race.
       const params = new URLSearchParams({ rootPath: root });
-      navigate(
-        `/w/${encodeURIComponent(workspace.id)}?${params.toString()}`,
-      );
+      navigate(`/w/${encodeURIComponent(workspace.id)}?${params.toString()}`);
     } catch (err) {
       setError(err);
     } finally {
@@ -184,10 +174,7 @@ export function WorkspacesPage() {
             }
           }}
         >
-          <DialogContent
-            className="sm:max-w-lg"
-            data-testid="workspace-create-form"
-          >
+          <DialogContent className="sm:max-w-lg" data-testid="workspace-create-form">
             <DialogHeader>
               <DialogTitle>{t.workspaces.createTitle}</DialogTitle>
               <DialogDescription>{t.workspaces.rootHint}</DialogDescription>
@@ -195,9 +182,7 @@ export function WorkspacesPage() {
             <form className="form" onSubmit={(e) => void handleCreate(e)}>
               <FieldGroup>
                 <Field>
-                  <FieldLabel htmlFor="workspace-name">
-                    {t.workspaces.nameLabel}
-                  </FieldLabel>
+                  <FieldLabel htmlFor="workspace-name">{t.workspaces.nameLabel}</FieldLabel>
                   <Input
                     id="workspace-name"
                     type="text"
@@ -211,9 +196,7 @@ export function WorkspacesPage() {
                   />
                 </Field>
                 <Field>
-                  <FieldLabel htmlFor="workspace-root">
-                    {t.workspaces.rootLabel}
-                  </FieldLabel>
+                  <FieldLabel htmlFor="workspace-root">{t.workspaces.rootLabel}</FieldLabel>
                   <Input
                     id="workspace-root"
                     type="text"
@@ -236,11 +219,7 @@ export function WorkspacesPage() {
                 />
               </FieldGroup>
               <DialogFooter className="mt-4 px-0 pb-0">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={closeCreateForm}
-                >
+                <Button type="button" variant="outline" onClick={closeCreateForm}>
                   {t.workspaces.cancel}
                 </Button>
                 <Button
@@ -254,9 +233,7 @@ export function WorkspacesPage() {
                   data-testid="workspace-create-submit"
                 >
                   {submitting ? <Spinner data-icon="inline-start" /> : null}
-                  {submitting
-                    ? t.workspaces.creating
-                    : t.workspaces.createSubmit}
+                  {submitting ? t.workspaces.creating : t.workspaces.createSubmit}
                 </Button>
               </DialogFooter>
             </form>
@@ -279,9 +256,7 @@ export function WorkspacesPage() {
                 })
               : undefined
           }
-          confirmLabel={
-            deletingId != null ? t.workspaces.deleting : t.workspaces.deleteSubmit
-          }
+          confirmLabel={deletingId != null ? t.workspaces.deleting : t.workspaces.deleteSubmit}
           cancelLabel={t.common.cancel}
           onConfirm={() => void handleDeleteConfirm()}
           confirmDisabled={deletingId != null}
@@ -369,9 +344,7 @@ export function WorkspacesPage() {
                         </TableCell>
                         <TableCell>{ws.sourceCount}</TableCell>
                         <TableCell className="muted">
-                          {ws.lastOpenedAt
-                            ? new Date(ws.lastOpenedAt).toLocaleString()
-                            : "—"}
+                          {ws.lastOpenedAt ? new Date(ws.lastOpenedAt).toLocaleString() : "—"}
                         </TableCell>
                         <TableCell className="actions-cell">
                           <Button

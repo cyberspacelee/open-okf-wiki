@@ -49,10 +49,7 @@ export function compactToolInput(value: unknown, max = 4000): string | undefined
  * Extract human-readable tool *result* text (OpenCode / pi-web style).
  * Prefer content[].text from Pi AgentToolResult; never dump full JSON envelopes.
  */
-export function formatToolResultText(
-  value: unknown,
-  max = PAYLOAD_TEXT_MAX,
-): string | undefined {
+export function formatToolResultText(value: unknown, max = PAYLOAD_TEXT_MAX): string | undefined {
   if (value === undefined || value === null) return undefined;
 
   if (typeof value === "string") {
@@ -172,16 +169,12 @@ export function extractAssistantError(message: unknown): {
   stopReason?: string;
 } {
   if (!isRecord(message)) return { isError: false };
-  const stopReason =
-    typeof message.stopReason === "string" ? message.stopReason : undefined;
+  const stopReason = typeof message.stopReason === "string" ? message.stopReason : undefined;
   const errorMessage =
     typeof message.errorMessage === "string" && message.errorMessage.trim()
       ? message.errorMessage.trim()
       : undefined;
-  const isError =
-    stopReason === "error" ||
-    stopReason === "aborted" ||
-    Boolean(errorMessage);
+  const isError = stopReason === "error" || stopReason === "aborted" || Boolean(errorMessage);
   return { isError, errorMessage, stopReason };
 }
 
@@ -190,10 +183,7 @@ export function extractAssistantError(message: unknown): {
  * Incomplete or non-JSON text is returned as-is. Overlong results are truncated
  * with a clear marker (avoids crushing the layout with multi-MB blobs).
  */
-export function formatPayloadText(
-  raw: string | undefined,
-  max = PAYLOAD_TEXT_MAX,
-): string {
+export function formatPayloadText(raw: string | undefined, max = PAYLOAD_TEXT_MAX): string {
   if (!raw) return "";
   const trimmed = raw.trim();
   let out = raw;
@@ -287,10 +277,7 @@ function truncateOneLine(text: string, max = 72): string {
  * OpenCode-style tool summary.
  * Known tools put everything useful on the trigger line; expand is result-only.
  */
-export function formatToolDisplay(
-  toolName: string,
-  inputRaw?: string,
-): ToolDisplaySummary {
+export function formatToolDisplay(toolName: string, inputRaw?: string): ToolDisplaySummary {
   const name = toolName.trim() || "tool";
   const lower = name.toLowerCase();
   const params = parseToolInput(inputRaw);
@@ -340,25 +327,18 @@ export function formatToolDisplay(
       asString(params.filePath) ??
       asString(params.target);
     const content =
-      asString(params.content) ??
-      asString(params.new_string) ??
-      asString(params.newString);
+      asString(params.content) ?? asString(params.new_string) ?? asString(params.newString);
     return {
       title: lower,
       subtitle: path ? toolPathLabel(path) : undefined,
       kind: "write-body",
-      writePreview: content
-        ? formatPayloadText(content, 4_000)
-        : undefined,
+      writePreview: content ? formatPayloadText(content, 4_000) : undefined,
     };
   }
 
   // ---- grep / find / glob — title + pattern/path; expand = matches only ----
   if (lower === "grep" || lower === "find" || lower === "glob") {
-    const pattern =
-      asString(params.pattern) ??
-      asString(params.query) ??
-      asString(params.glob);
+    const pattern = asString(params.pattern) ?? asString(params.query) ?? asString(params.glob);
     const path = asString(params.path);
     const include = asString(params.include);
     // OpenCode: subtitle = directory, args = pattern=…
@@ -383,10 +363,7 @@ export function formatToolDisplay(
 
   // ---- bash / shell — pi BashRenderer: header "shell", expand console ----
   if (lower === "bash" || lower === "shell" || lower === "run") {
-    const command =
-      asString(params.command) ??
-      asString(params.cmd) ??
-      asString(params.script);
+    const command = asString(params.command) ?? asString(params.cmd) ?? asString(params.script);
     return {
       title: lower === "run" ? "run" : "shell",
       subtitle: command ? truncateOneLine(command, 64) : undefined,
@@ -446,10 +423,7 @@ export function formatToolDisplay(
   // Last resort: unknown structured args — show compact one-liner, expand only result
   return {
     title: name,
-    subtitle: truncateOneLine(
-      keys.map((k) => k).join(", "),
-      48,
-    ),
+    subtitle: truncateOneLine(keys.map((k) => k).join(", "), 48),
     kind: "output-only",
   };
 }

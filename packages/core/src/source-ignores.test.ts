@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  DEFAULT_SOURCE_IGNORES,
   buildSourceIgnoreMap,
+  DEFAULT_SOURCE_IGNORES,
   effectiveSourceIgnores,
   entryMatchesIgnore,
   pathMatchesIgnore,
@@ -46,25 +46,16 @@ test("pathMatchesIgnore hides files under **/src/test/**", () => {
 });
 
 test("entryMatchesIgnore hides nested noise directories", () => {
-  assert.equal(
-    entryMatchesIgnore("", "node_modules", true, DEFAULT_SOURCE_IGNORES),
-    true,
-  );
+  assert.equal(entryMatchesIgnore("", "node_modules", true, DEFAULT_SOURCE_IGNORES), true);
   assert.equal(entryMatchesIgnore("", "src", true, DEFAULT_SOURCE_IGNORES), false);
-  assert.equal(
-    entryMatchesIgnore("src/main", "App.java", false, DEFAULT_SOURCE_IGNORES),
-    false,
-  );
+  assert.equal(entryMatchesIgnore("src/main", "App.java", false, DEFAULT_SOURCE_IGNORES), false);
 });
 
 test("entryMatchesIgnore hides src/test directory for java preset", () => {
   const patterns = resolveIgnorePreset("java-tests")!;
   assert.equal(entryMatchesIgnore("src", "test", true, patterns), true);
   assert.equal(entryMatchesIgnore("src/main/java", "App.java", false, patterns), false);
-  assert.equal(
-    entryMatchesIgnore("src/main/java", "AppTest.java", false, patterns),
-    true,
-  );
+  assert.equal(entryMatchesIgnore("src/main/java", "AppTest.java", false, patterns), true);
 });
 
 test("java-tests preset resolves", () => {

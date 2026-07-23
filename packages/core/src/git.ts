@@ -195,11 +195,7 @@ export async function cloneIntoWorkspace(
   await mkdir(path.dirname(dest), { recursive: true });
 
   const timeoutMs = input.timeoutMs ?? 120_000;
-  const clone = await runGit(
-    workspaceRoot,
-    ["clone", "--", remoteUrl, dest],
-    { timeoutMs },
-  );
+  const clone = await runGit(workspaceRoot, ["clone", "--", remoteUrl, dest], { timeoutMs });
   if (clone.code !== 0) {
     const detail = clone.stderr || clone.stdout || `exit ${clone.code}`;
     throw new Error(`git clone failed: ${detail}`);

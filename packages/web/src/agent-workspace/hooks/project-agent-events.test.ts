@@ -4,31 +4,31 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { en } from "../../i18n/en.ts";
+import { zh } from "../../i18n/zh.ts";
 import {
+  type AgentMessage,
   applyPiEvent,
   applyProductEvent,
   applyWorkUnit,
+  ensureWorkBlockAnchors,
   extractAssistantError,
   extractMessageText,
   extractMessageThinking,
   formatPayloadText,
+  formatProductCardContent,
   formatToolDisplay,
   formatToolResultText,
-  ensureWorkBlockAnchors,
-  formatProductCardContent,
   isTerminalOrWaitingPhase,
+  type StreamingRefs,
   unitRecentActivity,
   unitsForRun,
+  type WorkUnits,
+  type WorkUnitView,
   workBlockProgress,
   workUnitHasBody,
   workUnitsFromList,
-  type AgentMessage,
-  type StreamingRefs,
-  type WorkUnits,
-  type WorkUnitView,
 } from "./project-agent-events.ts";
-import { en } from "../../i18n/en.ts";
-import { zh } from "../../i18n/zh.ts";
 
 function refs(): StreamingRefs {
   return {
@@ -461,11 +461,7 @@ describe("applyPiEvent — single turn with tools", () => {
     assert.match(messages[0]!.content, /403/);
     assert.match(messages[0]!.errorMessage ?? "", /blocked/);
     // Same error must not also spawn a system card.
-    assert.equal(
-      messages.filter((m) => m.role === "system" && m.status === "error")
-        .length,
-      0,
-    );
+    assert.equal(messages.filter((m) => m.role === "system" && m.status === "error").length, 0);
   });
 
   it("streams thinking_delta into assistant.thinking", () => {
@@ -655,9 +651,7 @@ describe("applyPiEvent — single turn with tools", () => {
             type: "message_end",
             message: {
               role: "assistant",
-              content: [
-                { type: "text", text: "Hi! What can I help you with?" },
-              ],
+              content: [{ type: "text", text: "Hi! What can I help you with?" }],
               stopReason: "stop",
             },
           },
@@ -949,10 +943,7 @@ describe("applyProductEvent", () => {
       runId: "run-1",
       message: "planning",
     });
-    assert.equal(
-      messages.filter((m) => m.product?.kind === "run_phase").length,
-      1,
-    );
+    assert.equal(messages.filter((m) => m.product?.kind === "run_phase").length, 1);
   });
 
   it("upserts run_link and progress strips (no scroller spam)", () => {
@@ -1122,10 +1113,7 @@ describe("main timeline isolation", () => {
     assert.equal(assistantCount(messages), 1);
     assert.equal(messages[0]!.content, "parent");
     // No work_block from Pi alone.
-    assert.equal(
-      messages.filter((m) => m.product?.kind === "work_block").length,
-      0,
-    );
+    assert.equal(messages.filter((m) => m.product?.kind === "work_block").length, 0);
   });
 });
 
@@ -1193,10 +1181,7 @@ describe("formatToolDisplay", () => {
   });
 
   it("bash is console kind with command on subtitle", () => {
-    const d = formatToolDisplay(
-      "bash",
-      JSON.stringify({ command: "ls -la packages/web" }),
-    );
+    const d = formatToolDisplay("bash", JSON.stringify({ command: "ls -la packages/web" }));
     assert.equal(d.title, "shell");
     assert.match(d.subtitle ?? "", /ls -la/);
     assert.equal(d.kind, "console");
@@ -1354,10 +1339,7 @@ describe("applyProductEvent — work_block anchors + units fold", () => {
     assert.equal(list.length, 2);
     assert.equal(units.planner?.status, "settled");
     assert.equal(units.planner?.summary, "done planning");
-    assert.equal(
-      messages.filter((m) => m.status === "work_unit").length,
-      0,
-    );
+    assert.equal(messages.filter((m) => m.status === "work_unit").length, 0);
   });
 
   it("two runs get two work_block anchors; units fold stays per runId", () => {

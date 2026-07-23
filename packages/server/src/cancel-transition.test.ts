@@ -5,10 +5,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  transition,
-  type SessionRunState,
-} from "@okf-wiki/core";
+import { type SessionRunState, transition } from "@okf-wiki/core";
 
 test("Cancel patches match handleCancelRun session cleanup contract", () => {
   const atGate: SessionRunState = {

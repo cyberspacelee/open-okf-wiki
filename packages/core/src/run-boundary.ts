@@ -9,10 +9,10 @@ import path from "node:path";
 import type { WikiRunRecordStatus, WorkspaceConfig } from "@okf-wiki/contract";
 import { probeLocalGit } from "./git.js";
 import {
+  type CreateRunOptions,
   createRun,
   registerRunRecord,
   updateRunRecord,
-  type CreateRunOptions,
 } from "./run-store.js";
 import { skillDigest } from "./skill-digest.js";
 import { resolveSkillPath } from "./skill-path.js";
@@ -84,9 +84,7 @@ export type FrozenRunBoundary = {
   recordStatus: WikiRunRecordStatus;
 };
 
-async function assertSourcesReady(
-  workspace: WorkspaceConfig,
-): Promise<FrozenSourceSnapshot[]> {
+async function assertSourcesReady(workspace: WorkspaceConfig): Promise<FrozenSourceSnapshot[]> {
   const sources = workspace.sources ?? [];
   if (sources.length === 0) {
     throw new FreezeWikiRunError(
@@ -98,11 +96,9 @@ async function assertSourcesReady(
   const frozen: FrozenSourceSnapshot[] = [];
   for (const source of sources) {
     if (!source.id?.trim() || !source.path?.trim()) {
-      throw new FreezeWikiRunError(
-        "no_sources",
-        `source entry missing id or path`,
-        { sourceId: source.id },
-      );
+      throw new FreezeWikiRunError("no_sources", `source entry missing id or path`, {
+        sourceId: source.id,
+      });
     }
     const abs = path.resolve(source.path);
     const probe = await probeLocalGit(abs);
@@ -169,16 +165,11 @@ async function freezeSkill(
 /**
  * Fail-closed freeze for one Wiki Run: sources + Skill Version + Run Record.
  */
-export async function freezeWikiRun(
-  input: FreezeWikiRunInput,
-): Promise<FrozenRunBoundary> {
+export async function freezeWikiRun(input: FreezeWikiRunInput): Promise<FrozenRunBoundary> {
   const workspace = input.workspace;
   const workspaceRoot = path.resolve(workspace.rootPath);
   const sources = await assertSourcesReady(workspace);
-  const { skillPath, skillDigest: digest } = await freezeSkill(
-    workspace,
-    input.priorSkill,
-  );
+  const { skillPath, skillDigest: digest } = await freezeSkill(workspace, input.priorSkill);
 
   const createOpts: CreateRunOptions = {
     autoApprove: input.autoApprove,

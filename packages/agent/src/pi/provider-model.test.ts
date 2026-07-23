@@ -147,9 +147,7 @@ describe("provider-model bridge", () => {
     assert.equal(selected.model.baseUrl, "https://b.example/v1");
     assert.equal(selected.model.contextWindow, 32_000);
     // Third-party gateways reject role "developer"; product forces system.
-    const compat = selected.model.compat as
-      | { supportsDeveloperRole?: boolean }
-      | undefined;
+    const compat = selected.model.compat as { supportsDeveloperRole?: boolean } | undefined;
     assert.equal(compat?.supportsDeveloperRole, false);
 
     const defaulted = await resolveWorkspacePiModel({

@@ -6,12 +6,12 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
-  DefectReportSchema,
-  MergedDefectReportSchema,
   type DefectItem,
   type DefectReport,
+  DefectReportSchema,
   type DefectSeverity,
   type MergedDefectReport,
+  MergedDefectReportSchema,
   type WikiRunSpec,
 } from "@okf-wiki/contract";
 import { validateWikiTree } from "@okf-wiki/core";
@@ -24,10 +24,7 @@ const SEVERITY_RANK: Record<DefectSeverity, number> = {
   minor: 1,
 };
 
-export function parseDefectReportFromText(
-  text: string,
-  reviewerId: string,
-): DefectReport {
+export function parseDefectReportFromText(text: string, reviewerId: string): DefectReport {
   const raw = text?.trim() ?? "";
   if (!raw) {
     return DefectReportSchema.parse({
@@ -70,9 +67,7 @@ export function parseDefectReportFromText(
         typeof parsed === "object" &&
         Array.isArray((parsed as { defects?: unknown }).defects)
       ) {
-        const defects = normalizeDefectItems(
-          (parsed as { defects: unknown[] }).defects,
-        );
+        const defects = normalizeDefectItems((parsed as { defects: unknown[] }).defects);
         return DefectReportSchema.parse({
           reviewerId,
           clean: defects.length === 0,
@@ -135,9 +130,7 @@ function normalizeDefectItems(items: unknown[]): DefectItem[] {
     const o = item as Record<string, unknown>;
     const severityRaw = String(o.severity ?? "major").toLowerCase();
     const severity = (
-      severityRaw === "blocking" ||
-      severityRaw === "major" ||
-      severityRaw === "minor"
+      severityRaw === "blocking" || severityRaw === "major" || severityRaw === "minor"
         ? severityRaw
         : "major"
     ) as DefectSeverity;
@@ -150,17 +143,13 @@ function normalizeDefectItems(items: unknown[]): DefectItem[] {
       code: String(o.code ?? "review_finding").slice(0, 80),
       path: o.path ? String(o.path).slice(0, 200) : undefined,
       issue: issue.slice(0, 2000),
-      suggestedFix: o.suggestedFix
-        ? String(o.suggestedFix).slice(0, 2000)
-        : undefined,
+      suggestedFix: o.suggestedFix ? String(o.suggestedFix).slice(0, 2000) : undefined,
     });
   }
   return out;
 }
 
-export function mergeDefectReports(
-  reports: DefectReport[],
-): MergedDefectReport {
+export function mergeDefectReports(reports: DefectReport[]): MergedDefectReport {
   const defects: DefectItem[] = [];
   const reviewerIds: string[] = [];
   for (const r of reports) {
@@ -179,9 +168,7 @@ export function mergeDefectReports(
     seen.add(key);
     return true;
   });
-  unique.sort(
-    (a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity],
-  );
+  unique.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]);
   return MergedDefectReportSchema.parse({
     clean: unique.length === 0,
     defects: unique,
@@ -271,9 +258,7 @@ export async function evaluateWikiPublishable(input: {
     sources: input.sources,
   });
   if (!validation.ok) {
-    reasons.push(
-      `validation: ${validation.errors.slice(0, 10).join("; ")}`,
-    );
+    reasons.push(`validation: ${validation.errors.slice(0, 10).join("; ")}`);
   }
 
   const defects = await readMergedDefects(input.workspaceRoot, input.runId);

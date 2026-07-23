@@ -4,16 +4,16 @@ import { homedir } from "node:os";
 import path from "node:path";
 import {
   CatalogModelSchema,
-  ModelProfileSchema,
-  ProviderConfigSchema,
-  ProviderEntrySchema,
   type ModelProfile,
   type ModelProfilePublic,
+  ModelProfileSchema,
   type ModelProfileWrite,
   type ProviderApiShape,
   type ProviderConfig,
+  ProviderConfigSchema,
   type ProviderEntry,
   type ProviderEntryPublic,
+  ProviderEntrySchema,
   type ProviderEntryWrite,
   type ProviderPublic,
   type ProviderTestResult,
@@ -95,9 +95,7 @@ export function flattenModels(config: ProviderConfig): ModelProfile[] {
           baseUrl: p.baseUrl ?? "",
           apiKey: p.apiKey ?? "",
           apiShape: p.apiShape ?? "completions",
-          ...(m.maxContextTokens !== undefined
-            ? { maxContextTokens: m.maxContextTokens }
-            : {}),
+          ...(m.maxContextTokens !== undefined ? { maxContextTokens: m.maxContextTokens } : {}),
           headers: mergeHeaders(p.headers, m.headers),
           supportsDeveloperRole: p.supportsDeveloperRole === true,
         }),
@@ -251,9 +249,7 @@ export function toProviderEntryPublic(p: ProviderEntry): ProviderEntryPublic {
       id: m.id,
       name: m.name,
       modelId: m.modelId,
-      ...(m.maxContextTokens !== undefined
-        ? { maxContextTokens: m.maxContextTokens }
-        : {}),
+      ...(m.maxContextTokens !== undefined ? { maxContextTokens: m.maxContextTokens } : {}),
       ...(m.headers ? { headers: m.headers } : {}),
     })),
   };
@@ -265,16 +261,11 @@ export function toProviderPublic(
   env: NodeJS.ProcessEnv = process.env,
 ): ProviderPublic {
   const flat = flattenModels(config);
-  const nameByProvider = new Map(
-    (config.providers ?? []).map((p) => [p.id, p.name]),
-  );
+  const nameByProvider = new Map((config.providers ?? []).map((p) => [p.id, p.name]));
   return {
     version: 3,
     models: flat.map((m) =>
-      toModelProfilePublic(
-        m,
-        m.providerId ? nameByProvider.get(m.providerId) : undefined,
-      ),
+      toModelProfilePublic(m, m.providerId ? nameByProvider.get(m.providerId) : undefined),
     ),
     providers: (config.providers ?? []).map(toProviderEntryPublic),
     ...(config.defaultModelProfileId
@@ -287,10 +278,7 @@ export function toProviderPublic(
   };
 }
 
-function findProviderIndex(
-  config: ProviderConfig,
-  providerId: string,
-): number {
+function findProviderIndex(config: ProviderConfig, providerId: string): number {
   return (config.providers ?? []).findIndex((p) => p.id === providerId);
 }
 
@@ -314,9 +302,7 @@ export async function createProviderEntry(
   const current = await loadProviderConfig(providerPath);
   const preferred = input.id?.trim() || slugifyId(input.name);
   const id = uniqueId(preferred, allProviderIds(current));
-  const headers = normalizeHeaders(
-    input.headers === null ? null : input.headers,
-  );
+  const headers = normalizeHeaders(input.headers === null ? null : input.headers);
   const provider = ProviderEntrySchema.parse({
     id,
     name: input.name.trim(),
@@ -408,9 +394,7 @@ export async function deleteProviderEntry(
   if (providers.length === current.providers.length) {
     throw new Error(`provider not found: ${providerId}`);
   }
-  const remainingIds = new Set(
-    providers.flatMap((p) => p.models.map((m) => m.id)),
-  );
+  const remainingIds = new Set(providers.flatMap((p) => p.models.map((m) => m.id)));
   let defaultModelProfileId = current.defaultModelProfileId;
   if (defaultModelProfileId && !remainingIds.has(defaultModelProfileId)) {
     defaultModelProfileId = [...remainingIds][0];
@@ -443,9 +427,7 @@ export async function createModelProfile(
     apiKey: typeof input.apiKey === "string" ? input.apiKey : "",
     providerId: input.providerId?.trim(),
     providerName: input.providerName?.trim(),
-    headers: normalizeHeaders(
-      input.headers === null ? null : input.headers ?? undefined,
-    ),
+    headers: normalizeHeaders(input.headers === null ? null : (input.headers ?? undefined)),
     supportsDeveloperRole: input.supportsDeveloperRole,
   };
   if (!write.name || !write.modelId) {
@@ -472,8 +454,8 @@ export async function createModelProfile(
       : {}),
   });
 
-  let providers = [...(current.providers ?? [])];
-  let targetIndex = -1;
+  const providers = [...(current.providers ?? [])];
+  let targetIndex: number;
 
   if (write.providerId) {
     targetIndex = findProviderIndex(current, write.providerId);
@@ -492,10 +474,7 @@ export async function createModelProfile(
 
   if (targetIndex >= 0) {
     const p = providers[targetIndex]!;
-    const nextHeaders =
-      write.headers !== undefined
-        ? write.headers
-        : p.headers;
+    const nextHeaders = write.headers !== undefined ? write.headers : p.headers;
     const supportsDeveloperRole =
       write.supportsDeveloperRole !== undefined
         ? write.supportsDeveloperRole === true
@@ -536,9 +515,7 @@ export async function createModelProfile(
       providers,
       defaultModelProfileId:
         current.defaultModelProfileId ??
-        (flattenModels({ version: 3, providers }).length === 1
-          ? profileId
-          : undefined),
+        (flattenModels({ version: 3, providers }).length === 1 ? profileId : undefined),
     },
     providerPath,
   );
@@ -562,8 +539,7 @@ export async function updateModelProfile(
 
   let maxContextTokens = existingModel.maxContextTokens;
   if (input.maxContextTokens !== undefined) {
-    maxContextTokens =
-      input.maxContextTokens === null ? undefined : input.maxContextTokens;
+    maxContextTokens = input.maxContextTokens === null ? undefined : input.maxContextTokens;
   }
 
   const catalogModel = CatalogModelSchema.parse({
@@ -786,10 +762,7 @@ export function resolveProviderRuntime(
 }
 
 /** Look up a profile by id (throws if missing). */
-export function getModelProfile(
-  config: ProviderConfig,
-  profileId: string,
-): ModelProfile {
+export function getModelProfile(config: ProviderConfig, profileId: string): ModelProfile {
   const profile = flattenModels(config).find((m) => m.id === profileId);
   if (!profile) {
     throw new Error(`model profile not found: ${profileId}`);
@@ -805,9 +778,7 @@ export function hasProviderCredentials(
   if (env.OPENAI_BASE_URL?.trim() || env.OPENAI_API_KEY?.trim()) {
     return true;
   }
-  return flattenModels(config).some(
-    (m) => Boolean(m.baseUrl?.trim()) || Boolean(m.apiKey?.trim()),
-  );
+  return flattenModels(config).some((m) => Boolean(m.baseUrl?.trim()) || Boolean(m.apiKey?.trim()));
 }
 
 function redactProbeText(text: string): string {
@@ -861,10 +832,9 @@ export async function testProviderConnection(input: {
     };
   }
 
-  const model =
-    input.modelId?.includes("/")
-      ? input.modelId.split("/").slice(1).join("/") || "default"
-      : input.modelId?.trim() || "default";
+  const model = input.modelId?.includes("/")
+    ? input.modelId.split("/").slice(1).join("/") || "default"
+    : input.modelId?.trim() || "default";
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -928,9 +898,7 @@ export async function testProviderConnection(input: {
     }
 
     if (response.status === 400 || response.status === 422) {
-      const modelMissing = /model|not found|does not exist|unknown/i.test(
-        snippet,
-      );
+      const modelMissing = /model|not found|does not exist|unknown/i.test(snippet);
       return {
         ok: true,
         apiShape: input.apiShape,

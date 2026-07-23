@@ -20,9 +20,7 @@ import {
   operatorTrajectoryPath,
 } from "./trajectory-store.ts";
 
-async function withTempRoot(
-  fn: (root: string) => Promise<void>,
-): Promise<void> {
+async function withTempRoot(fn: (root: string) => Promise<void>): Promise<void> {
   const root = await mkdtemp(path.join(tmpdir(), "okf-traj-"));
   try {
     await fn(root);
@@ -32,8 +30,7 @@ async function withTempRoot(
 }
 
 function workUnit(
-  overrides: Partial<ProductWorkUnitEvent> &
-    Pick<ProductWorkUnitEvent, "unitId" | "status">,
+  overrides: Partial<ProductWorkUnitEvent> & Pick<ProductWorkUnitEvent, "unitId" | "status">,
 ): ProductWorkUnitEvent {
   return {
     source: "product",
@@ -82,10 +79,7 @@ test("appendTrajectory + loadTrajectory round-trip", async () => {
       assert.equal(loaded[2].summary, "done");
     }
 
-    const raw = await readFile(
-      operatorTrajectoryPath(root, sessionId),
-      "utf8",
-    );
+    const raw = await readFile(operatorTrajectoryPath(root, sessionId), "utf8");
     assert.equal(raw.trim().split("\n").length, 3);
   });
 });

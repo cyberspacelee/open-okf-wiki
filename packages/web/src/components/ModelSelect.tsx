@@ -1,12 +1,6 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
-import type { ModelProfilePublic } from "../api";
-import { useI18n } from "../i18n";
-import {
-  Field,
-  FieldDescription,
-  FieldLabel,
-} from "@/components/ui/field";
+import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import {
   Select,
   SelectContent,
@@ -14,6 +8,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import type { ModelProfilePublic } from "../api";
+import { useI18n } from "../i18n";
 
 type Props = {
   models: ModelProfilePublic[];
@@ -34,8 +30,7 @@ function modelLabel(
   defaultModelProfileId: string | undefined,
   defaultSuffix: string,
 ): string {
-  const suffix =
-    defaultModelProfileId === m.id ? ` ${defaultSuffix}` : "";
+  const suffix = defaultModelProfileId === m.id ? ` ${defaultSuffix}` : "";
   return `${m.name}${suffix} - ${m.modelId}`;
 }
 

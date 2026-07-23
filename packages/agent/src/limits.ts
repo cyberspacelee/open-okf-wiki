@@ -19,9 +19,7 @@ export const DEFAULT_ORCHESTRATION: WorkspaceOrchestration = {
   reviewCouncilSize: 1,
 };
 
-export function resolveOrchestration(
-  workspace?: WorkspaceConfig | null,
-): WorkspaceOrchestration {
+export function resolveOrchestration(workspace?: WorkspaceConfig | null): WorkspaceOrchestration {
   const o = workspace?.orchestration;
   if (!o) {
     return { ...DEFAULT_ORCHESTRATION };
@@ -33,11 +31,9 @@ export function resolveOrchestration(
     rootMaxSteps: o.rootMaxSteps ?? DEFAULT_ORCHESTRATION.rootMaxSteps,
     domainMaxSteps: o.domainMaxSteps ?? DEFAULT_ORCHESTRATION.domainMaxSteps,
     leafMaxSteps: o.leafMaxSteps ?? DEFAULT_ORCHESTRATION.leafMaxSteps,
-    reviewerMaxSteps:
-      o.reviewerMaxSteps ?? DEFAULT_ORCHESTRATION.reviewerMaxSteps,
+    reviewerMaxSteps: o.reviewerMaxSteps ?? DEFAULT_ORCHESTRATION.reviewerMaxSteps,
     planMaxSteps: o.planMaxSteps ?? DEFAULT_ORCHESTRATION.planMaxSteps,
-    reviewCouncilSize:
-      o.reviewCouncilSize ?? DEFAULT_ORCHESTRATION.reviewCouncilSize,
+    reviewCouncilSize: o.reviewCouncilSize ?? DEFAULT_ORCHESTRATION.reviewCouncilSize,
   };
 }
 

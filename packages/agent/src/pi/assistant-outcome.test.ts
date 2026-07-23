@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import {
-  lastAssistantOutcome,
-  resolveAssistantSummary,
-} from "./assistant-outcome.js";
+import { lastAssistantOutcome, resolveAssistantSummary } from "./assistant-outcome.js";
 
 describe("lastAssistantOutcome", () => {
   it("detects stopReason error", () => {

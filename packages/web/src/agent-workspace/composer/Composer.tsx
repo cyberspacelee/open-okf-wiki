@@ -2,13 +2,8 @@
  * Agent Workspace composer — mode: Chat | Wiki run (one primary action).
  */
 
-import {
-  useCallback,
-  useState,
-  type FormEvent,
-  type KeyboardEvent,
-} from "react";
 import { PlayIcon, SendIcon, SquareIcon } from "lucide-react";
+import { type FormEvent, type KeyboardEvent, useCallback, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   InputGroup,
@@ -25,8 +20,8 @@ import {
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { useI18n } from "../../i18n";
 import type { ModelProfilePublic } from "../../api";
+import { useI18n } from "../../i18n";
 import type { AgentStatus } from "../hooks/useSessionAgent";
 
 export type ComposerMode = "chat" | "wikiRun";
@@ -65,8 +60,7 @@ export function Composer({
   const busy = status === "sending" || status === "streaming";
   const isError = status === "error";
   const canSend = !disabled && !busy && input.trim().length > 0;
-  const showModelSelect =
-    mode === "wikiRun" && models.length > 0 && onWikiModelProfileIdChange;
+  const showModelSelect = mode === "wikiRun" && models.length > 0 && onWikiModelProfileIdChange;
 
   const handleSubmit = useCallback(
     (event: FormEvent) => {

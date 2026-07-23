@@ -9,11 +9,7 @@ import { WORKSPACE_DIR_NAME } from "@okf-wiki/core";
 
 /** Pi JSONL session tree root for a workspace. */
 export function piSessionsDir(workspaceRoot: string): string {
-  return path.join(
-    path.resolve(workspaceRoot),
-    WORKSPACE_DIR_NAME,
-    "pi-sessions",
-  );
+  return path.join(path.resolve(workspaceRoot), WORKSPACE_DIR_NAME, "pi-sessions");
 }
 
 /**

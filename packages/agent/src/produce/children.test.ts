@@ -3,11 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
-import {
-  produceRoleForChild,
-  runChildSession,
-  runChildrenParallel,
-} from "./children.js";
+import { produceRoleForChild, runChildrenParallel, runChildSession } from "./children.js";
 
 describe("produce/children", () => {
   it("maps child roles to operator-visible produce roles", () => {

@@ -14,28 +14,27 @@ import type {
   WorkspaceConfig,
 } from "@okf-wiki/contract";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
-import { resolveOrchestration } from "../limits.js";
 import {
   evaluateWikiPublishable,
   type PublishabilityResult,
   writeMergedDefects,
 } from "../defects.js";
-import { runReviewCouncil } from "../review-council.js";
-import { writeWikiRunSpec } from "../spec-store.js";
-import { runChildSession, runChildrenParallel } from "./children.js";
-import {
-  listWikiMarkdown,
-  produceWithPi,
-  shouldUsePiFixtureMode,
-  type ProduceWithPiResult,
-} from "./live-pi.js";
-import type { ProduceEventSink } from "./events.js";
-import { silentProduceEvents } from "./events.js";
-import { attachWorkUnitSink } from "./parent-visibility.js";
+import { resolveOrchestration } from "../limits.js";
 import type { RunWorkdirLayout } from "../pi/run-workdir.js";
 import type { SourceIgnoreInput } from "../pi/tool-operations.js";
+import { runReviewCouncil } from "../review-council.js";
+import { writeWikiRunSpec } from "../spec-store.js";
+import { runChildrenParallel, runChildSession } from "./children.js";
+import type { ProduceEventSink } from "./events.js";
+import { silentProduceEvents } from "./events.js";
+import {
+  listWikiMarkdown,
+  type ProduceWithPiResult,
+  produceWithPi,
+  shouldUsePiFixtureMode,
+} from "./live-pi.js";
+import { attachWorkUnitSink } from "./parent-visibility.js";
 import { planWikiSpec } from "./plan.js";
-import { buildReceiptIndex, persistResearchReceipt } from "./receipts.js";
 import {
   domainResearchPrompt,
   leafResearchPrompt,
@@ -43,6 +42,7 @@ import {
   rootWritePrompt,
   rootWriteSystemPrompt,
 } from "./prompts.js";
+import { buildReceiptIndex, persistResearchReceipt } from "./receipts.js";
 
 export type ProduceWikiModels = {
   planner?: {
@@ -140,9 +140,7 @@ async function emitPlanProgressFromDisk(
 /**
  * Layer B Produce: plan → research → write → council → repair → hard score.
  */
-export async function produceWiki(
-  input: ProduceWikiInput,
-): Promise<ProduceWikiResult> {
+export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiResult> {
   throwIfAborted(input.abortSignal);
   const events = input.onEvent ?? silentProduceEvents;
   const orch = resolveOrchestration(input.workspace);
@@ -172,9 +170,7 @@ export async function produceWiki(
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
       return cancelledResult(
-        input.spec
-          ? (input.spec as WikiRunSpec)
-          : defaultWikiRunSpec(input.workspace.name),
+        input.spec ? (input.spec as WikiRunSpec) : defaultWikiRunSpec(input.workspace.name),
         fixture,
         metrics,
       );
@@ -207,9 +203,7 @@ export async function produceWiki(
           wikiLanguage,
           fixture: false,
           model: input.models?.planner?.model ?? input.models?.writer?.model,
-          modelRuntime:
-            input.models?.planner?.modelRuntime ??
-            input.models?.writer?.modelRuntime,
+          modelRuntime: input.models?.planner?.modelRuntime ?? input.models?.writer?.modelRuntime,
           maxContextTokens:
             input.models?.planner?.maxContextTokens ??
             input.models?.writer?.maxContextTokens ??
@@ -228,20 +222,14 @@ export async function produceWiki(
         spec = planned.spec;
       } catch (planErr) {
         if (!(planErr instanceof Error && planErr.name === "AbortError")) {
-          plannerUnit.fail(
-            planErr instanceof Error ? planErr.message : String(planErr),
-          );
+          plannerUnit.fail(planErr instanceof Error ? planErr.message : String(planErr));
         }
         throw planErr;
       }
     }
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
-      return cancelledResult(
-        defaultWikiRunSpec(input.workspace.name),
-        fixture,
-        metrics,
-      );
+      return cancelledResult(defaultWikiRunSpec(input.workspace.name), fixture, metrics);
     }
     events.progress?.({
       phase: "failed",
@@ -359,9 +347,7 @@ export async function produceWiki(
             return cancelledResult(spec, fixture, metrics);
           }
           for (const t of leafTasks) {
-            t.leafUnit.fail(
-              err instanceof Error ? err.message : String(err),
-            );
+            t.leafUnit.fail(err instanceof Error ? err.message : String(err));
           }
         }
       }
@@ -464,8 +450,7 @@ export async function produceWiki(
       abortSignal: input.abortSignal,
       model: input.models?.writer?.model,
       modelRuntime: input.models?.writer?.modelRuntime,
-      maxContextTokens:
-        input.maxContextTokens ?? input.models?.writer?.maxContextTokens,
+      maxContextTokens: input.maxContextTokens ?? input.models?.writer?.maxContextTokens,
       contextTargetTokens,
       additionalSkillPaths: input.additionalSkillPaths,
       sourceIgnores: input.sourceIgnores,
@@ -608,12 +593,8 @@ export async function produceWiki(
         summary: defects.summary,
       });
 
-      const blocking = (spec.acceptance?.blockingSeverities ?? [
-        "blocking",
-      ]) as string[];
-      const hasBlocking = defects.defects.some((d) =>
-        blocking.includes(d.severity),
-      );
+      const blocking = (spec.acceptance?.blockingSeverities ?? ["blocking"]) as string[];
+      const hasBlocking = defects.defects.some((d) => blocking.includes(d.severity));
       if (defects.clean || !hasBlocking) {
         break;
       }
@@ -629,10 +610,7 @@ export async function produceWiki(
         defectCount: defects.defects.length,
       });
       const defectText = defects.defects
-        .map(
-          (d) =>
-            `- [${d.severity}] ${d.path ?? "?"} ${d.code ?? ""}: ${d.issue}`,
-        )
+        .map((d) => `- [${d.severity}] ${d.path ?? "?"} ${d.code ?? ""}: ${d.issue}`)
         .join("\n");
       try {
         produced = await produceWithPi({
@@ -643,8 +621,7 @@ export async function produceWiki(
           abortSignal: input.abortSignal,
           model: input.models?.writer?.model,
           modelRuntime: input.models?.writer?.modelRuntime,
-          maxContextTokens:
-            input.maxContextTokens ?? input.models?.writer?.maxContextTokens,
+          maxContextTokens: input.maxContextTokens ?? input.models?.writer?.maxContextTokens,
           contextTargetTokens,
           additionalSkillPaths: input.additionalSkillPaths,
           sourceIgnores: input.sourceIgnores,

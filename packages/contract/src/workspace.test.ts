@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { WorkspaceConfigSchema, WorkspaceSourceSchema } from "./workspace.js";
 import { exitCodeForStatus, WikiRunExitCode } from "./run.js";
+import { WorkspaceConfigSchema, WorkspaceSourceSchema } from "./workspace.js";
 
 test("WorkspaceSourceSchema accepts a clean local source", () => {
   const source = WorkspaceSourceSchema.parse({

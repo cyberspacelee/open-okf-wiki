@@ -3,12 +3,12 @@
  * Supports delete (pi-web SessionListDialog) and displays auto titles.
  */
 
-import { useState } from "react";
 import { PlusIcon, Trash2Icon } from "lucide-react";
+import { useState } from "react";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { PiSessionSummary } from "../../api";
 import { formatMessage, useI18n } from "../../i18n";
 
@@ -59,9 +59,7 @@ export function SessionList({
   className,
 }: SessionListProps) {
   const { t } = useI18n();
-  const [deleteTarget, setDeleteTarget] = useState<PiSessionSummary | null>(
-    null,
-  );
+  const [deleteTarget, setDeleteTarget] = useState<PiSessionSummary | null>(null);
 
   // Server should already dedupe; keep first-seen id so React keys stay unique
   // if a stale API ever returns both `{id}.json` and `{id}/` for one session.
@@ -74,14 +72,9 @@ export function SessionList({
   }
 
   return (
-    <div
-      data-testid="agent-session-list"
-      className={cn("flex h-full min-h-0 flex-col", className)}
-    >
+    <div data-testid="agent-session-list" className={cn("flex h-full min-h-0 flex-col", className)}>
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-2.5 py-2">
-        <span className="text-xs font-medium">
-          {t.agentWorkspace.sessions}
-        </span>
+        <span className="text-xs font-medium">{t.agentWorkspace.sessions}</span>
         <Button
           type="button"
           size="xs"
@@ -91,17 +84,13 @@ export function SessionList({
           onClick={() => onCreate()}
         >
           <PlusIcon data-icon="inline-start" />
-          {creating
-            ? t.agentWorkspace.creatingSession
-            : t.agentWorkspace.newSession}
+          {creating ? t.agentWorkspace.creatingSession : t.agentWorkspace.newSession}
         </Button>
       </div>
 
       <ScrollArea className="min-h-0 flex-1">
         {uniqueSessions.length === 0 ? (
-          <p className="px-3 py-4 text-xs text-muted-foreground">
-            {t.agentWorkspace.noSessions}
-          </p>
+          <p className="px-3 py-4 text-xs text-muted-foreground">{t.agentWorkspace.noSessions}</p>
         ) : (
           <ul className="flex flex-col gap-0.5 p-1.5">
             {uniqueSessions.map((session) => {
@@ -117,16 +106,12 @@ export function SessionList({
                     disabled={deleting}
                     className={cn(
                       "flex w-full flex-col gap-0.5 rounded-md border px-2 py-1.5 pr-8 text-left",
-                      active
-                        ? "border-border bg-muted"
-                        : "border-transparent hover:bg-muted/60",
+                      active ? "border-border bg-muted" : "border-transparent hover:bg-muted/60",
                       deleting && "opacity-50",
                     )}
                     onClick={() => onSelect(session.id)}
                   >
-                    <div className="truncate text-sm font-medium">
-                      {formatLabel(session)}
-                    </div>
+                    <div className="truncate text-sm font-medium">{formatLabel(session)}</div>
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="text-[10px] text-muted-foreground">
                         {formatUpdated(session.updatedAt)}
@@ -174,11 +159,7 @@ export function SessionList({
               })
             : undefined
         }
-        confirmLabel={
-          deletingId
-            ? t.agentWorkspace.deletingSession
-            : t.common.delete
-        }
+        confirmLabel={deletingId ? t.agentWorkspace.deletingSession : t.common.delete}
         cancelLabel={t.common.cancel}
         destructive
         confirmDisabled={deletingId != null}

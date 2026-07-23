@@ -6,16 +6,12 @@
 import type { WikiRunRecordStatus } from "@okf-wiki/contract";
 
 /** Outcomes that late product cancel must not overwrite. */
-export function isDurableRunStatus(
-  status: string | undefined | null,
-): boolean {
+export function isDurableRunStatus(status: string | undefined | null): boolean {
   return status === "published" || status === "publication_declined";
 }
 
 /** Statuses from which operator cancel is allowed (or already cancelled). */
-export function isCancellableRunStatus(
-  status: WikiRunRecordStatus | string,
-): boolean {
+export function isCancellableRunStatus(status: WikiRunRecordStatus | string): boolean {
   return (
     status === "running" ||
     status === "awaiting_plan" ||
@@ -32,20 +28,14 @@ export function cancelWinsOverPatch(
   existingStatus: WikiRunRecordStatus | string,
   patchStatus: WikiRunRecordStatus | string | undefined,
 ): boolean {
-  return (
-    existingStatus === "cancelled" &&
-    patchStatus !== undefined &&
-    patchStatus !== "cancelled"
-  );
+  return existingStatus === "cancelled" && patchStatus !== undefined && patchStatus !== "cancelled";
 }
 
 /**
  * Whether applying `cancelled` to `existingStatus` is allowed.
  * Idempotent when already cancelled.
  */
-export function canTransitionToCancelled(
-  existingStatus: WikiRunRecordStatus | string,
-): boolean {
+export function canTransitionToCancelled(existingStatus: WikiRunRecordStatus | string): boolean {
   return isCancellableRunStatus(existingStatus);
 }
 
@@ -53,9 +43,10 @@ export function canTransitionToCancelled(
  * Apply late product abort to a mapped terminal status.
  * Durable publish outcomes are preserved.
  */
-export function applyLateAbortStatus<
-  T extends { status: string; pages?: unknown; plan?: unknown },
->(mapped: T, aborted: boolean): T | { status: "cancelled"; error: string; summary: string; pages: T["pages"]; plan: T["plan"] } {
+export function applyLateAbortStatus<T extends { status: string; pages?: unknown; plan?: unknown }>(
+  mapped: T,
+  aborted: boolean,
+): T | { status: "cancelled"; error: string; summary: string; pages: T["pages"]; plan: T["plan"] } {
   if (!aborted || isDurableRunStatus(mapped.status)) {
     return mapped;
   }

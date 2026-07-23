@@ -21,10 +21,7 @@ test("isDefaultSessionTitle matches create-time titles", () => {
 });
 
 test("titleFromUserPrompt uses first line and truncates", () => {
-  assert.equal(
-    titleFromUserPrompt("Hello world\nmore detail"),
-    "Hello world",
-  );
+  assert.equal(titleFromUserPrompt("Hello world\nmore detail"), "Hello world");
   const long = "x".repeat(100);
   const titled = titleFromUserPrompt(long, 20);
   assert.ok(titled.length <= 20);

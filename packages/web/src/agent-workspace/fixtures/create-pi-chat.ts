@@ -8,9 +8,9 @@
 
 import type { StreamingRefs } from "../hooks/project-agent-events.ts";
 import {
+  type AgentMessage,
   applyPiEvent,
   applyProductEvent,
-  type AgentMessage,
   type ProductSseLike,
 } from "../hooks/project-agent-events.ts";
 
@@ -28,11 +28,7 @@ export type PiAssistantWriter = {
   thinkingDelta: (delta: string) => void;
   thinkingEnd: (content?: string) => void;
   toolStart: (toolCallId: string, toolName: string, args?: unknown) => void;
-  toolEnd: (
-    toolCallId: string,
-    result?: unknown,
-    opts?: { isError?: boolean },
-  ) => void;
+  toolEnd: (toolCallId: string, result?: unknown, opts?: { isError?: boolean }) => void;
   messageEnd: (message?: Record<string, unknown>) => void;
   /** Provider-style failure: empty content + stopReason error. */
   providerError: (errorMessage: string) => void;
@@ -93,9 +89,7 @@ function assistantWriter(push: (e: PiChatEvent) => void): PiAssistantWriter {
           message: {
             role: "assistant",
             content: [
-              ...(thinkingText
-                ? [{ type: "thinking", thinking: thinkingText }]
-                : []),
+              ...(thinkingText ? [{ type: "thinking", thinking: thinkingText }] : []),
               ...(contentText ? [{ type: "text", text: contentText }] : []),
             ],
           },
@@ -113,9 +107,7 @@ function assistantWriter(push: (e: PiChatEvent) => void): PiAssistantWriter {
           message: {
             role: "assistant",
             content: [
-              ...(thinkingText
-                ? [{ type: "thinking", thinking: thinkingText }]
-                : []),
+              ...(thinkingText ? [{ type: "thinking", thinking: thinkingText }] : []),
               ...(contentText ? [{ type: "text", text: contentText }] : []),
             ],
           },
@@ -159,9 +151,7 @@ function assistantWriter(push: (e: PiChatEvent) => void): PiAssistantWriter {
           message: {
             role: "assistant",
             content: [
-              ...(thinkingText
-                ? [{ type: "thinking", thinking: thinkingText }]
-                : []),
+              ...(thinkingText ? [{ type: "thinking", thinking: thinkingText }] : []),
               ...(contentText ? [{ type: "text", text: contentText }] : []),
             ],
             stopReason: "stop",

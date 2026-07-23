@@ -1,12 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, readlink, realpath } from "node:fs/promises";
+import { mkdir, mkdtemp, readlink, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
-import {
-  materializeRunWorkdir,
-  runWorkdirPromptPaths,
-} from "./run-workdir.js";
+import { materializeRunWorkdir, runWorkdirPromptPaths } from "./run-workdir.js";
 
 describe("run-workdir", () => {
   it("materialises sources, skill, wiki, analysis", async () => {
