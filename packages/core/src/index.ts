@@ -54,7 +54,12 @@ export {
 } from "./product-home.js";
 export {
   analysisScratchDir,
+  analysisReceiptsDir,
+  safeReceiptNodeId,
   writeAnalysisReceipt,
+  listAnalysisReceipts,
+  readAnalysisReceipt,
+  type AnalysisReceiptSummary,
 } from "./analysis-scratch.js";
 export {
   countMarkdownFiles,

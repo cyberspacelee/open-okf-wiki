@@ -597,5 +597,9 @@ export const zh: MessageTree = {
     subagentPreviewHint:
       "子代理预览（规划 / Domain / Leaf / 审查）。有完整正文时在此展开。",
     subagentNoDetail: "该 span 尚无详细输出。",
+    agentTreeTitle: "Agent 树",
+    agentTreeEmpty: "尚无子代理。启动 Wiki Run 后可看到规划 / 研究 span。",
+    agentTreeNoRun: "尚未关联 Run — 启动 Wiki Run 后填充 Agent 树。",
+    agentTreeLoading: "加载 receipt…",
   },
 };

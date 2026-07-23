@@ -5,6 +5,8 @@ import path from "node:path";
 import { test } from "node:test";
 import {
   analysisScratchDir,
+  listAnalysisReceipts,
+  readAnalysisReceipt,
   writeAnalysisReceipt,
 } from "./analysis-scratch.js";
 
@@ -29,4 +31,28 @@ test("writeAnalysisReceipt stores validated JSON under analysis scratch", async 
   const data = JSON.parse(raw) as { nodeId: string; status: string };
   assert.equal(data.nodeId, "reviewer");
   assert.equal(data.status, "complete");
+});
+
+test("listAnalysisReceipts and readAnalysisReceipt round-trip", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-scratch-list-"));
+  await writeAnalysisReceipt(root, {
+    version: 1,
+    runId: "run-2",
+    nodeId: "domain-core",
+    parentId: "root",
+    attempt: 1,
+    status: "complete",
+    scope: "core modules",
+    summary: "Found entrypoints",
+    findings: ["a", "b"],
+    evidence: [],
+    childReceipts: ["analysis/receipts/leaf-1.json"],
+    openQuestions: ["q?"],
+  });
+  const list = await listAnalysisReceipts(root, "run-2");
+  assert.ok(list.some((r) => r.nodeId === "domain-core"));
+  const one = await readAnalysisReceipt(root, "run-2", "domain-core");
+  assert.ok(one);
+  assert.equal(one!.summary, "Found entrypoints");
+  assert.equal(one!.findings?.length, 2);
 });

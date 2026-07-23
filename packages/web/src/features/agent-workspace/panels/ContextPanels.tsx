@@ -24,10 +24,12 @@ import type {
 import { useI18n } from "../../../i18n";
 import { workspaceHref } from "../../../lib/workspace-path";
 import type {
+  AgentMessage,
   PendingGate,
   ResumeGateInput,
 } from "../hooks/useSessionAgent";
 import { GateActions } from "../transcript/GateActions";
+import { AgentTree } from "./AgentTree";
 
 export type ContextPanelsProps = {
   workspaceId: string;
@@ -41,6 +43,8 @@ export type ContextPanelsProps = {
   pendingGate?: PendingGate | null;
   gateBusy?: boolean;
   onResumeGate?: (input: ResumeGateInput) => void | Promise<void>;
+  /** Transcript messages — used to build live subagent tree. */
+  messages?: AgentMessage[];
   className?: string;
 };
 
@@ -88,6 +92,7 @@ export function ContextPanels({
   pendingGate = null,
   gateBusy = false,
   onResumeGate,
+  messages = [],
   className,
 }: ContextPanelsProps) {
   const { t } = useI18n();
@@ -316,10 +321,16 @@ export function ContextPanels({
                 onResume={onResumeGate}
               />
             ) : null}
+            <AgentTree
+              workspaceId={workspaceId}
+              rootPath={rootPath}
+              runId={linkedRunId}
+              messages={messages}
+            />
             {recentRuns.length === 0 ? (
               <EmptyHint text={t.agentWorkspace.runsEmpty} />
             ) : (
-              <ul className="flex flex-col gap-1">
+              <ul className="mt-2 flex flex-col gap-1">
                 {recentRuns.slice(0, 8).map((run) => (
                   <li
                     key={run.runId}

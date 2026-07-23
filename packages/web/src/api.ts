@@ -723,6 +723,62 @@ export function cancelRun(
   );
 }
 
+/** Domain/Leaf analysis receipt summary (from Host research). */
+export type AnalysisReceiptSummary = {
+  nodeId: string;
+  parentId: string | null;
+  status: string;
+  scope: string;
+  summary: string;
+  relativePath: string;
+  findingsCount: number;
+  childReceipts: string[];
+};
+
+export type AnalysisReceiptDetail = {
+  version?: number;
+  runId: string;
+  nodeId: string;
+  parentId: string | null;
+  attempt?: number;
+  status: string;
+  scope: string;
+  summary: string;
+  findings?: string[];
+  evidence?: unknown[];
+  childReceipts?: string[];
+  openQuestions?: string[];
+};
+
+/** List analysis receipts for a Wiki Run. */
+export function listRunReceipts(
+  workspaceId: string,
+  runId: string,
+  rootPath?: string,
+): Promise<{ runId: string; receipts: AnalysisReceiptSummary[] }> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/receipts`,
+      rootPath,
+    ),
+  );
+}
+
+/** Read one analysis receipt by nodeId. */
+export function getRunReceipt(
+  workspaceId: string,
+  runId: string,
+  nodeId: string,
+  rootPath?: string,
+): Promise<{ runId: string; receipt: AnalysisReceiptDetail }> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/receipts/${encodeURIComponent(nodeId)}`,
+      rootPath,
+    ),
+  );
+}
+
 /** Absolute EventSource URL for run progress SSE. */
 export function runEventsUrl(
   workspaceId: string,

@@ -58,6 +58,7 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { useI18n } from "../../../i18n";
+import { getRunReceipt } from "../../../api";
 import type {
   AgentMessage,
   AgentProductMeta,
@@ -75,6 +76,9 @@ export type TranscriptProps = {
   pendingGate?: PendingGate | null;
   gateBusy?: boolean;
   onResumeGate?: (input: ResumeGateInput) => void | Promise<void>;
+  /** Optional: load full receipts when previewing spans. */
+  workspaceId?: string;
+  rootPath?: string;
 };
 
 function ToolCard({ tool }: { tool: AgentToolCall }) {
@@ -188,17 +192,23 @@ function productBadgeLabel(product: AgentProductMeta): string {
 function AgentSpanCard({
   product,
   content,
+  workspaceId,
+  rootPath,
 }: {
   product: AgentProductMeta;
   content: string;
+  workspaceId?: string;
+  rootPath?: string;
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
-  const preview =
+  const [loading, setLoading] = useState(false);
+  const [body, setBody] = useState(
     product.detail?.trim() ||
-    product.task?.trim() ||
-    product.label?.trim() ||
-    content;
+      product.task?.trim() ||
+      product.label?.trim() ||
+      content,
+  );
   const title = [
     product.role ?? "agent",
     product.agentId,
@@ -206,6 +216,52 @@ function AgentSpanCard({
   ]
     .filter(Boolean)
     .join(" · ");
+
+  async function openPreview() {
+    setOpen(true);
+    setBody(
+      product.detail?.trim() ||
+        product.task?.trim() ||
+        product.label?.trim() ||
+        content,
+    );
+    const runId = product.runId;
+    const nodeId =
+      product.agentId ||
+      (product.receiptPath
+        ? product.receiptPath.replace(/^.*\//, "").replace(/\.json$/i, "")
+        : undefined);
+    if (!workspaceId || !runId || !nodeId) return;
+    setLoading(true);
+    try {
+      const res = await getRunReceipt(workspaceId, runId, nodeId, rootPath);
+      const r = res.receipt;
+      setBody(
+        [
+          `nodeId: ${r.nodeId}`,
+          `status: ${r.status}`,
+          `scope: ${r.scope}`,
+          r.parentId ? `parentId: ${r.parentId}` : null,
+          "",
+          "## Summary",
+          r.summary || "(empty)",
+          "",
+          r.findings?.length
+            ? `## Findings\n${r.findings.map((f) => `- ${f}`).join("\n")}`
+            : null,
+          r.openQuestions?.length
+            ? `## Open questions\n${r.openQuestions.map((q) => `- ${q}`).join("\n")}`
+            : null,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      );
+    } catch {
+      // Keep SSE detail.
+    } finally {
+      setLoading(false);
+    }
+  }
 
   return (
     <>
@@ -226,7 +282,7 @@ function AgentSpanCard({
           size="sm"
           variant="outline"
           className="h-7 self-start px-2 text-xs"
-          onClick={() => setOpen(true)}
+          onClick={() => void openPreview()}
           data-testid="agent-span-preview"
         >
           <EyeIcon data-icon="inline-start" />
@@ -248,9 +304,15 @@ function AgentSpanCard({
             </SheetDescription>
           </SheetHeader>
           <ScrollArea className="min-h-0 flex-1 px-4 pb-4">
-            <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">
-              {preview || t.agentWorkspace.subagentNoDetail}
-            </pre>
+            {loading ? (
+              <div className="text-xs text-muted-foreground">
+                {t.agentWorkspace.agentTreeLoading}
+              </div>
+            ) : (
+              <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">
+                {body || t.agentWorkspace.subagentNoDetail}
+              </pre>
+            )}
           </ScrollArea>
         </SheetContent>
       </Sheet>
@@ -278,12 +340,16 @@ function MessageCard({
   pendingGate,
   gateBusy,
   onResumeGate,
+  workspaceId,
+  rootPath,
 }: {
   message: AgentMessage;
   showGateActions: boolean;
   pendingGate: PendingGate | null;
   gateBusy: boolean;
   onResumeGate?: (input: ResumeGateInput) => void | Promise<void>;
+  workspaceId?: string;
+  rootPath?: string;
 }) {
   const { t } = useI18n();
   const isUser = message.role === "user";
@@ -375,7 +441,12 @@ function MessageCard({
             ) : null}
           </div>
           {product?.kind === "agent_span" ? (
-            <AgentSpanCard product={product} content={message.content ?? ""} />
+            <AgentSpanCard
+              product={product}
+              content={message.content ?? ""}
+              workspaceId={workspaceId}
+              rootPath={rootPath}
+            />
           ) : message.content ? (
             <div className="whitespace-pre-wrap">{message.content}</div>
           ) : null}
@@ -493,6 +564,8 @@ export function Transcript({
   pendingGate = null,
   gateBusy = false,
   onResumeGate,
+  workspaceId,
+  rootPath,
 }: TranscriptProps) {
   const { t } = useI18n();
 
@@ -555,6 +628,8 @@ export function Transcript({
                   pendingGate={pendingGate}
                   gateBusy={gateBusy}
                   onResumeGate={onResumeGate}
+                  workspaceId={workspaceId}
+                  rootPath={rootPath}
                 />
               </MessageScrollerItem>
             ))}

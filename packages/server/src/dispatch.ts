@@ -54,6 +54,8 @@ import {
   handleDenyPlan,
   handleDenyPublication,
   handleGetRun,
+  handleGetRunReceipt,
+  handleListRunReceipts,
   handleListRuns,
   handleRetryRun,
   handleRevisePlan,
@@ -371,6 +373,33 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
       );
       if (params && method === "GET") {
         await handleRunEvents(req, res, params.id!, params.runId!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(
+        pathname,
+        "/api/workspaces/:id/runs/:runId/receipts/:nodeId",
+      );
+      if (params && method === "GET") {
+        await handleGetRunReceipt(
+          req,
+          res,
+          params.id!,
+          params.runId!,
+          params.nodeId!,
+          url,
+        );
+        return;
+      }
+    }
+    {
+      const params = matchRoute(
+        pathname,
+        "/api/workspaces/:id/runs/:runId/receipts",
+      );
+      if (params && method === "GET") {
+        await handleListRunReceipts(req, res, params.id!, params.runId!, url);
         return;
       }
     }

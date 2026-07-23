@@ -8,9 +8,11 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   freezeWikiRun,
   FreezeWikiRunError,
+  listAnalysisReceipts,
   listRuns,
   loadRun,
   loadWorkspaceById,
+  readAnalysisReceipt,
   RunStatusConflictError,
   updateRunRecord,
 } from "@okf-wiki/core";
@@ -332,6 +334,58 @@ export async function handleRevisePlan(
     }
     sendError(res, 400, error instanceof Error ? error.message : String(error));
   }
+}
+
+/** List analysis receipts for a run (Domain/Leaf research artifacts). */
+export async function handleListRunReceipts(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  runId: string,
+  url: URL,
+): Promise<void> {
+  const workspace = await loadWorkspaceOr404(res, id, url);
+  if (!workspace) return;
+
+  const existing = await loadRun(workspace.rootPath, runId);
+  if (!existing || existing.workspaceId !== workspace.id) {
+    sendError(res, 404, `run not found: ${runId}`);
+    return;
+  }
+
+  const receipts = await listAnalysisReceipts(workspace.rootPath, runId);
+  sendJson(res, 200, { runId, receipts });
+}
+
+/** Read one analysis receipt by nodeId (or filename stem). */
+export async function handleGetRunReceipt(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  runId: string,
+  nodeId: string,
+  url: URL,
+): Promise<void> {
+  const workspace = await loadWorkspaceOr404(res, id, url);
+  if (!workspace) return;
+
+  const existing = await loadRun(workspace.rootPath, runId);
+  if (!existing || existing.workspaceId !== workspace.id) {
+    sendError(res, 404, `run not found: ${runId}`);
+    return;
+  }
+
+  const decoded = decodeURIComponent(nodeId);
+  const receipt = await readAnalysisReceipt(
+    workspace.rootPath,
+    runId,
+    decoded,
+  );
+  if (!receipt) {
+    sendError(res, 404, `receipt not found: ${decoded}`);
+    return;
+  }
+  sendJson(res, 200, { runId, receipt });
 }
 
 export async function handleListRuns(

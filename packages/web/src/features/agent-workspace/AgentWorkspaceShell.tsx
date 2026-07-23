@@ -131,6 +131,7 @@ export function AgentWorkspaceShell({
       workspace={workspace}
       plan={plan}
       linkedRunId={linkedRunId}
+      messages={messages}
       phase={phase}
       pendingGate={pendingGate}
       gateBusy={gateBusy}
@@ -221,6 +222,8 @@ export function AgentWorkspaceShell({
             pendingGate={pendingGate}
             gateBusy={gateBusy}
             onResumeGate={onResumeGate}
+            workspaceId={workspaceId}
+            rootPath={rootPath}
           />
           <Composer
             input={input}

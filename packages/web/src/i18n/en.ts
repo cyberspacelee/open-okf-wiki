@@ -612,6 +612,10 @@ export const en = {
     subagentPreviewHint:
       "Subagent preview (planner / domain / leaf / reviewer). Full body when available.",
     subagentNoDetail: "No detailed output captured for this span yet.",
+    agentTreeTitle: "Agent tree",
+    agentTreeEmpty: "No subagents yet. Start a wiki run to see planner / research spans.",
+    agentTreeNoRun: "No linked run — start a wiki run to populate the agent tree.",
+    agentTreeLoading: "Loading receipt…",
   },
 } as const;
 
