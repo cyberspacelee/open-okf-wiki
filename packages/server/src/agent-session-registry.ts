@@ -44,6 +44,8 @@ import {
   FreezeWikiRunError,
   isPathInside,
   updateRunRecord,
+  upsertOperatorWorkAgent,
+  type OperatorWorkAgent,
 } from "@okf-wiki/core";
 import {
   emitAgentSessionEvent,
@@ -92,6 +94,11 @@ export type RegisteredAgentSession = {
    * before startWikiRun returns a shell snapshot).
    */
   livePhase?: ProductPhase;
+  /**
+   * In-memory Work surface agents (planner / leaf / …) for cold-load.
+   * Also mirrored to analysis/operator-work.json when runId is known.
+   */
+  workAgents?: OperatorWorkAgent[];
 };
 
 type SessionMetaDisk = {
@@ -748,11 +755,44 @@ function mapOrchestratorOnEvent(
         parentId?: string;
       };
       if (data.spanId && data.agentId && data.role && data.status) {
+        const runId = data.runId ?? entry.runId;
+        const agentRow: OperatorWorkAgent = {
+          agentId: data.agentId,
+          role: data.role,
+          status: data.status,
+          spanId: data.spanId,
+          parentId: data.parentId,
+          task: data.task?.slice(0, 2000) ?? data.promptSummary?.slice(0, 500),
+          detail: data.detail?.slice(0, 12_000),
+          receiptPath: data.receiptPath,
+          updatedAt: ts,
+        };
+        // Memory + disk for Session cold-load / Work drawer after refresh.
+        const agents = [...(entry.workAgents ?? [])];
+        const ai = agents.findIndex((a) => a.agentId === agentRow.agentId);
+        if (ai >= 0) {
+          agents[ai] = {
+            ...agents[ai],
+            ...agentRow,
+            detail: agentRow.detail ?? agents[ai]!.detail,
+            task: agentRow.task ?? agents[ai]!.task,
+          };
+        } else {
+          agents.push(agentRow);
+        }
+        entry.workAgents = agents;
+        if (runId) {
+          void upsertOperatorWorkAgent(entry.workspaceRoot, runId, agentRow, {
+            phase: entry.livePhase,
+          }).catch(() => {
+            // best-effort durable Work surface
+          });
+        }
         emitProductAgentEvent(entry.workspaceId, {
           source: "product",
           kind: "agent_span",
           sessionId: entry.sessionId,
-          runId: data.runId ?? entry.runId,
+          runId,
           spanId: data.spanId,
           agentId: data.agentId,
           role: data.role,

@@ -59,7 +59,12 @@ export {
   writeAnalysisReceipt,
   listAnalysisReceipts,
   readAnalysisReceipt,
+  upsertOperatorWorkAgent,
+  readOperatorWorkSnapshot,
+  operatorWorkSnapshotPath,
   type AnalysisReceiptSummary,
+  type OperatorWorkAgent,
+  type OperatorWorkSnapshot,
 } from "./analysis-scratch.js";
 export {
   countMarkdownFiles,

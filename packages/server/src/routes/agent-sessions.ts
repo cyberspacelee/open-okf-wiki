@@ -16,7 +16,12 @@ import {
   type AgentSseEvent,
   type PiSessionSummary,
 } from "@okf-wiki/contract";
-import { isPathInside, loadRun, loadWorkspaceById } from "@okf-wiki/core";
+import {
+  isPathInside,
+  loadRun,
+  loadWorkspaceById,
+  readOperatorWorkSnapshot,
+} from "@okf-wiki/core";
 import {
   agentSessionExistsOnDisk,
   dispatchAgentCommand,
@@ -231,10 +236,28 @@ export async function handleGetAgentSession(
     preferredPath,
   });
   let runStatus: string | undefined;
+  let workAgents = reg?.workAgents;
   if (reg?.runId) {
     try {
       const run = await loadRun(workspace.rootPath, reg.runId);
       runStatus = run?.status;
+    } catch {
+      // ignore
+    }
+  }
+  // Cold-load Work chips from disk when registry is empty (process restart)
+  // or memory has not been seeded yet.
+  if ((!workAgents || workAgents.length === 0) && reg?.runId) {
+    try {
+      const snap = await readOperatorWorkSnapshot(
+        workspace.rootPath,
+        reg.runId,
+      );
+      if (snap?.agents?.length) {
+        workAgents = snap.agents;
+        // Warm registry so later live updates merge correctly.
+        reg.workAgents = snap.agents;
+      }
     } catch {
       // ignore
     }
@@ -283,6 +306,7 @@ export async function handleGetAgentSession(
           }
         : null,
       plan: reg?.shell?.plan ?? null,
+      workAgents: workAgents ?? [],
     },
   });
 }

@@ -45,13 +45,24 @@ export type AgentFocusDrawerProps = {
   className?: string;
 };
 
-function ToolBlock({ tool }: { tool: AgentToolCall }) {
+function ToolBlock({
+  tool,
+  settled,
+}: {
+  tool: AgentToolCall;
+  /** When parent stream is settled, keep completed tools collapsed. */
+  settled?: boolean;
+}) {
   const { t } = useI18n();
   const input = formatPayloadText(tool.input);
   const output = formatPayloadText(tool.output);
+  const openDefault =
+    tool.status === "running" ||
+    tool.status === "error" ||
+    (!settled && tool.status !== "done");
   return (
     <Collapsible
-      defaultOpen={tool.status === "running" || tool.status === "error"}
+      defaultOpen={openDefault}
       className="w-full min-w-0 rounded-md border border-border/80 bg-muted/30"
     >
       <CollapsibleTrigger className="group flex w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-xs hover:bg-muted/60">
@@ -104,6 +115,7 @@ export function AgentStreamBody({
 }) {
   const { t } = useI18n();
   const streaming = stream?.status === "streaming";
+  const settled = stream?.status === "done" || stream?.status === "error";
   const thinking = stream?.thinking?.trim();
   const content = stream?.content?.trim();
   const tools = stream?.tools ?? [];
@@ -121,7 +133,7 @@ export function AgentStreamBody({
     <div className="flex min-w-0 flex-col gap-3">
       {thinking ? (
         <Collapsible
-          defaultOpen={streaming}
+          defaultOpen={!settled || streaming}
           className="w-full min-w-0 rounded-md border border-border/70 bg-muted/20"
         >
           <CollapsibleTrigger className="group flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted/50">
@@ -145,7 +157,7 @@ export function AgentStreamBody({
       {tools.length > 0 ? (
         <div className="flex min-w-0 flex-col gap-1.5">
           {tools.map((tool) => (
-            <ToolBlock key={tool.id} tool={tool} />
+            <ToolBlock key={tool.id} tool={tool} settled={settled} />
           ))}
         </div>
       ) : null}

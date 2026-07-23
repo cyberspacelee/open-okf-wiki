@@ -935,6 +935,17 @@ export type AgentSessionSnapshot = {
       pages?: string[];
     } | null;
     plan?: WikiRunPlan | null;
+    /** Durable Work surface agents (from registry / operator-work.json). */
+    workAgents?: Array<{
+      agentId: string;
+      role: string;
+      status: string;
+      spanId?: string;
+      parentId?: string;
+      task?: string;
+      detail?: string;
+      receiptPath?: string;
+    }>;
   };
 };
 

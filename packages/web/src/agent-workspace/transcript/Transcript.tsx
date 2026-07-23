@@ -185,6 +185,8 @@ function productBadgeLabel(product: AgentProductMeta): string {
       return "spec pages";
     case "agent_span":
       return product.role ?? "agent";
+    case "work_run":
+      return product.phase ?? "work";
     case "defects":
       return product.clean ? "review:ok" : "review:defects";
     default: {
@@ -192,6 +194,102 @@ function productBadgeLabel(product: AgentProductMeta): string {
       return String(_exhaustive);
     }
   }
+}
+
+function WorkRunCard({
+  product,
+  onOpenAgent,
+}: {
+  product: AgentProductMeta;
+  onOpenAgent?: TranscriptProps["onOpenAgent"];
+}) {
+  const agents = product.agents ?? [];
+  const running = agents.filter((a) => a.status === "running").length;
+  return (
+    <div className="flex min-w-0 flex-col gap-2" data-testid="work-run-card">
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="font-medium">
+          Work · Wiki Run {(product.runId ?? "—").slice(0, 8)}
+        </span>
+        {product.phase ? (
+          <Badge variant="outline" className="normal-case text-[10px]">
+            {product.phase}
+          </Badge>
+        ) : null}
+        {running > 0 ? (
+          <span className="inline-flex items-center gap-1 text-muted-foreground">
+            <Spinner className="size-3" />
+            {running} running
+          </span>
+        ) : null}
+      </div>
+      <ul className="flex min-w-0 flex-col gap-1">
+        {agents.map((a) => {
+          const isRunning = a.status === "running";
+          return (
+            <li key={a.agentId}>
+              <button
+                type="button"
+                className={cn(
+                  "flex w-full min-w-0 items-start gap-2 rounded-md border px-2 py-1.5 text-left text-xs transition-colors",
+                  isRunning
+                    ? "border-primary/30 bg-primary/5 hover:bg-primary/10"
+                    : "border-border/70 bg-background/60 hover:bg-muted/50",
+                )}
+                onClick={() =>
+                  onOpenAgent?.({
+                    agentId: a.agentId,
+                    role: a.role,
+                    task: a.task,
+                    detail: a.detail,
+                  })
+                }
+                data-testid="work-run-agent"
+                data-agent-id={a.agentId}
+              >
+                {isRunning ? (
+                  <Spinner className="mt-0.5 size-3 shrink-0 text-primary" />
+                ) : (
+                  <span className="mt-0.5 size-3 shrink-0 rounded-full bg-muted-foreground/40" />
+                )}
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <Badge variant="outline" className="text-[10px] normal-case">
+                      {a.role}
+                    </Badge>
+                    <Badge
+                      variant={
+                        a.status === "failed"
+                          ? "destructive"
+                          : a.status === "complete" || a.status === "done"
+                            ? "secondary"
+                            : "default"
+                      }
+                      className="text-[10px] normal-case"
+                    >
+                      {a.status}
+                    </Badge>
+                    <span className="truncate font-mono text-[10px] text-muted-foreground">
+                      {a.agentId}
+                    </span>
+                  </div>
+                  {a.task ? (
+                    <p className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground">
+                      {a.task}
+                    </p>
+                  ) : null}
+                </div>
+                <EyeIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      {agents.length === 0 ? (
+        <p className="text-[11px] text-muted-foreground">Waiting for agents…</p>
+      ) : null}
+    </div>
+  );
 }
 
 /** Click-to-preview subagent card (Claude Code / pi-subagent-ui style peek). */
@@ -437,6 +535,7 @@ function MessageCard({
             product?.kind === "run_phase" &&
               product.phase === "failed" &&
               "border-destructive/40 bg-destructive/5",
+            product?.kind === "work_run" && "border-primary/25 bg-primary/5",
           )}
         >
           <div className="mb-1 flex flex-wrap items-center gap-2 text-[10px] font-medium tracking-wide uppercase opacity-70">
@@ -452,9 +551,11 @@ function MessageCard({
                         ? "Spec queue"
                         : product.kind === "agent_span"
                           ? "Agent"
-                          : product.kind === "defects"
-                            ? "Review"
-                            : "Run link"
+                          : product.kind === "work_run"
+                            ? "Work"
+                            : product.kind === "defects"
+                              ? "Review"
+                              : "Run link"
                 : isTool
                   ? t.agentWorkspace.roleTool
                   : t.agentWorkspace.roleSystem}
@@ -478,7 +579,9 @@ function MessageCard({
               </Badge>
             ) : null}
           </div>
-          {product?.kind === "agent_span" ? (
+          {product?.kind === "work_run" ? (
+            <WorkRunCard product={product} onOpenAgent={onOpenAgent} />
+          ) : product?.kind === "agent_span" ? (
             <AgentSpanCard
               product={product}
               content={message.content ?? ""}
@@ -487,7 +590,7 @@ function MessageCard({
               onOpenAgent={onOpenAgent}
             />
           ) : message.content ? (
-            <div className="whitespace-pre-wrap">{message.content}</div>
+            <div className="whitespace-pre-wrap break-words">{message.content}</div>
           ) : null}
           {showGateActions && pendingGate && onResumeGate ? (
             <GateActions

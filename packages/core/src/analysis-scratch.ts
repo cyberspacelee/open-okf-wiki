@@ -158,3 +158,118 @@ export async function readAnalysisReceipt(
   }
   return null;
 }
+
+// ---------------------------------------------------------------------------
+// Operator Work surface snapshot (subagent chips for Session cold-load)
+// ---------------------------------------------------------------------------
+
+export type OperatorWorkAgent = {
+  agentId: string;
+  role: string;
+  status: "running" | "complete" | "failed" | string;
+  spanId?: string;
+  parentId?: string;
+  task?: string;
+  /** Capped summary / stream tail for Work drawer after refresh. */
+  detail?: string;
+  receiptPath?: string;
+  updatedAt?: string;
+};
+
+export type OperatorWorkSnapshot = {
+  runId: string;
+  phase?: string;
+  agents: OperatorWorkAgent[];
+  updatedAt: string;
+};
+
+export function operatorWorkSnapshotPath(
+  workspaceRoot: string,
+  runId: string,
+): string {
+  return path.join(analysisScratchDir(workspaceRoot, runId), "operator-work.json");
+}
+
+/**
+ * Upsert one agent row into analysis/operator-work.json (Session Work surface).
+ * Best-effort durable chip state for refresh after ring buffer is gone.
+ */
+export async function upsertOperatorWorkAgent(
+  workspaceRoot: string,
+  runId: string,
+  agent: OperatorWorkAgent,
+  opts?: { phase?: string },
+): Promise<OperatorWorkSnapshot> {
+  const existing = (await readOperatorWorkSnapshot(workspaceRoot, runId)) ?? {
+    runId,
+    agents: [],
+    updatedAt: new Date().toISOString(),
+  };
+  const agents = [...existing.agents];
+  const idx = agents.findIndex((a) => a.agentId === agent.agentId);
+  const nextAgent: OperatorWorkAgent = {
+    ...(idx >= 0 ? agents[idx] : {}),
+    ...agent,
+    detail: agent.detail ?? (idx >= 0 ? agents[idx]?.detail : undefined),
+    task: agent.task ?? (idx >= 0 ? agents[idx]?.task : undefined),
+    updatedAt: new Date().toISOString(),
+  };
+  if (idx >= 0) agents[idx] = nextAgent;
+  else agents.push(nextAgent);
+
+  const snapshot: OperatorWorkSnapshot = {
+    runId,
+    phase: opts?.phase ?? existing.phase,
+    agents,
+    updatedAt: new Date().toISOString(),
+  };
+  await writeOperatorWorkSnapshot(workspaceRoot, runId, snapshot);
+  return snapshot;
+}
+
+export async function readOperatorWorkSnapshot(
+  workspaceRoot: string,
+  runId: string,
+): Promise<OperatorWorkSnapshot | null> {
+  const filePath = operatorWorkSnapshotPath(workspaceRoot, runId);
+  const root = path.resolve(workspaceRoot);
+  if (!isPathInside(root, filePath)) return null;
+  try {
+    const raw = await readFile(filePath, "utf8");
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    const o = parsed as Record<string, unknown>;
+    if (typeof o.runId !== "string" || !Array.isArray(o.agents)) return null;
+    return {
+      runId: o.runId,
+      phase: typeof o.phase === "string" ? o.phase : undefined,
+      agents: o.agents as OperatorWorkAgent[],
+      updatedAt:
+        typeof o.updatedAt === "string"
+          ? o.updatedAt
+          : new Date().toISOString(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function writeOperatorWorkSnapshot(
+  workspaceRoot: string,
+  runId: string,
+  snapshot: OperatorWorkSnapshot,
+): Promise<void> {
+  const dir = analysisScratchDir(workspaceRoot, runId);
+  const root = path.resolve(workspaceRoot);
+  if (!isPathInside(root, dir)) {
+    throw new Error("operator work snapshot escapes workspace root");
+  }
+  await mkdir(dir, { recursive: true });
+  const filePath = operatorWorkSnapshotPath(workspaceRoot, runId);
+  if (!isPathInside(dir, filePath)) {
+    throw new Error("operator work path escapes analysis scratch");
+  }
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(tempPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+  await rename(tempPath, filePath);
+}

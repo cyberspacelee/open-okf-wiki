@@ -34,6 +34,18 @@ export type PlanProgressPage = {
   status: "pending" | "writing" | "done" | string;
 };
 
+/** One agent row inside a Work chip (planner / leaf / …). */
+export type WorkAgentChip = {
+  agentId: string;
+  role: string;
+  status: string;
+  spanId?: string;
+  parentId?: string;
+  task?: string;
+  detail?: string;
+  receiptPath?: string;
+};
+
 export type AgentProductMeta = {
   kind:
     | "run_phase"
@@ -42,6 +54,7 @@ export type AgentProductMeta = {
     | "progress"
     | "plan_progress"
     | "agent_span"
+    | "work_run"
     | "defects";
   phase?: string;
   gate?: "plan" | "publication";
@@ -62,6 +75,8 @@ export type AgentProductMeta = {
   defectCount?: number;
   clean?: boolean;
   round?: number;
+  /** Aggregated Work surface agents (one chip per run). */
+  agents?: WorkAgentChip[];
 };
 
 /** Tag for produce child streams (planner / leaf / domain / reviewer). */
@@ -129,6 +144,7 @@ export type ProductSseLike = {
     | "progress"
     | "plan_progress"
     | "agent_span"
+    | "work_run"
     | "defects";
   phase?: string;
   gate?: "plan" | "publication";
@@ -152,6 +168,7 @@ export type ProductSseLike = {
   clean?: boolean;
   defectCount?: number;
   summary?: string;
+  agents?: WorkAgentChip[];
 };
 
 function nowIso(): string {
@@ -1006,6 +1023,21 @@ export function productCardContent(event: ProductSseLike): string {
       if (event.receiptPath) bits.push(event.receiptPath);
       return bits.join(" · ");
     }
+    case "work_run": {
+      const agents = event.agents ?? [];
+      const running = agents.filter((a) => a.status === "running").length;
+      const done = agents.filter(
+        (a) => a.status === "complete" || a.status === "done",
+      ).length;
+      const bits = [
+        `Work · Wiki Run ${(event.runId ?? "?").slice(0, 8)}`,
+        event.phase ? `phase=${event.phase}` : null,
+        `${agents.length} agent(s)`,
+        running ? `${running} running` : null,
+        done ? `${done} done` : null,
+      ].filter(Boolean);
+      return bits.join(" · ");
+    }
     case "defects": {
       if (event.clean) return `Review: clean (round ${event.round ?? 1})`;
       return `Review: ${event.defectCount ?? 0} defect(s) (round ${event.round ?? 1})`;
@@ -1067,6 +1099,14 @@ export function productMeta(event: ProductSseLike): AgentProductMeta {
         task: event.task,
         label: event.promptSummary,
       };
+    case "work_run":
+      return {
+        kind: "work_run",
+        runId: event.runId,
+        phase: event.phase,
+        agents: event.agents ?? [],
+        status: event.status,
+      };
     case "defects":
       return {
         kind: "defects",
@@ -1081,6 +1121,51 @@ export function productMeta(event: ProductSseLike): AgentProductMeta {
       return _exhaustive;
     }
   }
+}
+
+/** Build WorkStreams from durable cold-load agent rows. */
+export function workStreamsFromAgents(
+  agents: WorkAgentChip[] | undefined,
+): WorkStreams {
+  if (!agents?.length) return {};
+  const out: WorkStreams = {};
+  for (const a of agents) {
+    if (!a.agentId) continue;
+    out[a.agentId] = {
+      agentId: a.agentId,
+      role: a.role || "agent",
+      status:
+        a.status === "running"
+          ? "streaming"
+          : a.status === "failed"
+            ? "error"
+            : "done",
+      content: a.detail?.trim() || "",
+      tools: [],
+      updatedAt: nowIso(),
+    };
+  }
+  return out;
+}
+
+/** Upsert one agent into a Work chip agent list (pure). */
+export function upsertWorkAgentChip(
+  agents: WorkAgentChip[],
+  chip: WorkAgentChip,
+): WorkAgentChip[] {
+  const next = [...agents];
+  const idx = next.findIndex((a) => a.agentId === chip.agentId);
+  if (idx >= 0) {
+    next[idx] = {
+      ...next[idx],
+      ...chip,
+      detail: chip.detail ?? next[idx]!.detail,
+      task: chip.task ?? next[idx]!.task,
+    };
+  } else {
+    next.push(chip);
+  }
+  return next;
 }
 
 /**
@@ -1103,9 +1188,35 @@ export function applyProductEvent(
   };
 
   if (event.kind === "run_phase") {
-    // Replace the trailing run_phase card (same run if runId known).
+    // Keep Work chip phase in sync, then upsert the phase strip card.
+    let base = prev;
     for (let i = prev.length - 1; i >= 0; i -= 1) {
       const m = prev[i]!;
+      if (m.product?.kind !== "work_run") continue;
+      if (
+        event.runId &&
+        m.product.runId &&
+        m.product.runId !== event.runId
+      ) {
+        break;
+      }
+      const agents = m.product.agents ?? [];
+      const next = prev.slice();
+      next[i] = {
+        ...m,
+        content: productCardContent({
+          kind: "work_run",
+          runId: m.product.runId,
+          phase: event.phase,
+          agents,
+        }),
+        product: { ...m.product, phase: event.phase },
+      };
+      base = next;
+      break;
+    }
+    for (let i = base.length - 1; i >= 0; i -= 1) {
+      const m = base[i]!;
       if (m.product?.kind !== "run_phase") continue;
       if (
         event.runId &&
@@ -1114,10 +1225,11 @@ export function applyProductEvent(
       ) {
         break;
       }
-      const next = prev.slice();
+      const next = base.slice();
       next[i] = { ...card, id: m.id };
       return next;
     }
+    return base === prev ? [...prev, card] : [...base, card];
   }
 
   if (event.kind === "plan_progress") {
@@ -1138,25 +1250,70 @@ export function applyProductEvent(
     }
   }
 
-  if (event.kind === "agent_span" && event.spanId) {
-    // Upsert by spanId so running → complete keeps one card with detail.
+  if (event.kind === "agent_span" && event.agentId) {
+    // Fold into a single Work chip per run (Claude Code / OpenCode pattern).
+    // Individual agent_span cards no longer spam the main timeline.
+    const chip: WorkAgentChip = {
+      agentId: event.agentId,
+      role: event.role ?? "agent",
+      status: event.status ?? "running",
+      spanId: event.spanId,
+      parentId: event.parentId,
+      task: event.task ?? event.promptSummary,
+      detail: event.detail,
+      receiptPath: event.receiptPath,
+    };
     for (let i = prev.length - 1; i >= 0; i -= 1) {
       const m = prev[i]!;
-      if (m.product?.kind !== "agent_span") continue;
-      if (m.product.spanId !== event.spanId) continue;
+      if (m.product?.kind !== "work_run") continue;
+      if (
+        event.runId &&
+        m.product.runId &&
+        m.product.runId !== event.runId
+      ) {
+        break;
+      }
+      const agents = upsertWorkAgentChip(m.product.agents ?? [], chip);
       const next = prev.slice();
       next[i] = {
-        ...card,
-        id: m.id,
+        ...m,
+        content: productCardContent({
+          kind: "work_run",
+          runId: event.runId ?? m.product.runId,
+          phase: m.product.phase,
+          agents,
+        }),
         product: {
-          ...productMeta(event),
-          // Keep earlier detail if complete event omitted it.
-          detail: event.detail ?? m.product.detail,
-          task: event.task ?? m.product.task,
+          kind: "work_run",
+          runId: event.runId ?? m.product.runId,
+          phase: m.product.phase,
+          agents,
         },
+        status: "work_run",
       };
       return next;
     }
+    const agents = [chip];
+    return [
+      ...prev,
+      {
+        id: makeId("product_work_run"),
+        role: "system",
+        content: productCardContent({
+          kind: "work_run",
+          runId: event.runId,
+          agents,
+        }),
+        createdAt:
+          typeof event.timestamp === "string" ? event.timestamp : nowIso(),
+        product: {
+          kind: "work_run",
+          runId: event.runId,
+          agents,
+        },
+        status: "work_run",
+      },
+    ];
   }
 
   if (event.kind === "gate" && event.gate) {

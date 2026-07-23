@@ -10,6 +10,56 @@ import {
   writeAnalysisReceipt,
 } from "./analysis-scratch.js";
 
+test("upsertOperatorWorkAgent persists Work surface snapshot", async () => {
+  const { mkdtemp, readFile } = await import("node:fs/promises");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const {
+    upsertOperatorWorkAgent,
+    readOperatorWorkSnapshot,
+    operatorWorkSnapshotPath,
+  } = await import("./analysis-scratch.js");
+
+  const root = await mkdtemp(path.join(os.tmpdir(), "okf-work-"));
+  await upsertOperatorWorkAgent(root, "run-w1", {
+    agentId: "planner",
+    role: "planner",
+    status: "running",
+    task: "draft",
+  });
+  await upsertOperatorWorkAgent(root, "run-w1", {
+    agentId: "planner",
+    role: "planner",
+    status: "complete",
+    detail: "spec ready",
+  });
+  await upsertOperatorWorkAgent(
+    root,
+    "run-w1",
+    {
+      agentId: "leaf-1",
+      role: "leaf",
+      status: "running",
+    },
+    { phase: "writing" },
+  );
+
+  const snap = await readOperatorWorkSnapshot(root, "run-w1");
+  assert.ok(snap);
+  assert.equal(snap!.agents.length, 2);
+  assert.equal(
+    snap!.agents.find((a) => a.agentId === "planner")?.status,
+    "complete",
+  );
+  assert.equal(
+    snap!.agents.find((a) => a.agentId === "planner")?.detail,
+    "spec ready",
+  );
+  assert.equal(snap!.phase, "writing");
+  const raw = await readFile(operatorWorkSnapshotPath(root, "run-w1"), "utf8");
+  assert.match(raw, /operator-work|planner|leaf-1/);
+});
+
 test("writeAnalysisReceipt stores validated JSON under analysis scratch", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-scratch-"));
   const filePath = await writeAnalysisReceipt(root, {

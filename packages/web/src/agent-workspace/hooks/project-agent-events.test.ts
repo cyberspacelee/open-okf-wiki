@@ -830,3 +830,45 @@ describe("formatPayloadText", () => {
     assert.match(out, /"a": 1/);
   });
 });
+
+describe("applyProductEvent — work_run chip", () => {
+  it("folds multiple agent_span into one work_run card", () => {
+    let messages: AgentMessage[] = [];
+    messages = applyProductEvent(messages, {
+      kind: "agent_span",
+      runId: "run-1",
+      spanId: "run-1-planner",
+      agentId: "planner",
+      role: "planner",
+      status: "running",
+      task: "draft spec",
+    });
+    messages = applyProductEvent(messages, {
+      kind: "agent_span",
+      runId: "run-1",
+      spanId: "run-1-leaf-1",
+      agentId: "leaf-d1-1",
+      role: "leaf",
+      status: "running",
+      parentId: "domain-1",
+      task: "q1",
+    });
+    messages = applyProductEvent(messages, {
+      kind: "agent_span",
+      runId: "run-1",
+      spanId: "run-1-planner",
+      agentId: "planner",
+      role: "planner",
+      status: "complete",
+      detail: "done planning",
+    });
+    const works = messages.filter((m) => m.product?.kind === "work_run");
+    assert.equal(works.length, 1);
+    assert.equal(works[0]!.product?.agents?.length, 2);
+    const planner = works[0]!.product?.agents?.find(
+      (a) => a.agentId === "planner",
+    );
+    assert.equal(planner?.status, "complete");
+    assert.equal(planner?.detail, "done planning");
+  });
+});

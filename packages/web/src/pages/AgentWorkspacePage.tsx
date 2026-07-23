@@ -67,6 +67,33 @@ export function AgentWorkspacePage() {
     [setSearchParams],
   );
 
+  // Deep-link Work surface: ?focusAgent=planner | leaf-…
+  const focusAgentFromUrl = searchParams.get("focusAgent");
+  useEffect(() => {
+    if (!activeSessionId) return;
+    if (focusAgentFromUrl && focusAgentFromUrl !== agent.focusAgentId) {
+      agent.setFocusAgentId(focusAgentFromUrl);
+    }
+    // Only seed from URL when opening; do not fight user closing drawer.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional one-way seed
+  }, [activeSessionId, focusAgentFromUrl]);
+
+  const handleFocusAgentIdChange = useCallback(
+    (agentId: string | null) => {
+      agent.setFocusAgentId(agentId);
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (agentId) next.set("focusAgent", agentId);
+          else next.delete("focusAgent");
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [agent, setSearchParams],
+  );
+
   const boot = useCallback(async () => {
     if (!id) return;
     setLoading(true);
@@ -245,7 +272,7 @@ export function AgentWorkspacePage() {
             }
             workStreams={agent.workStreams}
             focusAgentId={agent.focusAgentId}
-            onFocusAgentIdChange={agent.setFocusAgentId}
+            onFocusAgentIdChange={handleFocusAgentIdChange}
             focusedStream={agent.focusedStream}
           />
         )}

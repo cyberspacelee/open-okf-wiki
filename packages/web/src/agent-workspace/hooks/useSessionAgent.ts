@@ -32,9 +32,11 @@ import {
   applyProductEvent,
   isChildPiPayload,
   isTerminalOrWaitingPhase,
+  workStreamsFromAgents,
   type AgentMessage,
   type AgentStream,
   type StreamingRefs,
+  type WorkAgentChip,
   type WorkStreams,
 } from "./project-agent-events";
 
@@ -480,7 +482,7 @@ export function useSessionAgent({
       try {
         const snap = await getAgentSession(workspaceId, sessionId, rootPath);
         if (cancelled || streamGenRef.current !== gen) return;
-        setMessages(historyToMessages(snap.messages));
+        let timeline = historyToMessages(snap.messages);
         if (snap.product?.runId) setLinkedRunId(snap.product.runId);
         if (snap.product?.phase) setPhase(snap.product.phase);
         if (snap.product?.plan) setPlan(snap.product.plan);
@@ -492,6 +494,42 @@ export function useSessionAgent({
             pages: snap.product.pendingGate.pages,
           });
         }
+        // Restore Work surface chips + stream summaries after refresh.
+        const coldAgents = (snap.product?.workAgents ??
+          []) as WorkAgentChip[];
+        if (coldAgents.length > 0) {
+          setWorkStreams(workStreamsFromAgents(coldAgents));
+          for (const a of coldAgents) {
+            timeline = applyProductEvent(timeline, {
+              kind: "agent_span",
+              agentId: a.agentId,
+              role: a.role,
+              status: a.status,
+              runId: snap.product?.runId,
+              task: a.task,
+              detail: a.detail,
+              spanId: a.spanId ?? a.agentId,
+              parentId: a.parentId,
+              receiptPath: a.receiptPath,
+            });
+          }
+          if (snap.product?.phase) {
+            timeline = applyProductEvent(timeline, {
+              kind: "run_phase",
+              phase: snap.product.phase as
+                | "idle"
+                | "planning"
+                | "awaiting_plan"
+                | "writing"
+                | "awaiting_publish"
+                | "done"
+                | "failed"
+                | "cancelled",
+              runId: snap.product?.runId,
+            });
+          }
+        }
+        setMessages(timeline);
         // Restore streaming chrome when a wiki run / produce is still live.
         const phase = snap.product?.phase;
         const runStatus = snap.product?.runStatus;

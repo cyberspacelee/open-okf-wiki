@@ -49,7 +49,28 @@ function nodesFromMessages(messages: AgentMessage[]): AgentTreeNode[] {
   const byId = new Map<string, AgentTreeNode>();
   for (const m of messages) {
     const p = m.product;
-    if (!p || p.kind !== "agent_span") continue;
+    if (!p) continue;
+    // Prefer aggregated Work chip agents (one card per run).
+    if (p.kind === "work_run" && p.agents?.length) {
+      for (const a of p.agents) {
+        const id = a.spanId || a.agentId;
+        if (!id) continue;
+        byId.set(id, {
+          id,
+          role: a.role ?? "agent",
+          status: a.status ?? "unknown",
+          parentId: a.parentId && a.parentId !== "root" ? a.parentId : null,
+          label: a.task,
+          task: a.task,
+          detail: a.detail,
+          receiptPath: a.receiptPath,
+          receiptNodeId: a.agentId,
+          source: "span",
+        });
+      }
+      continue;
+    }
+    if (p.kind !== "agent_span") continue;
     const id = p.spanId || p.agentId || m.id;
     if (!id) continue;
     byId.set(id, {
