@@ -593,5 +593,9 @@ export const zh: MessageTree = {
     thinking: "思考",
     thinkingStreaming: "思考中…",
     jumpToLatest: "跳到最新",
+    viewSubagent: "查看输出",
+    subagentPreviewHint:
+      "子代理预览（规划 / Domain / Leaf / 审查）。有完整正文时在此展开。",
+    subagentNoDetail: "该 span 尚无详细输出。",
   },
 };
