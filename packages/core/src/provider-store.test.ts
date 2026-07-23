@@ -143,7 +143,7 @@ test("legacy v2 file is rejected (empty catalog)", async () => {
   assert.equal(loaded.providers.length, 0);
 });
 
-test("resolveProviderRuntime includes headers default", async () => {
+test("resolveProviderRuntime includes headers default and developer role off", async () => {
   const home = await tempHome();
   const file = path.join(home, "provider.json");
   await createModelProfile(
@@ -159,6 +159,28 @@ test("resolveProviderRuntime includes headers default", async () => {
   const config = await loadProviderConfig(file);
   const runtime = resolveProviderRuntime(config, {});
   assert.equal(runtime.headers?.["User-Agent"], "node");
+  assert.equal(runtime.supportsDeveloperRole, false);
+});
+
+test("supportsDeveloperRole can be enabled on provider", async () => {
+  const home = await tempHome();
+  const file = path.join(home, "provider.json");
+  const created = await createModelProfile(
+    {
+      name: "OpenAI",
+      modelId: "gpt-4o",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-x",
+      apiShape: "responses",
+      supportsDeveloperRole: true,
+    },
+    file,
+  );
+  assert.equal(created.profile.supportsDeveloperRole, true);
+  const runtime = resolveProviderRuntime(created.config, {
+    profileId: created.profile.id,
+  });
+  assert.equal(runtime.supportsDeveloperRole, true);
 });
 
 test("toProviderPublic exposes providers and flat models", async () => {

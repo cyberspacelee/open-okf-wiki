@@ -58,6 +58,11 @@ export const ProviderEntrySchema = z.object({
    * Applied to Pi/OpenAI SDK requests for every model under this provider.
    */
   headers: ProviderHeadersSchema,
+  /**
+   * When true, Pi may send system prompts as OpenAI `developer` role
+   * (reasoning models). Most third-party gateways reject it — default false.
+   */
+  supportsDeveloperRole: z.boolean().default(false),
   models: z.array(CatalogModelSchema).default([]),
 });
 
@@ -78,6 +83,8 @@ export const ModelProfileSchema = z.object({
   apiShape: ProviderApiShapeSchema.default("completions"),
   maxContextTokens: z.number().int().positive().max(10_000_000).optional(),
   headers: ProviderHeadersSchema,
+  /** Inherited from parent provider (default false). */
+  supportsDeveloperRole: z.boolean().optional(),
 });
 
 export type ModelProfile = z.infer<typeof ModelProfileSchema>;
@@ -108,6 +115,7 @@ export const ModelProfilePublicSchema = z.object({
   apiShape: ProviderApiShapeSchema,
   maxContextTokens: z.number().int().positive().optional(),
   headers: z.record(z.string(), z.string()).optional(),
+  supportsDeveloperRole: z.boolean().optional(),
 });
 
 export type ModelProfilePublic = z.infer<typeof ModelProfilePublicSchema>;
@@ -122,6 +130,7 @@ export const ProviderEntryPublicSchema = z.object({
   apiKeyMasked: z.string().nullable(),
   apiShape: ProviderApiShapeSchema,
   headers: z.record(z.string(), z.string()).optional(),
+  supportsDeveloperRole: z.boolean(),
   models: z.array(
     z.object({
       id: z.string(),
@@ -167,6 +176,8 @@ export const ModelProfileWriteSchema = z.object({
     .union([z.number().int().positive().max(10_000_000), z.null()])
     .optional(),
   headers: z.union([z.record(z.string(), z.string()), z.null()]).optional(),
+  /** Provider-level; omit on update to keep. Default false on create. */
+  supportsDeveloperRole: z.boolean().optional(),
 });
 
 export type ModelProfileWrite = z.infer<typeof ModelProfileWriteSchema>;
@@ -180,6 +191,7 @@ export const ProviderEntryWriteSchema = z.object({
   kind: ProviderKindSchema.optional(),
   id: z.string().trim().min(1).max(64).optional(),
   headers: z.union([z.record(z.string(), z.string()), z.null()]).optional(),
+  supportsDeveloperRole: z.boolean().optional(),
 });
 
 export type ProviderEntryWrite = z.infer<typeof ProviderEntryWriteSchema>;

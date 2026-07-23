@@ -302,6 +302,10 @@ export const en = {
     userAgent: "User-Agent (provider)",
     userAgentHint:
       "Sent on agent requests (Pi/OpenAI SDK). Use node if the gateway blocks OpenAI/JS. Shared by all models on this endpoint.",
+    supportsDeveloperRole: "Use OpenAI developer role",
+    supportsDeveloperRoleHint:
+      "Off by default. Enable only for official OpenAI (or fully compatible) endpoints. Third-party gateways often reject role “developer” with 400.",
+    developerRoleOn: "developer role on",
     addingUnderProvider: "Adding under provider {id}",
     maxContextTokens: "Max context (tokens)",
     maxContextTokensHint:

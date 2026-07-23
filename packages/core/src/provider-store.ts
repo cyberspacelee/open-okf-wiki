@@ -99,6 +99,7 @@ export function flattenModels(config: ProviderConfig): ModelProfile[] {
             ? { maxContextTokens: m.maxContextTokens }
             : {}),
           headers: mergeHeaders(p.headers, m.headers),
+          supportsDeveloperRole: p.supportsDeveloperRole === true,
         }),
       );
     }
@@ -230,6 +231,7 @@ export function toModelProfilePublic(
       ? { maxContextTokens: profile.maxContextTokens }
       : {}),
     ...(profile.headers ? { headers: profile.headers } : {}),
+    supportsDeveloperRole: profile.supportsDeveloperRole === true,
   };
 }
 
@@ -244,6 +246,7 @@ export function toProviderEntryPublic(p: ProviderEntry): ProviderEntryPublic {
     apiKeyMasked: maskSecret(apiKey),
     apiShape: p.apiShape ?? "completions",
     ...(p.headers ? { headers: p.headers } : {}),
+    supportsDeveloperRole: p.supportsDeveloperRole === true,
     models: (p.models ?? []).map((m) => ({
       id: m.id,
       name: m.name,
@@ -321,6 +324,7 @@ export async function createProviderEntry(
     baseUrl: (input.baseUrl ?? "").trim(),
     apiKey: typeof input.apiKey === "string" ? input.apiKey : "",
     apiShape: input.apiShape ?? "completions",
+    supportsDeveloperRole: input.supportsDeveloperRole === true,
     ...(headers ? { headers } : {}),
     models: [],
   });
@@ -364,6 +368,10 @@ export async function updateProviderEntry(
   if (input.headers !== undefined) {
     headers = normalizeHeaders(input.headers === null ? null : input.headers);
   }
+  const supportsDeveloperRole =
+    input.supportsDeveloperRole !== undefined
+      ? input.supportsDeveloperRole === true
+      : existing.supportsDeveloperRole === true;
   const provider = ProviderEntrySchema.parse({
     id: existing.id,
     name: input.name.trim(),
@@ -371,6 +379,7 @@ export async function updateProviderEntry(
     baseUrl: (input.baseUrl ?? "").trim(),
     apiKey,
     apiShape: input.apiShape ?? existing.apiShape,
+    supportsDeveloperRole,
     ...(headers ? { headers } : {}),
     models: existing.models,
   });
@@ -437,6 +446,7 @@ export async function createModelProfile(
     headers: normalizeHeaders(
       input.headers === null ? null : input.headers ?? undefined,
     ),
+    supportsDeveloperRole: input.supportsDeveloperRole,
   };
   if (!write.name || !write.modelId) {
     throw new Error("name and modelId are required");
@@ -486,12 +496,17 @@ export async function createModelProfile(
       write.headers !== undefined
         ? write.headers
         : p.headers;
+    const supportsDeveloperRole =
+      write.supportsDeveloperRole !== undefined
+        ? write.supportsDeveloperRole === true
+        : p.supportsDeveloperRole === true;
     providers[targetIndex] = ProviderEntrySchema.parse({
       ...p,
       // Allow first create under empty provider to set connection from form.
       baseUrl: p.baseUrl?.trim() || write.baseUrl,
       apiKey: p.apiKey || write.apiKey,
       apiShape: p.apiShape ?? write.apiShape,
+      supportsDeveloperRole,
       ...(nextHeaders ? { headers: nextHeaders } : { headers: undefined }),
       models: [...p.models, catalogModel],
     });
@@ -508,6 +523,7 @@ export async function createModelProfile(
         baseUrl: write.baseUrl,
         apiKey: write.apiKey,
         apiShape: write.apiShape,
+        supportsDeveloperRole: write.supportsDeveloperRole === true,
         ...(write.headers ? { headers: write.headers } : {}),
         models: [catalogModel],
       }),
@@ -571,6 +587,10 @@ export async function updateModelProfile(
   if (input.headers !== undefined) {
     headers = normalizeHeaders(input.headers === null ? null : input.headers);
   }
+  const supportsDeveloperRole =
+    input.supportsDeveloperRole !== undefined
+      ? input.supportsDeveloperRole === true
+      : provider.supportsDeveloperRole === true;
 
   const models = [...provider.models];
   models[loc.modelIndex] = catalogModel;
@@ -582,6 +602,7 @@ export async function updateModelProfile(
     baseUrl: (input.baseUrl ?? provider.baseUrl ?? "").trim(),
     apiKey,
     apiShape: input.apiShape ?? provider.apiShape,
+    supportsDeveloperRole,
     ...(headers ? { headers } : {}),
     models,
   });
@@ -678,6 +699,11 @@ export type ResolvedProviderRuntime = {
   maxContextTokens: number | undefined;
   /** Effective HTTP headers for Pi / probe. */
   headers: Record<string, string> | undefined;
+  /**
+   * When true, Pi may emit role "developer" for system prompts.
+   * Default false for third-party OpenAI-compatible gateways.
+   */
+  supportsDeveloperRole: boolean;
   source: {
     baseUrl: "stored" | "env" | "none";
     apiKey: "stored" | "env" | "none";
@@ -754,6 +780,7 @@ export function resolveProviderRuntime(
     profileName: profile?.name,
     maxContextTokens: profile?.maxContextTokens,
     headers,
+    supportsDeveloperRole: profile?.supportsDeveloperRole === true,
     source: { baseUrl: baseUrlSource, apiKey: apiKeySource },
   };
 }

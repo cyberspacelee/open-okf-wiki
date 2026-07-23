@@ -64,6 +64,11 @@ const emptyForm = {
   maxContextTokens: "",
   /** Provider-level User-Agent (default node for gateway WAF). */
   userAgent: "node",
+  /**
+   * When true, allow OpenAI `developer` role (official OpenAI).
+   * Default false — third-party gateways often reject it.
+   */
+  supportsDeveloperRole: false,
   /** When adding under an existing provider. */
   providerId: "",
   clearApiKey: false,
@@ -158,6 +163,7 @@ export function SettingsPage() {
           ? String(model.maxContextTokens)
           : "",
       userAgent: model.headers?.["User-Agent"] ?? model.headers?.["user-agent"] ?? "node",
+      supportsDeveloperRole: model.supportsDeveloperRole === true,
       providerId: model.providerId ?? "",
       clearApiKey: false,
     });
@@ -236,6 +242,7 @@ export function SettingsPage() {
             : {}),
         ...(maxContextTokens !== undefined ? { maxContextTokens } : {}),
         headers,
+        supportsDeveloperRole: form.supportsDeveloperRole,
       };
       const result =
         editorMode === "edit" && editingId
@@ -460,6 +467,9 @@ export function SettingsPage() {
                                 : "—"}
                               {entry.headers?.["User-Agent"]
                                 ? ` · UA=${entry.headers["User-Agent"]}`
+                                : ""}
+                              {entry.supportsDeveloperRole
+                                ? ` · ${t.globalSettings.developerRoleOn}`
                                 : ""}
                             </p>
                           </div>
@@ -815,6 +825,30 @@ export function SettingsPage() {
                         <FieldDescription>
                           {t.globalSettings.userAgentHint}
                         </FieldDescription>
+                      </Field>
+                      <Field orientation="horizontal">
+                        <Checkbox
+                          id="model-developer-role"
+                          checked={form.supportsDeveloperRole}
+                          onCheckedChange={(checked) =>
+                            setForm((f) => ({
+                              ...f,
+                              supportsDeveloperRole: checked === true,
+                            }))
+                          }
+                          data-testid="model-developer-role"
+                        />
+                        <FieldContent>
+                          <FieldLabel
+                            htmlFor="model-developer-role"
+                            className="font-normal"
+                          >
+                            {t.globalSettings.supportsDeveloperRole}
+                          </FieldLabel>
+                          <FieldDescription>
+                            {t.globalSettings.supportsDeveloperRoleHint}
+                          </FieldDescription>
+                        </FieldContent>
                       </Field>
                       {form.providerId ? (
                         <p className="muted small" data-testid="model-provider-hint">

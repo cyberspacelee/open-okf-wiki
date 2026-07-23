@@ -50,6 +50,11 @@ export type ResolvePiModelInput = {
    * Merged over the product default User-Agent: node.
    */
   headers?: Record<string, string>;
+  /**
+   * When true, allow OpenAI `developer` role for system prompts.
+   * Default false — most third-party gateways reject `developer`.
+   */
+  supportsDeveloperRole?: boolean;
 };
 
 export type ResolvedPiModel = {
@@ -176,10 +181,9 @@ export async function resolvePiModelFromProvider(
   // Pi maps systemPrompt → role "developer" when reasoning=true and
   // compat.supportsDeveloperRole !== false. Official OpenAI accepts it;
   // most third-party gateways return 400 "invalid role developer".
-  // Force system role for product openai-compatible endpoints.
-  // See: pi-ai openai-completions / openai-responses-shared.
+  // Provider setting controls this; product default is false.
   const compat = {
-    supportsDeveloperRole: false,
+    supportsDeveloperRole: input.supportsDeveloperRole === true,
   };
 
   modelRuntime.registerProvider(providerId, {
@@ -238,6 +242,7 @@ export async function resolvePiModelFromProvider(
     profileName: input.profileName,
     maxContextTokens: input.maxContextTokens,
     headers,
+    supportsDeveloperRole: input.supportsDeveloperRole === true,
     source: {
       baseUrl: baseUrl ? "stored" : "none",
       apiKey: apiKey ? "stored" : "none",
@@ -305,5 +310,6 @@ export async function resolveWorkspacePiModel(input: {
     maxContextTokens: runtime.maxContextTokens,
     providerKind: runtime.providerKind,
     headers: runtime.headers,
+    supportsDeveloperRole: runtime.supportsDeveloperRole,
   });
 }

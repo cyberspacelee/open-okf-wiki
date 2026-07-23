@@ -298,6 +298,10 @@ export const zh: MessageTree = {
     userAgent: "User-Agent（Provider）",
     userAgentHint:
       "Agent 请求（Pi/OpenAI SDK）使用。若网关拦截 OpenAI/JS，请用 node。同一 endpoint 下所有模型共享。",
+    supportsDeveloperRole: "使用 OpenAI developer role",
+    supportsDeveloperRoleHint:
+      "默认关闭。仅官方 OpenAI（或完全兼容）可开启。多数第三方网关会因 role “developer” 返回 400。",
+    developerRoleOn: "developer role 已开",
     addingUnderProvider: "正在添加到 Provider {id}",
     maxContextTokens: "最大上下文（tokens）",
     maxContextTokensHint:
