@@ -99,6 +99,35 @@ describe("projectPiMessages", () => {
       0,
     );
   });
+
+  it("projects toolCall args and pairs toolResult text", () => {
+    const rows = projectPiMessages([
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "tc1",
+            name: "read",
+            arguments: { path: "wiki/overview.md" },
+          },
+        ],
+        stopReason: "toolUse",
+      },
+      {
+        role: "toolResult",
+        toolCallId: "tc1",
+        content: [{ type: "text", text: "# Overview\nHello" }],
+        isError: false,
+      },
+    ]);
+    assert.equal(rows.length, 1);
+    const tools = rows[0]!.tools;
+    assert.ok(tools?.length === 1);
+    assert.equal(tools![0]!.name, "read");
+    assert.match(tools![0]!.input ?? "", /overview\.md/);
+    assert.match(tools![0]!.output ?? "", /Overview/);
+  });
 });
 
 describe("findPiSessionFile / loadPiSessionHistory", () => {

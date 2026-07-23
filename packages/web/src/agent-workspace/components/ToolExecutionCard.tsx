@@ -27,8 +27,8 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import {
-  formatPayloadText,
   formatToolDisplay,
+  formatToolResultText,
   type AgentToolCall,
 } from "../hooks/project-agent-events";
 
@@ -119,7 +119,8 @@ function expandBody(
 
 export function ToolExecutionCard({ tool, settled }: ToolExecutionCardProps) {
   const display = formatToolDisplay(tool.name, tool.input);
-  const output = formatPayloadText(tool.output);
+  // Prefer already-extracted plain text; peel JSON envelopes if any remain.
+  const output = formatToolResultText(tool.output) ?? "";
   const isError = tool.status === "error";
   const isRunning = tool.status === "running" || tool.status === "pending";
 

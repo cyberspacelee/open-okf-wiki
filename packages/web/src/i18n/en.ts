@@ -496,6 +496,13 @@ export const en = {
     roleTool: "Tool",
     toolInput: "Input",
     toolOutput: "Output",
+    cardGate: "Gate",
+    cardPhase: "Run",
+    cardProgress: "Progress",
+    cardPages: "Pages",
+    cardWork: "Work",
+    cardReview: "Review",
+    cardRun: "Job",
     thinking: "Thinking",
     thinkingStreaming: "Thinking…",
     /** Empty running work unit (no message/tools yet) — never "Thinking". */

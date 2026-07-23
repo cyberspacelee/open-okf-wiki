@@ -13,6 +13,7 @@ import {
   extractMessageThinking,
   formatPayloadText,
   formatToolDisplay,
+  formatToolResultText,
   isTerminalOrWaitingPhase,
   mergeWorkUnitsIntoTimeline,
   workUnitHasBody,
@@ -743,7 +744,7 @@ describe("applyProductEvent", () => {
     const phaseCards = messages.filter((m) => m.product?.kind === "run_phase");
     assert.equal(phaseCards.length, 1);
     assert.equal(phaseCards[0]!.product?.phase, "awaiting_publish");
-    assert.match(phaseCards[0]!.content, /awaiting_publish/);
+    assert.match(phaseCards[0]!.content, /publish approval|awaiting_publish/i);
   });
 
   it("upserts consecutive gate cards of the same kind", () => {
@@ -920,6 +921,27 @@ describe("formatPayloadText", () => {
     assert.ok(out.length < body.length + 40);
     assert.match(out, /…\[truncated \d+ chars\]$/);
     assert.ok(out.startsWith("{\n"));
+  });
+});
+
+describe("formatToolResultText", () => {
+  it("extracts text from Pi content array envelope", () => {
+    const out = formatToolResultText({
+      content: [{ type: "text", text: "line one\nline two" }],
+      isError: false,
+    });
+    assert.equal(out, "line one\nline two");
+  });
+
+  it("peels JSON string envelopes once", () => {
+    const raw = JSON.stringify({
+      content: [{ type: "text", text: "hello file" }],
+    });
+    assert.equal(formatToolResultText(raw), "hello file");
+  });
+
+  it("returns undefined for opaque objects without text", () => {
+    assert.equal(formatToolResultText({ foo: 1, bar: true }), undefined);
   });
 });
 

@@ -153,6 +153,8 @@ function historyToMessages(
     tools: m.tools?.map((t) => ({
       id: t.id,
       name: t.name,
+      input: t.input,
+      output: t.output,
       status:
         t.status === "running"
           ? ("running" as const)

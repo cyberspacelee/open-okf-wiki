@@ -7,7 +7,6 @@ import { useState } from "react";
 import { PlusIcon, Trash2Icon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { PiSessionSummary } from "../../api";
@@ -129,14 +128,6 @@ export function SessionList({
                       {formatLabel(session)}
                     </div>
                     <div className="flex flex-wrap items-center gap-1.5">
-                      {session.placeholder ? (
-                        <Badge
-                          variant="outline"
-                          className="h-4 px-1.5 text-[10px]"
-                        >
-                          stub
-                        </Badge>
-                      ) : null}
                       <span className="text-[10px] text-muted-foreground">
                         {formatUpdated(session.updatedAt)}
                       </span>

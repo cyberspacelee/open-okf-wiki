@@ -175,9 +175,9 @@ export function AgentFocusDrawer({
         data-testid="work-unit-drawer"
       >
         <SheetHeader className="min-w-0">
-          <SheetTitle className="flex min-w-0 flex-wrap items-center gap-2 font-mono text-sm">
-            <span className="min-w-0 break-all">
-              {title || t.agentWorkspace.roleAssistant}
+          <SheetTitle className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
+            <span className="min-w-0 break-words">
+              {task?.trim() || title || t.agentWorkspace.roleAssistant}
             </span>
             <Badge
               variant={

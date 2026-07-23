@@ -3,7 +3,7 @@
  */
 
 import type { ProductWorkUnitEvent, WorkUnitStatus } from "@okf-wiki/contract";
-import { safeStringify } from "./format.ts";
+import { compactToolInput, formatToolResultText } from "./format.ts";
 import type {
   AgentToolCall,
   WorkUnitEventLike,
@@ -50,10 +50,10 @@ export function workUnitToolsToAgentTools(
   return tools.map((t) => ({
     id: t.toolCallId,
     name: t.toolName,
-    input: safeStringify(t.input),
+    input: compactToolInput(t.input),
     output: t.errorText
       ? t.errorText
-      : safeStringify(t.output),
+      : formatToolResultText(t.output),
     status:
       t.state === "output-error"
         ? ("error" as const)

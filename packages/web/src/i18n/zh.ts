@@ -485,6 +485,13 @@ export const zh: MessageTree = {
     roleTool: "工具",
     toolInput: "输入",
     toolOutput: "输出",
+    cardGate: "门控",
+    cardPhase: "运行",
+    cardProgress: "进度",
+    cardPages: "页面",
+    cardWork: "工作",
+    cardReview: "审查",
+    cardRun: "任务",
     thinking: "思考",
     thinkingStreaming: "思考中…",
     /** 空 running 工作单元（尚无 message/tools）— 禁止显示「思考中」。 */

@@ -27,11 +27,13 @@ export type {
 } from "./project/types.ts";
 
 export {
+  compactToolInput,
   extractAssistantError,
   extractMessageText,
   extractMessageThinking,
   formatPayloadText,
   formatToolDisplay,
+  formatToolResultText,
   makeId,
   safeStringify,
   toolPathLabel,

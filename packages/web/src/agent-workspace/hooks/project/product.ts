@@ -15,38 +15,68 @@ import type {
   WorkAgentChip,
 } from "./types.ts";
 
+/** Human phase labels for operator timeline (not protocol enums). */
+function phaseLabel(phase: string | undefined): string {
+  switch (phase) {
+    case "idle":
+      return "Ready";
+    case "planning":
+      return "Planning wiki structure";
+    case "awaiting_plan":
+      return "Waiting for plan approval";
+    case "writing":
+    case "producing":
+      return "Writing wiki pages";
+    case "awaiting_publish":
+    case "awaiting_publication":
+      return "Waiting for publish approval";
+    case "publishing":
+      return "Publishing";
+    case "done":
+    case "published":
+      return "Published";
+    case "failed":
+      return "Failed";
+    case "cancelled":
+      return "Cancelled";
+    case "publication_declined":
+      return "Publication declined";
+    default:
+      return phase?.replace(/_/g, " ") || "Working";
+  }
+}
+
 export function productCardContent(event: ProductSseLike): string {
   switch (event.kind) {
     case "run_phase": {
-      const bits = [`Phase: ${event.phase ?? "?"}`];
-      if (event.status) bits.push(`status=${event.status}`);
-      if (event.runId) bits.push(`run=${event.runId}`);
-      if (typeof event.message === "string") bits.push(event.message);
-      return bits.join(" · ");
+      const head = phaseLabel(event.phase);
+      if (typeof event.message === "string" && event.message.trim()) {
+        return `${head} — ${event.message.trim()}`;
+      }
+      return head;
     }
     case "gate": {
-      const bits = [`Gate: ${event.gate ?? "?"}`];
-      if (event.runId) bits.push(`run=${event.runId}`);
-      if (event.question) bits.push(event.question);
-      if (event.pages?.length) {
-        bits.push(
-          `pages: ${event.pages
-            .slice(0, 8)
-            .map((p) => (typeof p === "string" ? p : p.path))
-            .join(", ")}`,
-        );
+      if (event.gate === "plan") {
+        const n = event.pages?.length;
+        return n
+          ? `Plan ready — ${n} page(s). Approve, revise, or deny below.`
+          : "Plan ready. Approve, revise, or deny below.";
       }
-      return bits.join(" · ");
+      if (event.gate === "publication") {
+        return "Wiki ready to publish. Approve or deny below.";
+      }
+      return event.question?.trim() || "Input needed";
     }
     case "run_link": {
-      const bits = [`Linked run ${event.runId ?? "?"}`];
-      if (event.status) bits.push(`status=${event.status}`);
-      return bits.join(" · ");
+      const short = event.runId ? event.runId.slice(0, 8) : "—";
+      if (event.status) {
+        return `Linked job ${short} · ${String(event.status).replace(/_/g, " ")}`;
+      }
+      return `Linked job ${short}`;
     }
     case "progress": {
-      const bits = [`Produce: ${event.phase ?? "?"}`];
-      if (event.label) bits.push(event.label);
-      return bits.join(" · ");
+      const head = phaseLabel(event.phase);
+      return event.label?.trim() ? `${head} — ${event.label.trim()}` : head;
     }
     case "plan_progress": {
       const pages = Array.isArray(event.pages) ? event.pages : [];
@@ -61,26 +91,26 @@ export function productCardContent(event: ProductSseLike): string {
       const lines = pages.slice(0, 12).map((p) => {
         if (typeof p === "string") return `· ${p}`;
         const pg = p as PlanProgressPage;
-        return `· [${pg.status}] ${pg.path}`;
+        const mark =
+          pg.status === "done" ? "✓" : pg.status === "writing" ? "…" : "·";
+        return `${mark} ${pg.path}`;
       });
       const more =
         pages.length > 12 ? `\n… +${pages.length - 12} more` : "";
-      return [`Spec pages ${done}/${total}`, ...lines].join("\n") + more;
+      return [`Writing pages ${done}/${total}`, ...lines].join("\n") + more;
     }
     case "work_unit": {
-      const bits = [
-        `Unit ${event.role ?? "?"}`,
-        event.unitId ?? "",
-        event.status ?? "",
-      ].filter(Boolean);
-      if (event.parentId) bits.push(`parent=${event.parentId}`);
-      if (event.task) bits.push(event.task);
-      if (event.receiptPath) bits.push(event.receiptPath);
-      return bits.join(" · ");
+      const role = event.role ?? "agent";
+      const task = event.task?.trim();
+      const status = event.status?.replace(/_/g, " ") ?? "";
+      if (task) return `${role}: ${task}${status ? ` (${status})` : ""}`;
+      return `${role}${status ? ` · ${status}` : ""}`;
     }
     case "work_run": {
       const agents = event.agents ?? [];
-      const running = agents.filter((a) => a.status === "running").length;
+      const running = agents.filter(
+        (a) => a.status === "running" || a.status === "pending",
+      ).length;
       const done = agents.filter(
         (a) =>
           a.status === "settled" ||
@@ -88,17 +118,18 @@ export function productCardContent(event: ProductSseLike): string {
           a.status === "done",
       ).length;
       const bits = [
-        `Work · Wiki Run ${(event.runId ?? "?").slice(0, 8)}`,
-        event.phase ? `phase=${event.phase}` : null,
-        `${agents.length} unit(s)`,
+        "Wiki work",
         running ? `${running} running` : null,
         done ? `${done} done` : null,
+        agents.length ? `${agents.length} unit(s)` : null,
       ].filter(Boolean);
       return bits.join(" · ");
     }
     case "defects": {
-      if (event.clean) return `Review: clean (round ${event.round ?? 1})`;
-      return `Review: ${event.defectCount ?? 0} defect(s) (round ${event.round ?? 1})`;
+      if (event.clean) {
+        return `Review passed (round ${event.round ?? 1})`;
+      }
+      return `Review found ${event.defectCount ?? 0} issue(s) (round ${event.round ?? 1})`;
     }
     default: {
       const _exhaustive: never = event.kind;

@@ -4,13 +4,14 @@
  */
 
 import {
+  compactToolInput,
   extractAssistantError,
   extractMessageText,
   extractMessageThinking,
+  formatToolResultText,
   isRecord,
   makeId,
   nowIso,
-  safeStringify,
 } from "./format.ts";
 import type {
   AgentMessage,
@@ -472,7 +473,7 @@ export function applyPiEvent(
       typeof body.toolCallId === "string" ? body.toolCallId : makeId("tool");
     const toolName =
       typeof body.toolName === "string" ? body.toolName : "tool";
-    const input = safeStringify(body.args);
+    const input = compactToolInput(body.args);
     const tool: AgentToolCall = {
       id: toolCallId,
       name: toolName,
@@ -525,7 +526,7 @@ export function applyPiEvent(
     const toolCallId =
       typeof body.toolCallId === "string" ? body.toolCallId : null;
     if (!toolCallId) return prev;
-    const partial = safeStringify(body.partialResult);
+    const partial = formatToolResultText(body.partialResult);
     return prev.map((m) => {
       if (!m.tools?.some((t) => t.id === toolCallId)) return m;
       return {
@@ -543,7 +544,7 @@ export function applyPiEvent(
     const toolCallId =
       typeof body.toolCallId === "string" ? body.toolCallId : null;
     if (!toolCallId) return prev;
-    const output = safeStringify(body.result);
+    const output = formatToolResultText(body.result);
     const isError = body.isError === true;
     return prev.map((m) => {
       if (!m.tools?.some((t) => t.id === toolCallId)) return m;

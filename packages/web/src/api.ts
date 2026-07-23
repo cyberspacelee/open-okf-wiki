@@ -929,7 +929,15 @@ export type AgentSessionHistoryMessage = {
   status?: "done" | "error" | string;
   errorMessage?: string;
   createdAt?: string;
-  tools?: Array<{ id: string; name: string; status: "running" | "done" | "error" }>;
+  tools?: Array<{
+    id: string;
+    name: string;
+    status: "running" | "done" | "error";
+    /** Compact JSON args when known (cold-load from toolCall.arguments). */
+    input?: string;
+    /** Plain-text result when paired toolResult is available. */
+    output?: string;
+  }>;
 };
 
 export type AgentSessionSnapshot = {

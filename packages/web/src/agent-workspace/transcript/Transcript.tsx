@@ -118,24 +118,74 @@ function ThinkingBlock({
 
 function productBadgeLabel(product: AgentProductMeta): string {
   switch (product.kind) {
-    case "run_phase":
-      return product.phase ?? "phase";
+    case "run_phase": {
+      const p = product.phase ?? "phase";
+      if (p === "awaiting_plan") return "needs plan OK";
+      if (p === "awaiting_publish" || p === "awaiting_publication") {
+        return "needs publish OK";
+      }
+      if (p === "writing" || p === "producing") return "writing";
+      if (p === "done" || p === "published") return "done";
+      return p.replace(/_/g, " ");
+    }
     case "gate":
-      return product.gate ? `gate:${product.gate}` : "gate";
+      return product.gate === "plan"
+        ? "plan"
+        : product.gate === "publication"
+          ? "publish"
+          : "gate";
     case "run_link":
-      return "run";
+      return "job";
     case "progress":
-      return product.phase ?? "progress";
+      return "progress";
     case "plan_progress":
-      return "spec pages";
+      return "pages";
     case "work_run":
-      return product.phase ?? "work";
+      return "work";
     case "defects":
-      return product.clean ? "review:ok" : "review:defects";
+      return product.clean ? "clean" : "issues";
     default: {
       const _exhaustive: never = product.kind;
       return String(_exhaustive);
     }
+  }
+}
+
+function unitStatusLabel(status: string): string {
+  switch (status) {
+    case "running":
+      return "running";
+    case "pending":
+      return "queued";
+    case "settled":
+    case "complete":
+    case "done":
+      return "done";
+    case "failed":
+      return "failed";
+    default:
+      return status.replace(/_/g, " ");
+  }
+}
+
+function unitRoleLabel(role: string): string {
+  switch (role) {
+    case "planner":
+    case "plan":
+      return "Planner";
+    case "domain":
+      return "Domain";
+    case "leaf":
+      return "Leaf";
+    case "reviewer":
+    case "review":
+      return "Reviewer";
+    case "root_research":
+      return "Research";
+    case "root_write":
+      return "Writer";
+    default:
+      return role;
   }
 }
 
@@ -178,6 +228,11 @@ function WorkUnitToolRow({
     !unit?.message?.text?.trim() &&
     tools.length === 0;
 
+  const title =
+    chip.task?.trim() ||
+    unit?.task?.trim() ||
+    unitRoleLabel(chip.role);
+
   return (
     <Collapsible
       defaultOpen={isRunning || isFailed}
@@ -198,10 +253,10 @@ function WorkUnitToolRow({
           />
         )}
         <Badge variant="outline" className="shrink-0 text-[10px] normal-case">
-          {chip.role}
+          {unitRoleLabel(chip.role)}
         </Badge>
-        <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
-          {chip.task || chip.agentId}
+        <span className="min-w-0 flex-1 truncate text-[12px] font-medium">
+          {title}
         </span>
         <Badge
           variant={
@@ -213,7 +268,7 @@ function WorkUnitToolRow({
           }
           className="shrink-0 text-[10px] normal-case"
         >
-          {chip.status}
+          {unitStatusLabel(chip.status)}
         </Badge>
       </CollapsibleTrigger>
       <CollapsibleContent className="min-w-0 space-y-2 border-t border-border/60 px-2.5 py-2">
@@ -260,7 +315,7 @@ function WorkUnitToolRow({
             }
           >
             <EyeIcon className="size-3" />
-            Open
+            {t.agentWorkspace.openFull}
           </button>
         ) : null}
       </CollapsibleContent>
@@ -284,12 +339,10 @@ function WorkRunCard({
   return (
     <div className="flex min-w-0 flex-col gap-2" data-testid="work-run-chip">
       <div className="flex flex-wrap items-center gap-2 text-xs">
-        <span className="font-medium">
-          Work · Wiki Run {(product.runId ?? "—").slice(0, 8)}
-        </span>
+        <span className="font-medium">Wiki work</span>
         {product.phase ? (
           <Badge variant="outline" className="normal-case text-[10px]">
-            {product.phase}
+            {productBadgeLabel({ ...product, kind: "run_phase", phase: product.phase })}
           </Badge>
         ) : null}
         {running > 0 ? (
@@ -399,22 +452,22 @@ function MessageCard({
             product?.kind === "work_run" && "border-primary/25 bg-primary/5",
           )}
         >
-          <div className="mb-1 flex flex-wrap items-center gap-2 text-[10px] font-medium tracking-wide uppercase opacity-70">
-            <span>
+          <div className="mb-1 flex flex-wrap items-center gap-2 text-[10px] font-medium tracking-wide opacity-70">
+            <span className="uppercase">
               {product
                 ? product.kind === "gate"
-                  ? "Product gate"
+                  ? t.agentWorkspace.cardGate
                   : product.kind === "run_phase"
-                    ? "Run phase"
+                    ? t.agentWorkspace.cardPhase
                     : product.kind === "progress"
-                      ? "Progress"
+                      ? t.agentWorkspace.cardProgress
                       : product.kind === "plan_progress"
-                        ? "Spec queue"
+                        ? t.agentWorkspace.cardPages
                         : product.kind === "work_run"
-                          ? "Work"
+                          ? t.agentWorkspace.cardWork
                           : product.kind === "defects"
-                            ? "Review"
-                            : "Run link"
+                            ? t.agentWorkspace.cardReview
+                            : t.agentWorkspace.cardRun
                 : isTool
                   ? t.agentWorkspace.roleTool
                   : t.agentWorkspace.roleSystem}
@@ -426,11 +479,6 @@ function MessageCard({
               >
                 {productBadgeLabel(product)}
               </Badge>
-            ) : null}
-            {product?.runId ? (
-              <span className="font-mono normal-case tracking-normal opacity-80">
-                {product.runId.slice(0, 8)}
-              </span>
             ) : null}
             {isError ? (
               <Badge variant="destructive" className="normal-case tracking-normal">

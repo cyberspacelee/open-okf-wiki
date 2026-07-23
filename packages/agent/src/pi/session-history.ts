@@ -15,6 +15,16 @@ import { readdir, stat } from "node:fs/promises";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { piSessionsDir } from "./session-paths.js";
 
+export type ProjectedHistoryTool = {
+  id: string;
+  name: string;
+  status: "running" | "done" | "error";
+  /** Compact JSON args for UI summary (OpenCode-style header). */
+  input?: string;
+  /** Plain-text result when available from paired toolResult. */
+  output?: string;
+};
+
 export type ProjectedHistoryMessage = {
   id: string;
   role: "user" | "assistant" | "system";
@@ -23,11 +33,7 @@ export type ProjectedHistoryMessage = {
   status?: "done" | "error";
   errorMessage?: string;
   createdAt?: string;
-  tools?: Array<{
-    id: string;
-    name: string;
-    status: "running" | "done" | "error";
-  }>;
+  tools?: ProjectedHistoryTool[];
 };
 
 export type PiSessionHistory = {
@@ -64,8 +70,42 @@ function thinkingFromContent(content: unknown): string {
   return parts.join("");
 }
 
+function compactArgs(args: unknown): string | undefined {
+  if (args === undefined || args === null) return undefined;
+  if (typeof args === "string") {
+    const t = args.trim();
+    return t || undefined;
+  }
+  try {
+    return JSON.stringify(args);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Pull plain text from a Pi toolResult content array / envelope. */
+function toolResultText(content: unknown): string | undefined {
+  if (typeof content === "string" && content.trim()) return content.trim();
+  if (Array.isArray(content)) {
+    const parts: string[] = [];
+    for (const block of content) {
+      if (!block || typeof block !== "object") continue;
+      const b = block as { type?: string; text?: string };
+      if (typeof b.text === "string" && b.text) parts.push(b.text);
+    }
+    if (parts.length) return parts.join("\n");
+  }
+  if (content && typeof content === "object") {
+    const c = content as { content?: unknown; text?: string };
+    if (typeof c.text === "string" && c.text.trim()) return c.text.trim();
+    if (c.content !== undefined) return toolResultText(c.content);
+  }
+  return undefined;
+}
+
 function toolsFromContent(
   content: unknown,
+  resultByCallId?: Map<string, { text?: string; isError?: boolean }>,
 ): ProjectedHistoryMessage["tools"] {
   if (!Array.isArray(content)) return undefined;
   const tools: NonNullable<ProjectedHistoryMessage["tools"]> = [];
@@ -77,16 +117,58 @@ function toolsFromContent(
       name?: string;
       toolCallId?: string;
       toolName?: string;
+      arguments?: unknown;
+      input?: unknown;
+      args?: unknown;
     };
     if (b.type === "toolCall" || b.type === "tool_use") {
+      const id = b.id ?? b.toolCallId ?? `tool_${tools.length}`;
+      const paired = resultByCallId?.get(id);
+      const input = compactArgs(b.arguments ?? b.input ?? b.args);
       tools.push({
-        id: b.id ?? b.toolCallId ?? `tool_${tools.length}`,
+        id,
         name: b.name ?? b.toolName ?? "tool",
-        status: "done",
+        status: paired?.isError ? "error" : "done",
+        input,
+        output: paired?.text,
       });
     }
   }
   return tools.length > 0 ? tools : undefined;
+}
+
+/**
+ * Index toolResult rows so assistant toolCall blocks can show args + result
+ * on cold load (pi-web nests tools under the assistant turn).
+ */
+function indexToolResults(
+  messages: unknown[],
+): Map<string, { text?: string; isError?: boolean }> {
+  const map = new Map<string, { text?: string; isError?: boolean }>();
+  for (const msg of messages) {
+    if (!msg || typeof msg !== "object") continue;
+    const m = msg as {
+      role?: string;
+      toolCallId?: string;
+      tool_call_id?: string;
+      content?: unknown;
+      isError?: boolean;
+      is_error?: boolean;
+    };
+    const role = m.role;
+    const isToolResult =
+      role === "toolResult" ||
+      role === "tool" ||
+      (role === "user" && Boolean(m.toolCallId || m.tool_call_id));
+    if (!isToolResult) continue;
+    const id = m.toolCallId ?? m.tool_call_id;
+    if (!id || typeof id !== "string") continue;
+    map.set(id, {
+      text: toolResultText(m.content),
+      isError: m.isError === true || m.is_error === true,
+    });
+  }
+  return map;
 }
 
 /** Pure projection of Pi LLM messages → UI history rows (exported for tests). */
@@ -94,6 +176,7 @@ export function projectPiMessages(
   messages: unknown[],
   entryIds?: string[],
 ): ProjectedHistoryMessage[] {
+  const resultByCallId = indexToolResults(messages);
   const out: ProjectedHistoryMessage[] = [];
   messages.forEach((msg, i) => {
     if (!msg || typeof msg !== "object") return;
@@ -116,7 +199,10 @@ export function projectPiMessages(
     }
     const text = textFromContent(m.content);
     const thinking = thinkingFromContent(m.content);
-    const tools = role === "assistant" ? toolsFromContent(m.content) : undefined;
+    const tools =
+      role === "assistant"
+        ? toolsFromContent(m.content, resultByCallId)
+        : undefined;
     const stopReason = typeof m.stopReason === "string" ? m.stopReason : undefined;
     const errorMessage =
       typeof m.errorMessage === "string" && m.errorMessage.trim()
