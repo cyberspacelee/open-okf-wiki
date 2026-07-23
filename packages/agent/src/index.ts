@@ -176,6 +176,8 @@ export {
 export {
   loadPiSessionHistory,
   findPiSessionFile,
+  isPiSessionJsonlName,
+  projectPiMessages,
   type PiSessionHistory,
   type ProjectedHistoryMessage,
 } from "./pi/session-history.js";

@@ -23,6 +23,7 @@ import {
   ensurePiSessionsDir,
   getRegisteredAgentSession,
   registerAgentSession,
+  resolveSessionHistoryFile,
 } from "../agent-session-registry.ts";
 import {
   getRecentAgentSessionEvents,
@@ -218,8 +219,17 @@ export async function handleGetAgentSession(
     return;
   }
 
-  const history = await loadPiSessionHistory(workspace.rootPath, sessionId);
   const reg = getRegisteredAgentSession(workspace.id, sessionId);
+  // Prefer live / meta sessionFile so cold history matches the JSONL Pi writes
+  // (`{timestamp}_{id}.jsonl`, not `{id}.jsonl` — see pi-web SessionManager).
+  const preferredPath = await resolveSessionHistoryFile(
+    workspace.rootPath,
+    sessionId,
+    reg,
+  );
+  const history = await loadPiSessionHistory(workspace.rootPath, sessionId, {
+    preferredPath,
+  });
   let runStatus: string | undefined;
   if (reg?.runId) {
     try {

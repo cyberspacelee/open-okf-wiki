@@ -6,6 +6,9 @@
  * - user messages: ignored (UI already optimistically appended)
  * - toolResult messages: ignored as cards (tool_execution_* owns tool chrome)
  * - assistant: one bubble per assistant message; text_delta + thinking_delta stream in
+ * - message_end finalizes lastAssistant when streaming id was cleared (agent_end /
+ *   duplicate end) — never invent a second thinking+answer card for the same turn
+ * - message_start reuses an already-streaming bubble (early deltas before start)
  * - stopReason "error" / errorMessage surface as status "error" (never silent empty)
  * - tool_execution_*: attach to the **last assistant** bubble (never invent a new one)
  *
@@ -361,14 +364,57 @@ export function applyPiEvent(
     // Tool results are mirrored via tool_execution_*; skip empty cards.
     if (role === "toolResult" || role === "tool") return prev;
 
-    // Assistant (or unknown role with assistant-shaped content): new bubble.
-    const id = makeId("asst");
-    refs.streamingAssistantId = id;
-    refs.lastAssistantId = id;
     const initial = extractMessageText(message);
     const thinking = extractMessageThinking(message);
     const err = extractAssistantError(message);
     const isError = err.isError;
+
+    // Reuse an in-flight assistant bubble (e.g. early thinking_delta opened one
+    // via ensureAssistantBubble before message_start). Creating a second card
+    // here is what users see as duplicated thinking + answer after the turn.
+    let reuseId: string | null = null;
+    const streamingIdx = findMessageIndex(prev, refs.streamingAssistantId);
+    if (streamingIdx >= 0) {
+      reuseId = prev[streamingIdx]!.id;
+    } else {
+      const lastIdx = findMessageIndex(prev, refs.lastAssistantId);
+      if (lastIdx >= 0 && prev[lastIdx]!.status === "streaming") {
+        reuseId = prev[lastIdx]!.id;
+      }
+    }
+
+    if (reuseId) {
+      refs.streamingAssistantId = reuseId;
+      refs.lastAssistantId = reuseId;
+      return prev.map((m) => {
+        if (m.id !== reuseId) return m;
+        return {
+          ...m,
+          content: isError
+            ? finalizeAssistantContent({
+                text: initial,
+                existing: m.content,
+                errorMessage: err.errorMessage,
+                isError: true,
+              })
+            : initial || m.content,
+          thinking: thinking || m.thinking,
+          thinkingStatus: thinking
+            ? isError
+              ? ("done" as const)
+              : ("streaming" as const)
+            : m.thinkingStatus,
+          status: isError ? "error" : "streaming",
+          errorMessage: err.errorMessage ?? m.errorMessage,
+          tools: m.tools ?? [],
+        };
+      });
+    }
+
+    // Assistant (or unknown role with assistant-shaped content): new bubble.
+    const id = makeId("asst");
+    refs.streamingAssistantId = id;
+    refs.lastAssistantId = id;
     return [
       ...prev,
       {
@@ -421,39 +467,60 @@ export function applyPiEvent(
     const isError = err.isError;
     const status = isError ? "error" : "done";
 
-    const id = refs.streamingAssistantId;
-    if (id) {
-      refs.streamingAssistantId = null;
-      // Keep lastAssistantId so tools that arrive after message_end still nest.
-      return prev.map((m) => {
-        if (m.id !== id) return m;
-        const content = finalizeAssistantContent({
-          text: finalText,
-          existing: m.content,
-          fixtureNote,
-          errorMessage: err.errorMessage,
-          isError,
+    // Prefer the streaming cursor; fall back to lastAssistant so that
+    // agent_end/agent_settled (which clear streamingAssistantId) or a
+    // duplicate message_end cannot invent a second thinking+answer card.
+    let id = refs.streamingAssistantId;
+    if (!id || findMessageIndex(prev, id) < 0) {
+      id = refs.lastAssistantId;
+    }
+    if (!id || findMessageIndex(prev, id) < 0) {
+      const idx = lastAssistantIndex(prev);
+      if (idx >= 0) id = prev[idx]!.id;
+    }
+
+    const targetIdx = id ? findMessageIndex(prev, id) : -1;
+    if (targetIdx >= 0) {
+      const existing = prev[targetIdx]!;
+      // Fixture-only ends (no LLM message body) after a settled turn must open a
+      // new card — otherwise turn 2 would rewrite the previous assistant.
+      const fixtureOnlyOnSettled =
+        Boolean(fixtureNote) &&
+        !finalText &&
+        !finalThinking &&
+        !isError &&
+        existing.status !== "streaming";
+
+      if (!fixtureOnlyOnSettled) {
+        refs.streamingAssistantId = null;
+        refs.lastAssistantId = existing.id;
+        // Keep lastAssistantId so tools that arrive after message_end still nest.
+        return prev.map((m) => {
+          if (m.id !== existing.id) return m;
+          const content = finalizeAssistantContent({
+            text: finalText,
+            existing: m.content,
+            fixtureNote,
+            errorMessage: err.errorMessage,
+            isError,
+          });
+          const thinking = finalThinking || m.thinking || undefined;
+          return {
+            ...m,
+            content,
+            thinking,
+            thinkingStatus: thinking ? ("done" as const) : m.thinkingStatus,
+            status,
+            errorMessage: err.errorMessage ?? m.errorMessage,
+          };
         });
-        const thinking =
-          finalThinking ||
-          m.thinking ||
-          undefined;
-        return {
-          ...m,
-          content,
-          thinking,
-          thinkingStatus: thinking
-            ? ("done" as const)
-            : m.thinkingStatus,
-          status,
-          errorMessage: err.errorMessage ?? m.errorMessage,
-        };
-      });
+      }
     }
 
     if (fixtureNote || finalText || finalThinking || isError) {
       const newId = makeId("asst");
       refs.lastAssistantId = newId;
+      refs.streamingAssistantId = null;
       const content = finalizeAssistantContent({
         text: finalText,
         existing: "",

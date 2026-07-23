@@ -57,6 +57,17 @@ export type CreateWikiSessionInput = {
    */
   sessionManager?: SessionManager;
   /**
+   * Product / Pi session id. When creating a new durable JSONL, passed as
+   * `SessionManager.create(..., { id })` so history lookup by product id works
+   * (pi-web uses the same id for file + API).
+   */
+  sessionId?: string;
+  /**
+   * Resume an existing Pi JSONL (absolute path). When set with workspaceRoot,
+   * opens that file instead of creating a new empty session.
+   */
+  sessionFile?: string;
+  /**
    * Workspace root for durable Pi JSONL sessions under
    * `{workspaceRoot}/.okf-wiki/pi-sessions/`.
    */
@@ -105,6 +116,8 @@ export type WikiSessionHandle = {
   scopedTools: boolean;
   /** Resolved context budget applied to compaction (if any). */
   contextBudget?: ContextBudget;
+  /** Absolute Pi JSONL path when durable (undefined for in-memory). */
+  sessionFile?: string;
   dispose: () => void;
 };
 
@@ -159,8 +172,22 @@ export async function createWikiSession(
     if (input.workspaceRoot) {
       const sessionDir = piSessionsDir(input.workspaceRoot);
       await mkdir(sessionDir, { recursive: true });
-      // Durable JSONL tree under workspace (ADR 0030).
-      sessionManager = SessionManager.create(runWorkDir, sessionDir);
+      // Durable JSONL under workspace (ADR 0030). Resume existing file when
+      // known; otherwise create with product sessionId (Pi names the file
+      // `{timestamp}_{id}.jsonl` — see findPiSessionFile).
+      if (input.sessionFile) {
+        sessionManager = SessionManager.open(
+          input.sessionFile,
+          sessionDir,
+          runWorkDir,
+        );
+      } else {
+        sessionManager = SessionManager.create(
+          runWorkDir,
+          sessionDir,
+          input.sessionId ? { id: input.sessionId } : undefined,
+        );
+      }
     } else {
       sessionManager = SessionManager.inMemory(runWorkDir);
     }
@@ -232,6 +259,7 @@ export async function createWikiSession(
     runWorkDir,
     scopedTools: useScoped,
     contextBudget: budget,
+    sessionFile: session.sessionFile,
     dispose: () => {
       session.dispose();
     },

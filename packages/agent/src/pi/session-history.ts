@@ -4,6 +4,10 @@
  *
  * Aligns with pi-ai content blocks: text, thinking, toolCall.
  * Failed assistant turns (stopReason error) are kept so the UI can show them.
+ *
+ * Pi file naming (SessionManager.newSession):
+ *   `{ISO-timestamp}_{sessionId}.jsonl` under the session dir
+ * Not `{sessionId}.jsonl`. findPiSessionFile must match that pattern.
  */
 
 import path from "node:path";
@@ -85,7 +89,8 @@ function toolsFromContent(
   return tools.length > 0 ? tools : undefined;
 }
 
-function projectPiMessages(
+/** Pure projection of Pi LLM messages → UI history rows (exported for tests). */
+export function projectPiMessages(
   messages: unknown[],
   entryIds?: string[],
 ): ProjectedHistoryMessage[] {
@@ -105,6 +110,7 @@ function projectPiMessages(
       return;
     }
     // Skip toolResult rows (pi-web nests tools under assistant).
+    // Pi toolResult uses role "toolResult"; some paths use user+toolCallId.
     if (role === "user" && m.toolCallId) {
       return;
     }
@@ -147,14 +153,42 @@ function projectPiMessages(
 }
 
 /**
+ * Whether a filename is Pi's durable session JSONL for `sessionId`.
+ * Matches `{timestamp}_{sessionId}.jsonl` and plain `{sessionId}.jsonl`.
+ */
+export function isPiSessionJsonlName(
+  fileName: string,
+  sessionId: string,
+): boolean {
+  if (!fileName.endsWith(".jsonl")) return false;
+  if (fileName === `${sessionId}.jsonl`) return true;
+  // Pi SessionManager: `${fileTimestamp}_${sessionId}.jsonl`
+  return fileName.endsWith(`_${sessionId}.jsonl`);
+}
+
+/**
  * Resolve a session file path under pi-sessions for a session id.
+ * Prefer an explicit path from product meta when known.
  */
 export async function findPiSessionFile(
   workspaceRoot: string,
   sessionId: string,
+  options?: { preferredPath?: string | null },
 ): Promise<string | null> {
+  const preferred = options?.preferredPath?.trim();
+  if (preferred) {
+    try {
+      const st = await stat(preferred);
+      if (st.isFile()) return preferred;
+    } catch {
+      // fall through to discovery
+    }
+  }
+
   const dir = piSessionsDir(workspaceRoot);
   const safe = sessionId.replace(/[/\\]/g, "_");
+
+  // 1) Exact / nested legacy candidates
   const candidates = [
     path.join(dir, `${safe}.jsonl`),
     path.join(dir, safe, "session.jsonl"),
@@ -165,9 +199,8 @@ export async function findPiSessionFile(
       const st = await stat(p);
       if (st.isFile()) return p;
       if (st.isDirectory()) {
-        // Prefer *.jsonl inside dir
         const names = await readdir(p);
-        const jsonl = names.find((n) => n.endsWith(".jsonl"));
+        const jsonl = names.find((n) => isPiSessionJsonlName(n, safe));
         if (jsonl) return path.join(p, jsonl);
       }
     } catch {
@@ -175,11 +208,42 @@ export async function findPiSessionFile(
     }
   }
 
-  // Fall back to SessionManager.list under the sessions dir
+  // 2) Pi default naming: scan session dir for *_{sessionId}.jsonl
+  //    Prefer the most recently modified match (resume latest fork/retry).
   try {
-    const listed = await SessionManager.list(dir);
+    const names = await readdir(dir);
+    const matches: Array<{ path: string; mtimeMs: number }> = [];
+    for (const name of names) {
+      if (!isPiSessionJsonlName(name, safe)) continue;
+      const full = path.join(dir, name);
+      try {
+        const st = await stat(full);
+        if (st.isFile()) {
+          matches.push({ path: full, mtimeMs: st.mtimeMs });
+        }
+      } catch {
+        // skip
+      }
+    }
+    if (matches.length > 0) {
+      matches.sort((a, b) => b.mtimeMs - a.mtimeMs);
+      return matches[0]!.path;
+    }
+  } catch {
+    // dir missing
+  }
+
+  // 3) SessionManager.list(cwd, sessionDir) — note both args (pi-web / Pi SDK).
+  //    A single-arg call treats the path as cwd and looks under ~/.pi/… — empty.
+  try {
+    const listed = await SessionManager.list(workspaceRoot, dir);
     const hit = listed.find(
-      (s) => s.id === sessionId || s.id === safe || s.path.includes(safe),
+      (s) =>
+        s.id === sessionId ||
+        s.id === safe ||
+        (typeof s.path === "string" &&
+          (s.path.includes(`_${safe}.jsonl`) ||
+            s.path.endsWith(`${safe}.jsonl`))),
     );
     if (hit?.path) return hit.path;
   } catch {
@@ -194,8 +258,13 @@ export async function findPiSessionFile(
 export async function loadPiSessionHistory(
   workspaceRoot: string,
   sessionId: string,
+  options?: { preferredPath?: string | null },
 ): Promise<PiSessionHistory> {
-  const sessionFile = await findPiSessionFile(workspaceRoot, sessionId);
+  const sessionFile = await findPiSessionFile(
+    workspaceRoot,
+    sessionId,
+    options,
+  );
   if (!sessionFile) {
     return { sessionId, messages: [] };
   }
@@ -204,13 +273,12 @@ export async function loadPiSessionHistory(
     const sm = SessionManager.open(sessionFile);
     const ctx = sm.buildSessionContext() as {
       messages?: unknown[];
-      entryIds?: string[];
     };
     const messages = Array.isArray(ctx.messages) ? ctx.messages : [];
     return {
       sessionId,
       sessionFile,
-      messages: projectPiMessages(messages, ctx.entryIds),
+      messages: projectPiMessages(messages),
       leafId: sm.getLeafId?.() ?? null,
     };
   } catch {

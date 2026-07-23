@@ -434,6 +434,206 @@ describe("applyPiEvent — single turn with tools", () => {
     assert.equal(messages[0]!.content, "Hi");
     assert.equal(messages[0]!.status, "done");
   });
+
+  it("does not invent a second card when agent_end clears streaming before message_end", () => {
+    // Symptom: after the answer finishes, thinking + message each appear twice.
+    // agent_end/agent_settled clear streamingAssistantId; a late message_end must
+    // finalize lastAssistant, not append a duplicate bubble.
+    const messages = applyAll([
+      {
+        kind: "message_start",
+        payload: {
+          type: "message_start",
+          message: { role: "assistant", content: [] },
+        },
+      },
+      {
+        kind: "message_update",
+        payload: {
+          type: "message_update",
+          message: {
+            role: "assistant",
+            content: [{ type: "thinking", thinking: "think" }],
+          },
+          assistantMessageEvent: { type: "thinking_delta", delta: "think" },
+        },
+      },
+      {
+        kind: "message_update",
+        payload: {
+          type: "message_update",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "think" },
+              { type: "text", text: "hi" },
+            ],
+          },
+          assistantMessageEvent: { type: "text_delta", delta: "hi" },
+        },
+      },
+      { kind: "agent_end", payload: { type: "agent_end", messages: [] } },
+      {
+        kind: "message_end",
+        payload: {
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "think" },
+              { type: "text", text: "hi" },
+            ],
+            stopReason: "stop",
+          },
+        },
+      },
+    ]);
+
+    assert.equal(assistantCount(messages), 1);
+    assert.equal(messages[0]!.thinking, "think");
+    assert.equal(messages[0]!.content, "hi");
+    assert.equal(messages[0]!.status, "done");
+  });
+
+  it("is idempotent on duplicate message_end (no second thinking/answer card)", () => {
+    const finalPayload = {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "think" },
+          { type: "text", text: "hi" },
+        ],
+        stopReason: "stop",
+      },
+    };
+    const messages = applyAll([
+      {
+        kind: "message_start",
+        payload: {
+          type: "message_start",
+          message: { role: "assistant", content: [] },
+        },
+      },
+      {
+        kind: "message_update",
+        payload: {
+          type: "message_update",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "think" },
+              { type: "text", text: "hi" },
+            ],
+          },
+          assistantMessageEvent: { type: "text_delta", delta: "hi" },
+        },
+      },
+      { kind: "message_end", payload: finalPayload },
+      { kind: "message_end", payload: finalPayload },
+    ]);
+
+    assert.equal(assistantCount(messages), 1);
+    assert.equal(messages[0]!.thinking, "think");
+    assert.equal(messages[0]!.content, "hi");
+  });
+
+  it("reuses streaming bubble when thinking_delta arrives before message_start", () => {
+    const messages = applyAll([
+      {
+        kind: "message_update",
+        payload: {
+          type: "message_update",
+          message: {
+            role: "assistant",
+            content: [{ type: "thinking", thinking: "think" }],
+          },
+          assistantMessageEvent: { type: "thinking_delta", delta: "think" },
+        },
+      },
+      {
+        kind: "message_start",
+        payload: {
+          type: "message_start",
+          message: { role: "assistant", content: [] },
+        },
+      },
+      {
+        kind: "message_update",
+        payload: {
+          type: "message_update",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "think" },
+              { type: "text", text: "hi" },
+            ],
+          },
+          assistantMessageEvent: { type: "text_delta", delta: "hi" },
+        },
+      },
+      {
+        kind: "message_end",
+        payload: {
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "think" },
+              { type: "text", text: "hi" },
+            ],
+            stopReason: "stop",
+          },
+        },
+      },
+    ]);
+
+    assert.equal(assistantCount(messages), 1);
+    assert.equal(messages[0]!.thinking, "think");
+    assert.equal(messages[0]!.content, "hi");
+    assert.equal(messages[0]!.status, "done");
+  });
+
+  it("fixture message_end after a settled turn still opens a new card", () => {
+    const r = refs();
+    let messages = applyAll(
+      [
+        {
+          kind: "message_start",
+          payload: {
+            type: "message_start",
+            message: { role: "assistant", content: [] },
+          },
+        },
+        {
+          kind: "message_end",
+          payload: {
+            type: "message_end",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "first" }],
+              stopReason: "stop",
+            },
+          },
+        },
+      ],
+      r,
+    );
+    messages = applyPiEvent(
+      messages,
+      "message_end",
+      {
+        type: "message_end",
+        mode: "fixture",
+        note: "fixture mode — prompt recorded (no LLM)",
+      },
+      r,
+    );
+
+    assert.equal(assistantCount(messages), 2);
+    assert.equal(messages[0]!.content, "first");
+    assert.match(messages[1]!.content, /fixture mode/);
+  });
 });
 
 describe("applyProductEvent", () => {

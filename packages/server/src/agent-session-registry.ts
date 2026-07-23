@@ -6,10 +6,11 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   createWikiSession,
+  findPiSessionFile,
   isTerminalPhase,
   markCancelled,
   markFailed,
@@ -63,6 +64,11 @@ export type RegisteredAgentSession = {
   metaPath: string;
   /** Workdir used as cwd for the operator chat session. */
   sessionWorkDir: string;
+  /**
+   * Absolute Pi JSONL path once known (written into meta on first live handle).
+   * History cold-load and live resume both prefer this path (pi-web pattern).
+   */
+  sessionFile?: string;
   /** Live Pi handle for operator chat (lazily created on first prompt/steer). */
   handle?: WikiSessionHandle;
   /** Unsubscribe from Pi session events. */
@@ -80,6 +86,60 @@ export type RegisteredAgentSession = {
   /** True while prompt/produce is running. */
   busy: boolean;
 };
+
+type SessionMetaDisk = {
+  schema?: string;
+  id?: string;
+  workspaceId?: string;
+  title?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  sessionWorkDir?: string;
+  sessionFile?: string;
+  stub?: boolean;
+};
+
+async function readSessionMeta(
+  metaPath: string,
+): Promise<SessionMetaDisk | null> {
+  try {
+    const raw = await readFile(metaPath, "utf8");
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed as SessionMetaDisk;
+  } catch {
+    return null;
+  }
+}
+
+/** Persist / refresh sessionFile on product meta so cold history can find Pi JSONL. */
+async function writeSessionMetaSessionFile(
+  entry: RegisteredAgentSession,
+  sessionFile: string,
+): Promise<void> {
+  entry.sessionFile = sessionFile;
+  const existing = (await readSessionMeta(entry.metaPath)) ?? {
+    schema: "okf.pi-session/v1",
+    id: entry.sessionId,
+    workspaceId: entry.workspaceId,
+    title: entry.title,
+    createdAt: entry.createdAt,
+    sessionWorkDir: entry.sessionWorkDir,
+    stub: false,
+  };
+  const next: SessionMetaDisk = {
+    ...existing,
+    id: entry.sessionId,
+    workspaceId: entry.workspaceId,
+    title: entry.title,
+    createdAt: existing.createdAt ?? entry.createdAt,
+    updatedAt: nowIso(),
+    sessionWorkDir: entry.sessionWorkDir,
+    sessionFile,
+    stub: false,
+  };
+  await writeFile(entry.metaPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+}
 
 const sessions = new Map<string, RegisteredAgentSession>();
 
@@ -249,6 +309,25 @@ export async function agentSessionExistsOnDisk(
   return false;
 }
 
+/**
+ * Resolve the preferred Pi JSONL path for cold history load.
+ * Order: live handle → in-memory meta → disk meta → discovery scan.
+ */
+export async function resolveSessionHistoryFile(
+  workspaceRoot: string,
+  sessionId: string,
+  reg?: RegisteredAgentSession | null,
+): Promise<string | null> {
+  const preferred =
+    reg?.handle?.sessionFile ??
+    reg?.sessionFile ??
+    (await readSessionMeta(sessionMetaPath(workspaceRoot, sessionId)))
+      ?.sessionFile;
+  return findPiSessionFile(workspaceRoot, sessionId, {
+    preferredPath: preferred,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Registry CRUD
 // ---------------------------------------------------------------------------
@@ -370,15 +449,18 @@ export async function ensureRegistered(
   const sessionWorkDir = piSessionPath(workspaceRoot, sessionId);
   await mkdir(sessionWorkDir, { recursive: true });
 
+  const metaPath = sessionMetaPath(workspaceRoot, sessionId);
+  const diskMeta = await readSessionMeta(metaPath);
   const entry: RegisteredAgentSession = {
     sessionId,
     workspaceId: workspace.id,
     workspaceRoot,
     workspaceName: workspace.name,
-    title: `Wiki Agent · ${workspace.name}`,
-    createdAt: nowIso(),
-    metaPath: sessionMetaPath(workspaceRoot, sessionId),
+    title: diskMeta?.title?.trim() || `Wiki Agent · ${workspace.name}`,
+    createdAt: diskMeta?.createdAt ?? nowIso(),
+    metaPath,
     sessionWorkDir,
+    sessionFile: diskMeta?.sessionFile,
     busy: false,
   };
   sessions.set(regKey(workspace.id, sessionId), entry);
@@ -437,11 +519,22 @@ async function ensureLiveHandle(
   const contextTargetTokens = workspace.limits?.contextTargetTokens;
   const maxContextTokens = model?.runtime.maxContextTokens;
 
+  // Resume existing Pi JSONL when present (same product sessionId). Without this
+  // every process restart SessionManager.create()'d a new empty file and history
+  // cold-load could not find the previous turn (pi-web opens by path/id).
+  const existingFile =
+    entry.sessionFile ??
+    (await findPiSessionFile(entry.workspaceRoot, entry.sessionId, {
+      preferredPath: entry.sessionFile,
+    }));
+
   const handle = await createWikiSession({
     role,
     runWorkDir: entry.sessionWorkDir,
     // Durable Pi JSONL under workspace .okf-wiki/pi-sessions/ (ADR 0030).
     workspaceRoot: entry.workspaceRoot,
+    sessionId: entry.sessionId,
+    ...(existingFile ? { sessionFile: existingFile } : {}),
     contextTargetTokens,
     maxContextTokens,
     additionalSkillPaths: skillPaths,
@@ -449,6 +542,15 @@ async function ensureLiveHandle(
       ? { model: model.model, modelRuntime: model.modelRuntime }
       : {}),
   });
+
+  if (handle.sessionFile) {
+    try {
+      await writeSessionMetaSessionFile(entry, handle.sessionFile);
+    } catch {
+      // Meta write failure must not block the live session.
+      entry.sessionFile = handle.sessionFile;
+    }
+  }
 
   entry.unsubPi = handle.session.subscribe((event) => {
     const kind =
@@ -463,6 +565,7 @@ async function ensureLiveHandle(
     role: handle.role,
     tools: [...handle.tools],
     runWorkDir: handle.runWorkDir,
+    sessionFile: handle.sessionFile,
     skillPathCount: skillPaths.length,
     contextTarget: handle.contextBudget?.contextTarget,
     contextWindow: handle.contextBudget?.contextWindow,
