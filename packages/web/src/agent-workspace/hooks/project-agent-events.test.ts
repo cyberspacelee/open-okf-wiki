@@ -7,14 +7,17 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  applyChildStreamEvent,
   applyPiEvent,
   applyProductEvent,
   extractAssistantError,
   extractMessageText,
   extractMessageThinking,
+  formatPayloadText,
   isTerminalOrWaitingPhase,
   type AgentMessage,
   type StreamingRefs,
+  type WorkStreams,
 } from "./project-agent-events.ts";
 
 function refs(): StreamingRefs {
@@ -696,13 +699,32 @@ describe("isTerminalOrWaitingPhase", () => {
   });
 });
 
-describe("applyPiEvent — produce child streams (planner / leaf)", () => {
+describe("applyChildStreamEvent — produce Work surface (planner / leaf)", () => {
+  it("does not pollute main timeline with okfAgent events", () => {
+    const r = refs();
+    const messages = applyPiEvent(
+      [],
+      "message_update",
+      {
+        type: "message_update",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "plan" }],
+        },
+        assistantMessageEvent: { type: "text_delta", delta: "plan" },
+        okfAgent: { agentId: "planner", role: "planner" },
+      },
+      r,
+    );
+    assert.equal(messages.length, 0);
+  });
+
   it("streams thinking + text under okfAgent without colliding leaves", () => {
     const r = refs();
-    let messages: AgentMessage[] = [];
+    let streams: WorkStreams = {};
 
-    messages = applyPiEvent(
-      messages,
+    streams = applyChildStreamEvent(
+      streams,
       "message_update",
       {
         type: "message_update",
@@ -715,8 +737,8 @@ describe("applyPiEvent — produce child streams (planner / leaf)", () => {
       },
       r,
     );
-    messages = applyPiEvent(
-      messages,
+    streams = applyChildStreamEvent(
+      streams,
       "message_update",
       {
         type: "message_update",
@@ -729,8 +751,8 @@ describe("applyPiEvent — produce child streams (planner / leaf)", () => {
       },
       r,
     );
-    messages = applyPiEvent(
-      messages,
+    streams = applyChildStreamEvent(
+      streams,
       "message_update",
       {
         type: "message_update",
@@ -743,8 +765,8 @@ describe("applyPiEvent — produce child streams (planner / leaf)", () => {
       },
       r,
     );
-    messages = applyPiEvent(
-      messages,
+    streams = applyChildStreamEvent(
+      streams,
       "tool_execution_start",
       {
         type: "tool_execution_start",
@@ -756,26 +778,20 @@ describe("applyPiEvent — produce child streams (planner / leaf)", () => {
       r,
     );
 
-    const planner = messages.find((m) => m.streamAgent?.agentId === "planner");
-    const leaf1 = messages.find((m) => m.streamAgent?.agentId === "leaf-d1-1");
-    const leaf2 = messages.find((m) => m.streamAgent?.agentId === "leaf-d1-2");
-    assert.ok(planner);
-    assert.ok(leaf1);
-    assert.ok(leaf2);
-    assert.equal(planner!.thinking, "plan A");
-    assert.equal(leaf1!.content, "leaf1");
-    assert.equal(leaf2!.content, "leaf2");
-    assert.equal(leaf1!.tools?.length, 1);
-    assert.equal(leaf1!.tools?.[0]?.name, "read");
-    assert.equal(leaf2!.tools?.length ?? 0, 0);
-    assert.equal(assistantCount(messages), 3);
+    assert.equal(streams.planner?.thinking, "plan A");
+    assert.equal(streams["leaf-d1-1"]?.content, "leaf1");
+    assert.equal(streams["leaf-d1-2"]?.content, "leaf2");
+    assert.equal(streams["leaf-d1-1"]?.tools?.length, 1);
+    assert.equal(streams["leaf-d1-1"]?.tools?.[0]?.name, "read");
+    assert.equal(streams["leaf-d1-2"]?.tools?.length ?? 0, 0);
+    assert.equal(Object.keys(streams).length, 3);
   });
 
   it("agent_end on one leaf does not finalize the other leaf stream", () => {
     const r = refs();
-    let messages: AgentMessage[] = [];
-    messages = applyPiEvent(
-      messages,
+    let streams: WorkStreams = {};
+    streams = applyChildStreamEvent(
+      streams,
       "message_update",
       {
         type: "message_update",
@@ -785,8 +801,8 @@ describe("applyPiEvent — produce child streams (planner / leaf)", () => {
       },
       r,
     );
-    messages = applyPiEvent(
-      messages,
+    streams = applyChildStreamEvent(
+      streams,
       "message_update",
       {
         type: "message_update",
@@ -796,15 +812,21 @@ describe("applyPiEvent — produce child streams (planner / leaf)", () => {
       },
       r,
     );
-    messages = applyPiEvent(
-      messages,
+    streams = applyChildStreamEvent(
+      streams,
       "agent_end",
       { type: "agent_end", okfAgent: { agentId: "leaf-a", role: "leaf" } },
       r,
     );
-    const a = messages.find((m) => m.streamAgent?.agentId === "leaf-a");
-    const b = messages.find((m) => m.streamAgent?.agentId === "leaf-b");
-    assert.equal(a?.status, "done");
-    assert.equal(b?.status, "streaming");
+    assert.equal(streams["leaf-a"]?.status, "done");
+    assert.equal(streams["leaf-b"]?.status, "streaming");
+  });
+});
+
+describe("formatPayloadText", () => {
+  it("pretty-prints JSON objects", () => {
+    const out = formatPayloadText('{"a":1,"b":[2]}');
+    assert.match(out, /\n/);
+    assert.match(out, /"a": 1/);
   });
 });

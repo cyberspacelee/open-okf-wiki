@@ -25,8 +25,10 @@ import { Transcript } from "./transcript/Transcript";
 import type {
   AgentMessage,
   AgentStatus,
+  AgentStream,
   PendingGate,
   ResumeGateInput,
+  WorkStreams,
 } from "./hooks/useSessionAgent";
 import type {
   ModelProfilePublic,
@@ -35,6 +37,7 @@ import type {
   WikiRunPlan,
   WorkspaceConfig,
 } from "../api";
+import { AgentFocusDrawer } from "./panels/AgentFocusDrawer";
 
 export type AgentWorkspaceShellProps = {
   workspaceId: string;
@@ -68,6 +71,11 @@ export type AgentWorkspaceShellProps = {
   wikiModelProfileId?: string;
   onWikiModelProfileIdChange?: (profileId: string) => void;
   defaultModelProfileId?: string;
+  /** Produce-child streams (Work surface). */
+  workStreams?: WorkStreams;
+  focusAgentId?: string | null;
+  onFocusAgentIdChange?: (agentId: string | null) => void;
+  focusedStream?: AgentStream | null;
 };
 
 export function AgentWorkspaceShell({
@@ -100,11 +108,20 @@ export function AgentWorkspaceShell({
   wikiModelProfileId = "",
   onWikiModelProfileIdChange,
   defaultModelProfileId,
+  workStreams = {},
+  focusAgentId = null,
+  onFocusAgentIdChange,
+  focusedStream = null,
 }: AgentWorkspaceShellProps) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
   const [leftOpen, setLeftOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
+  const [focusMeta, setFocusMeta] = useState<{
+    role?: string;
+    task?: string;
+    detail?: string;
+  }>({});
 
   const sessionList = (
     <SessionList
@@ -119,6 +136,20 @@ export function AgentWorkspaceShell({
     />
   );
 
+  const openAgent = (input: {
+    agentId: string;
+    role?: string;
+    task?: string;
+    detail?: string;
+  }) => {
+    setFocusMeta({
+      role: input.role,
+      task: input.task,
+      detail: input.detail,
+    });
+    onFocusAgentIdChange?.(input.agentId);
+  };
+
   const contextPanels = (
     <ContextPanels
       workspaceId={workspaceId}
@@ -129,6 +160,8 @@ export function AgentWorkspaceShell({
       messages={messages}
       phase={phase}
       recentRuns={recentRuns}
+      workStreams={workStreams}
+      onOpenAgent={openAgent}
     />
   );
 
@@ -188,6 +221,7 @@ export function AgentWorkspaceShell({
             onResumeGate={onResumeGate}
             workspaceId={workspaceId}
             rootPath={rootPath}
+            onOpenAgent={openAgent}
           />
           <Composer
             input={input}
@@ -231,6 +265,18 @@ export function AgentWorkspaceShell({
           </Sheet>
         </>
       ) : null}
+
+      <AgentFocusDrawer
+        open={Boolean(focusAgentId)}
+        onOpenChange={(open) => {
+          if (!open) onFocusAgentIdChange?.(null);
+        }}
+        agentId={focusAgentId}
+        role={focusMeta.role ?? focusedStream?.role}
+        task={focusMeta.task}
+        stream={focusedStream}
+        fallbackDetail={focusMeta.detail}
+      />
     </div>
   );
 }

@@ -29,7 +29,8 @@ import {
   type AnalysisReceiptSummary,
 } from "../../api";
 import { useI18n } from "../../i18n";
-import type { AgentMessage } from "../hooks/useSessionAgent";
+import type { AgentMessage, WorkStreams } from "../hooks/useSessionAgent";
+import { AgentStreamBody } from "./AgentFocusDrawer";
 
 export type AgentTreeNode = {
   id: string;
@@ -256,6 +257,13 @@ export type AgentTreeProps = {
   rootPath?: string;
   runId?: string | null;
   messages: AgentMessage[];
+  workStreams?: WorkStreams;
+  onOpenAgent?: (input: {
+    agentId: string;
+    role?: string;
+    task?: string;
+    detail?: string;
+  }) => void;
   className?: string;
 };
 
@@ -264,6 +272,8 @@ export function AgentTree({
   rootPath,
   runId,
   messages,
+  workStreams = {},
+  onOpenAgent,
   className,
 }: AgentTreeProps) {
   const { t } = useI18n();
@@ -317,6 +327,32 @@ export function AgentTree({
 
   const openPreview = useCallback(
     async (node: AgentTreeNode) => {
+      const agentKey =
+        node.receiptNodeId ||
+        (node.id.includes("planner")
+          ? "planner"
+          : node.id.replace(/^.*?(planner|domain-|leaf-|reviewer-)/, "$1"));
+      // Prefer Work surface (live stream) when parent provides a handler.
+      if (onOpenAgent) {
+        const streamKey =
+          workStreams[agentKey] ||
+          workStreams[node.receiptNodeId ?? ""] ||
+          workStreams[node.id] ||
+          Object.values(workStreams).find(
+            (s) =>
+              s.agentId === node.receiptNodeId ||
+              node.id.includes(s.agentId) ||
+              s.agentId.includes(node.receiptNodeId ?? "\0"),
+          );
+        onOpenAgent({
+          agentId: streamKey?.agentId ?? agentKey ?? node.id,
+          role: node.role,
+          task: node.task || node.label,
+          detail: node.detail,
+        });
+        return;
+      }
+
       setPreviewNode(node);
       setSheetOpen(true);
       setPreviewBody(node.detail?.trim() || node.task || node.label || "");
@@ -359,7 +395,7 @@ export function AgentTree({
         setPreviewLoading(false);
       }
     },
-    [workspaceId, runId, rootPath],
+    [workspaceId, runId, rootPath, onOpenAgent, workStreams],
   );
 
   if (!runId) {
@@ -443,9 +479,18 @@ export function AgentTree({
                 {t.agentWorkspace.agentTreeLoading}
               </div>
             ) : (
-              <pre className="okf-code-snippet">
-                {previewBody || t.agentWorkspace.subagentNoDetail}
-              </pre>
+              <div className="min-w-0">
+                <AgentStreamBody
+                  stream={
+                    previewNode
+                      ? workStreams[previewNode.receiptNodeId ?? ""] ||
+                        workStreams[previewNode.id] ||
+                        null
+                      : null
+                  }
+                  fallbackDetail={previewBody}
+                />
+              </div>
             )}
           </ScrollArea>
         </SheetContent>

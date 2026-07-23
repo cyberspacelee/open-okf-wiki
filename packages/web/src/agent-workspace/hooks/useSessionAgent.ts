@@ -27,12 +27,15 @@ import {
 } from "../../api";
 import { isCommandFailed } from "./command-result";
 import {
+  applyChildStreamEvent,
   applyPiEvent,
   applyProductEvent,
   isChildPiPayload,
   isTerminalOrWaitingPhase,
   type AgentMessage,
+  type AgentStream,
   type StreamingRefs,
+  type WorkStreams,
 } from "./project-agent-events";
 
 export { isCommandFailed } from "./command-result";
@@ -40,7 +43,9 @@ export { isCommandFailed } from "./command-result";
 export type {
   AgentMessage,
   AgentProductMeta,
+  AgentStream,
   AgentToolCall,
+  WorkStreams,
 } from "./project-agent-events";
 
 export type AgentMessageRole = AgentMessage["role"];
@@ -97,6 +102,16 @@ export type UseSessionAgentResult = {
   pendingGate: PendingGate | null;
   /** True while a resume_gate command is in flight. */
   gateBusy: boolean;
+  /**
+   * Produce-child live streams (planner / leaf / …) for the Work surface.
+   * Not rendered on the main chat timeline.
+   */
+  workStreams: WorkStreams;
+  /** Focused produce agent (opens Work drawer). */
+  focusAgentId: string | null;
+  setFocusAgentId: (agentId: string | null) => void;
+  /** Convenience: stream for the focused agent, if any. */
+  focusedStream: AgentStream | null;
 };
 
 const RECONNECT_MS = 1500;
@@ -161,6 +176,8 @@ export function useSessionAgent({
   const [plan, setPlan] = useState<WikiRunPlan | null>(null);
   const [pendingGate, setPendingGate] = useState<PendingGate | null>(null);
   const [gateBusy, setGateBusy] = useState(false);
+  const [workStreams, setWorkStreams] = useState<WorkStreams>({});
+  const [focusAgentId, setFocusAgentId] = useState<string | null>(null);
 
   const sendInFlight = useRef(false);
   const planRef = useRef<WikiRunPlan | null>(null);
@@ -199,6 +216,46 @@ export function useSessionAgent({
     if (event.source === "product") {
       const product = event as ProductSseEvent;
       setMessages((prev) => applyProductEvent(prev, product));
+
+      // Seed / finalize Work surface status from agent_span chips.
+      if (product.kind === "agent_span" && product.agentId) {
+        const agentId = product.agentId;
+        const role = product.role ?? "agent";
+        setWorkStreams((prev) => {
+          const cur = prev[agentId];
+          const status =
+            product.status === "running"
+              ? ("streaming" as const)
+              : product.status === "failed"
+                ? ("error" as const)
+                : ("done" as const);
+          return {
+            ...prev,
+            [agentId]: {
+              agentId,
+              role,
+              status,
+              content:
+                cur?.content ||
+                (product.status !== "running" && product.detail
+                  ? product.detail
+                  : cur?.content) ||
+                "",
+              thinking: cur?.thinking,
+              thinkingStatus: cur?.thinkingStatus,
+              tools: cur?.tools ?? [],
+              errorMessage:
+                product.status === "failed"
+                  ? product.detail || cur?.errorMessage
+                  : cur?.errorMessage,
+              updatedAt: nowIso(),
+            },
+          };
+        });
+        if (product.status === "running") {
+          setStatus("streaming");
+        }
+      }
 
       if (product.kind === "run_phase") {
         setPhase(product.phase);
@@ -252,6 +309,17 @@ export function useSessionAgent({
 
     if (event.source === "pi") {
       const kind = event.kind;
+      const child = isChildPiPayload(event.payload);
+
+      if (child) {
+        // Produce children: Work surface only — do not toggle root chat idle.
+        setWorkStreams((prev) =>
+          applyChildStreamEvent(prev, kind, event.payload, streamRefs.current),
+        );
+        setStatus("streaming");
+        return;
+      }
+
       if (kind === "agent_start" || kind === "prompt" || kind === "steer") {
         setStatus("streaming");
       } else if (kind === "agent_end" || kind === "agent_settled") {
@@ -305,11 +373,14 @@ export function useSessionAgent({
     setPlan(null);
     setPendingGate(null);
     setGateBusy(false);
+    setWorkStreams({});
+    setFocusAgentId(null);
     sendInFlight.current = false;
     lastSequenceRef.current = -1;
     streamRefs.current = {
       streamingAssistantId: null,
       lastAssistantId: null,
+      agents: new Map(),
     };
 
     if (esRef.current) {
@@ -653,6 +724,11 @@ export function useSessionAgent({
 
   const clearError = useCallback(() => setError(null), []);
 
+  const focusedStream = useMemo(() => {
+    if (!focusAgentId) return null;
+    return workStreams[focusAgentId] ?? null;
+  }, [focusAgentId, workStreams]);
+
   return {
     messages,
     status,
@@ -671,5 +747,9 @@ export function useSessionAgent({
     plan,
     pendingGate,
     gateBusy,
+    workStreams,
+    focusAgentId,
+    setFocusAgentId,
+    focusedStream,
   };
 }

@@ -70,6 +70,25 @@ export type StreamAgentTag = {
   role: string;
 };
 
+/**
+ * Live stream for one produce child (planner / leaf / …).
+ * Lives on the Work surface — never as a peer chat bubble on the main timeline.
+ */
+export type AgentStream = {
+  agentId: string;
+  role: string;
+  status: "streaming" | "done" | "error";
+  content: string;
+  thinking?: string;
+  thinkingStatus?: "streaming" | "done";
+  tools: AgentToolCall[];
+  errorMessage?: string;
+  updatedAt: string;
+};
+
+/** agentId → live stream (Work surface). */
+export type WorkStreams = Record<string, AgentStream>;
+
 export type AgentMessage = {
   id: string;
   role: AgentMessageRole;
@@ -83,7 +102,10 @@ export type AgentMessage = {
   /** Provider / agent error when status is "error". */
   errorMessage?: string;
   product?: AgentProductMeta;
-  /** Child produce agent stream (planner / leaf / …). */
+  /**
+   * @deprecated Child streams use WorkStreams; timeline messages must not
+   * carry streamAgent. Kept optional for defensive filtering.
+   */
   streamAgent?: StreamAgentTag;
 };
 
@@ -323,7 +345,9 @@ function finalizeAssistantContent(input: {
 }
 
 /**
- * Project one Pi event into transcript mutations.
+ * Project one Pi event into **main timeline** mutations.
+ * Produce-child events (`okfAgent`) are ignored here — use
+ * {@link applyChildStreamEvent} so they stay on the Work surface.
  * Mutates `refs` in place (streaming ids).
  */
 export function applyPiEvent(
@@ -332,11 +356,128 @@ export function applyPiEvent(
   payload: unknown,
   refs: StreamingRefs,
 ): AgentMessage[] {
+  // Child produce streams must not pollute the operator chat scroller.
+  if (extractOkfAgent(payload)) {
+    return prev;
+  }
+  return applyPiEventInner(prev, kind, payload, refs, null);
+}
+
+/**
+ * Project a produce-child Pi event into WorkStreams (per agentId).
+ * Concurrent leaves stay isolated via {@link StreamingRefs.agents}.
+ */
+export function applyChildStreamEvent(
+  streams: WorkStreams,
+  kind: string,
+  payload: unknown,
+  refs: StreamingRefs,
+): WorkStreams {
+  const agent = extractOkfAgent(payload);
+  if (!agent) return streams;
+
+  const existing = streams[agent.agentId];
+  const stableId = `work_${agent.agentId}`;
+  const prevMsg: AgentMessage = existing
+    ? {
+        id: stableId,
+        role: "assistant",
+        content: existing.content,
+        thinking: existing.thinking,
+        thinkingStatus: existing.thinkingStatus,
+        tools: existing.tools,
+        status: existing.status === "done" ? "streaming" : existing.status,
+        errorMessage: existing.errorMessage,
+        createdAt: existing.updatedAt,
+        streamAgent: agent,
+      }
+    : {
+        id: stableId,
+        role: "assistant",
+        content: "",
+        tools: [],
+        status: "streaming",
+        createdAt: nowIso(),
+        streamAgent: agent,
+      };
+
+  // Seed cursor so ensureAssistantBubble reuses the stable work_* id.
+  const cursor = cursorFor(refs, agent);
+  if (!cursor.streamingAssistantId) {
+    cursor.streamingAssistantId = stableId;
+  }
+  if (!cursor.lastAssistantId) {
+    cursor.lastAssistantId = stableId;
+  }
+
+  const nextList = applyPiEventInner([prevMsg], kind, payload, refs, agent);
+  // ensureAssistantBubble may append a new id when the cursor was empty —
+  // always take the agent-tagged / last assistant row, not index 0.
+  const next =
+    [...nextList]
+      .reverse()
+      .find(
+        (m) =>
+          m.role === "assistant" &&
+          (m.streamAgent?.agentId === agent.agentId ||
+            m.id === prevMsg.id ||
+            m.id.startsWith("work_") ||
+            m.id.startsWith("asst_")),
+      ) ??
+    nextList[nextList.length - 1] ??
+    prevMsg;
+  return {
+    ...streams,
+    [agent.agentId]: {
+      agentId: agent.agentId,
+      role: agent.role,
+      status:
+        next.status === "error"
+          ? "error"
+          : next.status === "streaming"
+            ? "streaming"
+            : "done",
+      content: next.content,
+      thinking: next.thinking,
+      thinkingStatus: next.thinkingStatus,
+      tools: next.tools ?? [],
+      errorMessage: next.errorMessage,
+      updatedAt: nowIso(),
+    },
+  };
+}
+
+/** Pretty-print JSON strings for tool / payload surfaces. */
+export function formatPayloadText(raw: string | undefined): string {
+  if (!raw) return "";
+  const trimmed = raw.trim();
+  if (
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  ) {
+    try {
+      return JSON.stringify(JSON.parse(trimmed), null, 2);
+    } catch {
+      // keep original
+    }
+  }
+  return raw;
+}
+
+/**
+ * Internal projector. When `streamAgent` is set, tags bubbles for Work surface.
+ */
+function applyPiEventInner(
+  prev: AgentMessage[],
+  kind: string,
+  payload: unknown,
+  refs: StreamingRefs,
+  streamAgent: StreamAgentTag | null,
+): AgentMessage[] {
   const body = isRecord(payload) ? payload : {};
   const message = "message" in body ? body.message : undefined;
   const role = messageRole(message);
   const ts = nowIso();
-  const streamAgent = extractOkfAgent(payload);
   const cursor = cursorFor(refs, streamAgent);
 
   // --- message_update: stream text / thinking into the current assistant ----
@@ -463,14 +604,30 @@ export function applyPiEvent(
     // Reuse an in-flight assistant bubble (e.g. early thinking_delta opened one
     // via ensureAssistantBubble before message_start). Creating a second card
     // here is what users see as duplicated thinking + answer after the turn.
+    // Also reuse when the previous assistant is still open for tools (status
+    // done after message_end but tools still running) so mid-turn tool loops
+    // do not spam empty assistant cards before the next text segment.
     let reuseId: string | null = null;
     const streamingIdx = findMessageIndex(prev, cursor.streamingAssistantId);
     if (streamingIdx >= 0) {
       reuseId = prev[streamingIdx]!.id;
     } else {
       const lastIdx = findMessageIndex(prev, cursor.lastAssistantId);
-      if (lastIdx >= 0 && prev[lastIdx]!.status === "streaming") {
-        reuseId = prev[lastIdx]!.id;
+      if (lastIdx >= 0) {
+        const last = prev[lastIdx]!;
+        const toolsRunning = last.tools?.some(
+          (t) => t.status === "running" || t.status === "pending",
+        );
+        if (last.status === "streaming" || toolsRunning) {
+          // Only reuse empty/streaming shells — not a finished text segment
+          // that should stay as its own card (pre-tool vs post-tool).
+          if (
+            last.status === "streaming" ||
+            (!last.content?.trim() && !last.thinking?.trim())
+          ) {
+            reuseId = last.id;
+          }
+        }
       }
     }
 

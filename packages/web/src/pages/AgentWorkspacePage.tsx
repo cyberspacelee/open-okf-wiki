@@ -243,6 +243,10 @@ export function AgentWorkspacePage() {
             defaultModelProfileId={
               workspace.model?.profileId ?? defaultModelProfileId
             }
+            workStreams={agent.workStreams}
+            focusAgentId={agent.focusAgentId}
+            onFocusAgentIdChange={agent.setFocusAgentId}
+            focusedStream={agent.focusedStream}
           />
         )}
       </div>

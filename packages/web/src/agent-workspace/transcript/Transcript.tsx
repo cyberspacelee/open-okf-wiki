@@ -20,7 +20,6 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
   Sheet,
   SheetContent,
@@ -66,6 +65,7 @@ import type {
   PendingGate,
   ResumeGateInput,
 } from "../hooks/useSessionAgent";
+import { formatPayloadText } from "../hooks/project-agent-events";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { GateActions } from "./GateActions";
 
@@ -79,16 +79,28 @@ export type TranscriptProps = {
   /** Optional: load full receipts when previewing spans. */
   workspaceId?: string;
   rootPath?: string;
+  /**
+   * Open Work surface for a produce agent (planner / leaf).
+   * Main timeline only shows chips — streams live in the focus drawer.
+   */
+  onOpenAgent?: (input: {
+    agentId: string;
+    role?: string;
+    task?: string;
+    detail?: string;
+  }) => void;
 };
 
 function ToolCard({ tool }: { tool: AgentToolCall }) {
   const { t } = useI18n();
+  const input = formatPayloadText(tool.input);
+  const output = formatPayloadText(tool.output);
   return (
     <Collapsible
       defaultOpen={tool.status === "running" || tool.status === "error"}
-      className="rounded-md border border-border/80 bg-muted/30"
+      className="w-full min-w-0 rounded-md border border-border/80 bg-muted/30"
     >
-      <CollapsibleTrigger className="group flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs hover:bg-muted/60">
+      <CollapsibleTrigger className="group flex w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-xs hover:bg-muted/60">
         <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-data-panel-open:rotate-90" />
         <WrenchIcon className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="min-w-0 flex-1 truncate font-mono font-medium">
@@ -107,21 +119,21 @@ function ToolCard({ tool }: { tool: AgentToolCall }) {
           {tool.status}
         </Badge>
       </CollapsibleTrigger>
-      <CollapsibleContent className="border-t border-border/60 px-2.5 py-2">
-        {tool.input ? (
-          <div className="mb-2 flex flex-col gap-0.5">
+      <CollapsibleContent className="min-w-0 border-t border-border/60 px-2.5 py-2">
+        {input ? (
+          <div className="mb-2 flex min-w-0 flex-col gap-0.5">
             <div className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
               {t.agentWorkspace.toolInput}
             </div>
-            <pre className="okf-code-snippet">{tool.input}</pre>
+            <pre className="okf-code-snippet">{input}</pre>
           </div>
         ) : null}
-        {tool.output ? (
-          <div className="flex flex-col gap-0.5">
+        {output ? (
+          <div className="flex min-w-0 flex-col gap-0.5">
             <div className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
               {t.agentWorkspace.toolOutput}
             </div>
-            <pre className="okf-code-snippet">{tool.output}</pre>
+            <pre className="okf-code-snippet">{output}</pre>
           </div>
         ) : null}
       </CollapsibleContent>
@@ -188,11 +200,13 @@ function AgentSpanCard({
   content,
   workspaceId,
   rootPath,
+  onOpenAgent,
 }: {
   product: AgentProductMeta;
   content: string;
   workspaceId?: string;
   rootPath?: string;
+  onOpenAgent?: TranscriptProps["onOpenAgent"];
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
@@ -210,6 +224,21 @@ function AgentSpanCard({
   ]
     .filter(Boolean)
     .join(" · ");
+  const running = product.status === "running";
+
+  function openWorkSurface() {
+    const agentId = product.agentId;
+    if (agentId && onOpenAgent) {
+      onOpenAgent({
+        agentId,
+        role: product.role,
+        task: product.task || product.label,
+        detail: product.detail || content,
+      });
+      return;
+    }
+    void openPreview();
+  }
 
   async function openPreview() {
     setOpen(true);
@@ -257,32 +286,45 @@ function AgentSpanCard({
     }
   }
 
+  // Compact chip: status + one-line task. Full stream lives in Work drawer.
+  const summary =
+    product.task?.trim() ||
+    product.label?.trim() ||
+    (running ? null : product.detail?.trim()?.slice(0, 160)) ||
+    content;
+
   return (
     <>
-      <div className="flex flex-col gap-1.5">
-        <div className="whitespace-pre-wrap">{content}</div>
+      <button
+        type="button"
+        className={cn(
+          "flex w-full min-w-0 flex-col gap-1 rounded-md border border-transparent px-0.5 py-0.5 text-left transition-colors hover:bg-muted/40",
+          running && "border-primary/20 bg-primary/5",
+        )}
+        onClick={() => openWorkSurface()}
+        data-testid="agent-span-preview"
+      >
+        <div className="flex flex-wrap items-center gap-1.5">
+          {running ? <Spinner className="size-3 text-primary" /> : null}
+          <span className="text-xs font-medium">
+            {running
+              ? t.agentWorkspace.thinkingStreaming
+              : t.agentWorkspace.viewSubagent}
+          </span>
+          <EyeIcon className="size-3.5 text-muted-foreground" />
+        </div>
+        {summary ? (
+          <div className="line-clamp-2 text-xs text-muted-foreground whitespace-pre-wrap break-words">
+            {summary}
+          </div>
+        ) : null}
         {product.parentId ? (
           <div className="text-[10px] text-muted-foreground">
             parent: <span className="font-mono">{product.parentId}</span>
           </div>
         ) : null}
-        {product.receiptPath ? (
-          <div className="truncate font-mono text-[10px] text-muted-foreground">
-            {product.receiptPath}
-          </div>
-        ) : null}
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-7 self-start px-2 text-xs"
-          onClick={() => void openPreview()}
-          data-testid="agent-span-preview"
-        >
-          <EyeIcon data-icon="inline-start" />
-          {t.agentWorkspace.viewSubagent}
-        </Button>
-      </div>
+      </button>
+      {/* Fallback sheet when no Work surface handler is wired. */}
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetContent
           side="right"
@@ -336,6 +378,7 @@ function MessageCard({
   onResumeGate,
   workspaceId,
   rootPath,
+  onOpenAgent,
 }: {
   message: AgentMessage;
   showGateActions: boolean;
@@ -344,6 +387,7 @@ function MessageCard({
   onResumeGate?: (input: ResumeGateInput) => void | Promise<void>;
   workspaceId?: string;
   rootPath?: string;
+  onOpenAgent?: TranscriptProps["onOpenAgent"];
 }) {
   const { t } = useI18n();
   const isUser = message.role === "user";
@@ -440,6 +484,7 @@ function MessageCard({
               content={message.content ?? ""}
               workspaceId={workspaceId}
               rootPath={rootPath}
+              onOpenAgent={onOpenAgent}
             />
           ) : message.content ? (
             <div className="whitespace-pre-wrap">{message.content}</div>
@@ -463,12 +508,10 @@ function MessageCard({
       data-testid="agent-message"
       data-role={message.role}
       data-status={message.status}
-      data-stream-agent={message.streamAgent?.agentId}
-      data-stream-role={message.streamAgent?.role}
       align={isUser ? "end" : "start"}
-      className="max-w-full"
+      className="max-w-full min-w-0"
     >
-      <MessageContent className="max-w-[min(100%,42rem)]">
+      <MessageContent className="max-w-[min(100%,42rem)] min-w-0">
         <MessageHeader className="gap-2">
           {isUser ? (
             <>
@@ -478,18 +521,9 @@ function MessageCard({
           ) : (
             <>
               <BotIcon className="size-3.5" />
-              <span>
-                {message.streamAgent?.role
-                  ? message.streamAgent.role
-                  : t.agentWorkspace.roleAssistant}
-              </span>
+              <span>{t.agentWorkspace.roleAssistant}</span>
             </>
           )}
-          {message.streamAgent?.agentId ? (
-            <Badge variant="secondary" className="normal-case tracking-normal font-mono text-[10px]">
-              {message.streamAgent.agentId}
-            </Badge>
-          ) : null}
           {isStreaming ? (
             <Badge variant="outline" className="normal-case tracking-normal">
               streaming
@@ -503,7 +537,7 @@ function MessageCard({
           ) : null}
         </MessageHeader>
 
-        <BubbleGroup>
+        <BubbleGroup className="min-w-0 w-full">
           {message.thinking ? (
             <ThinkingBlock
               thinking={message.thinking}
@@ -517,17 +551,19 @@ function MessageCard({
                 isUser ? "default" : isError ? "destructive" : "outline"
               }
               align={isUser ? "end" : "start"}
-              className={cn(!isUser && "w-full max-w-full")}
+              className={cn(!isUser && "w-full max-w-full min-w-0")}
             >
               <BubbleContent
                 className={cn(
-                  !isUser && "w-full max-w-full",
+                  !isUser && "w-full max-w-full min-w-0",
                   isError && "w-full",
                 )}
               >
                 {message.content ? (
                   isUser ? (
-                    <div className="whitespace-pre-wrap">{message.content}</div>
+                    <div className="whitespace-pre-wrap break-words">
+                      {message.content}
+                    </div>
                   ) : (
                     <AgentMarkdown
                       content={message.content}
@@ -548,7 +584,7 @@ function MessageCard({
                 ) : null}
 
                 {message.tools && message.tools.length > 0 ? (
-                  <div className="mt-2 flex flex-col gap-1.5">
+                  <div className="mt-2 flex min-w-0 w-full flex-col gap-1.5">
                     {message.tools.map((tool) => (
                       <ToolCard key={tool.id} tool={tool} />
                     ))}
@@ -571,14 +607,18 @@ export function Transcript({
   onResumeGate,
   workspaceId,
   rootPath,
+  onOpenAgent,
 }: TranscriptProps) {
   const { t } = useI18n();
+
+  // Child produce streams must never appear as peer chat bubbles.
+  const timeline = messages.filter((m) => !m.streamAgent);
 
   // Only the latest matching gate card shows actions (avoid stale buttons).
   let activeGateMessageId: string | null = null;
   if (pendingGate) {
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      const m = messages[i]!;
+    for (let i = timeline.length - 1; i >= 0; i -= 1) {
+      const m = timeline[i]!;
       if (
         m.product?.kind === "gate" &&
         m.product.gate === pendingGate.gate
@@ -589,7 +629,7 @@ export function Transcript({
     }
   }
 
-  if (messages.length === 0) {
+  if (timeline.length === 0) {
     return (
       <div
         data-testid="agent-transcript-empty"
@@ -621,7 +661,7 @@ export function Transcript({
       >
         <MessageScrollerViewport>
           <MessageScrollerContent className="gap-3 px-3 py-3 md:px-4">
-            {messages.map((m) => (
+            {timeline.map((m) => (
               <MessageScrollerItem
                 key={m.id}
                 messageId={m.id}
@@ -635,6 +675,7 @@ export function Transcript({
                   onResumeGate={onResumeGate}
                   workspaceId={workspaceId}
                   rootPath={rootPath}
+                  onOpenAgent={onOpenAgent}
                 />
               </MessageScrollerItem>
             ))}
