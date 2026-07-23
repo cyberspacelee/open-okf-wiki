@@ -393,6 +393,11 @@ export const PiSessionSummarySchema = z.object({
   id: z.string().min(1),
   /** Basename under pi-sessions (file or dir). */
   name: z.string().min(1),
+  /**
+   * Operator-facing title (from product meta).
+   * Auto-filled from the first user prompt when still default.
+   */
+  title: z.string().min(1).max(200).optional(),
   /** ISO mtime when known. */
   updatedAt: z.string().datetime().optional(),
   /** True when only a placeholder file exists (AgentSession not yet live). */

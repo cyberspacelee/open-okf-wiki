@@ -7,6 +7,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import {
   createAgentSession,
+  deleteAgentSession,
   getProvider,
   getWorkspace,
   listAgentSessions,
@@ -37,6 +38,7 @@ export function AgentWorkspacePage() {
   const [bootError, setBootError] = useState<unknown>(null);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [models, setModels] = useState<ModelProfilePublic[]>([]);
   const [defaultModelProfileId, setDefaultModelProfileId] = useState<
     string | undefined
@@ -136,6 +138,7 @@ export function AgentWorkspacePage() {
           {
             id: created.session.id,
             name: `${created.session.id}.json`,
+            title: created.session.title,
             updatedAt: created.session.createdAt,
             placeholder: true,
           },
@@ -184,6 +187,7 @@ export function AgentWorkspacePage() {
       const summary: PiSessionSummary = {
         id: created.session.id,
         name: `${created.session.id}.json`,
+        title: created.session.title,
         updatedAt: created.session.createdAt,
         placeholder: true,
       };
@@ -196,6 +200,86 @@ export function AgentWorkspacePage() {
       setCreating(false);
     }
   }, [id, creating, workspace?.name, rootPath, syncSessionIdInUrl]);
+
+  const handleDeleteSession = useCallback(
+    async (sessionId: string) => {
+      if (!id || deletingId) return;
+      setDeletingId(sessionId);
+      setBootError(null);
+      try {
+        await deleteAgentSession(id, sessionId, rootPath);
+        let nextList = sessions.filter((s) => s.id !== sessionId);
+        let nextActive =
+          activeSessionId === sessionId ? null : activeSessionId;
+
+        if (nextList.length === 0) {
+          const created = await createAgentSession(id, {}, rootPath);
+          nextList = [
+            {
+              id: created.session.id,
+              name: `${created.session.id}.json`,
+              title: created.session.title,
+              updatedAt: created.session.createdAt,
+              placeholder: true,
+            },
+          ];
+          nextActive = created.session.id;
+        } else if (!nextActive || !nextList.some((s) => s.id === nextActive)) {
+          nextActive = nextList[0]!.id;
+        }
+
+        setSessions(nextList);
+        setActiveSessionId(nextActive);
+        if (nextActive) syncSessionIdInUrl(nextActive);
+      } catch (err) {
+        setBootError(err);
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [
+      id,
+      deletingId,
+      rootPath,
+      sessions,
+      activeSessionId,
+      syncSessionIdInUrl,
+    ],
+  );
+
+  // Refresh session list titles after first prompt auto-titles the active session.
+  const activeListTitle =
+    sessions.find((s) => s.id === activeSessionId)?.title ?? "";
+  const activeTitleLooksDefault =
+    !activeListTitle ||
+    activeListTitle.startsWith("Wiki Agent · ") ||
+    activeListTitle === "New session";
+  const userMessageCount = agent.messages.filter((m) => m.role === "user").length;
+  useEffect(() => {
+    if (!id || !activeSessionId || !rootPath) return;
+    if (userMessageCount < 1 || !activeTitleLooksDefault) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void listAgentSessions(id, rootPath)
+        .then((res) => {
+          if (cancelled) return;
+          setSessions(res.sessions ?? []);
+        })
+        .catch(() => {
+          // best-effort title refresh
+        });
+    }, 500);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [
+    id,
+    activeSessionId,
+    rootPath,
+    userMessageCount,
+    activeTitleLooksDefault,
+  ]);
 
   return (
     <WorkspaceShell
@@ -220,7 +304,9 @@ export function AgentWorkspacePage() {
           activeSessionId={activeSessionId}
           onSelectSession={handleSelectSession}
           onCreateSession={() => void handleCreateSession()}
+          onDeleteSession={(sessionId) => void handleDeleteSession(sessionId)}
           creatingSession={creating}
+          deletingSessionId={deletingId}
           messages={agent.messages}
           input={agent.input}
           onInputChange={agent.setInput}

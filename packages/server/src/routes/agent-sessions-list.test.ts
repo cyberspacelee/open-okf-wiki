@@ -63,3 +63,22 @@ test("mergePiSessionEntries keeps orphan workdir when meta is missing", () => {
   assert.equal(sessions[0]?.id, "orphan-session-dir");
   assert.equal(sessions[0]?.placeholder, false);
 });
+
+test("mergePiSessionEntries preserves title from meta json", () => {
+  const sessions = mergePiSessionEntries([
+    {
+      name: "abc-session.json",
+      isDirectory: false,
+      updatedAt: "2026-07-22T16:00:00.000Z",
+      title: "Generate wiki for open-okf-wiki",
+    },
+    {
+      name: "abc-session",
+      isDirectory: true,
+      updatedAt: "2026-07-22T15:59:00.000Z",
+    },
+  ]);
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0]?.id, "abc-session");
+  assert.equal(sessions[0]?.title, "Generate wiki for open-okf-wiki");
+});

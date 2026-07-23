@@ -31,8 +31,11 @@ export {
   extractMessageText,
   extractMessageThinking,
   formatPayloadText,
+  formatToolDisplay,
   makeId,
   safeStringify,
+  toolPathLabel,
+  type ToolDisplaySummary,
 } from "./project/format.ts";
 
 export {

@@ -40,6 +40,7 @@ import {
 import {
   ensureLiveHandle,
   makeResolveModel,
+  maybeAutoTitleFromPrompt,
   persistTerminal,
   preferPiFixture,
   type RegisteredAgentSession,
@@ -98,6 +99,14 @@ export async function handlePrompt(
   emitPi(entry.workspaceId, entry.sessionId, "prompt", {
     textLength: text.length,
   });
+
+  // OpenCode / ChatGPT style: first user message becomes the list title
+  // when the session still has the create-time default name.
+  try {
+    await maybeAutoTitleFromPrompt(entry, text);
+  } catch {
+    // title update is best-effort
+  }
 
   if (preferPiFixture()) {
     // Explicit OKF_WIKI_AGENT_MODE=fixture only — not the default.

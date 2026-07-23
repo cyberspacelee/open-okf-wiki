@@ -12,6 +12,7 @@ import {
   extractMessageText,
   extractMessageThinking,
   formatPayloadText,
+  formatToolDisplay,
   isTerminalOrWaitingPhase,
   mergeWorkUnitsIntoTimeline,
   workUnitHasBody,
@@ -919,6 +920,37 @@ describe("formatPayloadText", () => {
     assert.ok(out.length < body.length + 40);
     assert.match(out, /…\[truncated \d+ chars\]$/);
     assert.ok(out.startsWith("{\n"));
+  });
+});
+
+describe("formatToolDisplay", () => {
+  it("summarizes read as path subtitle, not raw JSON", () => {
+    const d = formatToolDisplay(
+      "read",
+      JSON.stringify({ path: "wiki/overview.md", offset: 1, limit: 20 }),
+    );
+    assert.equal(d.title, "read");
+    assert.match(d.subtitle ?? "", /overview\.md/);
+    assert.ok(!(d.body ?? "").startsWith("{"));
+  });
+
+  it("summarizes bash/shell with $ command body", () => {
+    const d = formatToolDisplay(
+      "bash",
+      JSON.stringify({ command: "ls -la packages/web" }),
+    );
+    assert.equal(d.title, "shell");
+    assert.match(d.subtitle ?? "", /ls -la/);
+    assert.equal(d.body, "$ ls -la packages/web");
+  });
+
+  it("summarizes grep by pattern", () => {
+    const d = formatToolDisplay(
+      "grep",
+      JSON.stringify({ pattern: "handleDelete", path: "packages/server" }),
+    );
+    assert.equal(d.title, "grep");
+    assert.equal(d.subtitle, "handleDelete");
   });
 });
 

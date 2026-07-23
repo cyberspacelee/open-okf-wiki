@@ -1,25 +1,33 @@
 /**
  * Left-pane session list for Agent Workspace (Pi sessions).
+ * Supports delete (pi-web SessionListDialog) and displays auto titles.
  */
 
-import { PlusIcon } from "lucide-react";
+import { useState } from "react";
+import { PlusIcon, Trash2Icon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { PiSessionSummary } from "../../api";
-import { useI18n } from "../../i18n";
+import { formatMessage, useI18n } from "../../i18n";
 
 export type SessionListProps = {
   sessions: PiSessionSummary[];
   activeSessionId: string | null;
   onSelect: (sessionId: string) => void;
   onCreate: () => void;
+  onDelete?: (sessionId: string) => void | Promise<void>;
   creating?: boolean;
+  deletingId?: string | null;
   className?: string;
 };
 
 function formatLabel(session: PiSessionSummary): string {
+  const title = session.title?.trim();
+  if (title) return title;
+
   const name = session.name?.trim();
   if (name && name !== `${session.id}.json`) {
     return name.replace(/\.jsonl?$/i, "");
@@ -46,10 +54,15 @@ export function SessionList({
   activeSessionId,
   onSelect,
   onCreate,
+  onDelete,
   creating = false,
+  deletingId = null,
   className,
 }: SessionListProps) {
   const { t } = useI18n();
+  const [deleteTarget, setDeleteTarget] = useState<PiSessionSummary | null>(
+    null,
+  );
 
   // Server should already dedupe; keep first-seen id so React keys stay unique
   // if a stale API ever returns both `{id}.json` and `{id}/` for one session.
@@ -94,18 +107,21 @@ export function SessionList({
           <ul className="flex flex-col gap-0.5 p-1.5">
             {uniqueSessions.map((session) => {
               const active = session.id === activeSessionId;
+              const deleting = deletingId === session.id;
               return (
-                <li key={session.id}>
+                <li key={session.id} className="group relative">
                   <button
                     type="button"
                     data-testid="agent-session-item"
                     data-session-id={session.id}
                     data-active={active ? "true" : "false"}
+                    disabled={deleting}
                     className={cn(
-                      "flex w-full flex-col gap-0.5 rounded-md border px-2 py-1.5 text-left",
+                      "flex w-full flex-col gap-0.5 rounded-md border px-2 py-1.5 pr-8 text-left",
                       active
                         ? "border-border bg-muted"
                         : "border-transparent hover:bg-muted/60",
+                      deleting && "opacity-50",
                     )}
                     onClick={() => onSelect(session.id)}
                   >
@@ -126,12 +142,65 @@ export function SessionList({
                       </span>
                     </div>
                   </button>
+                  {onDelete ? (
+                    <button
+                      type="button"
+                      data-testid="agent-session-delete"
+                      data-session-id={session.id}
+                      title={t.agentWorkspace.deleteSession}
+                      aria-label={t.agentWorkspace.deleteSession}
+                      disabled={deleting}
+                      className={cn(
+                        "absolute top-1.5 right-1.5 rounded p-1 text-muted-foreground",
+                        "opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100",
+                        "hover:bg-destructive/10 hover:text-destructive",
+                        active && "opacity-70",
+                      )}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDeleteTarget(session);
+                      }}
+                    >
+                      <Trash2Icon className="size-3.5" />
+                    </button>
+                  ) : null}
                 </li>
               );
             })}
           </ul>
         )}
       </ScrollArea>
+
+      <ConfirmDialog
+        open={deleteTarget != null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null);
+        }}
+        title={t.agentWorkspace.deleteSession}
+        description={
+          deleteTarget
+            ? formatMessage(t.agentWorkspace.deleteSessionConfirm, {
+                title: formatLabel(deleteTarget),
+              })
+            : undefined
+        }
+        confirmLabel={
+          deletingId
+            ? t.agentWorkspace.deletingSession
+            : t.common.delete
+        }
+        cancelLabel={t.common.cancel}
+        destructive
+        confirmDisabled={deletingId != null}
+        data-testid="agent-session-delete-dialog"
+        confirmTestId="agent-session-delete-confirm"
+        onConfirm={async () => {
+          if (!deleteTarget || !onDelete) return;
+          const id = deleteTarget.id;
+          setDeleteTarget(null);
+          await onDelete(id);
+        }}
+      />
     </div>
   );
 }

@@ -29,6 +29,8 @@ import {
 } from "./session/commands.ts";
 import {
   agentSessionExistsOnDisk,
+  defaultSessionTitle,
+  deleteAgentSessionOnDisk,
   ensurePiSessionsDir,
   nowIso,
   readSessionMeta,
@@ -133,7 +135,7 @@ export async function registerAgentSession(input: {
 
   const createdAt = nowIso();
   const title =
-    input.title?.trim() || `Wiki Agent · ${input.workspace.name}`;
+    input.title?.trim() || defaultSessionTitle(input.workspace.name);
 
   const meta = {
     schema: "okf.pi-session/v1",
@@ -172,6 +174,26 @@ export async function registerAgentSession(input: {
 }
 
 /**
+ * Dispose live handle and remove session files from disk.
+ * Idempotent when the session is already gone.
+ */
+export async function deleteAgentSession(
+  workspace: WorkspaceConfig,
+  sessionId: string,
+): Promise<{ sessionId: string; removed: string[] }> {
+  const key = regKey(workspace.id, sessionId);
+  const existing = sessions.get(key);
+  if (existing) {
+    disposeEntry(existing);
+    sessions.delete(key);
+  }
+
+  const workspaceRoot = path.resolve(workspace.rootPath);
+  const { removed } = await deleteAgentSessionOnDisk(workspaceRoot, sessionId);
+  return { sessionId, removed };
+}
+
+/**
  * Ensure a registry entry exists for a session that already has disk meta
  * (e.g. server restarted, or create from another process).
  */
@@ -198,7 +220,8 @@ export async function ensureRegistered(
     workspaceId: workspace.id,
     workspaceRoot,
     workspaceName: workspace.name,
-    title: diskMeta?.title?.trim() || `Wiki Agent · ${workspace.name}`,
+    title:
+      diskMeta?.title?.trim() || defaultSessionTitle(workspace.name),
     createdAt: diskMeta?.createdAt ?? nowIso(),
     metaPath,
     sessionWorkDir,

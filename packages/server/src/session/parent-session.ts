@@ -4,11 +4,12 @@
  * Extracted from agent-session-registry for maintainability (no behavior change).
  */
 
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   createWikiSession,
   findPiSessionFile,
+  isPiSessionJsonlName,
   piSessionPath,
   piSessionsDir,
   resolveModelSelection,
@@ -149,12 +150,11 @@ export async function readSessionMeta(
   }
 }
 
-/** Persist / refresh sessionFile on product meta so cold history can find Pi JSONL. */
-export async function writeSessionMetaSessionFile(
+/** Persist full product meta for a registered session. */
+export async function writeSessionMeta(
   entry: RegisteredAgentSession,
-  sessionFile: string,
+  patch: Partial<SessionMetaDisk> = {},
 ): Promise<void> {
-  entry.sessionFile = sessionFile;
   const existing = (await readSessionMeta(entry.metaPath)) ?? {
     schema: "okf.pi-session/v1",
     id: entry.sessionId,
@@ -166,16 +166,124 @@ export async function writeSessionMetaSessionFile(
   };
   const next: SessionMetaDisk = {
     ...existing,
+    ...patch,
     id: entry.sessionId,
     workspaceId: entry.workspaceId,
     title: entry.title,
     createdAt: existing.createdAt ?? entry.createdAt,
     updatedAt: nowIso(),
     sessionWorkDir: entry.sessionWorkDir,
-    sessionFile,
+    sessionFile: patch.sessionFile ?? entry.sessionFile ?? existing.sessionFile,
     stub: false,
   };
   await writeFile(entry.metaPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+}
+
+/** Persist / refresh sessionFile on product meta so cold history can find Pi JSONL. */
+export async function writeSessionMetaSessionFile(
+  entry: RegisteredAgentSession,
+  sessionFile: string,
+): Promise<void> {
+  entry.sessionFile = sessionFile;
+  await writeSessionMeta(entry, { sessionFile });
+}
+
+/** Default title pattern used at create time. */
+export function defaultSessionTitle(workspaceName: string): string {
+  const name = workspaceName.trim() || "workspace";
+  return `Wiki Agent · ${name}`;
+}
+
+/**
+ * True when the title is still the create-time default and should be
+ * replaced by the first user prompt (OpenCode / ChatGPT style).
+ */
+export function isDefaultSessionTitle(
+  title: string,
+  workspaceName?: string,
+): boolean {
+  const t = title.trim();
+  if (!t) return true;
+  if (t === "New session" || t === "新会话") return true;
+  if (t.startsWith("Wiki Agent · ")) return true;
+  if (workspaceName && t === defaultSessionTitle(workspaceName)) return true;
+  return false;
+}
+
+/** Collapse first user message into a short session title. */
+export function titleFromUserPrompt(text: string, max = 60): string {
+  const firstLine =
+    text
+      .trim()
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .find((l) => l.length > 0) ?? "New session";
+  const compact = firstLine.replace(/\s+/g, " ");
+  if (compact.length <= max) return compact;
+  return `${compact.slice(0, Math.max(1, max - 1))}…`;
+}
+
+/**
+ * If the session still has a default title, rename it from the first user
+ * prompt and persist to product meta (pi-web / OpenCode pattern).
+ */
+export async function maybeAutoTitleFromPrompt(
+  entry: RegisteredAgentSession,
+  promptText: string,
+): Promise<string | null> {
+  if (!isDefaultSessionTitle(entry.title, entry.workspaceName)) {
+    return null;
+  }
+  const next = titleFromUserPrompt(promptText);
+  if (!next || next === entry.title) return null;
+  entry.title = next;
+  await writeSessionMeta(entry);
+  return next;
+}
+
+/**
+ * Remove product meta, session workdir, and matching Pi JSONL files.
+ * Caller must dispose the in-memory registry entry first.
+ */
+export async function deleteAgentSessionOnDisk(
+  workspaceRoot: string,
+  sessionId: string,
+): Promise<{ removed: string[] }> {
+  const root = path.resolve(workspaceRoot);
+  const dir = piSessionsDir(root);
+  const safe = sessionId.replace(/[/\\]/g, "_");
+  const removed: string[] = [];
+
+  const candidates = [
+    path.join(dir, `${safe}.json`),
+    path.join(dir, safe),
+    path.join(dir, `${safe}.jsonl`),
+  ];
+
+  // Also pick up Pi SessionManager files: `{timestamp}_{id}.jsonl`
+  try {
+    const names = await readdir(dir);
+    for (const name of names) {
+      if (isPiSessionJsonlName(name, safe) || name === safe || name === `${safe}.json`) {
+        const full = path.join(dir, name);
+        if (!candidates.includes(full)) candidates.push(full);
+      }
+    }
+  } catch {
+    // dir missing — nothing to delete
+  }
+
+  for (const full of candidates) {
+    if (!isPathInside(root, full)) continue;
+    try {
+      await rm(full, { recursive: true, force: true });
+      removed.push(full);
+    } catch {
+      // ignore missing
+    }
+  }
+
+  return { removed };
 }
 
 /**

@@ -461,6 +461,10 @@ export const en = {
     creatingSession: "Creating…",
     noSessions: "No sessions yet. Create one to start.",
     deleteSession: "Delete session",
+    deleteSessionConfirm:
+      "Delete “{title}”? Conversation history and tool logs for this session will be removed.",
+    deletingSession: "Deleting…",
+    toolDetails: "Details",
     panels: "Context panels",
     panelSources: "Sources",
     panelWiki: "Wiki",

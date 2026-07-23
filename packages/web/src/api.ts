@@ -869,6 +869,23 @@ export function createAgentSession(
   );
 }
 
+/** Delete a Pi agent session (meta + workdir + JSONL). */
+export function deleteAgentSession(
+  workspaceId: string,
+  sessionId: string,
+  rootPath?: string,
+): Promise<{ ok: boolean; sessionId: string; removed: number }> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/agent/sessions/${encodeURIComponent(sessionId)}`,
+      rootPath,
+    ),
+    {
+      method: "DELETE",
+    },
+  );
+}
+
 /**
  * POST an AgentCommand (prompt | steer | abort | compact | start_wiki_run | resume_gate).
  * Server returns 202 with status `stub` | `accepted`.

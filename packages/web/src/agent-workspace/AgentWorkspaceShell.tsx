@@ -47,7 +47,9 @@ export type AgentWorkspaceShellProps = {
   activeSessionId: string | null;
   onSelectSession: (sessionId: string) => void;
   onCreateSession: () => void;
+  onDeleteSession?: (sessionId: string) => void | Promise<void>;
   creatingSession?: boolean;
+  deletingSessionId?: string | null;
   messages: AgentMessage[];
   input: string;
   onInputChange: (value: string) => void;
@@ -86,7 +88,9 @@ export function AgentWorkspaceShell({
   activeSessionId,
   onSelectSession,
   onCreateSession,
+  onDeleteSession,
   creatingSession = false,
+  deletingSessionId = null,
   messages,
   input,
   onInputChange,
@@ -132,7 +136,9 @@ export function AgentWorkspaceShell({
         setLeftOpen(false);
       }}
       onCreate={onCreateSession}
+      onDelete={onDeleteSession}
       creating={creatingSession}
+      deletingId={deletingSessionId}
     />
   );
 

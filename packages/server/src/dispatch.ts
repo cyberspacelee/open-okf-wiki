@@ -64,6 +64,7 @@ import {
 import {
   handleAgentSessionCommand,
   handleAgentSessionEvents,
+  handleDeleteAgentSession,
   handleGetAgentSession,
   handleCreateAgentSession,
   handleListAgentSessions,
@@ -276,6 +277,16 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
       );
       if (params && method === "GET") {
         await handleGetAgentSession(
+          req,
+          res,
+          params.id!,
+          params.sessionId!,
+          url,
+        );
+        return;
+      }
+      if (params && method === "DELETE") {
+        await handleDeleteAgentSession(
           req,
           res,
           params.id!,

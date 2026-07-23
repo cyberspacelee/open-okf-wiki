@@ -23,6 +23,7 @@ import {
 } from "@okf-wiki/core";
 import {
   agentSessionExistsOnDisk,
+  deleteAgentSession,
   dispatchAgentCommand,
   ensurePiSessionsDir,
   ensureRegistered,
@@ -41,6 +42,7 @@ import {
   getRecentAgentSessionEvents,
   subscribeAgentSessionEvents,
 } from "../agent-session-events.ts";
+import { readSessionMeta } from "../session/parent-session.ts";
 import { readJsonBody, sendError, sendJson } from "../http-util.ts";
 
 const HEARTBEAT_MS = 15_000;
@@ -55,13 +57,15 @@ export function mergePiSessionEntries(
     name: string;
     isDirectory: boolean;
     updatedAt?: string;
+    /** Operator title from product meta (when known). */
+    title?: string;
   }>,
 ): PiSessionSummary[] {
   type Ranked = PiSessionSummary & { rank: number };
   const byId = new Map<string, Ranked>();
 
   for (const entry of entries) {
-    const { name, isDirectory: isDir, updatedAt } = entry;
+    const { name, isDirectory: isDir, updatedAt, title } = entry;
     if (name.startsWith(".")) continue;
 
     const isJsonl = /\.jsonl$/i.test(name);
@@ -77,6 +81,7 @@ export function mergePiSessionEntries(
     const candidate: Ranked = {
       id: idFromName,
       name,
+      title,
       updatedAt,
       placeholder: isMetaJson,
       rank,
@@ -84,12 +89,21 @@ export function mergePiSessionEntries(
 
     const existing = byId.get(idFromName);
     if (!existing || candidate.rank > existing.rank) {
-      byId.set(idFromName, candidate);
+      // Prefer higher-rank entry; keep title from either side.
+      byId.set(idFromName, {
+        ...candidate,
+        title: candidate.title ?? existing?.title,
+      });
     } else if (
       candidate.rank === existing.rank &&
       (candidate.updatedAt ?? "") > (existing.updatedAt ?? "")
     ) {
-      byId.set(idFromName, candidate);
+      byId.set(idFromName, {
+        ...candidate,
+        title: candidate.title ?? existing.title,
+      });
+    } else if (!existing.title && title) {
+      byId.set(idFromName, { ...existing, title });
     }
   }
 
@@ -139,6 +153,7 @@ export async function handleListAgentSessions(
     name: string;
     isDirectory: boolean;
     updatedAt?: string;
+    title?: string;
   }> = [];
   for (const name of names) {
     if (name.startsWith(".")) continue;
@@ -146,10 +161,23 @@ export async function handleListAgentSessions(
     if (!isPathInside(path.resolve(workspace.rootPath), full)) continue;
     try {
       const st = await stat(full);
+      let title: string | undefined;
+      // Product meta `{id}.json` carries the operator title.
+      if (/\.json$/i.test(name) && !st.isDirectory()) {
+        const meta = await readSessionMeta(full);
+        if (meta?.title?.trim()) title = meta.title.trim();
+      }
+      // Live registry may have a fresher auto-title than disk after first prompt.
+      if (/\.json$/i.test(name)) {
+        const idFromName = name.replace(/\.json$/i, "");
+        const live = getRegisteredAgentSession(workspace.id, idFromName);
+        if (live?.title?.trim()) title = live.title.trim();
+      }
       entries.push({
         name,
         isDirectory: st.isDirectory(),
         updatedAt: st.mtime.toISOString(),
+        title,
       });
     } catch {
       continue;
@@ -157,6 +185,39 @@ export async function handleListAgentSessions(
   }
 
   sendJson(res, 200, { sessions: mergePiSessionEntries(entries) });
+}
+
+/**
+ * DELETE /api/workspaces/:id/agent/sessions/:sessionId?rootPath=...
+ * Removes product meta + workdir + Pi JSONL (pi-web SessionListDialog pattern).
+ */
+export async function handleDeleteAgentSession(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  sessionId: string,
+  url: URL,
+): Promise<void> {
+  const workspace = await loadWorkspaceOr404(res, id, url);
+  if (!workspace) return;
+
+  const exists = await agentSessionExistsOnDisk(workspace.rootPath, sessionId);
+  if (!exists) {
+    sendError(res, 404, `agent session not found: ${sessionId}`);
+    return;
+  }
+
+  try {
+    const result = await deleteAgentSession(workspace, sessionId);
+    sendJson(res, 200, {
+      ok: true,
+      sessionId: result.sessionId,
+      removed: result.removed.length,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    sendError(res, 500, message);
+  }
 }
 
 /**
