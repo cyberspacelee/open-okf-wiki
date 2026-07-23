@@ -31,6 +31,7 @@ import {
 } from "./live-pi.js";
 import type { ProduceEventSink } from "./events.js";
 import { silentProduceEvents } from "./events.js";
+import { attachWorkUnitSink } from "./parent-visibility.js";
 import type { RunWorkdirLayout } from "../pi/run-workdir.js";
 import type { SourceIgnoreInput } from "../pi/tool-operations.js";
 import { planWikiSpec } from "./plan.js";
@@ -190,28 +191,49 @@ export async function produceWiki(
       spec = defaultWikiRunSpec(input.workspace.name);
     } else {
       events.progress?.({ phase: "planning", label: "planner session" });
-      const planned = await planWikiSpec({
-        runWorkDir: input.runWorkDir,
-        layout,
-        workspaceName: input.workspace.name,
-        wikiLanguage,
-        fixture: false,
-        model: input.models?.planner?.model ?? input.models?.writer?.model,
-        modelRuntime:
-          input.models?.planner?.modelRuntime ??
-          input.models?.writer?.modelRuntime,
-        maxContextTokens:
-          input.models?.planner?.maxContextTokens ??
-          input.models?.writer?.maxContextTokens ??
-          input.maxContextTokens,
-        contextTargetTokens,
-        workspaceRoot: input.workspace.rootPath,
-        sourceIgnores: input.sourceIgnores,
-        abortSignal: input.abortSignal,
-        agentId: "planner",
-        onPiEvent: events.childPiEvent,
+      const plannerUnit = attachWorkUnitSink(events, {
+        unitId: "planner",
+        role: "planner",
+        task: "Draft WikiRunSpec from sources",
+        parentId: "root",
+        runId: input.runId,
       });
-      spec = planned.spec;
+      plannerUnit.open();
+      try {
+        const planned = await planWikiSpec({
+          runWorkDir: input.runWorkDir,
+          layout,
+          workspaceName: input.workspace.name,
+          wikiLanguage,
+          fixture: false,
+          model: input.models?.planner?.model ?? input.models?.writer?.model,
+          modelRuntime:
+            input.models?.planner?.modelRuntime ??
+            input.models?.writer?.modelRuntime,
+          maxContextTokens:
+            input.models?.planner?.maxContextTokens ??
+            input.models?.writer?.maxContextTokens ??
+            input.maxContextTokens,
+          contextTargetTokens,
+          workspaceRoot: input.workspace.rootPath,
+          sourceIgnores: input.sourceIgnores,
+          abortSignal: input.abortSignal,
+          unitId: "planner",
+          onPiEvent: plannerUnit.onPiEvent,
+        });
+        plannerUnit.settle(
+          planned.spec.summary?.slice(0, 4000) ||
+            `Planned ${planned.spec.pages?.length ?? 0} page(s)`,
+        );
+        spec = planned.spec;
+      } catch (planErr) {
+        if (!(planErr instanceof Error && planErr.name === "AbortError")) {
+          plannerUnit.fail(
+            planErr instanceof Error ? planErr.message : String(planErr),
+          );
+        }
+        throw planErr;
+      }
     }
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
@@ -257,15 +279,14 @@ export async function produceWiki(
       throwIfAborted(input.abortSignal);
       metrics.domainStarts += 1;
       const domainNodeId = `domain-${d.id}`;
-      events.agentSpan?.({
-        spanId: `${input.runId}-${domainNodeId}`,
-        agentId: domainNodeId,
+      const domainUnit = attachWorkUnitSink(events, {
+        unitId: domainNodeId,
         role: "domain",
-        status: "running",
-        promptSummary: d.title ?? d.id,
+        task: d.title ?? d.id,
         parentId: "root",
         runId: input.runId,
       });
+      domainUnit.open();
 
       const leafQuestions = (d.questions ?? []).slice(0, orch.maxLeafFanOut);
       const childReceiptPaths: string[] = [];
@@ -274,20 +295,20 @@ export async function produceWiki(
         const leafTasks = leafQuestions.map((q, li) => {
           metrics.leafStarts += 1;
           const leafNodeId = `leaf-${d.id}-${li + 1}`;
-          events.agentSpan?.({
-            spanId: `${input.runId}-${leafNodeId}`,
-            agentId: leafNodeId,
+          const leafUnit = attachWorkUnitSink(events, {
+            unitId: leafNodeId,
             role: "leaf",
-            status: "running",
-            promptSummary: q.slice(0, 120),
+            task: q.slice(0, 2000),
             parentId: domainNodeId,
             runId: input.runId,
           });
+          leafUnit.open();
           return {
             leafNodeId,
+            leafUnit,
             input: {
               role: "leaf" as const,
-              agentId: leafNodeId,
+              unitId: leafNodeId,
               runWorkDir: input.runWorkDir,
               task: leafResearchPrompt({
                 domainId: d.id,
@@ -304,7 +325,7 @@ export async function produceWiki(
               workspaceRoot: input.workspace.rootPath,
               sourceIgnores: input.sourceIgnores,
               abortSignal: input.abortSignal,
-              onPiEvent: events.childPiEvent,
+              onPiEvent: leafUnit.onPiEvent,
             },
           };
         });
@@ -316,6 +337,7 @@ export async function produceWiki(
           );
           for (let i = 0; i < leafResults.length; i++) {
             const leafNodeId = leafTasks[i]!.leafNodeId;
+            const leafUnit = leafTasks[i]!.leafUnit;
             const lr = leafResults[i]!;
             const persisted = await persistResearchReceipt({
               workspaceRoot: input.workspace.rootPath,
@@ -328,16 +350,7 @@ export async function produceWiki(
               status: "complete",
             });
             childReceiptPaths.push(persisted.relativePath);
-            events.agentSpan?.({
-              spanId: `${input.runId}-${leafNodeId}`,
-              agentId: leafNodeId,
-              role: "leaf",
-              status: "complete",
-              promptSummary: lr.summary.slice(0, 120),
-              detail: lr.summary.slice(0, 12_000),
-              task: leafQuestions[i],
-              parentId: domainNodeId,
-              runId: input.runId,
+            leafUnit.settle(lr.summary.slice(0, 4000), {
               receiptPath: persisted.relativePath,
             });
           }
@@ -346,15 +359,9 @@ export async function produceWiki(
             return cancelledResult(spec, fixture, metrics);
           }
           for (const t of leafTasks) {
-            events.agentSpan?.({
-              spanId: `${input.runId}-${t.leafNodeId}`,
-              agentId: t.leafNodeId,
-              role: "leaf",
-              status: "failed",
-              error: err instanceof Error ? err.message : String(err),
-              parentId: domainNodeId,
-              runId: input.runId,
-            });
+            t.leafUnit.fail(
+              err instanceof Error ? err.message : String(err),
+            );
           }
         }
       }
@@ -362,7 +369,7 @@ export async function produceWiki(
       try {
         const domainResult = await runChildSession({
           role: "domain",
-          agentId: domainNodeId,
+          unitId: domainNodeId,
           runWorkDir: input.runWorkDir,
           task: domainResearchPrompt({
             domainId: d.id,
@@ -380,7 +387,7 @@ export async function produceWiki(
           workspaceRoot: input.workspace.rootPath,
           sourceIgnores: input.sourceIgnores,
           abortSignal: input.abortSignal,
-          onPiEvent: events.childPiEvent,
+          onPiEvent: domainUnit.onPiEvent,
         });
         const persisted = await persistResearchReceipt({
           workspaceRoot: input.workspace.rootPath,
@@ -393,16 +400,7 @@ export async function produceWiki(
           status: "complete",
           childReceipts: childReceiptPaths,
         });
-        events.agentSpan?.({
-          spanId: `${input.runId}-${domainNodeId}`,
-          agentId: domainNodeId,
-          role: "domain",
-          status: "complete",
-          promptSummary: domainResult.summary.slice(0, 120),
-          detail: domainResult.summary.slice(0, 12_000),
-          task: `Domain research: ${d.title ?? d.id}`,
-          parentId: "root",
-          runId: input.runId,
+        domainUnit.settle(domainResult.summary.slice(0, 4000), {
           receiptPath: persisted.relativePath,
         });
       } catch (err) {
@@ -410,15 +408,7 @@ export async function produceWiki(
           return cancelledResult(spec, fixture, metrics);
         }
         const msg = err instanceof Error ? err.message : String(err);
-        events.agentSpan?.({
-          spanId: `${input.runId}-${domainNodeId}`,
-          agentId: domainNodeId,
-          role: "domain",
-          status: "failed",
-          error: msg,
-          parentId: "root",
-          runId: input.runId,
-        });
+        domainUnit.fail(msg);
         await persistResearchReceipt({
           workspaceRoot: input.workspace.rootPath,
           runWorkDir: input.runWorkDir,
@@ -528,49 +518,44 @@ export async function produceWiki(
       const reviewers: Array<{ id: string; text: string }> = [];
       if (fixture || !input.models?.reviewer?.model) {
         for (let i = 0; i < councilSize; i++) {
-          const spanId = `${input.runId}-reviewer-${i + 1}-r${round}`;
-          events.agentSpan?.({
-            spanId,
-            agentId: `reviewer-${i + 1}`,
+          const reviewerId = `reviewer-${i + 1}`;
+          // Distinct unitId per review round so fold last-by-unitId stays truthful.
+          const unitId = `${reviewerId}-r${round}`;
+          const unit = attachWorkUnitSink(events, {
+            unitId,
             role: "reviewer",
-            status: "running",
-            runId: input.runId,
+            task: `Review round ${round}`,
             parentId: "root",
+            runId: input.runId,
           });
+          unit.open();
           reviewers.push({
-            id: `reviewer-${i + 1}`,
+            id: reviewerId,
             text: JSON.stringify({
               clean: true,
               defects: [],
               summary: "NO_DEFECTS",
             }),
           });
-          events.agentSpan?.({
-            spanId,
-            agentId: `reviewer-${i + 1}`,
-            role: "reviewer",
-            status: "complete",
-            runId: input.runId,
-            parentId: "root",
-          });
+          unit.settle("NO_DEFECTS");
         }
       } else {
         for (let i = 0; i < councilSize; i++) {
-          const spanId = `${input.runId}-reviewer-${i + 1}-r${round}`;
+          const reviewerId = `reviewer-${i + 1}`;
+          const unitId = `${reviewerId}-r${round}`;
           const lens = lenses[i % lenses.length]!;
-          events.agentSpan?.({
-            spanId,
-            agentId: `reviewer-${i + 1}`,
+          const unit = attachWorkUnitSink(events, {
+            unitId,
             role: "reviewer",
-            status: "running",
-            promptSummary: lens,
-            runId: input.runId,
+            task: `Review lens: ${lens}`,
             parentId: "root",
+            runId: input.runId,
           });
+          unit.open();
           try {
             const child = await runChildSession({
               role: "reviewer",
-              agentId: `reviewer-${i + 1}`,
+              unitId,
               runWorkDir: input.runWorkDir,
               task: reviewerPrompt({ pages: produced.pages, lens }),
               model: input.models.reviewer.model,
@@ -580,20 +565,10 @@ export async function produceWiki(
               workspaceRoot: input.workspace.rootPath,
               sourceIgnores: input.sourceIgnores,
               abortSignal: input.abortSignal,
-              onPiEvent: events.childPiEvent,
+              onPiEvent: unit.onPiEvent,
             });
-            reviewers.push({ id: `reviewer-${i + 1}`, text: child.summary });
-            events.agentSpan?.({
-              spanId,
-              agentId: `reviewer-${i + 1}`,
-              role: "reviewer",
-              status: "complete",
-              promptSummary: child.summary.slice(0, 120),
-              detail: child.summary.slice(0, 12_000),
-              task: `Review lens: ${lens}`,
-              runId: input.runId,
-              parentId: "root",
-            });
+            reviewers.push({ id: reviewerId, text: child.summary });
+            unit.settle(child.summary.slice(0, 4000));
           } catch (err) {
             if (err instanceof Error && err.name === "AbortError") {
               return cancelledResult(spec, fixture, metrics, produced);
@@ -601,7 +576,7 @@ export async function produceWiki(
             // Fail-closed: reviewer error is a blocking defect, not clean.
             const msg = err instanceof Error ? err.message : String(err);
             reviewers.push({
-              id: `reviewer-${i + 1}`,
+              id: reviewerId,
               text: JSON.stringify({
                 clean: false,
                 defects: [
@@ -614,15 +589,7 @@ export async function produceWiki(
                 summary: `reviewer error: ${msg}`,
               }),
             });
-            events.agentSpan?.({
-              spanId,
-              agentId: `reviewer-${i + 1}`,
-              role: "reviewer",
-              status: "failed",
-              error: msg,
-              runId: input.runId,
-              parentId: "root",
-            });
+            unit.fail(msg);
           }
         }
       }

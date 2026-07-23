@@ -25,10 +25,10 @@ import { Transcript } from "./transcript/Transcript";
 import type {
   AgentMessage,
   AgentStatus,
-  AgentStream,
   PendingGate,
   ResumeGateInput,
-  WorkStreams,
+  WorkUnits,
+  WorkUnitView,
 } from "./hooks/useSessionAgent";
 import type {
   ModelProfilePublic,
@@ -71,11 +71,11 @@ export type AgentWorkspaceShellProps = {
   wikiModelProfileId?: string;
   onWikiModelProfileIdChange?: (profileId: string) => void;
   defaultModelProfileId?: string;
-  /** Produce-child streams (Work surface). */
-  workStreams?: WorkStreams;
+  /** Produce work units fold cache (Work surface). */
+  units?: WorkUnits;
   focusAgentId?: string | null;
   onFocusAgentIdChange?: (agentId: string | null) => void;
-  focusedStream?: AgentStream | null;
+  focusedUnit?: WorkUnitView | null;
 };
 
 export function AgentWorkspaceShell({
@@ -108,10 +108,10 @@ export function AgentWorkspaceShell({
   wikiModelProfileId = "",
   onWikiModelProfileIdChange,
   defaultModelProfileId,
-  workStreams = {},
+  units = {},
   focusAgentId = null,
   onFocusAgentIdChange,
-  focusedStream = null,
+  focusedUnit = null,
 }: AgentWorkspaceShellProps) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
@@ -160,7 +160,7 @@ export function AgentWorkspaceShell({
       messages={messages}
       phase={phase}
       recentRuns={recentRuns}
-      workStreams={workStreams}
+      units={units}
       onOpenAgent={openAgent}
     />
   );
@@ -271,10 +271,10 @@ export function AgentWorkspaceShell({
         onOpenChange={(open) => {
           if (!open) onFocusAgentIdChange?.(null);
         }}
-        agentId={focusAgentId}
-        role={focusMeta.role ?? focusedStream?.role}
-        task={focusMeta.task}
-        stream={focusedStream}
+        unitId={focusAgentId}
+        role={focusMeta.role ?? focusedUnit?.role}
+        task={focusMeta.task ?? focusedUnit?.task}
+        unit={focusedUnit}
         fallbackDetail={focusMeta.detail}
       />
     </div>

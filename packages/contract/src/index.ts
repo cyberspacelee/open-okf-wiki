@@ -67,27 +67,24 @@ export {
 } from "./skill.js";
 
 export {
-  SESSION_SCHEMA_VERSION,
   OperatorSessionStatusSchema,
+  SessionWorkflowStateSchema,
+  SessionPhaseSchema,
+  type OperatorSessionStatus,
+  type SessionWorkflowState,
+  type SessionPhase,
+} from "./session.js";
+
+export {
   InteractionOptionSchema,
   InteractionModeSchema,
   PendingInteractionSchema,
   InteractionResumeSchema,
-  SessionWorkflowStateSchema,
-  SessionToolPartStateSchema,
-  SessionMessagePartSchema,
-  SessionMessageSchema,
-  OperatorSessionSchema,
-  type OperatorSessionStatus,
   type InteractionOption,
   type InteractionMode,
   type PendingInteraction,
   type InteractionResume,
-  type SessionWorkflowState,
-  type SessionMessagePart,
-  type SessionMessage,
-  type OperatorSession,
-} from "./session.js";
+} from "./interaction.js";
 
 export {
   mapSuspendToGateUi,
@@ -115,9 +112,13 @@ export {
   type SessionCard,
 } from "./events.js";
 
-/** Pi agent harness protocol (ADR 0030) — additive; legacy SessionMessage still exported. */
+/** Pi agent harness + product inject whitelist (ADR 0030 / 0031). */
 export {
   PI_SESSIONS_DIR,
+  OPERATOR_TRAJECTORY_FILE,
+  PRODUCT_INJECT_KINDS,
+  assertProductInject,
+  isProductInjectKind,
   AgentPromptCommandSchema,
   AgentSteerCommandSchema,
   AgentAbortCommandSchema,
@@ -130,6 +131,14 @@ export {
   ProductRunPhaseEventSchema,
   ProductGateEventSchema,
   ProductRunLinkEventSchema,
+  ProductProgressEventSchema,
+  ProductPlanProgressEventSchema,
+  ProductDefectsEventSchema,
+  WorkUnitRoleSchema,
+  WorkUnitStatusSchema,
+  WorkUnitMessageSchema,
+  WorkUnitToolStateSchema,
+  ProductWorkUnitEventSchema,
   ProductSseEventSchema,
   AgentSseHeartbeatSchema,
   AgentSseEventSchema,
@@ -137,6 +146,7 @@ export {
   CreatePiAgentSessionBodySchema,
   CreatePiAgentSessionResponseSchema,
   AgentCommandResponseSchema,
+  type ProductInjectKind,
   type AgentPromptCommand,
   type AgentSteerCommand,
   type AgentAbortCommand,
@@ -147,6 +157,14 @@ export {
   type ProductRunPhaseEvent,
   type ProductGateEvent,
   type ProductRunLinkEvent,
+  type ProductProgressEvent,
+  type ProductPlanProgressEvent,
+  type ProductDefectsEvent,
+  type WorkUnitRole,
+  type WorkUnitStatus,
+  type WorkUnitMessage,
+  type WorkUnitToolState,
+  type ProductWorkUnitEvent,
   type ProductSseEvent,
   type AgentSseHeartbeat,
   type AgentSseEvent,

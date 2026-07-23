@@ -1,12 +1,11 @@
 /**
- * Pi agent harness protocol (ADR 0030).
+ * Pi agent harness protocol (ADR 0030 / 0031).
  *
  * Operator conversation truth = Pi JSONL under `.okf-wiki/pi-sessions/`.
- * Live transport = AgentSession commands + SSE events (pi-web style).
- * Product injects only run_phase | gate | run_link beside the Pi stream.
+ * Product injects + work_unit PVUs = `operator-trajectory.jsonl` (session-scoped).
+ * Live transport = AgentSession commands + SSE (pi + whitelist product).
  *
- * Additive: legacy AI SDK SessionMessage types remain in session.ts for the
- * pre-cutover path; new clients should use this module.
+ * No UIMessage history. No agent_span body channel. No child_pi / okfAgent side path.
  */
 
 import { z } from "zod";
@@ -14,6 +13,9 @@ import { WikiRunPlanSchema, WikiRunRecordStatusSchema } from "./run.js";
 
 /** Relative dir under workspace meta: `{root}/.okf-wiki/pi-sessions/`. */
 export const PI_SESSIONS_DIR = "pi-sessions" as const;
+
+/** Filename for session-scoped product trajectory (beside Pi JSONL). */
+export const OPERATOR_TRAJECTORY_FILE = "operator-trajectory.jsonl" as const;
 
 // ---------------------------------------------------------------------------
 // Agent commands (client → server → AgentSession / WikiRunShell)
@@ -52,7 +54,6 @@ export const AgentStartWikiRunCommandSchema = z.object({
 
 /**
  * Resume a product plan / publication gate (WikiRunShell).
- * Aligns with {@link SessionGateResumeData} action vocabulary.
  */
 export const AgentResumeGateCommandSchema = z.object({
   type: z.literal("resume_gate"),
@@ -124,7 +125,40 @@ export function safeParseAgentCommand(
 
 // ---------------------------------------------------------------------------
 // Product SSE injects (server → client, beside Pi agent events)
+// ADR 0031 whitelist only — no agent_span body channel, no child_pi.
 // ---------------------------------------------------------------------------
+
+/** Canonical product inject kinds (assert at emit boundaries). */
+export const PRODUCT_INJECT_KINDS = [
+  "run_link",
+  "run_phase",
+  "gate",
+  "plan_progress",
+  "defects",
+  "progress",
+  "work_unit",
+] as const;
+
+export type ProductInjectKind = (typeof PRODUCT_INJECT_KINDS)[number];
+
+const PRODUCT_INJECT_KIND_SET = new Set<string>(PRODUCT_INJECT_KINDS);
+
+/**
+ * Hard allowlist for product SSE / trajectory rows.
+ * Unknown kinds must not be emitted (tests fail; adapters should throw).
+ */
+export function assertProductInject(kind: string): asserts kind is ProductInjectKind {
+  if (!PRODUCT_INJECT_KIND_SET.has(kind)) {
+    throw new Error(
+      `Product inject kind "${kind}" is not on the ADR 0031 whitelist ` +
+        `(${PRODUCT_INJECT_KINDS.join(" | ")})`,
+    );
+  }
+}
+
+export function isProductInjectKind(kind: string): kind is ProductInjectKind {
+  return PRODUCT_INJECT_KIND_SET.has(kind);
+}
 
 /** Wiki run phase strip for the operator timeline. */
 export const ProductRunPhaseEventSchema = z.object({
@@ -174,7 +208,7 @@ export const ProductRunLinkEventSchema = z.object({
   timestamp: z.string().datetime().optional(),
 });
 
-/** Produce-owned progress (ADR 0029 — only Produce emits business progress). */
+/** Produce-owned thin progress label (not a full tool trail). */
 export const ProductProgressEventSchema = z.object({
   source: z.literal("product"),
   kind: z.literal("progress"),
@@ -194,30 +228,7 @@ export const ProductProgressEventSchema = z.object({
   timestamp: z.string().datetime().optional(),
 });
 
-/** Supervisor tree span (domain / leaf / reviewer). */
-export const ProductAgentSpanEventSchema = z.object({
-  source: z.literal("product"),
-  kind: z.literal("agent_span"),
-  sessionId: z.string().min(1),
-  runId: z.string().min(1).optional(),
-  spanId: z.string().min(1),
-  agentId: z.string().min(1),
-  role: z.enum(["domain", "leaf", "reviewer", "root", "planner"]),
-  status: z.enum(["running", "complete", "failed"]),
-  promptSummary: z.string().max(500).optional(),
-  /**
-   * Full-ish body for click-to-preview (receipt summary / planner output).
-   * Capped for SSE size; UI may still fetch run receipt APIs for more.
-   */
-  detail: z.string().max(12_000).optional(),
-  parentId: z.string().max(120).optional(),
-  receiptPath: z.string().max(500).optional(),
-  task: z.string().max(2000).optional(),
-  sequence: z.number().int().nonnegative().optional(),
-  timestamp: z.string().datetime().optional(),
-});
-
-/** Spec page queue progress (Produce-owned; truthful file-backed statuses). */
+/** Spec page queue progress (Produce-owned; file-backed statuses). */
 export const ProductPlanProgressEventSchema = z.object({
   source: z.literal("product"),
   kind: z.literal("plan_progress"),
@@ -250,14 +261,88 @@ export const ProductDefectsEventSchema = z.object({
   timestamp: z.string().datetime().optional(),
 });
 
+// ---------------------------------------------------------------------------
+// work_unit — parent-visible produce unit (ADR 0031 PVU)
+// ---------------------------------------------------------------------------
+
+export const WorkUnitRoleSchema = z.enum([
+  "planner",
+  "domain",
+  "leaf",
+  "reviewer",
+  "root",
+]);
+
+export type WorkUnitRole = z.infer<typeof WorkUnitRoleSchema>;
+
+export const WorkUnitStatusSchema = z.enum([
+  "pending",
+  "running",
+  "settled",
+  "failed",
+]);
+
+export type WorkUnitStatus = z.infer<typeof WorkUnitStatusSchema>;
+
+/** Assistant body subset projected from child Pi message snapshots. */
+export const WorkUnitMessageSchema = z.object({
+  thinking: z.string().max(64_000).optional(),
+  text: z.string().max(64_000).optional(),
+});
+
+export type WorkUnitMessage = z.infer<typeof WorkUnitMessageSchema>;
+
+export const WorkUnitToolStateSchema = z.object({
+  toolCallId: z.string().min(1).max(120),
+  toolName: z.string().min(1).max(120),
+  state: z.enum([
+    "input-streaming",
+    "input-available",
+    "output-available",
+    "output-error",
+  ]),
+  input: z.unknown().optional(),
+  output: z.unknown().optional(),
+  errorText: z.string().max(4000).optional(),
+});
+
+export type WorkUnitToolState = z.infer<typeof WorkUnitToolStateSchema>;
+
+/**
+ * Parent-visible unit for produce child work.
+ * Fold last-by-unitId on cold load. Empty running (no message/tools) must not
+ * be labeled as model "thinking" in the UI.
+ */
+export const ProductWorkUnitEventSchema = z.object({
+  source: z.literal("product"),
+  kind: z.literal("work_unit"),
+  sessionId: z.string().min(1),
+  runId: z.string().min(1),
+  unitId: z.string().min(1).max(120),
+  role: WorkUnitRoleSchema,
+  status: WorkUnitStatusSchema,
+  task: z.string().max(2000).optional(),
+  parentId: z.string().max(120).optional(),
+  message: WorkUnitMessageSchema.optional(),
+  tools: z.array(WorkUnitToolStateSchema).max(200).optional(),
+  summary: z.string().max(4000).optional(),
+  receiptPath: z.string().max(500).optional(),
+  error: z.string().max(4000).optional(),
+  updatedAt: z.number().int().nonnegative().optional(),
+  sequence: z.number().int().nonnegative().optional(),
+  timestamp: z.string().datetime().optional(),
+});
+
+export type ProductWorkUnitEvent = z.infer<typeof ProductWorkUnitEventSchema>;
+
 export const ProductSseEventSchema = z.discriminatedUnion("kind", [
   ProductRunPhaseEventSchema,
   ProductGateEventSchema,
   ProductRunLinkEventSchema,
   ProductProgressEventSchema,
   ProductPlanProgressEventSchema,
-  ProductAgentSpanEventSchema,
   ProductDefectsEventSchema,
+  ProductWorkUnitEventSchema,
 ]);
 
 export type ProductRunPhaseEvent = z.infer<typeof ProductRunPhaseEventSchema>;
@@ -267,7 +352,6 @@ export type ProductProgressEvent = z.infer<typeof ProductProgressEventSchema>;
 export type ProductPlanProgressEvent = z.infer<
   typeof ProductPlanProgressEventSchema
 >;
-export type ProductAgentSpanEvent = z.infer<typeof ProductAgentSpanEventSchema>;
 export type ProductDefectsEvent = z.infer<typeof ProductDefectsEventSchema>;
 export type ProductSseEvent = z.infer<typeof ProductSseEventSchema>;
 
@@ -284,7 +368,7 @@ export type AgentSseHeartbeat = z.infer<typeof AgentSseHeartbeatSchema>;
 /**
  * Envelope for the Pi agent SSE channel.
  * - `product` / `server` injects are fully typed here
- * - `pi` carries opaque AgentSession events until agent package exports a mapper
+ * - `pi` carries opaque parent AgentSession events only (no okfAgent side path)
  */
 export const AgentSseEventSchema = z.union([
   ProductSseEventSchema,
@@ -302,7 +386,7 @@ export const AgentSseEventSchema = z.union([
 export type AgentSseEvent = z.infer<typeof AgentSseEventSchema>;
 
 // ---------------------------------------------------------------------------
-// Session list / create DTOs (directory-backed placeholders OK pre-factory)
+// Session list / create DTOs
 // ---------------------------------------------------------------------------
 
 export const PiSessionSummarySchema = z.object({

@@ -1,6 +1,6 @@
 /**
- * Run-panel subagent tree: live spans from transcript + analysis receipts.
- * Click a node to peek full detail (SSE detail and/or receipts API).
+ * Run-panel work unit tree: live units from work_run chips + analysis receipts.
+ * Click a node to open the Work drawer (unitId is canonical).
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -29,8 +29,8 @@ import {
   type AnalysisReceiptSummary,
 } from "../../api";
 import { useI18n } from "../../i18n";
-import type { AgentMessage, WorkStreams } from "../hooks/useSessionAgent";
-import { AgentStreamBody } from "./AgentFocusDrawer";
+import type { AgentMessage, WorkUnits } from "../hooks/useSessionAgent";
+import { AgentUnitBody } from "./AgentFocusDrawer";
 
 export type AgentTreeNode = {
   id: string;
@@ -41,8 +41,9 @@ export type AgentTreeNode = {
   task?: string;
   detail?: string;
   receiptPath?: string;
-  receiptNodeId?: string;
-  source: "span" | "receipt";
+  /** Canonical unitId for Work surface lookup. */
+  unitId?: string;
+  source: "unit" | "receipt";
 };
 
 function nodesFromMessages(messages: AgentMessage[]): AgentTreeNode[] {
@@ -50,10 +51,10 @@ function nodesFromMessages(messages: AgentMessage[]): AgentTreeNode[] {
   for (const m of messages) {
     const p = m.product;
     if (!p) continue;
-    // Prefer aggregated Work chip agents (one card per run).
+    // Prefer aggregated Work chip agents (one card per run); agentId === unitId.
     if (p.kind === "work_run" && p.agents?.length) {
       for (const a of p.agents) {
-        const id = a.spanId || a.agentId;
+        const id = a.agentId;
         if (!id) continue;
         byId.set(id, {
           id,
@@ -64,31 +65,57 @@ function nodesFromMessages(messages: AgentMessage[]): AgentTreeNode[] {
           task: a.task,
           detail: a.detail,
           receiptPath: a.receiptPath,
-          receiptNodeId: a.agentId,
-          source: "span",
+          unitId: a.agentId,
+          source: "unit",
         });
       }
-      continue;
     }
-    if (p.kind !== "agent_span") continue;
-    const id = p.spanId || p.agentId || m.id;
-    if (!id) continue;
-    byId.set(id, {
-      id,
-      role: p.role ?? "agent",
-      status: p.status ?? "unknown",
-      parentId: p.parentId && p.parentId !== "root" ? p.parentId : null,
-      label: p.label,
-      task: p.task,
-      detail: p.detail,
-      receiptPath: p.receiptPath,
-      receiptNodeId:
-        p.agentId ||
-        (p.receiptPath
-          ? p.receiptPath.replace(/^.*\//, "").replace(/\.json$/i, "")
-          : undefined),
-      source: "span",
-    });
+  }
+  return [...byId.values()];
+}
+
+/** Merge live units fold into tree nodes (status / body freshness). */
+function mergeUnits(
+  spans: AgentTreeNode[],
+  units: WorkUnits,
+): AgentTreeNode[] {
+  const byId = new Map(spans.map((n) => [n.id, n]));
+  for (const unit of Object.values(units)) {
+    const existing = byId.get(unit.unitId);
+    if (existing) {
+      byId.set(unit.unitId, {
+        ...existing,
+        role: unit.role || existing.role,
+        status: unit.status || existing.status,
+        parentId:
+          unit.parentId && unit.parentId !== "root"
+            ? unit.parentId
+            : existing.parentId,
+        task: unit.task || existing.task,
+        detail:
+          unit.summary ||
+          unit.message?.text ||
+          unit.error ||
+          existing.detail,
+        receiptPath: unit.receiptPath || existing.receiptPath,
+        unitId: unit.unitId,
+        source: "unit",
+      });
+    } else {
+      byId.set(unit.unitId, {
+        id: unit.unitId,
+        role: unit.role,
+        status: unit.status,
+        parentId:
+          unit.parentId && unit.parentId !== "root" ? unit.parentId : null,
+        label: unit.task,
+        task: unit.task,
+        detail: unit.summary || unit.message?.text || unit.error,
+        receiptPath: unit.receiptPath,
+        unitId: unit.unitId,
+        source: "unit",
+      });
+    }
   }
   return [...byId.values()];
 }
@@ -98,10 +125,10 @@ function mergeReceiptNodes(
   receipts: AnalysisReceiptSummary[],
 ): AgentTreeNode[] {
   const byId = new Map(spans.map((n) => [n.id, n]));
-  // Index by agentId / receipt node for linking children
+  // Index by unitId / receipt node for linking children
   const byReceiptNode = new Map<string, string>();
   for (const n of byId.values()) {
-    if (n.receiptNodeId) byReceiptNode.set(n.receiptNodeId, n.id);
+    if (n.unitId) byReceiptNode.set(n.unitId, n.id);
     if (n.role === "domain" || n.role === "leaf" || n.role === "planner") {
       byReceiptNode.set(n.id, n.id);
     }
@@ -112,8 +139,8 @@ function mergeReceiptNodes(
     if (!hitId) {
       for (const n of byId.values()) {
         if (
-          n.receiptNodeId === r.nodeId ||
-          n.id.endsWith(r.nodeId) ||
+          n.unitId === r.nodeId ||
+          n.id === r.nodeId ||
           n.receiptPath?.includes(r.nodeId)
         ) {
           hitId = n.id;
@@ -125,18 +152,21 @@ function mergeReceiptNodes(
       const hit = byId.get(hitId)!;
       byId.set(hitId, {
         ...hit,
-        receiptNodeId: r.nodeId,
+        unitId: hit.unitId ?? r.nodeId,
         receiptPath: r.relativePath,
         detail: hit.detail || r.summary,
         task: hit.task || r.scope,
-        status: hit.status === "running" ? hit.status : r.status,
+        status:
+          hit.status === "running" || hit.status === "pending"
+            ? hit.status
+            : r.status,
         parentId:
           hit.parentId ??
           (r.parentId && r.parentId !== "root" ? r.parentId : null),
       });
       byReceiptNode.set(r.nodeId, hitId);
     } else {
-      const id = `receipt-${r.nodeId}`;
+      const id = r.nodeId;
       byId.set(id, {
         id,
         role: r.nodeId.startsWith("leaf-")
@@ -150,7 +180,7 @@ function mergeReceiptNodes(
         task: r.scope,
         detail: r.summary,
         receiptPath: r.relativePath,
-        receiptNodeId: r.nodeId,
+        unitId: r.nodeId,
         source: "receipt",
       });
       byReceiptNode.set(r.nodeId, id);
@@ -187,8 +217,10 @@ function statusVariant(
   status: string,
 ): "default" | "secondary" | "destructive" | "outline" {
   if (status === "failed") return "destructive";
-  if (status === "running") return "default";
-  if (status === "complete") return "secondary";
+  if (status === "running" || status === "pending") return "default";
+  if (status === "settled" || status === "complete" || status === "done") {
+    return "secondary";
+  }
   return "outline";
 }
 
@@ -238,7 +270,7 @@ function TreeNodeRow({
               {node.status}
             </Badge>
             <span className="truncate font-mono text-[10px] text-muted-foreground">
-              {node.receiptNodeId || node.id}
+              {node.unitId || node.id}
             </span>
           </div>
           {(node.task || node.label) && (
@@ -278,7 +310,7 @@ export type AgentTreeProps = {
   rootPath?: string;
   runId?: string | null;
   messages: AgentMessage[];
-  workStreams?: WorkStreams;
+  units?: WorkUnits;
   onOpenAgent?: (input: {
     agentId: string;
     role?: string;
@@ -293,7 +325,7 @@ export function AgentTree({
   rootPath,
   runId,
   messages,
-  workStreams = {},
+  units = {},
   onOpenAgent,
   className,
 }: AgentTreeProps) {
@@ -306,7 +338,10 @@ export function AgentTree({
   const [previewLoading, setPreviewLoading] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
 
-  const spanNodes = useMemo(() => nodesFromMessages(messages), [messages]);
+  const spanNodes = useMemo(() => {
+    const fromMessages = nodesFromMessages(messages);
+    return mergeUnits(fromMessages, units);
+  }, [messages, units]);
 
   const refreshReceipts = useCallback(async () => {
     if (!runId) {
@@ -333,7 +368,9 @@ export function AgentTree({
     const hasCompleteReceipt = spanNodes.some(
       (n) =>
         n.receiptPath &&
-        (n.status === "complete" || n.status === "failed"),
+        (n.status === "settled" ||
+          n.status === "complete" ||
+          n.status === "failed"),
     );
     if (hasCompleteReceipt && runId) {
       void refreshReceipts();
@@ -348,25 +385,11 @@ export function AgentTree({
 
   const openPreview = useCallback(
     async (node: AgentTreeNode) => {
-      const agentKey =
-        node.receiptNodeId ||
-        (node.id.includes("planner")
-          ? "planner"
-          : node.id.replace(/^.*?(planner|domain-|leaf-|reviewer-)/, "$1"));
-      // Prefer Work surface (live stream) when parent provides a handler.
+      const unitId = node.unitId || node.id;
+      // Prefer Work surface (live unit) when parent provides a handler.
       if (onOpenAgent) {
-        const streamKey =
-          workStreams[agentKey] ||
-          workStreams[node.receiptNodeId ?? ""] ||
-          workStreams[node.id] ||
-          Object.values(workStreams).find(
-            (s) =>
-              s.agentId === node.receiptNodeId ||
-              node.id.includes(s.agentId) ||
-              s.agentId.includes(node.receiptNodeId ?? "\0"),
-          );
         onOpenAgent({
-          agentId: streamKey?.agentId ?? agentKey ?? node.id,
+          agentId: unitId,
           role: node.role,
           task: node.task || node.label,
           detail: node.detail,
@@ -377,7 +400,7 @@ export function AgentTree({
       setPreviewNode(node);
       setSheetOpen(true);
       setPreviewBody(node.detail?.trim() || node.task || node.label || "");
-      const nodeId = node.receiptNodeId;
+      const nodeId = node.unitId || node.id;
       if (!runId || !nodeId) return;
       setPreviewLoading(true);
       try {
@@ -411,12 +434,12 @@ export function AgentTree({
           .join("\n");
         setPreviewBody(body);
       } catch {
-        // Keep SSE detail if API fails (e.g. planner has no receipt file).
+        // Keep unit detail if API fails (e.g. planner has no receipt file).
       } finally {
         setPreviewLoading(false);
       }
     },
-    [workspaceId, runId, rootPath, onOpenAgent, workStreams],
+    [workspaceId, runId, rootPath, onOpenAgent],
   );
 
   if (!runId) {
@@ -482,7 +505,7 @@ export function AgentTree({
             <SheetTitle className="font-mono text-sm">
               {[
                 previewNode?.role,
-                previewNode?.receiptNodeId || previewNode?.id,
+                previewNode?.unitId || previewNode?.id,
               ]
                 .filter(Boolean)
                 .join(" · ")}
@@ -501,12 +524,10 @@ export function AgentTree({
               </div>
             ) : (
               <div className="min-w-0">
-                <AgentStreamBody
-                  stream={
+                <AgentUnitBody
+                  unit={
                     previewNode
-                      ? workStreams[previewNode.receiptNodeId ?? ""] ||
-                        workStreams[previewNode.id] ||
-                        null
+                      ? units[previewNode.unitId ?? previewNode.id] ?? null
                       : null
                   }
                   fallbackDetail={previewBody}

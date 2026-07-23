@@ -270,10 +270,10 @@ export function AgentWorkspacePage() {
             defaultModelProfileId={
               workspace.model?.profileId ?? defaultModelProfileId
             }
-            workStreams={agent.workStreams}
+            units={agent.units}
             focusAgentId={agent.focusAgentId}
             onFocusAgentIdChange={handleFocusAgentIdChange}
-            focusedStream={agent.focusedStream}
+            focusedUnit={agent.focusedUnit}
           />
         )}
       </div>

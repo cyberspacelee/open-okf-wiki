@@ -935,17 +935,30 @@ export type AgentSessionSnapshot = {
       pages?: string[];
     } | null;
     plan?: WikiRunPlan | null;
-    /** Durable Work surface agents (from registry / operator-work.json). */
-    workAgents?: Array<{
-      agentId: string;
+    /** Durable Work surface units (last-by-unitId fold from trajectory). */
+    workUnits?: Array<{
+      unitId: string;
       role: string;
       status: string;
-      spanId?: string;
-      parentId?: string;
+      runId?: string;
       task?: string;
-      detail?: string;
+      parentId?: string;
+      message?: { thinking?: string; text?: string };
+      tools?: Array<{
+        toolCallId: string;
+        toolName: string;
+        state: string;
+        input?: unknown;
+        output?: unknown;
+        errorText?: string;
+      }>;
+      summary?: string;
       receiptPath?: string;
+      error?: string;
+      updatedAt?: number;
     }>;
+    /** Full product inject history for cold project (optional). */
+    trajectory?: unknown[];
   };
 };
 

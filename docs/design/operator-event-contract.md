@@ -1,6 +1,6 @@
 # Operator Event contract
 
-**Status:** accepted (refined for ADR 0031)  
+**Status:** accepted (ADR 0031 thorough cut)  
 **Date:** 2026-07-23  
 **Authority:** [ADR 0031](../adr/0031-unidirectional-framework-first-operator-surface.md), [ADR 0030](../adr/0030-pi-agent-harness-for-semantic-workflow.md), [ADR 0029](../adr/0029-architecture-cleanup-no-compat.md)  
 **Related:** ADR 0026 (Session-centric), ADR 0028 (thin shell + supervisor)
@@ -9,11 +9,11 @@
 
 Define **who may produce** which operator-visible signals so that:
 
-1. The **Operator Session** stays the sole conversation truth surface (Pi JSONL + its events).  
+1. The **Operator Session** stays the sole conversation truth surface (Pi JSONL + session trajectory).  
 2. Dependencies stay **unidirectional**; **Pi framework capabilities** own stream/tool/history shapes.  
-3. Product code only injects what the framework does not own (gates, run link, thin phase, file-backed produce summaries).
+3. Product code only injects what the framework does not own (gates, run link, thin phase, produce summaries, parent-visible work units).
 
-Live transport remains **Pi `AgentSession` events + thin product SSE injects** (not AI SDK UIMessage / Mastra).
+Live transport remains **Pi `AgentSession` events + whitelist product SSE injects** (not AI SDK UIMessage / Mastra).
 
 ## Dependency direction
 
@@ -28,7 +28,8 @@ Web is a **projector**. Server fans out. Agent embeds Pi and may call Core. Core
 
 | Data | Authority | Not authority |
 |------|-----------|----------------|
-| Operator chat / tools / thinking | Operator Session Pi events + JSONL | Ring buffer alone; client `workStreams`; empty product shells |
+| Operator chat / tools / thinking | Operator Session Pi events + JSONL | Ring buffer alone; client maps; empty product shells |
+| Produce child trail (planner/leaf/…) | **`work_unit` on session trajectory** (fold last-by-unitId) | `agent_span`, `child_pi`, `okfAgent`, `workStreams`, `operator-work.json` |
 | Plan / publish HITL | Product `gate` + `resume_gate` | Free-text approve |
 | Run id / job status | `run_link` + Core Run Record | UI-only run state |
 | Spec page queue | Produce `plan_progress` (file-backed) | Invented page lists |
@@ -39,11 +40,13 @@ Web is a **projector**. Server fans out. Agent embeds Pi and may call Core. Core
 
 | Channel | Content | Who |
 |---------|---------|-----|
-| Pi events (`source: "pi"`) | `message_*`, `tool_execution_*`, agent/turn lifecycle; payload shaped as Pi `AgentEvent` | Operator Session (and **only** re-homed child visibility that still appears as parent-visible units) |
+| Pi events (`source: "pi"`) | Parent Operator Session only: `message_*`, `tool_execution_*`, agent/turn lifecycle | Parent `AgentSession` |
 | Product injects (`source: "product"`) | **Whitelist only** (below) | WikiRunShell / registry / Produce sink |
 | Server heartbeat | keep-alive | server only |
 
 ### Product inject whitelist
+
+Canonical list: `PRODUCT_INJECT_KINDS` in `@okf-wiki/contract` (`assertProductInject`).
 
 | `kind` | Allowed to carry | Forbidden |
 |--------|------------------|-----------|
@@ -53,46 +56,60 @@ Web is a **projector**. Server fans out. Agent embeds Pi and may call Core. Core
 | `plan_progress` | Spec page path/status list | LLM free text as progress |
 | `defects` | round, clean, counts, short summary | Full reviewer transcripts |
 | `progress` | Short produce label | Duplicate of tool/message stream |
-| Supervisor index (e.g. `agent_span`) | Topology id/role/status/task **index** | Opening UI “streaming” without Pi message body; racing a second body channel |
+| **`work_unit`** | Parent-visible unit snapshot: `unitId`, `role`, `status`, optional `message`/`tools`/`summary`/`receiptPath` | Opening UI “thinking” with empty body; inventing assistant prose |
+
+**Deleted (must not parse as product injects):**
+
+- `agent_span`
+- `child_pi` / `okfAgent` side path on `source:"pi"`
 
 Any new product `kind` requires an ADR or explicit contract revision.
 
-## Business progress ownership
+## Session durability
 
-| Signal | Who may produce | Who must not |
-|--------|-----------------|--------------|
-| Tool cards / assistant text / thinking | **Pi session events** (parent-visible units) | Web inventing rows; product injects as body |
-| Plan/publish gates | **Product shell** | Free-text `"approve"` inference |
-| Run phase / run link | **Shell / registry** | Dual lifecycle maps as truth |
-| Spec queue / defects | **Produce** → product inject | Session shell synthesis |
-| Child planner/leaf trail | Produce **re-homed** onto parent-visible units (tool-shaped preferred) | Parallel client true-source maps; empty span shells |
+| Store | Path | Content |
+|-------|------|---------|
+| Pi JSONL | `.okf-wiki/pi-sessions/<id>/` (framework) | Parent conversation |
+| Operator trajectory | same session dir / `operator-trajectory.jsonl` | Whitelist product rows + `work_unit` snapshots |
+| Job artifacts | `.okf-wiki/runs/<runId>/analysis/` | Spec, receipts, defects — **not** a second chat body store |
+
+Cold load: `project(Pi history) + project(trajectory fold)`. Ring buffer is catch-up only.
 
 ## Streaming projection (framework-aligned)
 
 1. Prefer **latest `event.message` snapshot** for assistant streaming (Pi interactive-mode pattern).  
-2. Deltas (`assistantMessageEvent`) are optional transport; must not be the only path if `message` is present.  
+2. Deltas are optional transport; must not be the only path if `message` is present.  
 3. Tools: id-keyed lifecycle; dedicated chrome.  
-4. Empty streaming UI must not be labeled as model thinking unless thinking content exists.
+4. Empty streaming UI must not be labeled as model thinking unless thinking content exists.  
+5. `work_unit` with `status=running` and no `message`/`tools` → UI **waiting for events**, not thinking.
 
 ## Session / Web MUST NOT
 
 1. Invent tool or progress rows because Produce was quiet.  
-2. Maintain a second message database (UIMessage, parallel durable transcript, authoritative `workStreams`).  
-3. Treat SSE ring buffer or product injects as durable conversation history.  
+2. Maintain a second message database (`workStreams` as authority, UIMessage history, …).  
+3. Treat SSE ring buffer or product injects as durable conversation history alone.  
 4. Open operator-visible “streaming” state without framework message/tool content.  
-5. Depend upward (web types inside core/agent runtime).
+5. Depend upward (web types inside core/agent runtime).  
+6. Fan child Pi events onto the bus as peer `source:"pi"` streams.
 
 ## Produce child sessions
 
 In-process child `AgentSession`s remain allowed as **implementation**.  
-Operator contract: expandable **parent-visible** unit (see ADR 0031 §5); not a second peer chat timeline as truth.
+Operator contract: expandable **parent-visible `work_unit`** on the session trajectory; not a second peer chat timeline as truth.
 
 ## Wipe
 
-Old `.okf-wiki/sessions/*.json` (UIMessage) and Mastra stores remain non-migrated. Pi sessions only.
+Old `.okf-wiki/sessions/*.json` (UIMessage) and Mastra stores remain non-migrated.  
+`operator-work.json` is **removed** (replaced by trajectory `work_unit` fold).  
+Pi sessions + `operator-trajectory.jsonl` only.
 
 ## Non-goals
 
 - Every JSON field of Pi content blocks.  
 - Full React layout specification.  
-- Mandating a single global produce session vs many children—if ADR 0031 invariants hold.
+- Mandating a single global produce session vs many children—if ADR 0031 invariants hold.  
+- Writing PVUs into parent Pi JSONL as synthetic tools (optional later upgrade).
+
+## Sample
+
+See `packages/contract/fixtures/operator-trajectory.sample.jsonl`.

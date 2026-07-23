@@ -1,23 +1,23 @@
 /**
  * Regression: Pi SSE projection must not invent multiple cards for one turn.
- *
- * Replays a tool-using agent turn (user → assistant+tools → toolResult → assistant)
- * and asserts card counts match pi-web semantics.
+ * Wave 3: work_unit fold only (no dual-path child stream authority).
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  applyChildStreamEvent,
   applyPiEvent,
   applyProductEvent,
+  applyWorkUnit,
   extractAssistantError,
   extractMessageText,
   extractMessageThinking,
   formatPayloadText,
   isTerminalOrWaitingPhase,
+  workUnitHasBody,
+  workUnitsFromList,
   type AgentMessage,
   type StreamingRefs,
-  type WorkStreams,
+  type WorkUnits,
 } from "./project-agent-events.ts";
 
 function refs(): StreamingRefs {
@@ -699,127 +699,120 @@ describe("isTerminalOrWaitingPhase", () => {
   });
 });
 
-describe("applyChildStreamEvent — produce Work surface (planner / leaf)", () => {
-  it("does not pollute main timeline with okfAgent events", () => {
-    const r = refs();
-    const messages = applyPiEvent(
-      [],
-      "message_update",
-      {
-        type: "message_update",
-        message: {
-          role: "assistant",
-          content: [{ type: "text", text: "plan" }],
+describe("applyWorkUnit — Work surface fold cache", () => {
+  it("folds last-write by unitId and keeps concurrent units isolated", () => {
+    let units: WorkUnits = {};
+    units = applyWorkUnit(units, {
+      unitId: "planner",
+      role: "planner",
+      status: "running",
+      runId: "run-1",
+      message: { thinking: "plan A" },
+    });
+    units = applyWorkUnit(units, {
+      unitId: "leaf-d1-1",
+      role: "leaf",
+      status: "running",
+      runId: "run-1",
+      parentId: "domain-1",
+      message: { text: "leaf1" },
+      tools: [
+        {
+          toolCallId: "t1",
+          toolName: "read",
+          state: "input-available",
+          input: { path: "x.ts" },
         },
-        assistantMessageEvent: { type: "text_delta", delta: "plan" },
-        okfAgent: { agentId: "planner", role: "planner" },
-      },
-      r,
-    );
-    assert.equal(messages.length, 0);
+      ],
+    });
+    units = applyWorkUnit(units, {
+      unitId: "leaf-d1-2",
+      role: "leaf",
+      status: "running",
+      runId: "run-1",
+      message: { text: "leaf2" },
+    });
+    units = applyWorkUnit(units, {
+      unitId: "planner",
+      role: "planner",
+      status: "settled",
+      runId: "run-1",
+      summary: "done planning",
+      message: { thinking: "plan A", text: "spec ready" },
+    });
+
+    assert.equal(units.planner?.status, "settled");
+    assert.equal(units.planner?.summary, "done planning");
+    assert.equal(units.planner?.message?.text, "spec ready");
+    assert.equal(units["leaf-d1-1"]?.message?.text, "leaf1");
+    assert.equal(units["leaf-d1-2"]?.message?.text, "leaf2");
+    assert.equal(units["leaf-d1-1"]?.tools?.length, 1);
+    assert.equal(units["leaf-d1-2"]?.tools?.length ?? 0, 0);
+    assert.equal(Object.keys(units).length, 3);
   });
 
-  it("streams thinking + text under okfAgent without colliding leaves", () => {
-    const r = refs();
-    let streams: WorkStreams = {};
-
-    streams = applyChildStreamEvent(
-      streams,
-      "message_update",
+  it("empty running unit is not labeled as having body (no Thinking chrome)", () => {
+    const units = applyWorkUnit(
+      {},
       {
-        type: "message_update",
-        message: {
-          role: "assistant",
-          content: [{ type: "thinking", thinking: "plan A" }],
-        },
-        assistantMessageEvent: { type: "thinking_delta", delta: "plan A" },
-        okfAgent: { agentId: "planner", role: "planner" },
+        unitId: "planner",
+        role: "planner",
+        status: "running",
+        runId: "run-1",
       },
-      r,
     );
-    streams = applyChildStreamEvent(
-      streams,
-      "message_update",
-      {
-        type: "message_update",
-        message: {
-          role: "assistant",
-          content: [{ type: "text", text: "leaf1" }],
-        },
-        assistantMessageEvent: { type: "text_delta", delta: "leaf1" },
-        okfAgent: { agentId: "leaf-d1-1", role: "leaf" },
-      },
-      r,
-    );
-    streams = applyChildStreamEvent(
-      streams,
-      "message_update",
-      {
-        type: "message_update",
-        message: {
-          role: "assistant",
-          content: [{ type: "text", text: "leaf2" }],
-        },
-        assistantMessageEvent: { type: "text_delta", delta: "leaf2" },
-        okfAgent: { agentId: "leaf-d1-2", role: "leaf" },
-      },
-      r,
-    );
-    streams = applyChildStreamEvent(
-      streams,
-      "tool_execution_start",
-      {
-        type: "tool_execution_start",
-        toolCallId: "t-leaf1",
-        toolName: "read",
-        args: { path: "sources/a/x.ts" },
-        okfAgent: { agentId: "leaf-d1-1", role: "leaf" },
-      },
-      r,
-    );
-
-    assert.equal(streams.planner?.thinking, "plan A");
-    assert.equal(streams["leaf-d1-1"]?.content, "leaf1");
-    assert.equal(streams["leaf-d1-2"]?.content, "leaf2");
-    assert.equal(streams["leaf-d1-1"]?.tools?.length, 1);
-    assert.equal(streams["leaf-d1-1"]?.tools?.[0]?.name, "read");
-    assert.equal(streams["leaf-d1-2"]?.tools?.length ?? 0, 0);
-    assert.equal(Object.keys(streams).length, 3);
+    assert.equal(units.planner?.status, "running");
+    assert.equal(workUnitHasBody(units.planner), false);
+    // Drawer uses workUnitHasBody — empty running must never imply thinking.
+    assert.equal(Boolean(units.planner?.message?.thinking), false);
   });
 
-  it("agent_end on one leaf does not finalize the other leaf stream", () => {
+  it("workUnitsFromList seeds cold-load fold", () => {
+    const units = workUnitsFromList([
+      {
+        unitId: "planner",
+        role: "planner",
+        status: "settled",
+        summary: "ok",
+      },
+      {
+        unitId: "leaf-1",
+        role: "leaf",
+        status: "failed",
+        error: "boom",
+      },
+    ]);
+    assert.equal(units.planner?.summary, "ok");
+    assert.equal(units["leaf-1"]?.error, "boom");
+  });
+});
+
+describe("main timeline isolation", () => {
+  it("parent Pi projection never invents peer bubbles for work units", () => {
+    // Produce bodies arrive only via product work_unit — parent Pi alone
+    // cannot create unit chips. Concurrent parent chat stays single-stream.
     const r = refs();
-    let streams: WorkStreams = {};
-    streams = applyChildStreamEvent(
-      streams,
+    let messages: AgentMessage[] = [];
+    messages = applyPiEvent(
+      messages,
       "message_update",
       {
         type: "message_update",
-        message: { role: "assistant", content: [{ type: "text", text: "a" }] },
-        assistantMessageEvent: { type: "text_delta", delta: "a" },
-        okfAgent: { agentId: "leaf-a", role: "leaf" },
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "parent" }],
+        },
+        assistantMessageEvent: { type: "text_delta", delta: "parent" },
       },
       r,
     );
-    streams = applyChildStreamEvent(
-      streams,
-      "message_update",
-      {
-        type: "message_update",
-        message: { role: "assistant", content: [{ type: "text", text: "b" }] },
-        assistantMessageEvent: { type: "text_delta", delta: "b" },
-        okfAgent: { agentId: "leaf-b", role: "leaf" },
-      },
-      r,
+    assert.equal(assistantCount(messages), 1);
+    assert.equal(messages[0]!.content, "parent");
+    // No product work_run chip from Pi alone.
+    assert.equal(
+      messages.filter((m) => m.product?.kind === "work_run").length,
+      0,
     );
-    streams = applyChildStreamEvent(
-      streams,
-      "agent_end",
-      { type: "agent_end", okfAgent: { agentId: "leaf-a", role: "leaf" } },
-      r,
-    );
-    assert.equal(streams["leaf-a"]?.status, "done");
-    assert.equal(streams["leaf-b"]?.status, "streaming");
   });
 });
 
@@ -831,36 +824,33 @@ describe("formatPayloadText", () => {
   });
 });
 
-describe("applyProductEvent — work_run chip", () => {
-  it("folds multiple agent_span into one work_run card", () => {
+describe("applyProductEvent — work_run chip from work_unit", () => {
+  it("folds multiple work_unit into one work_run card", () => {
     let messages: AgentMessage[] = [];
     messages = applyProductEvent(messages, {
-      kind: "agent_span",
+      kind: "work_unit",
       runId: "run-1",
-      spanId: "run-1-planner",
-      agentId: "planner",
+      unitId: "planner",
       role: "planner",
       status: "running",
       task: "draft spec",
     });
     messages = applyProductEvent(messages, {
-      kind: "agent_span",
+      kind: "work_unit",
       runId: "run-1",
-      spanId: "run-1-leaf-1",
-      agentId: "leaf-d1-1",
+      unitId: "leaf-d1-1",
       role: "leaf",
       status: "running",
       parentId: "domain-1",
       task: "q1",
     });
     messages = applyProductEvent(messages, {
-      kind: "agent_span",
+      kind: "work_unit",
       runId: "run-1",
-      spanId: "run-1-planner",
-      agentId: "planner",
+      unitId: "planner",
       role: "planner",
-      status: "complete",
-      detail: "done planning",
+      status: "settled",
+      summary: "done planning",
     });
     const works = messages.filter((m) => m.product?.kind === "work_run");
     assert.equal(works.length, 1);
@@ -868,7 +858,12 @@ describe("applyProductEvent — work_run chip", () => {
     const planner = works[0]!.product?.agents?.find(
       (a) => a.agentId === "planner",
     );
-    assert.equal(planner?.status, "complete");
+    assert.equal(planner?.status, "settled");
     assert.equal(planner?.detail, "done planning");
+    // work_unit must not emit standalone product cards of kind work_unit.
+    assert.equal(
+      messages.filter((m) => m.status === "work_unit").length,
+      0,
+    );
   });
 });

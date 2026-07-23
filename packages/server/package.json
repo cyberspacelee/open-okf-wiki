@@ -9,7 +9,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src --max-warnings 0",
     "build": "tsc -p tsconfig.json",
-    "test": "node --experimental-strip-types --test src/**/*.test.ts"
+    "test": "node --experimental-strip-types --test $(find src -name '*.test.ts' | sort)"
   },
   "dependencies": {
     "@okf-wiki/agent": "workspace:*",

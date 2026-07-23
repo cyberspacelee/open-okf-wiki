@@ -20,14 +20,17 @@ import {
   isPathInside,
   loadRun,
   loadWorkspaceById,
-  readOperatorWorkSnapshot,
 } from "@okf-wiki/core";
 import {
   agentSessionExistsOnDisk,
   dispatchAgentCommand,
   ensurePiSessionsDir,
+  foldWorkUnits,
   getRegisteredAgentSession,
+  lastRunPhase,
+  loadTrajectory,
   registerAgentSession,
+  resolveColdLoadPhase,
   resolveSessionHistoryFile,
 } from "../agent-session-registry.ts";
 import {
@@ -236,7 +239,6 @@ export async function handleGetAgentSession(
     preferredPath,
   });
   let runStatus: string | undefined;
-  let workAgents = reg?.workAgents;
   if (reg?.runId) {
     try {
       const run = await loadRun(workspace.rootPath, reg.runId);
@@ -245,45 +247,14 @@ export async function handleGetAgentSession(
       // ignore
     }
   }
-  // Cold-load Work chips from disk when registry is empty (process restart)
-  // or memory has not been seeded yet.
-  if ((!workAgents || workAgents.length === 0) && reg?.runId) {
-    try {
-      const snap = await readOperatorWorkSnapshot(
-        workspace.rootPath,
-        reg.runId,
-      );
-      if (snap?.agents?.length) {
-        workAgents = snap.agents;
-        // Warm registry so later live updates merge correctly.
-        reg.workAgents = snap.agents;
-      }
-    } catch {
-      // ignore
-    }
-  }
 
-  // Prefer live product phase (updated on every emitPhase) over shell snapshot,
-  // which lags during planner / mid-produce until the job returns.
-  const livePhase = reg?.livePhase;
-  const shellPhase = reg?.shell?.phase;
-  const productPhase =
-    livePhase ??
-    (shellPhase === "awaiting_plan"
-      ? "awaiting_plan"
-      : shellPhase === "awaiting_publish"
-        ? "awaiting_publish"
-        : shellPhase === "producing" || shellPhase === "hard_validate"
-          ? "writing"
-          : shellPhase === "published" || shellPhase === "publication_declined"
-            ? "done"
-            : shellPhase === "failed"
-              ? "failed"
-              : shellPhase === "cancelled"
-                ? "cancelled"
-                : shellPhase === "idle"
-                  ? "idle"
-                  : undefined);
+  // Cold-load product trajectory (work_unit fold + last run_phase).
+  const trajectory = await loadTrajectory(workspace.rootPath, sessionId);
+  const workUnits = [...foldWorkUnits(trajectory).values()];
+  const productPhase = resolveColdLoadPhase({
+    shellPhase: reg?.shell?.phase,
+    lastPhaseFromTrajectory: lastRunPhase(trajectory),
+  });
 
   sendJson(res, 200, {
     session: {
@@ -306,7 +277,9 @@ export async function handleGetAgentSession(
           }
         : null,
       plan: reg?.shell?.plan ?? null,
-      workAgents: workAgents ?? [],
+      workUnits,
+      /** Full product inject history for cold project (optional for clients). */
+      trajectory,
     },
   });
 }

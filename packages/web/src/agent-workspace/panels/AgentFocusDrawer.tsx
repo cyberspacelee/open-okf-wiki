@@ -1,6 +1,8 @@
 /**
- * Work surface focus: live produce-child stream (planner / leaf / …).
+ * Work surface focus: product work_unit body (planner / leaf / …).
  * Main chat only shows chips; this drawer hosts thinking / tools / text.
+ *
+ * Empty running units show waitingForEvents — never "Thinking".
  */
 
 import {
@@ -26,21 +28,23 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { useI18n } from "../../i18n";
-import type { AgentStream, AgentToolCall } from "../hooks/useSessionAgent";
+import type { AgentToolCall, WorkUnitView } from "../hooks/useSessionAgent";
 import {
   formatPayloadText,
+  workUnitHasBody,
+  workUnitToolsToAgentTools,
 } from "../hooks/project-agent-events";
 import { AgentMarkdown } from "../transcript/AgentMarkdown";
 
 export type AgentFocusDrawerProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Focused agent id (planner, leaf-*, …). */
-  agentId: string | null;
+  /** Focused unit id (planner, leaf-*, …). */
+  unitId: string | null;
   role?: string;
   task?: string;
-  stream: AgentStream | null;
-  /** Fallback body when no live stream yet (receipt / span detail). */
+  unit: WorkUnitView | null;
+  /** Fallback body when no unit fold yet (receipt summary). */
   fallbackDetail?: string;
   className?: string;
 };
@@ -50,7 +54,7 @@ function ToolBlock({
   settled,
 }: {
   tool: AgentToolCall;
-  /** When parent stream is settled, keep completed tools collapsed. */
+  /** When parent unit is settled, keep completed tools collapsed. */
   settled?: boolean;
 }) {
   const { t } = useI18n();
@@ -106,22 +110,24 @@ function ToolBlock({
   );
 }
 
-export function AgentStreamBody({
-  stream,
+export function AgentUnitBody({
+  unit,
   fallbackDetail,
 }: {
-  stream: AgentStream | null;
+  unit: WorkUnitView | null;
   fallbackDetail?: string;
 }) {
   const { t } = useI18n();
-  const streaming = stream?.status === "streaming";
-  const settled = stream?.status === "done" || stream?.status === "error";
-  const thinking = stream?.thinking?.trim();
-  const content = stream?.content?.trim();
-  const tools = stream?.tools ?? [];
+  const running = unit?.status === "running" || unit?.status === "pending";
+  const settled = unit?.status === "settled" || unit?.status === "failed";
+  const thinking = unit?.message?.thinking?.trim();
+  const text = unit?.message?.text?.trim();
+  const summary = unit?.summary?.trim();
+  const tools = workUnitToolsToAgentTools(unit?.tools);
   const fallback = fallbackDetail?.trim();
+  const hasBody = workUnitHasBody(unit);
 
-  if (!stream && !fallback) {
+  if (!unit && !fallback) {
     return (
       <p className="text-xs text-muted-foreground">
         {t.agentWorkspace.subagentNoDetail}
@@ -133,18 +139,18 @@ export function AgentStreamBody({
     <div className="flex min-w-0 flex-col gap-3">
       {thinking ? (
         <Collapsible
-          defaultOpen={!settled || streaming}
+          defaultOpen={!settled || running}
           className="w-full min-w-0 rounded-md border border-border/70 bg-muted/20"
         >
           <CollapsibleTrigger className="group flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted/50">
             <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-data-panel-open:rotate-90" />
             <SparklesIcon className="size-3.5 shrink-0" />
             <span className="min-w-0 flex-1 font-medium">
-              {streaming
+              {running && !settled
                 ? t.agentWorkspace.thinkingStreaming
                 : t.agentWorkspace.thinking}
             </span>
-            {streaming ? <Spinner className="size-3" /> : null}
+            {running && !settled ? <Spinner className="size-3" /> : null}
           </CollapsibleTrigger>
           <CollapsibleContent className="min-w-0 border-t border-border/50 px-2.5 py-2">
             <pre className="okf-code-snippet text-muted-foreground">
@@ -162,47 +168,58 @@ export function AgentStreamBody({
         </div>
       ) : null}
 
-      {content ? (
+      {text ? (
         <div className="min-w-0 text-sm leading-relaxed">
-          <AgentMarkdown content={content} streaming={streaming} />
+          <AgentMarkdown content={text} streaming={running && !settled} />
         </div>
       ) : null}
 
-      {!content && !thinking && tools.length === 0 && fallback ? (
+      {settled && summary && !text ? (
+        <div className="min-w-0 text-sm leading-relaxed">
+          <AgentMarkdown content={summary} />
+        </div>
+      ) : null}
+
+      {!hasBody && fallback ? (
         <pre className="okf-code-snippet">{formatPayloadText(fallback)}</pre>
       ) : null}
 
-      {streaming && !content && !thinking && tools.length === 0 ? (
+      {/* Empty running unit: waiting, never "Thinking". */}
+      {running && !hasBody && !fallback ? (
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <Loader2Icon className="size-3.5 animate-spin" />
-          {t.agentWorkspace.thinkingStreaming}
+          {t.agentWorkspace.waitingForEvents}
         </div>
       ) : null}
 
-      {stream?.errorMessage ? (
+      {unit?.status === "failed" && unit.error ? (
         <p className="text-xs text-destructive whitespace-pre-wrap break-words">
-          {stream.errorMessage}
+          {unit.error}
         </p>
       ) : null}
     </div>
   );
 }
 
+/** @deprecated Prefer AgentUnitBody — alias kept for local sheet previews. */
+export const AgentStreamBody = AgentUnitBody;
+
 export function AgentFocusDrawer({
   open,
   onOpenChange,
-  agentId,
+  unitId,
   role,
   task,
-  stream,
+  unit,
   fallbackDetail,
   className,
 }: AgentFocusDrawerProps) {
   const { t } = useI18n();
-  const title = [role ?? stream?.role, agentId ?? stream?.agentId]
+  const title = [role ?? unit?.role, unitId ?? unit?.unitId]
     .filter(Boolean)
     .join(" · ");
-  const status = stream?.status ?? (fallbackDetail ? "done" : "streaming");
+  const status =
+    unit?.status ?? (fallbackDetail ? "settled" : "running");
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -213,12 +230,14 @@ export function AgentFocusDrawer({
       >
         <SheetHeader>
           <SheetTitle className="flex flex-wrap items-center gap-2 font-mono text-sm">
-            <span className="min-w-0 break-all">{title || t.agentWorkspace.roleAssistant}</span>
+            <span className="min-w-0 break-all">
+              {title || t.agentWorkspace.roleAssistant}
+            </span>
             <Badge
               variant={
-                status === "error"
+                status === "failed"
                   ? "destructive"
-                  : status === "streaming"
+                  : status === "running" || status === "pending"
                     ? "default"
                     : "secondary"
               }
@@ -228,12 +247,12 @@ export function AgentFocusDrawer({
             </Badge>
           </SheetTitle>
           <SheetDescription>
-            {task || t.agentWorkspace.subagentPreviewHint}
+            {task || unit?.task || t.agentWorkspace.subagentPreviewHint}
           </SheetDescription>
         </SheetHeader>
         <ScrollArea className="min-h-0 flex-1 px-4 pb-4">
           <div className="min-w-0 pr-2">
-            <AgentStreamBody stream={stream} fallbackDetail={fallbackDetail} />
+            <AgentUnitBody unit={unit} fallbackDetail={fallbackDetail} />
           </div>
         </ScrollArea>
       </SheetContent>

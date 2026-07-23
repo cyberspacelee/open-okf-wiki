@@ -1,23 +1,18 @@
 /**
- * Pure projection of Pi AgentSession events → transcript rows.
+ * Pure projection of Operator Session → transcript + Work surface.
  *
- * Protocol (aligned with pi-web / @earendil-works/pi-agent-core + pi-ai):
- * - message_start / message_update / message_end carry `message.role`
- * - user messages: ignored (UI already optimistically appended)
- * - toolResult messages: ignored as cards (tool_execution_* owns tool chrome)
- * - assistant: one bubble per assistant message; text_delta + thinking_delta stream in
- * - message_end finalizes lastAssistant when streaming id was cleared (agent_end /
- *   duplicate end) — never invent a second thinking+answer card for the same turn
- * - message_start reuses an already-streaming bubble (early deltas before start)
- * - stopReason "error" / errorMessage surface as status "error" (never silent empty)
- * - tool_execution_*: attach to the **last assistant** bubble (never invent a new one)
- * - produce child sessions (planner / leaf / …) carry `okfAgent` on the payload and
- *   stream into separate bubbles keyed by agentId (concurrent leaves safe)
- *
- * Server wraps Pi events as `{ source:"pi", kind, payload }` where payload is
- * the raw AgentEvent (type + message + assistantMessageEvent + …) plus optional
- * `okfAgent: { agentId, role }` for child produce streams.
+ * ADR 0031 Wave 3:
+ * - Parent Pi events → main timeline (applyPiEvent)
+ * - Product whitelist (incl. work_unit) → cards + units fold cache
+ * - WorkUnits is a fold cache only (last-by-unitId), not durability authority
+ * - No dual-path child streams or span body channels (ADR 0031)
  */
+
+import type {
+  ProductWorkUnitEvent,
+  WorkUnitStatus,
+  WorkUnitToolState,
+} from "@okf-wiki/contract";
 
 export type AgentMessageRole = "user" | "assistant" | "tool" | "system";
 
@@ -34,12 +29,11 @@ export type PlanProgressPage = {
   status: "pending" | "writing" | "done" | string;
 };
 
-/** One agent row inside a Work chip (planner / leaf / …). */
+/** One unit row inside a Work chip (planner / leaf / …). unitId is canonical. */
 export type WorkAgentChip = {
   agentId: string;
   role: string;
   status: string;
-  spanId?: string;
   parentId?: string;
   task?: string;
   detail?: string;
@@ -53,7 +47,6 @@ export type AgentProductMeta = {
     | "run_link"
     | "progress"
     | "plan_progress"
-    | "agent_span"
     | "work_run"
     | "defects";
   phase?: string;
@@ -64,9 +57,6 @@ export type AgentProductMeta = {
   /** Publication gate page paths (when known). */
   pages?: string[] | PlanProgressPage[];
   label?: string;
-  spanId?: string;
-  agentId?: string;
-  role?: string;
   parentId?: string;
   receiptPath?: string;
   /** Full-ish subagent output for click-to-preview. */
@@ -79,30 +69,34 @@ export type AgentProductMeta = {
   agents?: WorkAgentChip[];
 };
 
-/** Tag for produce child streams (planner / leaf / domain / reviewer). */
-export type StreamAgentTag = {
-  agentId: string;
-  role: string;
-};
-
 /**
- * Live stream for one produce child (planner / leaf / …).
- * Lives on the Work surface — never as a peer chat bubble on the main timeline.
+ * Fold-cache view of one produce work unit (from product work_unit events).
+ * Empty running (no message/tools) must not be labeled as model "thinking".
  */
-export type AgentStream = {
-  agentId: string;
+export type WorkUnitView = {
+  unitId: string;
   role: string;
-  status: "streaming" | "done" | "error";
-  content: string;
-  thinking?: string;
-  thinkingStatus?: "streaming" | "done";
-  tools: AgentToolCall[];
-  errorMessage?: string;
-  updatedAt: string;
+  status: WorkUnitStatus;
+  runId?: string;
+  task?: string;
+  parentId?: string;
+  message?: { thinking?: string; text?: string };
+  tools?: Array<{
+    toolCallId: string;
+    toolName: string;
+    state: WorkUnitToolState["state"];
+    input?: unknown;
+    output?: unknown;
+    errorText?: string;
+  }>;
+  summary?: string;
+  receiptPath?: string;
+  error?: string;
+  updatedAt?: number;
 };
 
-/** agentId → live stream (Work surface). */
-export type WorkStreams = Record<string, AgentStream>;
+/** unitId → last-write fold (cache only). */
+export type WorkUnits = Record<string, WorkUnitView>;
 
 export type AgentMessage = {
   id: string;
@@ -117,11 +111,6 @@ export type AgentMessage = {
   /** Provider / agent error when status is "error". */
   errorMessage?: string;
   product?: AgentProductMeta;
-  /**
-   * @deprecated Child streams use WorkStreams; timeline messages must not
-   * carry streamAgent. Kept optional for defensive filtering.
-   */
-  streamAgent?: StreamAgentTag;
 };
 
 export type StreamCursor = {
@@ -131,11 +120,9 @@ export type StreamCursor = {
   lastAssistantId: string | null;
 };
 
-export type StreamingRefs = StreamCursor & {
-  /** Per child-agent stream cursors (keyed by agentId). */
-  agents?: Map<string, StreamCursor>;
-};
+export type StreamingRefs = StreamCursor;
 
+/** Loose product SSE / trajectory row accepted by projectors. */
 export type ProductSseLike = {
   kind:
     | "run_phase"
@@ -143,25 +130,21 @@ export type ProductSseLike = {
     | "run_link"
     | "progress"
     | "plan_progress"
-    | "agent_span"
     | "work_run"
-    | "defects";
+    | "defects"
+    | "work_unit";
   phase?: string;
   gate?: "plan" | "publication";
   runId?: string;
   status?: string;
   question?: string;
-  message?: string;
+  message?: string | { thinking?: string; text?: string };
   pages?: string[] | PlanProgressPage[];
   plan?: unknown;
   timestamp?: string;
   label?: string;
-  spanId?: string;
-  agentId?: string;
-  role?: string;
   parentId?: string;
   receiptPath?: string;
-  promptSummary?: string;
   detail?: string;
   task?: string;
   round?: number;
@@ -169,6 +152,29 @@ export type ProductSseLike = {
   defectCount?: number;
   summary?: string;
   agents?: WorkAgentChip[];
+  /** work_unit fields */
+  unitId?: string;
+  role?: string;
+  tools?: WorkUnitView["tools"];
+  error?: string;
+  updatedAt?: number;
+};
+
+/** Subset of ProductWorkUnitEvent used by applyWorkUnit (no source/sessionId required). */
+export type WorkUnitEventLike = {
+  kind?: "work_unit";
+  unitId: string;
+  role: string;
+  status: WorkUnitStatus | string;
+  runId?: string;
+  task?: string;
+  parentId?: string;
+  message?: { thinking?: string; text?: string };
+  tools?: WorkUnitView["tools"];
+  summary?: string;
+  receiptPath?: string;
+  error?: string;
+  updatedAt?: number;
 };
 
 function nowIso(): string {
@@ -194,40 +200,6 @@ export function safeStringify(value: unknown, max = 4000): string | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** Extract produce-child agent tag from a Pi SSE payload (`okfAgent`). */
-export function extractOkfAgent(payload: unknown): StreamAgentTag | null {
-  if (!isRecord(payload)) return null;
-  const okf = payload.okfAgent;
-  if (!isRecord(okf)) return null;
-  if (typeof okf.agentId !== "string" || !okf.agentId.trim()) return null;
-  return {
-    agentId: okf.agentId.trim(),
-    role:
-      typeof okf.role === "string" && okf.role.trim()
-        ? okf.role.trim()
-        : "agent",
-  };
-}
-
-/** True when this Pi payload belongs to a produce child stream. */
-export function isChildPiPayload(payload: unknown): boolean {
-  return extractOkfAgent(payload) !== null;
-}
-
-function cursorFor(
-  refs: StreamingRefs,
-  agent: StreamAgentTag | null,
-): StreamCursor {
-  if (!agent) return refs;
-  if (!refs.agents) refs.agents = new Map();
-  let c = refs.agents.get(agent.agentId);
-  if (!c) {
-    c = { streamingAssistantId: null, lastAssistantId: null };
-    refs.agents.set(agent.agentId, c);
-  }
-  return c;
 }
 
 /** Extract plain text from a Pi assistant/user message content array or string. */
@@ -294,20 +266,10 @@ function findMessageIndex(messages: AgentMessage[], id: string | null): number {
   return messages.findIndex((m) => m.id === id);
 }
 
-function lastAssistantIndex(
-  messages: AgentMessage[],
-  streamAgent?: StreamAgentTag | null,
-): number {
+function lastAssistantIndex(messages: AgentMessage[]): number {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const m = messages[i];
-    if (m?.role !== "assistant") continue;
-    if (streamAgent) {
-      if (m.streamAgent?.agentId === streamAgent.agentId) return i;
-      continue;
-    }
-    // Operator chat: ignore child produce bubbles.
-    if (m.streamAgent) continue;
-    return i;
+    if (m?.role === "assistant") return i;
   }
   return -1;
 }
@@ -316,7 +278,6 @@ function ensureAssistantBubble(
   prev: AgentMessage[],
   cursor: StreamCursor,
   ts: string,
-  streamAgent?: StreamAgentTag | null,
 ): { messages: AgentMessage[]; assistantId: string } {
   const streamingIdx = findMessageIndex(prev, cursor.streamingAssistantId);
   if (streamingIdx >= 0) {
@@ -327,7 +288,7 @@ function ensureAssistantBubble(
     cursor.streamingAssistantId = prev[lastIdx]!.id;
     return { messages: prev, assistantId: prev[lastIdx]!.id };
   }
-  const id = makeId(streamAgent ? `asst_${streamAgent.role}` : "asst");
+  const id = makeId("asst");
   cursor.streamingAssistantId = id;
   cursor.lastAssistantId = id;
   return {
@@ -340,7 +301,6 @@ function ensureAssistantBubble(
         createdAt: ts,
         status: "streaming",
         tools: [],
-        ...(streamAgent ? { streamAgent } : {}),
       },
     ],
     assistantId: id,
@@ -361,107 +321,142 @@ function finalizeAssistantContent(input: {
   return "";
 }
 
-/**
- * Project one Pi event into **main timeline** mutations.
- * Produce-child events (`okfAgent`) are ignored here — use
- * {@link applyChildStreamEvent} so they stay on the Work surface.
- * Mutates `refs` in place (streaming ids).
- */
-export function applyPiEvent(
-  prev: AgentMessage[],
-  kind: string,
-  payload: unknown,
-  refs: StreamingRefs,
-): AgentMessage[] {
-  // Child produce streams must not pollute the operator chat scroller.
-  if (extractOkfAgent(payload)) {
-    return prev;
+function normalizeWorkUnitStatus(status: string): WorkUnitStatus {
+  if (
+    status === "pending" ||
+    status === "running" ||
+    status === "settled" ||
+    status === "failed"
+  ) {
+    return status;
   }
-  return applyPiEventInner(prev, kind, payload, refs, null);
+  // Defensive map for legacy chip strings if any leak through cold load.
+  if (status === "complete" || status === "done") return "settled";
+  if (status === "error" || status === "streaming") {
+    return status === "error" ? "failed" : "running";
+  }
+  return "pending";
 }
 
 /**
- * Project a produce-child Pi event into WorkStreams (per agentId).
- * Concurrent leaves stay isolated via {@link StreamingRefs.agents}.
+ * True when a unit has any body content (thinking / text / tools / summary / error).
+ * Empty running units must use waitingForEvents, never "Thinking".
  */
-export function applyChildStreamEvent(
-  streams: WorkStreams,
-  kind: string,
-  payload: unknown,
-  refs: StreamingRefs,
-): WorkStreams {
-  const agent = extractOkfAgent(payload);
-  if (!agent) return streams;
+export function workUnitHasBody(unit: WorkUnitView | null | undefined): boolean {
+  if (!unit) return false;
+  if (unit.message?.thinking?.trim()) return true;
+  if (unit.message?.text?.trim()) return true;
+  if (unit.tools && unit.tools.length > 0) return true;
+  if (unit.summary?.trim()) return true;
+  if (unit.error?.trim()) return true;
+  return false;
+}
 
-  const existing = streams[agent.agentId];
-  const stableId = `work_${agent.agentId}`;
-  const prevMsg: AgentMessage = existing
-    ? {
-        id: stableId,
-        role: "assistant",
-        content: existing.content,
-        thinking: existing.thinking,
-        thinkingStatus: existing.thinkingStatus,
-        tools: existing.tools,
-        status: existing.status === "done" ? "streaming" : existing.status,
-        errorMessage: existing.errorMessage,
-        createdAt: existing.updatedAt,
-        streamAgent: agent,
-      }
-    : {
-        id: stableId,
-        role: "assistant",
-        content: "",
-        tools: [],
-        status: "streaming",
-        createdAt: nowIso(),
-        streamAgent: agent,
-      };
+/** Map WorkUnit tools into AgentToolCall for shared ToolCard chrome. */
+export function workUnitToolsToAgentTools(
+  tools: WorkUnitView["tools"] | undefined,
+): AgentToolCall[] {
+  if (!tools?.length) return [];
+  return tools.map((t) => ({
+    id: t.toolCallId,
+    name: t.toolName,
+    input: safeStringify(t.input),
+    output: t.errorText
+      ? t.errorText
+      : safeStringify(t.output),
+    status:
+      t.state === "output-error"
+        ? ("error" as const)
+        : t.state === "output-available"
+          ? ("done" as const)
+          : t.state === "input-available" || t.state === "input-streaming"
+            ? ("running" as const)
+            : ("pending" as const),
+  }));
+}
 
-  // Seed cursor so ensureAssistantBubble reuses the stable work_* id.
-  const cursor = cursorFor(refs, agent);
-  if (!cursor.streamingAssistantId) {
-    cursor.streamingAssistantId = stableId;
-  }
-  if (!cursor.lastAssistantId) {
-    cursor.lastAssistantId = stableId;
-  }
+/**
+ * Last-write fold by unitId. Status mapped as-is (pending|running|settled|failed).
+ */
+export function applyWorkUnit(
+  units: WorkUnits,
+  event: WorkUnitEventLike | ProductWorkUnitEvent,
+): WorkUnits {
+  const unitId =
+    typeof event.unitId === "string" ? event.unitId.trim() : "";
+  if (!unitId) return units;
 
-  const nextList = applyPiEventInner([prevMsg], kind, payload, refs, agent);
-  // ensureAssistantBubble may append a new id when the cursor was empty —
-  // always take the agent-tagged / last assistant row, not index 0.
-  const next =
-    [...nextList]
-      .reverse()
-      .find(
-        (m) =>
-          m.role === "assistant" &&
-          (m.streamAgent?.agentId === agent.agentId ||
-            m.id === prevMsg.id ||
-            m.id.startsWith("work_") ||
-            m.id.startsWith("asst_")),
-      ) ??
-    nextList[nextList.length - 1] ??
-    prevMsg;
-  return {
-    ...streams,
-    [agent.agentId]: {
-      agentId: agent.agentId,
-      role: agent.role,
-      status:
-        next.status === "error"
-          ? "error"
-          : next.status === "streaming"
-            ? "streaming"
-            : "done",
-      content: next.content,
-      thinking: next.thinking,
-      thinkingStatus: next.thinkingStatus,
-      tools: next.tools ?? [],
-      errorMessage: next.errorMessage,
-      updatedAt: nowIso(),
-    },
+  const prev = units[unitId];
+  const status = normalizeWorkUnitStatus(String(event.status ?? "pending"));
+  const next: WorkUnitView = {
+    unitId,
+    role:
+      typeof event.role === "string" && event.role.trim()
+        ? event.role.trim()
+        : (prev?.role ?? "agent"),
+    status,
+    runId:
+      typeof event.runId === "string" && event.runId
+        ? event.runId
+        : prev?.runId,
+    task:
+      typeof event.task === "string"
+        ? event.task
+        : prev?.task,
+    parentId:
+      typeof event.parentId === "string"
+        ? event.parentId
+        : prev?.parentId,
+    message: event.message
+      ? {
+          thinking: event.message.thinking ?? prev?.message?.thinking,
+          text: event.message.text ?? prev?.message?.text,
+        }
+      : prev?.message,
+    tools: event.tools !== undefined ? event.tools : prev?.tools,
+    summary:
+      typeof event.summary === "string"
+        ? event.summary
+        : prev?.summary,
+    receiptPath:
+      typeof event.receiptPath === "string"
+        ? event.receiptPath
+        : prev?.receiptPath,
+    error:
+      typeof event.error === "string"
+        ? event.error
+        : status === "failed"
+          ? prev?.error
+          : status === "settled"
+            ? undefined
+            : prev?.error,
+    updatedAt:
+      typeof event.updatedAt === "number"
+        ? event.updatedAt
+        : (prev?.updatedAt ?? Date.now()),
   };
+
+  // When message is partial-patched above, fill missing side from prev if event
+  // only sent one of thinking/text (already handled via ??).
+  return { ...units, [unitId]: next };
+}
+
+/** Seed units fold cache from durable cold-load workUnits array. */
+export function workUnitsFromList(
+  list: WorkUnitEventLike[] | undefined,
+): WorkUnits {
+  if (!list?.length) return {};
+  let units: WorkUnits = {};
+  for (const row of list) {
+    if (!row?.unitId) continue;
+    units = applyWorkUnit(units, {
+      ...row,
+      kind: "work_unit",
+      status: row.status ?? "pending",
+      role: row.role ?? "agent",
+    });
+  }
+  return units;
 }
 
 /** Pretty-print JSON strings for tool / payload surfaces. */
@@ -482,20 +477,21 @@ export function formatPayloadText(raw: string | undefined): string {
 }
 
 /**
- * Internal projector. When `streamAgent` is set, tags bubbles for Work surface.
+ * Project one Pi event into **main timeline** mutations.
+ * Parent chat only — produce bodies arrive via product work_unit.
+ * Mutates `refs` in place (streaming ids).
  */
-function applyPiEventInner(
+export function applyPiEvent(
   prev: AgentMessage[],
   kind: string,
   payload: unknown,
   refs: StreamingRefs,
-  streamAgent: StreamAgentTag | null,
 ): AgentMessage[] {
   const body = isRecord(payload) ? payload : {};
   const message = "message" in body ? body.message : undefined;
   const role = messageRole(message);
   const ts = nowIso();
-  const cursor = cursorFor(refs, streamAgent);
+  const cursor = refs;
 
   // --- message_update: stream text / thinking into the current assistant ----
   if (kind === "message_update") {
@@ -508,21 +504,20 @@ function applyPiEventInner(
 
     if (ame?.type === "text_delta" && typeof ame.delta === "string") {
       const delta = ame.delta;
-      const ensured = ensureAssistantBubble(prev, cursor, ts, streamAgent);
+      const ensured = ensureAssistantBubble(prev, cursor, ts);
       return ensured.messages.map((m) =>
         m.id === ensured.assistantId
           ? {
               ...m,
               content: m.content + delta,
               status: "streaming",
-              ...(streamAgent ? { streamAgent } : {}),
             }
           : m,
       );
     }
 
     if (ame?.type === "thinking_start") {
-      const ensured = ensureAssistantBubble(prev, cursor, ts, streamAgent);
+      const ensured = ensureAssistantBubble(prev, cursor, ts);
       return ensured.messages.map((m) =>
         m.id === ensured.assistantId
           ? {
@@ -530,7 +525,6 @@ function applyPiEventInner(
               thinking: m.thinking ?? "",
               thinkingStatus: "streaming" as const,
               status: "streaming",
-              ...(streamAgent ? { streamAgent } : {}),
             }
           : m,
       );
@@ -538,7 +532,7 @@ function applyPiEventInner(
 
     if (ame?.type === "thinking_delta" && typeof ame.delta === "string") {
       const delta = ame.delta;
-      const ensured = ensureAssistantBubble(prev, cursor, ts, streamAgent);
+      const ensured = ensureAssistantBubble(prev, cursor, ts);
       return ensured.messages.map((m) =>
         m.id === ensured.assistantId
           ? {
@@ -546,14 +540,13 @@ function applyPiEventInner(
               thinking: (m.thinking ?? "") + delta,
               thinkingStatus: "streaming" as const,
               status: "streaming",
-              ...(streamAgent ? { streamAgent } : {}),
             }
           : m,
       );
     }
 
     if (ame?.type === "thinking_end") {
-      const ensured = ensureAssistantBubble(prev, cursor, ts, streamAgent);
+      const ensured = ensureAssistantBubble(prev, cursor, ts);
       const endContent =
         typeof ame.content === "string" ? ame.content : undefined;
       return ensured.messages.map((m) =>
@@ -566,7 +559,6 @@ function applyPiEventInner(
                   : (m.thinking ?? ""),
               thinkingStatus: "done" as const,
               status: "streaming",
-              ...(streamAgent ? { streamAgent } : {}),
             }
           : m,
       );
@@ -585,7 +577,7 @@ function applyPiEventInner(
       ) {
         return prev;
       }
-      const ensured = ensureAssistantBubble(prev, cursor, ts, streamAgent);
+      const ensured = ensureAssistantBubble(prev, cursor, ts);
       return ensured.messages.map((m) =>
         m.id === ensured.assistantId
           ? {
@@ -598,7 +590,6 @@ function applyPiEventInner(
                   ? ("streaming" as const)
                   : m.thinkingStatus,
               status: "streaming",
-              ...(streamAgent ? { streamAgent } : {}),
             }
           : m,
       );
@@ -672,13 +663,12 @@ function applyPiEventInner(
           status: isError ? "error" : "streaming",
           errorMessage: err.errorMessage ?? m.errorMessage,
           tools: m.tools ?? [],
-          ...(streamAgent ? { streamAgent } : {}),
         };
       });
     }
 
     // Assistant (or unknown role with assistant-shaped content): new bubble.
-    const id = makeId(streamAgent ? `asst_${streamAgent.role}` : "asst");
+    const id = makeId("asst");
     cursor.streamingAssistantId = id;
     cursor.lastAssistantId = id;
     return [
@@ -704,7 +694,6 @@ function applyPiEventInner(
         status: isError ? "error" : "streaming",
         errorMessage: err.errorMessage,
         tools: [],
-        ...(streamAgent ? { streamAgent } : {}),
       },
     ];
   }
@@ -742,7 +731,7 @@ function applyPiEventInner(
       id = cursor.lastAssistantId;
     }
     if (!id || findMessageIndex(prev, id) < 0) {
-      const idx = lastAssistantIndex(prev, streamAgent);
+      const idx = lastAssistantIndex(prev);
       if (idx >= 0) id = prev[idx]!.id;
     }
 
@@ -779,14 +768,13 @@ function applyPiEventInner(
             thinkingStatus: thinking ? ("done" as const) : m.thinkingStatus,
             status,
             errorMessage: err.errorMessage ?? m.errorMessage,
-            ...(streamAgent ? { streamAgent } : {}),
           };
         });
       }
     }
 
     if (fixtureNote || finalText || finalThinking || isError) {
-      const newId = makeId(streamAgent ? `asst_${streamAgent.role}` : "asst");
+      const newId = makeId("asst");
       cursor.lastAssistantId = newId;
       cursor.streamingAssistantId = null;
       const content = finalizeAssistantContent({
@@ -807,7 +795,6 @@ function applyPiEventInner(
           createdAt: ts,
           status,
           errorMessage: err.errorMessage,
-          ...(streamAgent ? { streamAgent } : {}),
         },
       ];
     }
@@ -834,20 +821,19 @@ function applyPiEventInner(
       assistantId = cursor.lastAssistantId;
     }
     if (!assistantId || findMessageIndex(prev, assistantId) < 0) {
-      const idx = lastAssistantIndex(prev, streamAgent);
+      const idx = lastAssistantIndex(prev);
       if (idx >= 0) assistantId = prev[idx]!.id;
     }
 
     if (!assistantId || findMessageIndex(prev, assistantId) < 0) {
       // No assistant yet (tool-only edge case) — open one bubble.
-      const ensured = ensureAssistantBubble(prev, cursor, ts, streamAgent);
+      const ensured = ensureAssistantBubble(prev, cursor, ts);
       return ensured.messages.map((m) =>
         m.id === ensured.assistantId
           ? {
               ...m,
               tools: [tool],
               status: "streaming",
-              ...(streamAgent ? { streamAgent } : {}),
             }
           : m,
       );
@@ -866,7 +852,6 @@ function applyPiEventInner(
       return {
         ...m,
         tools,
-        ...(streamAgent ? { streamAgent: m.streamAgent ?? streamAgent } : {}),
       };
     });
   }
@@ -945,17 +930,11 @@ function applyPiEventInner(
   }
 
   if (kind === "agent_end" || kind === "agent_settled") {
-    // Clear streaming cursor for this stream only; leave lastAssistant for late tools.
+    // Clear streaming cursor; leave lastAssistant for late tools.
     // Do not clobber status "error" on failed assistant turns.
     cursor.streamingAssistantId = null;
     return prev.map((m) => {
       if (m.status !== "streaming") return m;
-      if (streamAgent) {
-        if (m.streamAgent?.agentId !== streamAgent.agentId) return m;
-      } else if (m.streamAgent) {
-        // Operator chat settle must not finalize concurrent child streams.
-        return m;
-      }
       return { ...m, status: "done" };
     });
   }
@@ -970,7 +949,7 @@ export function productCardContent(event: ProductSseLike): string {
       const bits = [`Phase: ${event.phase ?? "?"}`];
       if (event.status) bits.push(`status=${event.status}`);
       if (event.runId) bits.push(`run=${event.runId}`);
-      if (event.message) bits.push(event.message);
+      if (typeof event.message === "string") bits.push(event.message);
       return bits.join(" · ");
     }
     case "gate": {
@@ -978,7 +957,12 @@ export function productCardContent(event: ProductSseLike): string {
       if (event.runId) bits.push(`run=${event.runId}`);
       if (event.question) bits.push(event.question);
       if (event.pages?.length) {
-        bits.push(`pages: ${event.pages.slice(0, 8).join(", ")}`);
+        bits.push(
+          `pages: ${event.pages
+            .slice(0, 8)
+            .map((p) => (typeof p === "string" ? p : p.path))
+            .join(", ")}`,
+        );
       }
       return bits.join(" · ");
     }
@@ -1011,15 +995,14 @@ export function productCardContent(event: ProductSseLike): string {
         pages.length > 12 ? `\n… +${pages.length - 12} more` : "";
       return [`Spec pages ${done}/${total}`, ...lines].join("\n") + more;
     }
-    case "agent_span": {
+    case "work_unit": {
       const bits = [
-        `Agent ${event.role ?? "?"}`,
-        event.agentId ?? "",
+        `Unit ${event.role ?? "?"}`,
+        event.unitId ?? "",
         event.status ?? "",
       ].filter(Boolean);
       if (event.parentId) bits.push(`parent=${event.parentId}`);
       if (event.task) bits.push(event.task);
-      else if (event.promptSummary) bits.push(event.promptSummary);
       if (event.receiptPath) bits.push(event.receiptPath);
       return bits.join(" · ");
     }
@@ -1027,12 +1010,15 @@ export function productCardContent(event: ProductSseLike): string {
       const agents = event.agents ?? [];
       const running = agents.filter((a) => a.status === "running").length;
       const done = agents.filter(
-        (a) => a.status === "complete" || a.status === "done",
+        (a) =>
+          a.status === "settled" ||
+          a.status === "complete" ||
+          a.status === "done",
       ).length;
       const bits = [
         `Work · Wiki Run ${(event.runId ?? "?").slice(0, 8)}`,
         event.phase ? `phase=${event.phase}` : null,
-        `${agents.length} agent(s)`,
+        `${agents.length} unit(s)`,
         running ? `${running} running` : null,
         done ? `${done} done` : null,
       ].filter(Boolean);
@@ -1085,19 +1071,12 @@ export function productMeta(event: ProductSseLike): AgentProductMeta {
         runId: event.runId,
         pages: event.pages,
       };
-    case "agent_span":
+    case "work_unit":
+      // work_unit folds into work_run chips; meta is not used as a card kind.
       return {
-        kind: "agent_span",
+        kind: "work_run",
         runId: event.runId,
-        spanId: event.spanId,
-        agentId: event.agentId,
-        role: event.role,
-        status: event.status,
-        parentId: event.parentId,
-        receiptPath: event.receiptPath,
-        detail: event.detail,
-        task: event.task,
-        label: event.promptSummary,
+        agents: [],
       };
     case "work_run":
       return {
@@ -1123,32 +1102,7 @@ export function productMeta(event: ProductSseLike): AgentProductMeta {
   }
 }
 
-/** Build WorkStreams from durable cold-load agent rows. */
-export function workStreamsFromAgents(
-  agents: WorkAgentChip[] | undefined,
-): WorkStreams {
-  if (!agents?.length) return {};
-  const out: WorkStreams = {};
-  for (const a of agents) {
-    if (!a.agentId) continue;
-    out[a.agentId] = {
-      agentId: a.agentId,
-      role: a.role || "agent",
-      status:
-        a.status === "running"
-          ? "streaming"
-          : a.status === "failed"
-            ? "error"
-            : "done",
-      content: a.detail?.trim() || "",
-      tools: [],
-      updatedAt: nowIso(),
-    };
-  }
-  return out;
-}
-
-/** Upsert one agent into a Work chip agent list (pure). */
+/** Upsert one unit into a Work chip agent list (pure). agentId === unitId. */
 export function upsertWorkAgentChip(
   agents: WorkAgentChip[],
   chip: WorkAgentChip,
@@ -1168,10 +1122,30 @@ export function upsertWorkAgentChip(
   return next;
 }
 
+function chipFromWorkUnit(event: ProductSseLike): WorkAgentChip | null {
+  if (event.kind !== "work_unit" || !event.unitId) return null;
+  const msg = isRecord(event.message) ? event.message : undefined;
+  const detail =
+    (typeof event.summary === "string" && event.summary) ||
+    (typeof msg?.text === "string" && msg.text) ||
+    (typeof event.error === "string" && event.error) ||
+    undefined;
+  return {
+    agentId: event.unitId,
+    role: event.role ?? "agent",
+    status: String(event.status ?? "pending"),
+    parentId: event.parentId,
+    task: event.task,
+    detail,
+    receiptPath: event.receiptPath,
+  };
+}
+
 /**
  * Apply a product inject. Phase cards upsert the latest run_phase row so the
  * transcript does not spam one card per phase transition for a single run.
  * Gate cards upsert the latest open gate of the same kind (plan/publication).
+ * work_unit folds into a single work_run chip per run (timeline index).
  */
 export function applyProductEvent(
   prev: AgentMessage[],
@@ -1233,7 +1207,7 @@ export function applyProductEvent(
   }
 
   if (event.kind === "plan_progress") {
-    // Upsert Spec queue card so page statuses refresh in place.
+    // Upsert Spec pages card so page statuses refresh in place.
     for (let i = prev.length - 1; i >= 0; i -= 1) {
       const m = prev[i]!;
       if (m.product?.kind !== "plan_progress") continue;
@@ -1250,19 +1224,9 @@ export function applyProductEvent(
     }
   }
 
-  if (event.kind === "agent_span" && event.agentId) {
-    // Fold into a single Work chip per run (Claude Code / OpenCode pattern).
-    // Individual agent_span cards no longer spam the main timeline.
-    const chip: WorkAgentChip = {
-      agentId: event.agentId,
-      role: event.role ?? "agent",
-      status: event.status ?? "running",
-      spanId: event.spanId,
-      parentId: event.parentId,
-      task: event.task ?? event.promptSummary,
-      detail: event.detail,
-      receiptPath: event.receiptPath,
-    };
+  if (event.kind === "work_unit") {
+    const chip = chipFromWorkUnit(event);
+    if (!chip) return prev;
     for (let i = prev.length - 1; i >= 0; i -= 1) {
       const m = prev[i]!;
       if (m.product?.kind !== "work_run") continue;

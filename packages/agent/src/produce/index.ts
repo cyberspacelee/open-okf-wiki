@@ -1,6 +1,7 @@
 /**
- * Produce module surface (Pi path, ADR 0030).
+ * Produce module surface (Pi path, ADR 0030 / 0031).
  * Deep entry: produceWiki. Primitive: produceWithPi.
+ * Operator body channel: parent-visible work_unit only.
  */
 
 export {
@@ -23,8 +24,18 @@ export {
   type ProduceEventSink,
   type ProduceProgressPhase,
   type ProduceAgentRole,
-  type ProduceChildPiEvent,
 } from "./events.js";
+export {
+  createParentVisibilityReducer,
+  attachWorkUnitSink,
+  messageFromPiContent,
+  type ParentUnitUpdate,
+  type ParentUnitStatus,
+  type ParentUnitMessage,
+  type ParentUnitToolState,
+  type ParentVisibilityReducer,
+  type CreateParentVisibilityReducerOpts,
+} from "./parent-visibility.js";
 export { parsePlanFromAgentText } from "./plan-parse.js";
 export { planWikiSpec, type PlanWikiSpecInput, type PlanWikiSpecResult } from "./plan.js";
 export {

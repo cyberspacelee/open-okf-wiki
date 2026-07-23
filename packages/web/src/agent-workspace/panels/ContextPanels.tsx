@@ -23,7 +23,7 @@ import type {
 } from "../../api";
 import { useI18n } from "../../i18n";
 import { workspaceHref } from "../../lib/workspace-path";
-import type { AgentMessage, WorkStreams } from "../hooks/useSessionAgent";
+import type { AgentMessage, WorkUnits } from "../hooks/useSessionAgent";
 import { AgentTree } from "./AgentTree";
 
 export type ContextPanelsProps = {
@@ -34,9 +34,9 @@ export type ContextPanelsProps = {
   linkedRunId?: string | null;
   phase?: string | null;
   recentRuns?: StoredRunRecord[];
-  /** Transcript messages — used to build live subagent tree. */
+  /** Transcript messages — used to build live unit tree. */
   messages?: AgentMessage[];
-  workStreams?: WorkStreams;
+  units?: WorkUnits;
   onOpenAgent?: (input: {
     agentId: string;
     role?: string;
@@ -88,7 +88,7 @@ export function ContextPanels({
   phase = null,
   recentRuns = [],
   messages = [],
-  workStreams = {},
+  units = {},
   onOpenAgent,
   className,
 }: ContextPanelsProps) {
@@ -208,7 +208,7 @@ export function ContextPanels({
               rootPath={rootPath}
               runId={linkedRunId}
               messages={messages}
-              workStreams={workStreams}
+              units={units}
               onOpenAgent={onOpenAgent}
             />
           </PanelShell>

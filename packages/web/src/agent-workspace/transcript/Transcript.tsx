@@ -4,7 +4,6 @@
  * Projects Pi text, thinking, tools, and provider errors (never silent empty).
  */
 
-import { useState } from "react";
 import {
   BotIcon,
   ChevronRightIcon,
@@ -20,14 +19,6 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Bubble,
   BubbleContent,
@@ -57,7 +48,6 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { useI18n } from "../../i18n";
-import { getRunReceipt } from "../../api";
 import type {
   AgentMessage,
   AgentProductMeta,
@@ -183,8 +173,6 @@ function productBadgeLabel(product: AgentProductMeta): string {
       return product.phase ?? "progress";
     case "plan_progress":
       return "spec pages";
-    case "agent_span":
-      return product.role ?? "agent";
     case "work_run":
       return product.phase ?? "work";
     case "defects":
@@ -204,7 +192,9 @@ function WorkRunCard({
   onOpenAgent?: TranscriptProps["onOpenAgent"];
 }) {
   const agents = product.agents ?? [];
-  const running = agents.filter((a) => a.status === "running").length;
+  const running = agents.filter(
+    (a) => a.status === "running" || a.status === "pending",
+  ).length;
   return (
     <div className="flex min-w-0 flex-col gap-2" data-testid="work-run-card">
       <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -225,7 +215,8 @@ function WorkRunCard({
       </div>
       <ul className="flex min-w-0 flex-col gap-1">
         {agents.map((a) => {
-          const isRunning = a.status === "running";
+          const isRunning =
+            a.status === "running" || a.status === "pending";
           return (
             <li key={a.agentId}>
               <button
@@ -261,7 +252,9 @@ function WorkRunCard({
                       variant={
                         a.status === "failed"
                           ? "destructive"
-                          : a.status === "complete" || a.status === "done"
+                          : a.status === "settled" ||
+                              a.status === "complete" ||
+                              a.status === "done"
                             ? "secondary"
                             : "default"
                       }
@@ -286,171 +279,9 @@ function WorkRunCard({
         })}
       </ul>
       {agents.length === 0 ? (
-        <p className="text-[11px] text-muted-foreground">Waiting for agents…</p>
+        <p className="text-[11px] text-muted-foreground">Waiting for units…</p>
       ) : null}
     </div>
-  );
-}
-
-/** Click-to-preview subagent card (Claude Code / pi-subagent-ui style peek). */
-function AgentSpanCard({
-  product,
-  content,
-  workspaceId,
-  rootPath,
-  onOpenAgent,
-}: {
-  product: AgentProductMeta;
-  content: string;
-  workspaceId?: string;
-  rootPath?: string;
-  onOpenAgent?: TranscriptProps["onOpenAgent"];
-}) {
-  const { t } = useI18n();
-  const [open, setOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [body, setBody] = useState(
-    product.detail?.trim() ||
-      product.task?.trim() ||
-      product.label?.trim() ||
-      content,
-  );
-  const title = [
-    product.role ?? "agent",
-    product.agentId,
-    product.status,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  const running = product.status === "running";
-
-  function openWorkSurface() {
-    const agentId = product.agentId;
-    if (agentId && onOpenAgent) {
-      onOpenAgent({
-        agentId,
-        role: product.role,
-        task: product.task || product.label,
-        detail: product.detail || content,
-      });
-      return;
-    }
-    void openPreview();
-  }
-
-  async function openPreview() {
-    setOpen(true);
-    setBody(
-      product.detail?.trim() ||
-        product.task?.trim() ||
-        product.label?.trim() ||
-        content,
-    );
-    const runId = product.runId;
-    const nodeId =
-      product.agentId ||
-      (product.receiptPath
-        ? product.receiptPath.replace(/^.*\//, "").replace(/\.json$/i, "")
-        : undefined);
-    if (!workspaceId || !runId || !nodeId) return;
-    setLoading(true);
-    try {
-      const res = await getRunReceipt(workspaceId, runId, nodeId, rootPath);
-      const r = res.receipt;
-      setBody(
-        [
-          `nodeId: ${r.nodeId}`,
-          `status: ${r.status}`,
-          `scope: ${r.scope}`,
-          r.parentId ? `parentId: ${r.parentId}` : null,
-          "",
-          "## Summary",
-          r.summary || "(empty)",
-          "",
-          r.findings?.length
-            ? `## Findings\n${r.findings.map((f) => `- ${f}`).join("\n")}`
-            : null,
-          r.openQuestions?.length
-            ? `## Open questions\n${r.openQuestions.map((q) => `- ${q}`).join("\n")}`
-            : null,
-        ]
-          .filter(Boolean)
-          .join("\n"),
-      );
-    } catch {
-      // Keep SSE detail.
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  // Compact chip: status + one-line task. Full stream lives in Work drawer.
-  const summary =
-    product.task?.trim() ||
-    product.label?.trim() ||
-    (running ? null : product.detail?.trim()?.slice(0, 160)) ||
-    content;
-
-  return (
-    <>
-      <button
-        type="button"
-        className={cn(
-          "flex w-full min-w-0 flex-col gap-1 rounded-md border border-transparent px-0.5 py-0.5 text-left transition-colors hover:bg-muted/40",
-          running && "border-primary/20 bg-primary/5",
-        )}
-        onClick={() => openWorkSurface()}
-        data-testid="agent-span-preview"
-      >
-        <div className="flex flex-wrap items-center gap-1.5">
-          {running ? <Spinner className="size-3 text-primary" /> : null}
-          <span className="text-xs font-medium">
-            {running
-              ? t.agentWorkspace.thinkingStreaming
-              : t.agentWorkspace.viewSubagent}
-          </span>
-          <EyeIcon className="size-3.5 text-muted-foreground" />
-        </div>
-        {summary ? (
-          <div className="line-clamp-2 text-xs text-muted-foreground whitespace-pre-wrap break-words">
-            {summary}
-          </div>
-        ) : null}
-        {product.parentId ? (
-          <div className="text-[10px] text-muted-foreground">
-            parent: <span className="font-mono">{product.parentId}</span>
-          </div>
-        ) : null}
-      </button>
-      {/* Fallback sheet when no Work surface handler is wired. */}
-      <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent
-          side="right"
-          className="flex w-full flex-col sm:max-w-lg"
-          data-testid="agent-span-sheet"
-        >
-          <SheetHeader>
-            <SheetTitle className="font-mono text-sm">{title}</SheetTitle>
-            <SheetDescription>
-              {product.task ||
-                product.label ||
-                t.agentWorkspace.subagentPreviewHint}
-            </SheetDescription>
-          </SheetHeader>
-          <ScrollArea className="min-h-0 flex-1 px-4 pb-4">
-            {loading ? (
-              <div className="text-xs text-muted-foreground">
-                {t.agentWorkspace.agentTreeLoading}
-              </div>
-            ) : (
-              <pre className="okf-code-snippet">
-                {body || t.agentWorkspace.subagentNoDetail}
-              </pre>
-            )}
-          </ScrollArea>
-        </SheetContent>
-      </Sheet>
-    </>
   );
 }
 
@@ -474,8 +305,6 @@ function MessageCard({
   pendingGate,
   gateBusy,
   onResumeGate,
-  workspaceId,
-  rootPath,
   onOpenAgent,
 }: {
   message: AgentMessage;
@@ -483,8 +312,6 @@ function MessageCard({
   pendingGate: PendingGate | null;
   gateBusy: boolean;
   onResumeGate?: (input: ResumeGateInput) => void | Promise<void>;
-  workspaceId?: string;
-  rootPath?: string;
   onOpenAgent?: TranscriptProps["onOpenAgent"];
 }) {
   const { t } = useI18n();
@@ -549,13 +376,11 @@ function MessageCard({
                       ? "Progress"
                       : product.kind === "plan_progress"
                         ? "Spec queue"
-                        : product.kind === "agent_span"
-                          ? "Agent"
-                          : product.kind === "work_run"
-                            ? "Work"
-                            : product.kind === "defects"
-                              ? "Review"
-                              : "Run link"
+                        : product.kind === "work_run"
+                          ? "Work"
+                          : product.kind === "defects"
+                            ? "Review"
+                            : "Run link"
                 : isTool
                   ? t.agentWorkspace.roleTool
                   : t.agentWorkspace.roleSystem}
@@ -581,14 +406,6 @@ function MessageCard({
           </div>
           {product?.kind === "work_run" ? (
             <WorkRunCard product={product} onOpenAgent={onOpenAgent} />
-          ) : product?.kind === "agent_span" ? (
-            <AgentSpanCard
-              product={product}
-              content={message.content ?? ""}
-              workspaceId={workspaceId}
-              rootPath={rootPath}
-              onOpenAgent={onOpenAgent}
-            />
           ) : message.content ? (
             <div className="whitespace-pre-wrap break-words">{message.content}</div>
           ) : null}
@@ -708,14 +525,12 @@ export function Transcript({
   pendingGate = null,
   gateBusy = false,
   onResumeGate,
-  workspaceId,
-  rootPath,
   onOpenAgent,
 }: TranscriptProps) {
   const { t } = useI18n();
 
-  // Child produce streams must never appear as peer chat bubbles.
-  const timeline = messages.filter((m) => !m.streamAgent);
+  // Main timeline: parent Pi + product cards only (work units live in drawer).
+  const timeline = messages;
 
   // Only the latest matching gate card shows actions (avoid stale buttons).
   let activeGateMessageId: string | null = null;
@@ -776,8 +591,6 @@ export function Transcript({
                   pendingGate={pendingGate}
                   gateBusy={gateBusy}
                   onResumeGate={onResumeGate}
-                  workspaceId={workspaceId}
-                  rootPath={rootPath}
                   onOpenAgent={onOpenAgent}
                 />
               </MessageScrollerItem>

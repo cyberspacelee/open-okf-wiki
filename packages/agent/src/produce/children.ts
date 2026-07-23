@@ -5,8 +5,8 @@
  * Provider failures often complete session.prompt() without throwing
  * (stopReason "error"). We fail closed instead of inventing empty success.
  *
- * Live operator UI: every relevant Pi event is forwarded via `onPiEvent` so
- * thinking / text / tools stream under the parent Operator Session.
+ * Live operator UI: raw Pi events are forwarded via `onPiEvent(kind, payload)`.
+ * Callers reduce them with parent-visibility → work_unit (ADR 0031).
  */
 
 import type { Model } from "@earendil-works/pi-ai/compat";
@@ -18,7 +18,7 @@ import {
 import { resolveAssistantSummary } from "../pi/assistant-outcome.js";
 import type { WikiAgentRole } from "../pi/tool-policy.js";
 import type { SourceIgnoreInput } from "../pi/tool-operations.js";
-import type { ProduceAgentRole, ProduceChildPiEvent } from "./events.js";
+import type { ProduceAgentRole } from "./events.js";
 
 export type ChildRole = Extract<
   WikiAgentRole,
@@ -49,15 +49,15 @@ export type RunChildSessionInput = {
   /** Soft timeout in ms (host abort via session.abort). */
   timeoutMs?: number;
   /**
-   * Stable operator-visible agent id (matches agent_span.agentId).
+   * Stable operator-visible unit id (matches work_unit.unitId).
    * Defaults to the child role name when omitted.
    */
-  agentId?: string;
+  unitId?: string;
   /**
-   * Forward live Pi events (thinking / text / tools) to the Operator Session.
-   * Callers wire this to ProduceEventSink.childPiEvent.
+   * Forward live Pi events (kind + payload) for parent-visibility reduction.
+   * Callers typically wire: attachWorkUnitSink(...).onPiEvent
    */
-  onPiEvent?: (event: ProduceChildPiEvent) => void;
+  onPiEvent?: (kind: string, payload: unknown) => void;
 };
 
 export type RunChildSessionResult = {
@@ -114,18 +114,11 @@ export async function runChildSession(
     );
   }
 
-  const agentId = input.agentId?.trim() || input.role;
-  const produceRole = produceRoleForChild(input.role);
   const forward = (kind: string, payload: unknown): void => {
     if (!input.onPiEvent) return;
     if (!FORWARDED_KINDS.has(kind)) return;
     try {
-      input.onPiEvent({
-        agentId,
-        role: produceRole,
-        kind,
-        payload,
-      });
+      input.onPiEvent(kind, payload);
     } catch {
       // Never let a bad subscriber break the child session.
     }

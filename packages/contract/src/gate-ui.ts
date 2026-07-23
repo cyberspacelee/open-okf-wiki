@@ -7,7 +7,7 @@
  */
 
 import type { WikiRunPlan } from "./run.js";
-import type { InteractionOption, PendingInteraction } from "./session.js";
+import type { InteractionOption, PendingInteraction } from "./interaction.js";
 
 /** Minimal suspend payload shape (plan-gate / publish-gate suspendSchema). */
 export type SuspendPayloadForGate = {

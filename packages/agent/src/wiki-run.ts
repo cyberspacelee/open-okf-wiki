@@ -22,6 +22,7 @@ import { produceWithPi, shouldUsePiFixtureMode } from "./produce/live-pi.js";
 import { planWikiSpec } from "./produce/plan.js";
 import { writeWikiRunSpec } from "./spec-store.js";
 import type { ProduceEventSink } from "./produce/events.js";
+import { createParentVisibilityReducer } from "./produce/parent-visibility.js";
 import { resolveWikiSkillPaths } from "./pi/skill-paths.js";
 import { piRunWorkDir } from "./pi/session-paths.js";
 import { redactErrorMessage } from "./run-redact.js";
@@ -171,9 +172,8 @@ function produceEventsFromJob(
         defectCount: p.defectCount,
       }),
     planProgress: (p) => emit(onEvent, "plan_progress", undefined, p),
-    agentSpan: (p) => emit(onEvent, "agent_span", p.status, p),
     defects: (p) => emit(onEvent, "defects", p.summary, p),
-    childPiEvent: (p) => emit(onEvent, "child_pi", p.kind, p),
+    workUnit: (p) => emit(onEvent, "work_unit", p.status, p),
   };
 }
 
@@ -215,7 +215,7 @@ async function resolveRoleModels(
 
 /**
  * Materialize run workdir + run Planner before plan gate / produce.
- * Emits planning progress and a planner agent_span with previewable detail.
+ * Emits planning progress and a planner work_unit with parent-visible detail.
  */
 async function discoverWikiPlan(input: {
   runId: string;
@@ -259,17 +259,19 @@ async function discoverWikiPlan(input: {
   });
 
   const models = await resolveRoleModels(input.resolveModel, fixture);
-  const spanId = `${input.runId}-planner`;
-  emit(input.onEvent, "agent_span", "running", {
-    spanId,
-    agentId: "planner",
+  const planner = createParentVisibilityReducer({
+    unitId: "planner",
     role: "planner",
-    status: "running",
-    promptSummary: "Analyze sources and draft WikiRunSpec",
     task: "Discover domains, pages, and acceptance criteria from sources/",
     parentId: "root",
     runId: input.runId,
   });
+  const emitUnit = (
+    u: ReturnType<typeof planner.getUnit>,
+  ): void => {
+    emit(input.onEvent, "work_unit", u.status, { ...u, runId: input.runId });
+  };
+  emitUnit(planner.open());
 
   try {
     const planned = await planWikiSpec({
@@ -285,8 +287,8 @@ async function discoverWikiPlan(input: {
       workspaceRoot: input.workspace.rootPath,
       abortSignal: input.abortSignal,
       useDefaultSpec: fixture,
-      agentId: "planner",
-      onPiEvent: (p) => emit(input.onEvent, "child_pi", p.kind, p),
+      unitId: "planner",
+      onPiEvent: (kind, payload) => emitUnit(planner.onPiEvent(kind, payload)),
     });
 
     let spec = planned.spec;
@@ -302,41 +304,22 @@ async function discoverWikiPlan(input: {
     }
     await writeWikiRunSpec(input.workspace.rootPath, input.runId, spec);
 
-    emit(input.onEvent, "agent_span", "complete", {
-      spanId,
-      agentId: "planner",
-      role: "planner",
-      status: "complete",
-      promptSummary: spec.summary.slice(0, 120),
-      task: "Discover domains, pages, and acceptance criteria from sources/",
-      detail: [
-        planned.rawSummary?.slice(0, 10_000) ||
-          `Planned ${spec.pages?.length ?? 0} page(s), ${spec.domains?.length ?? 0} domain(s).`,
-        "",
+    const summary =
+      planned.rawSummary?.slice(0, 4000) ||
+      [
+        `Planned ${spec.pages?.length ?? 0} page(s), ${spec.domains?.length ?? 0} domain(s).`,
         `summary: ${spec.summary}`,
         `pages: ${(spec.pages ?? []).map((p) => p.path).join(", ")}`,
         `domains: ${(spec.domains ?? []).map((d) => d.id).join(", ")}`,
-      ].join("\n"),
-      parentId: "root",
-      runId: input.runId,
-    });
+      ].join("\n");
+    emitUnit(planner.settle(summary.slice(0, 4000)));
     emit(input.onEvent, "phase", "planning", {
       label: `plan ready (${spec.pages?.length ?? 0} pages)`,
     });
     return spec;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    emit(input.onEvent, "agent_span", "failed", {
-      spanId,
-      agentId: "planner",
-      role: "planner",
-      status: "failed",
-      promptSummary: msg.slice(0, 120),
-      detail: msg.slice(0, 4000),
-      parentId: "root",
-      runId: input.runId,
-      error: msg,
-    });
+    emitUnit(planner.fail(msg.slice(0, 4000)));
     throw err;
   }
 }

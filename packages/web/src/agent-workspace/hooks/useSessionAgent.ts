@@ -1,12 +1,12 @@
 /**
- * Client hook for the Pi Agent Workspace (ADR 0030).
+ * Client hook for the Pi Agent Workspace (ADR 0030 / 0031 Wave 3).
  *
  * Live transport:
  * - POST AgentCommand → /command
- * - EventSource ← /events (product injects + Pi AgentSession events)
+ * - EventSource ← /events (product injects + parent Pi AgentSession events)
  *
+ * Pure projection: WorkUnits is a fold cache of product work_unit events.
  * Session bootstrap is a single effect: reset → cold-load history → open SSE.
- * That avoids history/SSE races that wiped the transcript.
  *
  * Command failures use `ok === false` / `status === "failed"` (not string matching).
  */
@@ -27,17 +27,17 @@ import {
 } from "../../api";
 import { isCommandFailed } from "./command-result";
 import {
-  applyChildStreamEvent,
   applyPiEvent,
   applyProductEvent,
-  isChildPiPayload,
+  applyWorkUnit,
   isTerminalOrWaitingPhase,
-  workStreamsFromAgents,
+  workUnitsFromList,
   type AgentMessage,
-  type AgentStream,
+  type ProductSseLike,
   type StreamingRefs,
-  type WorkAgentChip,
-  type WorkStreams,
+  type WorkUnitEventLike,
+  type WorkUnits,
+  type WorkUnitView,
 } from "./project-agent-events";
 
 export { isCommandFailed } from "./command-result";
@@ -45,9 +45,9 @@ export { isCommandFailed } from "./command-result";
 export type {
   AgentMessage,
   AgentProductMeta,
-  AgentStream,
   AgentToolCall,
-  WorkStreams,
+  WorkUnits,
+  WorkUnitView,
 } from "./project-agent-events";
 
 export type AgentMessageRole = AgentMessage["role"];
@@ -105,15 +105,15 @@ export type UseSessionAgentResult = {
   /** True while a resume_gate command is in flight. */
   gateBusy: boolean;
   /**
-   * Produce-child live streams (planner / leaf / …) for the Work surface.
-   * Not rendered on the main chat timeline.
+   * Produce work units (planner / leaf / …) fold cache for the Work surface.
+   * Not rendered as peer bubbles on the main chat timeline.
    */
-  workStreams: WorkStreams;
-  /** Focused produce agent (opens Work drawer). */
+  units: WorkUnits;
+  /** Focused produce unit id (opens Work drawer). */
   focusAgentId: string | null;
   setFocusAgentId: (agentId: string | null) => void;
-  /** Convenience: stream for the focused agent, if any. */
-  focusedStream: AgentStream | null;
+  /** Convenience: unit for the focused id, if any. */
+  focusedUnit: WorkUnitView | null;
 };
 
 const RECONNECT_MS = 1500;
@@ -162,6 +162,42 @@ function historyToMessages(
   }));
 }
 
+function asProductSseLike(event: ProductSseEvent | ProductSseLike): ProductSseLike {
+  return event as ProductSseLike;
+}
+
+function coldWorkUnitRow(row: unknown): WorkUnitEventLike | null {
+  if (!isRecord(row)) return null;
+  if (typeof row.unitId !== "string" || !row.unitId.trim()) return null;
+  return {
+    kind: "work_unit",
+    unitId: row.unitId.trim(),
+    role: typeof row.role === "string" ? row.role : "agent",
+    status: typeof row.status === "string" ? row.status : "pending",
+    runId: typeof row.runId === "string" ? row.runId : undefined,
+    task: typeof row.task === "string" ? row.task : undefined,
+    parentId: typeof row.parentId === "string" ? row.parentId : undefined,
+    message: isRecord(row.message)
+      ? {
+          thinking:
+            typeof row.message.thinking === "string"
+              ? row.message.thinking
+              : undefined,
+          text:
+            typeof row.message.text === "string" ? row.message.text : undefined,
+        }
+      : undefined,
+    tools: Array.isArray(row.tools)
+      ? (row.tools as WorkUnitView["tools"])
+      : undefined,
+    summary: typeof row.summary === "string" ? row.summary : undefined,
+    receiptPath:
+      typeof row.receiptPath === "string" ? row.receiptPath : undefined,
+    error: typeof row.error === "string" ? row.error : undefined,
+    updatedAt: typeof row.updatedAt === "number" ? row.updatedAt : undefined,
+  };
+}
+
 export function useSessionAgent({
   workspaceId,
   sessionId,
@@ -178,7 +214,7 @@ export function useSessionAgent({
   const [plan, setPlan] = useState<WikiRunPlan | null>(null);
   const [pendingGate, setPendingGate] = useState<PendingGate | null>(null);
   const [gateBusy, setGateBusy] = useState(false);
-  const [workStreams, setWorkStreams] = useState<WorkStreams>({});
+  const [units, setUnits] = useState<WorkUnits>({});
   const [focusAgentId, setFocusAgentId] = useState<string | null>(null);
 
   const sendInFlight = useRef(false);
@@ -217,44 +253,11 @@ export function useSessionAgent({
 
     if (event.source === "product") {
       const product = event as ProductSseEvent;
-      setMessages((prev) => applyProductEvent(prev, product));
+      setMessages((prev) => applyProductEvent(prev, asProductSseLike(product)));
 
-      // Seed / finalize Work surface status from agent_span chips.
-      if (product.kind === "agent_span" && product.agentId) {
-        const agentId = product.agentId;
-        const role = product.role ?? "agent";
-        setWorkStreams((prev) => {
-          const cur = prev[agentId];
-          const status =
-            product.status === "running"
-              ? ("streaming" as const)
-              : product.status === "failed"
-                ? ("error" as const)
-                : ("done" as const);
-          return {
-            ...prev,
-            [agentId]: {
-              agentId,
-              role,
-              status,
-              content:
-                cur?.content ||
-                (product.status !== "running" && product.detail
-                  ? product.detail
-                  : cur?.content) ||
-                "",
-              thinking: cur?.thinking,
-              thinkingStatus: cur?.thinkingStatus,
-              tools: cur?.tools ?? [],
-              errorMessage:
-                product.status === "failed"
-                  ? product.detail || cur?.errorMessage
-                  : cur?.errorMessage,
-              updatedAt: nowIso(),
-            },
-          };
-        });
-        if (product.status === "running") {
+      if (product.kind === "work_unit") {
+        setUnits((prev) => applyWorkUnit(prev, product));
+        if (product.status === "running" || product.status === "pending") {
           setStatus("streaming");
         }
       }
@@ -311,16 +314,6 @@ export function useSessionAgent({
 
     if (event.source === "pi") {
       const kind = event.kind;
-      const child = isChildPiPayload(event.payload);
-
-      if (child) {
-        // Produce children: Work surface only — do not toggle root chat idle.
-        setWorkStreams((prev) =>
-          applyChildStreamEvent(prev, kind, event.payload, streamRefs.current),
-        );
-        setStatus("streaming");
-        return;
-      }
 
       if (kind === "agent_start" || kind === "prompt" || kind === "steer") {
         setStatus("streaming");
@@ -362,8 +355,10 @@ export function useSessionAgent({
   }, []);
 
   // Bootstrap: reset → await cold history → open SSE.
-  // On first connect, skip ring-buffer replay (only advance sequence until the
-  // server hello heartbeat) so history + SSE do not double-apply the same turn.
+  // On first connect, skip ring-buffer replay of parent Pi (only advance
+  // sequence until the server hello heartbeat) so history + SSE do not
+  // double-apply the same turn. Product frames from the buffer still apply
+  // so refresh mid-wiki-run restores phase / work units.
   // Reconnects apply the buffer with sequence dedup for live catch-up.
   useEffect(() => {
     setStatus("idle");
@@ -375,14 +370,13 @@ export function useSessionAgent({
     setPlan(null);
     setPendingGate(null);
     setGateBusy(false);
-    setWorkStreams({});
+    setUnits({});
     setFocusAgentId(null);
     sendInFlight.current = false;
     lastSequenceRef.current = -1;
     streamRefs.current = {
       streamingAssistantId: null,
       lastAssistantId: null,
-      agents: new Map(),
     };
 
     if (esRef.current) {
@@ -408,9 +402,8 @@ export function useSessionAgent({
       if (streamGenRef.current !== gen || !eventsUrl) return;
       if (typeof EventSource === "undefined") return;
 
-      // Bootstrap: skip operator-chat Pi frames that would double history, but
-      // still apply product injects + produce-child Pi streams from the ring
-      // buffer so refresh mid-wiki-run restores phase / planner / leaf UI.
+      // Bootstrap: skip parent-chat Pi frames that would double history, but
+      // still apply product injects (work_unit / phase / gate) from the ring.
       // Reconnect: apply buffer; sequence filter drops already-seen frames.
       let skipChatPiUntilHello = mode === "bootstrap";
 
@@ -435,16 +428,8 @@ export function useSessionAgent({
               skipChatPiUntilHello = false;
               return;
             }
-            // Product timeline + child produce streams are not in Pi JSONL history.
-            // handleSseEvent owns sequence advancement so we do not double-skip.
+            // Product timeline is not in Pi JSONL history.
             if (parsed.source === "product") {
-              handleSseEvent(parsed);
-              return;
-            }
-            if (
-              parsed.source === "pi" &&
-              isChildPiPayload(parsed.payload)
-            ) {
               handleSseEvent(parsed);
               return;
             }
@@ -494,23 +479,41 @@ export function useSessionAgent({
             pages: snap.product.pendingGate.pages,
           });
         }
-        // Restore Work surface chips + stream summaries after refresh.
-        const coldAgents = (snap.product?.workAgents ??
-          []) as WorkAgentChip[];
-        if (coldAgents.length > 0) {
-          setWorkStreams(workStreamsFromAgents(coldAgents));
-          for (const a of coldAgents) {
+
+        // Seed units fold cache from durable workUnits (last-by-unitId).
+        const coldUnits = workUnitsFromList(
+          (snap.product?.workUnits ?? [])
+            .map(coldWorkUnitRow)
+            .filter((u): u is WorkUnitEventLike => u !== null),
+        );
+        setUnits(coldUnits);
+
+        // Project product trajectory for cards (work_run / phase / gate / …).
+        // Prefer full trajectory when present; otherwise fold workUnits into chips.
+        const trajectory = snap.product?.trajectory;
+        if (Array.isArray(trajectory) && trajectory.length > 0) {
+          for (const row of trajectory) {
+            if (!isRecord(row) || typeof row.kind !== "string") continue;
+            timeline = applyProductEvent(timeline, row as ProductSseLike);
+          }
+        } else if (snap.product?.workUnits?.length) {
+          for (const raw of snap.product.workUnits) {
+            const row = coldWorkUnitRow(raw);
+            if (!row) continue;
             timeline = applyProductEvent(timeline, {
-              kind: "agent_span",
-              agentId: a.agentId,
-              role: a.role,
-              status: a.status,
-              runId: snap.product?.runId,
-              task: a.task,
-              detail: a.detail,
-              spanId: a.spanId ?? a.agentId,
-              parentId: a.parentId,
-              receiptPath: a.receiptPath,
+              kind: "work_unit",
+              unitId: row.unitId,
+              role: row.role,
+              status: row.status,
+              runId: row.runId ?? snap.product?.runId,
+              task: row.task,
+              parentId: row.parentId,
+              message: row.message,
+              tools: row.tools,
+              summary: row.summary,
+              receiptPath: row.receiptPath,
+              error: row.error,
+              updatedAt: row.updatedAt,
             });
           }
           if (snap.product?.phase) {
@@ -529,6 +532,7 @@ export function useSessionAgent({
             });
           }
         }
+
         setMessages(timeline);
         // Restore streaming chrome when a wiki run / produce is still live.
         const phase = snap.product?.phase;
@@ -656,6 +660,7 @@ export function useSessionAgent({
       setPlan(null);
       setPendingGate(null);
       setPhase(null);
+      setUnits({});
 
       try {
         setStatus("streaming");
@@ -762,10 +767,10 @@ export function useSessionAgent({
 
   const clearError = useCallback(() => setError(null), []);
 
-  const focusedStream = useMemo(() => {
+  const focusedUnit = useMemo(() => {
     if (!focusAgentId) return null;
-    return workStreams[focusAgentId] ?? null;
-  }, [focusAgentId, workStreams]);
+    return units[focusAgentId] ?? null;
+  }, [focusAgentId, units]);
 
   return {
     messages,
@@ -785,9 +790,9 @@ export function useSessionAgent({
     plan,
     pendingGate,
     gateBusy,
-    workStreams,
+    units,
     focusAgentId,
     setFocusAgentId,
-    focusedStream,
+    focusedUnit,
   };
 }

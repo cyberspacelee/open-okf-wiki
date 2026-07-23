@@ -80,6 +80,28 @@ describe("produceWiki fixture", () => {
     assert.ok(kinds.includes("progress"));
     assert.ok(kinds.includes("defects"));
     assert.ok(kinds.includes("plan_progress"));
+    assert.ok(kinds.includes("work_unit"));
+    // ADR 0031: only whitelist product inject kinds from produce sink
+    const allowed = new Set([
+      "progress",
+      "defects",
+      "plan_progress",
+      "work_unit",
+    ]);
+    assert.ok(kinds.every((k) => allowed.has(k)));
+    const workUnits = events.filter((e) => e.kind === "work_unit");
+    assert.ok(workUnits.length >= 2);
+    for (const e of workUnits) {
+      const p = e.payload as { unitId?: string; runId?: string; status?: string };
+      assert.ok(p.unitId);
+      assert.equal(p.runId, "run-1");
+      assert.ok(
+        p.status === "running" ||
+          p.status === "settled" ||
+          p.status === "failed" ||
+          p.status === "pending",
+      );
+    }
     assert.ok(result.metrics.domainStarts >= 1);
     // Default Spec domain has questions → Host leaf fan-out runs.
     assert.ok(result.metrics.leafStarts >= 1);

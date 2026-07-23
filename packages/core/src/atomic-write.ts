@@ -1,6 +1,6 @@
 /**
  * Atomic JSON write: temp file + rename.
- * Callers that need per-path serialization (e.g. session-store) wrap this.
+ * Callers that need per-path serialization wrap this.
  */
 
 import { mkdir, rename, writeFile } from "node:fs/promises";

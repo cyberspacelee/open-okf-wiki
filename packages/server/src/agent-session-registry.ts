@@ -31,12 +31,8 @@ import {
   type WikiWorkflowTerminal,
 } from "@okf-wiki/agent";
 import {
-
   type AgentCommand,
   type AgentCommandResponse,
-  type ProductSseEvent,
-  type WikiRunPlan,
-  type WikiRunRecordStatus,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
 import {
@@ -44,13 +40,16 @@ import {
   FreezeWikiRunError,
   isPathInside,
   updateRunRecord,
-  upsertOperatorWorkAgent,
-  type OperatorWorkAgent,
 } from "@okf-wiki/core";
 import {
-  emitAgentSessionEvent,
-  emitProductAgentEvent,
-} from "./agent-session-events.ts";
+  emitGate,
+  emitPhase,
+  emitRunLink,
+} from "./session/product-inject.ts";
+import {
+  emitPi,
+  mapOrchestratorOnEvent,
+} from "./session/produce-adapter.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -88,18 +87,19 @@ export type RegisteredAgentSession = {
   abortController?: AbortController;
   /** True while prompt/produce is running. */
   busy: boolean;
-  /**
-   * Last product run_phase emitted on the live bus.
-   * Source of truth for cold-load while shell is lagging (e.g. planner phase
-   * before startWikiRun returns a shell snapshot).
-   */
-  livePhase?: ProductPhase;
-  /**
-   * In-memory Work surface agents (planner / leaf / …) for cold-load.
-   * Also mirrored to analysis/operator-work.json when runId is known.
-   */
-  workAgents?: OperatorWorkAgent[];
 };
+
+// Re-export session helpers used by routes / tests.
+export {
+  foldWorkUnits,
+  lastRunPhase,
+  loadTrajectory,
+  operatorTrajectoryPath,
+} from "./session/trajectory-store.ts";
+export {
+  productPhaseFromShell,
+  resolveColdLoadPhase,
+} from "./session/produce-adapter.ts";
 
 type SessionMetaDisk = {
   schema?: string;
@@ -171,125 +171,6 @@ function nowIso(): string {
  */
 export function preferPiFixture(): boolean {
   return shouldUsePiFixtureMode({});
-}
-
-// ---------------------------------------------------------------------------
-// Product phase mapping (shell → SSE product injects)
-// ---------------------------------------------------------------------------
-
-type ProductPhase = Extract<ProductSseEvent, { kind: "run_phase" }>["phase"];
-
-function productPhaseFromShell(phase: WikiRunShellState["phase"]): ProductPhase {
-  switch (phase) {
-    case "idle":
-      return "idle";
-    case "awaiting_plan":
-      return "awaiting_plan";
-    case "producing":
-    case "hard_validate":
-      return "writing";
-    case "awaiting_publish":
-      return "awaiting_publish";
-    case "published":
-    case "publication_declined":
-      return "done";
-    case "failed":
-      return "failed";
-    case "cancelled":
-      return "cancelled";
-    default: {
-      const _exhaustive: never = phase;
-      return _exhaustive;
-    }
-  }
-}
-
-function safeJsonPayload(value: unknown): unknown {
-  try {
-    return JSON.parse(
-      JSON.stringify(value, (_key, v) => {
-        if (typeof v === "bigint") return String(v);
-        if (typeof v === "function" || typeof v === "symbol") return undefined;
-        return v;
-      }),
-    );
-  } catch {
-    return { note: "non-serializable pi event" };
-  }
-}
-
-function emitPi(
-  workspaceId: string,
-  sessionId: string,
-  kind: string,
-  payload?: unknown,
-): void {
-  emitAgentSessionEvent(workspaceId, sessionId, {
-    source: "pi",
-    kind,
-    sessionId,
-    payload: payload === undefined ? undefined : safeJsonPayload(payload),
-    timestamp: nowIso(),
-  });
-}
-
-function emitPhase(
-  entry: RegisteredAgentSession,
-  phase: ProductPhase,
-  message?: string,
-  status?: WikiRunRecordStatus,
-): void {
-  entry.livePhase = phase;
-  emitProductAgentEvent(entry.workspaceId, {
-    source: "product",
-    kind: "run_phase",
-    sessionId: entry.sessionId,
-    runId: entry.runId,
-    phase,
-    status,
-    message,
-    timestamp: nowIso(),
-  });
-  // Keep durable Run Record in sync so cold-load after refresh shows running.
-  if (status && entry.runId) {
-    void updateRunRecord(entry.workspaceRoot, entry.runId, { status }).catch(
-      () => {
-        // best-effort; SSE still carries status
-      },
-    );
-  }
-}
-
-function emitGate(
-  entry: RegisteredAgentSession,
-  gate: "plan" | "publication",
-  question: string,
-  plan?: WikiRunPlan,
-  pages?: string[],
-): void {
-  emitProductAgentEvent(entry.workspaceId, {
-    source: "product",
-    kind: "gate",
-    sessionId: entry.sessionId,
-    runId: entry.runId,
-    gate,
-    question,
-    plan,
-    pages,
-    timestamp: nowIso(),
-  });
-}
-
-function emitRunLink(entry: RegisteredAgentSession, status?: WikiRunRecordStatus): void {
-  if (!entry.runId) return;
-  emitProductAgentEvent(entry.workspaceId, {
-    source: "product",
-    kind: "run_link",
-    sessionId: entry.sessionId,
-    runId: entry.runId,
-    status,
-    timestamp: nowIso(),
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -643,230 +524,6 @@ function makeResolveModel(
       maxContextTokens: piModel.runtime.maxContextTokens,
       profileId: piModel.runtime.profileId,
     };
-  };
-}
-
-function mapOrchestratorOnEvent(
-  entry: RegisteredAgentSession,
-): (event: { type: string; message?: string; data?: unknown }) => void {
-  return (event) => {
-    const ts = nowIso();
-    if (event.type === "gate") {
-      const gate =
-        event.message === "awaiting_plan" || event.message === "plan"
-          ? "plan"
-          : "publication";
-      const data = (event.data ?? {}) as {
-        plan?: WikiRunPlan;
-        pages?: string[];
-      };
-      emitGate(
-        entry,
-        gate,
-        gate === "plan"
-          ? "Review and confirm the wiki Spec before produce"
-          : "Review produced pages and approve publication",
-        data.plan ?? entry.shell?.plan,
-        data.pages ?? entry.shell?.pages,
-      );
-      emitPhase(
-        entry,
-        gate === "plan" ? "awaiting_plan" : "awaiting_publish",
-        event.message,
-        gate === "plan" ? "awaiting_plan" : "awaiting_publication",
-      );
-      emitRunLink(
-        entry,
-        gate === "plan" ? "awaiting_plan" : "awaiting_publication",
-      );
-      return;
-    }
-    if (event.type === "phase") {
-      const msg = event.message ?? "";
-      const data = (event.data ?? {}) as { label?: string };
-      if (
-        msg === "planning" ||
-        msg === "researching" ||
-        msg === "writing" ||
-        msg === "reviewing" ||
-        msg === "repairing" ||
-        msg === "done" ||
-        msg === "failed"
-      ) {
-        emitProductAgentEvent(entry.workspaceId, {
-          source: "product",
-          kind: "progress",
-          sessionId: entry.sessionId,
-          runId: entry.runId,
-          phase: msg,
-          label: data.label ?? event.message,
-          timestamp: ts,
-        });
-      }
-      if (msg === "planning") {
-        emitPhase(entry, "planning", data.label ?? msg, "running");
-        emitRunLink(entry, "running");
-      } else if (
-        msg === "producing" ||
-        msg === "writing" ||
-        msg === "researching" ||
-        msg === "reviewing" ||
-        msg === "repairing"
-      ) {
-        emitPhase(entry, "writing", data.label ?? msg, "running");
-        emitRunLink(entry, "running");
-      } else if (msg === "hard_validate") {
-        emitPhase(entry, "writing", "hard-validate", "running");
-      } else if (msg === "published" || msg === "done") {
-        emitPhase(entry, "done", "published", "published");
-        emitRunLink(entry, "published");
-      } else if (msg === "failed") {
-        emitPhase(entry, "failed", data.label ?? msg, "failed");
-      } else {
-        emitPhase(entry, productPhaseFromShell(entry.shell?.phase ?? "idle"), msg);
-      }
-      return;
-    }
-    if (event.type === "plan_progress") {
-      const data = (event.data ?? {}) as {
-        pages?: Array<{ path: string; status: "pending" | "writing" | "done" }>;
-      };
-      emitProductAgentEvent(entry.workspaceId, {
-        source: "product",
-        kind: "plan_progress",
-        sessionId: entry.sessionId,
-        runId: entry.runId,
-        pages: data.pages ?? [],
-        timestamp: ts,
-      });
-      return;
-    }
-    if (event.type === "agent_span") {
-      const data = (event.data ?? {}) as {
-        spanId?: string;
-        agentId?: string;
-        role?: "domain" | "leaf" | "reviewer" | "root" | "planner";
-        status?: "running" | "complete" | "failed";
-        promptSummary?: string;
-        detail?: string;
-        task?: string;
-        runId?: string;
-        receiptPath?: string;
-        parentId?: string;
-      };
-      if (data.spanId && data.agentId && data.role && data.status) {
-        const runId = data.runId ?? entry.runId;
-        const agentRow: OperatorWorkAgent = {
-          agentId: data.agentId,
-          role: data.role,
-          status: data.status,
-          spanId: data.spanId,
-          parentId: data.parentId,
-          task: data.task?.slice(0, 2000) ?? data.promptSummary?.slice(0, 500),
-          detail: data.detail?.slice(0, 12_000),
-          receiptPath: data.receiptPath,
-          updatedAt: ts,
-        };
-        // Memory + disk for Session cold-load / Work drawer after refresh.
-        const agents = [...(entry.workAgents ?? [])];
-        const ai = agents.findIndex((a) => a.agentId === agentRow.agentId);
-        if (ai >= 0) {
-          agents[ai] = {
-            ...agents[ai],
-            ...agentRow,
-            detail: agentRow.detail ?? agents[ai]!.detail,
-            task: agentRow.task ?? agents[ai]!.task,
-          };
-        } else {
-          agents.push(agentRow);
-        }
-        entry.workAgents = agents;
-        if (runId) {
-          void upsertOperatorWorkAgent(entry.workspaceRoot, runId, agentRow, {
-            phase: entry.livePhase,
-          }).catch(() => {
-            // best-effort durable Work surface
-          });
-        }
-        emitProductAgentEvent(entry.workspaceId, {
-          source: "product",
-          kind: "agent_span",
-          sessionId: entry.sessionId,
-          runId,
-          spanId: data.spanId,
-          agentId: data.agentId,
-          role: data.role,
-          status: data.status,
-          promptSummary: data.promptSummary,
-          detail: data.detail?.slice(0, 12_000),
-          task: data.task?.slice(0, 2000),
-          receiptPath: data.receiptPath,
-          parentId: data.parentId,
-          timestamp: ts,
-        });
-      }
-      return;
-    }
-    if (event.type === "defects") {
-      const data = (event.data ?? {}) as {
-        round?: number;
-        clean?: boolean;
-        defectCount?: number;
-        summary?: string;
-      };
-      emitProductAgentEvent(entry.workspaceId, {
-        source: "product",
-        kind: "defects",
-        sessionId: entry.sessionId,
-        runId: entry.runId,
-        round: data.round ?? 1,
-        clean: data.clean ?? true,
-        defectCount: data.defectCount ?? 0,
-        summary: data.summary,
-        timestamp: ts,
-      });
-      return;
-    }
-    if (event.type === "child_pi") {
-      // Produce child sessions (planner / leaf / domain / reviewer) stream here.
-      const data = (event.data ?? {}) as {
-        agentId?: string;
-        role?: string;
-        kind?: string;
-        payload?: unknown;
-      };
-      const kind =
-        (typeof data.kind === "string" && data.kind) ||
-        event.message ||
-        "event";
-      const agentId =
-        typeof data.agentId === "string" && data.agentId.trim()
-          ? data.agentId.trim()
-          : "child";
-      const role =
-        typeof data.role === "string" && data.role.trim()
-          ? data.role.trim()
-          : "leaf";
-      const raw = data.payload;
-      const payload =
-        raw && typeof raw === "object" && !Array.isArray(raw)
-          ? {
-              ...(raw as Record<string, unknown>),
-              okfAgent: { agentId, role },
-            }
-          : {
-              okfAgent: { agentId, role },
-              value: raw,
-            };
-      emitPi(entry.workspaceId, entry.sessionId, kind, payload);
-      return;
-    }
-    if (event.type === "error") {
-      emitPi(entry.workspaceId, entry.sessionId, "error", {
-        message: event.message,
-        data: event.data,
-      });
-    }
   };
 }
 
@@ -1254,7 +911,6 @@ async function handleStartWikiRun(
   entry.runId = frozen.runId;
   // Shell snapshot before startWikiRun returns — cold-load can still see a run.
   entry.shell = startShell({ skipPlanConfirm: true });
-  entry.livePhase = "planning";
   emitRunLink(entry, "running");
   emitPhase(
     entry,
@@ -1365,7 +1021,7 @@ async function handleResumeGate(
     // Surface writing/busy for cold-load + UI before resumeWikiRun returns.
     // Keep shell at awaiting_plan until resumeGate transitions it — mutating
     // shell here would break resumeGate's phase assertions.
-    entry.livePhase = "writing";
+    // Phase is durable via trajectory run_phase (no dual in-memory phase).
     emitPhase(entry, "writing", "plan approved — producing", "running");
   }
 

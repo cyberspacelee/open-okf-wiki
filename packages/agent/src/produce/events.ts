@@ -1,7 +1,11 @@
 /**
- * Produce-owned business Operator Event sink (ADR 0029).
+ * Produce-owned Operator Event sink (ADR 0029 / 0031).
  * Adapters map these onto product SSE; Session must not invent them.
+ *
+ * Body channel is parent-visible `work_unit` only (ADR 0031 whitelist).
  */
+
+import type { ParentUnitUpdate } from "./parent-visibility.js";
 
 export type ProduceProgressPhase =
   | "planning"
@@ -12,7 +16,7 @@ export type ProduceProgressPhase =
   | "done"
   | "failed";
 
-/** Operator-visible supervisor role for agent_span / child stream tags. */
+/** Operator-visible supervisor role for work_unit tags. */
 export type ProduceAgentRole =
   | "domain"
   | "leaf"
@@ -21,19 +25,9 @@ export type ProduceAgentRole =
   | "planner";
 
 /**
- * Live Pi event from a produce child session (planner / domain / leaf / reviewer).
- * Server fans these out as `source:"pi"` with `okfAgent` metadata so the UI can
- * stream thinking / text / tools under the correct span.
+ * Produce → operator sink.
+ * Only whitelist product injects; conversation body is work_unit snapshots.
  */
-export type ProduceChildPiEvent = {
-  agentId: string;
-  role: ProduceAgentRole;
-  /** Pi AgentSession event type (`message_update`, `tool_execution_start`, …). */
-  kind: string;
-  /** Full Pi event payload (type + message + assistantMessageEvent + …). */
-  payload: unknown;
-};
-
 export type ProduceEventSink = {
   progress?: (p: {
     phase: ProduceProgressPhase;
@@ -45,29 +39,17 @@ export type ProduceEventSink = {
   planProgress?: (p: {
     pages: Array<{ path: string; status: "pending" | "writing" | "done" }>;
   }) => void;
-  agentSpan?: (p: {
-    spanId: string;
-    agentId: string;
-    role: ProduceAgentRole;
-    status: "running" | "complete" | "failed";
-    promptSummary?: string;
-    /** Expandable preview body (capped). */
-    detail?: string;
-    /** Short task description for the span card. */
-    task?: string;
-    parentId?: string;
-    runId: string;
-    error?: string;
-    receiptPath?: string;
-  }) => void;
   defects?: (p: {
     round: number;
     clean: boolean;
     defectCount: number;
     summary?: string;
   }) => void;
-  /** Stream child Pi session events (thinking / text / tools) to the operator. */
-  childPiEvent?: (p: ProduceChildPiEvent) => void;
+  /**
+   * Parent-visible produce unit (ADR 0031 PVU).
+   * Fold last-by-unitId on cold load. Requires runId for trajectory binding.
+   */
+  workUnit?: (p: ParentUnitUpdate & { runId: string }) => void;
 };
 
 /** No-op sink for tests / CLI silence. */
@@ -84,9 +66,8 @@ export function recordingProduceEvents(): {
     sink: {
       progress: (p) => events.push({ kind: "progress", payload: p }),
       planProgress: (p) => events.push({ kind: "plan_progress", payload: p }),
-      agentSpan: (p) => events.push({ kind: "agent_span", payload: p }),
       defects: (p) => events.push({ kind: "defects", payload: p }),
-      childPiEvent: (p) => events.push({ kind: "child_pi", payload: p }),
+      workUnit: (p) => events.push({ kind: "work_unit", payload: p }),
     },
   };
 }

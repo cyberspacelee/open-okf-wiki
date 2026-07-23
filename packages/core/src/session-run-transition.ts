@@ -5,7 +5,7 @@
  */
 
 import type {
-  OperatorSession,
+  OperatorSessionStatus,
   PendingInteraction,
   SessionWorkflowState,
   WikiRunPlan,
@@ -17,9 +17,9 @@ import {
   isDurableRunStatus,
 } from "./run-status-policy.js";
 
-/** Minimal state snapshot the transition table reads. */
+/** Minimal state snapshot the transition table reads (framework-agnostic). */
 export type SessionRunState = {
-  sessionStatus: OperatorSession["status"];
+  sessionStatus: OperatorSessionStatus;
   workflowPhase: SessionWorkflowState["phase"];
   linkedRunId?: string | null;
   runStatus?: WikiRunRecordStatus | string | null;
@@ -90,7 +90,7 @@ export type SessionRunAppendHint = {
  */
 export type SessionRunPatches = {
   session?: {
-    status?: OperatorSession["status"];
+    status?: OperatorSessionStatus;
     pending?: PendingInteraction | null;
     workflow?: Partial<SessionWorkflowState>;
   };
@@ -113,7 +113,7 @@ export type SessionRunPatches = {
 export function sessionProjectionForRunStatus(
   status: WikiRunRecordStatus | string,
 ): {
-  sessionStatus: OperatorSession["status"];
+  sessionStatus: OperatorSessionStatus;
   workflowPhase: SessionWorkflowState["phase"];
 } {
   switch (status) {
@@ -447,7 +447,7 @@ export function sessionViewFromRunStatus(input: {
   suspended?: boolean;
   suspendGate?: "plan" | "publication";
 }): {
-  status: OperatorSession["status"];
+  status: OperatorSessionStatus;
   workflowPhase: SessionWorkflowState["phase"];
   pages?: string[];
   plan?: WikiRunPlan;

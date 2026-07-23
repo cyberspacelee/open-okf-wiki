@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  assertProductInject,
+  isProductInjectKind,
   parseAgentCommand,
+  PRODUCT_INJECT_KINDS,
   ProductSseEventSchema,
+  ProductWorkUnitEventSchema,
   safeParseAgentCommand,
 } from "./agent-protocol.js";
 import { defaultWikiRunSpec } from "./run.js";
@@ -151,4 +155,53 @@ test("ProductSseEventSchema: run_phase | gate | run_link", () => {
     status: "running",
   });
   assert.equal(link.kind, "run_link");
+});
+
+test("ProductSseEventSchema: work_unit accepted; agent_span rejected", () => {
+  const unit = ProductWorkUnitEventSchema.parse({
+    source: "product",
+    kind: "work_unit",
+    sessionId: "s1",
+    runId: "r1",
+    unitId: "leaf-1",
+    role: "leaf",
+    status: "running",
+    task: "Explore domain",
+    message: { text: "reading sources…" },
+    tools: [
+      {
+        toolCallId: "t1",
+        toolName: "read",
+        state: "output-available",
+        input: { path: "src/a.ts" },
+      },
+    ],
+  });
+  assert.equal(unit.kind, "work_unit");
+  assert.equal(unit.unitId, "leaf-1");
+
+  const viaUnion = ProductSseEventSchema.parse(unit);
+  assert.equal(viaUnion.kind, "work_unit");
+
+  const legacySpan = ProductSseEventSchema.safeParse({
+    source: "product",
+    kind: "agent_span",
+    sessionId: "s1",
+    spanId: "x",
+    agentId: "leaf-1",
+    role: "leaf",
+    status: "running",
+  });
+  assert.equal(legacySpan.success, false);
+});
+
+test("assertProductInject: whitelist only", () => {
+  for (const kind of PRODUCT_INJECT_KINDS) {
+    assert.equal(isProductInjectKind(kind), true);
+    assertProductInject(kind);
+  }
+  assert.equal(isProductInjectKind("agent_span"), false);
+  assert.equal(isProductInjectKind("child_pi"), false);
+  assert.throws(() => assertProductInject("agent_span"), /whitelist/);
+  assert.throws(() => assertProductInject("child_pi"), /whitelist/);
 });

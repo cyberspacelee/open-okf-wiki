@@ -484,13 +484,15 @@ export const zh: MessageTree = {
     toolOutput: "输出",
     thinking: "思考",
     thinkingStreaming: "思考中…",
+    /** 空 running 工作单元（尚无 message/tools）— 禁止显示「思考中」。 */
+    waitingForEvents: "等待事件…",
     jumpToLatest: "跳到最新",
     viewSubagent: "查看输出",
     subagentPreviewHint:
-      "子代理预览（规划 / Domain / Leaf / 审查）。有完整正文时在此展开。",
-    subagentNoDetail: "该 span 尚无详细输出。",
+      "工作单元预览（规划 / Domain / Leaf / 审查）。有完整正文时在此展开。",
+    subagentNoDetail: "该单元尚无详细输出。",
     agentTreeTitle: "Agent 树",
-    agentTreeEmpty: "尚无子代理。启动 Wiki Run 后可看到规划 / 研究 span。",
+    agentTreeEmpty: "尚无工作单元。启动 Wiki Run 后可看到规划 / 研究单元。",
     agentTreeNoRun: "尚未关联 Run — 启动 Wiki Run 后填充 Agent 树。",
     agentTreeLoading: "加载 receipt…",
   },

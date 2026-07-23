@@ -494,13 +494,15 @@ export const en = {
     toolOutput: "Output",
     thinking: "Thinking",
     thinkingStreaming: "Thinking…",
+    /** Empty running work unit (no message/tools yet) — never "Thinking". */
+    waitingForEvents: "Waiting for events…",
     jumpToLatest: "Jump to latest",
     viewSubagent: "View output",
     subagentPreviewHint:
-      "Subagent preview (planner / domain / leaf / reviewer). Full body when available.",
-    subagentNoDetail: "No detailed output captured for this span yet.",
+      "Work unit preview (planner / domain / leaf / reviewer). Full body when available.",
+    subagentNoDetail: "No detailed output captured for this unit yet.",
     agentTreeTitle: "Agent tree",
-    agentTreeEmpty: "No subagents yet. Start a wiki run to see planner / research spans.",
+    agentTreeEmpty: "No work units yet. Start a wiki run to see planner / research units.",
     agentTreeNoRun: "No linked run — start a wiki run to populate the agent tree.",
     agentTreeLoading: "Loading receipt…",
   },

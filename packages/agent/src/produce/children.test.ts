@@ -8,7 +8,6 @@ import {
   runChildSession,
   runChildrenParallel,
 } from "./children.js";
-import type { ProduceChildPiEvent } from "./events.js";
 
 describe("produce/children", () => {
   it("maps child roles to operator-visible produce roles", () => {
@@ -21,14 +20,14 @@ describe("produce/children", () => {
 
   it("fixture child returns summary without LLM", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "okf-child-"));
-    const forwarded: ProduceChildPiEvent[] = [];
+    const forwarded: Array<{ kind: string; payload: unknown }> = [];
     const r = await runChildSession({
       role: "domain",
       runWorkDir: dir,
       task: "Investigate auth module",
       fixture: true,
-      agentId: "domain-auth",
-      onPiEvent: (e) => forwarded.push(e),
+      unitId: "domain-auth",
+      onPiEvent: (kind, payload) => forwarded.push({ kind, payload }),
     });
     assert.equal(r.mode, "fixture");
     assert.match(r.summary, /domain/);
