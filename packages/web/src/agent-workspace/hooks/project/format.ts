@@ -114,19 +114,34 @@ export function formatPayloadText(
 }
 
 // ---------------------------------------------------------------------------
-// Tool display — human-friendly summaries (pi-web / OpenCode style)
-// Collapsed header shows verb + key arg; body avoids dumping full JSON.
+// Tool display — OpenCode BasicTool / pi-web specialized renderer style
+//
+// One-line header: title + subtitle + optional args chips.
+// Expand body is RESULT only (no "Input" / "Output" labels).
+// Args already shown in the header are never repeated as JSON.
 // ---------------------------------------------------------------------------
 
 export type ToolDisplaySummary = {
-  /** Short verb / tool label (e.g. "read", "grep"). */
+  /** Verb / tool label shown in the trigger (e.g. "read", "grep"). */
   title: string;
-  /** Primary target for the header (path, pattern, command…). */
+  /** Key target on the same line (filename, pattern, command…). */
   subtitle?: string;
-  /** Expanded primary content (command body, content preview…). */
-  body?: string;
-  /** Remaining structured args as pretty JSON when useful. */
-  details?: string;
+  /** Secondary chips after subtitle (OpenCode args: offset=…, pattern=…). */
+  args?: string[];
+  /**
+   * How to expand:
+   * - output-only: only tool result text (read/grep/list when completed)
+   * - console: shell — `$ cmd` then result (pi BashRenderer)
+   * - write-body: write/edit content preview + result
+   * - raw: unknown tools — pretty args only when there is no structured header
+   */
+  kind: "output-only" | "console" | "write-body" | "raw";
+  /** For write/edit: content preview in expand (not labeled "Input"). */
+  writePreview?: string;
+  /** For console: full command for the `$ …` line. */
+  command?: string;
+  /** True when this tool is fully described by the header (no expand needed). */
+  headerOnly?: boolean;
 };
 
 function parseToolInput(raw: string | undefined): Record<string, unknown> | null {
@@ -161,132 +176,125 @@ export function toolPathLabel(pathValue: string): string {
   return parts[parts.length - 1]!;
 }
 
-function remainingDetails(
-  params: Record<string, unknown>,
-  usedKeys: string[],
-): string | undefined {
-  const rest: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(params)) {
-    if (usedKeys.includes(k)) continue;
-    if (v === undefined || v === null || v === "") continue;
-    rest[k] = v;
-  }
-  if (Object.keys(rest).length === 0) return undefined;
-  try {
-    return formatPayloadText(JSON.stringify(rest));
-  } catch {
-    return undefined;
-  }
+function truncateOneLine(text: string, max = 72): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (compact.length <= max) return compact;
+  return `${compact.slice(0, Math.max(1, max - 1))}…`;
 }
 
 /**
- * Build a display summary for a tool call.
- * Known tools (read/write/edit/grep/find/ls/bash/…) get verb + key arg headers
- * instead of raw JSON — matching pi-web renderers and OpenCode BasicTool.
+ * OpenCode-style tool summary.
+ * Known tools put everything useful on the trigger line; expand is result-only.
  */
 export function formatToolDisplay(
   toolName: string,
   inputRaw?: string,
 ): ToolDisplaySummary {
   const name = toolName.trim() || "tool";
+  const lower = name.toLowerCase();
   const params = parseToolInput(inputRaw);
 
   if (!params) {
-    // Non-JSON or empty — show name + truncated raw as subtitle when short.
     const raw = inputRaw?.trim();
     if (raw && raw.length <= 80 && !raw.startsWith("{") && !raw.startsWith("[")) {
-      return { title: name, subtitle: raw, body: raw };
+      return {
+        title: name,
+        subtitle: raw,
+        kind: "output-only",
+        headerOnly: true,
+      };
     }
     return {
       title: name,
-      body: raw ? formatPayloadText(raw) : undefined,
+      kind: "raw",
+      writePreview: raw ? formatPayloadText(raw) : undefined,
     };
   }
 
-  const lower = name.toLowerCase();
-
-  // read / write / edit / ls — path-centric
-  if (
-    lower === "read" ||
-    lower === "write" ||
-    lower === "edit" ||
-    lower === "ls" ||
-    lower === "list"
-  ) {
+  // ---- read / ls / list — OpenCode: header only (filename + offset/limit) ----
+  if (lower === "read" || lower === "ls" || lower === "list") {
     const path =
       asString(params.path) ??
       asString(params.file_path) ??
       asString(params.filePath) ??
       asString(params.target);
-    const used = ["path", "file_path", "filePath", "target"];
+    const args: string[] = [];
+    if (params.offset !== undefined) args.push(`offset=${params.offset}`);
+    if (params.limit !== undefined) args.push(`limit=${params.limit}`);
+    return {
+      title: lower === "list" ? "list" : lower,
+      subtitle: path ? toolPathLabel(path) : undefined,
+      args: args.length ? args : undefined,
+      kind: "output-only",
+      // read rarely needs expand; list/ls may show directory listing as output
+      headerOnly: lower === "read",
+    };
+  }
+
+  // ---- write / edit — subtitle = path; expand = content preview + result ----
+  if (lower === "write" || lower === "edit") {
+    const path =
+      asString(params.path) ??
+      asString(params.file_path) ??
+      asString(params.filePath) ??
+      asString(params.target);
     const content =
       asString(params.content) ??
       asString(params.new_string) ??
       asString(params.newString);
-    if (content) used.push("content", "new_string", "newString");
-    const rangeParts: string[] = [];
-    if (params.offset !== undefined) rangeParts.push(`offset=${params.offset}`);
-    if (params.limit !== undefined) rangeParts.push(`limit=${params.limit}`);
-    used.push("offset", "limit");
-
-    const subtitle = path
-      ? `${toolPathLabel(path)}${rangeParts.length ? ` (${rangeParts.join(", ")})` : ""}`
-      : undefined;
     return {
       title: lower,
-      subtitle,
-      body: content
+      subtitle: path ? toolPathLabel(path) : undefined,
+      kind: "write-body",
+      writePreview: content
         ? formatPayloadText(content, 4_000)
-        : path
-          ? path
-          : undefined,
-      details: remainingDetails(params, used),
+        : undefined,
     };
   }
 
-  // grep / find / glob — pattern-centric
+  // ---- grep / find / glob — title + pattern/path; expand = matches only ----
   if (lower === "grep" || lower === "find" || lower === "glob") {
     const pattern =
       asString(params.pattern) ??
       asString(params.query) ??
       asString(params.glob);
-    const path =
-      asString(params.path) ??
-      asString(params.include) ??
-      asString(params.glob);
-    const used = ["pattern", "query", "glob", "path", "include"];
-    const subtitle = pattern ?? (path ? toolPathLabel(path) : undefined);
-    const bodyParts = [
-      pattern ? `pattern: ${pattern}` : null,
-      path ? `path: ${path}` : null,
-    ].filter(Boolean);
+    const path = asString(params.path);
+    const include = asString(params.include);
+    // OpenCode: subtitle = directory, args = pattern=…
+    // When no path, put pattern on the subtitle (common for our tools).
+    if (path) {
+      const args: string[] = [];
+      if (pattern) args.push(`pattern=${truncateOneLine(pattern, 40)}`);
+      if (include) args.push(`include=${include}`);
+      return {
+        title: lower,
+        subtitle: toolPathLabel(path),
+        args: args.length ? args : undefined,
+        kind: "output-only",
+      };
+    }
     return {
       title: lower,
-      subtitle,
-      body: bodyParts.length ? bodyParts.join("\n") : undefined,
-      details: remainingDetails(params, used),
+      subtitle: pattern ? truncateOneLine(pattern, 56) : include,
+      kind: "output-only",
     };
   }
 
-  // bash / shell — command-centric (pi BashRenderer: `> command`)
+  // ---- bash / shell — pi BashRenderer: header "shell", expand console ----
   if (lower === "bash" || lower === "shell" || lower === "run") {
     const command =
       asString(params.command) ??
       asString(params.cmd) ??
       asString(params.script);
     return {
-      title: lower === "bash" || lower === "shell" ? "shell" : lower,
-      subtitle: command
-        ? command.length > 72
-          ? `${command.slice(0, 71)}…`
-          : command
-        : undefined,
-      body: command ? `$ ${command}` : undefined,
-      details: remainingDetails(params, ["command", "cmd", "script"]),
+      title: lower === "run" ? "run" : "shell",
+      subtitle: command ? truncateOneLine(command, 64) : undefined,
+      kind: "console",
+      command: command ?? undefined,
     };
   }
 
-  // Generic: prefer a single primary string field as subtitle
+  // ---- generic: pick one primary field as subtitle; no Input/Output dump ----
   const primaryKeys = [
     "path",
     "file_path",
@@ -301,42 +309,46 @@ export function formatToolDisplay(
     "message",
     "prompt",
   ];
-  let subtitle: string | undefined;
-  const used: string[] = [];
   for (const key of primaryKeys) {
     const v = asString(params[key]);
     if (v) {
-      subtitle = v.length > 72 ? `${v.slice(0, 71)}…` : v;
-      used.push(key);
-      break;
-    }
-  }
-
-  // If only a few simple fields, show them as key: value lines instead of JSON
-  const keys = Object.keys(params);
-  if (keys.length > 0 && keys.length <= 6) {
-    const lines = keys
-      .map((k) => {
-        const v = params[k];
-        if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
-          return `${k}: ${v}`;
-        }
-        return null;
-      })
-      .filter(Boolean) as string[];
-    if (lines.length === keys.length) {
       return {
         title: name,
-        subtitle: subtitle ?? lines[0],
-        body: lines.join("\n"),
+        subtitle: truncateOneLine(v, 64),
+        kind: "output-only",
       };
     }
   }
 
+  // Few scalar fields → pack into subtitle rather than JSON body
+  const keys = Object.keys(params);
+  if (keys.length > 0 && keys.length <= 4) {
+    const parts = keys
+      .map((k) => {
+        const v = params[k];
+        if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+          return `${k}=${v}`;
+        }
+        return null;
+      })
+      .filter(Boolean) as string[];
+    if (parts.length === keys.length) {
+      return {
+        title: name,
+        subtitle: truncateOneLine(parts.join(" · "), 72),
+        kind: "output-only",
+        headerOnly: true,
+      };
+    }
+  }
+
+  // Last resort: unknown structured args — show compact one-liner, expand only result
   return {
     title: name,
-    subtitle,
-    body: formatPayloadText(JSON.stringify(params)),
-    details: used.length ? remainingDetails(params, used) : undefined,
+    subtitle: truncateOneLine(
+      keys.map((k) => k).join(", "),
+      48,
+    ),
+    kind: "output-only",
   };
 }

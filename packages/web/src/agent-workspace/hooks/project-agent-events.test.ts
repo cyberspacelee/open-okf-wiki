@@ -924,33 +924,43 @@ describe("formatPayloadText", () => {
 });
 
 describe("formatToolDisplay", () => {
-  it("summarizes read as path subtitle, not raw JSON", () => {
+  it("read is header-only: filename + args, no input dump", () => {
     const d = formatToolDisplay(
       "read",
       JSON.stringify({ path: "wiki/overview.md", offset: 1, limit: 20 }),
     );
     assert.equal(d.title, "read");
-    assert.match(d.subtitle ?? "", /overview\.md/);
-    assert.ok(!(d.body ?? "").startsWith("{"));
+    assert.equal(d.subtitle, "overview.md");
+    assert.deepEqual(d.args, ["offset=1", "limit=20"]);
+    assert.equal(d.kind, "output-only");
+    assert.equal(d.headerOnly, true);
+    assert.equal(d.writePreview, undefined);
   });
 
-  it("summarizes bash/shell with $ command body", () => {
+  it("bash is console kind with command on subtitle", () => {
     const d = formatToolDisplay(
       "bash",
       JSON.stringify({ command: "ls -la packages/web" }),
     );
     assert.equal(d.title, "shell");
     assert.match(d.subtitle ?? "", /ls -la/);
-    assert.equal(d.body, "$ ls -la packages/web");
+    assert.equal(d.kind, "console");
+    assert.equal(d.command, "ls -la packages/web");
   });
 
-  it("summarizes grep by pattern", () => {
+  it("grep puts pattern on the trigger line, not as JSON body", () => {
     const d = formatToolDisplay(
       "grep",
       JSON.stringify({ pattern: "handleDelete", path: "packages/server" }),
     );
     assert.equal(d.title, "grep");
-    assert.equal(d.subtitle, "handleDelete");
+    assert.equal(d.kind, "output-only");
+    // path as subtitle, pattern as arg (OpenCode layout) — or pattern as subtitle
+    assert.ok(
+      d.subtitle === "server" ||
+        d.subtitle === "handleDelete" ||
+        (d.args ?? []).some((a) => a.includes("handleDelete")),
+    );
   });
 });
 

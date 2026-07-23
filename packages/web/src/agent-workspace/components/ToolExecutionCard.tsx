@@ -1,8 +1,13 @@
 /**
- * Shared tool call chrome for transcript + Work surface focus drawer.
+ * Tool call row — OpenCode BasicTool / pi-web specialized renderer style.
  *
- * Header: verb + key arg (pi-web / OpenCode style) — not a raw JSON dump.
- * Body: primary content; full payload only when no structured summary exists.
+ * Trigger (always visible):
+ *   [status] [icon] title  subtitle  arg arg
+ *
+ * Expand (only when there is result / write body / console output):
+ *   plain result text — NO "Input" / "Output" section labels.
+ *
+ * Known tools put args on the trigger line; they are never re-dumped as JSON.
  */
 
 import {
@@ -14,7 +19,6 @@ import {
   TerminalIcon,
   WrenchIcon,
 } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 import {
   Collapsible,
   CollapsibleContent,
@@ -22,7 +26,6 @@ import {
 } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { useI18n } from "../../i18n";
 import {
   formatPayloadText,
   formatToolDisplay,
@@ -33,7 +36,6 @@ export type ToolExecutionCardProps = {
   tool: AgentToolCall;
   /**
    * When the parent work unit is settled, keep completed tools collapsed.
-   * Omit on the main transcript (open only for running/error).
    * Pass `false` while a unit is still active so non-done tools expand.
    */
   settled?: boolean;
@@ -61,89 +63,176 @@ function toolIcon(name: string) {
 
 function StatusGlyph({ status }: { status: AgentToolCall["status"] }) {
   if (status === "running" || status === "pending") {
-    return <Spinner className="size-3 shrink-0 text-primary" />;
+    return <Spinner className="size-3 shrink-0 text-muted-foreground" />;
   }
   if (status === "error") {
     return <CircleAlertIcon className="size-3.5 shrink-0 text-destructive" />;
   }
   if (status === "done") {
-    return <CheckIcon className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-500" />;
+    return (
+      <CheckIcon className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-500" />
+    );
   }
   return null;
 }
 
+/**
+ * Build expand body text.
+ * OpenCode: expand children are result only (markdown/pre), never labeled Input.
+ * pi-web bash: `> command\n\noutput` in one console block.
+ */
+function expandBody(
+  kind: ReturnType<typeof formatToolDisplay>["kind"],
+  opts: {
+    command?: string;
+    writePreview?: string;
+    output: string;
+    isError: boolean;
+  },
+): string {
+  const { command, writePreview, output, isError } = opts;
+
+  if (kind === "console") {
+    // pi BashRenderer: combine command + output, no labels
+    if (command && output) return `$ ${command}\n\n${output}`;
+    if (command) return `$ ${command}`;
+    return output;
+  }
+
+  if (kind === "write-body") {
+    // Content preview then result — still no "Input"/"Output" chrome
+    const parts: string[] = [];
+    if (writePreview) parts.push(writePreview);
+    if (output) parts.push(output);
+    return parts.join("\n\n");
+  }
+
+  if (kind === "raw" && writePreview && !output) {
+    return writePreview;
+  }
+
+  // output-only (and raw with result): just the result
+  if (output) return output;
+  if (isError) return "";
+  return "";
+}
+
 export function ToolExecutionCard({ tool, settled }: ToolExecutionCardProps) {
-  const { t } = useI18n();
   const display = formatToolDisplay(tool.name, tool.input);
   const output = formatPayloadText(tool.output);
+  const isError = tool.status === "error";
+  const isRunning = tool.status === "running" || tool.status === "pending";
+
+  const body = expandBody(display.kind, {
+    command: display.command,
+    writePreview: display.writePreview,
+    output,
+    isError,
+  });
+
+  // OpenCode: completed read is often header-only (no expand).
+  // Expand when there is result text, write preview, console command, or error.
+  const canExpand =
+    !display.headerOnly &&
+    (Boolean(body.trim()) ||
+      isError ||
+      (display.kind === "console" && Boolean(display.command)) ||
+      (display.kind === "write-body" && Boolean(display.writePreview)));
+
+  // Default open only while running/error — completed tools stay collapsed (OpenCode).
   const openDefault =
-    tool.status === "running" ||
-    tool.status === "error" ||
-    (settled === false && tool.status !== "done");
+    isRunning ||
+    isError ||
+    (settled === false && tool.status !== "done" && canExpand);
+
   const Icon = toolIcon(tool.name);
-  const hasBody = Boolean(display.body || display.details || output);
+
+  const trigger = (
+    <div
+      className={cn(
+        "flex w-full min-w-0 items-center gap-2 px-2 py-1 text-left text-xs",
+        canExpand && "hover:bg-muted/50",
+      )}
+    >
+      {canExpand ? (
+        <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-panel-open:rotate-90" />
+      ) : (
+        <span className="size-3.5 shrink-0" aria-hidden />
+      )}
+      <StatusGlyph status={tool.status} />
+      <Icon
+        className={cn(
+          "size-3.5 shrink-0",
+          isError ? "text-destructive" : "text-muted-foreground",
+        )}
+      />
+      <span className="min-w-0 flex-1 truncate leading-5">
+        <span
+          className={cn(
+            "font-medium",
+            isRunning && "text-muted-foreground",
+            isError && "text-destructive",
+          )}
+        >
+          {display.title}
+        </span>
+        {display.subtitle ? (
+          <span className="ml-1.5 text-muted-foreground">
+            {display.subtitle}
+          </span>
+        ) : null}
+        {display.args?.map((arg) => (
+          <span
+            key={arg}
+            className="ml-1.5 font-mono text-[10px] text-muted-foreground/80"
+          >
+            {arg}
+          </span>
+        ))}
+      </span>
+    </div>
+  );
+
+  if (!canExpand) {
+    // OpenCode read: single non-collapsible row
+    return (
+      <div
+        className="w-full min-w-0 rounded-md"
+        data-testid="tool-execution-card"
+        data-tool-name={tool.name}
+        data-tool-status={tool.status}
+        data-header-only="true"
+      >
+        {trigger}
+      </div>
+    );
+  }
 
   return (
     <Collapsible
       defaultOpen={openDefault}
-      className="w-full min-w-0 rounded-md border border-border/80 bg-muted/30"
+      className="group w-full min-w-0 rounded-md"
       data-testid="tool-execution-card"
       data-tool-name={tool.name}
       data-tool-status={tool.status}
     >
-      <CollapsibleTrigger className="group flex w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-xs hover:bg-muted/60">
-        <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-data-panel-open:rotate-90" />
-        <StatusGlyph status={tool.status} />
-        <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate">
-          <span className="font-medium">{display.title}</span>
-          {display.subtitle ? (
-            <span className="ml-1.5 text-muted-foreground">
-              {display.subtitle}
-            </span>
-          ) : null}
-        </span>
-        <Badge
-          variant={
-            tool.status === "error"
-              ? "destructive"
-              : tool.status === "done"
-                ? "secondary"
-                : "outline"
-          }
-          className={cn("shrink-0 normal-case", tool.status === "running" && "animate-pulse")}
-        >
-          {tool.status}
-        </Badge>
+      <CollapsibleTrigger className="w-full min-w-0 rounded-md text-left">
+        {trigger}
       </CollapsibleTrigger>
-      {hasBody ? (
-        <CollapsibleContent className="min-w-0 overflow-hidden border-t border-border/60 px-2.5 py-2">
-          {display.body ? (
-            <div className="mb-2 flex min-w-0 max-w-full flex-col gap-0.5">
-              <div className="text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
-                {t.agentWorkspace.toolInput}
-              </div>
-              <pre className="okf-code-snippet">{display.body}</pre>
-            </div>
-          ) : null}
-          {display.details ? (
-            <div className="mb-2 flex min-w-0 max-w-full flex-col gap-0.5">
-              <div className="text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
-                {t.agentWorkspace.toolDetails}
-              </div>
-              <pre className="okf-code-snippet">{display.details}</pre>
-            </div>
-          ) : null}
-          {output ? (
-            <div className="flex min-w-0 max-w-full flex-col gap-0.5">
-              <div className="text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
-                {t.agentWorkspace.toolOutput}
-              </div>
-              <pre className="okf-code-snippet">{output}</pre>
-            </div>
-          ) : null}
-        </CollapsibleContent>
-      ) : null}
+      <CollapsibleContent className="min-w-0 overflow-hidden pl-8 pr-2 pb-1.5">
+        {body.trim() ? (
+          <pre
+            className={cn(
+              "okf-code-snippet max-h-64 overflow-auto text-[11px] leading-relaxed",
+              isError && "text-destructive",
+            )}
+          >
+            {body}
+          </pre>
+        ) : isRunning ? (
+          <p className="text-[11px] text-muted-foreground">…</p>
+        ) : null}
+      </CollapsibleContent>
     </Collapsible>
   );
 }
