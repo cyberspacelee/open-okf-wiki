@@ -67,8 +67,8 @@ The thin Workflow shell step that owns Wiki generation work: Root → Domain →
 _Avoid_: Session-synthesized progress, durable-produce stub, second write path, adaptive stage machine
 
 **Operator Event** (also: Operator timeline parts):
-Pi session events + product SSE injects (`run_phase` / `gate` / `run_link`) that form the operator-visible Wiki Run trajectory. Business progress is owned by Produce; Session UI projects the stream and must not invent tool/progress rows. Contract: [docs/design/operator-event-contract.md](docs/design/operator-event-contract.md).
-_Avoid_: AI SDK UIMessage dual protocol, Session-synthesized fake tools, free-text gate inference
+Pi Operator Session events + **whitelist** product SSE injects (`run_phase` / `gate` / `run_link` / thin produce summaries) that form the operator-visible trajectory. Conversation body (text/thinking/tools) is framework-owned; product injects must not invent streaming bodies. Session UI is a pure projector (ADR 0031). Contract: [docs/design/operator-event-contract.md](docs/design/operator-event-contract.md).
+_Avoid_: AI SDK UIMessage dual protocol, Session-synthesized fake tools, free-text gate inference, client maps as second true source
 
 **SessionTurn**:
 The deep product module for one operator chat turn: intent/mode resolution, turn lock, start/resume param assembly, framework stream tee into Session history, and onFinish drain into Session–Run transition. Owns conversational HITL routing — not Produce semantics or business progress synthesis.
@@ -83,8 +83,8 @@ Older ADRs/skills may say “Run Plan”; map to **WikiRunSpec** / living Spec.
 _Avoid_: Treating Run Plan as a separate durable product object
 
 **Operator Session**:
-The operator-facing **sole truth surface** for one project thread (Session-centric agent, ADR 0026 / **0030**): durable **Pi JSONL session tree** under `{root}/.okf-wiki/pi-sessions/`, live **AgentSession** events (SSE), tool/progress visibility, plan/publish gates via product WikiRunShell, and zero or more Wiki Runs linked to that thread. Primary UI is the **Agent Workspace** (`/w/:id`, shadcn). HITL is structured `resume_gate` commands, not free-text. Old UIMessage session files under `.okf-wiki/sessions/` are wiped (no migrator).
-_Avoid_: Wiki Run as the main UI, AI SDK UIMessage history, Mastra workflow snapshots, Session-synthesized fake tool trails
+The operator-facing **sole conversation truth surface** for one project thread (ADR 0026 / **0030** / **0031**): durable **Pi JSONL session tree** under `{root}/.okf-wiki/pi-sessions/`, live **AgentSession** events (SSE), tool/progress visibility, plan/publish gates via product WikiRunShell, and zero or more Wiki Runs linked to that thread. Layers depend one way (Web→Server→Agent→Pi; Core parallel). Primary UI is the **Agent Workspace** (`/w/:id`, shadcn). HITL is structured `resume_gate` commands, not free-text. Old UIMessage session files under `.okf-wiki/sessions/` are wiped (no migrator).
+_Avoid_: Wiki Run as the main UI, AI SDK UIMessage history, Mastra workflow snapshots, Session-synthesized fake tool trails, parallel body true-sources (`workStreams` as authority, empty product streaming shells)
 
 **Wiki Reviewer** / **Review council**:
 Independent, read-only agent role(s) that inspect the Staging Wiki against sources and Skill review guidance. Host merges outputs into `defects.json`; Root repairs; Host **fail-closes** publish when blocking defects remain. Reviewers never write Wiki pages or publish.
@@ -159,4 +159,4 @@ Index and current-stack shortlist: [docs/adr/README.md](docs/adr/README.md).
 - Pre-[0030](docs/adr/0030-pi-agent-harness-for-semantic-workflow.md): Mastra / AI SDK / UIMessage Session → Pi AgentSession + JSONL + WikiRunShell.
 - [0020](docs/adr/0020-typescript-mastra-web-workspace.md) §6 originally forbade product clone; **operator clone** is allowed per [0022](docs/adr/0022-source-clone-into-workspace.md) (Semantic Workflow still never clones).
 - Session stream / single write path: [0024](docs/adr/0024-session-as-conversational-workspace.md) + [0025](docs/adr/0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) supersede transitional Session-SSE wording in [0023](docs/adr/0023-operator-session-stream-and-plan-confirm.md).
-- Operator Event emit / no-compat cleanup: [0029](docs/adr/0029-architecture-cleanup-no-compat.md) + [operator-event contract](docs/design/operator-event-contract.md) — Produce only; Session does not synthesize business progress; durable-produce deleted.
+- Operator Event emit / no-compat cleanup: [0029](docs/adr/0029-architecture-cleanup-no-compat.md) + [0031](docs/adr/0031-unidirectional-framework-first-operator-surface.md) + [operator-event contract](docs/design/operator-event-contract.md) — framework-first Session; inject whitelist; Session UI projects only; no parallel body true-sources.

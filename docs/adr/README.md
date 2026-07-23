@@ -6,10 +6,11 @@ Domain vocabulary: [CONTEXT.md](../../CONTEXT.md). Package map: [packages/README
 
 | ADR | Role |
 |---|---|
-| [0030](0030-pi-agent-harness-for-semantic-workflow.md) | **Current:** Pi agent harness (`pi-ai` / `pi-agent-core` / `pi-coding-agent`); Pi JSONL session; Pi built-in tools + phase allowlists; product WikiRunShell; Agent Workspace UI; no Mastra/AI SDK |
+| [0031](0031-unidirectional-framework-first-operator-surface.md) | **Current:** unidirectional layers; **framework-first** operator surface; single Pi Operator Session as conversation authority; product inject whitelist; subagent = parent-visible unit |
+| [0030](0030-pi-agent-harness-for-semantic-workflow.md) | Pi agent harness (`pi-ai` / `pi-agent-core` / `pi-coding-agent`); Pi JSONL; built-in tools + phase allowlists; WikiRunShell; no Mastra/AI SDK |
 | [0021](0021-retire-python-primary-path.md) | Python primary path **removed** |
 | [0022](0022-source-clone-into-workspace.md) | Operator-initiated clone; Semantic Workflow never clones |
-| [0026](0026-session-centric-agent-workspace.md) | **Session-centric intent** (re-read under 0030: Pi session = operator timeline; Run = linked job) |
+| [0026](0026-session-centric-agent-workspace.md) | **Session-centric intent** (re-read under 0030/0031: Pi session = operator timeline; Run = linked job) |
 | [0028](0028-supervisor-tree-and-thin-workflow-shell.md) | Thin shell + Supervisor produce **intent** (impl moves to Pi + WikiRunShell per 0030) |
 | [0029](0029-architecture-cleanup-no-compat.md) | No-compat cleanup culture; wipe-not-migrate (session shape again under 0030) |
 
@@ -47,8 +48,9 @@ Still load-bearing domain/ops decisions (map Host → Run Boundary when reading 
 ## Reading rules for agents
 
 1. Prefer **CONTEXT.md** for domain terms.
-2. Prefer **0030 + 0021 + 0022 + 0026 + 0028 + 0029** for “how the product is built” (0030 wins on agent/session/tools stack; 0026 wins on Session vs Run center *intent*; 0028 wins on shell + supervisor *intent*; 0029 wins on no-compat culture).
+2. Prefer **0031 + 0030 + 0021 + 0022 + 0026 + 0028 + 0029** for “how the product is built” (0031 wins on dependency direction + operator-surface ownership; 0030 wins on agent/session/tools stack; 0026 wins on Session vs Run center *intent*; 0028 wins on shell + supervisor *intent*; 0029 wins on no-compat culture).
 3. Pre-0019 ADRs may say **Host** / **Host Instructions** → map to **Run Boundary** / **Run Instructions**.
 4. Pre-0021 ADRs may assume **Python** harness → map duties to `@okf-wiki/core` + `@okf-wiki/agent`.
 5. Pre-0030 ADRs may assume **Mastra / AI SDK / UIMessage / list_source tools** → map to **Pi AgentSession / JSONL / built-in tools** (0030).
-6. Do **not** reintroduce: dual Staging writers, UIMessage Session history, Mastra workflow suspend as product HITL backbone, hand-rolled `list_source`/`write_wiki` tools, `bash` in Semantic Workflow, Session synthesis of business progress, Mastra/Pi inside `@okf-wiki/core`.
+6. Do **not** reintroduce: dual Staging writers, UIMessage Session history, Mastra workflow suspend as product HITL backbone, hand-rolled `list_source`/`write_wiki` tools, `bash` in Semantic Workflow, Session synthesis of business progress, Mastra/Pi inside `@okf-wiki/core`, **parallel operator body true-sources** (client maps / empty product streaming shells racing Pi messages) per 0031.
+7. Operator events: [operator-event-contract](../design/operator-event-contract.md).
