@@ -121,15 +121,23 @@ export function subscribeRunEvents(
 /** In-flight AbortControllers for running agents (best-effort cancel). */
 const abortControllers = new Map<string, AbortController>();
 
-export function registerRunAbortController(runId: string): AbortSignal {
+/**
+ * Bind a Wiki Run id to an AbortController so REST cancel and session abort
+ * share the same signal. Pass `controller` when the caller already owns one
+ * (session produce); otherwise a fresh controller is created.
+ */
+export function registerRunAbortController(
+  runId: string,
+  controller?: AbortController,
+): AbortSignal {
   // Replace any stale controller for the same id (should not happen).
   const existing = abortControllers.get(runId);
-  if (existing) {
+  if (existing && existing !== controller) {
     existing.abort();
   }
-  const controller = new AbortController();
-  abortControllers.set(runId, controller);
-  return controller.signal;
+  const next = controller ?? new AbortController();
+  abortControllers.set(runId, next);
+  return next.signal;
 }
 
 export function abortRun(runId: string): boolean {

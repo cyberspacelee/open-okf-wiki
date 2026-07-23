@@ -4,7 +4,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import {
   createAgentSession,
   getProvider,
@@ -16,10 +16,8 @@ import {
   type StoredRunRecord,
   type WorkspaceConfig,
 } from "../api";
-import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
-import { ErrorBanner } from "../components/ErrorBanner";
-import { WorkspaceSubnav } from "../components/WorkspaceSubnav";
+import { WorkspaceShell } from "../components/WorkspaceShell";
 import { AgentWorkspaceShell } from "../agent-workspace/AgentWorkspaceShell";
 import { useSessionAgent } from "../agent-workspace/hooks/useSessionAgent";
 import { useI18n } from "../i18n";
@@ -200,83 +198,61 @@ export function AgentWorkspacePage() {
   }, [id, creating, workspace?.name, rootPath, syncSessionIdInUrl]);
 
   return (
-    <Layout>
-      <div
-        data-testid="agent-workspace-page"
-        className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden"
-      >
-        <div className="flex shrink-0 flex-col gap-1">
-          <div className="flex min-w-0 items-baseline gap-2 text-xs text-muted-foreground">
-            <Link to="/workspaces" className="hover:text-foreground hover:underline">
-              {t.nav.workspaces}
-            </Link>
-            <span aria-hidden>/</span>
-            <span className="truncate font-medium text-foreground">
-              {workspace?.name ?? t.agentWorkspace.title}
-            </span>
-            {rootPath ? (
-              <span
-                className="hidden min-w-0 truncate font-mono text-[11px] sm:inline"
-                title={rootPath}
-              >
-                {rootPath}
-              </span>
-            ) : null}
-          </div>
-          {id ? <WorkspaceSubnav workspaceId={id} /> : null}
+    <WorkspaceShell
+      workspaceId={id}
+      workspaceName={workspace?.name}
+      title={t.agentWorkspace.title}
+      error={bootError}
+      onDismissError={() => setBootError(null)}
+      compact
+      testId="agent-workspace-page"
+    >
+      {loading || !workspace ? (
+        <div className="flex min-h-0 flex-1 items-center justify-center">
+          <LoadingState label={t.agentWorkspace.loading} />
         </div>
-
-        {bootError ? (
-          <ErrorBanner error={bootError} onDismiss={() => setBootError(null)} />
-        ) : null}
-
-        {loading || !workspace ? (
-          <div className="flex min-h-0 flex-1 items-center justify-center">
-            <LoadingState label={t.agentWorkspace.loading} />
-          </div>
-        ) : (
-          <AgentWorkspaceShell
-            workspaceId={id}
-            workspace={workspace}
-            rootPath={rootPath}
-            sessions={sessions}
-            activeSessionId={activeSessionId}
-            onSelectSession={handleSelectSession}
-            onCreateSession={() => void handleCreateSession()}
-            creatingSession={creating}
-            messages={agent.messages}
-            input={agent.input}
-            onInputChange={agent.setInput}
-            onSend={() => void agent.send()}
-            onStartWikiRun={() =>
-              void agent.startWikiRun({
-                modelProfileId: wikiModelProfileId || undefined,
-              })
-            }
-            onAbort={() => void agent.abort()}
-            agentStatus={agent.status}
-            agentError={agent.error}
-            onDismissAgentError={agent.clearError}
-            plan={agent.plan}
-            linkedRunId={agent.linkedRunId}
-            phase={agent.phase}
-            pendingGate={agent.pendingGate}
-            gateBusy={agent.gateBusy}
-            onResumeGate={(input) => void agent.resumeGate(input)}
-            recentRuns={recentRuns}
-            models={models}
-            wikiModelProfileId={wikiModelProfileId}
-            onWikiModelProfileIdChange={setWikiModelProfileId}
-            defaultModelProfileId={
-              workspace.model?.profileId ?? defaultModelProfileId
-            }
-            units={agent.units}
-            focusAgentId={agent.focusAgentId}
-            onFocusAgentIdChange={handleFocusAgentIdChange}
-            focusedUnit={agent.focusedUnit}
-          />
-        )}
-      </div>
-    </Layout>
+      ) : (
+        <AgentWorkspaceShell
+          workspaceId={id}
+          workspace={workspace}
+          rootPath={rootPath}
+          sessions={sessions}
+          activeSessionId={activeSessionId}
+          onSelectSession={handleSelectSession}
+          onCreateSession={() => void handleCreateSession()}
+          creatingSession={creating}
+          messages={agent.messages}
+          input={agent.input}
+          onInputChange={agent.setInput}
+          onSend={() => void agent.send()}
+          onStartWikiRun={() =>
+            void agent.startWikiRun({
+              modelProfileId: wikiModelProfileId || undefined,
+            })
+          }
+          onAbort={() => void agent.abort()}
+          agentStatus={agent.status}
+          agentError={agent.error}
+          onDismissAgentError={agent.clearError}
+          plan={agent.plan}
+          linkedRunId={agent.linkedRunId}
+          phase={agent.phase}
+          pendingGate={agent.pendingGate}
+          gateBusy={agent.gateBusy}
+          onResumeGate={(input) => void agent.resumeGate(input)}
+          recentRuns={recentRuns}
+          models={models}
+          wikiModelProfileId={wikiModelProfileId}
+          onWikiModelProfileIdChange={setWikiModelProfileId}
+          defaultModelProfileId={
+            workspace.model?.profileId ?? defaultModelProfileId
+          }
+          units={agent.units}
+          focusAgentId={agent.focusAgentId}
+          onFocusAgentIdChange={handleFocusAgentIdChange}
+          focusedUnit={agent.focusedUnit}
+        />
+      )}
+    </WorkspaceShell>
   );
 }

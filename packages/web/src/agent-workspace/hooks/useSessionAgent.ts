@@ -31,6 +31,7 @@ import {
   applyProductEvent,
   applyWorkUnit,
   isTerminalOrWaitingPhase,
+  mergeWorkUnitsIntoTimeline,
   workUnitsFromList,
   type AgentMessage,
   type ProductSseLike,
@@ -470,14 +471,48 @@ export function useSessionAgent({
         const snap = await getAgentSession(workspaceId, sessionId, rootPath);
         if (cancelled || streamGenRef.current !== gen) return;
         let timeline = historyToMessages(snap.messages);
-        if (snap.product?.runId) setLinkedRunId(snap.product.runId);
+        const trajectory = snap.product?.trajectory;
+
+        // Recover plan / runId from durable trajectory when registry shell is cold.
+        let restoredRunId =
+          typeof snap.product?.runId === "string"
+            ? snap.product.runId
+            : undefined;
+        let restoredPlan = snap.product?.plan ?? null;
+        if (Array.isArray(trajectory)) {
+          for (let i = trajectory.length - 1; i >= 0; i -= 1) {
+            const row = trajectory[i];
+            if (!isRecord(row)) continue;
+            if (
+              !restoredRunId &&
+              typeof row.runId === "string" &&
+              row.runId.trim() &&
+              (row.kind === "run_link" ||
+                row.kind === "work_unit" ||
+                row.kind === "run_phase" ||
+                row.kind === "gate")
+            ) {
+              restoredRunId = row.runId.trim();
+            }
+            if (
+              !restoredPlan &&
+              row.kind === "gate" &&
+              isRecord(row.plan)
+            ) {
+              restoredPlan = row.plan as WikiRunPlan;
+            }
+            if (restoredRunId && restoredPlan) break;
+          }
+        }
+
+        if (restoredRunId) setLinkedRunId(restoredRunId);
         if (snap.product?.phase) setPhase(snap.product.phase);
-        if (snap.product?.plan) setPlan(snap.product.plan);
+        if (restoredPlan) setPlan(restoredPlan);
         if (snap.product?.pendingGate?.gate) {
           setPendingGate({
             gate: snap.product.pendingGate.gate,
-            runId: snap.product.runId,
-            plan: snap.product.pendingGate.plan,
+            runId: restoredRunId ?? snap.product.runId,
+            plan: snap.product.pendingGate.plan ?? restoredPlan ?? undefined,
             pages: snap.product.pendingGate.pages,
           });
         }
@@ -491,48 +526,34 @@ export function useSessionAgent({
         setUnits(coldUnits);
 
         // Project product trajectory for cards (work_run / phase / gate / …).
-        // Prefer full trajectory when present; otherwise fold workUnits into chips.
-        const trajectory = snap.product?.trajectory;
+        // Always merge cold units afterwards so every unit appears on the Work
+        // chip and Agents tree after refresh / re-entry.
         if (Array.isArray(trajectory) && trajectory.length > 0) {
           for (const row of trajectory) {
             if (!isRecord(row) || typeof row.kind !== "string") continue;
             timeline = applyProductEvent(timeline, row as ProductSseLike);
           }
-        } else if (snap.product?.workUnits?.length) {
-          for (const raw of snap.product.workUnits) {
-            const row = coldWorkUnitRow(raw);
-            if (!row) continue;
-            timeline = applyProductEvent(timeline, {
-              kind: "work_unit",
-              unitId: row.unitId,
-              role: row.role,
-              status: row.status,
-              runId: row.runId ?? snap.product?.runId,
-              task: row.task,
-              parentId: row.parentId,
-              message: row.message,
-              tools: row.tools,
-              summary: row.summary,
-              receiptPath: row.receiptPath,
-              error: row.error,
-              updatedAt: row.updatedAt,
-            });
-          }
-          if (snap.product?.phase) {
-            timeline = applyProductEvent(timeline, {
-              kind: "run_phase",
-              phase: snap.product.phase as
-                | "idle"
-                | "planning"
-                | "awaiting_plan"
-                | "writing"
-                | "awaiting_publish"
-                | "done"
-                | "failed"
-                | "cancelled",
-              runId: snap.product?.runId,
-            });
-          }
+        }
+        if (Object.keys(coldUnits).length > 0) {
+          timeline = mergeWorkUnitsIntoTimeline(timeline, coldUnits);
+        }
+        if (
+          snap.product?.phase &&
+          !timeline.some((m) => m.product?.kind === "run_phase")
+        ) {
+          timeline = applyProductEvent(timeline, {
+            kind: "run_phase",
+            phase: snap.product.phase as
+              | "idle"
+              | "planning"
+              | "awaiting_plan"
+              | "writing"
+              | "awaiting_publish"
+              | "done"
+              | "failed"
+              | "cancelled",
+            runId: restoredRunId ?? snap.product?.runId,
+          });
         }
 
         setMessages(timeline);

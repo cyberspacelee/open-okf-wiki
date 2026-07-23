@@ -13,6 +13,7 @@ import {
   extractMessageThinking,
   formatPayloadText,
   isTerminalOrWaitingPhase,
+  mergeWorkUnitsIntoTimeline,
   workUnitHasBody,
   workUnitsFromList,
   type AgentMessage,
@@ -952,6 +953,11 @@ describe("applyProductEvent — work_run chip from work_unit", () => {
     const works = messages.filter((m) => m.product?.kind === "work_run");
     assert.equal(works.length, 1);
     assert.equal(works[0]!.product?.agents?.length, 2);
+    // First-seen order: planner then leaf (newest does not jump above history).
+    assert.deepEqual(
+      works[0]!.product?.agents?.map((a) => a.agentId),
+      ["planner", "leaf-d1-1"],
+    );
     const planner = works[0]!.product?.agents?.find(
       (a) => a.agentId === "planner",
     );
@@ -961,6 +967,99 @@ describe("applyProductEvent — work_run chip from work_unit", () => {
     assert.equal(
       messages.filter((m) => m.status === "work_unit").length,
       0,
+    );
+  });
+
+  it("late unit for an earlier run attaches to that run, not a new Work chip", () => {
+    let messages: AgentMessage[] = [];
+    messages = applyProductEvent(messages, {
+      kind: "work_unit",
+      runId: "run-1",
+      unitId: "planner",
+      role: "planner",
+      status: "settled",
+    });
+    messages = applyProductEvent(messages, {
+      kind: "work_unit",
+      runId: "run-1",
+      unitId: "leaf-1",
+      role: "leaf",
+      status: "settled",
+    });
+    messages = applyProductEvent(messages, {
+      kind: "work_unit",
+      runId: "run-2",
+      unitId: "planner",
+      role: "planner",
+      status: "running",
+    });
+    // Late leaf for run-1 after run-2 Work chip exists — must not open a 3rd card.
+    messages = applyProductEvent(messages, {
+      kind: "work_unit",
+      runId: "run-1",
+      unitId: "leaf-2",
+      role: "leaf",
+      status: "running",
+    });
+    const works = messages.filter((m) => m.product?.kind === "work_run");
+    assert.equal(works.length, 2);
+    const r1 = works.find((m) => m.product?.runId === "run-1");
+    const r2 = works.find((m) => m.product?.runId === "run-2");
+    assert.ok(r1 && r2);
+    assert.deepEqual(
+      r1!.product?.agents?.map((a) => a.agentId),
+      ["planner", "leaf-1", "leaf-2"],
+    );
+    assert.deepEqual(r2!.product?.agents?.map((a) => a.agentId), ["planner"]);
+  });
+
+  it("mergeWorkUnitsIntoTimeline restores all cold units onto one Work chip", () => {
+    // Simulate sparse trajectory (only last unit) + full fold cache after refresh.
+    let messages: AgentMessage[] = [];
+    messages = applyProductEvent(messages, {
+      kind: "work_unit",
+      runId: "run-1",
+      unitId: "reviewer-1",
+      role: "reviewer",
+      status: "settled",
+      summary: "NO_DEFECTS",
+    });
+    const units = workUnitsFromList([
+      {
+        kind: "work_unit",
+        unitId: "planner",
+        role: "planner",
+        status: "settled",
+        runId: "run-1",
+        summary: "planned",
+      },
+      {
+        kind: "work_unit",
+        unitId: "leaf-1",
+        role: "leaf",
+        status: "settled",
+        runId: "run-1",
+        summary: "leaf done",
+      },
+      {
+        kind: "work_unit",
+        unitId: "reviewer-1",
+        role: "reviewer",
+        status: "settled",
+        runId: "run-1",
+        summary: "NO_DEFECTS",
+      },
+    ]);
+    messages = mergeWorkUnitsIntoTimeline(messages, units);
+    const works = messages.filter((m) => m.product?.kind === "work_run");
+    assert.equal(works.length, 1);
+    assert.equal(works[0]!.product?.agents?.length, 3);
+    assert.ok(
+      works[0]!.product?.agents?.some((a) => a.agentId === "planner"),
+    );
+    assert.ok(works[0]!.product?.agents?.some((a) => a.agentId === "leaf-1"));
+    assert.ok(
+      works[0]!.product?.agents?.some((a) => a.agentId === "reviewer-1"),
     );
   });
 });

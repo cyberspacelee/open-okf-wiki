@@ -174,7 +174,10 @@ export function productMeta(event: ProductSseLike): AgentProductMeta {
   }
 }
 
-/** Upsert one unit into a Work chip agent list (pure). agentId === unitId. */
+/** Upsert one unit into a Work chip agent list (pure). agentId === unitId.
+ * First-seen order is preserved: updates stay in place; new units append.
+ * (Never unshift — newest must not jump above historical agents.)
+ */
 export function upsertWorkAgentChip(
   agents: WorkAgentChip[],
   chip: WorkAgentChip,
@@ -187,11 +190,33 @@ export function upsertWorkAgentChip(
       ...chip,
       detail: chip.detail ?? next[idx]!.detail,
       task: chip.task ?? next[idx]!.task,
+      parentId: chip.parentId ?? next[idx]!.parentId,
+      receiptPath: chip.receiptPath ?? next[idx]!.receiptPath,
     };
   } else {
     next.push(chip);
   }
   return next;
+}
+
+/**
+ * Find the work_run card for `runId` searching newest-first.
+ * Different-run cards are skipped (not a hard stop) so late units for an
+ * earlier run still attach to the original Work chip.
+ */
+export function findWorkRunIndex(
+  messages: readonly AgentMessage[],
+  runId?: string,
+): number {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const m = messages[i]!;
+    if (m.product?.kind !== "work_run") continue;
+    if (runId && m.product.runId && m.product.runId !== runId) {
+      continue;
+    }
+    return i;
+  }
+  return -1;
 }
 
 function chipFromWorkUnit(event: ProductSseLike): WorkAgentChip | null {
@@ -236,30 +261,22 @@ export function applyProductEvent(
   if (event.kind === "run_phase") {
     // Keep Work chip phase in sync, then upsert the phase strip card.
     let base = prev;
-    for (let i = prev.length - 1; i >= 0; i -= 1) {
-      const m = prev[i]!;
-      if (m.product?.kind !== "work_run") continue;
-      if (
-        event.runId &&
-        m.product.runId &&
-        m.product.runId !== event.runId
-      ) {
-        break;
-      }
-      const agents = m.product.agents ?? [];
+    const workIdx = findWorkRunIndex(prev, event.runId);
+    if (workIdx >= 0) {
+      const m = prev[workIdx]!;
+      const agents = m.product?.agents ?? [];
       const next = prev.slice();
-      next[i] = {
+      next[workIdx] = {
         ...m,
         content: productCardContent({
           kind: "work_run",
-          runId: m.product.runId,
+          runId: m.product?.runId,
           phase: event.phase,
           agents,
         }),
-        product: { ...m.product, phase: event.phase },
+        product: { ...m.product!, phase: event.phase },
       };
       base = next;
-      break;
     }
     for (let i = base.length - 1; i >= 0; i -= 1) {
       const m = base[i]!;
@@ -269,7 +286,7 @@ export function applyProductEvent(
         m.product.runId &&
         m.product.runId !== event.runId
       ) {
-        break;
+        continue;
       }
       const next = base.slice();
       next[i] = { ...card, id: m.id };
@@ -288,7 +305,7 @@ export function applyProductEvent(
         m.product.runId &&
         m.product.runId !== event.runId
       ) {
-        break;
+        continue;
       }
       const next = prev.slice();
       next[i] = { ...card, id: m.id };
@@ -299,30 +316,23 @@ export function applyProductEvent(
   if (event.kind === "work_unit") {
     const chip = chipFromWorkUnit(event);
     if (!chip) return prev;
-    for (let i = prev.length - 1; i >= 0; i -= 1) {
-      const m = prev[i]!;
-      if (m.product?.kind !== "work_run") continue;
-      if (
-        event.runId &&
-        m.product.runId &&
-        m.product.runId !== event.runId
-      ) {
-        break;
-      }
-      const agents = upsertWorkAgentChip(m.product.agents ?? [], chip);
+    const workIdx = findWorkRunIndex(prev, event.runId);
+    if (workIdx >= 0) {
+      const m = prev[workIdx]!;
+      const agents = upsertWorkAgentChip(m.product?.agents ?? [], chip);
       const next = prev.slice();
-      next[i] = {
+      next[workIdx] = {
         ...m,
         content: productCardContent({
           kind: "work_run",
-          runId: event.runId ?? m.product.runId,
-          phase: m.product.phase,
+          runId: event.runId ?? m.product?.runId,
+          phase: m.product?.phase,
           agents,
         }),
         product: {
           kind: "work_run",
-          runId: event.runId ?? m.product.runId,
-          phase: m.product.phase,
+          runId: event.runId ?? m.product?.runId,
+          phase: m.product?.phase,
           agents,
         },
         status: "work_run",
@@ -356,13 +366,13 @@ export function applyProductEvent(
     for (let i = prev.length - 1; i >= 0; i -= 1) {
       const m = prev[i]!;
       if (m.product?.kind !== "gate") continue;
-      if (m.product.gate !== event.gate) break;
+      if (m.product.gate !== event.gate) continue;
       if (
         event.runId &&
         m.product.runId &&
         m.product.runId !== event.runId
       ) {
-        break;
+        continue;
       }
       const next = prev.slice();
       next[i] = { ...card, id: m.id };
@@ -371,6 +381,48 @@ export function applyProductEvent(
   }
 
   return [...prev, card];
+}
+
+/**
+ * Ensure every folded work unit appears on its Work chip (cold-load safety net).
+ * Trajectory replay is primary; this fills gaps without reordering first-seen agents.
+ */
+export function mergeWorkUnitsIntoTimeline(
+  messages: AgentMessage[],
+  units: Record<
+    string,
+    {
+      unitId: string;
+      role: string;
+      status: string;
+      runId?: string;
+      task?: string;
+      parentId?: string;
+      summary?: string;
+      receiptPath?: string;
+      error?: string;
+      message?: { thinking?: string; text?: string };
+    }
+  >,
+): AgentMessage[] {
+  let next = messages;
+  for (const unit of Object.values(units)) {
+    if (!unit.unitId) continue;
+    next = applyProductEvent(next, {
+      kind: "work_unit",
+      unitId: unit.unitId,
+      role: unit.role,
+      status: unit.status,
+      runId: unit.runId,
+      task: unit.task,
+      parentId: unit.parentId,
+      summary: unit.summary,
+      receiptPath: unit.receiptPath,
+      error: unit.error,
+      message: unit.message,
+    });
+  }
+  return next;
 }
 
 /** Whether a product run_phase should clear the busy/streaming chrome. */

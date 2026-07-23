@@ -51,4 +51,6 @@ export {
   productCardContent,
   productMeta,
   upsertWorkAgentChip,
+  findWorkRunIndex,
+  mergeWorkUnitsIntoTimeline,
 } from "./project/product.ts";

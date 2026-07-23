@@ -24,6 +24,12 @@ import {
   FreezeWikiRunError,
 } from "@okf-wiki/core";
 import {
+  abortRun,
+  registerRunAbortController,
+  clearRunAbortController,
+} from "../run-events.ts";
+import { finalizeRunStatus } from "../wiki-run-job.ts";
+import {
   emitPhase,
   emitRunLink,
 } from "./product-inject.ts";
@@ -208,10 +214,22 @@ export async function handleSteer(
   }
 }
 
+/**
+ * Stop in-flight chat / produce and cancel the linked Wiki Run Record.
+ * Mirrors REST cancel (abort signal + durable cancelled status) so "Stop agent"
+ * does not leave Jobs stuck at running / awaiting_*.
+ */
 export async function handleAbort(
   entry: RegisteredAgentSession,
 ): Promise<AgentCommandResponse> {
+  const runId = entry.runId;
+
+  // Signal in-flight produce (session controller and/or run registry).
   entry.abortController?.abort();
+  if (runId) {
+    abortRun(runId);
+  }
+
   if (entry.handle) {
     try {
       await entry.handle.session.abort();
@@ -219,10 +237,30 @@ export async function handleAbort(
       // ignore abort races
     }
   }
+
   if (entry.shell && !isTerminalPhase(entry.shell.phase)) {
     entry.shell = markCancelled(entry.shell, "Aborted by operator");
-    emitPhase(entry, "cancelled", "Aborted by operator", "cancelled");
   }
+
+  // Durable Run Record cancel (same path as Jobs cancel).
+  if (runId) {
+    try {
+      await finalizeRunStatus(entry.workspaceRoot, runId, {
+        status: "cancelled",
+        error: "cancelled",
+        summary: "Wiki Run cancelled",
+      });
+    } catch {
+      // best-effort; shell / product inject still carry cancel for the UI
+    }
+    emitPhase(entry, "cancelled", "Aborted by operator", "cancelled");
+    emitRunLink(entry, "cancelled");
+  } else if (entry.shell?.phase === "cancelled") {
+    emitPhase(entry, "cancelled", "Aborted by operator");
+  }
+
+  entry.busy = false;
+  entry.abortController = undefined;
   emitPi(entry.workspaceId, entry.sessionId, "abort", {});
   return {
     ok: true,
@@ -230,7 +268,7 @@ export async function handleAbort(
     command: "abort",
     status: "accepted",
     message: "abort requested",
-    runId: entry.runId,
+    runId,
   };
 }
 
@@ -364,6 +402,8 @@ export async function handleStartWikiRun(
     command.autoApprove === true || workspace.planConfirm === false;
   const controller = new AbortController();
   entry.abortController = controller;
+  // Share controller with REST cancel so Jobs cancel and Stop agent both work.
+  registerRunAbortController(frozen.runId, controller);
 
   const runOpts = {
     runId: frozen.runId,
@@ -402,6 +442,7 @@ export async function handleStartWikiRun(
       entry.busy = false;
       entry.abortController = undefined;
       entry.produceModelProfileId = undefined;
+      clearRunAbortController(frozen.runId);
     });
 
   return {
@@ -451,6 +492,7 @@ export async function handleResumeGate(
     command.gate === "publication" ? "publish-gate" : "plan-gate";
   const controller = new AbortController();
   entry.abortController = controller;
+  registerRunAbortController(entry.runId, controller);
   entry.busy = true;
   if (command.gate === "plan" && command.action === "approve") {
     // Surface writing/busy for cold-load + UI before resumeWikiRun returns.
@@ -513,5 +555,6 @@ export async function handleResumeGate(
     entry.busy = false;
     entry.abortController = undefined;
     entry.produceModelProfileId = undefined;
+    if (entry.runId) clearRunAbortController(entry.runId);
   }
 }

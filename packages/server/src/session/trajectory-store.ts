@@ -135,3 +135,54 @@ export function lastRunPhase(
   }
   return undefined;
 }
+
+/** Last linked Wiki Run id from run_link / work_unit / run_phase (cold-load). */
+export function lastLinkedRunId(
+  events: readonly ProductSseEvent[],
+): string | undefined {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (!event) continue;
+    if (
+      (event.kind === "run_link" ||
+        event.kind === "work_unit" ||
+        event.kind === "run_phase" ||
+        event.kind === "gate") &&
+      typeof event.runId === "string" &&
+      event.runId.trim()
+    ) {
+      return event.runId.trim();
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Last Spec/plan snapshot from a gate inject (cold-load Plan panel).
+ * Prefers plan-gate, then any gate that carried a plan.
+ */
+export function lastPlanFromTrajectory(
+  events: readonly ProductSseEvent[],
+): NonNullable<Extract<ProductSseEvent, { kind: "gate" }>["plan"]> | undefined {
+  let anyPlan:
+    | NonNullable<Extract<ProductSseEvent, { kind: "gate" }>["plan"]>
+    | undefined;
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (event?.kind !== "gate" || !event.plan) continue;
+    if (event.gate === "plan") return event.plan;
+    if (!anyPlan) anyPlan = event.plan;
+  }
+  return anyPlan;
+}
+
+/** Last gate inject (for pendingGate restore when shell is gone). */
+export function lastGateFromTrajectory(
+  events: readonly ProductSseEvent[],
+): Extract<ProductSseEvent, { kind: "gate" }> | undefined {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (event?.kind === "gate" && event.gate) return event;
+  }
+  return undefined;
+}

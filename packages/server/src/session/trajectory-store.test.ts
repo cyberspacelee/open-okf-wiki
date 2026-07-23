@@ -12,6 +12,9 @@ import {
   appendTrajectory,
   capProductEventForTrajectory,
   foldWorkUnits,
+  lastGateFromTrajectory,
+  lastLinkedRunId,
+  lastPlanFromTrajectory,
   lastRunPhase,
   loadTrajectory,
   operatorTrajectoryPath,
@@ -132,6 +135,57 @@ test("lastRunPhase returns most recent run_phase", () => {
   ];
   assert.equal(lastRunPhase(events), "writing");
   assert.equal(lastRunPhase([]), undefined);
+});
+
+test("lastLinkedRunId / lastPlanFromTrajectory for cold re-entry", () => {
+  const plan = {
+    version: 1 as const,
+    summary: "wiki for cold restore",
+    audience: "devs",
+    domains: [],
+    pages: [
+      {
+        path: "overview.md",
+        purpose: "overview",
+        domainIds: [],
+        questions: [],
+        template: "overview" as const,
+        critical: true,
+      },
+    ],
+    openQuestions: [],
+    acceptance: {
+      reviewRequired: false,
+      maxRepairRounds: 0,
+      blockingSeverities: ["blocking" as const],
+    },
+    changelog: [],
+  };
+  const events: ProductSseEvent[] = [
+    {
+      source: "product",
+      kind: "run_link",
+      sessionId: "s",
+      runId: "run-old",
+      status: "running",
+    },
+    workUnit({ unitId: "planner", status: "settled", runId: "run-new" }),
+    {
+      source: "product",
+      kind: "gate",
+      sessionId: "s",
+      runId: "run-new",
+      gate: "publication",
+      question: "publish?",
+      plan,
+      pages: ["overview.md"],
+    },
+  ];
+  assert.equal(lastLinkedRunId(events), "run-new");
+  assert.equal(lastPlanFromTrajectory(events)?.summary, plan.summary);
+  assert.equal(lastGateFromTrajectory(events)?.gate, "publication");
+  assert.equal(lastLinkedRunId([]), undefined);
+  assert.equal(lastPlanFromTrajectory([]), undefined);
 });
 
 test("capProductEventForTrajectory truncates message fields at 64k", () => {

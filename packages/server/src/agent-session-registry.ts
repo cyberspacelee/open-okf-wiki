@@ -52,6 +52,9 @@ export {
 // Re-export session helpers used by routes / tests.
 export {
   foldWorkUnits,
+  lastGateFromTrajectory,
+  lastLinkedRunId,
+  lastPlanFromTrajectory,
   lastRunPhase,
   loadTrajectory,
   operatorTrajectoryPath,

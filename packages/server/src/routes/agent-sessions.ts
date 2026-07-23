@@ -25,8 +25,12 @@ import {
   agentSessionExistsOnDisk,
   dispatchAgentCommand,
   ensurePiSessionsDir,
+  ensureRegistered,
   foldWorkUnits,
   getRegisteredAgentSession,
+  lastGateFromTrajectory,
+  lastLinkedRunId,
+  lastPlanFromTrajectory,
   lastRunPhase,
   loadTrajectory,
   registerAgentSession,
@@ -227,7 +231,17 @@ export async function handleGetAgentSession(
     return;
   }
 
-  const reg = getRegisteredAgentSession(workspace.id, sessionId);
+  // Ensure registry entry exists so re-entry after process restart can rehydrate
+  // runId / shell from durable trajectory + Run Record (not only live memory).
+  let reg = getRegisteredAgentSession(workspace.id, sessionId);
+  if (!reg) {
+    try {
+      reg = await ensureRegistered(workspace, sessionId);
+    } catch {
+      reg = undefined;
+    }
+  }
+
   // Prefer live / meta sessionFile so cold history matches the JSONL Pi writes
   // (`{timestamp}_{id}.jsonl`, not `{id}.jsonl` — see pi-web SessionManager).
   const preferredPath = await resolveSessionHistoryFile(
@@ -238,23 +252,100 @@ export async function handleGetAgentSession(
   const history = await loadPiSessionHistory(workspace.rootPath, sessionId, {
     preferredPath,
   });
+
+  // Cold-load product trajectory (work_unit fold + last run_phase / plan / runId).
+  const trajectory = await loadTrajectory(workspace.rootPath, sessionId);
+  const workUnits = [...foldWorkUnits(trajectory).values()];
+  const trajRunId = lastLinkedRunId(trajectory);
+  const runId = reg?.runId ?? trajRunId;
+  const trajPlan = lastPlanFromTrajectory(trajectory);
+  const trajGate = lastGateFromTrajectory(trajectory);
+  const productPhase = resolveColdLoadPhase({
+    shellPhase: reg?.shell?.phase,
+    lastPhaseFromTrajectory: lastRunPhase(trajectory),
+  });
+
   let runStatus: string | undefined;
-  if (reg?.runId) {
+  let plan = reg?.shell?.plan ?? trajPlan ?? null;
+  let runPages: string[] | undefined =
+    reg?.shell?.pages ?? trajGate?.pages ?? undefined;
+
+  if (runId) {
     try {
-      const run = await loadRun(workspace.rootPath, reg.runId);
-      runStatus = run?.status;
+      const run = await loadRun(workspace.rootPath, runId);
+      if (run) {
+        runStatus = run.status;
+        if (!plan && run.plan) plan = run.plan;
+        if ((!runPages || runPages.length === 0) && run.pages?.length) {
+          runPages = run.pages;
+        }
+      }
     } catch {
       // ignore
     }
   }
 
-  // Cold-load product trajectory (work_unit fold + last run_phase).
-  const trajectory = await loadTrajectory(workspace.rootPath, sessionId);
-  const workUnits = [...foldWorkUnits(trajectory).values()];
-  const productPhase = resolveColdLoadPhase({
-    shellPhase: reg?.shell?.phase,
-    lastPhaseFromTrajectory: lastRunPhase(trajectory),
-  });
+  // Rehydrate in-memory registry so subsequent commands (resume / abort) see
+  // the linked run after a cold re-entry.
+  if (reg) {
+    if (!reg.runId && runId) reg.runId = runId;
+    if (plan && !reg.shell?.plan) {
+      reg.shell = {
+        phase:
+          productPhase === "awaiting_plan"
+            ? "awaiting_plan"
+            : productPhase === "awaiting_publish"
+              ? "awaiting_publish"
+              : productPhase === "writing" || productPhase === "planning"
+                ? "producing"
+                : productPhase === "failed"
+                  ? "failed"
+                  : productPhase === "cancelled"
+                    ? "cancelled"
+                    : productPhase === "done"
+                      ? "published"
+                      : "idle",
+        plan,
+        pages: runPages,
+        pendingGate:
+          productPhase === "awaiting_plan"
+            ? "plan"
+            : productPhase === "awaiting_publish"
+              ? "publish"
+              : undefined,
+        summary: plan.summary,
+      };
+    }
+  }
+
+  const pendingGateFromShell = reg?.shell?.pendingGate
+    ? {
+        gate:
+          reg.shell.pendingGate === "publish" ? "publication" : ("plan" as const),
+        plan: reg.shell.plan ?? plan ?? undefined,
+        pages: reg.shell.pages ?? runPages,
+      }
+    : null;
+
+  const pendingGateFromDurable =
+    !pendingGateFromShell &&
+    (productPhase === "awaiting_plan" || productPhase === "awaiting_publish") &&
+    trajGate
+      ? {
+          gate: trajGate.gate,
+          plan: trajGate.plan ?? plan ?? undefined,
+          pages: trajGate.pages ?? runPages,
+        }
+      : productPhase === "awaiting_plan" || productPhase === "awaiting_publish"
+        ? {
+            gate:
+              productPhase === "awaiting_plan"
+                ? ("plan" as const)
+                : ("publication" as const),
+            plan: plan ?? undefined,
+            pages: runPages,
+          }
+        : null;
 
   sendJson(res, 200, {
     session: {
@@ -265,18 +356,12 @@ export async function handleGetAgentSession(
     },
     messages: history.messages,
     product: {
-      runId: reg?.runId,
+      runId,
       runStatus,
       phase: productPhase,
       busy: reg?.busy === true,
-      pendingGate: reg?.shell?.pendingGate
-        ? {
-            gate: reg.shell.pendingGate === "publish" ? "publication" : "plan",
-            plan: reg.shell.plan,
-            pages: reg.shell.pages,
-          }
-        : null,
-      plan: reg?.shell?.plan ?? null,
+      pendingGate: pendingGateFromShell ?? pendingGateFromDurable,
+      plan,
       workUnits,
       /** Full product inject history for cold project (optional for clients). */
       trajectory,
