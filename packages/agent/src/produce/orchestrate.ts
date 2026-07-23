@@ -108,30 +108,20 @@ export async function produceWiki(
 
   events.progress?.({ phase: "planning", label: "materialize + seed Spec" });
 
-  // Write first (materialize may reset the workdir — seed Spec after).
-  let produced: ProduceWithPiResult;
+  // 1) Materialize workdir + seed Spec first (do not write wiki yet).
+  //    Research must run before root_write so analysis actually informs pages.
+  let layout: ProduceWithPiResult["layout"];
   try {
-    produced = await produceWithPi({
+    const seeded = await produceWithPi({
       runWorkDir: input.runWorkDir,
-      role: "root_write",
+      role: "root_research",
       materialize: input.materialize,
-      fixture,
+      // Fixture: materialize only (no LLM). Live: optional brief research pass.
+      fixture: true,
       title: spec.summary ?? input.workspace.name ?? "Wiki",
       abortSignal: input.abortSignal,
-      model: input.models?.writer?.model,
-      modelRuntime: input.models?.writer?.modelRuntime,
-      maxContextTokens:
-        input.maxContextTokens ?? input.models?.writer?.maxContextTokens,
-      contextTargetTokens: input.contextTargetTokens,
-      additionalSkillPaths: input.additionalSkillPaths,
-      systemPrompt: [
-        "You are the Open OKF Wiki producer agent (Root writer).",
-        "Use only the provided tools. Never use bash.",
-        "Read skill/SKILL.md before writing. Follow the living Spec in analysis/spec.json.",
-        "Write Staging Wiki pages under wiki/. Prefer Spec page paths when listed.",
-        "Cite sources with [Source](repo:path#L1) form.",
-      ].join(" "),
     });
+    layout = seeded.layout;
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
       return cancelledResult(spec, fixture, metrics);
@@ -139,16 +129,16 @@ export async function produceWiki(
     throw err;
   }
 
-  // Spec + plan progress after materialize so reset cannot wipe them.
   await writeWikiRunSpec(input.workspace.rootPath, input.runId, spec);
+  // Plan pages start as pending — not done (avoid "instant plan complete" UX).
   events.planProgress?.({
     pages: (spec.pages ?? []).map((p) => ({
       path: p.path,
-      status: "done" as const,
+      status: "pending" as const,
     })),
   });
 
-  // --- Research (Host fan-out) — after write for fixture speed; still emits spans ---
+  // 2) Domain research before write.
   if (input.research !== false) {
     events.progress?.({ phase: "researching", label: "domain research" });
     const domains = (spec.domains ?? []).slice(0, orch.maxDomainFanOut);
@@ -197,7 +187,7 @@ export async function produceWiki(
         });
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") {
-          return cancelledResult(spec, fixture, metrics, produced);
+          return cancelledResult(spec, fixture, metrics);
         }
         events.progress?.({
           phase: "researching",
@@ -207,9 +197,46 @@ export async function produceWiki(
     }
   }
 
+  // 3) Root write after research (workdir already materialised — no reset).
+  throwIfAborted(input.abortSignal);
+  events.progress?.({ phase: "writing", label: "root_write" });
+  let produced: ProduceWithPiResult;
+  try {
+    produced = await produceWithPi({
+      runWorkDir: input.runWorkDir,
+      role: "root_write",
+      // Do not re-materialize/reset — preserve research artifacts + Spec.
+      fixture,
+      title: spec.summary ?? input.workspace.name ?? "Wiki",
+      abortSignal: input.abortSignal,
+      model: input.models?.writer?.model,
+      modelRuntime: input.models?.writer?.modelRuntime,
+      maxContextTokens:
+        input.maxContextTokens ?? input.models?.writer?.maxContextTokens,
+      contextTargetTokens: input.contextTargetTokens,
+      additionalSkillPaths: input.additionalSkillPaths,
+      systemPrompt: [
+        "You are the Open OKF Wiki producer agent (Root writer).",
+        "Use only the provided tools. Never use bash.",
+        "Read skill/SKILL.md before writing. Follow the living Spec in analysis/spec.json.",
+        "Write Staging Wiki pages under wiki/. Prefer Spec page paths when listed",
+        "(especially overview.md when the Spec requires it).",
+        "Cite sources with [Source](repo:path#L1) form.",
+      ].join(" "),
+    });
+    // Keep layout from materialize if write returns empty paths edge-case.
+    if (!produced.layout?.runWorkDir && layout) {
+      produced = { ...produced, layout };
+    }
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      return cancelledResult(spec, fixture, metrics);
+    }
+    throw err;
+  }
+
   throwIfAborted(input.abortSignal);
   events.progress?.({ phase: "writing", label: "root_write complete" });
-
   events.planProgress?.({
     pages: (spec.pages ?? []).map((p) => ({
       path: p.path,

@@ -322,7 +322,9 @@ export function applyPiEvent(
     }
 
     // Snapshot path (pi-web style): replace content from partial message.
-    if (message) {
+    // Only when there is no typed delta event — never append on top of deltas
+    // (that would double text/thinking when providers send full snapshots).
+    if (message && !ame) {
       const text = extractMessageText(message);
       const thinking = extractMessageThinking(message);
       if (
@@ -337,11 +339,9 @@ export function applyPiEvent(
         m.id === ensured.assistantId
           ? {
               ...m,
+              // Replace (not append) — snapshot is the full partial message.
               content: text.length > 0 ? text : m.content,
-              thinking:
-                thinking.length > 0
-                  ? thinking
-                  : m.thinking,
+              thinking: thinking.length > 0 ? thinking : m.thinking,
               thinkingStatus:
                 thinking.length > 0
                   ? ("streaming" as const)

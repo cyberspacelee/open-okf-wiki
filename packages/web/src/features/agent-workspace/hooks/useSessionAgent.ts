@@ -290,7 +290,10 @@ export function useSessionAgent({
     }
   }, []);
 
-  // Single bootstrap: reset → cold-load history → open SSE (no dual wipe race).
+  // Bootstrap: reset → await cold history → open SSE.
+  // On first connect, skip ring-buffer replay (only advance sequence until the
+  // server hello heartbeat) so history + SSE do not double-apply the same turn.
+  // Reconnects apply the buffer with sequence dedup for live catch-up.
   useEffect(() => {
     setStatus("idle");
     setError(null);
@@ -322,11 +325,63 @@ export function useSessionAgent({
       return;
     }
 
-    // Keep previous transcript only until history arrives — clear for new session.
     setMessages([]);
 
     let cancelled = false;
     const gen = ++streamGenRef.current;
+
+    const openEventSource = (mode: "bootstrap" | "reconnect"): void => {
+      if (streamGenRef.current !== gen || !eventsUrl) return;
+      if (typeof EventSource === "undefined") return;
+
+      // Bootstrap: ignore ring buffer content until first heartbeat.
+      // Reconnect: apply buffer; sequence filter drops already-seen frames.
+      let skipUntilHello = mode === "bootstrap";
+
+      const es = new EventSource(eventsUrl);
+      esRef.current = es;
+
+      es.onmessage = (msg) => {
+        if (streamGenRef.current !== gen) return;
+        try {
+          const parsed: unknown = JSON.parse(msg.data);
+          if (!isRecord(parsed)) return;
+
+          if (skipUntilHello) {
+            const seq = eventSequence(parsed as AgentSseEvent);
+            if (seq !== undefined && seq > lastSequenceRef.current) {
+              lastSequenceRef.current = seq;
+            }
+            if (
+              parsed.source === "server" &&
+              parsed.kind === "heartbeat"
+            ) {
+              skipUntilHello = false;
+            }
+            return;
+          }
+
+          handleSseEvent(parsed);
+        } catch {
+          // ignore malformed SSE frames
+        }
+      };
+
+      es.onerror = () => {
+        es.close();
+        if (esRef.current === es) {
+          esRef.current = null;
+        }
+        if (streamGenRef.current !== gen) return;
+        if (reconnectTimerRef.current) {
+          clearTimeout(reconnectTimerRef.current);
+        }
+        reconnectTimerRef.current = setTimeout(() => {
+          reconnectTimerRef.current = null;
+          openEventSource("reconnect");
+        }, RECONNECT_MS);
+      };
+    };
 
     void (async () => {
       try {
@@ -346,55 +401,16 @@ export function useSessionAgent({
         }
       } catch (err) {
         if (cancelled || streamGenRef.current !== gen) return;
-        // Do not pretend this is an empty brand-new session.
         const message =
           err instanceof Error ? err.message : "Failed to load session history";
         setError(message);
-        // Leave messages empty only when we truly have nothing.
         setMessages([]);
       }
+
+      if (cancelled || streamGenRef.current !== gen) return;
+      if (!eventsUrl) return;
+      openEventSource("bootstrap");
     })();
-
-    if (!eventsUrl || typeof EventSource === "undefined") {
-      return () => {
-        cancelled = true;
-        streamGenRef.current += 1;
-      };
-    }
-
-    const open = (): void => {
-      if (streamGenRef.current !== gen) return;
-
-      const es = new EventSource(eventsUrl);
-      esRef.current = es;
-
-      es.onmessage = (msg) => {
-        if (streamGenRef.current !== gen) return;
-        try {
-          const parsed: unknown = JSON.parse(msg.data);
-          handleSseEvent(parsed);
-        } catch {
-          // ignore malformed SSE frames
-        }
-      };
-
-      es.onerror = () => {
-        es.close();
-        if (esRef.current === es) {
-          esRef.current = null;
-        }
-        if (streamGenRef.current !== gen) return;
-        if (reconnectTimerRef.current) {
-          clearTimeout(reconnectTimerRef.current);
-        }
-        reconnectTimerRef.current = setTimeout(() => {
-          reconnectTimerRef.current = null;
-          open();
-        }, RECONNECT_MS);
-      };
-    };
-
-    open();
 
     return () => {
       cancelled = true;
@@ -484,6 +500,11 @@ export function useSessionAgent({
       sendInFlight.current = true;
       setError(null);
       setStatus("sending");
+      // Clear stale plan from a previous run so the panel does not look "done"
+      // before this produce cycle actually finishes analysis/write.
+      setPlan(null);
+      setPendingGate(null);
+      setPhase(null);
 
       try {
         setStatus("streaming");
@@ -499,6 +520,9 @@ export function useSessionAgent({
           )
         ) {
           return;
+        }
+        if (res?.runId) {
+          setLinkedRunId(res.runId);
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
