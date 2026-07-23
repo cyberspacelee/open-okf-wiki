@@ -181,6 +181,14 @@ export async function resolvePiModelFromProvider(
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow,
         maxTokens,
+        // Pi uses the official OpenAI JS SDK, which defaults to User-Agent
+        // "OpenAI/JS …" + X-Stainless-* headers. Some OpenAI-compatible
+        // gateways (Cloudflare WAF) return 403 "request was blocked" for that
+        // signature while plain node fetch works. Override UA so agent turns
+        // match a simple HTTP client.
+        headers: {
+          "User-Agent": "node",
+        },
       },
     ],
   });
@@ -195,6 +203,14 @@ export async function resolvePiModelFromProvider(
       `Failed to register Pi model ${providerId}/${servedModelId} from provider profile`,
     );
   }
+
+  // Ensure headers stick even if registerProvider drops unknown fields.
+  const existingHeaders =
+    model.headers && typeof model.headers === "object" ? model.headers : {};
+  (model as { headers: Record<string, string> }).headers = {
+    ...existingHeaders,
+    "User-Agent": "node",
+  };
 
   // Synthetic runtime snapshot for callers that log source (not from store).
   const runtime: ResolvedProviderRuntime = {
