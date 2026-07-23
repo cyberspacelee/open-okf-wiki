@@ -443,7 +443,7 @@ export function AgentTree({
                 {t.agentWorkspace.agentTreeLoading}
               </div>
             ) : (
-              <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">
+              <pre className="okf-code-snippet">
                 {previewBody || t.agentWorkspace.subagentNoDetail}
               </pre>
             )}

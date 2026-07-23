@@ -109,23 +109,19 @@ function ToolCard({ tool }: { tool: AgentToolCall }) {
       </CollapsibleTrigger>
       <CollapsibleContent className="border-t border-border/60 px-2.5 py-2">
         {tool.input ? (
-          <div className="mb-2">
-            <div className="mb-0.5 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
+          <div className="mb-2 flex flex-col gap-0.5">
+            <div className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
               {t.agentWorkspace.toolInput}
             </div>
-            <pre className="overflow-x-auto rounded bg-background/80 p-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
-              {tool.input}
-            </pre>
+            <pre className="okf-code-snippet">{tool.input}</pre>
           </div>
         ) : null}
         {tool.output ? (
-          <div>
-            <div className="mb-0.5 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
+          <div className="flex flex-col gap-0.5">
+            <div className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
               {t.agentWorkspace.toolOutput}
             </div>
-            <pre className="overflow-x-auto rounded bg-background/80 p-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
-              {tool.output}
-            </pre>
+            <pre className="okf-code-snippet">{tool.output}</pre>
           </div>
         ) : null}
       </CollapsibleContent>
@@ -157,9 +153,7 @@ function ThinkingBlock({
         {streaming ? <Spinner className="size-3" /> : null}
       </CollapsibleTrigger>
       <CollapsibleContent className="border-t border-border/50 px-2.5 py-2">
-        <div className="whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
-          {thinking}
-        </div>
+        <pre className="okf-code-snippet text-muted-foreground">{thinking}</pre>
       </CollapsibleContent>
     </Collapsible>
   );
@@ -309,7 +303,7 @@ function AgentSpanCard({
                 {t.agentWorkspace.agentTreeLoading}
               </div>
             ) : (
-              <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">
+              <pre className="okf-code-snippet">
                 {body || t.agentWorkspace.subagentNoDetail}
               </pre>
             )}

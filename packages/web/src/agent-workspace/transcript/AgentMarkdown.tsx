@@ -47,7 +47,7 @@ export const AgentMarkdown = memo(function AgentMarkdown({
           table: true,
           mermaid: true,
         }}
-        className="size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
+        className="size-full space-y-2 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
       >
         {content}
       </Streamdown>

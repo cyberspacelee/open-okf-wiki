@@ -178,14 +178,24 @@ export function AgentWorkspacePage() {
         data-testid="agent-workspace-page"
         className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden"
       >
-        <div className="flex shrink-0 flex-col gap-1.5">
-          <p className="text-[11px] text-muted-foreground">
-            <Link to="/workspaces" className="hover:underline">
+        <div className="flex shrink-0 flex-col gap-1">
+          <div className="flex min-w-0 items-baseline gap-2 text-xs text-muted-foreground">
+            <Link to="/workspaces" className="hover:text-foreground hover:underline">
               {t.nav.workspaces}
             </Link>
-            <span className="mx-1.5">/</span>
-            <span>{workspace?.name ?? t.agentWorkspace.title}</span>
-          </p>
+            <span aria-hidden>/</span>
+            <span className="truncate font-medium text-foreground">
+              {workspace?.name ?? t.agentWorkspace.title}
+            </span>
+            {rootPath ? (
+              <span
+                className="hidden min-w-0 truncate font-mono text-[11px] sm:inline"
+                title={rootPath}
+              >
+                {rootPath}
+              </span>
+            ) : null}
+          </div>
           {id ? <WorkspaceSubnav workspaceId={id} /> : null}
         </div>
 

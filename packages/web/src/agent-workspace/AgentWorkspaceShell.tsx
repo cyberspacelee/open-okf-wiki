@@ -2,17 +2,11 @@
  * Agent Workspace 3-pane shell (ADR 0030).
  *
  * left: session list · center: transcript + composer · right: context panels
- * Uses existing shadcn Sidebar primitives only for density cues; layout is
- * a plain flex split (not the app nav Sidebar).
+ * Page-level Subnav owns workspace chrome; this shell only toggles panes on mobile.
  */
 
 import { useState } from "react";
-import { Link } from "react-router-dom";
-import {
-  LayoutListIcon,
-  PanelRightIcon,
-  SettingsIcon,
-} from "lucide-react";
+import { LayoutListIcon, PanelRightIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -23,7 +17,6 @@ import {
 import { cn } from "@/lib/utils";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useI18n } from "../i18n";
-import { workspaceHref } from "../lib/workspace-path";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Composer } from "./composer/Composer";
 import { ContextPanels } from "./panels/ContextPanels";
@@ -147,9 +140,9 @@ export function AgentWorkspaceShell({
         className,
       )}
     >
-      {/* Compact chrome */}
-      <header className="flex shrink-0 items-center gap-2 border-b border-border px-2.5 py-1.5">
-        {isMobile ? (
+      {/* Mobile-only pane toggles — desktop chrome lives in page Subnav. */}
+      {isMobile ? (
+        <header className="flex shrink-0 items-center gap-2 border-b border-border px-2 py-1">
           <Button
             type="button"
             size="icon-sm"
@@ -159,30 +152,9 @@ export function AgentWorkspaceShell({
           >
             <LayoutListIcon />
           </Button>
-        ) : null}
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-semibold tracking-tight">
+          <div className="min-w-0 flex-1 truncate text-sm font-medium">
             {workspace?.name ?? t.agentWorkspace.title}
           </div>
-          <div className="truncate font-mono text-[11px] text-muted-foreground">
-            {workspace?.rootPath ?? rootPath ?? workspaceId}
-          </div>
-        </div>
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          nativeButton={false}
-          render={
-            <Link to={workspaceHref(workspaceId, "/settings", rootPath)} />
-          }
-        >
-          <SettingsIcon data-icon="inline-start" />
-          <span className="hidden sm:inline">
-            {t.agentWorkspace.workspaceSettings}
-          </span>
-        </Button>
-        {isMobile ? (
           <Button
             type="button"
             size="icon-sm"
@@ -192,8 +164,8 @@ export function AgentWorkspaceShell({
           >
             <PanelRightIcon />
           </Button>
-        ) : null}
-      </header>
+        </header>
+      ) : null}
 
       {agentError ? (
         <div className="shrink-0 px-2.5 pt-2">
@@ -201,7 +173,6 @@ export function AgentWorkspaceShell({
         </div>
       ) : null}
 
-      {/* 3 panes */}
       <div className="flex min-h-0 flex-1">
         {!isMobile ? (
           <aside className="flex w-56 shrink-0 flex-col border-r border-border md:w-60">

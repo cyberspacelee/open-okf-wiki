@@ -207,6 +207,14 @@
   @apply bg-muted font-semibold text-foreground;
 }
 
+/**
+ * Shared mono payload surface (tool I/O, thinking, sheet peeks).
+ * Matches Streamdown code density without nested borders.
+ */
+.okf-code-snippet {
+  @apply m-0 max-h-64 overflow-x-auto overflow-y-auto rounded-md border border-border/70 bg-muted/40 p-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words;
+}
+
 .form {
   @apply flex max-w-xl flex-col gap-4;
 }
@@ -299,16 +307,8 @@ code.mono {
   @apply mt-4 flex list-disc flex-col gap-1.5 pl-5 text-sm text-muted-foreground;
 }
 
-.run-publish-actions {
-  @apply mt-4 flex flex-col gap-3 border-t border-border pt-4;
-}
-
 .run-event-log {
   @apply mt-4 border-t border-border pt-3;
-}
-
-.panel-subtitle {
-  @apply mb-2 text-sm font-semibold;
 }
 
 .event-log {
@@ -485,15 +485,6 @@ code.mono {
   @apply my-0 overflow-x-auto;
 }
 
-/* Session timeline leftovers (legacy class hooks) */
-.session-timeline {
-  @apply flex max-h-[28rem] flex-col gap-3 overflow-y-auto rounded-md border p-3;
-}
-
-.session-timeline__item {
-  @apply min-w-0;
-}
-
 .session-markdown,
 .agent-markdown {
   @apply text-sm leading-relaxed;
@@ -569,66 +560,15 @@ code.mono {
   @apply border border-border px-2 py-1 text-left;
 }
 
-.session-tool-card {
-  @apply rounded-md border bg-card px-3 py-2 flex flex-col gap-1;
-}
-
-.session-tool-card--subagent {
-  @apply border-l-2 border-l-primary;
-}
-
-.session-tool-card__header {
-  @apply flex flex-wrap items-center gap-2;
-}
-
-.session-tool-card__name {
-  @apply font-medium text-sm;
-}
-
-.session-tool-card__row {
-  @apply break-all;
-}
-
-.session-tool-card__id {
-  @apply truncate opacity-70;
-}
-
-.run-session-timeline {
-  @apply mt-3;
-}
-
 /* Skill settings editor: keep fork tooling usable on narrow layouts */
 #settings-skill-file-editor,
 [data-testid="settings-skill-file-editor"] {
   @apply max-w-full;
 }
 
-.session-plan-card {
-  @apply mt-3 rounded-md border border-amber-500/40 bg-card p-4 flex flex-col gap-2;
-}
-
-.session-plan-pages {
-  @apply flex list-disc flex-col gap-1 pl-5;
-}
-
-.run-publish-actions {
-  @apply mt-2;
-}
-
 @media (max-width: 720px) {
-  /* Session header actions + publish HITL: full-width stack on narrow screens */
-  .run-page .row-actions,
   [data-testid="run-page"] .row-actions {
     @apply w-full;
-  }
-
-  .run-publish-actions .row-actions {
-    @apply w-full flex-col items-stretch;
-  }
-
-  .run-publish-actions .row-actions > button,
-  [data-testid="run-publish-actions"] button {
-    @apply w-full min-h-9;
   }
 
   .row-between {
