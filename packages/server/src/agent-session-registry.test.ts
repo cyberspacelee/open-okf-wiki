@@ -296,6 +296,134 @@ test("H2: concurrent ensureRegistered opens a single live SessionManager", async
   assert.equal(listLiveAgentSessionSummaries(workspace.id)[0]?.id, sessionId);
 });
 
+test("H2: delete wins over concurrent cold ensureRegistered (no reanimation)", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-registry-delete-open-race-"));
+  const oldMode = process.env.OKF_WIKI_AGENT_MODE;
+  process.env.OKF_WIKI_AGENT_MODE = "fixture";
+  t.after(async () => {
+    resetAgentSessionRegistryForTests();
+    if (oldMode === undefined) delete process.env.OKF_WIKI_AGENT_MODE;
+    else process.env.OKF_WIKI_AGENT_MODE = oldMode;
+    await removeRunRoot(root);
+  });
+
+  const workspace = await createWorkspace({
+    name: "Delete Open Race",
+    rootPath: root,
+    publicationPath: path.join(root, "published"),
+    resolvedModelId: "openai/test",
+  });
+  await saveWorkspace(workspace);
+  const sessionId = "delete-open-race";
+  const sessionsDir = path.join(workspace.rootPath, ".okf-wiki", "pi-sessions");
+
+  // Persist a real SessionManager JSONL, then drop the live handle so the next
+  // ensureRegistered is a cold open that can race with delete.
+  await registerAgentSession({ workspace, sessionId });
+  const warm = await ensureRegistered(workspace, sessionId);
+  warm.handle.session.sessionManager.appendMessage({
+    role: "user",
+    content: [{ type: "text", text: "persist me" }],
+    timestamp: Date.now(),
+  } as never);
+  warm.handle.session.sessionManager.appendMessage({
+    role: "assistant",
+    content: [{ type: "text", text: "ok" }],
+    api: "openai-completions",
+    provider: "fixture",
+    model: "fixture",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "stop",
+    timestamp: Date.now(),
+  } as never);
+  evictLiveAgentSessionForTests(workspace.id, sessionId);
+  assert.equal(listLiveAgentSessionSummaries(workspace.id).length, 0);
+  const beforeFiles = await readdir(sessionsDir);
+  assert.ok(
+    beforeFiles.some((name) => name.includes(sessionId)),
+    `expected persisted JSONL for ${sessionId}, got ${beforeFiles.join(", ")}`,
+  );
+
+  // Start cold open first so it is in-flight when delete begins, then race a
+  // second waiter + delete. Delete must serialize against the open single-flight.
+  const openA = ensureRegistered(workspace, sessionId).then(
+    (entry) => ({ ok: true as const, entry }),
+    (error: unknown) => ({
+      ok: false as const,
+      message: error instanceof Error ? error.message : String(error),
+    }),
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const openB = ensureRegistered(workspace, sessionId).then(
+    (entry) => ({ ok: true as const, entry }),
+    (error: unknown) => ({
+      ok: false as const,
+      message: error instanceof Error ? error.message : String(error),
+    }),
+  );
+  const dispatch = dispatchAgentCommand(workspace, sessionId, {
+    type: "prompt",
+    text: "hello after race",
+  }).then(
+    (response) => ({ ok: true as const, response }),
+    (error: unknown) => ({
+      ok: false as const,
+      message: error instanceof Error ? error.message : String(error),
+    }),
+  );
+
+  const deleted = await deleteAgentSession(workspace, sessionId);
+  assert.ok(deleted.removed >= 1);
+
+  const [a, b, cmd] = await Promise.all([openA, openB, dispatch]);
+  // Waiters may succeed briefly (then be disposed) or reject with delete/not-found;
+  // either way they must not leave a live reanimation after delete resolves.
+  for (const result of [a, b]) {
+    if (!result.ok) {
+      assert.match(
+        result.message,
+        /deleted|not found|being deleted/i,
+        `unexpected open failure: ${result.message}`,
+      );
+    }
+  }
+  void cmd; // may reject or return failed — disk/live assertions below are the contract
+
+  // After delete resolves: no live entry, JSONL gone.
+  assert.equal(listLiveAgentSessionSummaries(workspace.id).length, 0);
+  const afterFiles = await readdir(sessionsDir).catch(() => [] as string[]);
+  assert.equal(
+    afterFiles.some((name) => name.includes(sessionId)),
+    false,
+    `session JSONL must be gone after delete; found ${afterFiles.join(", ")}`,
+  );
+
+  // Post-delete open must fail (session is gone; product does not resurrect).
+  await assert.rejects(
+    () => ensureRegistered(workspace, sessionId),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /not found|deleted/i);
+      return true;
+    },
+  );
+  assert.equal(listLiveAgentSessionSummaries(workspace.id).length, 0);
+  const finalFiles = await readdir(sessionsDir).catch(() => [] as string[]);
+  assert.equal(
+    finalFiles.some((name) => name.includes(sessionId)),
+    false,
+    `post-delete open must not recreate JSONL; found ${finalFiles.join(", ")}`,
+  );
+});
+
 test("H3: delete mid-gate aborts, settles, and cascades run data", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-registry-delete-gate-"));
   const oldMode = process.env.OKF_WIKI_AGENT_MODE;

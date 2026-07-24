@@ -52,7 +52,11 @@ type PendingGate = {
   detachAbort?: () => void;
 };
 
-/** Bound wait for abort/idle before cascading Session delete. */
+/**
+ * Bound wait for abort/idle before cascading Session delete.
+ * Fail-open: if the session never reports idle within this window, delete still
+ * proceeds (dispose + disk cascade) rather than hanging forever.
+ */
 const DELETE_SETTLE_TIMEOUT_MS = 5_000;
 const DELETE_SETTLE_POLL_MS = 25;
 
@@ -60,6 +64,11 @@ const liveSessions = new Map<string, RegisteredAgentSession>();
 const pendingGates = new Map<string, PendingGate>();
 /** Single-flight open for cold ensureRegistered (one SessionManager per JSONL). */
 const openingSessions = new Map<string, Promise<RegisteredAgentSession>>();
+/**
+ * Keys undergoing delete. In-flight cold opens check this after openOperatorSession
+ * and dispose without registerLive so a deleted session cannot reanimate.
+ */
+const deletingSessions = new Set<string>();
 
 function sessionKey(workspaceId: string, sessionId: string): string {
   return `${workspaceId}::${sessionId}`;
@@ -303,13 +312,17 @@ export async function registerAgentSession(input: {
 /**
  * Open the exact SessionManager id; never scan legacy metadata or cwd stores.
  * Concurrent cold opens share one in-flight promise so only one SessionManager
- * is constructed against the JSONL.
+ * is constructed against the JSONL. A concurrent delete wins: the open disposes
+ * its handle and rejects rather than reanimating a deleted session.
  */
 export async function ensureRegistered(
   workspace: WorkspaceConfig,
   sessionId: string,
 ): Promise<RegisteredAgentSession> {
   const key = sessionKey(workspace.id, sessionId);
+  if (deletingSessions.has(key)) {
+    throw new Error(`Operator Session is being deleted: ${sessionId}`);
+  }
   const existing = liveSessions.get(key);
   if (existing) return existing;
 
@@ -317,13 +330,29 @@ export async function ensureRegistered(
   if (inFlight) return inFlight;
 
   const openPromise = (async (): Promise<RegisteredAgentSession> => {
+    if (deletingSessions.has(key)) {
+      throw new Error(`Operator Session is being deleted: ${sessionId}`);
+    }
     // Re-check after any prior await inside open; another path may have registered.
     const raced = liveSessions.get(key);
     if (raced) return raced;
     const runtime = await runtimeInput(workspace, sessionId);
+    if (deletingSessions.has(key)) {
+      throw new Error(`Operator Session is being deleted: ${sessionId}`);
+    }
     const again = liveSessions.get(key);
     if (again) return again;
     const handle = await openOperatorSession({ ...runtime.input, sessionId });
+    // Delete may have started while openOperatorSession was in flight. Dispose
+    // immediately and reject so waiters never observe a resurrected live entry.
+    if (deletingSessions.has(key)) {
+      try {
+        handle.dispose();
+      } catch {
+        // Already disposed.
+      }
+      throw new Error(`Operator Session was deleted during open: ${sessionId}`);
+    }
     return registerLive(workspace.id, handle, runtime.queueFixtureTurn);
   })();
 
@@ -357,38 +386,63 @@ export function listLiveAgentSessionSummaries(workspaceId: string): LiveAgentSes
  * Abort any live turn, wait briefly for idle/settle, dispose the handle, then
  * cascade v2 Run data + SessionManager JSONL. Gate waiters are rejected first
  * so wiki_produce cannot keep writing after delete begins.
+ *
+ * Serialized against cold open on the same key: marks the session deleting,
+ * awaits any in-flight ensureRegistered open (disposing a late-arriving handle
+ * via the deleting flag), then tears down live state and cascades disk.
  */
 export async function deleteAgentSession(
   workspace: WorkspaceConfig,
   sessionId: string,
 ): Promise<{ sessionId: string; removed: number }> {
   const key = sessionKey(workspace.id, sessionId);
-  const live = liveSessions.get(key);
-  const hadLive = Boolean(live);
 
-  // Unblock gate waiters before filesystem cascade so tool catch can finish.
-  pendingGates.get(key)?.reject(new Error("Wiki Run cancelled"));
+  // Mark first so concurrent/in-flight opens cannot registerLive after we cascade.
+  deletingSessions.add(key);
+  try {
+    // Unblock gate waiters before filesystem cascade so tool catch can finish.
+    pendingGates.get(key)?.reject(new Error("Wiki Run cancelled"));
 
-  if (live) {
-    await live.handle.session.abort().catch(() => undefined);
-    await waitForSessionQuiet(live, DELETE_SETTLE_TIMEOUT_MS);
-    disposeLive(live);
-    liveSessions.delete(key);
+    // Await the cold-open single-flight so we can dispose its handle. Without
+    // this, openOperatorSession + registerLive can finish after disk delete and
+    // reanimate a “deleted” session.
+    const inFlight = openingSessions.get(key);
+    if (inFlight) {
+      try {
+        await inFlight;
+      } catch {
+        // Open failed or was cancelled by the deleting flag — nothing to dispose
+        // from that path (handle disposed inside ensureRegistered if needed).
+      }
+    }
+
+    const live = liveSessions.get(key);
+    const hadLive = Boolean(live);
+
+    if (live) {
+      await live.handle.session.abort().catch(() => undefined);
+      await waitForSessionQuiet(live, DELETE_SETTLE_TIMEOUT_MS);
+      disposeLive(live);
+      liveSessions.delete(key);
+    }
+
+    // Open's finally may already have cleared this; drop any stale entry.
+    openingSessions.delete(key);
+
+    const result = await deleteOperatorSession(workspace.rootPath, sessionId);
+    return {
+      sessionId,
+      removed: (hadLive || result.deleted ? 1 : 0) + result.removedRunIds.length,
+    };
+  } finally {
+    deletingSessions.delete(key);
   }
-
-  // Drop any cold-open still racing this id.
-  openingSessions.delete(key);
-
-  const result = await deleteOperatorSession(workspace.rootPath, sessionId);
-  return {
-    sessionId,
-    removed: (hadLive || result.deleted ? 1 : 0) + result.removedRunIds.length,
-  };
 }
 
 /**
  * Wait until the AgentSession reports idle and the registry busy flag clears,
- * or until the timeout elapses (delete still proceeds).
+ * or until the timeout elapses. Fail-open: timeout resolves without error so
+ * delete can still dispose and cascade disk (never hangs forever).
  */
 async function waitForSessionQuiet(
   entry: RegisteredAgentSession,
@@ -425,6 +479,7 @@ async function waitForSessionQuiet(
       }
     });
     const poll = setInterval(check, DELETE_SETTLE_POLL_MS);
+    // Fail-open: proceed with delete even if the turn never reports idle.
     const timer = setTimeout(finish, timeoutMs);
     check();
   });
@@ -473,6 +528,7 @@ export function resetAgentSessionRegistryForTests(): void {
   for (const entry of liveSessions.values()) disposeLive(entry);
   liveSessions.clear();
   openingSessions.clear();
+  deletingSessions.clear();
   for (const pending of pendingGates.values()) pending.reject(new Error("test reset"));
   pendingGates.clear();
 }
