@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { assertOrdinaryTree, makeTreeReadOnly, makeTreeWritable } from "./immutable-tree.js";
 
 /** Max single skill file size included in the digest (1 MiB). */
 export const SKILL_DIGEST_MAX_FILE_BYTES = 1_048_576;
@@ -117,6 +118,53 @@ export async function skillDigest(skillRoot: string): Promise<string> {
   }
 
   return hash.digest("hex");
+}
+
+/**
+ * Copy a Skill Version as ordinary files, then recompute and verify its digest.
+ * The destination must not exist and is sealed read-only only after verification.
+ */
+export async function materializeSkillVersion(input: {
+  sourceSkillPath: string;
+  destination: string;
+  expectedDigest: string;
+}): Promise<{ path: string; digest: string }> {
+  const source = path.resolve(input.sourceSkillPath);
+  const destination = path.resolve(input.destination);
+  const files = await listSkillFiles(source);
+  await mkdir(path.dirname(destination), { recursive: true });
+  await mkdir(destination);
+
+  try {
+    for (const relativePath of files) {
+      const segments = relativePath.split("/");
+      if (segments.some((segment) => !segment || segment === "." || segment === "..")) {
+        throw new Error(`invalid skill-relative path: ${relativePath}`);
+      }
+      const sourceFile = path.join(source, ...segments);
+      const sourceInfo = await lstat(sourceFile);
+      if (sourceInfo.isSymbolicLink() || !sourceInfo.isFile()) {
+        throw new Error(`skill entry is not an ordinary file: ${relativePath}`);
+      }
+      const destinationFile = path.join(destination, ...segments);
+      await mkdir(path.dirname(destinationFile), { recursive: true });
+      await writeFile(destinationFile, await readFile(sourceFile), { flag: "wx" });
+    }
+
+    await assertOrdinaryTree(destination, "Producer Skill");
+    const digest = await skillDigest(destination);
+    if (digest !== input.expectedDigest) {
+      throw new Error(
+        `Producer Skill digest changed while freezing (${input.expectedDigest} != ${digest})`,
+      );
+    }
+    await makeTreeReadOnly(destination);
+    return { path: destination, digest };
+  } catch (error) {
+    await makeTreeWritable(destination).catch(() => undefined);
+    await rm(destination, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 /**

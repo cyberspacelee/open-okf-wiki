@@ -7,14 +7,23 @@
  *   wiki/     — Staging Wiki (writable for write roles)
  *   analysis/ — spec + receipts (writable for write roles)
  *
- * Host path guards are pure and unit-tested. When createAgentSession is given
+ * Agent path guards are pure and unit-tested. When createAgentSession is given
  * `customTools` built here, write/edit are Operations-wrapped so the FS layer
  * cannot write outside wiki/ + analysis/. Read tools reject ignored source paths
  * when an ignore list is provided.
  */
 
 import { constants } from "node:fs";
-import { access, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import {
+  access,
+  glob as fsGlob,
+  mkdir,
+  readdir,
+  readFile,
+  realpath,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import {
   createEditToolDefinition,
@@ -24,6 +33,7 @@ import {
   createReadToolDefinition,
   createWriteToolDefinition,
   type EditOperations,
+  type FindOperations,
   type GrepOperations,
   type LsOperations,
   type ReadOperations,
@@ -224,16 +234,161 @@ export type WikiToolOperationsOptions = {
   sourceIgnores?: SourceIgnoreInput;
 };
 
-function guardAbs(
+function assertRelativeToolPath(inputPath: unknown): void {
+  if (inputPath === undefined || inputPath === "") {
+    return;
+  }
+  if (typeof inputPath !== "string") {
+    throw new Error("tool path must be a relative string");
+  }
+  const normalized = inputPath.replace(/\\/g, "/");
+  if (
+    path.isAbsolute(inputPath) ||
+    /^[A-Za-z]:\//.test(normalized) ||
+    normalized.startsWith("//")
+  ) {
+    throw new Error(`tool path must be relative: ${inputPath}`);
+  }
+  if (normalized.split("/").includes("..")) {
+    throw new Error(`tool path must not contain '..': ${inputPath}`);
+  }
+}
+
+function withRelativePathGuard<T extends ToolDefinition<any, any>>(definition: T): T {
+  const execute = definition.execute;
+  return {
+    ...definition,
+    execute: (async (
+      toolCallId: string,
+      input: { path?: unknown },
+      signal: AbortSignal | undefined,
+      onUpdate: unknown,
+      context: unknown,
+    ) => {
+      assertRelativeToolPath(input?.path);
+      return (execute as (...args: any[]) => Promise<unknown>)(
+        toolCallId,
+        input,
+        signal,
+        onUpdate,
+        context,
+      );
+    }) as T["execute"],
+  };
+}
+
+function grepResultPath(line: string): string | undefined {
+  return /^(.*?)(?::\d+:|-\d+-)/.exec(line)?.[1];
+}
+
+function withGrepSourceIgnoreFilter<T extends ToolDefinition<any, any>>(
+  definition: T,
+  options: WikiToolOperationsOptions,
+): T {
+  const guarded = withRelativePathGuard(definition);
+  if (!options.sourceIgnores) {
+    return guarded;
+  }
+  const execute = guarded.execute;
+  return {
+    ...guarded,
+    execute: (async (
+      toolCallId: string,
+      input: { path?: string },
+      signal: AbortSignal | undefined,
+      onUpdate: unknown,
+      context: unknown,
+    ) => {
+      const result = (await (execute as (...args: any[]) => Promise<any>)(
+        toolCallId,
+        input,
+        signal,
+        onUpdate,
+        context,
+      )) as { content?: Array<{ type: string; text?: string }> };
+      if (!Array.isArray(result.content)) {
+        return result;
+      }
+
+      const searchPath = assertPathAllowed(options.runWorkDir, input.path || ".", {
+        mode: "read",
+        sourceIgnores: options.sourceIgnores,
+      });
+      const searchInfo = await stat(searchPath);
+      const resultBase = searchInfo.isDirectory() ? searchPath : path.dirname(searchPath);
+      result.content = result.content.map((part) => {
+        if (part.type !== "text" || typeof part.text !== "string") {
+          return part;
+        }
+        let keptMatch = false;
+        const lines = part.text.split("\n").filter((line) => {
+          const resultPath = grepResultPath(line);
+          if (!resultPath) {
+            return true;
+          }
+          const absoluteResult = path.resolve(resultBase, resultPath);
+          const rel = path
+            .relative(path.resolve(options.runWorkDir), absoluteResult)
+            .replace(/\\/g, "/");
+          if (isIgnoredSourceRel(rel, options.sourceIgnores)) {
+            return false;
+          }
+          keptMatch = true;
+          return true;
+        });
+        return {
+          ...part,
+          text: keptMatch ? lines.join("\n") : "No matches found",
+        };
+      });
+      return result;
+    }) as T["execute"],
+  };
+}
+
+async function closestExistingRealPath(absolutePath: string): Promise<string> {
+  let current = absolutePath;
+  for (;;) {
+    try {
+      return await realpath(current);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT") {
+        throw error;
+      }
+      const parent = path.dirname(current);
+      if (parent === current) {
+        throw error;
+      }
+      current = parent;
+    }
+  }
+}
+
+async function guardAbs(
   runWorkDir: string,
   absolutePath: string,
   mode: PathAccessMode,
   sourceIgnores?: SourceIgnoreInput,
-): string {
-  return assertAbsolutePathAllowed(runWorkDir, absolutePath, {
+): Promise<string> {
+  const logicalPath = assertAbsolutePathAllowed(runWorkDir, absolutePath, {
     mode,
     sourceIgnores,
   });
+  const canonicalRoot = await realpath(path.resolve(runWorkDir));
+  const canonicalPath =
+    mode === "write" ? await closestExistingRealPath(logicalPath) : await realpath(logicalPath);
+  if (!isUnder(canonicalRoot, canonicalPath)) {
+    throw new Error(`path escapes run workdir through symlink: ${absolutePath}`);
+  }
+
+  if (mode === "read") {
+    const canonicalRel = path.relative(canonicalRoot, canonicalPath).replace(/\\/g, "/");
+    if (canonicalRel && isIgnoredSourceRel(canonicalRel, sourceIgnores)) {
+      throw new Error(`read denied: symlink target is ignored by Source Ignores (${canonicalRel})`);
+    }
+  }
+  return logicalPath;
 }
 
 /** Read Operations: contain to runWorkDir + optional source ignores. */
@@ -241,12 +396,12 @@ export function createWikiReadOperations(options: WikiToolOperationsOptions): Re
   const { runWorkDir, sourceIgnores } = options;
   return {
     async readFile(absolutePath) {
-      guardAbs(runWorkDir, absolutePath, "read", sourceIgnores);
-      return readFile(absolutePath);
+      const safePath = await guardAbs(runWorkDir, absolutePath, "read", sourceIgnores);
+      return readFile(safePath);
     },
     async access(absolutePath) {
-      guardAbs(runWorkDir, absolutePath, "read", sourceIgnores);
-      await access(absolutePath, constants.R_OK);
+      const safePath = await guardAbs(runWorkDir, absolutePath, "read", sourceIgnores);
+      await access(safePath, constants.R_OK);
     },
   };
 }
@@ -256,12 +411,12 @@ export function createWikiWriteOperations(options: WikiToolOperationsOptions): W
   const { runWorkDir } = options;
   return {
     async writeFile(absolutePath, content) {
-      guardAbs(runWorkDir, absolutePath, "write");
-      await writeFile(absolutePath, content, "utf8");
+      const safePath = await guardAbs(runWorkDir, absolutePath, "write");
+      await writeFile(safePath, content, "utf8");
     },
     async mkdir(dir) {
-      guardAbs(runWorkDir, dir, "write");
-      await mkdir(dir, { recursive: true });
+      const safePath = await guardAbs(runWorkDir, dir, "write");
+      await mkdir(safePath, { recursive: true });
     },
   };
 }
@@ -272,16 +427,16 @@ export function createWikiEditOperations(options: WikiToolOperationsOptions): Ed
   return {
     async readFile(absolutePath) {
       // edit only targets files that may be written
-      guardAbs(runWorkDir, absolutePath, "write");
-      return readFile(absolutePath);
+      const safePath = await guardAbs(runWorkDir, absolutePath, "write");
+      return readFile(safePath);
     },
     async writeFile(absolutePath, content) {
-      guardAbs(runWorkDir, absolutePath, "write");
-      await writeFile(absolutePath, content, "utf8");
+      const safePath = await guardAbs(runWorkDir, absolutePath, "write");
+      await writeFile(safePath, content, "utf8");
     },
     async access(absolutePath) {
-      guardAbs(runWorkDir, absolutePath, "write");
-      await access(absolutePath, constants.R_OK | constants.W_OK);
+      const safePath = await guardAbs(runWorkDir, absolutePath, "write");
+      await access(safePath, constants.R_OK | constants.W_OK);
     },
   };
 }
@@ -291,22 +446,23 @@ export function createWikiLsOperations(options: WikiToolOperationsOptions): LsOp
   const { runWorkDir, sourceIgnores } = options;
   const root = path.resolve(runWorkDir);
   return {
-    exists(absolutePath) {
+    async exists(absolutePath) {
       try {
-        guardAbs(runWorkDir, absolutePath, "read", sourceIgnores);
+        const safePath = await guardAbs(runWorkDir, absolutePath, "read", sourceIgnores);
+        await access(safePath, constants.R_OK);
         return true;
       } catch {
         return false;
       }
     },
     async stat(absolutePath) {
-      guardAbs(runWorkDir, absolutePath, "read", sourceIgnores);
-      const info = await stat(absolutePath);
+      const safePath = await guardAbs(runWorkDir, absolutePath, "read", sourceIgnores);
+      const info = await stat(safePath);
       return { isDirectory: () => info.isDirectory() };
     },
     async readdir(absolutePath) {
-      guardAbs(runWorkDir, absolutePath, "read", sourceIgnores);
-      const names = await readdir(absolutePath);
+      const safePath = await guardAbs(runWorkDir, absolutePath, "read", sourceIgnores);
+      const names = await readdir(safePath);
       if (!sourceIgnores) {
         return names;
       }
@@ -324,13 +480,56 @@ export function createWikiGrepOperations(options: WikiToolOperationsOptions): Gr
   const { runWorkDir, sourceIgnores } = options;
   return {
     async isDirectory(absolutePath) {
-      guardAbs(runWorkDir, absolutePath, "read", sourceIgnores);
-      const info = await stat(absolutePath);
+      const safePath = await guardAbs(runWorkDir, absolutePath, "read", sourceIgnores);
+      const info = await stat(safePath);
       return info.isDirectory();
     },
     async readFile(absolutePath) {
-      guardAbs(runWorkDir, absolutePath, "read", sourceIgnores);
-      return readFile(absolutePath, "utf8");
+      const safePath = await guardAbs(runWorkDir, absolutePath, "read", sourceIgnores);
+      return readFile(safePath, "utf8");
+    },
+  };
+}
+
+/** Find Operations: native glob with the same containment and ignore policy. */
+export function createWikiFindOperations(options: WikiToolOperationsOptions): FindOperations {
+  const { runWorkDir, sourceIgnores } = options;
+  return {
+    async exists(absolutePath) {
+      try {
+        const safePath = await guardAbs(runWorkDir, absolutePath, "read", sourceIgnores);
+        await access(safePath, constants.R_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    async glob(pattern, cwd, { ignore, limit }) {
+      const safeCwd = await guardAbs(runWorkDir, cwd, "read", sourceIgnores);
+      const matches: string[] = [];
+      for await (const candidate of fsGlob(pattern, {
+        cwd: safeCwd,
+        exclude: ignore,
+      })) {
+        const absoluteCandidate = path.isAbsolute(candidate)
+          ? candidate
+          : path.resolve(safeCwd, candidate);
+        try {
+          const safeCandidate = await guardAbs(
+            runWorkDir,
+            absoluteCandidate,
+            "read",
+            sourceIgnores,
+          );
+          matches.push(safeCandidate);
+        } catch {
+          continue;
+        }
+        if (matches.length >= limit) {
+          break;
+        }
+      }
+      return matches;
     },
   };
 }
@@ -362,27 +561,41 @@ export function buildWikiScopedToolDefinitions(
   };
 
   const defs: ToolDefinition<any, any>[] = [
-    createReadToolDefinition(runWorkDir, {
-      operations: createWikiReadOperations(opsOpts),
-    }),
-    createLsToolDefinition(runWorkDir, {
-      operations: createWikiLsOperations(opsOpts),
-    }),
-    createGrepToolDefinition(runWorkDir, {
-      operations: createWikiGrepOperations(opsOpts),
-    }),
-    // Stock find (no custom Operations) — still constrained by cwd + tool allowlist.
-    createFindToolDefinition(runWorkDir),
+    withRelativePathGuard(
+      createReadToolDefinition(runWorkDir, {
+        operations: createWikiReadOperations(opsOpts),
+      }),
+    ),
+    withRelativePathGuard(
+      createLsToolDefinition(runWorkDir, {
+        operations: createWikiLsOperations(opsOpts),
+      }),
+    ),
+    withGrepSourceIgnoreFilter(
+      createGrepToolDefinition(runWorkDir, {
+        operations: createWikiGrepOperations(opsOpts),
+      }),
+      opsOpts,
+    ),
+    withRelativePathGuard(
+      createFindToolDefinition(runWorkDir, {
+        operations: createWikiFindOperations(opsOpts),
+      }),
+    ),
   ];
 
   if (input.mayWrite) {
     defs.push(
-      createWriteToolDefinition(runWorkDir, {
-        operations: createWikiWriteOperations(opsOpts),
-      }),
-      createEditToolDefinition(runWorkDir, {
-        operations: createWikiEditOperations(opsOpts),
-      }),
+      withRelativePathGuard(
+        createWriteToolDefinition(runWorkDir, {
+          operations: createWikiWriteOperations(opsOpts),
+        }),
+      ),
+      withRelativePathGuard(
+        createEditToolDefinition(runWorkDir, {
+          operations: createWikiEditOperations(opsOpts),
+        }),
+      ),
     );
   }
 

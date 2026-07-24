@@ -1,14 +1,13 @@
 /**
- * Materialise a Pi-friendly single-cwd layout for one Wiki Run (ADR 0030).
+ * Describe the immutable Run Boundary layout used by Pi (ADR 0032).
  *
  * {runWorkDir}/
- *   sources/<id>/  → snapshot roots (symlink)
- *   skill/         → Producer Skill (symlink)
+ *   sources/<id>/  → run-owned ordinary snapshot trees
+ *   skill/         → run-owned Producer Skill copy
  *   wiki/          → Staging Wiki (directory)
  *   analysis/      → spec + receipts
  */
 
-import { lstat, mkdir, rm, symlink } from "node:fs/promises";
 import path from "node:path";
 
 export type RunWorkdirLayout = {
@@ -21,59 +20,24 @@ export type RunWorkdirLayout = {
   sourceMounts: Map<string, string>;
 };
 
-export type MaterializeRunWorkdirInput = {
-  runWorkDir: string;
-  /** source id → absolute snapshot/checkout path */
-  sources: ReadonlyMap<string, string>;
-  /** absolute Producer Skill root */
-  skillRoot: string;
-  /** when true, wipe runWorkDir first */
-  reset?: boolean;
-};
-
-async function ensureSymlink(target: string, linkPath: string): Promise<void> {
-  try {
-    const st = await lstat(linkPath);
-    if (st.isSymbolicLink() || st.isDirectory() || st.isFile()) {
-      await rm(linkPath, { recursive: true, force: true });
-    }
-  } catch {
-    // missing is fine
-  }
-  await symlink(target, linkPath, "junction");
-}
-
-/**
- * Create the run workdir tree. Uses directory junctions/symlinks for sources and skill.
- * On Windows, `junction` avoids needing elevated symlink privileges for directories.
- */
-export async function materializeRunWorkdir(
-  input: MaterializeRunWorkdirInput,
-): Promise<RunWorkdirLayout> {
-  const runWorkDir = path.resolve(input.runWorkDir);
-  if (input.reset) {
-    await rm(runWorkDir, { recursive: true, force: true });
-  }
-
+/** Validate and project an already-frozen Run Boundary layout. Performs no I/O or copying. */
+export function runWorkdirLayout(
+  runWorkDirInput: string,
+  sourceMountsInput: ReadonlyMap<string, string>,
+): RunWorkdirLayout {
+  const runWorkDir = path.resolve(runWorkDirInput);
   const sourcesDir = path.join(runWorkDir, "sources");
   const skillDir = path.join(runWorkDir, "skill");
   const wikiDir = path.join(runWorkDir, "wiki");
   const analysisDir = path.join(runWorkDir, "analysis");
-
-  await mkdir(sourcesDir, { recursive: true });
-  await mkdir(wikiDir, { recursive: true });
-  await mkdir(analysisDir, { recursive: true });
-
   const sourceMounts = new Map<string, string>();
-  for (const [id, abs] of input.sources) {
-    const safeId = id.replace(/[/\\]/g, "_");
-    const mount = path.join(sourcesDir, safeId);
-    await ensureSymlink(path.resolve(abs), mount);
+  for (const [id, mountInput] of sourceMountsInput) {
+    const mount = path.resolve(mountInput);
+    if (mount !== path.join(sourcesDir, id)) {
+      throw new Error(`source ${id} is not mounted in the frozen Run workdir`);
+    }
     sourceMounts.set(id, mount);
   }
-
-  await ensureSymlink(path.resolve(input.skillRoot), skillDir);
-
   return {
     runWorkDir,
     sourcesDir,

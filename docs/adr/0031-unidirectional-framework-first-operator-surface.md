@@ -2,6 +2,7 @@
 
 **Status:** accepted  
 **Date:** 2026-07-23  
+**Refined by:** [ADR 0032](0032-pi-tool-owned-wiki-runs.md) (removes all product SSE injects, session metadata, and replay state)
 **Related:** [0030](0030-pi-agent-harness-for-semantic-workflow.md) (Pi stack), [0026](0026-session-centric-agent-workspace.md) (Session-centric intent), [0028](0028-supervisor-tree-and-thin-workflow-shell.md) (thin shell + produce), [0029](0029-architecture-cleanup-no-compat.md) (no dual paths), [0019](0019-prefer-run-boundary-over-host.md) (Run Boundary)  
 **Refines:** 0030 (session/events ownership), 0026 (visibility), operator-event-contract  
 **Does not supersede:** Run Boundary (`@okf-wiki/core`), Producer Skill method layer, WikiRunShell gates  

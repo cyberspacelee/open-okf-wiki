@@ -28,7 +28,6 @@ import {
   compactionSettingsFromBudget,
   resolveContextBudget,
 } from "./context-budget.js";
-import { piSessionsDir } from "./session-paths.js";
 import { buildWikiScopedToolDefinitions, type SourceIgnoreInput } from "./tool-operations.js";
 import {
   assertSafeWikiToolList,
@@ -46,29 +45,8 @@ export type CreateWikiSessionInput = {
   model?: Model<any>;
   /** Optional system prompt override (via DefaultResourceLoader). */
   systemPrompt?: string;
-  /**
-   * Prefer in-memory for tests.
-   * When omitted: if `workspaceRoot` is set, uses durable
-   * `SessionManager.create(runWorkDir, piSessionsDir(workspaceRoot))` (JSONL);
-   * otherwise `SessionManager.inMemory(runWorkDir)`.
-   */
+  /** Operator Sessions inject their sole durable SessionManager; child Sessions default in-memory. */
   sessionManager?: SessionManager;
-  /**
-   * Product / Pi session id. When creating a new durable JSONL, passed as
-   * `SessionManager.create(..., { id })` so history lookup by product id works
-   * (pi-web uses the same id for file + API).
-   */
-  sessionId?: string;
-  /**
-   * Resume an existing Pi JSONL (absolute path). When set with workspaceRoot,
-   * opens that file instead of creating a new empty session.
-   */
-  sessionFile?: string;
-  /**
-   * Workspace root for durable Pi JSONL sessions under
-   * `{workspaceRoot}/.okf-wiki/pi-sessions/`.
-   */
-  workspaceRoot?: string;
   /** Optional ModelRuntime for live enterprise gateways. */
   modelRuntime?: ModelRuntime;
   /**
@@ -101,20 +79,20 @@ export type CreateWikiSessionInput = {
    * Injected as additionalSkillPaths with noSkills:true (skip Pi defaults).
    */
   additionalSkillPaths?: readonly string[];
+  /** Additional real Pi custom tools (for example operator wiki_produce). */
+  customTools?: ToolDefinition<any, any>[];
 };
 
 export type WikiSessionHandle = {
   session: AgentSession;
   role: WikiAgentRole;
   /** Tool allowlist actually passed to createAgentSession. */
-  tools: readonly PiFsToolName[];
+  tools: readonly string[];
   runWorkDir: string;
   /** True when Operations-scoped customTools were registered. */
   scopedTools: boolean;
   /** Resolved context budget applied to compaction (if any). */
   contextBudget?: ContextBudget;
-  /** Absolute Pi JSONL path when durable (undefined for in-memory). */
-  sessionFile?: string;
   dispose: () => void;
 };
 
@@ -148,9 +126,7 @@ export function buildWikiSessionCustomTools(input: {
  */
 export async function createWikiSession(input: CreateWikiSessionInput): Promise<WikiSessionHandle> {
   const tools = resolveWikiSessionTools(input.role);
-  // Defensive copy for the SDK (mutable string[]).
-  const toolList = [...tools];
-  assertSafeWikiToolList(toolList);
+  assertSafeWikiToolList(tools);
 
   const runWorkDir = path.resolve(input.runWorkDir);
   await mkdir(runWorkDir, { recursive: true });
@@ -158,27 +134,7 @@ export async function createWikiSession(input: CreateWikiSessionInput): Promise<
   const agentDir = path.resolve(input.agentDir ?? path.join(runWorkDir, ".okf-pi-agent"));
   await mkdir(agentDir, { recursive: true });
 
-  let sessionManager = input.sessionManager;
-  if (!sessionManager) {
-    if (input.workspaceRoot) {
-      const sessionDir = piSessionsDir(input.workspaceRoot);
-      await mkdir(sessionDir, { recursive: true });
-      // Durable JSONL under workspace (ADR 0030). Resume existing file when
-      // known; otherwise create with product sessionId (Pi names the file
-      // `{timestamp}_{id}.jsonl` — see findPiSessionFile).
-      if (input.sessionFile) {
-        sessionManager = SessionManager.open(input.sessionFile, sessionDir, runWorkDir);
-      } else {
-        sessionManager = SessionManager.create(
-          runWorkDir,
-          sessionDir,
-          input.sessionId ? { id: input.sessionId } : undefined,
-        );
-      }
-    } else {
-      sessionManager = SessionManager.inMemory(runWorkDir);
-    }
-  }
+  const sessionManager = input.sessionManager ?? SessionManager.inMemory(runWorkDir);
 
   const maxFromModel =
     typeof input.model?.contextWindow === "number" && input.model.contextWindow > 0
@@ -217,19 +173,21 @@ export async function createWikiSession(input: CreateWikiSessionInput): Promise<
   await resourceLoader.reload();
 
   const useScoped = input.scopedTools !== false;
-  const customTools = useScoped
+  const scopedTools = useScoped
     ? buildWikiSessionCustomTools({
         role: input.role,
         runWorkDir,
         sourceIgnores: input.sourceIgnores,
       })
-    : undefined;
+    : [];
+  const customTools = [...scopedTools, ...(input.customTools ?? [])];
+  const toolList = [...new Set([...tools, ...customTools.map((definition) => definition.name)])];
 
   const { session } = await createAgentSession({
     cwd: runWorkDir,
     agentDir,
     tools: toolList,
-    customTools,
+    customTools: customTools.length > 0 ? customTools : undefined,
     sessionManager,
     settingsManager,
     resourceLoader,
@@ -244,7 +202,6 @@ export async function createWikiSession(input: CreateWikiSessionInput): Promise<
     runWorkDir,
     scopedTools: useScoped,
     contextBudget: budget,
-    sessionFile: session.sessionFile,
     dispose: () => {
       session.dispose();
     },

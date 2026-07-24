@@ -1,33 +1,21 @@
 /**
- * Agent Workspace 3-pane shell (ADR 0030 / 0031 WP6).
+ * Agent Workspace 3-pane shell (ADR 0032).
  *
  * left: session list · center: transcript + composer · right: context panels
- * Produce trail nests under the wiki_produce tool card on the transcript.
  */
 
+import type { AgentResumeGateCommand } from "@okf-wiki/contract";
 import { LayoutListIcon, PanelRightIcon } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
-import type {
-  ModelProfilePublic,
-  PiSessionSummary,
-  StoredRunRecord,
-  WikiRunPlan,
-  WorkspaceConfig,
-} from "../api";
+import type { PiSessionSummary, StoredRunRecord, WorkspaceConfig } from "../api";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { useI18n } from "../i18n";
 import { Composer } from "./composer/Composer";
-import type { ProduceUnit } from "./hooks/project/produce";
-import type {
-  AgentMessage,
-  AgentStatus,
-  PendingGate,
-  ResumeGateInput,
-} from "./hooks/useSessionAgent";
+import type { AgentMessage, AgentStatus } from "./hooks/useSessionAgent";
 import { ContextPanels } from "./panels/ContextPanels";
 import { SessionList } from "./session-list/SessionList";
 import { Transcript } from "./transcript/Transcript";
@@ -47,24 +35,14 @@ export type AgentWorkspaceShellProps = {
   input: string;
   onInputChange: (value: string) => void;
   onSend: () => void;
-  onStartWikiRun: () => void;
   onAbort: () => void;
+  onResumeGate: (command: AgentResumeGateCommand) => Promise<void>;
   agentStatus: AgentStatus;
+  agentReady: boolean;
   agentError?: unknown;
   onDismissAgentError?: () => void;
-  plan?: WikiRunPlan | null;
-  linkedRunId?: string | null;
-  phase?: string | null;
-  pendingGate?: PendingGate | null;
-  gateBusy?: boolean;
-  onResumeGate?: (input: ResumeGateInput) => void | Promise<void>;
   recentRuns?: StoredRunRecord[];
-  produceUnits?: ProduceUnit[];
   className?: string;
-  models?: ModelProfilePublic[];
-  wikiModelProfileId?: string;
-  onWikiModelProfileIdChange?: (profileId: string) => void;
-  defaultModelProfileId?: string;
 };
 
 export function AgentWorkspaceShell({
@@ -82,36 +60,19 @@ export function AgentWorkspaceShell({
   input,
   onInputChange,
   onSend,
-  onStartWikiRun,
   onAbort,
+  onResumeGate,
   agentStatus,
+  agentReady,
   agentError,
   onDismissAgentError,
-  plan = null,
-  linkedRunId = null,
-  phase = null,
-  pendingGate = null,
-  gateBusy = false,
-  onResumeGate,
   recentRuns = [],
-  produceUnits = [],
   className,
-  models = [],
-  wikiModelProfileId = "",
-  onWikiModelProfileIdChange,
-  defaultModelProfileId,
 }: AgentWorkspaceShellProps) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
   const [leftOpen, setLeftOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
-  const [focusedUnitId, setFocusedUnitId] = useState<string | null>(null);
-
-  const handleFocusUnit = useCallback((unitId: string) => {
-    setFocusedUnitId(unitId);
-    // On mobile, close the agents sheet so the transcript card is visible.
-    setRightOpen(false);
-  }, []);
 
   const sessionList = (
     <SessionList
@@ -120,7 +81,6 @@ export function AgentWorkspaceShell({
       onSelect={(id) => {
         onSelectSession(id);
         setLeftOpen(false);
-        setFocusedUnitId(null);
       }}
       onCreate={onCreateSession}
       onDelete={onDeleteSession}
@@ -134,13 +94,7 @@ export function AgentWorkspaceShell({
       workspaceId={workspaceId}
       rootPath={rootPath}
       workspace={workspace}
-      plan={plan}
-      linkedRunId={linkedRunId}
-      phase={phase}
       recentRuns={recentRuns}
-      produceUnits={produceUnits}
-      focusedUnitId={focusedUnitId}
-      onFocusUnit={handleFocusUnit}
     />
   );
 
@@ -189,28 +143,14 @@ export function AgentWorkspaceShell({
         ) : null}
 
         <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <Transcript
-            messages={messages}
-            pendingGate={pendingGate}
-            gateBusy={gateBusy}
-            onResumeGate={onResumeGate}
-            phase={phase}
-            onStartWikiRun={onStartWikiRun}
-            produceUnits={produceUnits}
-            focusedUnitId={focusedUnitId}
-          />
+          <Transcript messages={messages} onResumeGate={onResumeGate} />
           <Composer
             input={input}
             onInputChange={onInputChange}
             onSend={onSend}
-            onStartWikiRun={onStartWikiRun}
             onAbort={onAbort}
             status={agentStatus}
-            disabled={!activeSessionId}
-            models={models}
-            wikiModelProfileId={wikiModelProfileId}
-            onWikiModelProfileIdChange={onWikiModelProfileIdChange}
-            defaultModelProfileId={defaultModelProfileId}
+            disabled={!activeSessionId || !agentReady}
           />
         </main>
 

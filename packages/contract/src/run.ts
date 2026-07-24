@@ -1,9 +1,9 @@
 import { z } from "zod";
+import { IgnorePatternSchema, SourceIdSchema } from "./workspace.js";
 
 export const WikiRunRecordStatusSchema = z.enum([
   "running",
   "published",
-  "needs_input",
   "failed",
   "cancelled",
   "awaiting_plan",
@@ -12,39 +12,6 @@ export const WikiRunRecordStatusSchema = z.enum([
 ]);
 
 export type WikiRunRecordStatus = z.infer<typeof WikiRunRecordStatusSchema>;
-
-/** Process exit codes for headless CLI (stable automation contract). */
-export const WikiRunExitCode = {
-  success: 0,
-  failure: 1,
-  needsInput: 2,
-  awaitingPublication: 3,
-  publicationDeclined: 4,
-  cancelled: 5,
-  awaitingPlan: 6,
-} as const;
-
-export type WikiRunExitCodeValue = (typeof WikiRunExitCode)[keyof typeof WikiRunExitCode];
-
-export function exitCodeForStatus(status: WikiRunRecordStatus): WikiRunExitCodeValue {
-  switch (status) {
-    case "published":
-      return WikiRunExitCode.success;
-    case "needs_input":
-      return WikiRunExitCode.needsInput;
-    case "awaiting_publication":
-      return WikiRunExitCode.awaitingPublication;
-    case "publication_declined":
-      return WikiRunExitCode.publicationDeclined;
-    case "awaiting_plan":
-      return WikiRunExitCode.awaitingPlan;
-    case "cancelled":
-      return WikiRunExitCode.cancelled;
-    case "failed":
-    case "running":
-      return WikiRunExitCode.failure;
-  }
-}
 
 /** Page template hints from the Producer Skill. */
 export const WikiPageTemplateSchema = z.enum([
@@ -108,12 +75,6 @@ export const WikiRunSpecSchema = z.object({
 
 export type WikiRunSpec = z.infer<typeof WikiRunSpecSchema>;
 
-/**
- * @deprecated Use WikiRunSpec. Kept as a type alias during rename; same schema.
- */
-export const WikiRunPlanSchema = WikiRunSpecSchema;
-export type WikiRunPlan = WikiRunSpec;
-
 export const DefectSeveritySchema = z.enum(["blocking", "major", "minor"]);
 export type DefectSeverity = z.infer<typeof DefectSeveritySchema>;
 
@@ -147,38 +108,49 @@ export const MergedDefectReportSchema = z.object({
 
 export type MergedDefectReport = z.infer<typeof MergedDefectReportSchema>;
 
+/** Frozen identity and path policy for one Repository Snapshot. */
+export const RepositorySnapshotSchema = z
+  .object({
+    id: SourceIdSchema,
+    /** Exact Git object id materialised for the Wiki Run (SHA-1 or SHA-256). */
+    revision: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/),
+    /** Frozen patterns already applied to the materialised ordinary-file tree. */
+    effectiveIgnores: z.array(IgnorePatternSchema),
+  })
+  .strict();
+
+export type RepositorySnapshot = z.infer<typeof RepositorySnapshotSchema>;
+
 /**
- * Lightweight persisted run record for the Web UI / server registry.
- * Frozen skill fields + spec live on the record; orchestration is the
- * Mastra wiki-run workflow (thin shell + supervisor produce).
+ * Complete, secret-free Wiki Run Record.
+ *
+ * Every key is present in v2. State-dependent outcome fields use null/empty
+ * values so readers never infer semantics from a missing property. Frozen
+ * inputs are immutable after creation; only status and result fields change.
  */
-export const StoredRunRecordSchema = z.object({
-  runId: z.string().min(1),
-  workspaceId: z.string().min(1),
-  status: WikiRunRecordStatusSchema,
-  error: z.string().optional(),
-  autoApprove: z.boolean().optional(),
-  /** Absolute skill root frozen for this run (fork, home, or package). */
-  skillPath: z.string().min(1).optional(),
-  /** Content digest of the frozen Producer Skill. */
-  skillDigest: z.string().min(1).optional(),
-  /**
-   * Proposed / living WikiRunSpec (plan-gate + produce).
-   * Field name remains `plan` for Session/Run UI continuity; value is WikiRunSpec.
-   */
-  plan: WikiRunSpecSchema.optional(),
-  /** Wiki-relative page paths produced under staging (when available). */
-  pages: z.array(z.string().min(1)).optional(),
-  /** Short operator-facing summary of the run outcome. */
-  summary: z.string().optional(),
-  /**
-   * Operator Session that started or owns this run (Session-first linkage).
-   * Headless / autoApprove API starts may omit this.
-   */
-  sessionId: z.string().min(1).optional(),
-  createdAt: z.string().min(1),
-  updatedAt: z.string().min(1),
-});
+export const StoredRunRecordSchema = z
+  .object({
+    schema: z.literal("okf.wiki-run/v2"),
+    runId: z.string().trim().min(1),
+    workspaceId: z.string().trim().min(1),
+    sessionId: z.string().trim().min(1),
+    status: WikiRunRecordStatusSchema,
+    autoApprove: z.boolean(),
+    error: z.string().nullable(),
+    /** Absolute path to the immutable, run-owned Producer Skill copy. */
+    skillPath: z.string().trim().min(1),
+    /** SHA-256 content digest reverified after copying the Producer Skill. */
+    skillDigest: z.string().regex(/^[0-9a-f]{64}$/),
+    sources: z.array(RepositorySnapshotSchema).min(1),
+    spec: WikiRunSpecSchema.nullable(),
+    /** Wiki-relative page paths produced under staging. */
+    pages: z.array(z.string().trim().min(1)),
+    /** Short operator-facing outcome summary. */
+    summary: z.string().nullable(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  })
+  .strict();
 
 export type StoredRunRecord = z.infer<typeof StoredRunRecordSchema>;
 

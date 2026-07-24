@@ -3,33 +3,20 @@ import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
-import { produceRoleForChild, runChildrenParallel, runChildSession } from "./children.js";
+import { runChildrenParallel, runChildSession } from "./children.js";
 
 describe("produce/children", () => {
-  it("maps child roles to operator-visible produce roles", () => {
-    assert.equal(produceRoleForChild("plan"), "planner");
-    assert.equal(produceRoleForChild("leaf"), "leaf");
-    assert.equal(produceRoleForChild("domain"), "domain");
-    assert.equal(produceRoleForChild("reviewer"), "reviewer");
-    assert.equal(produceRoleForChild("root_research"), "root");
-  });
-
   it("fixture child returns summary without LLM", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "okf-child-"));
-    const forwarded: Array<{ kind: string; payload: unknown }> = [];
     const r = await runChildSession({
       role: "domain",
       runWorkDir: dir,
       task: "Investigate auth module",
       fixture: true,
-      unitId: "domain-auth",
-      onPiEvent: (kind, payload) => forwarded.push({ kind, payload }),
     });
     assert.equal(r.mode, "fixture");
     assert.match(r.summary, /domain/);
     assert.match(r.summary, /auth/);
-    // Fixture path has no live Pi session — no stream frames.
-    assert.equal(forwarded.length, 0);
   });
 
   it("parallel fan-out respects order", async () => {

@@ -43,7 +43,7 @@ export function orchestrationLimitsInstruction(
   return [
     `Supervisor policy: maxDepth=${orch.maxDepth},`,
     `maxDomainFanOut=${orch.maxDomainFanOut}, maxLeafFanOut=${orch.maxLeafFanOut}`,
-    `(Host-enforced via delegation hooks where possible).`,
+    `(Produce-enforced via delegation hooks where possible).`,
     `Domain/Leaf/Reviewer tool steps are host-capped at`,
     `${orch.domainMaxSteps}/${orch.leafMaxSteps}/${orch.reviewerMaxSteps}.`,
     "Prefer the fewest Domains that isolate independent evidence; do not open empty slots.",

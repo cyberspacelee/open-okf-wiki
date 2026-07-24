@@ -1,158 +1,78 @@
-/**
- * Parse model plan text into a WikiRunSpec.
- */
+/** Parse the Planner response into the one executable WikiRunSpec shape. */
 
-import { defaultWikiRunSpec, type WikiRunSpec, WikiRunSpecSchema } from "@okf-wiki/contract";
+import { type WikiRunSpec, WikiRunSpecSchema } from "@okf-wiki/contract";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isCompleteSpec(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const required = [
+    "version",
+    "summary",
+    "audience",
+    "domains",
+    "pages",
+    "openQuestions",
+    "acceptance",
+    "changelog",
+  ];
+  if (!required.every((key) => key in value)) return false;
+  if (!Array.isArray(value.domains) || !Array.isArray(value.pages)) return false;
+  if (
+    !value.domains.every(
+      (domain) =>
+        isRecord(domain) &&
+        ["id", "title", "scope", "critical", "questions"].every((key) => key in domain),
+    )
+  ) {
+    return false;
+  }
+  if (
+    !value.pages.every(
+      (page) =>
+        isRecord(page) &&
+        ["path", "purpose", "domainIds", "questions", "critical"].every((key) => key in page),
+    )
+  ) {
+    return false;
+  }
+  const acceptance = value.acceptance;
+  return (
+    isRecord(acceptance) &&
+    ["reviewRequired", "maxRepairRounds", "blockingSeverities"].every((key) => key in acceptance)
+  );
+}
 
 /**
- * Parse a model plan into a WikiRunSpec.
- * Accepts fenced JSON Spec/plan shapes or Markdown page lists.
- * Falls back to prior Spec pages or defaultWikiRunSpec.
+ * Accept a complete WikiRunSpec as raw or fenced JSON.
+ *
+ * Markdown page lists and thin `{ summary, pages }` plans are intentionally
+ * rejected: accepting them made the live Planner silently succeed with an
+ * invented default Spec instead of failing closed.
  */
-export function parsePlanFromAgentText(
-  text: string,
-  options: {
-    workspaceName: string;
-    prior?: WikiRunSpec;
-  },
-): WikiRunSpec {
+export function parsePlanFromAgentText(text: string): WikiRunSpec {
   const raw = text?.trim() ?? "";
-  const pages: Array<{ path: string; purpose: string }> = [];
-  const seen = new Set<string>();
+  const fence = /```(?:json)?\s*([\s\S]*?)```/i.exec(raw);
+  const candidates = [fence?.[1]?.trim(), raw].filter(
+    (candidate, index, values): candidate is string =>
+      Boolean(candidate) && values.indexOf(candidate) === index,
+  );
 
-  // Prefer fenced JSON Spec (or legacy { summary, pages }) when present.
-  const jsonFence = /```(?:json)?\s*([\s\S]*?)```/i.exec(raw);
-  if (jsonFence?.[1]) {
+  for (const candidate of candidates) {
     try {
-      const parsed = JSON.parse(jsonFence[1]!) as Record<string, unknown>;
-      const asSpec = WikiRunSpecSchema.safeParse({
-        ...parsed,
-        ...(options.prior?.notes && !parsed.notes ? { notes: options.prior.notes } : {}),
-      });
-      if (asSpec.success && asSpec.data.pages.length > 0) {
-        return asSpec.data;
-      }
-      if (Array.isArray(parsed.pages)) {
-        for (const item of parsed.pages) {
-          if (!item || typeof item !== "object") {
-            continue;
-          }
-          const pathVal = String((item as { path?: unknown }).path ?? "").trim();
-          const purposeVal = String((item as { purpose?: unknown }).purpose ?? "").trim();
-          if (!pathVal || !purposeVal || seen.has(pathVal)) {
-            continue;
-          }
-          seen.add(pathVal);
-          pages.push({
-            path: pathVal.slice(0, 200),
-            purpose: purposeVal.slice(0, 500),
-          });
-        }
-      }
-      if (pages.length > 0) {
-        const summary =
-          (typeof parsed.summary === "string" && parsed.summary.trim()) ||
-          raw
-            .split("\n")
-            .find((l) => l.trim() && !l.trim().startsWith("```"))
-            ?.trim() ||
-          `Proposed wiki plan for ${options.workspaceName}`;
-        return WikiRunSpecSchema.parse({
-          summary: summary.slice(0, 1500),
-          pages: pages.map((p) => ({
-            ...p,
-            domainIds: ["core"],
-            questions: [p.purpose],
-            critical: true,
-          })),
-          domains: [
-            {
-              id: "core",
-              title: "Core",
-              scope: "Primary repository scope",
-              critical: true,
-              questions: pages.map((p) => p.purpose).slice(0, 8),
-            },
-          ],
-          ...(options.prior?.notes
-            ? { notes: options.prior.notes }
-            : typeof parsed.notes === "string" && parsed.notes.trim()
-              ? { notes: parsed.notes.trim().slice(0, 4000) }
-              : {}),
-        });
-      }
+      const start = candidate.indexOf("{");
+      const end = candidate.lastIndexOf("}");
+      if (start < 0 || end <= start) continue;
+      const value = JSON.parse(candidate.slice(start, end + 1)) as unknown;
+      if (!isCompleteSpec(value)) continue;
+      const parsed = WikiRunSpecSchema.safeParse(value);
+      if (parsed.success) return parsed.data;
     } catch {
-      // fall through to list parsing
+      // Try the next representation before failing closed.
     }
   }
 
-  const lineRe = /^[\s>*-]*\**`?([A-Za-z0-9_./-]+\.md)`?\**\s*[-—:–]\s+(.+?)\s*$/gm;
-  let match: RegExpExecArray | null;
-  while ((match = lineRe.exec(raw)) !== null) {
-    const pathVal = match[1]!.trim();
-    const purposeVal = match[2]!.replace(/\*\*/g, "").trim();
-    if (!pathVal || !purposeVal || seen.has(pathVal)) {
-      continue;
-    }
-    seen.add(pathVal);
-    pages.push({
-      path: pathVal.slice(0, 200),
-      purpose: purposeVal.slice(0, 500),
-    });
-  }
-
-  // Summary: first non-empty non-list line, or first heading body.
-  let summary = "";
-  for (const line of raw.split("\n")) {
-    const t = line.trim();
-    if (!t || t.startsWith("```") || t.startsWith("#")) {
-      if (t.startsWith("#")) {
-        const heading = t.replace(/^#+\s*/, "").trim();
-        if (heading && !summary) {
-          summary = heading;
-        }
-      }
-      continue;
-    }
-    if (/^[-*+]\s+/.test(t) || /^\d+\.\s+/.test(t)) {
-      continue;
-    }
-    summary = t;
-    break;
-  }
-  if (!summary) {
-    summary = options.prior?.summary || `Proposed wiki plan for ${options.workspaceName}`;
-  }
-
-  if (pages.length === 0 && options.prior?.pages?.length) {
-    return WikiRunSpecSchema.parse({
-      ...options.prior,
-      summary: summary.slice(0, 1500),
-      ...(options.prior.notes ? { notes: options.prior.notes } : {}),
-    });
-  }
-
-  if (pages.length === 0) {
-    return defaultWikiRunSpec(options.workspaceName);
-  }
-
-  return WikiRunSpecSchema.parse({
-    summary: summary.slice(0, 1500),
-    pages: pages.map((p) => ({
-      ...p,
-      domainIds: ["core"],
-      questions: [p.purpose],
-      critical: true,
-    })),
-    domains: [
-      {
-        id: "core",
-        title: "Core",
-        scope: "Primary repository scope",
-        critical: true,
-        questions: pages.map((p) => p.purpose).slice(0, 8),
-      },
-    ],
-    ...(options.prior?.notes ? { notes: options.prior.notes } : {}),
-  });
+  throw new Error("Planner did not return a complete JSON WikiRunSpec");
 }

@@ -1,253 +1,551 @@
-/**
- * In-process registry for Pi agent sessions (ADR 0030).
- *
- * Maps sessionId → live WikiSessionHandle (when created), WikiRunShell state,
- * and workspace root. Routes stay thin; this module owns command side-effects.
- *
- * Implementation is split under `./session/` for maintainability.
- * This module keeps the registry map + public re-exports used by routes.
- */
+/** Live-handle cache around the Pi-native Operator Session module (ADR 0032). */
 
-import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
-import { piSessionPath } from "@okf-wiki/agent";
+import {
+  createOperatorFixtureModel,
+  createOperatorSession,
+  deleteOperatorSession,
+  listOperatorSessions,
+  loadOperatorSessionHistory,
+  type OperatorSessionHistory,
+  openOperatorSession,
+  resolveModelSelection,
+  resolveWikiSkillPaths,
+  resolveWorkspacePiModel,
+  shouldUsePiFixtureMode,
+  type WikiProduceGateCoordinator,
+  type WikiProduceGateDecision,
+  type WikiProduceGateRequest,
+} from "@okf-wiki/agent";
 import {
   type AgentCommand,
   type AgentCommandResponse,
+  type AgentSseActiveTool,
+  type PiAgentSseEvent,
+  WikiProduceToolDetailsSchema,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
-import { isPathInside } from "@okf-wiki/core";
-import {
-  handleAbort,
-  handleCompact,
-  handlePrompt,
-  handleResumeGate,
-  handleStartWikiRun,
-  handleSteer,
-} from "./session/commands.ts";
-import {
-  agentSessionExistsOnDisk,
-  defaultSessionTitle,
-  deleteAgentSessionOnDisk,
-  ensurePiSessionsDir,
-  nowIso,
-  type RegisteredAgentSession,
-  readSessionMeta,
-  sessionMetaPath,
-} from "./session/parent-session.ts";
-import { emitPhase } from "./session/product-inject.ts";
+import { loadWorkspaceById } from "@okf-wiki/core";
+import { emitAgentSessionEvent } from "./agent-session-events.ts";
 
-// ---------------------------------------------------------------------------
-// Public types + path / history helpers (re-exported for routes / tests)
-// ---------------------------------------------------------------------------
+type OperatorSessionHandle = Awaited<ReturnType<typeof createOperatorSession>>;
 
-export type { RegisteredAgentSession } from "./session/parent-session.ts";
-export {
-  agentSessionExistsOnDisk,
-  ensurePiSessionsDir,
-  preferPiFixture,
-  resolveSessionHistoryFile,
-  sessionMetaPath,
-} from "./session/parent-session.ts";
-export {
-  productPhaseFromRunStatus,
-  productPhaseFromShell,
-  resolveColdLoadPhase,
-} from "./session/produce-adapter.ts";
+export type RegisteredAgentSession = {
+  handle: OperatorSessionHandle;
+  workspaceId: string;
+  busy: boolean;
+  unsubscribe: () => void;
+  activeTool?: AgentSseActiveTool;
+  queueFixtureTurn?: (text: string, canProduce: boolean) => void;
+};
 
-// ---------------------------------------------------------------------------
-// Registry CRUD
-// ---------------------------------------------------------------------------
+export type LiveAgentSessionSummary = {
+  id: string;
+  title?: string;
+  createdAt: string;
+  updatedAt: string;
+};
 
-const sessions = new Map<string, RegisteredAgentSession>();
+type PendingGate = {
+  request: WikiProduceGateRequest;
+  resolve: (decision: WikiProduceGateDecision) => void;
+  reject: (error: Error) => void;
+  detachAbort?: () => void;
+};
 
-function regKey(workspaceId: string, sessionId: string): string {
+const liveSessions = new Map<string, RegisteredAgentSession>();
+const pendingGates = new Map<string, PendingGate>();
+
+function sessionKey(workspaceId: string, sessionId: string): string {
   return `${workspaceId}::${sessionId}`;
 }
 
-export function getRegisteredAgentSession(
+function pendingGateKey(workspaceId: string, sessionId: string): string {
+  return sessionKey(workspaceId, sessionId);
+}
+
+function titleFromPrompt(text: string, max = 60): string {
+  const firstLine =
+    text
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean) ?? "New session";
+  const compact = firstLine.replace(/\s+/g, " ");
+  return compact.length <= max ? compact : `${compact.slice(0, max - 1)}…`;
+}
+
+function defaultTitle(workspace: WorkspaceConfig): string {
+  return `Wiki Agent · ${workspace.name.trim() || "workspace"}`;
+}
+
+function shouldAutoTitle(name: string | undefined): boolean {
+  const value = name?.trim();
+  return (
+    !value || value === "New session" || value === "新会话" || value.startsWith("Wiki Agent · ")
+  );
+}
+
+function disposeLive(entry: RegisteredAgentSession): void {
+  try {
+    entry.unsubscribe();
+  } catch {
+    // Already detached.
+  }
+  try {
+    entry.handle.dispose();
+  } catch {
+    // Already disposed.
+  }
+}
+
+function activeToolUpdate(event: unknown): AgentSseActiveTool | null | undefined {
+  if (!event || typeof event !== "object") return undefined;
+  const body = event as Record<string, unknown>;
+  if (
+    body.type === "tool_execution_end" ||
+    body.type === "agent_end" ||
+    body.type === "agent_settled"
+  ) {
+    return null;
+  }
+  if (body.type === "tool_execution_start") return null;
+  if (body.type !== "tool_execution_update") return undefined;
+
+  const partial = body.partialResult;
+  if (!partial || typeof partial !== "object") return undefined;
+  const parsed = WikiProduceToolDetailsSchema.safeParse(
+    (partial as Record<string, unknown>).details,
+  );
+  if (!parsed.success || typeof body.toolCallId !== "string" || typeof body.toolName !== "string") {
+    return undefined;
+  }
+  return {
+    toolCallId: body.toolCallId,
+    toolName: body.toolName,
+    details: parsed.data,
+  };
+}
+
+function registerLive(
   workspaceId: string,
-  sessionId: string,
-): RegisteredAgentSession | undefined {
-  return sessions.get(regKey(workspaceId, sessionId));
+  handle: OperatorSessionHandle,
+  queueFixtureTurn?: (text: string, canProduce: boolean) => void,
+): RegisteredAgentSession {
+  const key = sessionKey(workspaceId, handle.sessionId);
+  const prior = liveSessions.get(key);
+  if (prior) disposeLive(prior);
+
+  const entry: RegisteredAgentSession = {
+    handle,
+    workspaceId,
+    busy: false,
+    unsubscribe: () => undefined,
+    ...(queueFixtureTurn ? { queueFixtureTurn } : {}),
+  };
+  entry.unsubscribe = handle.session.subscribe((event) => {
+    const activeTool = activeToolUpdate(event);
+    if (activeTool === null) delete entry.activeTool;
+    else if (activeTool) entry.activeTool = activeTool;
+    const kind = event.type;
+    emitAgentSessionEvent(workspaceId, handle.sessionId, {
+      source: "pi",
+      kind,
+      sessionId: handle.sessionId,
+      payload: event,
+      timestamp: new Date().toISOString(),
+    } satisfies PiAgentSseEvent);
+  });
+  liveSessions.set(key, entry);
+  return entry;
 }
 
-/** Test helper. */
-export function resetAgentSessionRegistryForTests(): void {
-  for (const entry of sessions.values()) {
-    disposeEntry(entry);
-  }
-  sessions.clear();
+function projectLiveSession(entry: RegisteredAgentSession): LiveAgentSessionSummary {
+  const manager = entry.handle.session.sessionManager;
+  const header = manager.getHeader();
+  if (!header) throw new Error("Pi did not initialize the Operator Session");
+  return {
+    id: manager.getSessionId(),
+    title: manager.getSessionName()?.trim() || undefined,
+    createdAt: header.timestamp,
+    updatedAt: manager.getBranch().at(-1)?.timestamp ?? header.timestamp,
+  };
 }
 
-function disposeEntry(entry: RegisteredAgentSession): void {
-  try {
-    entry.unsubPi?.();
-  } catch {
-    // ignore
-  }
-  entry.unsubPi = undefined;
-  try {
-    entry.handle?.dispose();
-  } catch {
-    // ignore
-  }
-  entry.handle = undefined;
-  entry.abortController?.abort();
-  entry.abortController = undefined;
+function gateCoordinator(workspaceId: string, sessionId: string): WikiProduceGateCoordinator {
+  return {
+    waitForDecision(request, signal) {
+      const key = pendingGateKey(workspaceId, sessionId);
+      if (pendingGates.has(key)) {
+        return Promise.reject(new Error("Operator Session already has a pending Wiki Run gate"));
+      }
+      return new Promise<WikiProduceGateDecision>((resolve, reject) => {
+        const pending: PendingGate = {
+          request,
+          resolve: (decision) => {
+            pending.detachAbort?.();
+            pendingGates.delete(key);
+            resolve(decision);
+          },
+          reject: (error) => {
+            pending.detachAbort?.();
+            pendingGates.delete(key);
+            reject(error);
+          },
+        };
+        if (signal) {
+          const abort = () => pending.reject(new Error("Wiki Run cancelled"));
+          signal.addEventListener("abort", abort, { once: true });
+          pending.detachAbort = () => signal.removeEventListener("abort", abort);
+        }
+        pendingGates.set(key, pending);
+      });
+    },
+  };
 }
 
-/**
- * Create product-side session meta + registry entry.
- * Does not construct a live AgentSession until first prompt (cheap create).
- */
+async function resolveRoleModel(
+  workspace: WorkspaceConfig,
+  role: "default" | "planner" | "worker" | "writer" | "reviewer",
+) {
+  const selected = resolveModelSelection({ workspace, role });
+  return resolveWorkspacePiModel({
+    profileId: selected.profileId,
+    modelId: selected.id,
+  });
+}
+
+async function reloadWorkspace(workspace: WorkspaceConfig): Promise<WorkspaceConfig> {
+  const current = await loadWorkspaceById(workspace.id, { rootPath: workspace.rootPath });
+  if (!current) {
+    throw new Error(`Workspace not found while starting Wiki Run: ${workspace.id}`);
+  }
+  return current;
+}
+
+async function runtimeInput(workspace: WorkspaceConfig, sessionId?: string) {
+  const fixture = shouldUsePiFixtureMode({});
+  const fixtureModel = fixture ? await createOperatorFixtureModel() : undefined;
+  const operatorModel = fixtureModel ? undefined : await resolveRoleModel(workspace, "default");
+  const skillPaths = await resolveWikiSkillPaths({
+    workspaceRoot: workspace.rootPath,
+    skillPath: workspace.skillPath,
+  });
+  return {
+    input: {
+      workspace,
+      ...(sessionId ? { sessionId } : {}),
+      ...(fixtureModel
+        ? { model: fixtureModel.model, modelRuntime: fixtureModel.modelRuntime }
+        : operatorModel
+          ? { model: operatorModel.model, modelRuntime: operatorModel.modelRuntime }
+          : {}),
+      additionalSkillPaths: skillPaths,
+      contextTargetTokens: workspace.limits?.contextTargetTokens,
+      maxContextTokens: operatorModel?.runtime.maxContextTokens,
+      wikiProduce: {
+        gateCoordinator: gateCoordinator(workspace.id, sessionId ?? "pending"),
+        resolveWorkspace: () => reloadWorkspace(workspace),
+        fixture,
+        resolveModel: fixture
+          ? undefined
+          : async (
+              role: "planner" | "worker" | "writer" | "reviewer",
+              currentWorkspace: WorkspaceConfig,
+            ) => {
+              const resolved = await resolveRoleModel(currentWorkspace, role);
+              return {
+                model: resolved.model,
+                modelRuntime: resolved.modelRuntime,
+                maxContextTokens: resolved.runtime.maxContextTokens,
+              };
+            },
+      },
+    },
+    queueFixtureTurn: fixtureModel
+      ? (text: string, canProduce: boolean) => {
+          if (canProduce) fixtureModel.queueWikiProduceTurn(text);
+          else fixtureModel.queueAssistantTurn();
+        }
+      : undefined,
+  };
+}
+
+/** Create a Pi-native SessionManager session and cache its live AgentSession. */
 export async function registerAgentSession(input: {
   workspace: WorkspaceConfig;
   sessionId?: string;
   title?: string;
-}): Promise<RegisteredAgentSession> {
-  const sessionId = input.sessionId?.trim() || randomUUID();
-  if (!/^[a-zA-Z0-9._-]+$/.test(sessionId)) {
-    throw new Error("sessionId must be alphanumeric (._- allowed)");
+}): Promise<LiveAgentSessionSummary> {
+  const requestedId = input.sessionId?.trim();
+  if (requestedId && liveSessions.has(sessionKey(input.workspace.id, requestedId))) {
+    throw new Error(`Operator Session already exists: ${requestedId}`);
   }
 
-  const workspaceRoot = path.resolve(input.workspace.rootPath);
-  await ensurePiSessionsDir(workspaceRoot);
-
-  const metaPath = sessionMetaPath(workspaceRoot, sessionId);
-  if (!isPathInside(workspaceRoot, metaPath)) {
-    throw new Error("session path escapes workspace");
-  }
-
-  const sessionWorkDir = piSessionPath(workspaceRoot, sessionId);
-  await mkdir(sessionWorkDir, { recursive: true });
-
-  const createdAt = nowIso();
-  const title = input.title?.trim() || defaultSessionTitle(input.workspace.name);
-
-  const meta = {
-    schema: "okf.pi-session/v1",
-    id: sessionId,
-    workspaceId: input.workspace.id,
-    title,
-    createdAt,
-    updatedAt: createdAt,
-    sessionWorkDir,
-    /** Live handle is created lazily on prompt. */
-    stub: false,
+  // A generated id must be known before constructing the gate coordinator. Pi
+  // accepts an omitted id, so create once then bind the coordinator through a
+  // stable wrapper that resolves the final id lazily.
+  let resolvedSessionId = input.sessionId?.trim() ?? "";
+  const coordinator: WikiProduceGateCoordinator = {
+    waitForDecision(request, signal) {
+      return gateCoordinator(input.workspace.id, resolvedSessionId).waitForDecision(
+        request,
+        signal,
+      );
+    },
   };
-  await writeFile(metaPath, `${JSON.stringify(meta, null, 2)}\n`, "utf8");
-
-  const entry: RegisteredAgentSession = {
-    sessionId,
-    workspaceId: input.workspace.id,
-    workspaceRoot,
-    workspaceName: input.workspace.name,
-    title,
-    createdAt,
-    metaPath,
-    sessionWorkDir,
-    busy: false,
-  };
-
-  // Replace any prior in-memory entry for this id.
-  const key = regKey(entry.workspaceId, sessionId);
-  const prior = sessions.get(key);
-  if (prior) disposeEntry(prior);
-  sessions.set(key, entry);
-
-  emitPhase(entry, "idle", "agent session created");
-
-  return entry;
+  const runtime = await runtimeInput(input.workspace, input.sessionId);
+  const handle = await createOperatorSession({
+    ...runtime.input,
+    ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+    wikiProduce: { ...runtime.input.wikiProduce, gateCoordinator: coordinator },
+  });
+  resolvedSessionId = handle.sessionId;
+  handle.session.setSessionName(input.title?.trim() || defaultTitle(input.workspace));
+  return projectLiveSession(registerLive(input.workspace.id, handle, runtime.queueFixtureTurn));
 }
 
-/**
- * Dispose live handle and remove session files from disk.
- * Idempotent when the session is already gone.
- */
-export async function deleteAgentSession(
-  workspace: WorkspaceConfig,
-  sessionId: string,
-): Promise<{ sessionId: string; removed: string[] }> {
-  const key = regKey(workspace.id, sessionId);
-  const existing = sessions.get(key);
-  if (existing) {
-    disposeEntry(existing);
-    sessions.delete(key);
-  }
-
-  const workspaceRoot = path.resolve(workspace.rootPath);
-  const { removed } = await deleteAgentSessionOnDisk(workspaceRoot, sessionId);
-  return { sessionId, removed };
-}
-
-/**
- * Ensure a registry entry exists for a session that already has disk meta
- * (e.g. server restarted, or create from another process).
- */
+/** Open the exact SessionManager id; never scan legacy metadata or cwd stores. */
 export async function ensureRegistered(
   workspace: WorkspaceConfig,
   sessionId: string,
 ): Promise<RegisteredAgentSession> {
-  const existing = getRegisteredAgentSession(workspace.id, sessionId);
+  const key = sessionKey(workspace.id, sessionId);
+  const existing = liveSessions.get(key);
   if (existing) return existing;
-
-  const workspaceRoot = path.resolve(workspace.rootPath);
-  const onDisk = await agentSessionExistsOnDisk(workspaceRoot, sessionId);
-  if (!onDisk) {
-    throw new Error(`agent session not found: ${sessionId}`);
-  }
-
-  const sessionWorkDir = piSessionPath(workspaceRoot, sessionId);
-  await mkdir(sessionWorkDir, { recursive: true });
-
-  const metaPath = sessionMetaPath(workspaceRoot, sessionId);
-  const diskMeta = await readSessionMeta(metaPath);
-  const entry: RegisteredAgentSession = {
-    sessionId,
-    workspaceId: workspace.id,
-    workspaceRoot,
-    workspaceName: workspace.name,
-    title: diskMeta?.title?.trim() || defaultSessionTitle(workspace.name),
-    createdAt: diskMeta?.createdAt ?? nowIso(),
-    metaPath,
-    sessionWorkDir,
-    sessionFile: diskMeta?.sessionFile,
-    runId: diskMeta?.runId,
-    busy: false,
-  };
-  sessions.set(regKey(workspace.id, sessionId), entry);
-  return entry;
+  const runtime = await runtimeInput(workspace, sessionId);
+  const handle = await openOperatorSession({ ...runtime.input, sessionId });
+  return registerLive(workspace.id, handle, runtime.queueFixtureTurn);
 }
 
-// ---------------------------------------------------------------------------
-// Command dispatch
-// ---------------------------------------------------------------------------
+export function getLiveAgentSessionSummary(
+  workspaceId: string,
+  sessionId: string,
+): LiveAgentSessionSummary | undefined {
+  const entry = liveSessions.get(sessionKey(workspaceId, sessionId));
+  return entry ? projectLiveSession(entry) : undefined;
+}
 
+/** Current genuine Pi tool update for an SSE snapshot; never reconstructed from a Run Record. */
+export function getActiveAgentSessionTool(
+  workspaceId: string,
+  sessionId: string,
+): AgentSseActiveTool | undefined {
+  return liveSessions.get(sessionKey(workspaceId, sessionId))?.activeTool;
+}
+
+/** Public projections for live-only Sessions that Pi has not persisted yet. */
+export function listLiveAgentSessionSummaries(workspaceId: string): LiveAgentSessionSummary[] {
+  return [...liveSessions.values()]
+    .filter((entry) => entry.workspaceId === workspaceId)
+    .map(projectLiveSession);
+}
+
+/** Dispose the live handle, then let the Agent Session module cascade v2 Runs. */
+export async function deleteAgentSession(
+  workspace: WorkspaceConfig,
+  sessionId: string,
+): Promise<{ sessionId: string; removed: number }> {
+  const key = sessionKey(workspace.id, sessionId);
+  const live = liveSessions.get(key);
+  const hadLive = Boolean(live);
+  if (live) {
+    disposeLive(live);
+    liveSessions.delete(key);
+  }
+  pendingGates.get(key)?.reject(new Error("Operator Session deleted"));
+  const result = await deleteOperatorSession(workspace.rootPath, sessionId);
+  return {
+    sessionId,
+    removed: (hadLive || result.deleted ? 1 : 0) + result.removedRunIds.length,
+  };
+}
+
+/**
+ * A newly-created Pi Session remains live-only until its first assistant
+ * message. SessionManager deliberately owns that lifecycle, so callers must
+ * not create placeholder files just to make the empty Session discoverable.
+ */
+export async function agentSessionExists(
+  workspace: WorkspaceConfig,
+  sessionId: string,
+): Promise<boolean> {
+  return (
+    liveSessions.has(sessionKey(workspace.id, sessionId)) ||
+    (await listOperatorSessions(workspace.rootPath)).some((session) => session.id === sessionId)
+  );
+}
+
+/** Read the active SessionManager branch, including a not-yet-flushed Session. */
+export async function loadAgentSessionHistory(
+  workspace: WorkspaceConfig,
+  sessionId: string,
+): Promise<OperatorSessionHistory | null> {
+  const live = liveSessions.get(sessionKey(workspace.id, sessionId));
+  if (live) {
+    const manager = live.handle.session.sessionManager;
+    return {
+      sessionId: manager.getSessionId(),
+      messages: manager
+        .getBranch()
+        .filter((entry) => entry.type === "message")
+        .map((entry) => entry.message as OperatorSessionHistory["messages"][number]),
+    };
+  }
+  return loadOperatorSessionHistory(workspace.rootPath, sessionId);
+}
+
+/** Test helper. */
+export function resetAgentSessionRegistryForTests(): void {
+  for (const entry of liveSessions.values()) disposeLive(entry);
+  liveSessions.clear();
+  for (const pending of pendingGates.values()) pending.reject(new Error("test reset"));
+  pendingGates.clear();
+}
+
+function providerFailure(messages: readonly unknown[]): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || typeof message !== "object") continue;
+    const row = message as { role?: string; stopReason?: string; errorMessage?: string };
+    if (row.role !== "assistant") continue;
+    if (row.stopReason === "error" || row.stopReason === "aborted" || row.errorMessage?.trim()) {
+      return row.errorMessage?.trim() || `assistant stopReason=${row.stopReason ?? "error"}`;
+    }
+    return null;
+  }
+  return null;
+}
+
+async function prompt(
+  entry: RegisteredAgentSession,
+  text: string,
+  canProduce: boolean,
+): Promise<AgentCommandResponse> {
+  if (entry.busy) {
+    return {
+      ok: false,
+      sessionId: entry.handle.sessionId,
+      command: "prompt",
+      status: "failed",
+      message: "Operator Session already has an active turn",
+    };
+  }
+  entry.busy = true;
+  try {
+    if (shouldAutoTitle(entry.handle.session.sessionManager.getSessionName())) {
+      entry.handle.session.setSessionName(titleFromPrompt(text));
+    }
+    entry.queueFixtureTurn?.(text, canProduce);
+    await entry.handle.session.prompt(text);
+    const failure = providerFailure(entry.handle.session.messages);
+    return failure
+      ? {
+          ok: false,
+          sessionId: entry.handle.sessionId,
+          command: "prompt",
+          status: "failed",
+          message: `prompt failed: ${failure}`,
+        }
+      : {
+          ok: true,
+          sessionId: entry.handle.sessionId,
+          command: "prompt",
+          status: "accepted",
+          message: "prompt completed",
+        };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      sessionId: entry.handle.sessionId,
+      command: "prompt",
+      status: "failed",
+      message: `prompt failed: ${message}`,
+    };
+  } finally {
+    entry.busy = false;
+  }
+}
+
+function resumeGate(
+  workspace: WorkspaceConfig,
+  sessionId: string,
+  command: Extract<AgentCommand, { type: "resume_gate" }>,
+): AgentCommandResponse {
+  const pending = pendingGates.get(pendingGateKey(workspace.id, sessionId));
+  if (!pending) {
+    return {
+      ok: false,
+      sessionId,
+      command: "resume_gate",
+      status: "failed",
+      message: "Operator Session has no pending Wiki Run gate",
+      runId: command.runId,
+    };
+  }
+  if (pending.request.gate !== command.gate) {
+    return {
+      ok: false,
+      sessionId,
+      command: "resume_gate",
+      status: "failed",
+      message: `pending gate is ${pending.request.gate}, not ${command.gate}`,
+      runId: pending.request.runId,
+    };
+  }
+  if (command.runId && command.runId !== pending.request.runId) {
+    return {
+      ok: false,
+      sessionId,
+      command: "resume_gate",
+      status: "failed",
+      message: "runId does not match the pending Wiki Run gate",
+      runId: pending.request.runId,
+    };
+  }
+  pending.resolve({
+    action: command.action,
+    feedback: command.feedback,
+    spec: command.spec,
+  });
+  return {
+    ok: true,
+    sessionId,
+    command: "resume_gate",
+    status: "accepted",
+    message: `${command.gate} gate ${command.action}`,
+    runId: pending.request.runId,
+  };
+}
+
+/** Delegate commands only to the real AgentSession or its active tool gate. */
 export async function dispatchAgentCommand(
   workspace: WorkspaceConfig,
   sessionId: string,
   command: AgentCommand,
 ): Promise<AgentCommandResponse> {
+  if (command.type === "resume_gate") return resumeGate(workspace, sessionId, command);
   const entry = await ensureRegistered(workspace, sessionId);
 
-  switch (command.type) {
-    case "prompt":
-      return handlePrompt(entry, workspace, command.text);
-    case "steer":
-      return handleSteer(entry, workspace, command.text);
-    case "abort":
-      return handleAbort(entry);
-    case "compact":
-      return handleCompact(entry, workspace);
-    case "start_wiki_run":
-      return handleStartWikiRun(entry, workspace, command);
-    case "resume_gate":
-      return handleResumeGate(entry, workspace, command);
-    default: {
-      const _exhaustive: never = command;
-      return _exhaustive;
+  if (command.type === "prompt") return prompt(entry, command.text, workspace.sources.length > 0);
+  if (command.type === "steer") {
+    try {
+      await entry.handle.session.steer(command.text);
+      return { ok: true, sessionId, command: "steer", status: "accepted" };
+    } catch (error) {
+      return {
+        ok: false,
+        sessionId,
+        command: "steer",
+        status: "failed",
+        message: error instanceof Error ? error.message : String(error),
+      };
     }
   }
+  if (command.type === "abort") {
+    await entry.handle.session.abort().catch(() => undefined);
+    return { ok: true, sessionId, command: "abort", status: "accepted" };
+  }
+  await entry.handle.session.compact();
+  return { ok: true, sessionId, command: "compact", status: "accepted" };
 }

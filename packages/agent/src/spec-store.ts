@@ -1,6 +1,6 @@
 /**
  * Living WikiRunSpec on disk under the run analysis scratch.
- * Root may replan during produce; Host scorers read the same file.
+ * Root may replan during Produce; mechanical scorers read the same file.
  */
 
 import { readFile } from "node:fs/promises";

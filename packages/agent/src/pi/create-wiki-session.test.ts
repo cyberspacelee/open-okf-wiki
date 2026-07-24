@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
 import { createWikiSession, resolveWikiSessionTools } from "./create-wiki-session.js";
-import { piRunWorkDir, piSessionsDir } from "./session-paths.js";
+import { piSessionsDir } from "./session-paths.js";
 import { assertSafeWikiToolList, toolNamesForRole } from "./tool-policy.js";
 
 const temps: string[] = [];
@@ -24,13 +24,16 @@ describe("create-wiki-session tool list safety", () => {
       "domain",
       "leaf",
       "reviewer",
-      "operator_chat",
     ] as const) {
       const tools = resolveWikiSessionTools(role);
       assert.deepEqual([...tools], [...toolNamesForRole(role)]);
       assertSafeWikiToolList(tools);
       assert.ok(!tools.includes("bash" as never));
     }
+  });
+
+  it("operator chat has no built-in file tools", () => {
+    assert.deepEqual([...resolveWikiSessionTools("operator_chat")], []);
   });
 
   it("root_write allowlist is read+write Pi tools only", () => {
@@ -81,9 +84,8 @@ describe("create-wiki-session tool list safety", () => {
 });
 
 describe("session-paths", () => {
-  it("piSessionsDir and piRunWorkDir under .okf-wiki", () => {
+  it("keeps Operator Session JSONL under .okf-wiki", () => {
     const root = "/workspace/repo";
     assert.equal(piSessionsDir(root), path.join(root, ".okf-wiki", "pi-sessions"));
-    assert.equal(piRunWorkDir(root, "run-1"), path.join(root, ".okf-wiki", "runs", "run-1"));
   });
 });

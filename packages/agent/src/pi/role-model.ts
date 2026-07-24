@@ -17,7 +17,7 @@ export type ResolvedModelRef = {
   profileId?: string;
   /** Which role mapping produced this ref. */
   role: WikiModelRole;
-  /** True when an explicit override (e.g. start_wiki_run.modelProfileId) won. */
+  /** True when an explicit operator model override won. */
   overridden: boolean;
 };
 
@@ -53,7 +53,7 @@ export function modelRefForRole(
 export function resolveModelSelection(input: {
   workspace: WorkspaceConfig;
   role?: WikiModelRole;
-  /** Explicit profile id from start_wiki_run / UI. */
+  /** Explicit profile id selected for the Operator Session. */
   overrideProfileId?: string;
   /** Explicit free-text model id (legacy). */
   overrideModelId?: string;

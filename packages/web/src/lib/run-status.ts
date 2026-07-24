@@ -5,7 +5,6 @@ export type RunStatusTone = "default" | "running" | "success" | "warning" | "dan
 const LABELS: Record<WikiRunRecordStatus, string> = {
   running: "Running",
   published: "Published",
-  needs_input: "Needs input",
   failed: "Failed",
   cancelled: "Cancelled",
   awaiting_plan: "Awaiting plan",
@@ -16,7 +15,6 @@ const LABELS: Record<WikiRunRecordStatus, string> = {
 const TONES: Record<WikiRunRecordStatus, RunStatusTone> = {
   running: "running",
   published: "success",
-  needs_input: "warning",
   failed: "danger",
   cancelled: "muted",
   awaiting_plan: "warning",

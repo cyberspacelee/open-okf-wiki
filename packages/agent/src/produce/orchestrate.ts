@@ -1,19 +1,13 @@
 /**
  * Deep Produce module (Layer B Semantic Workflow body, ADR 0028 / 0030).
  *
- * Host-driven: materialize → plan → Domain/Leaf research + receipts →
+ * wiki_produce-driven: approved Spec → Domain/Leaf research + receipts →
  * root_write → review council → repair* → evaluateWikiPublishable.
  */
 
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import type {
-  MergedDefectReport,
-  WikiRunPlan,
-  WikiRunSpec,
-  WorkspaceConfig,
-} from "@okf-wiki/contract";
-import { defaultWikiRunSpec } from "@okf-wiki/contract";
+import type { MergedDefectReport, WikiRunSpec, WorkspaceConfig } from "@okf-wiki/contract";
 import {
   evaluateWikiPublishable,
   type PublishabilityResult,
@@ -25,29 +19,17 @@ import type { SourceIgnoreInput } from "../pi/tool-operations.js";
 import { runReviewCouncil } from "../review-council.js";
 import { writeWikiRunSpec } from "../spec-store.js";
 import { runChildrenParallel, runChildSession } from "./children.js";
-import { attachProgress, type ProduceEventSink, silentProduceEvents } from "./events.js";
+import { type ProduceEventSink, silentProduceEvents } from "./events.js";
 import {
   listWikiMarkdown,
   type ProduceWithPiResult,
   produceWithPi,
   shouldUsePiFixtureMode,
 } from "./live-pi.js";
-import { planWikiSpec } from "./plan.js";
-import {
-  domainResearchPrompt,
-  leafResearchPrompt,
-  reviewerPrompt,
-  rootWritePrompt,
-  rootWriteSystemPrompt,
-} from "./prompts.js";
+import { domainResearchPrompt, leafResearchPrompt, reviewerPrompt } from "./prompts.js";
 import { buildReceiptIndex, persistResearchReceipt } from "./receipts.js";
 
 export type ProduceWikiModels = {
-  planner?: {
-    model: Model<any>;
-    modelRuntime?: ModelRuntime;
-    maxContextTokens?: number;
-  };
   writer?: {
     model: Model<any>;
     modelRuntime?: ModelRuntime;
@@ -68,14 +50,10 @@ export type ProduceWikiModels = {
 export type ProduceWikiInput = {
   runId: string;
   workspace: WorkspaceConfig;
-  runWorkDir: string;
-  /** Approved / default living Spec. When omit and live, planner may run. */
-  spec?: WikiRunSpec | WikiRunPlan;
-  materialize?: {
-    sources: Map<string, string>;
-    skillRoot: string;
-    reset?: boolean;
-  };
+  /** Existing frozen Run Boundary layout. */
+  layout: RunWorkdirLayout;
+  /** Already-approved living Spec. */
+  spec: WikiRunSpec;
   models?: ProduceWikiModels;
   fixture?: boolean;
   abortSignal?: AbortSignal;
@@ -85,8 +63,6 @@ export type ProduceWikiInput = {
   onEvent?: ProduceEventSink;
   research?: boolean;
   review?: boolean;
-  /** Skip LLM planner; use provided/default Spec. */
-  skipPlan?: boolean;
   sourceIgnores?: SourceIgnoreInput;
 };
 
@@ -136,7 +112,7 @@ async function emitPlanProgressFromDisk(
 }
 
 /**
- * Layer B Produce: plan → research → write → council → repair → hard score.
+ * Layer B Produce: research → write → council → repair → hard score.
  */
 export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiResult> {
   throwIfAborted(input.abortSignal);
@@ -148,107 +124,7 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
   const wikiLanguage = input.workspace.wikiLanguage ?? "en";
   const contextTargetTokens =
     input.contextTargetTokens ?? input.workspace.limits?.contextTargetTokens;
-
-  events.progress?.({ phase: "planning", label: "materialize workdir" });
-
-  // 1) Materialize workdir (fixture materialize; no wiki write yet).
-  let layout: ProduceWithPiResult["layout"];
-  try {
-    const seeded = await produceWithPi({
-      runWorkDir: input.runWorkDir,
-      role: "root_research",
-      materialize: input.materialize,
-      fixture: true,
-      title: input.workspace.name ?? "Wiki",
-      abortSignal: input.abortSignal,
-      sourceIgnores: input.sourceIgnores,
-      workspaceRoot: input.workspace.rootPath,
-    });
-    layout = seeded.layout;
-  } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
-      return cancelledResult(
-        input.spec ? (input.spec as WikiRunSpec) : defaultWikiRunSpec(input.workspace.name),
-        fixture,
-        metrics,
-      );
-    }
-    throw err;
-  }
-
-  // 2) Spec: use provided, or planner, or default (fixture).
-  let spec: WikiRunSpec;
-  try {
-    if (input.spec) {
-      spec = input.spec as WikiRunSpec;
-    } else if (fixture || input.skipPlan) {
-      spec = defaultWikiRunSpec(input.workspace.name);
-    } else {
-      events.progress?.({ phase: "planning", label: "planner session" });
-      const plannerUnit = attachProgress(events, {
-        unitId: "planner",
-        role: "planner",
-        task: "Draft WikiRunSpec from sources",
-        parentId: "root",
-      });
-      plannerUnit.open();
-      try {
-        const planned = await planWikiSpec({
-          runWorkDir: input.runWorkDir,
-          layout,
-          workspaceName: input.workspace.name,
-          wikiLanguage,
-          fixture: false,
-          model: input.models?.planner?.model ?? input.models?.writer?.model,
-          modelRuntime: input.models?.planner?.modelRuntime ?? input.models?.writer?.modelRuntime,
-          maxContextTokens:
-            input.models?.planner?.maxContextTokens ??
-            input.models?.writer?.maxContextTokens ??
-            input.maxContextTokens,
-          contextTargetTokens,
-          workspaceRoot: input.workspace.rootPath,
-          sourceIgnores: input.sourceIgnores,
-          abortSignal: input.abortSignal,
-          unitId: "planner",
-          onPiEvent: plannerUnit.onPiEvent,
-        });
-        plannerUnit.settle(
-          planned.spec.summary?.slice(0, 4000) ||
-            `Planned ${planned.spec.pages?.length ?? 0} page(s)`,
-        );
-        spec = planned.spec;
-      } catch (planErr) {
-        if (!(planErr instanceof Error && planErr.name === "AbortError")) {
-          plannerUnit.fail(planErr instanceof Error ? planErr.message : String(planErr));
-        }
-        throw planErr;
-      }
-    }
-  } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
-      return cancelledResult(defaultWikiRunSpec(input.workspace.name), fixture, metrics);
-    }
-    events.progress?.({
-      phase: "failed",
-      label: err instanceof Error ? err.message : String(err),
-    });
-    return {
-      status: "failed",
-      pages: [],
-      summary: `Plan failed: ${err instanceof Error ? err.message : String(err)}`,
-      spec: defaultWikiRunSpec(input.workspace.name),
-      defects: null,
-      publishability: {
-        publishable: false,
-        reasons: [err instanceof Error ? err.message : String(err)],
-        pages: [],
-        defects: null,
-      },
-      layout,
-      mode: fixture ? "fixture" : "live",
-      metrics,
-    };
-  }
+  const { layout, spec } = input;
 
   await writeWikiRunSpec(input.workspace.rootPath, input.runId, spec);
   await emitPlanProgressFromDisk(events, layout.wikiDir, spec);
@@ -264,13 +140,6 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
       throwIfAborted(input.abortSignal);
       metrics.domainStarts += 1;
       const domainNodeId = `domain-${d.id}`;
-      const domainUnit = attachProgress(events, {
-        unitId: domainNodeId,
-        role: "domain",
-        task: d.title ?? d.id,
-        parentId: "root",
-      });
-      domainUnit.open();
 
       const leafQuestions = (d.questions ?? []).slice(0, orch.maxLeafFanOut);
       const childReceiptPaths: string[] = [];
@@ -279,20 +148,11 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
         const leafTasks = leafQuestions.map((q, li) => {
           metrics.leafStarts += 1;
           const leafNodeId = `leaf-${d.id}-${li + 1}`;
-          const leafUnit = attachProgress(events, {
-            unitId: leafNodeId,
-            role: "leaf",
-            task: q.slice(0, 2000),
-            parentId: domainNodeId,
-          });
-          leafUnit.open();
           return {
             leafNodeId,
-            leafUnit,
             input: {
               role: "leaf" as const,
-              unitId: leafNodeId,
-              runWorkDir: input.runWorkDir,
+              runWorkDir: layout.runWorkDir,
               task: leafResearchPrompt({
                 domainId: d.id,
                 question: q,
@@ -305,10 +165,8 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
               modelRuntime: workerModel?.modelRuntime,
               maxContextTokens: workerModel?.maxContextTokens,
               contextTargetTokens,
-              workspaceRoot: input.workspace.rootPath,
               sourceIgnores: input.sourceIgnores,
               abortSignal: input.abortSignal,
-              onPiEvent: leafUnit.onPiEvent,
             },
           };
         });
@@ -320,11 +178,10 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
           );
           for (let i = 0; i < leafResults.length; i++) {
             const leafNodeId = leafTasks[i]!.leafNodeId;
-            const leafUnit = leafTasks[i]!.leafUnit;
             const lr = leafResults[i]!;
             const persisted = await persistResearchReceipt({
               workspaceRoot: input.workspace.rootPath,
-              runWorkDir: input.runWorkDir,
+              runWorkDir: layout.runWorkDir,
               runId: input.runId,
               nodeId: leafNodeId,
               parentId: domainNodeId,
@@ -333,16 +190,10 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
               status: "complete",
             });
             childReceiptPaths.push(persisted.relativePath);
-            leafUnit.settle(lr.summary.slice(0, 4000), {
-              receiptPath: persisted.relativePath,
-            });
           }
         } catch (err) {
           if (err instanceof Error && err.name === "AbortError") {
-            return cancelledResult(spec, fixture, metrics);
-          }
-          for (const t of leafTasks) {
-            t.leafUnit.fail(err instanceof Error ? err.message : String(err));
+            return cancelledResult(spec, fixture, metrics, layout);
           }
         }
       }
@@ -350,8 +201,7 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
       try {
         const domainResult = await runChildSession({
           role: "domain",
-          unitId: domainNodeId,
-          runWorkDir: input.runWorkDir,
+          runWorkDir: layout.runWorkDir,
           task: domainResearchPrompt({
             domainId: d.id,
             title: d.title ?? d.id,
@@ -365,14 +215,12 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
           modelRuntime: workerModel?.modelRuntime,
           maxContextTokens: workerModel?.maxContextTokens,
           contextTargetTokens,
-          workspaceRoot: input.workspace.rootPath,
           sourceIgnores: input.sourceIgnores,
           abortSignal: input.abortSignal,
-          onPiEvent: domainUnit.onPiEvent,
         });
-        const persisted = await persistResearchReceipt({
+        await persistResearchReceipt({
           workspaceRoot: input.workspace.rootPath,
-          runWorkDir: input.runWorkDir,
+          runWorkDir: layout.runWorkDir,
           runId: input.runId,
           nodeId: domainNodeId,
           parentId: "root",
@@ -381,18 +229,14 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
           status: "complete",
           childReceipts: childReceiptPaths,
         });
-        domainUnit.settle(domainResult.summary.slice(0, 4000), {
-          receiptPath: persisted.relativePath,
-        });
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") {
-          return cancelledResult(spec, fixture, metrics);
+          return cancelledResult(spec, fixture, metrics, layout);
         }
         const msg = err instanceof Error ? err.message : String(err);
-        domainUnit.fail(msg);
         await persistResearchReceipt({
           workspaceRoot: input.workspace.rootPath,
-          runWorkDir: input.runWorkDir,
+          runWorkDir: layout.runWorkDir,
           runId: input.runId,
           nodeId: domainNodeId,
           parentId: "root",
@@ -434,14 +278,14 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
   // 4) Root write
   throwIfAborted(input.abortSignal);
   events.progress?.({ phase: "writing", label: "root_write" });
-  const receiptIndex = await buildReceiptIndex(input.runWorkDir);
+  const receiptIndex = await buildReceiptIndex(layout.runWorkDir);
   let produced: ProduceWithPiResult;
   try {
     produced = await produceWithPi({
-      runWorkDir: input.runWorkDir,
-      role: "root_write",
+      layout,
+      spec,
+      workspaceName: input.workspace.name,
       fixture,
-      title: spec.summary ?? input.workspace.name ?? "Wiki",
       abortSignal: input.abortSignal,
       model: input.models?.writer?.model,
       modelRuntime: input.models?.writer?.modelRuntime,
@@ -449,26 +293,13 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
       contextTargetTokens,
       additionalSkillPaths: input.additionalSkillPaths,
       sourceIgnores: input.sourceIgnores,
-      workspaceRoot: input.workspace.rootPath,
-      spec,
       wikiLanguage,
       multiSource,
       receiptIndex,
-      systemPrompt: rootWriteSystemPrompt(),
-      prompt: rootWritePrompt({
-        layout,
-        spec,
-        wikiLanguage,
-        multiSource,
-        receiptIndex,
-      }),
     });
-    if (!produced.layout?.runWorkDir && layout) {
-      produced = { ...produced, layout };
-    }
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
-      return cancelledResult(spec, fixture, metrics);
+      return cancelledResult(spec, fixture, metrics, layout);
     }
     throw err;
   }
@@ -499,15 +330,6 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
       if (fixture || !input.models?.reviewer?.model) {
         for (let i = 0; i < councilSize; i++) {
           const reviewerId = `reviewer-${i + 1}`;
-          // Distinct unitId per review round so fold last-by-unitId stays truthful.
-          const unitId = `${reviewerId}-r${round}`;
-          const unit = attachProgress(events, {
-            unitId,
-            role: "reviewer",
-            task: `Review round ${round}`,
-            parentId: "root",
-          });
-          unit.open();
           reviewers.push({
             id: reviewerId,
             text: JSON.stringify({
@@ -516,40 +338,27 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
               summary: "NO_DEFECTS",
             }),
           });
-          unit.settle("NO_DEFECTS");
         }
       } else {
         for (let i = 0; i < councilSize; i++) {
           const reviewerId = `reviewer-${i + 1}`;
-          const unitId = `${reviewerId}-r${round}`;
           const lens = lenses[i % lenses.length]!;
-          const unit = attachProgress(events, {
-            unitId,
-            role: "reviewer",
-            task: `Review lens: ${lens}`,
-            parentId: "root",
-          });
-          unit.open();
           try {
             const child = await runChildSession({
               role: "reviewer",
-              unitId,
-              runWorkDir: input.runWorkDir,
+              runWorkDir: layout.runWorkDir,
               task: reviewerPrompt({ pages: produced.pages, lens }),
               model: input.models.reviewer.model,
               modelRuntime: input.models.reviewer.modelRuntime,
               maxContextTokens: input.models.reviewer.maxContextTokens,
               contextTargetTokens,
-              workspaceRoot: input.workspace.rootPath,
               sourceIgnores: input.sourceIgnores,
               abortSignal: input.abortSignal,
-              onPiEvent: unit.onPiEvent,
             });
             reviewers.push({ id: reviewerId, text: child.summary });
-            unit.settle(child.summary.slice(0, 4000));
           } catch (err) {
             if (err instanceof Error && err.name === "AbortError") {
-              return cancelledResult(spec, fixture, metrics, produced);
+              return cancelledResult(spec, fixture, metrics, layout, produced);
             }
             // Fail-closed: reviewer error is a blocking defect, not clean.
             const msg = err instanceof Error ? err.message : String(err);
@@ -567,7 +376,6 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
                 summary: `reviewer error: ${msg}`,
               }),
             });
-            unit.fail(msg);
           }
         }
       }
@@ -607,10 +415,10 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
         .join("\n");
       try {
         produced = await produceWithPi({
-          runWorkDir: input.runWorkDir,
-          role: "root_write",
+          layout,
+          spec,
+          workspaceName: input.workspace.name,
           fixture,
-          title: spec.summary ?? input.workspace.name ?? "Wiki",
           abortSignal: input.abortSignal,
           model: input.models?.writer?.model,
           modelRuntime: input.models?.writer?.modelRuntime,
@@ -618,26 +426,15 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
           contextTargetTokens,
           additionalSkillPaths: input.additionalSkillPaths,
           sourceIgnores: input.sourceIgnores,
-          workspaceRoot: input.workspace.rootPath,
-          spec,
           wikiLanguage,
           multiSource,
           receiptIndex,
           repairDefects: defectText,
-          systemPrompt: rootWriteSystemPrompt(),
-          prompt: rootWritePrompt({
-            layout: produced.layout,
-            spec,
-            wikiLanguage,
-            multiSource,
-            receiptIndex,
-            repairDefects: defectText,
-          }),
         });
         await emitPlanProgressFromDisk(events, produced.layout.wikiDir, spec);
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") {
-          return cancelledResult(spec, fixture, metrics, produced);
+          return cancelledResult(spec, fixture, metrics, layout, produced);
         }
         throw err;
       }
@@ -654,9 +451,11 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
   }
 
   // 6) Hard score
-  const sources = (input.workspace.sources ?? []).map((s) => ({
-    id: s.id,
-    path: s.path,
+  // Hard validation is bound to the run-owned Repository Snapshot Set.
+  // Never re-read mutable Workspace checkout paths after freeze/materialize.
+  const sources = [...layout.sourceMounts].map(([id, sourcePath]) => ({
+    id,
+    path: sourcePath,
   }));
   const publishability = await evaluateWikiPublishable({
     wikiRoot: produced.layout.wikiDir,
@@ -710,6 +509,7 @@ function cancelledResult(
   spec: WikiRunSpec,
   fixture: boolean,
   metrics: ProduceWikiResult["metrics"],
+  layout: RunWorkdirLayout,
   produced?: ProduceWithPiResult,
 ): ProduceWikiResult {
   const emptyPub: PublishabilityResult = {
@@ -725,14 +525,7 @@ function cancelledResult(
     spec,
     defects: null,
     publishability: emptyPub,
-    layout: produced?.layout ?? {
-      runWorkDir: "",
-      sourcesDir: "",
-      skillDir: "",
-      wikiDir: "",
-      analysisDir: "",
-      sourceMounts: new Map(),
-    },
+    layout: produced?.layout ?? layout,
     mode: fixture ? "fixture" : "live",
     metrics,
   };

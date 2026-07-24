@@ -1,111 +1,39 @@
-/**
- * Pi agent session HTTP routes (ADR 0030).
- *
- * Primary conversational entry (ADR 0030). Legacy `/sessions` chat is retired.
- * Commands dispatch through agent-session-registry → @okf-wiki/agent
- * (createWikiSession, WikiRunShell via startWikiRun / resumeWikiRun).
- */
+/** Thin HTTP adapter over Pi-native Operator Sessions (ADR 0032). */
 
-import { readdir, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import path from "node:path";
-import { loadPiSessionHistory, piSessionsDir } from "@okf-wiki/agent";
+import { listOperatorSessions } from "@okf-wiki/agent";
 import {
   type AgentSseEvent,
+  type AgentSseSnapshot,
   CreatePiAgentSessionBodySchema,
-  type PiSessionSummary,
   safeParseAgentCommand,
 } from "@okf-wiki/contract";
-import { isPathInside, listRuns, loadRun, loadWorkspaceById } from "@okf-wiki/core";
+import { loadWorkspaceById } from "@okf-wiki/core";
+import { subscribeAgentSessionEvents } from "../agent-session-events.ts";
 import {
-  getRecentAgentSessionEvents,
-  subscribeAgentSessionEvents,
-} from "../agent-session-events.ts";
-import {
-  agentSessionExistsOnDisk,
+  agentSessionExists,
   deleteAgentSession,
   dispatchAgentCommand,
-  ensurePiSessionsDir,
-  ensureRegistered,
-  getRegisteredAgentSession,
+  getActiveAgentSessionTool,
+  getLiveAgentSessionSummary,
+  listLiveAgentSessionSummaries,
+  loadAgentSessionHistory,
   registerAgentSession,
-  resolveColdLoadPhase,
-  resolveSessionHistoryFile,
 } from "../agent-session-registry.ts";
 import { readJsonBody, sendError, sendJson } from "../http-util.ts";
-import { readSessionMeta, sessionMetaPath } from "../session/parent-session.ts";
 
 const HEARTBEAT_MS = 15_000;
 
-/**
- * Merge raw pi-sessions directory entries into unique product session summaries.
- * Prefer product meta `{id}.json` over companion workdir `{id}/`.
- * Standalone Pi `*.jsonl` files are conversation storage and are omitted.
- */
-export function mergePiSessionEntries(
-  entries: Array<{
-    name: string;
-    isDirectory: boolean;
-    updatedAt?: string;
-    /** Operator title from product meta (when known). */
-    title?: string;
-  }>,
-): PiSessionSummary[] {
-  type Ranked = PiSessionSummary & { rank: number };
-  const byId = new Map<string, Ranked>();
-
-  for (const entry of entries) {
-    const { name, isDirectory: isDir, updatedAt, title } = entry;
-    if (name.startsWith(".")) continue;
-
-    const isJsonl = /\.jsonl$/i.test(name);
-    if (isJsonl) continue;
-
-    const isMetaJson = /\.json$/i.test(name);
-    if (!isMetaJson && !isDir) continue;
-
-    const idFromName = isDir ? name : name.replace(/\.json$/i, "");
-    if (!idFromName) continue;
-
-    const rank = isMetaJson ? 2 : 1;
-    const candidate: Ranked = {
-      id: idFromName,
-      name,
-      title,
-      updatedAt,
-      placeholder: isMetaJson,
-      rank,
-    };
-
-    const existing = byId.get(idFromName);
-    if (!existing || candidate.rank > existing.rank) {
-      // Prefer higher-rank entry; keep title from either side.
-      byId.set(idFromName, {
-        ...candidate,
-        title: candidate.title ?? existing?.title,
-      });
-    } else if (
-      candidate.rank === existing.rank &&
-      (candidate.updatedAt ?? "") > (existing.updatedAt ?? "")
-    ) {
-      byId.set(idFromName, {
-        ...candidate,
-        title: candidate.title ?? existing.title,
-      });
-    } else if (!existing.title && title) {
-      byId.set(idFromName, { ...existing, title });
-    }
-  }
-
-  return [...byId.values()]
-    .map(({ rank: _rank, ...summary }) => summary)
-    .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
-}
+export type AgentSessionSseDependencies = {
+  getActiveTool?: typeof getActiveAgentSessionTool;
+  loadHistory?: typeof loadAgentSessionHistory;
+  subscribe?: typeof subscribeAgentSessionEvents;
+  heartbeatMs?: number;
+};
 
 async function loadWorkspaceOr404(res: ServerResponse, id: string, url: URL) {
-  const rootPath = url.searchParams.get("rootPath") ?? undefined;
   const workspace = await loadWorkspaceById(id, {
-    rootPath: rootPath ?? undefined,
+    rootPath: url.searchParams.get("rootPath") ?? undefined,
   });
   if (!workspace) {
     sendError(res, 404, `workspace not found: ${id}`);
@@ -114,10 +42,7 @@ async function loadWorkspaceOr404(res: ServerResponse, id: string, url: URL) {
   return workspace;
 }
 
-/**
- * GET /api/workspaces/:id/agent/sessions?rootPath=...
- * Lists entries under `.okf-wiki/pi-sessions/`.
- */
+/** GET SessionManager's workspace-scoped index. */
 export async function handleListAgentSessions(
   _req: IncomingMessage,
   res: ServerResponse,
@@ -126,90 +51,21 @@ export async function handleListAgentSessions(
 ): Promise<void> {
   const workspace = await loadWorkspaceOr404(res, id, url);
   if (!workspace) return;
-
-  const dir = await ensurePiSessionsDir(workspace.rootPath);
-  let names: string[] = [];
-  try {
-    names = await readdir(dir);
-  } catch {
-    // Missing or unreadable dir → empty list (ensurePiSessionsDir should create it).
+  const sessionsById = new Map(
+    (await listOperatorSessions(workspace.rootPath)).map(
+      (summary) => [summary.id, summary] as const,
+    ),
+  );
+  for (const live of listLiveAgentSessionSummaries(workspace.id)) {
+    sessionsById.set(live.id, live);
   }
-
-  const entries: Array<{
-    name: string;
-    isDirectory: boolean;
-    updatedAt?: string;
-    title?: string;
-  }> = [];
-  for (const name of names) {
-    if (name.startsWith(".")) continue;
-    const full = path.join(dir, name);
-    if (!isPathInside(path.resolve(workspace.rootPath), full)) continue;
-    try {
-      const st = await stat(full);
-      let title: string | undefined;
-      // Product meta `{id}.json` carries the operator title.
-      if (/\.json$/i.test(name) && !st.isDirectory()) {
-        const meta = await readSessionMeta(full);
-        if (meta?.title?.trim()) title = meta.title.trim();
-      }
-      // Live registry may have a fresher auto-title than disk after first prompt.
-      if (/\.json$/i.test(name)) {
-        const idFromName = name.replace(/\.json$/i, "");
-        const live = getRegisteredAgentSession(workspace.id, idFromName);
-        if (live?.title?.trim()) title = live.title.trim();
-      }
-      entries.push({
-        name,
-        isDirectory: st.isDirectory(),
-        updatedAt: st.mtime.toISOString(),
-        title,
-      });
-    } catch {
-      continue;
-    }
-  }
-
-  sendJson(res, 200, { sessions: mergePiSessionEntries(entries) });
+  const sessions = [...sessionsById.values()].sort((a, b) =>
+    (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""),
+  );
+  sendJson(res, 200, { sessions });
 }
 
-/**
- * DELETE /api/workspaces/:id/agent/sessions/:sessionId?rootPath=...
- * Removes product meta + workdir + Pi JSONL (pi-web SessionListDialog pattern).
- */
-export async function handleDeleteAgentSession(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  id: string,
-  sessionId: string,
-  url: URL,
-): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
-  if (!workspace) return;
-
-  const exists = await agentSessionExistsOnDisk(workspace.rootPath, sessionId);
-  if (!exists) {
-    sendError(res, 404, `agent session not found: ${sessionId}`);
-    return;
-  }
-
-  try {
-    const result = await deleteAgentSession(workspace, sessionId);
-    sendJson(res, 200, {
-      ok: true,
-      sessionId: result.sessionId,
-      removed: result.removed.length,
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    sendError(res, 500, message);
-  }
-}
-
-/**
- * POST /api/workspaces/:id/agent/sessions?rootPath=...
- * Creates session meta under pi-sessions and registers an in-memory entry.
- */
+/** POST creates a real live SessionManager; Pi persists it on the first completed turn. */
 export async function handleCreateAgentSession(
   req: IncomingMessage,
   res: ServerResponse,
@@ -227,30 +83,26 @@ export async function handleCreateAgentSession(
   }
 
   try {
-    const entry = await registerAgentSession({
+    const session = await registerAgentSession({
       workspace,
       sessionId: parsed.data.sessionId,
       title: parsed.data.title,
     });
-
     sendJson(res, 201, {
       session: {
-        id: entry.sessionId,
+        id: session.id,
         workspaceId: workspace.id,
-        title: entry.title,
-        path: entry.metaPath,
-        createdAt: entry.createdAt,
-        /** Live AgentSession is constructed lazily on first prompt. */
-        stub: false,
+        title: session.title ?? `Wiki Agent · ${workspace.name}`,
+        createdAt: session.createdAt,
       },
     });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (message.includes("sessionId must be alphanumeric")) {
-      sendError(res, 400, message);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("already exists")) {
+      sendError(res, 409, message);
       return;
     }
-    if (message.includes("escapes workspace")) {
+    if (/session.*id|invalid/i.test(message)) {
       sendError(res, 400, message);
       return;
     }
@@ -258,10 +110,7 @@ export async function handleCreateAgentSession(
   }
 }
 
-/**
- * GET /api/workspaces/:id/agent/sessions/:sessionId?rootPath=...
- * Cold-load Pi JSONL history + product meta (pi-web style reload).
- */
+/** GET reads the exact active SessionManager branch; no product metadata merge. */
 export async function handleGetAgentSession(
   _req: IncomingMessage,
   res: ServerResponse,
@@ -271,151 +120,58 @@ export async function handleGetAgentSession(
 ): Promise<void> {
   const workspace = await loadWorkspaceOr404(res, id, url);
   if (!workspace) return;
-
-  const exists = await agentSessionExistsOnDisk(workspace.rootPath, sessionId);
-  if (!exists) {
+  const info = (await listOperatorSessions(workspace.rootPath)).find(
+    (session) => session.id === sessionId,
+  );
+  const live = getLiveAgentSessionSummary(workspace.id, sessionId);
+  if (!info && !live) {
     sendError(res, 404, `agent session not found: ${sessionId}`);
     return;
   }
-
-  // Ensure registry entry exists so re-entry after process restart can rehydrate
-  // runId / shell from session meta + Run Record (not only live memory).
-  let reg = getRegisteredAgentSession(workspace.id, sessionId);
-  if (!reg) {
-    try {
-      reg = await ensureRegistered(workspace, sessionId);
-    } catch {
-      reg = undefined;
-    }
+  const history = await loadAgentSessionHistory(workspace, sessionId);
+  if (!history) {
+    sendError(res, 404, `agent session not found: ${sessionId}`);
+    return;
   }
-
-  // Prefer live / meta sessionFile so cold history matches the JSONL Pi writes
-  // (`{timestamp}_{id}.jsonl`, not `{id}.jsonl` — see pi-web SessionManager).
-  const preferredPath = await resolveSessionHistoryFile(workspace.rootPath, sessionId, reg);
-  const history = await loadPiSessionHistory(workspace.rootPath, sessionId, {
-    preferredPath,
-  });
-
-  // Product state from live shell / session meta / Run Record (no trajectory body).
-  const diskMeta = await readSessionMeta(sessionMetaPath(workspace.rootPath, sessionId));
-  let runId = reg?.runId ?? diskMeta?.runId;
-  if (!runId) {
-    try {
-      const runs = await listRuns(workspace.rootPath);
-      const linked = runs.find((r) => r.sessionId === sessionId);
-      if (linked) runId = linked.runId;
-    } catch {
-      // ignore
-    }
-  }
-
-  let runStatus: string | undefined;
-  let plan = reg?.shell?.plan ?? null;
-  let runPages: string[] | undefined = reg?.shell?.pages;
-
-  if (runId) {
-    try {
-      const run = await loadRun(workspace.rootPath, runId);
-      if (run) {
-        runStatus = run.status;
-        if (!plan && run.plan) plan = run.plan;
-        if ((!runPages || runPages.length === 0) && run.pages?.length) {
-          runPages = run.pages;
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }
-
-  const productPhase = resolveColdLoadPhase({
-    shellPhase: reg?.shell?.phase,
-    runStatus,
-  });
-
-  // Rehydrate in-memory registry so subsequent commands (resume / abort) see
-  // the linked run after a cold re-entry.
-  if (reg) {
-    if (!reg.runId && runId) reg.runId = runId;
-    if (plan && !reg.shell?.plan) {
-      reg.shell = {
-        phase:
-          productPhase === "awaiting_plan"
-            ? "awaiting_plan"
-            : productPhase === "awaiting_publish"
-              ? "awaiting_publish"
-              : productPhase === "writing" || productPhase === "planning"
-                ? "producing"
-                : productPhase === "failed"
-                  ? "failed"
-                  : productPhase === "cancelled"
-                    ? "cancelled"
-                    : productPhase === "done"
-                      ? "published"
-                      : "idle",
-        plan,
-        pages: runPages,
-        pendingGate:
-          productPhase === "awaiting_plan"
-            ? "plan"
-            : productPhase === "awaiting_publish"
-              ? "publish"
-              : undefined,
-        summary: plan.summary,
-      };
-    }
-  }
-
-  const pendingGateFromShell = reg?.shell?.pendingGate
-    ? {
-        gate: reg.shell.pendingGate === "publish" ? "publication" : ("plan" as const),
-        plan: reg.shell.plan ?? plan ?? undefined,
-        pages: reg.shell.pages ?? runPages,
-      }
-    : null;
-
-  const pendingGateFromDurable =
-    !pendingGateFromShell &&
-    (productPhase === "awaiting_plan" || productPhase === "awaiting_publish")
-      ? {
-          gate: productPhase === "awaiting_plan" ? ("plan" as const) : ("publication" as const),
-          plan: plan ?? undefined,
-          pages: runPages,
-        }
-      : null;
-
   sendJson(res, 200, {
     session: {
-      id: sessionId,
+      id: info?.id ?? history.sessionId,
       workspaceId: workspace.id,
-      title: reg?.title ?? diskMeta?.title,
-      sessionFile: history.sessionFile,
+      title: info?.title ?? live?.title,
+      createdAt: info?.createdAt ?? live?.createdAt,
+      updatedAt: info?.updatedAt ?? live?.updatedAt,
     },
-    /** Pi-native messages as-is (WP5); no product work fold. */
     messages: history.messages,
-    /**
-     * Parent-visible produce units from durable okf.produce_progress custom
-     * entries (last-by-unitId). Not workUnits / not product inject.
-     * Live mid-run updates arrive via SSE kind okf.produce_progress.
-     */
-    produceUnits: history.produceUnits ?? [],
-    product: {
-      runId,
-      runStatus,
-      phase: productPhase,
-      busy: reg?.busy === true,
-      pendingGate: pendingGateFromShell ?? pendingGateFromDurable,
-      plan,
-      /** Same list nested under product for clients that prefer one object. */
-      produceUnits: history.produceUnits ?? [],
-    },
   });
 }
 
-/**
- * POST /api/workspaces/:id/agent/sessions/:sessionId/command?rootPath=...
- * Validates AgentCommand and dispatches via agent-session-registry.
- */
+/** DELETE Session JSONL and all associated v2 Run data. */
+export async function handleDeleteAgentSession(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  sessionId: string,
+  url: URL,
+): Promise<void> {
+  const workspace = await loadWorkspaceOr404(res, id, url);
+  if (!workspace) return;
+  if (!(await agentSessionExists(workspace, sessionId))) {
+    sendError(res, 404, `agent session not found: ${sessionId}`);
+    return;
+  }
+  try {
+    const deleted = await deleteAgentSession(workspace, sessionId);
+    sendJson(res, 200, {
+      ok: true,
+      sessionId: deleted.sessionId,
+      removed: deleted.removed,
+    });
+  } catch (error) {
+    sendError(res, 500, error instanceof Error ? error.message : String(error));
+  }
+}
+
+/** POST delegates to AgentSession prompt/steer/abort/compact or the active tool gate. */
 export async function handleAgentSessionCommand(
   req: IncomingMessage,
   res: ServerResponse,
@@ -425,109 +181,127 @@ export async function handleAgentSessionCommand(
 ): Promise<void> {
   const workspace = await loadWorkspaceOr404(res, id, url);
   if (!workspace) return;
-
-  const exists = await agentSessionExistsOnDisk(workspace.rootPath, sessionId);
-  if (!exists) {
+  if (!(await agentSessionExists(workspace, sessionId))) {
     sendError(res, 404, `agent session not found: ${sessionId}`);
     return;
   }
 
-  const body = await readJsonBody(req);
-  const parsed = safeParseAgentCommand(body);
+  const parsed = safeParseAgentCommand(await readJsonBody(req));
   if (!parsed.success) {
     sendError(res, 400, "invalid agent command", parsed.error.flatten());
     return;
   }
-
   try {
-    const response = await dispatchAgentCommand(workspace, sessionId, parsed.data);
-    sendJson(res, 202, response);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (message.includes("not found")) {
-      sendError(res, 404, message);
-      return;
-    }
-    sendError(res, 500, message);
+    sendJson(res, 202, await dispatchAgentCommand(workspace, sessionId, parsed.data));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendError(res, message.includes("not found") ? 404 : 500, message);
   }
 }
 
-/**
- * GET /api/workspaces/:id/agent/sessions/:sessionId/events?rootPath=...
- * SSE stream: recent bus events + heartbeats + live Pi/product injects.
- */
+/** SSE: one current SessionManager snapshot, then genuine Pi events and heartbeats. */
 export async function handleAgentSessionEvents(
   req: IncomingMessage,
   res: ServerResponse,
   id: string,
   sessionId: string,
   url: URL,
+  dependencies: AgentSessionSseDependencies = {},
 ): Promise<void> {
   const workspace = await loadWorkspaceOr404(res, id, url);
   if (!workspace) return;
 
+  let closed = false;
+  let ready = false;
+  const lifecycle: { heartbeat?: ReturnType<typeof setInterval> } = {};
+  let unsubscribe = (): void => undefined;
+  const pending: AgentSseEvent[] = [];
+
+  function onRequestClose(): void {
+    // IncomingMessage also emits close after a normally completed GET. The
+    // response close event owns that normal lifecycle; only an incomplete or
+    // aborted request is itself a disconnect signal.
+    if (req.aborted || !req.complete) cleanup();
+  }
+  function cleanup(): void {
+    if (closed) return;
+    closed = true;
+    ready = false;
+    pending.length = 0;
+    if (lifecycle.heartbeat) clearInterval(lifecycle.heartbeat);
+    unsubscribe();
+    req.off("close", onRequestClose);
+    res.off("close", cleanup);
+    if (!res.writableEnded && !res.destroyed) res.end();
+  }
+  const writeEvent = (event: AgentSseEvent): void => {
+    if (closed || res.writableEnded || res.destroyed) return;
+    try {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    } catch {
+      cleanup();
+    }
+  };
+  unsubscribe = (dependencies.subscribe ?? subscribeAgentSessionEvents)(
+    workspace.id,
+    sessionId,
+    (event) => {
+      if (ready) writeEvent(event);
+      else pending.push(event);
+    },
+  );
+  // This is the snapshot/live cut. The active tool is captured immediately
+  // after subscription; any later Pi update is already queued in `pending`
+  // and must be applied after this snapshot, never folded backward into it.
+  const activeTool = (dependencies.getActiveTool ?? getActiveAgentSessionTool)(
+    workspace.id,
+    sessionId,
+  );
+  req.once("close", onRequestClose);
+  res.once("close", cleanup);
+
+  let history: Awaited<ReturnType<typeof loadAgentSessionHistory>>;
+  try {
+    history = await (dependencies.loadHistory ?? loadAgentSessionHistory)(workspace, sessionId);
+  } catch (error) {
+    if (closed) return;
+    sendError(res, 500, error instanceof Error ? error.message : String(error));
+    cleanup();
+    return;
+  }
+  if (closed) return;
+  if (!history) {
+    sendError(res, 404, `agent session not found: ${sessionId}`);
+    cleanup();
+    return;
+  }
   res.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache, no-transform",
     Connection: "keep-alive",
     "X-Accel-Buffering": "no",
   });
-
-  // Clients pass afterSequence on reconnect so the ring dump does not
-  // re-project already-applied (or cold-loaded) Pi turns as peer bubbles.
-  const afterRaw =
-    url.searchParams.get("afterSequence") ??
-    (typeof req.headers["last-event-id"] === "string" ? req.headers["last-event-id"] : undefined);
-  const afterSequence = (() => {
-    if (afterRaw == null || afterRaw === "") return -1;
-    const n = Number(afterRaw);
-    return Number.isFinite(n) ? n : -1;
-  })();
-
-  const writeEvent = (event: AgentSseEvent): void => {
-    if (res.writableEnded) return;
-    const seq =
-      "sequence" in event && typeof event.sequence === "number" ? event.sequence : Date.now();
-    res.write(`id: ${seq}\ndata: ${JSON.stringify(event)}\n\n`);
-  };
-
-  for (const event of getRecentAgentSessionEvents(workspace.id, sessionId)) {
-    const seq =
-      "sequence" in event && typeof event.sequence === "number" ? event.sequence : undefined;
-    if (seq !== undefined && seq <= afterSequence) continue;
-    writeEvent(event);
-  }
-
-  // Initial hello so clients know the stream is live even with empty history.
   writeEvent({
     source: "server",
-    kind: "heartbeat",
+    kind: "snapshot",
     sessionId,
     timestamp: new Date().toISOString(),
-  });
+    payload: {
+      session: { id: sessionId, workspaceId: workspace.id },
+      messages: history.messages,
+      ...(activeTool ? { activeTool } : {}),
+    },
+  } satisfies AgentSseSnapshot);
+  ready = true;
+  for (const event of pending.splice(0)) writeEvent(event);
+  if (closed) return;
 
-  const unsubscribe = subscribeAgentSessionEvents(workspace.id, sessionId, writeEvent);
-
-  const heartbeat = setInterval(() => {
+  lifecycle.heartbeat = setInterval(() => {
     writeEvent({
       source: "server",
       kind: "heartbeat",
       sessionId,
       timestamp: new Date().toISOString(),
     });
-  }, HEARTBEAT_MS);
-
-  const cleanup = (): void => {
-    clearInterval(heartbeat);
-    unsubscribe();
-    if (!res.writableEnded) {
-      res.end();
-    }
-  };
-
-  req.on("close", cleanup);
-  res.on("close", cleanup);
+  }, dependencies.heartbeatMs ?? HEARTBEAT_MS);
 }
-
-// Re-export for tests / diagnostics.
-export { piSessionsDir };

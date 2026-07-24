@@ -5,18 +5,17 @@
  * path + digest, durable Wiki Run Record. No Pi / framework deps.
  */
 
+import { randomUUID } from "node:crypto";
+import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
-import type { WikiRunRecordStatus, WorkspaceConfig } from "@okf-wiki/contract";
+import type { RepositorySnapshot, WikiRunRecordStatus, WorkspaceConfig } from "@okf-wiki/contract";
 import { probeLocalGit } from "./git.js";
-import {
-  type CreateRunOptions,
-  createRun,
-  registerRunRecord,
-  updateRunRecord,
-} from "./run-store.js";
-import { skillDigest } from "./skill-digest.js";
+import { makeTreeWritable } from "./immutable-tree.js";
+import { materializeRepositorySnapshot } from "./repository-snapshot.js";
+import { registerRunRecord } from "./run-store.js";
+import { materializeSkillVersion, skillDigest } from "./skill-digest.js";
 import { resolveSkillPath } from "./skill-path.js";
-import { buildSourceIgnoreMap } from "./source-ignores.js";
+import { effectiveIgnoresForSource } from "./source-ignores.js";
 
 export type FreezeWikiRunErrorCode =
   | "no_sources"
@@ -43,18 +42,20 @@ export class FreezeWikiRunError extends Error {
   }
 }
 
-export type FrozenSourceSnapshot = {
-  id: string;
+export type FrozenSourceSnapshot = RepositorySnapshot & {
+  /** Absolute path to the immutable, run-owned ordinary-file tree. */
   path: string;
-  head?: string;
-  branch?: string;
+};
+
+type ReadySource = RepositorySnapshot & {
+  repositoryPath: string;
 };
 
 export type FreezeWikiRunInput = {
   workspace: WorkspaceConfig;
-  /** When set, register this runId (Session-first). Otherwise createRun generates one. */
+  /** When set, register this runId. Otherwise the Run Boundary generates one. */
   runId?: string;
-  sessionId?: string;
+  sessionId: string;
   autoApprove?: boolean;
   /** Initial record status (default running). Plan-gate starts may use awaiting_plan later via update. */
   status?: WikiRunRecordStatus;
@@ -74,8 +75,8 @@ export type FrozenRunBoundary = {
   workspaceRoot: string;
   skillPath: string;
   skillDigest: string;
-  sessionId?: string;
-  autoApprove?: boolean;
+  sessionId: string;
+  autoApprove: boolean;
   sources: FrozenSourceSnapshot[];
   /** sourceId → absolute path (for materialize). */
   sourcePathMap: Map<string, string>;
@@ -84,7 +85,7 @@ export type FrozenRunBoundary = {
   recordStatus: WikiRunRecordStatus;
 };
 
-async function assertSourcesReady(workspace: WorkspaceConfig): Promise<FrozenSourceSnapshot[]> {
+async function assertSourcesReady(workspace: WorkspaceConfig): Promise<ReadySource[]> {
   const sources = workspace.sources ?? [];
   if (sources.length === 0) {
     throw new FreezeWikiRunError(
@@ -93,7 +94,7 @@ async function assertSourcesReady(workspace: WorkspaceConfig): Promise<FrozenSou
     );
   }
 
-  const frozen: FrozenSourceSnapshot[] = [];
+  const frozen: ReadySource[] = [];
   for (const source of sources) {
     if (!source.id?.trim() || !source.path?.trim()) {
       throw new FreezeWikiRunError("no_sources", `source entry missing id or path`, {
@@ -116,11 +117,18 @@ async function assertSourcesReady(workspace: WorkspaceConfig): Promise<FrozenSou
         { sourceId: source.id, details: probe },
       );
     }
+    if (!probe.head) {
+      throw new FreezeWikiRunError(
+        "source_not_git",
+        `source "${source.id}" has no Git revision to freeze: ${abs}`,
+        { sourceId: source.id, details: probe },
+      );
+    }
     frozen.push({
       id: source.id,
-      path: abs,
-      head: probe.head ?? undefined,
-      branch: probe.branch ?? undefined,
+      repositoryPath: abs,
+      revision: probe.head,
+      effectiveIgnores: effectiveIgnoresForSource(source),
     });
   }
   return frozen;
@@ -169,49 +177,91 @@ export async function freezeWikiRun(input: FreezeWikiRunInput): Promise<FrozenRu
   const workspace = input.workspace;
   const workspaceRoot = path.resolve(workspace.rootPath);
   const sources = await assertSourcesReady(workspace);
-  const { skillPath, skillDigest: digest } = await freezeSkill(workspace, input.priorSkill);
-
-  const createOpts: CreateRunOptions = {
-    autoApprove: input.autoApprove,
-    skillPath,
-    skillDigest: digest,
-    sessionId: input.sessionId,
-  };
+  const { skillPath: sourceSkillPath, skillDigest: digest } = await freezeSkill(
+    workspace,
+    input.priorSkill,
+  );
 
   const status = input.status ?? "running";
-  let runId: string;
-
-  if (input.runId?.trim()) {
-    const explicit = input.runId.trim();
-    try {
-      const record = await registerRunRecord(workspaceRoot, workspace.id, {
-        ...createOpts,
-        runId: explicit,
-        status,
-      });
-      runId = record.runId;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (/invalid runId/i.test(msg)) {
-        throw new FreezeWikiRunError("invalid_run_id", msg, { cause: err });
-      }
-      throw err;
-    }
-  } else {
-    const record = await createRun(workspaceRoot, workspace.id, createOpts);
-    // createRun always starts as running; patch status if caller asked otherwise.
-    if (status !== "running") {
-      await updateRunRecord(workspaceRoot, record.runId, { status });
-    }
-    runId = record.runId;
+  const runId = input.runId?.trim() || randomUUID();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(runId) || runId.includes("..")) {
+    throw new FreezeWikiRunError("invalid_run_id", "invalid runId");
   }
 
+  const runsRoot = path.join(workspaceRoot, ".okf-wiki", "runs");
+  const runDir = path.join(runsRoot, runId);
   const sourcePathMap = new Map<string, string>();
-  for (const s of sources) {
-    sourcePathMap.set(s.id, s.path);
+  const frozenSources: FrozenSourceSnapshot[] = [];
+  const skillPath = path.join(runDir, "skill");
+  let ownsRunDir = false;
+
+  try {
+    await mkdir(runsRoot, { recursive: true });
+    try {
+      await mkdir(runDir);
+      ownsRunDir = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | undefined)?.code === "EEXIST") {
+        throw new Error(`run directory already exists: ${runDir}`, { cause: error });
+      }
+      throw error;
+    }
+
+    for (const source of sources) {
+      const snapshotPath = path.join(runDir, "sources", source.id);
+      await materializeRepositorySnapshot({
+        repositoryPath: source.repositoryPath,
+        revision: source.revision,
+        destination: snapshotPath,
+        effectiveIgnores: source.effectiveIgnores,
+      });
+      sourcePathMap.set(source.id, snapshotPath);
+      frozenSources.push({
+        id: source.id,
+        revision: source.revision,
+        effectiveIgnores: source.effectiveIgnores,
+        path: snapshotPath,
+      });
+    }
+
+    try {
+      await materializeSkillVersion({
+        sourceSkillPath,
+        destination: skillPath,
+        expectedDigest: digest,
+      });
+    } catch (error) {
+      throw new FreezeWikiRunError(
+        "skill_resolve",
+        error instanceof Error ? error.message : "failed to materialize Producer Skill",
+        { cause: error },
+      );
+    }
+
+    const frozenRecordInputs = {
+      autoApprove: input.autoApprove ?? false,
+      skillPath,
+      skillDigest: digest,
+      sessionId: input.sessionId,
+      sources: sources.map(({ repositoryPath: _repositoryPath, ...source }) => source),
+    };
+
+    await registerRunRecord(workspaceRoot, workspace.id, {
+      ...frozenRecordInputs,
+      runId,
+      status,
+    });
+  } catch (error) {
+    if (ownsRunDir) {
+      await makeTreeWritable(runDir).catch(() => undefined);
+      await rm(runDir, { recursive: true, force: true });
+    }
+    throw error;
   }
 
-  const sourceIgnores = buildSourceIgnoreMap(workspace.sources ?? []);
+  const sourceIgnores = new Map<string, readonly string[]>(
+    frozenSources.map((source) => [source.id, source.effectiveIgnores]),
+  );
 
   return {
     runId,
@@ -220,8 +270,8 @@ export async function freezeWikiRun(input: FreezeWikiRunInput): Promise<FrozenRu
     skillPath,
     skillDigest: digest,
     sessionId: input.sessionId,
-    autoApprove: input.autoApprove,
-    sources,
+    autoApprove: input.autoApprove ?? false,
+    sources: frozenSources,
     sourcePathMap,
     sourceIgnores,
     recordStatus: status,

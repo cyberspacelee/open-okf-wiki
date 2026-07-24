@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
-import { WorkspaceConfigSchema } from "@okf-wiki/contract";
+import { defaultWikiRunSpec, WorkspaceConfigSchema } from "@okf-wiki/contract";
+import { runWorkdirLayout } from "../pi/run-workdir.js";
 import { recordingProduceEvents } from "./events.js";
 import { produceWiki } from "./orchestrate.js";
 
@@ -46,20 +47,22 @@ describe("produceWiki fixture", () => {
   it("seeds Spec, writes pages, reviews clean, scores publishable", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "okf-produce-"));
     temps.push(root);
-    const { workspace, src, skill } = await makeWorkspace(root);
+    const { workspace } = await makeWorkspace(root);
     const { sink, events } = recordingProduceEvents();
     const runWorkDir = path.join(root, ".okf-wiki", "runs", "run-1");
+    const source = path.join(runWorkDir, "sources", "main");
+    await mkdir(path.join(runWorkDir, "skill"), { recursive: true });
+    await mkdir(source, { recursive: true });
+    await writeFile(path.join(source, "README.md"), "# Frozen source\n", "utf8");
+    await writeFile(path.join(runWorkDir, "skill", "SKILL.md"), "# Frozen skill\n", "utf8");
+    const layout = runWorkdirLayout(runWorkDir, new Map([["main", source]]));
 
     const result = await produceWiki({
       runId: "run-1",
       workspace,
-      runWorkDir,
+      layout,
+      spec: defaultWikiRunSpec(workspace.name),
       fixture: true,
-      materialize: {
-        sources: new Map([["main", src]]),
-        skillRoot: skill,
-        reset: true,
-      },
       onEvent: sink,
     });
 
@@ -78,26 +81,10 @@ describe("produceWiki fixture", () => {
     assert.ok(kinds.includes("progress"));
     assert.ok(kinds.includes("defects"));
     assert.ok(kinds.includes("plan_progress"));
-    assert.ok(kinds.includes("onProgress"));
-    // WP2: no product work_unit; onProgress is host-local only
-    assert.ok(!kinds.includes("work_unit"));
-    const allowed = new Set(["progress", "defects", "plan_progress", "onProgress"]);
+    const allowed = new Set(["progress", "defects", "plan_progress"]);
     assert.ok(kinds.every((k) => allowed.has(k)));
-    const progressEvents = events.filter((e) => e.kind === "onProgress");
-    assert.ok(progressEvents.length >= 2);
-    for (const e of progressEvents) {
-      const p = e.payload as { unitId?: string; role?: string; status?: string };
-      assert.ok(p.unitId);
-      assert.ok(p.role);
-      assert.ok(
-        p.status === "running" ||
-          p.status === "settled" ||
-          p.status === "failed" ||
-          p.status === "pending",
-      );
-    }
     assert.ok(result.metrics.domainStarts >= 1);
-    // Default Spec domain has questions → Host leaf fan-out runs.
+    // Default Spec domain has questions → Produce leaf fan-out runs.
     assert.ok(result.metrics.leafStarts >= 1);
     assert.ok(result.pages.includes("index.md"));
   });

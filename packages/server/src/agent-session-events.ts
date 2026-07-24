@@ -1,84 +1,37 @@
 /**
- * In-memory bus for Pi agent session SSE (product injects + heartbeats).
- * When AgentSession factory lands, pi events should also fan out here.
+ * Ephemeral fan-out for genuine live Pi events.
+ *
+ * Durable history comes from SessionManager and is sent as the first SSE
+ * snapshot. This module deliberately has no replay, sequence, or product
+ * event channel.
  */
+import type { AgentSseEvent } from "@okf-wiki/contract";
 
-import type { AgentSseEvent, ProductSseEvent } from "@okf-wiki/contract";
+export type PiAgentSessionEvent = Extract<AgentSseEvent, { source: "pi" }>;
+export type AgentSessionEventListener = (event: PiAgentSessionEvent) => void;
 
-export type AgentSessionEventListener = (event: AgentSseEvent) => void;
+const listeners = new Map<string, Set<AgentSessionEventListener>>();
 
-type SessionBus = {
-  sequence: number;
-  listeners: Set<AgentSessionEventListener>;
-  recent: AgentSseEvent[];
-};
-
-const buses = new Map<string, SessionBus>();
-const MAX_RECENT = 256;
-
-function busKey(workspaceId: string, sessionId: string): string {
-  return `${workspaceId}::${sessionId}`;
+function sessionKey(workspaceId: string, sessionId: string): string {
+  return workspaceId + "::" + sessionId;
 }
 
-function getOrCreateBus(workspaceId: string, sessionId: string): SessionBus {
-  const key = busKey(workspaceId, sessionId);
-  let bus = buses.get(key);
-  if (!bus) {
-    bus = { sequence: 0, listeners: new Set(), recent: [] };
-    buses.set(key, bus);
-  }
-  return bus;
-}
-
-function nextSequence(bus: SessionBus): number {
-  bus.sequence += 1;
-  return bus.sequence;
-}
-
-function publish(workspaceId: string, sessionId: string, event: AgentSseEvent): AgentSseEvent {
-  const bus = getOrCreateBus(workspaceId, sessionId);
-  const withSeq: AgentSseEvent =
-    "sequence" in event && event.sequence !== undefined
-      ? event
-      : ({ ...event, sequence: nextSequence(bus) } as AgentSseEvent);
-
-  bus.recent.push(withSeq);
-  if (bus.recent.length > MAX_RECENT) {
-    bus.recent.splice(0, bus.recent.length - MAX_RECENT);
-  }
-  for (const listener of bus.listeners) {
-    try {
-      listener(withSeq);
-    } catch {
-      // Never let a bad subscriber break the bus.
-    }
-  }
-  return withSeq;
-}
-
-/** Emit a typed product inject (run_phase | gate | run_link). */
-export function emitProductAgentEvent(workspaceId: string, event: ProductSseEvent): AgentSseEvent {
-  return publish(workspaceId, event.sessionId, event);
-}
-
-/** Emit an opaque Pi / server event on the session bus. */
+/** Forward one event emitted by the live parent AgentSession. */
 export function emitAgentSessionEvent(
   workspaceId: string,
   sessionId: string,
-  event: AgentSseEvent,
-): AgentSseEvent {
-  return publish(workspaceId, sessionId, event);
-}
-
-export function getRecentAgentSessionEvents(
-  workspaceId: string,
-  sessionId: string,
-): AgentSseEvent[] {
-  const bus = buses.get(busKey(workspaceId, sessionId));
-  if (!bus) {
-    return [];
+  event: PiAgentSessionEvent,
+): PiAgentSessionEvent {
+  const current = listeners.get(sessionKey(workspaceId, sessionId));
+  if (!current) return event;
+  for (const listener of current) {
+    try {
+      listener(event);
+    } catch {
+      // A disconnected response must not break the parent AgentSession.
+    }
   }
-  return bus.recent.slice();
+  return event;
 }
 
 export function subscribeAgentSessionEvents(
@@ -86,17 +39,17 @@ export function subscribeAgentSessionEvents(
   sessionId: string,
   listener: AgentSessionEventListener,
 ): () => void {
-  const bus = getOrCreateBus(workspaceId, sessionId);
-  bus.listeners.add(listener);
+  const key = sessionKey(workspaceId, sessionId);
+  const current = listeners.get(key) ?? new Set<AgentSessionEventListener>();
+  current.add(listener);
+  listeners.set(key, current);
   return () => {
-    bus.listeners.delete(listener);
-    if (bus.listeners.size === 0 && bus.recent.length === 0) {
-      buses.delete(busKey(workspaceId, sessionId));
-    }
+    current.delete(listener);
+    if (current.size === 0) listeners.delete(key);
   };
 }
 
-/** Test helper: drop all buses. */
+/** Test helper. */
 export function resetAgentSessionEventBusesForTests(): void {
-  buses.clear();
+  listeners.clear();
 }

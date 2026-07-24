@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { exitCodeForStatus, WikiRunExitCode } from "./run.js";
 import { WorkspaceConfigSchema, WorkspaceSourceSchema } from "./workspace.js";
 
 test("WorkspaceSourceSchema accepts a clean local source", () => {
@@ -55,11 +54,4 @@ test("WorkspaceConfigSchema accepts wikiLanguage zh", () => {
     createdAt: new Date().toISOString(),
   });
   assert.equal(ws.wikiLanguage, "zh");
-});
-
-test("exit codes map publication gate statuses", () => {
-  assert.equal(exitCodeForStatus("awaiting_publication"), WikiRunExitCode.awaitingPublication);
-  assert.equal(exitCodeForStatus("publication_declined"), WikiRunExitCode.publicationDeclined);
-  assert.equal(exitCodeForStatus("published"), WikiRunExitCode.success);
-  assert.equal(exitCodeForStatus("awaiting_plan"), WikiRunExitCode.awaitingPlan);
 });

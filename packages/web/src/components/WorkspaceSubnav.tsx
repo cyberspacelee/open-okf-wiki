@@ -1,4 +1,4 @@
-import { BookOpenIcon, BotIcon, FolderGit2Icon, ListTodoIcon, SettingsIcon } from "lucide-react";
+import { BookOpenIcon, BotIcon, FolderGit2Icon, SettingsIcon } from "lucide-react";
 import { NavLink, useLocation, useSearchParams } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { useI18n } from "../i18n";
@@ -55,14 +55,6 @@ export function WorkspaceSubnav({ workspaceId, compact = false }: Props) {
       end: false,
       testId: "workspace-subnav-wiki",
       icon: BookOpenIcon,
-    },
-    {
-      kind: "path",
-      suffix: "/run",
-      label: t.subnav.runs,
-      end: false,
-      testId: "workspace-subnav-run",
-      icon: ListTodoIcon,
     },
     {
       kind: "path",

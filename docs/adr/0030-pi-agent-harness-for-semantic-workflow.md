@@ -2,6 +2,7 @@
 
 **Status:** accepted  
 **Date:** 2026-07-22  
+**Refined by:** [ADR 0032](0032-pi-tool-owned-wiki-runs.md) (real `wiki_produce` tool replaces WikiRunShell; `SessionManager` and Pi events are sole Session authorities)
 **Related:** ADR 0002 (untrusted source), 0019 (Run Boundary), 0026 (Session-centric intent), 0028 (thin shell + supervisor tree intent)  
 **Supersedes (framework clauses):** [0020](0020-typescript-mastra-web-workspace.md) Mastra/AI SDK stack; [0025](0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) Mastra workflow + `toAISdkStream`; [0027](0027-framework-first-session-stream.md) Mastra + AI SDK as the only stream/HITL backbone  
 **Does not supersede:** Run Boundary (`@okf-wiki/core`), Staging/atomic publish, Producer Skill method layer, no-shell source policy (0002), Session as sole human operate surface (0026 intent)  

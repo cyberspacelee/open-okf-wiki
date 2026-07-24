@@ -1,7 +1,6 @@
 import { Navigate, Route, Routes, useLocation, useParams } from "react-router-dom";
 import { AgentWorkspacePage } from "./pages/AgentWorkspacePage";
 import { SettingsPage } from "./pages/SettingsPage";
-import { WorkspaceRunPage } from "./pages/WorkspaceRunPage";
 import { WorkspaceSettingsPage } from "./pages/WorkspaceSettingsPage";
 import { WorkspaceSourcesPage } from "./pages/WorkspaceSourcesPage";
 import { WorkspacesPage } from "./pages/WorkspacesPage";
@@ -25,7 +24,6 @@ export default function App() {
       <Route path="/workspaces/:id" element={<LegacyWorkspaceRedirect />} />
       <Route path="/workspaces/:id/session" element={<LegacyWorkspaceRedirect />} />
       <Route path="/workspaces/:id/sources" element={<WorkspaceSourcesPage />} />
-      <Route path="/workspaces/:id/run" element={<WorkspaceRunPage />} />
       <Route path="/workspaces/:id/wiki/*" element={<WorkspaceWikiPage />} />
       <Route path="/workspaces/:id/wiki" element={<WorkspaceWikiPage />} />
       <Route path="/workspaces/:id/settings" element={<WorkspaceSettingsPage />} />

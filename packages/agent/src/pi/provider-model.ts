@@ -12,7 +12,7 @@
 
 import { type Api, InMemoryCredentialStore, type Model } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import type { ProviderApiShape } from "@okf-wiki/contract";
+import type { ProviderApiShape, ProviderTestResult } from "@okf-wiki/contract";
 import {
   flattenModels,
   hasProviderCredentials,
@@ -110,6 +110,19 @@ function missingModelMessage(): string {
     "No model selected. Pick a model profile in Workspace Settings, or set a " +
     "default model in global Settings."
   );
+}
+
+function redactProviderError(text: string): string {
+  return text
+    .replace(/\bsk-[a-zA-Z0-9-]{6,}\b/g, "[redacted-key]")
+    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/api[_-]?key["']?\s*[:=]\s*["']?[^"'\s]+/gi, "api_key=[redacted]")
+    .slice(0, 240);
+}
+
+function httpStatusFromError(text: string): number | undefined {
+  const match = /(?:HTTP\s*|status(?:\s+code)?\s*[:=]?\s*)(\d{3})\b/i.exec(text);
+  return match ? Number(match[1]) : undefined;
 }
 
 /**
@@ -252,6 +265,116 @@ export async function resolvePiModelFromProvider(
     providerKind,
     runtime,
   };
+}
+
+/**
+ * Exercise the same Pi transport used by live Operator Sessions.
+ *
+ * This is deliberately a complete model call, not a hand-written probe for an
+ * assumed OpenAI path. It therefore verifies provider composition, auth,
+ * headers, model identity, compatibility flags, and response parsing together.
+ */
+export async function testProviderConnection(input: {
+  baseUrl: string;
+  apiKey: string;
+  apiShape: ProviderApiShape;
+  modelId?: string;
+  headers?: Record<string, string>;
+  supportsDeveloperRole?: boolean;
+  signal?: AbortSignal;
+}): Promise<ProviderTestResult> {
+  const baseUrl = input.baseUrl.trim().replace(/\/$/, "");
+  if (!baseUrl) {
+    return { ok: false, apiShape: input.apiShape, message: "base URL is required" };
+  }
+  try {
+    const parsed = new URL(baseUrl);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return {
+        ok: false,
+        apiShape: input.apiShape,
+        message: "base URL must use http or https",
+      };
+    }
+  } catch {
+    return {
+      ok: false,
+      apiShape: input.apiShape,
+      message: "base URL is not a valid absolute URL",
+    };
+  }
+
+  const started = Date.now();
+  try {
+    const resolved = await resolvePiModelFromProvider({
+      baseUrl,
+      apiKey: input.apiKey,
+      apiShape: input.apiShape,
+      modelId: input.modelId?.trim() || "default",
+      profileId: "connection-test",
+      profileName: "Connection test",
+      headers: input.headers,
+      supportsDeveloperRole: input.supportsDeveloperRole,
+    });
+    const result = await resolved.modelRuntime.completeSimple(
+      resolved.model,
+      {
+        systemPrompt: "Reply with pong.",
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: "ping" }],
+            timestamp: Date.now(),
+          },
+        ],
+      },
+      { maxTokens: 1, signal: input.signal },
+    );
+    const latencyMs = Date.now() - started;
+    if (result.stopReason === "aborted") {
+      return {
+        ok: false,
+        apiShape: input.apiShape,
+        message: "request timed out",
+        latencyMs,
+      };
+    }
+    if (result.stopReason === "error") {
+      const error = redactProviderError(result.errorMessage || "Pi model call failed");
+      return {
+        ok: false,
+        apiShape: input.apiShape,
+        ...(httpStatusFromError(error) !== undefined ? { status: httpStatusFromError(error) } : {}),
+        message: error,
+        latencyMs,
+      };
+    }
+    return {
+      ok: true,
+      apiShape: input.apiShape,
+      message: `Pi transport completed for ${resolved.servedModelId}`,
+      latencyMs,
+    };
+  } catch (error) {
+    const latencyMs = Date.now() - started;
+    if (error instanceof Error && error.name === "AbortError") {
+      return {
+        ok: false,
+        apiShape: input.apiShape,
+        message: "request timed out",
+        latencyMs,
+      };
+    }
+    const message = redactProviderError(error instanceof Error ? error.message : String(error));
+    const status = httpStatusFromError(message);
+    return {
+      ok: false,
+      apiShape: input.apiShape,
+      ...(status !== undefined ? { status } : {}),
+      message: message || "Pi transport failed",
+      latencyMs,
+    };
+  }
 }
 
 /**

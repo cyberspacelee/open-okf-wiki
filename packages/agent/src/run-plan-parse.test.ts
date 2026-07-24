@@ -1,83 +1,37 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parsePlanFromAgentText } from "./produce/index.js";
+import { defaultWikiRunSpec } from "@okf-wiki/contract";
+import { parsePlanFromAgentText } from "./produce/plan-parse.js";
 
-test("parsePlanFromAgentText extracts markdown list pages", () => {
+test("parsePlanFromAgentText accepts a complete fenced WikiRunSpec", () => {
+  const expected = defaultWikiRunSpec("Demo");
   const plan = parsePlanFromAgentText(
-    [
-      "Source-grounded overview for Demo.",
-      "",
-      "### Pages",
-      "- `overview.md` — Project purpose and navigation",
-      "- `architecture.md` — Runtime layout and modules",
-      "- concepts.md: Domain vocabulary",
-    ].join("\n"),
-    { workspaceName: "Demo" },
+    ["Here is the plan:", "```json", JSON.stringify(expected), "```"].join("\n"),
   );
-  assert.equal(plan.summary, "Source-grounded overview for Demo.");
-  assert.equal(plan.pages.length, 3);
-  assert.equal(plan.pages[0]!.path, "overview.md");
-  assert.equal(plan.pages[1]!.path, "architecture.md");
-  assert.equal(plan.pages[2]!.path, "concepts.md");
-  assert.match(plan.pages[2]!.purpose, /vocabulary/i);
+  assert.deepEqual(plan, expected);
 });
 
-test("parsePlanFromAgentText prefers fenced JSON pages", () => {
-  const plan = parsePlanFromAgentText(
-    [
-      "Here is the plan:",
-      "```json",
-      JSON.stringify({
-        summary: "JSON plan",
-        pages: [
-          { path: "overview.md", purpose: "Intro" },
-          { path: "api.md", purpose: "HTTP surface" },
-        ],
-      }),
-      "```",
-    ].join("\n"),
-    { workspaceName: "Demo" },
+test("parsePlanFromAgentText accepts a complete raw WikiRunSpec", () => {
+  const expected = defaultWikiRunSpec("Raw");
+  assert.deepEqual(parsePlanFromAgentText(JSON.stringify(expected)), expected);
+});
+
+test("parsePlanFromAgentText rejects Markdown page-list compatibility", () => {
+  assert.throws(
+    () =>
+      parsePlanFromAgentText(
+        ["### Pages", "- `overview.md` — Project purpose and navigation"].join("\n"),
+      ),
+    /complete JSON WikiRunSpec/,
   );
-  assert.equal(plan.summary, "JSON plan");
-  assert.equal(plan.pages.length, 2);
-  assert.equal(plan.pages[1]!.path, "api.md");
 });
 
-test("parsePlanFromAgentText falls back to prior pages", () => {
-  const plan = parsePlanFromAgentText("No list here, just prose.", {
-    workspaceName: "Demo",
-    prior: {
-      version: 1,
-      summary: "Prior",
-      audience: "Engineers",
-      domains: [],
-      pages: [
-        {
-          path: "overview.md",
-          purpose: "Keep me",
-          domainIds: [],
-          questions: [],
-          critical: true,
-        },
-      ],
-      openQuestions: [],
-      acceptance: {
-        reviewRequired: true,
-        maxRepairRounds: 2,
-        blockingSeverities: ["blocking"],
-      },
-      changelog: [],
-      notes: "Operator revision feedback:\nadd concepts",
-    },
-  });
-  assert.equal(plan.pages.length, 1);
-  assert.equal(plan.pages[0]!.path, "overview.md");
-  assert.match(plan.notes ?? "", /revision feedback/i);
-});
-
-test("parsePlanFromAgentText default overview when empty", () => {
-  const plan = parsePlanFromAgentText("", { workspaceName: "Empty" });
-  assert.equal(plan.pages.length, 1);
-  assert.equal(plan.pages[0]!.path, "overview.md");
-  assert.match(plan.summary, /Empty/);
+test("parsePlanFromAgentText rejects a thin legacy JSON plan", () => {
+  assert.throws(
+    () =>
+      parsePlanFromAgentText(
+        `\`\`\`json\n${JSON.stringify({ summary: "Thin", pages: [{ path: "x.md", purpose: "x" }] })}\n\`\`\``,
+      ),
+    /complete JSON WikiRunSpec/,
+  );
 });

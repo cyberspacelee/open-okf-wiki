@@ -1,13 +1,13 @@
 /**
  * Agent Workspace operator surface (ADR 0030 / 0031 WP6).
  *
- * Route + shell, session chrome, fixture wiki run → phase/gate strips.
+ * Route + shell, session chrome, and the sole Pi prompt surface.
  * Empty streaming uses waiting-for-events (never Thinking alone).
  *
  * E2E webServer always sets OKF_WIKI_AGENT_MODE=fixture (see playwright.config.ts).
  */
 import { expect, type Page, test } from "@playwright/test";
-import { addSourceViaUi, createTempGitRepo, createWorkspaceViaUi } from "./helpers";
+import { addSourceViaUi, createTempGitRepo, createWorkspaceViaUi, setChecked } from "./helpers";
 
 /** Assert empty streaming / waiting chrome is not mislabeled as model "Thinking". */
 async function expectWaitingNotThinking(page: Page): Promise<void> {
@@ -18,19 +18,7 @@ async function expectWaitingNotThinking(page: Page): Promise<void> {
   await expect(waiting.first()).not.toContainText(/Thinking|思考中/);
 }
 
-async function startWikiRunFromComposer(page: Page): Promise<void> {
-  // Composer defaults to Chat mode — switch to Wiki run for the primary CTA.
-  const start = page.getByTestId("agent-start-wiki-run");
-  if ((await start.count()) === 0) {
-    await page.getByTestId("agent-mode-wiki").click();
-  }
-  await expect(page.getByTestId("agent-start-wiki-run")).toBeEnabled({
-    timeout: 15_000,
-  });
-  await page.getByTestId("agent-start-wiki-run").click();
-}
-
-test.describe("agent workspace operator surface (ADR 0031)", () => {
+test.describe("agent workspace operator surface (ADR 0032)", () => {
   test("route + shell render after workspace create", async ({ page }) => {
     const { name } = await createWorkspaceViaUi(page, "E2E Agent Shell");
 
@@ -38,7 +26,8 @@ test.describe("agent workspace operator surface (ADR 0031)", () => {
     await expect(page.getByTestId("agent-workspace-shell")).toBeVisible();
     await expect(page.getByTestId("agent-session-list")).toBeVisible();
     await expect(page.getByTestId("agent-composer")).toBeVisible();
-    await expect(page.getByTestId("agent-composer-mode")).toBeVisible();
+    await expect(page.getByTestId("agent-start-wiki-run")).toHaveCount(0);
+    await expect(page.getByTestId("agent-composer-mode")).toHaveCount(0);
     await expect(page.getByTestId("agent-context-panels")).toBeVisible();
     await expect(page.getByTestId("agent-workspace-page")).toContainText(name);
 
@@ -47,6 +36,18 @@ test.describe("agent workspace operator surface (ADR 0031)", () => {
       timeout: 15_000,
     });
     await expect(page).toHaveURL(/\/w\/[^/?]+/);
+    await expect(page.getByTestId("workspace-subnav-run")).toHaveCount(0);
+  });
+
+  test("legacy independent Run route is not an operator surface", async ({ page }) => {
+    await createWorkspaceViaUi(page, "E2E Agent Only");
+    const id = new URL(page.url()).pathname.split("/").filter(Boolean).at(-1);
+    expect(id).toBeTruthy();
+
+    await page.goto(`/workspaces/${encodeURIComponent(id!)}/run`);
+
+    await expect(page.getByTestId("workspace-run-page")).toHaveCount(0);
+    await expect(page).toHaveURL(/\/workspaces$/);
   });
 
   test("can create and select an agent session", async ({ page }) => {
@@ -74,51 +75,73 @@ test.describe("agent workspace operator surface (ADR 0031)", () => {
     }
   });
 
-  test("fixture wiki run shows phase or gate strip (no work_unit body channel)", async ({
-    page,
-  }) => {
-    await createWorkspaceViaUi(page, "E2E Agent Work Surface");
-    const gitRepo = createTempGitRepo("agent-work");
-    await addSourceViaUi(page, gitRepo, "worksrc");
+  test("prompt drives the genuine wiki_produce gates and publishes the Wiki", async ({ page }) => {
+    test.setTimeout(120_000);
+    const { name } = await createWorkspaceViaUi(page, "E2E Agent Produce");
+    const source = createTempGitRepo("agent-produce");
+
+    await addSourceViaUi(page, source, "appsrc");
+    await page.getByTestId("workspace-subnav-settings").click();
+    await expect(page.getByTestId("settings-page")).toBeVisible();
+    await setChecked(page, "settings-plan-confirm", true);
+    await page.getByTestId("settings-save").click();
+    await expect(page.getByRole("status")).toBeVisible();
 
     await page.getByTestId("workspace-subnav-agent").click();
     await expect(page.getByTestId("agent-workspace-page")).toBeVisible();
-    await expect(page.getByTestId("agent-workspace-shell")).toBeVisible();
+    await expect(page.getByTestId("agent-session-item")).toHaveCount(1);
 
-    await startWikiRunFromComposer(page);
+    const composerInput = page.getByTestId("agent-composer-input");
+    const send = page.getByTestId("agent-send");
+    const prompt = "Inspect the sources and produce the wiki.";
+    await expect(composerInput).toBeEnabled({ timeout: 15_000 });
+    await composerInput.fill(prompt);
+    await expect(composerInput).toHaveValue(prompt);
+    await expect(send).toBeEnabled();
+    await send.click();
 
-    const phaseStrip = page.locator('[data-product-kind="run_phase"]');
-    const gateStrip = page.locator('[data-product-kind="gate"]');
-    const gateApprove = page.getByTestId("agent-gate-approve");
-    const toolCard = page.getByTestId("tool-execution-card");
-    const waiting = page.getByTestId("waiting-for-events");
+    const userMessage = page.locator('[data-testid="agent-message"][data-role="user"]');
+    await expect(userMessage.last()).toContainText("Inspect the sources", { timeout: 15_000 });
+    await expect(page.locator("[data-product-kind]")).toHaveCount(0);
+    await expect(page.getByTestId("agent-start-wiki-run")).toHaveCount(0);
 
-    await expect
-      .poll(
-        async () => {
-          if ((await gateApprove.count()) > 0) return "gate";
-          if ((await gateStrip.count()) > 0) return "gate-strip";
-          if ((await phaseStrip.count()) > 0) return "phase";
-          if ((await toolCard.count()) > 0) return "tool";
-          if ((await waiting.count()) > 0) return "waiting";
-          return "pending";
-        },
-        {
-          timeout: 90_000,
-          message: "expected phase/gate/tool strip after fixture wiki run",
-        },
-      )
-      .not.toBe("pending");
+    const details = page.getByTestId("wiki-produce-details");
+    await expect(details).toHaveAttribute("data-wiki-status", "awaiting_plan", {
+      timeout: 45_000,
+    });
+    await expect(details).toContainText("overview.md");
+    await page.reload();
+    await expect(page.getByTestId("agent-workspace-page")).toBeVisible();
+    await expect(details).toHaveAttribute("data-wiki-status", "awaiting_plan", {
+      timeout: 15_000,
+    });
+    await expect(details).toContainText("overview.md");
+    await page.getByTestId("agent-gate-approve").click();
 
-    // Legacy work_unit body channel must not reappear.
-    await expect(page.getByTestId("work-block")).toHaveCount(0);
-    await expect(page.getByTestId("work-unit-row")).toHaveCount(0);
+    await expect(details).toHaveAttribute("data-wiki-status", "awaiting_publication", {
+      timeout: 45_000,
+    });
+    await page.reload();
+    await expect(page.getByTestId("agent-workspace-page")).toBeVisible();
+    await expect(details).toHaveAttribute("data-wiki-status", "awaiting_publication", {
+      timeout: 15_000,
+    });
+    await page.getByTestId("agent-gate-approve").click();
 
+    await expect(details).toHaveAttribute("data-wiki-status", "published", {
+      timeout: 45_000,
+    });
     await expectWaitingNotThinking(page);
 
-    if ((await gateApprove.count()) > 0) {
-      await gateApprove.click();
-    }
+    await page.getByTestId("workspace-subnav-wiki").click();
+    await expect(page.getByTestId("wiki-page")).toBeVisible({ timeout: 15_000 });
+    await expect(
+      page.getByTestId("wiki-page-list").getByTestId("wiki-page-link").filter({
+        hasText: "overview.md",
+      }),
+    ).toBeVisible();
+    await expect(page.getByTestId("wiki-page-title")).toContainText(name);
+    await expect(page.getByTestId("wiki-markdown")).toContainText("fixture mode");
   });
 
   test("workspaces picker loads and can open agent workspace route", async ({ page }) => {

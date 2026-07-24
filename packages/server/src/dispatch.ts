@@ -31,21 +31,7 @@ import {
   handleUpdateModel,
   handleUpdateProvider,
 } from "./routes/provider.ts";
-import {
-  handleApprovePlan,
-  handleApprovePublication,
-  handleCancelRun,
-  handleCreateRun,
-  handleDenyPlan,
-  handleDenyPublication,
-  handleGetRun,
-  handleGetRunReceipt,
-  handleListRunReceipts,
-  handleListRuns,
-  handleRetryRun,
-  handleRevisePlan,
-  handleRunEvents,
-} from "./routes/runs.ts";
+import { handleListRuns } from "./routes/runs.ts";
 import { handleListWiki, handleReadWiki, matchWikiApiRoute } from "./routes/wiki.ts";
 import {
   handleAddSource,
@@ -272,93 +258,10 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
       }
     }
     {
-      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/retry");
-      if (params && method === "POST") {
-        await handleRetryRun(req, res, params.id!, params.runId!, url);
-        return;
-      }
-    }
-    {
-      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/approve-plan");
-      if (params && method === "POST") {
-        await handleApprovePlan(req, res, params.id!, params.runId!, url);
-        return;
-      }
-    }
-    {
-      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/deny-plan");
-      if (params && method === "POST") {
-        await handleDenyPlan(req, res, params.id!, params.runId!, url);
-        return;
-      }
-    }
-    {
-      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/revise-plan");
-      if (params && method === "POST") {
-        await handleRevisePlan(req, res, params.id!, params.runId!, url);
-        return;
-      }
-    }
-    {
-      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/approve-publication");
-      if (params && method === "POST") {
-        await handleApprovePublication(req, res, params.id!, params.runId!, url);
-        return;
-      }
-    }
-    {
-      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/deny-publication");
-      if (params && method === "POST") {
-        await handleDenyPublication(req, res, params.id!, params.runId!, url);
-        return;
-      }
-    }
-    {
-      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/cancel");
-      if (params && method === "POST") {
-        await handleCancelRun(req, res, params.id!, params.runId!, url);
-        return;
-      }
-    }
-    {
-      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/events");
-      if (params && method === "GET") {
-        await handleRunEvents(req, res, params.id!, params.runId!, url);
-        return;
-      }
-    }
-    {
-      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/receipts/:nodeId");
-      if (params && method === "GET") {
-        await handleGetRunReceipt(req, res, params.id!, params.runId!, params.nodeId!, url);
-        return;
-      }
-    }
-    {
-      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/receipts");
-      if (params && method === "GET") {
-        await handleListRunReceipts(req, res, params.id!, params.runId!, url);
-        return;
-      }
-    }
-    {
-      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId");
-      if (params && method === "GET") {
-        await handleGetRun(req, res, params.id!, params.runId!, url);
-        return;
-      }
-    }
-    {
       const params = matchRoute(pathname, "/api/workspaces/:id/runs");
-      if (params) {
-        if (method === "GET") {
-          await handleListRuns(req, res, params.id!, url);
-          return;
-        }
-        if (method === "POST") {
-          await handleCreateRun(req, res, params.id!, url);
-          return;
-        }
+      if (params && method === "GET") {
+        await handleListRuns(req, res, params.id!, url);
+        return;
       }
     }
     // Published Wiki browse: list and read under publicationPath

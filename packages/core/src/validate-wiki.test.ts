@@ -3,14 +3,8 @@ import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import {
-  hasConceptFrontmatter,
-  hasNonEmptyTitleFrontmatter,
-  hasNonEmptyTypeFrontmatter,
-  isReservedWikiPath,
-  validateWikiTree,
-  WIKI_VALIDATE_MAX_FILE_BYTES,
-} from "./validate-wiki.js";
+import { validateWikiTree, WIKI_VALIDATE_MAX_FILE_BYTES } from "./validate-wiki.js";
+import { isReservedWikiPath, parseWikiFrontmatter } from "./wiki-tree.js";
 
 async function tempDir(prefix: string): Promise<string> {
   return mkdtemp(path.join(tmpdir(), prefix));
@@ -30,25 +24,32 @@ const listingIndex = `# Pages
 * [Overview](overview.md) - Repository overview
 `;
 
-test("hasNonEmptyTitleFrontmatter accepts quoted and plain titles", () => {
-  assert.equal(hasNonEmptyTitleFrontmatter("---\ntitle: Hello\n---\n\n# H\n"), true);
-  assert.equal(hasNonEmptyTitleFrontmatter('---\ntitle: "Quoted Title"\n---\n\nx\n'), true);
-  assert.equal(hasNonEmptyTitleFrontmatter("---\ntitle: 'Also Fine'\n---\n\nx\n"), true);
+test("parseWikiFrontmatter accepts quoted and plain titles", () => {
+  assert.equal(parseWikiFrontmatter("---\ntitle: Hello\n---\n\n# H\n")?.values.title, "Hello");
+  assert.equal(
+    parseWikiFrontmatter('---\ntitle: "Quoted Title"\n---\n\nx\n')?.values.title,
+    "Quoted Title",
+  );
+  assert.equal(
+    parseWikiFrontmatter("---\ntitle: 'Also Fine'\n---\n\nx\n")?.values.title,
+    "Also Fine",
+  );
 });
 
-test("hasNonEmptyTitleFrontmatter rejects missing or empty title", () => {
-  assert.equal(hasNonEmptyTitleFrontmatter("# No frontmatter\n"), false);
-  assert.equal(hasNonEmptyTitleFrontmatter("---\nfoo: bar\n---\n\nx\n"), false);
-  assert.equal(hasNonEmptyTitleFrontmatter("---\ntitle:\n---\n\nx\n"), false);
-  assert.equal(hasNonEmptyTitleFrontmatter("---\ntitle:   \n---\n\nx\n"), false);
-  assert.equal(hasNonEmptyTitleFrontmatter('---\ntitle: ""\n---\n\nx\n'), false);
+test("parseWikiFrontmatter rejects missing or empty title", () => {
+  assert.equal(parseWikiFrontmatter("# No frontmatter\n"), null);
+  assert.equal(parseWikiFrontmatter("---\nfoo: bar\n---\n\nx\n")?.values.title, undefined);
+  assert.equal(parseWikiFrontmatter("---\ntitle:\n---\n\nx\n")?.values.title, undefined);
+  assert.equal(parseWikiFrontmatter("---\ntitle:   \n---\n\nx\n")?.values.title, undefined);
+  assert.equal(parseWikiFrontmatter('---\ntitle: ""\n---\n\nx\n')?.values.title, undefined);
 });
 
-test("hasNonEmptyTypeFrontmatter and hasConceptFrontmatter", () => {
-  assert.equal(hasNonEmptyTypeFrontmatter("---\ntype: Overview\ntitle: X\n---\n"), true);
-  assert.equal(hasNonEmptyTypeFrontmatter("---\ntitle: X\n---\n"), false);
-  assert.equal(hasConceptFrontmatter("---\ntype: Overview\ntitle: X\n---\n"), true);
-  assert.equal(hasConceptFrontmatter("---\ntitle: X\n---\n"), false);
+test("parseWikiFrontmatter exposes concept type and title once", () => {
+  assert.deepEqual(parseWikiFrontmatter("---\ntype: Overview\ntitle: X\n---\n")?.values, {
+    type: "Overview",
+    title: "X",
+  });
+  assert.equal(parseWikiFrontmatter("---\ntitle: X\n---\n")?.values.type, undefined);
   assert.equal(isReservedWikiPath("index.md"), true);
   assert.equal(isReservedWikiPath("modules/index.md"), true);
   assert.equal(isReservedWikiPath("log.md"), true);

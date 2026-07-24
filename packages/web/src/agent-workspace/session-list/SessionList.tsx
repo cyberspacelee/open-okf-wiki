@@ -26,11 +26,6 @@ export type SessionListProps = {
 function formatLabel(session: PiSessionSummary): string {
   const title = session.title?.trim();
   if (title) return title;
-
-  const name = session.name?.trim();
-  if (name && name !== `${session.id}.json`) {
-    return name.replace(/\.jsonl?$/i, "");
-  }
   return session.id.slice(0, 10);
 }
 

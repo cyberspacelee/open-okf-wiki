@@ -3,18 +3,16 @@
  * Loads workspace + Pi agent sessions; wires the 3-pane shell.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { AgentWorkspaceShell } from "../agent-workspace/AgentWorkspaceShell";
 import { useSessionAgent } from "../agent-workspace/hooks/useSessionAgent";
 import {
   createAgentSession,
   deleteAgentSession,
-  getProvider,
   getWorkspace,
   listAgentSessions,
   listRuns,
-  type ModelProfilePublic,
   type PiSessionSummary,
   type StoredRunRecord,
   type WorkspaceConfig,
@@ -39,9 +37,15 @@ export function AgentWorkspacePage() {
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [models, setModels] = useState<ModelProfilePublic[]>([]);
-  const [defaultModelProfileId, setDefaultModelProfileId] = useState<string | undefined>();
-  const [wikiModelProfileId, setWikiModelProfileId] = useState("");
+  const mountedRef = useRef(true);
+  const bootKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const rootPath = workspace?.rootPath ?? rootPathHint;
 
@@ -53,6 +57,10 @@ export function AgentWorkspacePage() {
 
   const syncSessionIdInUrl = useCallback(
     (sessionId: string) => {
+      // Boot may finish after the operator has opened Sources/Wiki/Settings.
+      // A stale Agent page must not navigate the now-current page back to /w/:id.
+      const agentPath = `/w/${encodeURIComponent(id)}`;
+      if (!mountedRef.current || window.location.pathname !== agentPath) return;
       setSearchParams(
         (prev) => {
           const next = new URLSearchParams(prev);
@@ -62,7 +70,7 @@ export function AgentWorkspacePage() {
         { replace: true },
       );
     },
-    [setSearchParams],
+    [id, setSearchParams],
   );
 
   const boot = useCallback(async () => {
@@ -75,19 +83,10 @@ export function AgentWorkspacePage() {
       setWorkspace(ws);
       const root = ws.rootPath ?? rootPathHint;
 
-      const [sessRes, runsRes, providerRes] = await Promise.all([
+      const [sessRes, runsRes] = await Promise.all([
         listAgentSessions(id, root),
         listRuns(id, root).catch(() => ({ runs: [] as StoredRunRecord[] })),
-        getProvider().catch(() => null),
       ]);
-
-      const catalog = providerRes?.provider.models ?? [];
-      setModels(catalog);
-      setDefaultModelProfileId(providerRes?.provider.defaultModelProfileId);
-      // Prefer workspace selection, then catalog default, then first model.
-      const initialProfile =
-        ws.model?.profileId || providerRes?.provider.defaultModelProfileId || catalog[0]?.id || "";
-      setWikiModelProfileId(initialProfile);
 
       let list = sessRes.sessions ?? [];
       let sessionId = searchParams.get("sessionId") ?? list[0]?.id ?? null;
@@ -102,10 +101,8 @@ export function AgentWorkspacePage() {
         list = [
           {
             id: created.session.id,
-            name: `${created.session.id}.json`,
             title: created.session.title,
             updatedAt: created.session.createdAt,
-            placeholder: true,
           },
           ...list,
         ];
@@ -126,6 +123,9 @@ export function AgentWorkspacePage() {
   }, [id, rootPathHint, searchParams, syncSessionIdInUrl]);
 
   useEffect(() => {
+    const key = `${id}::${rootPathHint ?? ""}`;
+    if (bootKeyRef.current === key) return;
+    bootKeyRef.current = key;
     void boot();
     // Boot once per workspace id / rootPath hint (not on every sessionId write).
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional one-shot boot
@@ -151,10 +151,8 @@ export function AgentWorkspacePage() {
       );
       const summary: PiSessionSummary = {
         id: created.session.id,
-        name: `${created.session.id}.json`,
         title: created.session.title,
         updatedAt: created.session.createdAt,
-        placeholder: true,
       };
       setSessions((prev) => [summary, ...prev]);
       setActiveSessionId(created.session.id);
@@ -181,10 +179,8 @@ export function AgentWorkspacePage() {
           nextList = [
             {
               id: created.session.id,
-              name: `${created.session.id}.json`,
               title: created.session.title,
               updatedAt: created.session.createdAt,
-              placeholder: true,
             },
           ];
           nextActive = created.session.id;
@@ -261,27 +257,13 @@ export function AgentWorkspacePage() {
           input={agent.input}
           onInputChange={agent.setInput}
           onSend={() => void agent.send()}
-          onStartWikiRun={() =>
-            void agent.startWikiRun({
-              modelProfileId: wikiModelProfileId || undefined,
-            })
-          }
           onAbort={() => void agent.abort()}
+          onResumeGate={agent.resumeGate}
           agentStatus={agent.status}
+          agentReady={agent.ready}
           agentError={agent.error}
           onDismissAgentError={agent.clearError}
-          plan={agent.plan}
-          linkedRunId={agent.linkedRunId}
-          phase={agent.phase}
-          pendingGate={agent.pendingGate}
-          gateBusy={agent.gateBusy}
-          onResumeGate={(input) => void agent.resumeGate(input)}
-          produceUnits={agent.produceUnits}
           recentRuns={recentRuns}
-          models={models}
-          wikiModelProfileId={wikiModelProfileId}
-          onWikiModelProfileIdChange={setWikiModelProfileId}
-          defaultModelProfileId={workspace.model?.profileId ?? defaultModelProfileId}
         />
       )}
     </WorkspaceShell>

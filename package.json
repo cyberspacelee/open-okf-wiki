@@ -16,15 +16,13 @@
     "lint:fix": "eslint . --fix",
     "format": "biome check --write --formatter-enabled=true --linter-enabled=false --assist-enabled=true .",
     "format:check": "biome check --formatter-enabled=true --linter-enabled=false --assist-enabled=true .",
-    "check": "pnpm run typecheck && pnpm run lint && pnpm run format:check && node scripts/check-no-forbidden-agent-deps.mjs && node scripts/check-no-legacy-protocol.mjs && node scripts/check-operator-surface.mjs",
-    "check:deps": "node scripts/check-no-forbidden-agent-deps.mjs",
-    "check:operator-surface": "node scripts/check-operator-surface.mjs",
+    "check": "pnpm run typecheck && pnpm run lint && pnpm run format:check && pnpm run check:architecture",
+    "check:architecture": "node scripts/check-architecture.mjs",
     "test:e2e": "pnpm --filter @okf-wiki/web test:e2e",
     "dev": "pnpm run build:libs && pnpm run dev:stack",
     "dev:stack": "concurrently -k -n contract,core,agent,server,web -c blue,cyan,magenta,green,yellow \"pnpm --filter @okf-wiki/contract dev\" \"pnpm --filter @okf-wiki/core dev\" \"pnpm --filter @okf-wiki/agent dev\" \"pnpm --filter @okf-wiki/server dev\" \"pnpm --filter @okf-wiki/web dev\"",
     "dev:web": "pnpm --filter @okf-wiki/web dev",
-    "dev:server": "pnpm --filter @okf-wiki/server dev",
-    "cli": "pnpm --filter @okf-wiki/cli start"
+    "dev:server": "pnpm --filter @okf-wiki/server dev"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.5",

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -9,6 +10,7 @@ import {
   resolvePiModelFromProvider,
   resolveWorkspacePiModel,
   servedModelIdFromProfile,
+  testProviderConnection,
 } from "./provider-model.js";
 
 describe("provider-model bridge", () => {
@@ -63,6 +65,92 @@ describe("provider-model bridge", () => {
       profileId: "r1",
     });
     assert.equal(resolved.model.api, "openai-responses");
+  });
+
+  it("tests a provider through ModelRuntime.completeSimple", async () => {
+    let requestPath = "";
+    let requestBody: Record<string, unknown> = {};
+    let authorization = "";
+    const server = createServer((req, res) => {
+      requestPath = req.url ?? "";
+      authorization = String(req.headers.authorization ?? "");
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.on("end", () => {
+        requestBody = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+        const base = {
+          id: "chatcmpl-probe",
+          object: "chat.completion.chunk",
+          created: Math.floor(Date.now() / 1000),
+          model: "probe-model",
+        };
+        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        res.write(
+          `data: ${JSON.stringify({
+            ...base,
+            choices: [
+              { index: 0, delta: { role: "assistant", content: "pong" }, finish_reason: null },
+            ],
+          })}\n\n`,
+        );
+        res.write(
+          `data: ${JSON.stringify({
+            ...base,
+            choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          })}\n\n`,
+        );
+        res.end("data: [DONE]\n\n");
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      assert.ok(address && typeof address === "object");
+      const result = await testProviderConnection({
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        apiKey: "sk-probe-secret",
+        apiShape: "completions",
+        modelId: "openai/probe-model",
+        supportsDeveloperRole: true,
+      });
+
+      assert.equal(result.ok, true, result.message);
+      assert.equal(requestPath, "/v1/chat/completions");
+      assert.equal(requestBody.model, "probe-model");
+      assert.equal(requestBody.stream, true);
+      assert.equal((requestBody.messages as Array<{ role?: string }>)[0]?.role, "developer");
+      assert.equal(authorization, "Bearer sk-probe-secret");
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
+  it("propagates an aborted Pi outcome as a provider test failure", async () => {
+    const controller = new AbortController();
+    const server = createServer(() => controller.abort());
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      assert.ok(address && typeof address === "object");
+      const result = await testProviderConnection({
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        apiKey: "sk-probe-secret",
+        apiShape: "completions",
+        modelId: "openai/probe-model",
+        signal: controller.signal,
+      });
+
+      assert.equal(result.ok, false);
+      assert.match(result.message, /timed out/i);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
   });
 
   it("rejects missing credentials", async () => {

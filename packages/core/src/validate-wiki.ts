@@ -1,4 +1,4 @@
-import { lstat, readdir, readFile } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   parseSourceCitations,
@@ -8,6 +8,7 @@ import {
   validateCitationResolve,
 } from "./citations.js";
 import { assertAbsolutePath, assertNoSymlinkComponents } from "./paths.js";
+import { isReservedWikiPath, parseWikiFrontmatter, scanWikiTree } from "./wiki-tree.js";
 
 /** Soft caps for mechanical publication validation. */
 export const WIKI_VALIDATE_MAX_FILES = 500;
@@ -35,143 +36,6 @@ export type ValidateWikiResult = {
   /** Total Source Citations found across pages. */
   citationCount?: number;
 };
-
-/** Reserved OKF filenames (SPEC §3.1) — listing/history, not concept pages. */
-export const RESERVED_WIKI_BASENAMES = new Set(["index.md", "log.md"]);
-
-/**
- * True when the relative path is an OKF reserved file at any directory level
- * (`index.md` / `log.md`). Reserved files are not concept documents.
- */
-export function isReservedWikiPath(relPath: string): boolean {
-  const base = relPath.replace(/\\/g, "/").split("/").pop()?.toLowerCase() ?? "";
-  return RESERVED_WIKI_BASENAMES.has(base);
-}
-
-/**
- * Extract a YAML frontmatter block body (between the opening/closing `---`),
- * or null when the file does not start with a well-formed frontmatter fence.
- */
-export function extractYamlFrontmatterBody(content: string): string | null {
-  const trimmed = content.replace(/^\uFEFF/, "");
-  if (!trimmed.startsWith("---")) {
-    return null;
-  }
-  const firstNl = trimmed.indexOf("\n");
-  if (firstNl < 0) {
-    return null;
-  }
-  if (trimmed.slice(0, firstNl).trim() !== "---") {
-    return null;
-  }
-  const rest = trimmed.slice(firstNl + 1);
-  const close = rest.search(/^---\s*$/m);
-  if (close < 0) {
-    return null;
-  }
-  return rest.slice(0, close);
-}
-
-function unquoteYamlScalar(raw: string): string {
-  const t = raw.trim();
-  if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
-    return t.slice(1, -1).trim();
-  }
-  return t;
-}
-
-function frontmatterScalar(front: string, key: string): string | undefined {
-  const re = new RegExp(`^\\s*${key}\\s*:\\s*(.+?)\\s*$`, "m");
-  const match = front.match(re);
-  if (!match) return undefined;
-  const value = unquoteYamlScalar(match[1]!);
-  return value.length > 0 ? value : undefined;
-}
-
-/**
- * Minimal frontmatter check: file starts with `---` and a YAML block that
- * contains a non-empty `title:` key (simple regex — not a full YAML parser).
- */
-export function hasNonEmptyTitleFrontmatter(content: string): boolean {
-  const front = extractYamlFrontmatterBody(content);
-  if (front === null) return false;
-  return frontmatterScalar(front, "title") !== undefined;
-}
-
-/**
- * OKF v0.1 hard rule: concept pages need a non-empty `type` field.
- */
-export function hasNonEmptyTypeFrontmatter(content: string): boolean {
-  const front = extractYamlFrontmatterBody(content);
-  if (front === null) return false;
-  return frontmatterScalar(front, "type") !== undefined;
-}
-
-/**
- * Concept page frontmatter: parseable YAML with non-empty `type` and `title`
- * (product keeps `title` for UI; OKF requires `type`).
- */
-export function hasConceptFrontmatter(content: string): boolean {
-  return hasNonEmptyTypeFrontmatter(content) && hasNonEmptyTitleFrontmatter(content);
-}
-
-type WalkEntry = {
-  absPath: string;
-  relPath: string;
-  isFile: boolean;
-  isDirectory: boolean;
-};
-
-/**
- * Depth-first walk that never follows symlinks. Rejects symlink entries as errors
- * rather than traversing them (path escape / reparse-point safety).
- */
-async function walkTreeNoFollow(
-  root: string,
-  onEntry: (entry: WalkEntry) => void | Promise<void>,
-  errors: string[],
-): Promise<void> {
-  async function walk(dir: string, rel: string): Promise<void> {
-    let entries;
-    try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      errors.push(`cannot read directory ${rel || "."}: ${message}`);
-      return;
-    }
-
-    for (const entry of entries) {
-      const absPath = path.join(dir, entry.name);
-      const relPath = rel ? path.join(rel, entry.name) : entry.name;
-
-      // Prefer lstat so we never follow reparse points.
-      let info;
-      try {
-        info = await lstat(absPath);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        errors.push(`cannot stat ${relPath}: ${message}`);
-        continue;
-      }
-
-      if (info.isSymbolicLink()) {
-        errors.push(`symlink not allowed in wiki tree: ${relPath}`);
-        continue;
-      }
-
-      if (info.isDirectory()) {
-        await onEntry({ absPath, relPath, isFile: false, isDirectory: true });
-        await walk(absPath, relPath);
-      } else if (info.isFile()) {
-        await onEntry({ absPath, relPath, isFile: true, isDirectory: false });
-      }
-      // Ignore other node types (sockets, devices, etc.)
-    }
-  }
-
-  await walk(root, "");
-}
 
 /**
  * Mechanically validate a staging / publication-candidate Wiki tree before publish.
@@ -239,28 +103,13 @@ export async function validateWikiTree(
     };
   }
 
-  let fileCount = 0;
-  let pageCount = 0;
-  const mdFiles: { absPath: string; relPath: string }[] = [];
-
-  await walkTreeNoFollow(
-    resolved,
-    async (entry) => {
-      if (!entry.isFile) {
-        return;
-      }
-      fileCount += 1;
-      if (fileCount > WIKI_VALIDATE_MAX_FILES) {
-        // Keep counting pages for diagnostics but only emit the cap error once.
-        return;
-      }
-      if (entry.relPath.toLowerCase().endsWith(".md")) {
-        pageCount += 1;
-        mdFiles.push({ absPath: entry.absPath, relPath: entry.relPath });
-      }
-    },
-    errors,
-  );
+  const scan = await scanWikiTree(resolved);
+  errors.push(...scan.issues.map((issue) => issue.message));
+  const fileCount = scan.files.length;
+  const mdFiles = scan.files
+    .filter((file) => file.relativePath.toLowerCase().endsWith(".md"))
+    .map((file) => ({ absPath: file.absolutePath, relPath: file.relativePath }));
+  const pageCount = mdFiles.length;
 
   if (fileCount > WIKI_VALIDATE_MAX_FILES) {
     errors.push(`wiki tree has ${fileCount} files (max ${WIKI_VALIDATE_MAX_FILES})`);
@@ -310,10 +159,13 @@ export async function validateWikiTree(
       // OKF reserved listing/history files: no concept frontmatter or citations.
       continue;
     }
-    if (!hasConceptFrontmatter(content)) {
-      if (!hasNonEmptyTypeFrontmatter(content) && !hasNonEmptyTitleFrontmatter(content)) {
+    const frontmatter = parseWikiFrontmatter(content);
+    const hasType = Boolean(frontmatter?.values.type);
+    const hasTitle = Boolean(frontmatter?.values.title);
+    if (!hasType || !hasTitle) {
+      if (!hasType && !hasTitle) {
         errors.push(`${md.relPath}: missing YAML frontmatter with non-empty type and title`);
-      } else if (!hasNonEmptyTypeFrontmatter(content)) {
+      } else if (!hasType) {
         errors.push(`${md.relPath}: missing YAML frontmatter with non-empty type`);
       } else {
         errors.push(`${md.relPath}: missing YAML frontmatter with non-empty title`);

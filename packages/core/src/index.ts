@@ -62,7 +62,6 @@ export {
   resolveProviderRuntime,
   saveProviderConfig,
   setDefaultModelProfile,
-  testProviderConnection,
   toModelProfilePublic,
   toProviderEntryPublic,
   toProviderPublic,
@@ -70,13 +69,11 @@ export {
   updateProviderEntry,
 } from "./provider-store.js";
 export {
-  countMarkdownFiles,
   type PublishStagingInput,
   type PublishStagingResult,
   publishStagingToPublication,
 } from "./publish.js";
 export {
-  extractTitleFromFrontmatter,
   listPublishedWikiPages,
   PUBLISHED_WIKI_MAX_FILE_BYTES,
   PUBLISHED_WIKI_MAX_PAGES,
@@ -96,15 +93,7 @@ export {
   freezeWikiRun,
 } from "./run-boundary.js";
 export {
-  applyLateAbortStatus,
-  cancelWinsOverPatch,
-  canTransitionToCancelled,
-  isCancellableRunStatus,
-  isDurableRunStatus,
-} from "./run-status-policy.js";
-export {
-  type CreateRunOptions,
-  createRun,
+  deleteSessionRuns,
   listRuns,
   loadRun,
   type RegisterRunOptions,
@@ -113,15 +102,6 @@ export {
   registerRunRecord,
   updateRunRecord,
 } from "./run-store.js";
-export {
-  type SessionRunAppendHint,
-  type SessionRunEvent,
-  type SessionRunPatches,
-  type SessionRunState,
-  sessionProjectionForRunStatus,
-  sessionViewFromRunStatus,
-  transition,
-} from "./session-run-transition.js";
 export {
   listSkillFiles,
   readSkillFrontmatter,
@@ -149,7 +129,6 @@ export {
   skillLayoutPaths,
 } from "./skill-path.js";
 export {
-  buildSourceIgnoreMap,
   DEFAULT_SOURCE_IGNORES,
   effectiveIgnoresForSource,
   effectiveSourceIgnores,
@@ -160,18 +139,23 @@ export {
   resolveIgnorePreset,
 } from "./source-ignores.js";
 export {
-  extractYamlFrontmatterBody,
-  hasConceptFrontmatter,
-  hasNonEmptyTitleFrontmatter,
-  hasNonEmptyTypeFrontmatter,
-  isReservedWikiPath,
-  RESERVED_WIKI_BASENAMES,
   type ValidateWikiOptions,
   type ValidateWikiResult,
   validateWikiTree,
   WIKI_VALIDATE_MAX_FILE_BYTES,
   WIKI_VALIDATE_MAX_FILES,
 } from "./validate-wiki.js";
+export {
+  countMarkdownFiles,
+  isReservedWikiPath,
+  parseWikiFrontmatter,
+  RESERVED_WIKI_BASENAMES,
+  scanWikiTree,
+  type WikiFrontmatter,
+  type WikiTreeFile,
+  type WikiTreeIssue,
+  type WikiTreeScan,
+} from "./wiki-tree.js";
 export {
   type AddSourceInput,
   type AddSourceOptions,

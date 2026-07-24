@@ -5,8 +5,8 @@
  * Provider failures often complete session.prompt() without throwing
  * (stopReason "error"). We fail closed instead of inventing empty success.
  *
- * Live operator UI: raw Pi events are forwarded via `onPiEvent(kind, payload)`.
- * Callers reduce them locally and call onProgress only — never product work_unit.
+ * Child events stay inside the child Session implementation. The parent
+ * Operator Session exposes only the real `wiki_produce` tool lifecycle.
  */
 
 import type { Model } from "@earendil-works/pi-ai/compat";
@@ -15,19 +15,11 @@ import { resolveAssistantSummary } from "../pi/assistant-outcome.js";
 import { createWikiSession, type WikiSessionHandle } from "../pi/create-wiki-session.js";
 import type { SourceIgnoreInput } from "../pi/tool-operations.js";
 import type { WikiAgentRole } from "../pi/tool-policy.js";
-import type { ProduceAgentRole } from "./events.js";
 
 export type ChildRole = Extract<
   WikiAgentRole,
   "domain" | "leaf" | "reviewer" | "root_research" | "plan"
 >;
-
-/** Map child session role → operator-visible produce role. */
-export function produceRoleForChild(role: ChildRole): ProduceAgentRole {
-  if (role === "plan") return "planner";
-  if (role === "root_research") return "root";
-  return role;
-}
 
 export type RunChildSessionInput = {
   role: ChildRole;
@@ -36,7 +28,6 @@ export type RunChildSessionInput = {
   systemPrompt?: string;
   model?: Model<any>;
   modelRuntime?: ModelRuntime;
-  workspaceRoot?: string;
   sourceIgnores?: SourceIgnoreInput;
   maxContextTokens?: number;
   contextTargetTokens?: number;
@@ -45,16 +36,6 @@ export type RunChildSessionInput = {
   abortSignal?: AbortSignal;
   /** Soft timeout in ms (host abort via session.abort). */
   timeoutMs?: number;
-  /**
-   * Stable operator-visible unit id (matches ProduceProgress.unitId).
-   * Defaults to the child role name when omitted.
-   */
-  unitId?: string;
-  /**
-   * Forward live Pi events (kind + payload) for local progress reduction.
-   * Callers typically wire: attachProgress(...).onPiEvent
-   */
-  onPiEvent?: (kind: string, payload: unknown) => void;
 };
 
 export type RunChildSessionResult = {
@@ -62,22 +43,6 @@ export type RunChildSessionResult = {
   summary: string;
   mode: "fixture" | "live";
 };
-
-/** Pi event kinds that carry operator-visible stream content. */
-const FORWARDED_KINDS = new Set([
-  "agent_start",
-  "agent_end",
-  "agent_settled",
-  "message_start",
-  "message_update",
-  "message_end",
-  "tool_execution_start",
-  "tool_execution_update",
-  "tool_execution_end",
-  "turn_start",
-  "turn_end",
-  "error",
-]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -109,16 +74,6 @@ export async function runChildSession(input: RunChildSessionInput): Promise<RunC
     );
   }
 
-  const forward = (kind: string, payload: unknown): void => {
-    if (!input.onPiEvent) return;
-    if (!FORWARDED_KINDS.has(kind)) return;
-    try {
-      input.onPiEvent(kind, payload);
-    } catch {
-      // Never let a bad subscriber break the child session.
-    }
-  };
-
   let handle: WikiSessionHandle | undefined;
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const onAbort = () => {
@@ -133,7 +88,6 @@ export async function runChildSession(input: RunChildSessionInput): Promise<RunC
     handle = await createWikiSession({
       role: input.role,
       runWorkDir: input.runWorkDir,
-      workspaceRoot: input.workspaceRoot,
       model: input.model,
       modelRuntime: input.modelRuntime,
       systemPrompt:
@@ -164,8 +118,6 @@ export async function runChildSession(input: RunChildSessionInput): Promise<RunC
         event && typeof event === "object" && "type" in event
           ? String((event as { type: unknown }).type)
           : "event";
-      forward(kind, event);
-
       if (kind !== "message_update") return;
       // Narrow via unknown — Pi event unions omit assistantMessageEvent on some arms.
       const raw = event as unknown;

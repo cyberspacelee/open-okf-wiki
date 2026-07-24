@@ -1,5 +1,5 @@
 /**
- * Structured defect reports, merge, and Host publishability scoring.
+ * Structured defect reports, merge, and deterministic publishability scoring.
  * Fail-closed: blocking defects prevent publish.
  */
 
@@ -14,8 +14,7 @@ import {
   MergedDefectReportSchema,
   type WikiRunSpec,
 } from "@okf-wiki/contract";
-import { validateWikiTree } from "@okf-wiki/core";
-import { listMarkdownPages } from "./fs-ops.js";
+import { scanWikiTree, validateWikiTree } from "@okf-wiki/core";
 import { defectsPath } from "./spec-store.js";
 
 const SEVERITY_RANK: Record<DefectSeverity, number> = {
@@ -222,7 +221,7 @@ export type PublishabilityResult = {
 };
 
 /**
- * Deterministic Host scorer: critical pages exist, mechanical validate ok,
+ * Deterministic scorer: critical pages exist, mechanical validate ok,
  * no blocking defects when review is required.
  */
 export async function evaluateWikiPublishable(input: {
@@ -235,7 +234,9 @@ export async function evaluateWikiPublishable(input: {
   requireReviewReceipt?: boolean;
 }): Promise<PublishabilityResult> {
   const reasons: string[] = [];
-  const pages = await listMarkdownPages(input.wikiRoot);
+  const pages = (await scanWikiTree(input.wikiRoot)).files
+    .map((file) => file.relativePath)
+    .filter((relativePath) => relativePath.toLowerCase().endsWith(".md"));
   if (pages.length === 0) {
     reasons.push("no staged wiki pages");
   }

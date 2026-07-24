@@ -4,13 +4,14 @@
  * Trigger (always visible):
  *   [status] [icon] title  subtitle  arg arg
  *
- * Expand (only when there is result / write body / console output / nested trail):
+ * Expand (only when there is result / write body / console output):
  *   plain result text — NO "Input" / "Output" section labels.
  *   optional nested React node (wiki_produce → ProduceTrail).
  *
  * Known tools put args on the trigger line; they are never re-dumped as JSON.
  */
 
+import type { AgentResumeGateCommand, WikiProduceToolDetails } from "@okf-wiki/contract";
 import {
   CheckIcon,
   ChevronRightIcon,
@@ -21,33 +22,182 @@ import {
   TerminalIcon,
   WrenchIcon,
 } from "lucide-react";
-import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { useI18n } from "../../i18n";
 import {
   type AgentToolCall,
   formatToolDisplay,
   formatToolResultText,
-  WIKI_PRODUCE_TOOL_NAME,
 } from "../hooks/project-agent-events";
+
+const WIKI_PRODUCE_TOOL_NAME = "wiki_produce";
 
 export type ToolExecutionCardProps = {
   tool: AgentToolCall;
+  onResumeGate: (command: AgentResumeGateCommand) => Promise<void>;
   /**
    * When the parent work unit is settled, keep completed tools collapsed.
    * Pass `false` while a unit is still active so non-done tools expand.
    */
   settled?: boolean;
-  /**
-   * Nested trail (e.g. produce units under wiki_produce).
-   * When set, the card always expands to host the trail.
-   */
-  nested?: ReactNode;
-  /** Force open while nested work is active (running produce units). */
-  nestedActive?: boolean;
 };
+
+function WikiProduceDetailsPanel({
+  details,
+  onResumeGate,
+}: {
+  details: WikiProduceToolDetails;
+  onResumeGate: (command: AgentResumeGateCommand) => Promise<void>;
+}) {
+  const { t } = useI18n();
+  const gate =
+    details.status === "awaiting_plan"
+      ? ("plan" as const)
+      : details.status === "awaiting_publication"
+        ? ("publication" as const)
+        : null;
+  const pages = details.spec?.pages.map((page) => page.path) ?? details.pages ?? [];
+  const [submitting, setSubmitting] = useState(false);
+  const [revising, setRevising] = useState(false);
+  const [feedback, setFeedback] = useState("");
+
+  useEffect(() => {
+    setSubmitting(false);
+    setRevising(false);
+    setFeedback("");
+  }, [details.runId, details.status]);
+
+  const decide = async (action: "approve" | "deny" | "revise") => {
+    if (!gate || !details.runId || submitting) return;
+    if (action === "revise" && !feedback.trim()) {
+      setRevising(true);
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await onResumeGate({
+        type: "resume_gate",
+        gate,
+        action,
+        runId: details.runId,
+        ...(gate === "plan" && details.spec ? { spec: details.spec } : {}),
+        ...(action === "revise" ? { feedback: feedback.trim() } : {}),
+      });
+    } catch {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div
+      className="space-y-2 rounded-md border border-border/70 bg-muted/20 p-2.5"
+      data-testid="wiki-produce-details"
+      data-wiki-status={details.status}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-medium">
+            {gate === "plan"
+              ? t.planConfirm.title
+              : gate === "publication"
+                ? t.runStatus.awaiting_publication
+                : details.status}
+          </p>
+          {details.summary ? (
+            <p className="mt-0.5 text-[11px] text-muted-foreground">{details.summary}</p>
+          ) : null}
+        </div>
+        {details.runId ? (
+          <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+            {details.runId}
+          </span>
+        ) : null}
+      </div>
+
+      {details.spec?.summary ? (
+        <p className="text-xs leading-relaxed">{details.spec.summary}</p>
+      ) : null}
+      {pages.length > 0 ? (
+        <div>
+          <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            {t.planConfirm.pagesLabel} · {pages.length}
+          </p>
+          <ul className="grid gap-1 sm:grid-cols-2">
+            {pages.map((page) => (
+              <li key={page} className="truncate font-mono text-[10px] text-muted-foreground">
+                {page}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {gate && details.runId ? (
+        <div
+          className="space-y-2 border-t border-border/60 pt-2"
+          data-testid={`agent-${gate}-gate`}
+        >
+          {revising && gate === "plan" ? (
+            <Textarea
+              data-testid="agent-gate-feedback"
+              value={feedback}
+              onChange={(event) => setFeedback(event.target.value)}
+              placeholder={t.planConfirm.revisePlaceholder}
+              disabled={submitting}
+              rows={2}
+              className="min-h-16 text-xs"
+            />
+          ) : null}
+          <div className="flex flex-wrap gap-1.5">
+            <Button
+              type="button"
+              size="sm"
+              data-testid="agent-gate-approve"
+              disabled={submitting}
+              onClick={() => void decide("approve")}
+            >
+              {submitting
+                ? t.planConfirm.working
+                : gate === "plan"
+                  ? t.planConfirm.approve
+                  : t.planConfirm.chipPublish}
+            </Button>
+            {gate === "plan" ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                data-testid={revising ? "agent-gate-revise-submit" : "agent-gate-revise"}
+                disabled={submitting}
+                onClick={() => {
+                  if (!revising) setRevising(true);
+                  else void decide("revise");
+                }}
+              >
+                {revising ? t.planConfirm.reviseSubmit : t.planConfirm.revise}
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              data-testid="agent-gate-deny"
+              disabled={submitting}
+              onClick={() => void decide("deny")}
+            >
+              {gate === "plan" ? t.planConfirm.decline : t.planConfirm.chipKeepStaging}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function toolIcon(name: string) {
   const lower = name.toLowerCase();
@@ -123,19 +273,14 @@ function expandBody(
   return "";
 }
 
-export function ToolExecutionCard({
-  tool,
-  settled,
-  nested,
-  nestedActive = false,
-}: ToolExecutionCardProps) {
+export function ToolExecutionCard({ tool, onResumeGate, settled }: ToolExecutionCardProps) {
   const display = formatToolDisplay(tool.name, tool.input);
   const output = formatToolResultText(tool.output) ?? "";
   const isError = tool.status === "error";
   const isRunning = tool.status === "running" || tool.status === "pending";
-  const hasNested = Boolean(nested);
   const isWikiProduce =
     tool.name === WIKI_PRODUCE_TOOL_NAME || tool.name.toLowerCase() === "wiki_produce";
+  const wikiDetails = isWikiProduce ? tool.details : undefined;
 
   const body = expandBody(display.kind, {
     command: display.command,
@@ -144,9 +289,8 @@ export function ToolExecutionCard({
     isError,
   });
 
-  // Expand when result exists, or when hosting a nested produce trail.
   const canExpand =
-    hasNested ||
+    Boolean(wikiDetails) ||
     (!display.headerOnly &&
       (Boolean(body.trim()) ||
         isError ||
@@ -154,18 +298,12 @@ export function ToolExecutionCard({
         (display.kind === "write-body" && Boolean(display.writePreview))));
 
   const autoOpen =
-    isRunning ||
-    isError ||
-    nestedActive ||
-    (settled === false && tool.status !== "done" && canExpand) ||
-    // wiki_produce with nested units: open while nested active, else closed when done
-    (hasNested && (isRunning || nestedActive));
+    isRunning || isError || (settled === false && tool.status !== "done" && canExpand);
 
   const [open, setOpen] = useState(autoOpen);
   useEffect(() => {
     if (autoOpen) setOpen(true);
-    else if (hasNested && !isRunning && !nestedActive && !isError) setOpen(false);
-  }, [autoOpen, hasNested, isRunning, nestedActive, isError]);
+  }, [autoOpen]);
 
   const Icon = toolIcon(tool.name);
 
@@ -229,7 +367,6 @@ export function ToolExecutionCard({
       data-testid="tool-execution-card"
       data-tool-name={tool.name}
       data-tool-status={tool.status}
-      data-has-nested={hasNested ? "true" : undefined}
     >
       <CollapsibleTrigger className="w-full min-w-0 rounded-md text-left">
         {trigger}
@@ -245,19 +382,15 @@ export function ToolExecutionCard({
             {body}
           </pre>
         ) : null}
-        {body.trim() && isWikiProduce && !hasNested ? (
+        {body.trim() && isWikiProduce ? (
           <pre className="okf-code-snippet max-h-32 overflow-auto text-[11px] leading-relaxed text-muted-foreground">
             {body}
           </pre>
         ) : null}
-        {isRunning && !body.trim() && !hasNested ? (
-          <p className="text-[11px] text-muted-foreground">…</p>
+        {wikiDetails ? (
+          <WikiProduceDetailsPanel details={wikiDetails} onResumeGate={onResumeGate} />
         ) : null}
-        {hasNested ? (
-          <div className="mt-1 min-w-0" data-testid="tool-nested-trail">
-            {nested}
-          </div>
-        ) : null}
+        {isRunning && !body.trim() ? <p className="text-[11px] text-muted-foreground">…</p> : null}
       </CollapsibleContent>
     </Collapsible>
   );

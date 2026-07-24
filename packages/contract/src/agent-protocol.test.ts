@@ -1,16 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  assertProductInject,
-  isProductInjectKind,
-  PRODUCT_INJECT_KINDS,
-  ProductSseEventSchema,
-  parseAgentCommand,
-  safeParseAgentCommand,
-} from "./agent-protocol.js";
+import { AgentSseEventSchema, parseAgentCommand, safeParseAgentCommand } from "./agent-protocol.js";
 import { defaultWikiRunSpec } from "./run.js";
 
-const samplePlan = {
+const sampleSpec = {
   ...defaultWikiRunSpec("S"),
   summary: "S",
   pages: [
@@ -31,25 +24,16 @@ test("parseAgentCommand: prompt / steer / abort / compact", () => {
   assert.equal(parseAgentCommand({ type: "compact" }).type, "compact");
 });
 
-test("parseAgentCommand: start_wiki_run", () => {
-  const cmd = parseAgentCommand({
-    type: "start_wiki_run",
-    notes: "generate",
-    autoApprove: false,
-  });
-  assert.equal(cmd.type, "start_wiki_run");
-  if (cmd.type === "start_wiki_run") {
-    assert.equal(cmd.notes, "generate");
-    assert.equal(cmd.autoApprove, false);
-  }
+test("parseAgentCommand: rejects removed start_wiki_run command", () => {
+  assert.equal(safeParseAgentCommand({ type: "start_wiki_run", notes: "generate" }).success, false);
 });
 
-test("parseAgentCommand: resume_gate approve plan", () => {
+test("parseAgentCommand: resume_gate approve Spec", () => {
   const cmd = parseAgentCommand({
     type: "resume_gate",
     gate: "plan",
     action: "approve",
-    plan: samplePlan,
+    spec: sampleSpec,
     runId: "run-1",
   });
   assert.equal(cmd.type, "resume_gate");
@@ -57,7 +41,7 @@ test("parseAgentCommand: resume_gate approve plan", () => {
     assert.equal(cmd.gate, "plan");
     assert.equal(cmd.action, "approve");
     assert.equal(cmd.runId, "run-1");
-    assert.equal(cmd.plan?.pages.length, 1);
+    assert.equal(cmd.spec?.pages.length, 1);
   }
 });
 
@@ -125,107 +109,65 @@ test("parseAgentCommand: rejects unknown type and empty prompt", () => {
   assert.equal(safeParseAgentCommand({}).success, false);
 });
 
-test("ProductSseEventSchema: whitelist run_link | run_phase | gate | plan_progress | defects", () => {
-  const phase = ProductSseEventSchema.parse({
-    source: "product",
-    kind: "run_phase",
+test("AgentSseEventSchema: accepts snapshot, opaque Pi events, and heartbeat only", () => {
+  const snapshot = AgentSseEventSchema.parse({
+    source: "server",
+    kind: "snapshot",
     sessionId: "s1",
-    runId: "r1",
-    phase: "planning",
-    message: "planning…",
+    timestamp: "2026-07-24T00:00:00.000Z",
+    payload: {
+      session: { id: "s1", workspaceId: "w1" },
+      messages: [{ role: "user", content: "hello" }],
+      activeTool: {
+        toolCallId: "tool-1",
+        toolName: "wiki_produce",
+        details: {
+          status: "awaiting_plan",
+          runId: "run-1",
+          summary: "Awaiting WikiRunSpec approval",
+        },
+      },
+    },
   });
-  assert.equal(phase.kind, "run_phase");
-
-  const gate = ProductSseEventSchema.parse({
-    source: "product",
-    kind: "gate",
-    sessionId: "s1",
-    gate: "plan",
-    plan: samplePlan,
-    question: "Approve plan?",
-  });
-  assert.equal(gate.kind, "gate");
-
-  const link = ProductSseEventSchema.parse({
-    source: "product",
-    kind: "run_link",
-    sessionId: "s1",
-    runId: "r1",
-    status: "running",
-  });
-  assert.equal(link.kind, "run_link");
-
-  const planProgress = ProductSseEventSchema.parse({
-    source: "product",
-    kind: "plan_progress",
-    sessionId: "s1",
-    runId: "r1",
-    pages: [{ path: "overview.md", status: "writing" }],
-  });
-  assert.equal(planProgress.kind, "plan_progress");
-
-  const defects = ProductSseEventSchema.parse({
-    source: "product",
-    kind: "defects",
-    sessionId: "s1",
-    runId: "r1",
-    round: 1,
-    clean: true,
-    defectCount: 0,
-  });
-  assert.equal(defects.kind, "defects");
-});
-
-test("ProductSseEventSchema: rejects work_unit, progress, agent_span body channels", () => {
-  const workUnit = ProductSseEventSchema.safeParse({
-    source: "product",
-    kind: "work_unit",
-    sessionId: "s1",
-    runId: "r1",
-    unitId: "leaf-1",
-    role: "leaf",
-    status: "running",
-    task: "Explore domain",
-    message: { text: "reading sources…" },
-  });
-  assert.equal(workUnit.success, false);
-
-  const progress = ProductSseEventSchema.safeParse({
-    source: "product",
-    kind: "progress",
-    sessionId: "s1",
-    phase: "writing",
-    label: "writing pages",
-  });
-  assert.equal(progress.success, false);
-
-  const legacySpan = ProductSseEventSchema.safeParse({
-    source: "product",
-    kind: "agent_span",
-    sessionId: "s1",
-    spanId: "x",
-    agentId: "leaf-1",
-    role: "leaf",
-    status: "running",
-  });
-  assert.equal(legacySpan.success, false);
-});
-
-test("assertProductInject: whitelist only", () => {
-  assert.deepEqual(
-    [...PRODUCT_INJECT_KINDS],
-    ["run_link", "run_phase", "gate", "plan_progress", "defects"],
-  );
-  for (const kind of PRODUCT_INJECT_KINDS) {
-    assert.equal(isProductInjectKind(kind), true);
-    assertProductInject(kind);
+  assert.equal(snapshot.kind, "snapshot");
+  if (snapshot.source === "server" && snapshot.kind === "snapshot") {
+    assert.equal(snapshot.payload.activeTool?.details.status, "awaiting_plan");
   }
-  assert.equal(isProductInjectKind("work_unit"), false);
-  assert.equal(isProductInjectKind("progress"), false);
-  assert.equal(isProductInjectKind("agent_span"), false);
-  assert.equal(isProductInjectKind("child_pi"), false);
-  assert.throws(() => assertProductInject("work_unit"), /whitelist/);
-  assert.throws(() => assertProductInject("progress"), /whitelist/);
-  assert.throws(() => assertProductInject("agent_span"), /whitelist/);
-  assert.throws(() => assertProductInject("child_pi"), /whitelist/);
+
+  const pi = AgentSseEventSchema.parse({
+    source: "pi",
+    kind: "message_update",
+    sessionId: "s1",
+    payload: { event: { type: "text_delta", delta: "hello" } },
+  });
+  assert.equal(pi.source, "pi");
+
+  const heartbeat = AgentSseEventSchema.parse({
+    source: "server",
+    kind: "heartbeat",
+    sessionId: "s1",
+    timestamp: new Date().toISOString(),
+  });
+  assert.equal(heartbeat.source, "server");
+
+  assert.equal(
+    AgentSseEventSchema.safeParse({
+      source: "product",
+      kind: "run_phase",
+      sessionId: "s1",
+    }).success,
+    false,
+  );
+});
+
+test("AgentSseEventSchema: rejects sequence/replay framing", () => {
+  assert.equal(
+    AgentSseEventSchema.safeParse({
+      source: "pi",
+      kind: "message_update",
+      sessionId: "s1",
+      sequence: 1,
+    }).success,
+    false,
+  );
 });

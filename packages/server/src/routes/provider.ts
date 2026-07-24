@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { testProviderConnection } from "@okf-wiki/agent";
 import {
   ModelProfileWriteSchema,
   ProviderApiShapeSchema,
@@ -15,7 +16,6 @@ import {
   probeLocalGit,
   resolveProviderRuntime,
   setDefaultModelProfile,
-  testProviderConnection,
   toProviderPublic,
   updateModelProfile,
   updateProviderEntry,

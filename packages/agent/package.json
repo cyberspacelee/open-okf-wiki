@@ -18,13 +18,10 @@
     "spike:pi": "node scripts/pi-spike.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "0.81.1",
     "@earendil-works/pi-ai": "0.81.1",
     "@earendil-works/pi-coding-agent": "0.81.1",
     "@okf-wiki/contract": "workspace:*",
-    "@okf-wiki/core": "workspace:*",
-    "@okf-wiki/skill": "workspace:*",
-    "zod": "^4.4.3"
+    "@okf-wiki/core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

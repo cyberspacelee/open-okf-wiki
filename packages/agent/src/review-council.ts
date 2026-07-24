@@ -1,5 +1,5 @@
 /**
- * Host-owned review council → MergedDefectReport.
+ * Produce-owned review council → MergedDefectReport.
  * Pi path: pure merge of pre-generated reviewer texts (no Mastra Agent).
  */
 

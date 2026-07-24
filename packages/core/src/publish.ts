@@ -1,7 +1,8 @@
-import { cp, lstat, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
+import { cp, lstat, mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { assertAbsolutePath, assertNoSymlinkComponents } from "./paths.js";
 import { validateWikiTree } from "./validate-wiki.js";
+import { countMarkdownFiles } from "./wiki-tree.js";
 
 export type PublishStagingInput = {
   stagingDir: string;
@@ -19,38 +20,6 @@ export type PublishStagingResult = {
   publicationPath: string;
   pageCount: number;
 };
-
-// Re-export for callers that imported from publish historically.
-export { assertNoSymlinkComponents } from "./paths.js";
-
-/** Count `.md` files under `dir` (recursive). */
-export async function countMarkdownFiles(dir: string): Promise<number> {
-  let count = 0;
-  let entries;
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException | undefined)?.code;
-    if (code === "ENOENT") {
-      return 0;
-    }
-    throw error;
-  }
-
-  for (const entry of entries) {
-    const full = path.join(dir, entry.name);
-    if (entry.isSymbolicLink()) {
-      // Do not follow symlinks when counting pages.
-      continue;
-    }
-    if (entry.isDirectory()) {
-      count += await countMarkdownFiles(full);
-    } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
-      count += 1;
-    }
-  }
-  return count;
-}
 
 /**
  * Publish a staging Wiki tree to the stable Published Wiki path.

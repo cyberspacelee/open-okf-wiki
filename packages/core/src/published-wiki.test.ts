@@ -4,12 +4,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import {
-  extractTitleFromFrontmatter,
   listPublishedWikiPages,
   PublishedWikiError,
   readPublishedWikiPage,
   resolvePublishedWikiPath,
 } from "./published-wiki.js";
+import { parseWikiFrontmatter } from "./wiki-tree.js";
 
 async function tempDir(prefix: string): Promise<string> {
   return mkdtemp(path.join(tmpdir(), prefix));
@@ -24,13 +24,13 @@ async function writeMd(root: string, rel: string, body: string): Promise<void> {
 const page = (title: string, body = "Hello.", type = "Concept") =>
   `---\ntype: ${type}\ntitle: ${title}\n---\n\n# ${title}\n\n${body}\n`;
 
-test("extractTitleFromFrontmatter reads plain and quoted titles", () => {
-  assert.equal(extractTitleFromFrontmatter("---\ntitle: Hello\n---\n\n# H\n"), "Hello");
+test("parseWikiFrontmatter reads plain and quoted titles", () => {
+  assert.equal(parseWikiFrontmatter("---\ntitle: Hello\n---\n\n# H\n")?.values.title, "Hello");
   assert.equal(
-    extractTitleFromFrontmatter('---\ntitle: "Quoted Title"\n---\n\nx\n'),
+    parseWikiFrontmatter('---\ntitle: "Quoted Title"\n---\n\nx\n')?.values.title,
     "Quoted Title",
   );
-  assert.equal(extractTitleFromFrontmatter("# No frontmatter\n"), undefined);
+  assert.equal(parseWikiFrontmatter("# No frontmatter\n"), null);
 });
 
 test("listPublishedWikiPages returns sorted posix relative paths", async () => {

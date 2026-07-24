@@ -240,17 +240,3 @@ function globToRegExp(pattern: string): RegExp {
 export function effectiveIgnoresForSource(source: WorkspaceSource): string[] {
   return effectiveSourceIgnores(source);
 }
-
-/**
- * Build sourceId → effective ignore patterns for a Wiki Run.
- * Used by agent tools so generation always sees the same frozen membership.
- */
-export function buildSourceIgnoreMap(
-  sources: readonly WorkspaceSource[],
-): Map<string, readonly string[]> {
-  const map = new Map<string, readonly string[]>();
-  for (const source of sources) {
-    map.set(source.id, effectiveIgnoresForSource(source));
-  }
-  return map;
-}

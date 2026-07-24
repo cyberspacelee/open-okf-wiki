@@ -2,7 +2,7 @@
 
 This context defines the language for deriving a source-grounded Markdown wiki from one or more fixed source repositories.
 
-**Implementation note:** The live product is the TypeScript monorepo (`packages/*`: Web UI, localhost server, **Pi agent harness** (`@earendil-works/pi-*`), product WikiRunShell, `@okf-wiki/core` Run Boundary). See [ADR 0030](docs/adr/0030-pi-agent-harness-for-semantic-workflow.md) and [ADR 0021](docs/adr/0021-retire-python-primary-path.md). Terms below remain domain vocabulary; older ADRs may still name historical Python/Mastra packages.
+**Implementation note:** The live product is the TypeScript monorepo (`packages/*`: Web UI, localhost server, **Pi agent harness** (`@earendil-works/pi-*`), and the `@okf-wiki/core` Run Boundary). See [ADR 0032](docs/adr/0032-pi-tool-owned-wiki-runs.md), [ADR 0030](docs/adr/0030-pi-agent-harness-for-semantic-workflow.md), and [ADR 0021](docs/adr/0021-retire-python-primary-path.md). Terms below remain domain vocabulary; older ADRs may still name historical Python/Mastra packages.
 
 ## Language
 
@@ -39,7 +39,7 @@ The trusted execution boundary for one Wiki Run: freeze Snapshot Set and Skill, 
 _Avoid_: host OS, Agent Host, host agent, HTTP host, harness, product web app
 
 **Run Instructions**:
-The short, non-forkable shell the product injects for every Wiki Run: mount and trust boundaries, activation of the selected Producer Skill, and boundary-enforced role limits.
+The short, trusted policy supplied to a `wiki_produce` execution and its child sessions: available paths, trust boundaries, selected Producer Skill, and boundary-enforced role limits. It is prompt material, not a workflow shell or operator protocol.
 _Avoid_: system prompt monolith, Producer Skill body, conversation-level one-off prompt, Skill Fork override
 
 **Producer Skill**:
@@ -63,16 +63,16 @@ The model-directed sequence of repository exploration, page design, writing, rev
 _Avoid_: Python state machine, fixed role pipeline, Run Instructions dump
 
 **Produce** (also: Supervisor produce; Layer B Semantic Workflow body):
-The thin Workflow shell step that owns Wiki generation work: Root → Domain → Leaf supervisor tree, living WikiRunSpec, Host review council, repair rounds, and **all business Operator Event** emissions (`data-plan-progress`, `data-progress`, `data-defects`, `data-agent-span`, `data-sources-index`, tool/text). Not the Session shell and not Run REST.
-_Avoid_: Session-synthesized progress, durable-produce stub, second write path, adaptive stage machine
+The Semantic Workflow executed by the real Pi `wiki_produce` custom tool: Root → Domain → Leaf supervisor tree, living WikiRunSpec, review council, repair rounds, and plan/publication gates. Its tool execution is the parent Operator Session's visible unit; it does not synthesize Pi messages or a parallel progress stream.
+_Avoid_: WikiRunShell, Session-synthesized progress, durable-produce stub, second write path, adaptive stage machine
 
 **Operator Event** (also: Operator timeline parts):
-Pi Operator Session events + **whitelist** product SSE injects (`run_phase` / `gate` / `run_link` / thin produce summaries) that form the operator-visible trajectory. Conversation body (text/thinking/tools) is framework-owned; product injects must not invent streaming bodies. Session UI is a pure projector (ADR 0031). Contract: [docs/design/operator-event-contract.md](docs/design/operator-event-contract.md).
-_Avoid_: AI SDK UIMessage dual protocol, Session-synthesized fake tools, free-text gate inference, client maps as second true source
+An event emitted by the parent Pi Operator Session. The server forwards genuine Pi events after a current snapshot, and the Agent Workspace is a pure projector. Run and gate state is expressed by the real `wiki_produce` tool lifecycle and the linked Run Record, never by product-injected pseudo-events.
+_Avoid_: Product SSE inject, AI SDK UIMessage dual protocol, Session-synthesized fake tools, free-text gate inference, client maps as second true source
 
 **SessionTurn**:
-The deep product module for one operator chat turn: intent/mode resolution, turn lock, start/resume param assembly, framework stream tee into Session history, and onFinish drain into Session–Run transition. Owns conversational HITL routing — not Produce semantics or business progress synthesis.
-_Avoid_: Semantic Workflow body, second progress author, free-text gate parser
+The product module for one Operator Agent command: command validation, turn exclusion, and delegation to the Pi `AgentSession`. A Wiki Run begins only when the agent calls `wiki_produce`; there is no post-turn Session–Run transition.
+_Avoid_: Semantic Workflow body, Run starter, second progress author, free-text gate parser
 
 **WikiRunSpec** (also: living Spec; operator plan-gate payload):
 The executable specification for one Wiki Run: audience, domains, intended pages with reader questions, acceptance (review rounds / blocking severities), open questions, and replan changelog. Persisted under the run analysis scratch (`spec.json`) and revised when discovery demands it.
@@ -83,19 +83,19 @@ Older ADRs/skills may say “Run Plan”; map to **WikiRunSpec** / living Spec.
 _Avoid_: Treating Run Plan as a separate durable product object
 
 **Operator Session**:
-The operator-facing **sole conversation truth surface** for one project thread (ADR 0026 / **0030** / **0031**): durable **Pi JSONL** under `{root}/.okf-wiki/pi-sessions/` (chat, tools, and parent-visible produce progress via framework tool/custom entries such as `okf.produce_progress`), live **AgentSession** events (SSE), thin product injects only (`run_link` / `run_phase` / `gate` / `plan_progress` / `defects`), plan/publish gates via product WikiRunShell, and zero or more Wiki Runs linked to that thread. Produce children are implementation-only; operator-visible produce unit = parent Session tool / parent-visible card — not a product body inject. Layers depend one way (Web→Server→Agent→Pi; Core parallel). Primary UI is the **Agent Workspace** (`/w/:id`). HITL is structured `resume_gate` commands, not free-text. Old UIMessage session files, `operator-work.json`, and trajectory body folds are wiped (no migrator).
-_Avoid_: Wiki Run as the main UI, AI SDK UIMessage history, Mastra workflow snapshots, Session-synthesized fake tool trails, `agent_span`/`child_pi`/`work_unit`/`workStreams` dual body channels, empty product streaming shells
+The operator-facing **sole conversation truth surface** for one project thread (ADR 0032): one `SessionManager`-owned Pi JSONL tree, its live `AgentSession` events, and zero or more Wiki Runs started by real `wiki_produce` tool calls. The **Agent Workspace** (`/w/:id`) projects that state. There is no product Session metadata, synthetic event stream, or independent Run operate surface.
+_Avoid_: Wiki Run as the main UI, product Session registry, AI SDK UIMessage history, Mastra workflow snapshots, Session-synthesized tool trails, product event injects, ring-buffer history
 
 **Wiki Reviewer** / **Review council**:
-Independent, read-only agent role(s) that inspect the Staging Wiki against sources and Skill review guidance. Host merges outputs into `defects.json`; Root repairs; Host **fail-closes** publish when blocking defects remain. Reviewers never write Wiki pages or publish.
+Independent, read-only agent role(s) that inspect the Staging Wiki against sources and Skill review guidance. The `wiki_produce` runtime merges outputs into `defects.json`; Root repairs; the Run Boundary **fail-closes** publication when blocking defects remain. Reviewers never write Wiki pages or publish.
 _Avoid_: Optional soft review, Skill self-review alone as the only gate, open-loop receipts that do not block publish
 
 **Wiki Run**:
-One bounded attempt to derive and publish a Wiki from a Repository Snapshot Set using one exact Skill Version or Skill Fork revision; **owned by / linked from an Operator Session**. Execution mode may be interactive or background; observable trajectory still belongs on the Session. Not the operator’s home UI.
-_Avoid_: Agent turn synonym, Session synonym, Production Run, second HITL center parallel to Session
+One bounded attempt, started by an Operator Agent's `wiki_produce` tool call, to derive and publish a Wiki from a Repository Snapshot Set using one exact Skill Version or Skill Fork revision. It is linked to its Operator Session; the tool execution waits through plan and publication gates, and no mutable Run HTTP interface exists.
+_Avoid_: Agent turn synonym, Session synonym, Production Run, independent REST job, second HITL center parallel to Session
 
 **Wiki Run Record**:
-An immutable, secret-free terminal record of one Wiki Run's frozen inputs, outcome, usage, and publication status, used for audit and to create a Manual Retry Run. Terminal statuses distinguish published success, needs input, failure, cancellation, awaiting operator publication approval, and operator-declined publication with Staging retained.
+An `okf.wiki-run/v2`, secret-free record of one Wiki Run's immutable Session link, exact source revisions and Effective Source Ignores, copied Skill Version digest, and evolving outcome/publication state. Pre-v2 records are ignored rather than migrated.
 _Avoid_: Operator Session history, Analysis Receipt, durable checkpoint of the Semantic Workflow
 
 **Staging Wiki**:
@@ -119,7 +119,7 @@ A Wiki Run that updates an existing Published Wiki for a newer Repository Snapsh
 _Avoid_: Knowledge-graph invalidation, patch-only rendering
 
 **Manual Retry Run**:
-A newly created Wiki Run started by a human from an earlier Wiki Run Record after automatic retries are exhausted; it reuses the earlier run's frozen inputs by default but has its own run identity and does not resume the earlier Semantic Workflow or partial receipts (it may attach to the same Operator Session).
+A newly created Wiki Run requested through the Operator Session after automatic retries are exhausted. It may reuse an earlier Run Record's frozen inputs, but has its own identity and does not resume the earlier Semantic Workflow or partial receipts.
 _Avoid_: Resume of a Wiki Run graph, checkpoint recovery of Staging as Published, automatic retry
 
 **递归委派树**:
@@ -156,7 +156,8 @@ Index and current-stack shortlist: [docs/adr/README.md](docs/adr/README.md).
 
 - Pre-[0019](docs/adr/0019-prefer-run-boundary-over-host.md): **Host** / **Host Instructions** → **Run Boundary** / **Run Instructions**. Do not reintroduce `okf_wiki.host` or `Host*` APIs.
 - Pre-[0021](docs/adr/0021-retire-python-primary-path.md): Python / Pydantic AI harness language → TypeScript `@okf-wiki/core` (Run Boundary) + `@okf-wiki/agent` (Pi harness, ADR 0030).
-- Pre-[0030](docs/adr/0030-pi-agent-harness-for-semantic-workflow.md): Mastra / AI SDK / UIMessage Session → Pi AgentSession + JSONL + WikiRunShell.
+- Pre-[0030](docs/adr/0030-pi-agent-harness-for-semantic-workflow.md): Mastra / AI SDK / UIMessage Session → Pi AgentSession + JSONL.
+- [0032](docs/adr/0032-pi-tool-owned-wiki-runs.md): real `wiki_produce` tool + Pi-only events + `SessionManager`; no WikiRunShell, product injects, session metadata, or compatibility path.
 - [0020](docs/adr/0020-typescript-mastra-web-workspace.md) §6 originally forbade product clone; **operator clone** is allowed per [0022](docs/adr/0022-source-clone-into-workspace.md) (Semantic Workflow still never clones).
 - Session stream / single write path: [0024](docs/adr/0024-session-as-conversational-workspace.md) + [0025](docs/adr/0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) supersede transitional Session-SSE wording in [0023](docs/adr/0023-operator-session-stream-and-plan-confirm.md).
-- Operator Event emit / no-compat cleanup: [0029](docs/adr/0029-architecture-cleanup-no-compat.md) + [0031](docs/adr/0031-unidirectional-framework-first-operator-surface.md) + [operator-event contract](docs/design/operator-event-contract.md) — framework-first Session; inject whitelist; Session UI projects only; no parallel body true-sources.
+- Operator Event / no-compat cleanup: [0032](docs/adr/0032-pi-tool-owned-wiki-runs.md) supersedes ADR 0031's inject whitelist. The Session UI projects only a current snapshot and genuine Pi events; there is no parallel body channel.

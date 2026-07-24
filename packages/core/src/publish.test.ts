@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { assertNoSymlinkComponents } from "./paths.js";
-import { countMarkdownFiles, publishStagingToPublication } from "./publish.js";
+import { publishStagingToPublication } from "./publish.js";
+import { countMarkdownFiles } from "./wiki-tree.js";
 
 async function tempDir(prefix: string): Promise<string> {
   return mkdtemp(path.join(tmpdir(), prefix));

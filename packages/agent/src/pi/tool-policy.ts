@@ -41,8 +41,11 @@ export function toolNamesForRole(role: WikiAgentRole): readonly PiFsToolName[] {
     case "domain":
     case "leaf":
     case "reviewer":
-    case "operator_chat":
       return READ_ONLY;
+    case "operator_chat":
+      // Operator conversation only selects product tools such as wiki_produce.
+      // Source exploration happens inside run-owned child Sessions.
+      return [];
     case "root_write":
       return READ_WRITE;
     default: {

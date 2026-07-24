@@ -2,20 +2,20 @@
 
 OKF Wiki turns a pinned **Repository Snapshot Set** into a source-grounded Markdown **Wiki**.
 
-The product is a **local Web UI**, a **localhost Node server**, and a **Pi agent harness** (`@earendil-works/pi-ai` / `pi-agent-core` / `pi-coding-agent`), with a trusted **Run Boundary** in TypeScript (`@okf-wiki/core`). The operator configures a **Workspace** of local Git checkouts (link existing paths or clone into the workspace). The agent follows a versioned Producer Skill, writes pages into isolated Staging, and returns a typed terminal result. The Run Boundary freezes snapshots and skill digests, enforces path policy, validates Markdown mechanically, and publishes the whole Wiki atomically.
+The product is a **local Web UI**, a **localhost Node server**, and a **Pi agent harness**, with a trusted **Run Boundary** in TypeScript (`@okf-wiki/core`). The operator configures a **Workspace** of local Git checkouts (link existing paths or clone into the workspace). The agent follows a versioned Producer Skill, writes pages into isolated Staging, and returns a typed terminal result. The Run Boundary freezes snapshots and the Skill, enforces path policy, validates Markdown mechanically, and publishes the whole Wiki atomically.
 
-The primary operator surface is the **Agent Workspace** (`/w/:id`) — a session-first coding-agent UI (Pi JSONL sessions, SSE events, tool cards, plan/publish gates). **Wiki Run** remains the bounded production job (history, staging, publish) linked to that session.
+The **Agent Workspace** (`/w/:id`) is the only operator surface. Its real Pi `wiki_produce` tool owns each Wiki Run, including both gates. Pi JSONL is the conversation authority; Run Record v2 and the run work directory hold the frozen job facts and artifacts.
 
 | Doc | Purpose |
 |---|---|
 | [CONTEXT.md](CONTEXT.md) | Domain vocabulary |
 | [docs/adr/](docs/adr/) | Architecture decisions ([index](docs/adr/README.md)) |
 | [packages/README.md](packages/README.md) | Monorepo package map |
-| [ADR 0030](docs/adr/0030-pi-agent-harness-for-semantic-workflow.md) | **Current stack:** Pi harness, WikiRunShell, Agent Workspace |
+| [ADR 0032](docs/adr/0032-pi-tool-owned-wiki-runs.md) | **Current stack:** Pi-owned Session and `wiki_produce` tool, immutable Run Boundary, Agent Workspace |
 | [ADR 0021](docs/adr/0021-retire-python-primary-path.md) | Python primary path retired |
 | [ADR 0022](docs/adr/0022-source-clone-into-workspace.md) | Operator-initiated source clone |
-| [ADR 0026](docs/adr/0026-session-centric-agent-workspace.md) | Session-centric operate surface (intent) |
-| [ADR 0028](docs/adr/0028-supervisor-tree-and-thin-workflow-shell.md) | Thin shell + supervisor produce (intent) |
+| [ADR 0031](docs/adr/0031-unidirectional-framework-first-operator-surface.md) | Unidirectional package boundaries and framework-first projection |
+| [ADR 0030](docs/adr/0030-pi-agent-harness-for-semantic-workflow.md) | Pi runtime and tool policy; shell clauses superseded by ADR 0032 |
 
 Historical ADRs 0020 / 0024 / 0025 / 0027 describe the former Mastra + AI SDK stack; framework clauses are superseded by **0030**.
 
@@ -44,13 +44,12 @@ Copy [`.env.example`](.env.example) to an untracked `.env` (or export vars in th
 |---|---|
 | `@okf-wiki/web` | Operator Web UI (Vite + React + shadcn Agent Workspace) |
 | `@okf-wiki/server` | Localhost HTTP API + Pi agent session SSE/commands |
-| `@okf-wiki/agent` | Pi sessions, WikiRunShell, produce (no Mastra/AI SDK) |
+| `@okf-wiki/agent` | Pi sessions, real `wiki_produce` tool, Semantic Workflow (no Mastra/AI SDK) |
 | `@okf-wiki/core` | Run Boundary (git probe, path policy, publish, stores) |
 | `@okf-wiki/contract` | Shared Zod schemas + agent protocol |
-| `@okf-wiki/cli` | Headless CLI (`wiki-run`, doctor, …) |
 | `@okf-wiki/skill` | Bundled Producer Skill assets |
 
-**Forbidden product dependencies:** `@mastra/*`, `ai`, `@ai-sdk/*` (guard: `pnpm check:deps`).
+**Architecture guard:** `pnpm check:architecture` rejects retired packages/protocols and forbidden product dependencies (`@mastra/*`, `ai`, `@ai-sdk/*`).
 
 ## Quick start
 
@@ -69,9 +68,9 @@ pnpm dev
 # → UI   http://127.0.0.1:5173  (proxies /api → server)
 ```
 
-**Default is live** produce (real Pi agent + model). Configure one or more model profiles in **Settings** (base URL, API key, max context; OpenAI-compatible gateways only), or set `OPENAI_API_KEY` (and optional `OPENAI_BASE_URL`) as env fallback. Agent Workspace can pick a model per wiki run; workspace `limits.contextTargetTokens` drives Pi compaction (default 85% of profile max context). Producer / home / workspace skills load into the Pi session. Missing credentials fail with a clear error.
+**Default is live** produce (real Pi agent + model). Configure one or more model profiles in **Settings** (base URL, API key, max context; OpenAI-compatible gateways only), or set `OPENAI_API_KEY` (and optional `OPENAI_BASE_URL`) as env fallback. Workspace `limits.contextTargetTokens` drives Pi compaction (default 85% of profile max context). Producer / home / workspace skills load into the Pi session. Missing credentials fail with a clear error.
 
-For **no-LLM pipeline smoke** only (tests, e2e, shell/path/publish checks), set `OKF_WIKI_AGENT_MODE=fixture` or CLI `--fixture`. That is not the normal operator path.
+For **no-LLM pipeline smoke** only (tests, e2e, path/publish checks), set `OKF_WIKI_AGENT_MODE=fixture`. That is not the normal operator path.
 
 `pnpm dev` builds shared packages once, then runs in parallel:
 
@@ -88,20 +87,10 @@ Split terminals if you prefer: `pnpm dev:server` and `pnpm dev:web`.
 1. Open **Workspaces** → create a workspace with an **absolute** `rootPath`.
 2. **Settings** → configure model catalog endpoints if needed (secrets stay machine-local / env).
 3. Open **Agent Workspace** (`/w/:id`) — session list, transcript, sources/wiki/plan/run panels.
-4. Start a wiki run from the composer; approve plan/publish gates when shown.
+4. Ask the Operator Agent to produce or refresh the Wiki; it calls `wiki_produce`, then approve plan/publication gates when shown.
 5. Browse published Markdown under the Wiki panel or `/workspaces/:id/wiki`.
 
 Legacy multi-tab Session chat (AI SDK `useChat`) is **removed**. Old `.okf-wiki/sessions/*.json` files are not migrated — wipe if present and use Pi sessions under `.okf-wiki/pi-sessions/`.
-
-### Headless wiki-run
-
-```bash
-OKF_WIKI_AGENT_MODE=fixture \
-  pnpm --filter @okf-wiki/cli start -- wiki-run \
-    --root /abs/workspace \
-    --source app=/abs/repo \
-    --yes --fixture
-```
 
 ### Provider and server environment
 
@@ -126,16 +115,15 @@ Model identity stays provider-prefixed (for example `openai:<served-model-name>`
 | `pnpm typecheck` | Root solution `tsc -b` (project references) | Local before PR; **CI** |
 | `pnpm lint` / `pnpm lint:fix` | ESLint flat config (`eslint.config.mjs`) | Local; staged pre-commit; **CI** |
 | `pnpm format` / `pnpm format:check` | Biome format (+ import assist); lint stays ESLint | Local; staged pre-commit; **CI** |
-| `pnpm check` | `typecheck` + `lint` + `format:check` + domain guards | Convenient full static check |
-| `pnpm check:deps` | Fail if `@mastra/*` / `ai` / `@ai-sdk/*` reappear | Local; part of `check` |
+| `pnpm check` | `typecheck` + `lint` + `format:check` + architecture guard | Convenient full static check |
+| `pnpm check:architecture` | Reject retired packages, protocols, routes, and dependency edges | Local / **CI**; part of `check` |
 | `pnpm test` | Package unit tests (`node:test` where present) | Local; **CI** |
 | `pnpm test:e2e` | Playwright Web e2e (`@okf-wiki/web`) | Local when touching UI/API; **CI job** |
-| `pnpm cli` | Headless CLI entry (`@okf-wiki/cli`) | Doctor / wiki-run / automation |
 
 ```bash
 pnpm install
 pnpm test
-pnpm check          # typecheck + eslint + biome format + dep guards
+pnpm check          # typecheck + eslint + biome format + architecture guard
 ```
 
 ### Pre-commit (optional, recommended)
@@ -156,13 +144,13 @@ pnpm --filter @okf-wiki/web exec playwright install chromium
 pnpm test:e2e
 ```
 
-Legacy Session/UIMessage e2e specs are ignored; Agent Workspace smoke lives under `packages/web/e2e/agent-workspace.spec.ts`. Specs under `packages/web/e2e/`. Not a pre-commit gate.
+Agent Workspace smoke lives under `packages/web/e2e/agent-workspace.spec.ts`. Specs live under `packages/web/e2e/`. Playwright is not a pre-commit gate.
 
 ### CI
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
 
-1. **typescript** — unit tests (contract / core / agent) + `pnpm typecheck` + `pnpm lint` + `pnpm format:check`
+1. **typescript** — unit tests (contract / core / agent) + `pnpm check`
 2. **web-e2e** — Playwright Chromium against the local dev stack
 
 ## Manual verification

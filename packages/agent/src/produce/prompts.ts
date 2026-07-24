@@ -1,5 +1,5 @@
 /**
- * Skill-aligned prompts for Host-orchestrated Pi produce (ADR 0028 / 0030).
+ * Skill-aligned prompts for wiki_produce-orchestrated Pi Produce (ADR 0032).
  */
 
 import type { WikiRunSpec } from "@okf-wiki/contract";
@@ -75,7 +75,7 @@ export function rootWritePrompt(input: {
     ? [
         "",
         "## Repair mode",
-        "Blocking defects from the Host review council (fix these issues; do not rewrite unrelated pages unless needed):",
+        "Blocking defects from the review council (fix these issues; do not rewrite unrelated pages unless needed):",
         input.repairDefects.trim(),
       ].join("\n")
     : "";
@@ -133,23 +133,28 @@ export function plannerPrompt(input: {
   layout: RunWorkdirLayout;
   workspaceName: string;
   wikiLanguage?: WikiLanguage;
+  operatorNotes?: string;
 }): string {
   const paths = runWorkdirPromptPaths(input.layout);
+  const operatorNotes = input.operatorNotes?.trim();
   return [
     "You are planning a source-grounded repository wiki (WikiRunSpec).",
     paths,
     `Workspace name: ${input.workspaceName}`,
+    ...(operatorNotes ? [`Operator-requested focus:\n${operatorNotes}`] : []),
     "Using only read tools (ls, find, grep, read), inspect sources/ entry points",
     "(README, package manifests, top-level layout). Do not write files.",
     "",
     "Return a single JSON object (optionally fenced) matching WikiRunSpec:",
     "{",
+    '  "version": 1,',
     '  "summary": string,',
     '  "audience": string,',
     '  "domains": [{ "id", "title", "scope", "critical", "questions": string[] }],',
     '  "pages": [{ "path", "purpose", "domainIds", "questions", "template"?, "critical" }],',
     '  "openQuestions": string[],',
-    '  "acceptance": { "reviewRequired": true, "maxRepairRounds": 2, "blockingSeverities": ["blocking"] }',
+    '  "acceptance": { "reviewRequired": true, "maxRepairRounds": 2, "blockingSeverities": ["blocking"] },',
+    '  "changelog": string[]',
     "}",
     "",
     "Rules:",
@@ -184,7 +189,7 @@ export function domainResearchPrompt(input: {
     "- key findings (bullet list)",
     "- source paths with line ranges when known from tools",
     "- open questions",
-    `Host will persist this as analysis receipt nodeId=${input.nodeId} runId=${input.runId}.`,
+    `Produce will persist this as analysis receipt nodeId=${input.nodeId} runId=${input.runId}.`,
   ].join("\n");
 }
 

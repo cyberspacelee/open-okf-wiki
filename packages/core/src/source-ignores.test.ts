@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  buildSourceIgnoreMap,
   DEFAULT_SOURCE_IGNORES,
   effectiveSourceIgnores,
   entryMatchesIgnore,
@@ -62,16 +61,4 @@ test("java-tests preset resolves", () => {
   const list = resolveIgnorePreset("java-tests");
   assert.ok(list);
   assert.ok(list!.some((p) => p.includes("Test.java")));
-});
-
-test("buildSourceIgnoreMap freezes per-source effective patterns", () => {
-  const map = buildSourceIgnoreMap([
-    {
-      id: "app",
-      path: "/tmp/app",
-      applyDefaultIgnores: false,
-      ignore: ["src/test/**"],
-    },
-  ]);
-  assert.deepEqual(map.get("app"), ["src/test/**"]);
 });

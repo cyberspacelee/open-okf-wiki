@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { type WorkspaceConfig, WorkspaceConfigSchema } from "@okf-wiki/contract";
 import { FreezeWikiRunError, freezeWikiRun } from "./run-boundary.js";
 import { loadRun } from "./run-store.js";
+import { skillDigest } from "./skill-digest.js";
 
 async function makeGitRepo(parent: string, name: string): Promise<string> {
   const dir = path.join(parent, name);
@@ -75,11 +76,11 @@ test("freezeWikiRun creates record with skillDigest and clean sources", async ()
   });
 
   assert.ok(frozen.runId);
-  assert.equal(frozen.skillPath, path.resolve(workspace.skillPath!));
+  assert.equal(frozen.skillPath, path.join(root, ".okf-wiki", "runs", frozen.runId, "skill"));
   assert.ok(frozen.skillDigest && frozen.skillDigest.length > 8);
   assert.equal(frozen.sources.length, 1);
   assert.equal(frozen.sources[0]!.id, "main");
-  assert.ok(frozen.sources[0]!.head);
+  assert.ok(frozen.sources[0]!.revision);
   assert.equal(frozen.sourcePathMap.get("main"), frozen.sources[0]!.path);
   assert.ok(frozen.sourceIgnores.has("main"));
 
@@ -94,7 +95,7 @@ test("freezeWikiRun creates record with skillDigest and clean sources", async ()
 test("freezeWikiRun rejects dirty source", async () => {
   const { workspace } = await makeWorkspace({ dirty: true });
   await assert.rejects(
-    () => freezeWikiRun({ workspace }),
+    () => freezeWikiRun({ workspace, sessionId: "session-dirty" }),
     (err: unknown) => {
       assert.ok(err instanceof FreezeWikiRunError);
       assert.equal(err.code, "source_dirty");
@@ -106,7 +107,7 @@ test("freezeWikiRun rejects dirty source", async () => {
 test("freezeWikiRun rejects empty sources", async () => {
   const { workspace } = await makeWorkspace({ noSources: true });
   await assert.rejects(
-    () => freezeWikiRun({ workspace }),
+    () => freezeWikiRun({ workspace, sessionId: "session-empty" }),
     (err: unknown) => {
       assert.ok(err instanceof FreezeWikiRunError);
       assert.equal(err.code, "no_sources");
@@ -126,4 +127,141 @@ test("freezeWikiRun registerRunRecord with explicit runId", async () => {
   const record = await loadRun(root, "agent-run-1");
   assert.ok(record);
   assert.equal(record!.sessionId, "s2");
+});
+
+test("freezeWikiRun materialises a fixed revision instead of exposing the live checkout", async () => {
+  const { root, workspace } = await makeWorkspace();
+  const liveSource = workspace.sources[0]!.path;
+  const frozen = await freezeWikiRun({
+    workspace,
+    runId: "snapshot-run",
+    sessionId: "snapshot-session",
+  });
+
+  const snapshot = frozen.sourcePathMap.get("main");
+  assert.ok(snapshot);
+  assert.notEqual(snapshot, liveSource);
+  assert.equal(snapshot, path.join(root, ".okf-wiki", "runs", "snapshot-run", "sources", "main"));
+  assert.equal((await lstat(snapshot)).isSymbolicLink(), false);
+  assert.equal((await lstat(path.join(snapshot, "README.md"))).isSymbolicLink(), false);
+
+  await writeFile(path.join(liveSource, "README.md"), "# changed after freeze\n", "utf8");
+  assert.equal(await readFile(path.join(snapshot, "README.md"), "utf8"), "# src\n");
+});
+
+test("freezeWikiRun physically removes Effective Source Ignores from the snapshot", async () => {
+  const { workspace } = await makeWorkspace();
+  const liveSource = workspace.sources[0]!.path;
+  workspace.sources[0]!.ignore = ["private/**"];
+  await mkdir(path.join(liveSource, "node_modules"), { recursive: true });
+  await mkdir(path.join(liveSource, "private"), { recursive: true });
+  await mkdir(path.join(liveSource, "src"), { recursive: true });
+  await writeFile(path.join(liveSource, "node_modules", "dep.js"), "ignored default\n");
+  await writeFile(path.join(liveSource, "private", "secret.txt"), "ignored configured\n");
+  await writeFile(path.join(liveSource, "src", "keep.ts"), "export const keep = true;\n");
+  spawnSync("git", ["add", "-f", "."], { cwd: liveSource, stdio: "ignore" });
+  spawnSync("git", ["commit", "-m", "tracked ignores"], { cwd: liveSource, stdio: "ignore" });
+
+  const frozen = await freezeWikiRun({
+    workspace,
+    runId: "ignore-run",
+    sessionId: "ignore-session",
+  });
+  const snapshot = frozen.sourcePathMap.get("main")!;
+
+  await assert.rejects(() => readFile(path.join(snapshot, "node_modules", "dep.js")));
+  await assert.rejects(() => readFile(path.join(snapshot, "private", "secret.txt")));
+  assert.equal(
+    await readFile(path.join(snapshot, "src", "keep.ts"), "utf8"),
+    "export const keep = true;\n",
+  );
+  assert.ok(frozen.sources[0]!.effectiveIgnores.includes("private/**"));
+});
+
+test("freezeWikiRun turns Git symlink blobs into read-only ordinary text files", async () => {
+  const { workspace } = await makeWorkspace();
+  const liveSource = workspace.sources[0]!.path;
+  await symlink("README.md", path.join(liveSource, "readme-link"));
+  spawnSync("git", ["add", "."], { cwd: liveSource, stdio: "ignore" });
+  spawnSync("git", ["commit", "-m", "add symlink blob"], { cwd: liveSource, stdio: "ignore" });
+
+  const frozen = await freezeWikiRun({
+    workspace,
+    runId: "symlink-run",
+    sessionId: "symlink-session",
+  });
+  const snapshot = frozen.sourcePathMap.get("main")!;
+  const linkInfo = await lstat(path.join(snapshot, "readme-link"));
+
+  assert.equal(linkInfo.isSymbolicLink(), false);
+  assert.equal(linkInfo.isFile(), true);
+  assert.equal(await readFile(path.join(snapshot, "readme-link"), "utf8"), "README.md");
+  assert.equal(linkInfo.mode & 0o222, 0);
+  assert.equal((await lstat(snapshot)).mode & 0o222, 0);
+});
+
+test("freezeWikiRun copies and reverifies the Producer Skill as a run-owned version", async () => {
+  const { root, workspace, skillDir } = await makeWorkspace();
+  const frozen = await freezeWikiRun({
+    workspace,
+    runId: "skill-run",
+    sessionId: "skill-session",
+  });
+
+  const expectedPath = path.join(root, ".okf-wiki", "runs", "skill-run", "skill");
+  assert.equal(frozen.skillPath, expectedPath);
+  assert.equal((await lstat(frozen.skillPath)).isSymbolicLink(), false);
+  assert.equal((await lstat(path.join(frozen.skillPath, "SKILL.md"))).mode & 0o222, 0);
+  assert.equal(await skillDigest(frozen.skillPath), frozen.skillDigest);
+
+  await writeFile(path.join(skillDir, "SKILL.md"), "---\nname: changed\n---\n# changed\n");
+  assert.equal(await skillDigest(frozen.skillPath), frozen.skillDigest);
+  const record = await loadRun(root, frozen.runId);
+  assert.equal(record?.skillPath, expectedPath);
+  assert.equal(record?.skillDigest, frozen.skillDigest);
+});
+
+test("freezeWikiRun refuses an existing run directory without touching its contents", async () => {
+  const { root, workspace } = await makeWorkspace();
+  const existing = path.join(root, ".okf-wiki", "runs", "collision-run");
+  await mkdir(existing, { recursive: true });
+  await writeFile(path.join(existing, "sentinel.txt"), "operator data\n");
+
+  await assert.rejects(
+    () =>
+      freezeWikiRun({
+        workspace,
+        runId: "collision-run",
+        sessionId: "collision-session",
+      }),
+    /already exists/i,
+  );
+  assert.equal(await readFile(path.join(existing, "sentinel.txt"), "utf8"), "operator data\n");
+  assert.equal(await loadRun(root, "collision-run"), null);
+});
+
+test("freezeWikiRun removes only its new run directory when Skill digest reverification fails", async () => {
+  const { root, workspace, skillDir } = await makeWorkspace();
+  const runDir = path.join(root, ".okf-wiki", "runs", "bad-skill-run");
+
+  await assert.rejects(
+    () =>
+      freezeWikiRun({
+        workspace,
+        runId: "bad-skill-run",
+        sessionId: "bad-skill-session",
+        priorSkill: { skillPath: skillDir, skillDigest: "0".repeat(64) },
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof FreezeWikiRunError);
+      assert.equal(error.code, "skill_resolve");
+      return true;
+    },
+  );
+  await assert.rejects(() => lstat(runDir), /ENOENT/);
+  assert.equal(await loadRun(root, "bad-skill-run"), null);
+  assert.equal(
+    await readFile(path.join(skillDir, "SKILL.md"), "utf8"),
+    "---\nname: test-skill\n---\n# skill\n",
+  );
 });

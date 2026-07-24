@@ -1,11 +1,6 @@
-/**
- * Pi-native snapshot projector (pi-web / ADR 0031).
- *
- * Authority for assistant bodies is the latest `event.message` snapshot on
- * message_start / message_update / message_end — not a string-delta machine.
- * tool_execution_* update tool state on the current or last assistant.
- */
+/** Pi-native Operator Session projector (ADR 0032). */
 
+import { type WikiProduceToolDetails, WikiProduceToolDetailsSchema } from "@okf-wiki/contract";
 import {
   compactToolInput,
   extractAssistantError,
@@ -16,7 +11,14 @@ import {
   makeId,
   nowIso,
 } from "./format.ts";
-import type { AgentContentPart, AgentMessage, AgentToolCall, PiStreamState } from "./types.ts";
+import type {
+  AgentContentPart,
+  AgentMessage,
+  AgentSseLike,
+  AgentToolCall,
+  PiHistoryMessage,
+  PiStreamState,
+} from "./types.ts";
 
 export function createPiStreamState(seed: AgentMessage[] = []): PiStreamState {
   let lastAssistantId: string | null = null;
@@ -43,6 +45,12 @@ export function viewMessages(state: PiStreamState): AgentMessage[] {
 function messageRole(message: unknown): string | null {
   if (!isRecord(message) || typeof message.role !== "string") return null;
   return message.role;
+}
+
+function wikiProduceDetails(value: unknown): WikiProduceToolDetails | undefined {
+  if (!isRecord(value) || !isRecord(value.details)) return undefined;
+  const parsed = WikiProduceToolDetailsSchema.safeParse(value.details);
+  return parsed.success ? parsed.data : undefined;
 }
 
 function findMessageIndex(messages: AgentMessage[], id: string | null): number {
@@ -72,6 +80,7 @@ function extractToolCallsFromMessage(
       name,
       input: compactToolInput(args) ?? prev?.input,
       output: prev?.output,
+      ...(prev?.details ? { details: prev.details } : {}),
       status: prev?.status ?? "pending",
     });
     seen.add(id);
@@ -93,8 +102,6 @@ function extractPartsFromMessage(
   prevParts?: AgentContentPart[],
 ): AgentContentPart[] | undefined {
   const parts: AgentContentPart[] = [];
-  const toolIdsInContent = new Set<string>();
-
   if (isRecord(message) && Array.isArray(message.content)) {
     let textBuf = "";
     let thinkingBuf = "";
@@ -126,7 +133,6 @@ function extractPartsFromMessage(
         flushText();
         flushThinking();
         const id = typeof block.id === "string" ? block.id : makeId("tool");
-        toolIdsInContent.add(id);
         parts.push({ type: "tool", toolId: id });
       }
     }
@@ -136,7 +142,9 @@ function extractPartsFromMessage(
 
   // Preserve tools that only arrived via tool_execution_* (append if missing).
   const seenTool = new Set(
-    parts.filter((p): p is { type: "tool"; toolId: string } => p.type === "tool").map((p) => p.toolId),
+    parts
+      .filter((p): p is { type: "tool"; toolId: string } => p.type === "tool")
+      .map((p) => p.toolId),
   );
   for (const t of tools ?? []) {
     if (!seenTool.has(t.id)) {
@@ -296,22 +304,6 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
   if (kind === "message_update") {
     if (role && role !== "assistant") return state;
 
-    // Replay / redelivery: do not open a new streaming shell on top of a
-    // completed last assistant (hist_* cold load, or post-agent_end ring).
-    // turnActive is not required — agent_end clears it before redelivery.
-    if (!state.streamingMessage && state.lastAssistantId) {
-      const idx = findMessageIndex(state.messages, state.lastAssistantId);
-      if (idx >= 0) {
-        const last = state.messages[idx]!;
-        if (
-          last.role === "assistant" &&
-          (last.status === "done" || last.status === "error")
-        ) {
-          return state;
-        }
-      }
-    }
-
     if (!message) return state;
 
     const text = extractMessageText(message);
@@ -344,22 +336,6 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
   if (kind === "message_start") {
     if (role === "user") return state;
     if (role === "toolResult" || role === "tool") return state;
-
-    // Replay guard only when the agent turn is settled (!turnActive).
-    // While turnActive, allow another message_start (tool-loop second asst).
-    // agent_start clears lastAssistantId for a brand-new operator turn.
-    if (!state.streamingMessage && !state.turnActive && state.lastAssistantId) {
-      const idx = findMessageIndex(state.messages, state.lastAssistantId);
-      if (idx >= 0) {
-        const last = state.messages[idx]!;
-        if (
-          last.role === "assistant" &&
-          (last.status === "done" || last.status === "error")
-        ) {
-          return state;
-        }
-      }
-    }
 
     // Reuse open streaming shell (e.g. tool opened one early).
     if (state.streamingMessage) {
@@ -396,41 +372,17 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
       if (isRecord(message) && typeof message.toolCallId === "string") {
         const toolCallId = message.toolCallId;
         const output = formatToolResultText(message.content) ?? formatToolResultText(message);
+        const details = wikiProduceDetails(message);
         const isError = message.isError === true;
         return updateToolInState(state, toolCallId, {
           output: output,
+          ...(details ? { details } : {}),
           status: isError ? "error" : "done",
           name: typeof message.toolName === "string" ? message.toolName : undefined,
         });
       }
       return state;
     }
-
-    // Replay / redelivery guard (pi-web: one assistant shell per message_start).
-    // Do NOT require turnActive: agent_end clears it, and host tools / ring
-    // dumps often omit agent_start. Late message_end after finalize must not
-    // open a peer bubble on top of hist_* or the just-finalized card.
-    // Legitimate new turns always open message_start first (Pi agent-loop +
-    // parent wiki_produce host tool), which sets streamingMessage.
-    if (!state.streamingMessage && state.lastAssistantId) {
-      const idx = findMessageIndex(state.messages, state.lastAssistantId);
-      if (idx >= 0) {
-        const last = state.messages[idx]!;
-        if (
-          last.role === "assistant" &&
-          (last.status === "done" || last.status === "error")
-        ) {
-          return state;
-        }
-      }
-    }
-
-    const fixtureNote =
-      typeof body.note === "string"
-        ? body.note
-        : typeof body.mode === "string" && body.mode === "fixture"
-          ? "fixture mode — prompt recorded (no LLM)"
-          : undefined;
 
     const err = extractAssistantError(message);
     const isError = err.isError;
@@ -452,34 +404,6 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
               : state.streamingMessage.thinkingStatus,
           };
 
-      // Fixture-only empty end after settled turn → new card.
-      if (
-        fixtureNote &&
-        !finalized.content &&
-        !finalized.thinking &&
-        !isError &&
-        state.streamingMessage.status !== "streaming"
-      ) {
-        const newId = makeId("asst");
-        const card: AgentMessage = {
-          id: newId,
-          role: "assistant",
-          content: fixtureNote,
-          createdAt: ts,
-          status: "done",
-        };
-        return {
-          ...state,
-          messages: [...state.messages, card],
-          streamingMessage: null,
-          lastAssistantId: newId,
-        };
-      }
-
-      if (!finalized.content && fixtureNote) {
-        finalized.content = fixtureNote;
-      }
-
       return {
         ...state,
         messages: [...state.messages, finalized],
@@ -489,19 +413,18 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
     }
 
     // No streaming shell: open from final snapshot if meaningful.
-    if (message || fixtureNote || isError) {
+    if (message || isError) {
       const newId = makeId("asst");
       const card = message
         ? assistantFromSnapshot(message, { id: newId, prev: null, status, ts })
         : {
             id: newId,
             role: "assistant" as const,
-            content: fixtureNote ?? err.errorMessage ?? "",
+            content: err.errorMessage ?? "",
             createdAt: ts,
             status,
             errorMessage: err.errorMessage,
           };
-      if (!card.content && fixtureNote) card.content = fixtureNote;
       return {
         ...state,
         messages: [...state.messages, card],
@@ -528,8 +451,10 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
     const toolCallId = typeof body.toolCallId === "string" ? body.toolCallId : null;
     if (!toolCallId) return state;
     const partial = formatToolResultText(body.partialResult);
+    const details = wikiProduceDetails(body.partialResult);
     return updateToolInState(state, toolCallId, {
       output: partial,
+      ...(details ? { details } : {}),
       status: "running",
     });
   }
@@ -538,9 +463,11 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
     const toolCallId = typeof body.toolCallId === "string" ? body.toolCallId : null;
     if (!toolCallId) return state;
     const output = formatToolResultText(body.result);
+    const details = wikiProduceDetails(body.result);
     const isError = body.isError === true;
     return updateToolInState(state, toolCallId, {
       output: output,
+      ...(details ? { details } : {}),
       status: isError ? "error" : "done",
     });
   }
@@ -615,5 +542,85 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
   }
 
   // prompt / session_ready / turn_* — no transcript rows.
+  return state;
+}
+
+function historyTimestamp(row: PiHistoryMessage): string {
+  if (typeof row.timestamp !== "number") return nowIso();
+  const date = new Date(row.timestamp);
+  return Number.isNaN(date.getTime()) ? nowIso() : date.toISOString();
+}
+
+/** Project the durable branch returned by Pi SessionManager. */
+export function projectPiHistory(rows: readonly PiHistoryMessage[]): AgentMessage[] {
+  const messages: AgentMessage[] = [];
+
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index]!;
+    const createdAt = historyTimestamp(row);
+
+    if (row.role === "user") {
+      messages.push({
+        id: `hist_user_${index + 1}`,
+        role: "user",
+        content: extractMessageText(row),
+        createdAt,
+        status: "done",
+      });
+      continue;
+    }
+
+    if (row.role === "assistant") {
+      const error = extractAssistantError(row);
+      messages.push(
+        assistantFromSnapshot(row, {
+          id: `hist_asst_${index + 1}`,
+          status: error.isError ? "error" : "done",
+          ts: createdAt,
+        }),
+      );
+      continue;
+    }
+
+    if (row.role !== "toolResult" || typeof row.toolCallId !== "string") continue;
+    const output = formatToolResultText(row.content) ?? formatToolResultText(row);
+    const details = wikiProduceDetails(row);
+    for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
+      const message = messages[messageIndex]!;
+      if (message.role !== "assistant") continue;
+      if (!message.tools?.some((tool) => tool.id === row.toolCallId)) continue;
+      messages[messageIndex] = patchToolsOnAssistant(message, row.toolCallId, {
+        name: row.toolName,
+        output,
+        ...(details ? { details } : {}),
+        status: row.isError === true ? "error" : "done",
+      });
+      break;
+    }
+  }
+
+  return messages;
+}
+
+/**
+ * Fold the only three accepted transport shapes:
+ * current server snapshot, genuine Pi event, and heartbeat.
+ */
+export function projectAgentEvent(state: PiStreamState, event: AgentSseLike): PiStreamState {
+  if (event.source === "server" && event.kind === "snapshot") {
+    const rows = event.payload.messages as PiHistoryMessage[];
+    const snapshot = createPiStreamState(projectPiHistory(rows));
+    const activeTool = event.payload.activeTool;
+    if (!activeTool) return snapshot;
+    return updateToolInState(snapshot, activeTool.toolCallId, {
+      name: activeTool.toolName,
+      details: activeTool.details,
+      output: activeTool.details.summary,
+      status: "running",
+    });
+  }
+  if (event.source === "pi" && typeof event.kind === "string") {
+    return reducePiEvent(state, event.kind, event.payload);
+  }
   return state;
 }

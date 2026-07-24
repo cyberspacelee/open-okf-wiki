@@ -1,5 +1,5 @@
 /**
- * Host-side Analysis Receipt persistence for Domain/Leaf research.
+ * Produce-owned Analysis Receipt persistence for Domain/Leaf research.
  * Writers consume receipts from analysis/; children return summaries only.
  */
 

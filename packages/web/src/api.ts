@@ -16,15 +16,12 @@ import type {
   ProviderEntryPublic,
   ProviderPublic,
   ProviderTestResult,
-  RunSseEvent,
   SkillFileContent,
   SkillFileEntry,
   SkillInfo,
   SourceOrigin,
   StoredRunRecord,
-  ToolPartState,
   WikiLanguage,
-  WikiRunPlan,
   WikiRunRecordStatus,
   WorkspaceConfig,
   WorkspaceSource,
@@ -43,15 +40,12 @@ export type {
   ProviderEntryPublic,
   ProviderPublic,
   ProviderTestResult,
-  RunSseEvent,
   SkillFileContent,
   SkillFileEntry,
   SkillInfo,
   SourceOrigin,
   StoredRunRecord,
-  ToolPartState,
   WikiLanguage,
-  WikiRunPlan,
   WikiRunRecordStatus,
   WorkspaceConfig,
   WorkspaceSource,
@@ -165,10 +159,6 @@ export type CloneSourceInput = {
   id?: string;
   relativeDir?: string;
   ref?: string;
-};
-
-export type CreateRunInput = {
-  autoApprove?: boolean;
 };
 
 export class ApiError extends Error {
@@ -562,193 +552,6 @@ export function listRuns(
   );
 }
 
-export function createRun(
-  workspaceId: string,
-  input?: CreateRunInput,
-  rootPath?: string,
-): Promise<{ run: StoredRunRecord }> {
-  return request(
-    withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/runs`, rootPath),
-    {
-      method: "POST",
-      body: JSON.stringify(input ?? {}),
-    },
-  );
-}
-
-/**
- * Manual Retry: new run reusing frozen skillPath/skillDigest from a terminal run.
- */
-export function retryRun(
-  workspaceId: string,
-  runId: string,
-  rootPath?: string,
-): Promise<{ run: StoredRunRecord; retriedFrom: string; skillDigest?: string }> {
-  return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/retry`,
-      rootPath,
-    ),
-    { method: "POST", body: JSON.stringify({}) },
-  );
-}
-
-/** HITL: approve proposed plan and continue write phase. */
-export function approvePlan(
-  workspaceId: string,
-  runId: string,
-  input?: { notes?: string; plan?: WikiRunPlan },
-  rootPath?: string,
-): Promise<{ run: StoredRunRecord }> {
-  return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/approve-plan`,
-      rootPath,
-    ),
-    { method: "POST", body: JSON.stringify(input ?? {}) },
-  );
-}
-
-/** HITL: decline plan; run becomes cancelled. */
-export function denyPlan(
-  workspaceId: string,
-  runId: string,
-  rootPath?: string,
-): Promise<{ run: StoredRunRecord }> {
-  return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/deny-plan`,
-      rootPath,
-    ),
-    { method: "POST", body: JSON.stringify({}) },
-  );
-}
-
-/** HITL: revise plan with free-text feedback and re-suspend. */
-export function revisePlan(
-  workspaceId: string,
-  runId: string,
-  feedback: string,
-  rootPath?: string,
-): Promise<{ run: StoredRunRecord }> {
-  return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/revise-plan`,
-      rootPath,
-    ),
-    { method: "POST", body: JSON.stringify({ feedback }) },
-  );
-}
-
-/** HITL: approve publication of a run that is awaiting_publication. */
-export function approvePublication(
-  workspaceId: string,
-  runId: string,
-  rootPath?: string,
-): Promise<{ run: StoredRunRecord; publicationPath: string; pageCount: number }> {
-  return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/approve-publication`,
-      rootPath,
-    ),
-    { method: "POST", body: JSON.stringify({}) },
-  );
-}
-
-/** HITL: decline publication; staging is retained. */
-export function denyPublication(
-  workspaceId: string,
-  runId: string,
-  rootPath?: string,
-): Promise<{ run: StoredRunRecord }> {
-  return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/deny-publication`,
-      rootPath,
-    ),
-    { method: "POST", body: JSON.stringify({}) },
-  );
-}
-
-/** Best-effort cancel of a running Wiki Run. */
-export function cancelRun(
-  workspaceId: string,
-  runId: string,
-  rootPath?: string,
-): Promise<{ run: StoredRunRecord }> {
-  return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/cancel`,
-      rootPath,
-    ),
-    { method: "POST", body: JSON.stringify({}) },
-  );
-}
-
-/** Domain/Leaf analysis receipt summary (from Host research). */
-export type AnalysisReceiptSummary = {
-  nodeId: string;
-  parentId: string | null;
-  status: string;
-  scope: string;
-  summary: string;
-  relativePath: string;
-  findingsCount: number;
-  childReceipts: string[];
-};
-
-export type AnalysisReceiptDetail = {
-  version?: number;
-  runId: string;
-  nodeId: string;
-  parentId: string | null;
-  attempt?: number;
-  status: string;
-  scope: string;
-  summary: string;
-  findings?: string[];
-  evidence?: unknown[];
-  childReceipts?: string[];
-  openQuestions?: string[];
-};
-
-/** List analysis receipts for a Wiki Run. */
-export function listRunReceipts(
-  workspaceId: string,
-  runId: string,
-  rootPath?: string,
-): Promise<{ runId: string; receipts: AnalysisReceiptSummary[] }> {
-  return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/receipts`,
-      rootPath,
-    ),
-  );
-}
-
-/** Read one analysis receipt by nodeId. */
-export function getRunReceipt(
-  workspaceId: string,
-  runId: string,
-  nodeId: string,
-  rootPath?: string,
-): Promise<{ runId: string; receipt: AnalysisReceiptDetail }> {
-  return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/receipts/${encodeURIComponent(nodeId)}`,
-      rootPath,
-    ),
-  );
-}
-
-/** Absolute EventSource URL for run progress SSE. */
-export function runEventsUrl(workspaceId: string, runId: string, rootPath?: string): string {
-  return `${API_BASE}${withRootPathQuery(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/events`,
-    rootPath,
-  )}`;
-}
-
 export type WikiPageListResponse = {
   workspaceId: string;
   publicationPath: string;
@@ -804,7 +607,7 @@ export function listAgentSessions(
   );
 }
 
-/** Create a Pi agent session placeholder (stub until AgentSession factory lands). */
+/** Create a live Pi Operator Session; Pi persists it on the first completed turn. */
 export function createAgentSession(
   workspaceId: string,
   input?: CreatePiAgentSessionBody,
@@ -822,7 +625,7 @@ export function createAgentSession(
   );
 }
 
-/** Delete a Pi agent session (meta + workdir + JSONL). */
+/** Delete a Pi Operator Session and its associated Wiki Run work data. */
 export function deleteAgentSession(
   workspaceId: string,
   sessionId: string,
@@ -840,8 +643,7 @@ export function deleteAgentSession(
 }
 
 /**
- * POST an AgentCommand (prompt | steer | abort | compact | start_wiki_run | resume_gate).
- * Server returns 202 with status `stub` | `accepted`.
+ * POST a native AgentSession command (prompt | steer | abort | compact).
  */
 export function agentSessionCommand(
   workspaceId: string,
@@ -861,7 +663,7 @@ export function agentSessionCommand(
   );
 }
 
-/** Absolute EventSource URL for Pi + product agent SSE. */
+/** Absolute EventSource URL for snapshot + genuine Pi events. */
 export function agentSessionEventsUrl(
   workspaceId: string,
   sessionId: string,
@@ -871,78 +673,4 @@ export function agentSessionEventsUrl(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/agent/sessions/${encodeURIComponent(sessionId)}/events`,
     rootPath,
   )}`;
-}
-
-/**
- * Cold-load Pi JSONL history message (content blocks intact).
- * Matches agent `PiHistoryMessage` — web maps to thin UI view model.
- */
-export type PiHistoryMessage = {
-  role: "user" | "assistant" | "toolResult" | "system";
-  content?: unknown;
-  stopReason?: string;
-  errorMessage?: string;
-  toolCallId?: string;
-  toolName?: string;
-  isError?: boolean;
-  timestamp?: number;
-};
-
-/** Parent-visible produce unit from cold load / SSE (not workUnit). */
-export type ProduceUnitSnapshot = {
-  role: string;
-  status: string;
-  unitId?: string;
-  task?: string;
-  parentId?: string;
-  summary?: string;
-  receiptPath?: string;
-  error?: string;
-  tools?: unknown[];
-  message?: { text?: string; thinking?: string };
-  children?: ProduceUnitSnapshot[];
-};
-
-export type AgentSessionSnapshot = {
-  session: {
-    id: string;
-    workspaceId: string;
-    title?: string;
-    sessionFile?: string;
-  };
-  /** Pi-native messages (content blocks); no product work fold. */
-  messages: PiHistoryMessage[];
-  /**
-   * Parent-visible produce units from durable okf.produce_progress custom entries
-   * (last-by-unitId). Live updates via SSE kind okf.produce_progress.
-   */
-  produceUnits?: ProduceUnitSnapshot[];
-  product: {
-    runId?: string;
-    runStatus?: string;
-    phase?: string;
-    /** True while server registry has an in-flight prompt/produce. */
-    busy?: boolean;
-    pendingGate?: {
-      gate: "plan" | "publication";
-      plan?: WikiRunPlan;
-      pages?: string[];
-    } | null;
-    plan?: WikiRunPlan | null;
-    /** Same list nested under product when present. */
-    produceUnits?: ProduceUnitSnapshot[];
-  };
-};
-
-export function getAgentSession(
-  workspaceId: string,
-  sessionId: string,
-  rootPath?: string,
-): Promise<AgentSessionSnapshot> {
-  return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/agent/sessions/${encodeURIComponent(sessionId)}`,
-      rootPath,
-    ),
-  );
 }

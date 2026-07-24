@@ -1,4 +1,4 @@
-import { lstat, readdir, readFile } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   assertAbsolutePath,
@@ -7,6 +7,7 @@ import {
   resolveContainedPath,
   toPosixRelative,
 } from "./paths.js";
+import { parseWikiFrontmatter, scanWikiTree } from "./wiki-tree.js";
 
 /** Soft cap on listed / readable published wiki pages. */
 export const PUBLISHED_WIKI_MAX_PAGES = 500;
@@ -41,51 +42,6 @@ export class PublishedWikiError extends Error {
     this.name = "PublishedWikiError";
     this.code = code;
   }
-}
-
-/**
- * Extract a non-empty YAML frontmatter `title` value, if present.
- * Mirrors the mechanical check in {@link hasNonEmptyTitleFrontmatter}.
- */
-export function extractTitleFromFrontmatter(content: string): string | undefined {
-  const trimmed = content.replace(/^\uFEFF/, "");
-  if (!trimmed.startsWith("---")) {
-    return undefined;
-  }
-  const firstNl = trimmed.indexOf("\n");
-  if (firstNl < 0) {
-    return undefined;
-  }
-  if (trimmed.slice(0, firstNl).trim() !== "---") {
-    return undefined;
-  }
-  const rest = trimmed.slice(firstNl + 1);
-  const close = rest.search(/^---\s*$/m);
-  if (close < 0) {
-    return undefined;
-  }
-  const front = rest.slice(0, close);
-  const match = front.match(/^\s*title\s*:\s*(.+?)\s*$/m);
-  if (!match) {
-    return undefined;
-  }
-  let raw = match[1]!.trim();
-  // JSON-style quoted string from fixture agent: title: "Foo"
-  if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
-    const inner = raw.slice(1, -1);
-    try {
-      // Prefer JSON unquote when double-quoted so escapes work.
-      if (raw.startsWith('"')) {
-        raw = JSON.parse(raw) as string;
-      } else {
-        raw = inner.trim();
-      }
-    } catch {
-      raw = inner.trim();
-    }
-  }
-  const title = raw.trim();
-  return title.length > 0 ? title : undefined;
 }
 
 /**
@@ -196,52 +152,21 @@ async function assertPublicationRoot(publicationPath: string): Promise<string> {
  */
 export async function listPublishedWikiPages(publicationPath: string): Promise<string[]> {
   const root = await assertPublicationRoot(publicationPath);
-  const pages: string[] = [];
-
-  async function walk(dir: string, rel: string): Promise<void> {
-    let entries;
-    try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch (error) {
-      throw new PublishedWikiError(
-        "io",
-        `cannot read directory ${rel || "."}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-
-    // Stable order for deterministic UI / tests.
-    entries.sort((a, b) => a.name.localeCompare(b.name));
-
-    for (const entry of entries) {
-      const absPath = path.join(dir, entry.name);
-      const relPath = rel ? `${rel}/${entry.name}` : entry.name;
-
-      let info;
-      try {
-        info = await lstat(absPath);
-      } catch {
-        continue;
-      }
-
-      // Never follow symlinks (path-escape safety).
-      if (info.isSymbolicLink()) {
-        continue;
-      }
-      if (info.isDirectory()) {
-        await walk(absPath, relPath);
-      } else if (info.isFile() && entry.name.toLowerCase().endsWith(".md")) {
-        pages.push(relPath.split(path.sep).join("/"));
-        if (pages.length > PUBLISHED_WIKI_MAX_PAGES) {
-          throw new PublishedWikiError(
-            "too_large",
-            `published wiki has more than ${PUBLISHED_WIKI_MAX_PAGES} pages`,
-          );
-        }
-      }
-    }
+  const scan = await scanWikiTree(root);
+  const ioIssue = scan.issues.find((issue) => issue.kind === "io");
+  if (ioIssue) {
+    throw new PublishedWikiError("io", ioIssue.message);
   }
+  const pages = scan.files
+    .filter((file) => file.relativePath.toLowerCase().endsWith(".md"))
+    .map((file) => file.relativePath);
 
-  await walk(root, "");
+  if (pages.length > PUBLISHED_WIKI_MAX_PAGES) {
+    throw new PublishedWikiError(
+      "too_large",
+      `published wiki has more than ${PUBLISHED_WIKI_MAX_PAGES} pages`,
+    );
+  }
 
   if (pages.length === 0) {
     throw new PublishedWikiError("empty", `published wiki has no markdown pages: ${root}`);
@@ -303,7 +228,7 @@ export async function readPublishedWikiPage(
   }
 
   const posixPath = toPublishedWikiPosixRelative(root, abs);
-  const title = extractTitleFromFrontmatter(content);
+  const title = parseWikiFrontmatter(content)?.values.title;
   const page: PublishedWikiPage = { path: posixPath, content };
   if (title !== undefined) {
     page.title = title;
