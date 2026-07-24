@@ -15,6 +15,7 @@ import { resolveAssistantSummary } from "../pi/assistant-outcome.js";
 import { createWikiSession, type WikiSessionHandle } from "../pi/create-wiki-session.js";
 import type { SourceIgnoreInput } from "../pi/tool-operations.js";
 import type { WikiAgentRole } from "../pi/tool-policy.js";
+import { shouldUsePiFixtureMode } from "./live-pi.js";
 
 export type ChildRole = Extract<
   WikiAgentRole,
@@ -59,8 +60,9 @@ export async function runChildSession(input: RunChildSessionInput): Promise<RunC
     throw err;
   }
 
-  // Explicit fixture only (arg or OKF_WIKI_AGENT_MODE=fixture). No auto-fallback.
-  if (input.fixture === true || process.env.OKF_WIKI_AGENT_MODE === "fixture") {
+  // Explicit fixture only (arg or non-production OKF_WIKI_AGENT_MODE=fixture).
+  // No auto-fallback; production ignores the env kill-switch.
+  if (shouldUsePiFixtureMode({ fixture: input.fixture })) {
     return {
       role: input.role,
       mode: "fixture",
@@ -70,7 +72,7 @@ export async function runChildSession(input: RunChildSessionInput): Promise<RunC
 
   if (!input.model) {
     throw new Error(
-      `Child session (${input.role}) live mode requires a model, or pass fixture: true / OKF_WIKI_AGENT_MODE=fixture for smoke only`,
+      `Child session (${input.role}) live mode requires a model, or pass fixture: true / OKF_WIKI_AGENT_MODE=fixture for smoke only (ignored when NODE_ENV=production)`,
     );
   }
 

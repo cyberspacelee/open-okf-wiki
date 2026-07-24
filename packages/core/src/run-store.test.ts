@@ -292,3 +292,62 @@ test("updateRunRecord keeps cancellation races inside the Run Store", async (t) 
     /not running/,
   );
 });
+
+test("updateRunRecord serializes concurrent cancel vs published/failed (cancel-wins)", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "okf-run-store-rmw-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  // Many iterations so interleaving would surface without the per-path lock.
+  for (let i = 0; i < 40; i++) {
+    const runId = `race-${i}`;
+    await registerRunRecord(root, "workspace-1", {
+      runId,
+      status: "running",
+      sessionId: "session-1",
+      autoApprove: false,
+      skillPath: path.join(root, ".okf-wiki", "runs", runId, "skill"),
+      skillDigest: "a".repeat(64),
+      sources: [{ id: "main", revision: "b".repeat(40), effectiveIgnores: [] }],
+    });
+
+    const settled = await Promise.allSettled([
+      updateRunRecord(root, runId, { status: "cancelled" }),
+      updateRunRecord(root, runId, {
+        status: "published",
+        pages: ["overview.md"],
+        summary: "done",
+      }),
+      updateRunRecord(root, runId, { status: "failed", error: "boom" }),
+    ]);
+
+    const final = await loadRun(root, runId);
+    assert.ok(final, `run ${runId} should still exist`);
+
+    // Once any concurrent caller observed cancelled, disk must stay cancelled
+    // (late published/failed must not clobber cancel under the RMW lock).
+    const cancelObserved = settled.some(
+      (r) => r.status === "fulfilled" && r.value.status === "cancelled",
+    );
+    if (cancelObserved) {
+      assert.equal(
+        final.status,
+        "cancelled",
+        `cancel-wins violated for ${runId}: final=${final.status}`,
+      );
+    } else {
+      // Agent finished first: cancel must conflict; final is terminal non-cancel.
+      assert.ok(
+        final.status === "published" || final.status === "failed",
+        `expected published|failed for ${runId}, got ${final.status}`,
+      );
+      const cancelResult = settled[0];
+      assert.equal(cancelResult.status, "rejected");
+    }
+
+    // Frozen identity fields must never be torn by concurrent writers.
+    assert.equal(final.runId, runId);
+    assert.equal(final.sessionId, "session-1");
+    assert.equal(final.workspaceId, "workspace-1");
+    assert.equal(final.skillDigest, "a".repeat(64));
+  }
+});

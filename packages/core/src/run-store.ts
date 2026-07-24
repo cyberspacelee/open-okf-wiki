@@ -14,6 +14,29 @@ import { WORKSPACE_DIR_NAME } from "./workspace-store.js";
 
 const RUNS_DIR_NAME = "runs";
 
+/**
+ * In-process per-path mutex for single-server Node RMW on run records.
+ * Concurrent `updateRunRecord` callers for the same path serialize so
+ * cancel-wins and frozen-field rules are evaluated on the latest disk state.
+ */
+const runRecordUpdateTails = new Map<string, Promise<void>>();
+
+function withRunRecordUpdateLock<T>(absolutePath: string, fn: () => Promise<T>): Promise<T> {
+  const prev = runRecordUpdateTails.get(absolutePath) ?? Promise.resolve();
+  const run = prev.catch(() => undefined).then(fn);
+  const tail = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  runRecordUpdateTails.set(absolutePath, tail);
+  void tail.finally(() => {
+    if (runRecordUpdateTails.get(absolutePath) === tail) {
+      runRecordUpdateTails.delete(absolutePath);
+    }
+  });
+  return run;
+}
+
 /** Absolute path to `{root}/.okf-wiki/runs`. */
 function runsDir(rootPath: string): string {
   return path.join(path.resolve(rootPath), WORKSPACE_DIR_NAME, RUNS_DIR_NAME);
@@ -115,10 +138,12 @@ export class RunStatusConflictError extends Error {
 /**
  * Merge a patch into an existing run record and persist it.
  *
- * Concurrency rules for cancel races:
+ * Concurrency rules for cancel races (evaluated under a per-path lock so
+ * concurrent callers re-read the latest record before applying policy):
  * - A `cancelled` record is never overwritten by a different status (cancel wins).
  * - `cancelled` may only be applied while the record is still `running`
- *   (agent/HITL finished first wins; cancel returns conflict).
+ *   (or awaiting plan/publication HITL); agent/HITL finished first wins and
+ *   cancel returns conflict.
  */
 export async function updateRunRecord(
   rootPath: string,
@@ -132,58 +157,63 @@ export async function updateRunRecord(
     }
   }
 
-  const existing = await loadRun(rootPath, runId);
-  if (!existing) {
-    throw new Error(`run not found: ${runId}`);
-  }
+  const resolvedRoot = path.resolve(rootPath);
+  const recordPath = runRecordPath(resolvedRoot, runId);
 
-  // Cancel wins races against late agent finalization / auto-publish.
-  if (existing.status === "cancelled" && patch.status && patch.status !== "cancelled") {
-    return existing;
-  }
+  return withRunRecordUpdateLock(recordPath, async () => {
+    const existing = await loadRun(resolvedRoot, runId);
+    if (!existing) {
+      throw new Error(`run not found: ${runId}`);
+    }
 
-  // Cancel while running or waiting on operator (plan / publish HITL);
-  // idempotent if already cancelled.
-  if (
-    patch.status === "cancelled" &&
-    !["running", "awaiting_plan", "awaiting_publication", "cancelled"].includes(existing.status)
-  ) {
-    throw new RunStatusConflictError(existing, `run is not running (status: ${existing.status})`);
-  }
+    // Cancel wins races against late agent finalization / auto-publish.
+    if (existing.status === "cancelled" && patch.status && patch.status !== "cancelled") {
+      return existing;
+    }
 
-  const next: StoredRunRecord = {
-    ...existing,
-    updatedAt: new Date().toISOString(),
-  };
+    // Cancel while running or waiting on operator (plan / publish HITL);
+    // idempotent if already cancelled.
+    if (
+      patch.status === "cancelled" &&
+      !["running", "awaiting_plan", "awaiting_publication", "cancelled"].includes(existing.status)
+    ) {
+      throw new RunStatusConflictError(existing, `run is not running (status: ${existing.status})`);
+    }
 
-  if (patch.status !== undefined) {
-    next.status = patch.status;
-  }
-  if (patch.error !== undefined) {
-    next.error = patch.error;
-  }
-  if (Array.isArray(patch.pages)) {
-    next.pages = patch.pages;
-  }
-  if (patch.summary !== undefined) {
-    next.summary = patch.summary;
-  }
-  if (patch.spec !== undefined) {
-    next.spec = patch.spec;
-  }
+    const next: StoredRunRecord = {
+      ...existing,
+      updatedAt: new Date().toISOString(),
+    };
 
-  // Clear stale error when transitioning to a successful terminal status.
-  if (
-    patch.status === "awaiting_publication" ||
-    patch.status === "awaiting_plan" ||
-    patch.status === "published"
-  ) {
-    next.error = null;
-  }
+    if (patch.status !== undefined) {
+      next.status = patch.status;
+    }
+    if (patch.error !== undefined) {
+      next.error = patch.error;
+    }
+    if (Array.isArray(patch.pages)) {
+      next.pages = patch.pages;
+    }
+    if (patch.summary !== undefined) {
+      next.summary = patch.summary;
+    }
+    if (patch.spec !== undefined) {
+      next.spec = patch.spec;
+    }
 
-  const parsed = StoredRunRecordSchema.parse(next);
-  await atomicWriteJson(runRecordPath(rootPath, runId), parsed);
-  return parsed;
+    // Clear stale error when transitioning to a successful terminal status.
+    if (
+      patch.status === "awaiting_publication" ||
+      patch.status === "awaiting_plan" ||
+      patch.status === "published"
+    ) {
+      next.error = null;
+    }
+
+    const parsed = StoredRunRecordSchema.parse(next);
+    await atomicWriteJson(recordPath, parsed);
+    return parsed;
+  });
 }
 
 export async function loadRun(rootPath: string, runId: string): Promise<StoredRunRecord | null> {

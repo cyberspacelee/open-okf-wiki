@@ -23,7 +23,10 @@ export type ProduceWithPiInput = {
   /** Already-approved living Spec. */
   spec: WikiRunSpec;
   workspaceName: string;
-  /** Force fixture mode (no LLM). Also true when OKF_WIKI_AGENT_MODE=fixture. */
+  /**
+   * Force fixture mode (no LLM). Also true when OKF_WIKI_AGENT_MODE=fixture
+   * outside production (NODE_ENV !== "production").
+   */
   fixture?: boolean;
   /** Optional model for live mode. */
   model?: Model<any>;
@@ -59,6 +62,9 @@ function throwIfAborted(signal?: AbortSignal): void {
  * Whether to use the no-LLM fixture produce path.
  *
  * **Explicit only** — never auto-selected because credentials are missing.
+ * Env opt-in (`OKF_WIKI_AGENT_MODE=fixture`) is ignored when `NODE_ENV` is
+ * `production` so production deploys always require real models. Explicit
+ * `fixture: true` (test injection) still works in any environment.
  */
 export function shouldUsePiFixtureMode(
   input: { fixture?: boolean },
@@ -66,6 +72,8 @@ export function shouldUsePiFixtureMode(
 ): boolean {
   if (input.fixture === true) return true;
   if (input.fixture === false) return false;
+  // Production fail-closed: never honor fixture env by accident.
+  if (env.NODE_ENV === "production") return false;
   return env.OKF_WIKI_AGENT_MODE === "fixture";
 }
 
@@ -150,8 +158,8 @@ export async function produceWithPi(input: ProduceWithPiInput): Promise<ProduceW
       "Live produce requires a model. Configure a model profile in Settings " +
         "(base URL + API key; OpenAI-compatible only), set OPENAI_API_KEY " +
         "(and optional OPENAI_BASE_URL), or pass an explicit model/modelRuntime. " +
-        "For no-LLM pipeline smoke only, pass fixture: true or set " +
-        "OKF_WIKI_AGENT_MODE=fixture (not the default).",
+        "For no-LLM pipeline smoke only (non-production), pass fixture: true or set " +
+        "OKF_WIKI_AGENT_MODE=fixture (not the default; ignored when NODE_ENV=production).",
     );
   }
 

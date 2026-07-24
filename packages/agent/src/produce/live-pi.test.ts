@@ -32,6 +32,26 @@ describe("produce/live-pi fixture mode", () => {
     assert.equal(shouldUsePiFixtureMode({}, { OPENAI_API_KEY: "", OPENAI_BASE_URL: "" }), false);
   });
 
+  it("ignores fixture env in production; honors it in test/dev", () => {
+    assert.equal(
+      shouldUsePiFixtureMode({}, { OKF_WIKI_AGENT_MODE: "fixture", NODE_ENV: "production" }),
+      false,
+    );
+    assert.equal(
+      shouldUsePiFixtureMode({}, { OKF_WIKI_AGENT_MODE: "fixture", NODE_ENV: "test" }),
+      true,
+    );
+    assert.equal(
+      shouldUsePiFixtureMode({}, { OKF_WIKI_AGENT_MODE: "fixture", NODE_ENV: "development" }),
+      true,
+    );
+    // Explicit injection still works even under production NODE_ENV.
+    assert.equal(
+      shouldUsePiFixtureMode({ fixture: true }, { NODE_ENV: "production" }),
+      true,
+    );
+  });
+
   it("writes wiki overview + index without LLM", async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), "okf-live-pi-"));
     temps.push(tmp);
