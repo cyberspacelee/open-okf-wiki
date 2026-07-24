@@ -9,6 +9,9 @@
  * Package resolution prefers Node package resolution, then the monorepo sibling
  * `packages/skill` next to this package (stable via import.meta.url, not cwd).
  * Home skills toggle is Settings/app.json only (no env override).
+ *
+ * Core owns the single resolution algorithm. Agent/server call these helpers
+ * once per logical resolve rather than reimplementing priority order.
  */
 
 import { access } from "node:fs/promises";
@@ -19,7 +22,10 @@ import type { SkillSourceKind } from "@okf-wiki/contract";
 import {
   homeProducerSkillPath,
   homeSkillsDir,
+  isUnderHomeSkills,
+  isUnderWorkspaceSkills,
   workspaceProducerSkillPath,
+  workspaceSkillsDir,
 } from "./product-home.js";
 import { copySkillTree } from "./skill-fork.js";
 import { getLoadHomeSkills } from "./workspace-store.js";
@@ -29,12 +35,40 @@ export type ResolveSkillSourceOptions = {
   skillPath?: string;
   /** Workspace root for `{root}/.agents/skills` discovery. */
   workspaceRoot?: string;
+  /**
+   * When set, overrides Settings loadHomeSkills for this resolve.
+   * When omitted, reads app.json via getLoadHomeSkills().
+   */
+  loadHomeSkills?: boolean;
 };
 
 export type ResolvedSkillSource = {
   path: string;
   kind: SkillSourceKind;
 };
+
+export type ResolveWikiSkillPathsInput = {
+  /** Workspace root for project skills + producer discovery. */
+  workspaceRoot?: string;
+  /** Explicit workspace.skillPath override. */
+  skillPath?: string;
+  /**
+   * When set, overrides Settings loadHomeSkills.
+   * When omitted, reads app.json via getLoadHomeSkills().
+   */
+  loadHomeSkills?: boolean;
+  /** Include resolved Producer Skill directory (default true). */
+  includeProducerSkill?: boolean;
+};
+
+async function existsPath(candidate: string): Promise<boolean> {
+  try {
+    await access(candidate);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 async function existsSkillDir(candidate: string): Promise<boolean> {
   try {
@@ -123,13 +157,20 @@ export async function ensureHomeProducerSkill(
   });
 }
 
+async function resolveLoadHomeSkills(override?: boolean): Promise<boolean> {
+  if (typeof override === "boolean") {
+    return override;
+  }
+  return getLoadHomeSkills();
+}
+
 /**
  * Resolve the active Producer Skill for a Wiki Run / Settings.
  *
  * Priority:
  * 1. Explicit skillPath
  * 2. `{workspaceRoot}/.agents/skills/repository-wiki-producer`
- * 3. `~/.agents/skills/…` when loadHomeSkills (Settings)
+ * 3. `~/.agents/skills/…` when loadHomeSkills (Settings or override)
  * 4. Package-embedded skill
  */
 export async function resolveSkillSource(
@@ -150,7 +191,7 @@ export async function resolveSkillSource(
     }
   }
 
-  const loadHome = await getLoadHomeSkills();
+  const loadHome = await resolveLoadHomeSkills(options.loadHomeSkills);
   if (loadHome) {
     const home = await ensureHomeProducerSkill();
     return { path: home.path, kind: "home" };
@@ -164,6 +205,70 @@ export async function resolveSkillSource(
 export async function resolveSkillPath(options: ResolveSkillSourceOptions = {}): Promise<string> {
   const source = await resolveSkillSource(options);
   return source.path;
+}
+
+/**
+ * Unique, absolute skill roots for Pi `additionalSkillPaths`.
+ * Missing dirs are omitted (no throw).
+ *
+ * Strategy: prefer skills *roots* (workspace / home) so sibling skills load.
+ * Add the resolved Producer Skill only when it lives outside those roots
+ * (package skill or explicit path).
+ *
+ * Uses the same priority algorithm as {@link resolveSkillSource} once.
+ */
+export async function resolveWikiSkillPaths(
+  input: ResolveWikiSkillPathsInput = {},
+): Promise<string[]> {
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  const add = (p: string | undefined) => {
+    if (!p) return;
+    const abs = path.resolve(p.trim());
+    if (!abs || seen.has(abs)) return;
+    seen.add(abs);
+    out.push(abs);
+  };
+
+  const workspaceRoot = input.workspaceRoot?.trim();
+  if (workspaceRoot) {
+    const workspaceRootSkills = workspaceSkillsDir(workspaceRoot);
+    if (await existsPath(workspaceRootSkills)) {
+      add(workspaceRootSkills);
+    }
+  }
+
+  const loadHome = await resolveLoadHomeSkills(input.loadHomeSkills);
+  if (loadHome) {
+    const homeRoot = homeSkillsDir();
+    if (await existsPath(homeRoot)) {
+      add(homeRoot);
+    }
+  }
+
+  if (input.includeProducerSkill !== false) {
+    try {
+      const producer = await resolveSkillPath({
+        skillPath: input.skillPath,
+        workspaceRoot: input.workspaceRoot,
+        loadHomeSkills: input.loadHomeSkills,
+      });
+      if (!(await existsPath(producer))) {
+        return out;
+      }
+      // Skip if already covered by a parent skills root.
+      const underWs = workspaceRoot ? isUnderWorkspaceSkills(workspaceRoot, producer) : false;
+      const underHome = isUnderHomeSkills(producer);
+      if (!underWs && !underHome) {
+        add(producer);
+      }
+    } catch {
+      // Producer skill optional for chat; produce materialize handles hard fail.
+    }
+  }
+
+  return out;
 }
 
 /** Operator-facing paths for Settings. */

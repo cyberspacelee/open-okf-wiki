@@ -123,9 +123,11 @@ export {
   ensureHomeProducerSkill,
   type ResolvedSkillSource,
   type ResolveSkillSourceOptions,
+  type ResolveWikiSkillPathsInput,
   resolvePackageSkillPath,
   resolveSkillPath,
   resolveSkillSource,
+  resolveWikiSkillPaths,
   skillLayoutPaths,
 } from "./skill-path.js";
 export {

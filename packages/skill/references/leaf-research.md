@@ -9,4 +9,4 @@ Use this branch only for the narrow, self-contained Leaf task assigned by its Do
    questions in a concise evidence summary.
 3. Return only that summary text. Produce persists it as a bounded Analysis Receipt under
    `analysis/receipts/` with the run-assigned run, node, parent, and attempt identity. Do not invent
-   a Host `publish_receipt` tool, handoff JSON, or further delegation.
+   a Host publish tool, handoff JSON schema, or further delegation.

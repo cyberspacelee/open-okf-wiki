@@ -8,7 +8,6 @@ import {
   type OperatorSessionHistory,
   openOperatorSession,
   resolveModelSelection,
-  resolveWikiSkillPaths,
   resolveWorkspacePiModel,
   shouldUsePiFixtureMode,
   type WikiProduceGateCoordinator,
@@ -23,7 +22,7 @@ import {
   WikiProduceToolDetailsSchema,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
-import { loadWorkspaceById } from "@okf-wiki/core";
+import { loadWorkspaceById, resolveWikiSkillPaths } from "@okf-wiki/core";
 import { emitAgentSessionEvent } from "./agent-session-events.ts";
 
 type OperatorSessionHandle = Awaited<ReturnType<typeof createOperatorSession>>;

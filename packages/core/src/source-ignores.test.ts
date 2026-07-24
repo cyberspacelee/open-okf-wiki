@@ -44,6 +44,36 @@ test("pathMatchesIgnore hides files under **/src/test/**", () => {
   assert.equal(pathMatchesIgnore("src/main/java/AppTest.java", patterns), true);
 });
 
+test("pathMatchesIgnore treats bare directory names as whole trees", () => {
+  // Product semantics: bare name is stronger than native matchesGlob alone.
+  assert.equal(pathMatchesIgnore("node_modules", ["node_modules"]), true);
+  assert.equal(pathMatchesIgnore("node_modules/pkg/index.js", ["node_modules"]), true);
+  assert.equal(pathMatchesIgnore("not_node_modules/x", ["node_modules"]), false);
+  assert.equal(pathMatchesIgnore("node_modules_bak/x", ["node_modules"]), false);
+});
+
+test("pathMatchesIgnore trailing /** matches the directory itself", () => {
+  assert.equal(pathMatchesIgnore("node_modules", ["node_modules/**"]), true);
+  assert.equal(pathMatchesIgnore("dist", ["dist/**"]), true);
+  assert.equal(pathMatchesIgnore(".git", [".git/**"]), true);
+  assert.equal(pathMatchesIgnore("src/test", ["**/src/test/**"]), true);
+});
+
+test("pathMatchesIgnore normalizes path separators and prefixes", () => {
+  assert.equal(pathMatchesIgnore("node_modules\\pkg\\a.js", ["node_modules/**"]), true);
+  assert.equal(pathMatchesIgnore("./dist/out.js", ["dist/**"]), true);
+  assert.equal(pathMatchesIgnore("/coverage/lcov.info", ["coverage/**"]), true);
+  assert.equal(pathMatchesIgnore("dist/", ["dist/**"]), true);
+});
+
+test("pathMatchesIgnore trust boundary: defaults hide dependency noise only", () => {
+  assert.equal(pathMatchesIgnore("node_modules/x", DEFAULT_SOURCE_IGNORES), true);
+  assert.equal(pathMatchesIgnore("src/main/App.java", DEFAULT_SOURCE_IGNORES), false);
+  // Tests are not excluded by default — operators must opt in via ignore/presets.
+  assert.equal(pathMatchesIgnore("src/test/java/FooTest.java", DEFAULT_SOURCE_IGNORES), false);
+  assert.equal(pathMatchesIgnore("src/main/java/AppTest.java", DEFAULT_SOURCE_IGNORES), false);
+});
+
 test("entryMatchesIgnore hides nested noise directories", () => {
   assert.equal(entryMatchesIgnore("", "node_modules", true, DEFAULT_SOURCE_IGNORES), true);
   assert.equal(entryMatchesIgnore("", "src", true, DEFAULT_SOURCE_IGNORES), false);

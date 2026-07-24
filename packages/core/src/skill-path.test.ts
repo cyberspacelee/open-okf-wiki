@@ -7,6 +7,7 @@ import {
   ensureHomeProducerSkill,
   resolvePackageSkillPath,
   resolveSkillSource,
+  resolveWikiSkillPaths,
 } from "./skill-path.js";
 
 const prevHome = process.env.HOME;
@@ -127,4 +128,67 @@ test("resolveSkillSource uses package when home skills disabled in Settings", as
   assert.equal(resolved.kind, "package");
   const pkg = await resolvePackageSkillPath();
   assert.equal(resolved.path, pkg);
+});
+
+test("resolveSkillSource honors loadHomeSkills override", async () => {
+  const appHome = await isolateAppState();
+  const { setLoadHomeSkills } = await import("./workspace-store.js");
+  // Settings say home is on, but caller overrides to package.
+  await setLoadHomeSkills(true, path.join(appHome, "app.json"));
+
+  const fakeHome = await mkdtemp(path.join(tmpdir(), "okf-home-override-"));
+  process.env.HOME = fakeHome;
+
+  const resolved = await resolveSkillSource({ loadHomeSkills: false });
+  assert.equal(resolved.kind, "package");
+  const pkg = await resolvePackageSkillPath();
+  assert.equal(resolved.path, pkg);
+});
+
+test("resolveWikiSkillPaths prefers workspace skills root and skips nested producer", async () => {
+  const appHome = await isolateAppState();
+  const { setLoadHomeSkills } = await import("./workspace-store.js");
+  await setLoadHomeSkills(false, path.join(appHome, "app.json"));
+
+  const fakeHome = await mkdtemp(path.join(tmpdir(), "okf-wiki-paths-home-"));
+  process.env.HOME = fakeHome;
+
+  const workspace = await mkdtemp(path.join(tmpdir(), "okf-wiki-paths-ws-"));
+  const projectSkill = path.join(workspace, ".agents", "skills", "repository-wiki-producer");
+  await mkdir(projectSkill, { recursive: true });
+  await writeFile(
+    path.join(projectSkill, "SKILL.md"),
+    "---\nname: repository-wiki-producer\ndescription: project\n---\n# Project\n",
+  );
+
+  const paths = await resolveWikiSkillPaths({ workspaceRoot: workspace });
+  assert.deepEqual(paths, [path.resolve(workspace, ".agents", "skills")]);
+});
+
+test("resolveWikiSkillPaths adds package producer when outside skills roots", async () => {
+  const appHome = await isolateAppState();
+  const { setLoadHomeSkills } = await import("./workspace-store.js");
+  await setLoadHomeSkills(false, path.join(appHome, "app.json"));
+
+  const fakeHome = await mkdtemp(path.join(tmpdir(), "okf-wiki-paths-pkg-"));
+  process.env.HOME = fakeHome;
+
+  const paths = await resolveWikiSkillPaths({});
+  const pkg = await resolvePackageSkillPath();
+  assert.deepEqual(paths, [path.resolve(pkg)]);
+});
+
+test("resolveWikiSkillPaths explicit skillPath outside roots is listed once", async () => {
+  await isolateAppState();
+  const fakeHome = await mkdtemp(path.join(tmpdir(), "okf-wiki-paths-fork-"));
+  process.env.HOME = fakeHome;
+
+  const fork = await mkdtemp(path.join(tmpdir(), "okf-fork-skill-"));
+  await writeFile(
+    path.join(fork, "SKILL.md"),
+    "---\nname: fork-skill\ndescription: fork\n---\n# Fork\n",
+  );
+
+  const paths = await resolveWikiSkillPaths({ skillPath: fork, loadHomeSkills: false });
+  assert.deepEqual(paths, [path.resolve(fork)]);
 });

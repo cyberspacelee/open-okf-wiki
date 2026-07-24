@@ -10,8 +10,15 @@
  *
  * Matching is enforced by the Run Boundary on Pi read tools (`ls`, `find`,
  * `grep`, `read`) via Operations wrappers during Wiki generation (not prompt-only).
+ *
+ * Glob engine: Node `path.matchesGlob` (Node >=22, engines.node). Product semantics
+ * layered on top when native matching alone is weaker:
+ * - bare directory names match the whole tree (`node_modules` → `node_modules/foo`)
+ * - trailing `/**` also matches the directory itself (native often needs a trailing `/`)
+ * - path normalization (`\`, `./`, leading `/`, trailing `/`)
  */
 
+import path from "node:path";
 import {
   IGNORE_PRESETS as CONTRACT_IGNORE_PRESETS,
   type WorkspaceSource,
@@ -90,14 +97,14 @@ export function effectiveSourceIgnores(source: {
  * - it sits under a directory matched by a trailing-/** pattern (e.g. java test trees).
  */
 export function pathMatchesIgnore(relativePath: string, patterns: readonly string[]): boolean {
-  const path = normalizeRepoRelative(relativePath);
-  if (!path) {
+  const repoPath = normalizeRepoRelative(relativePath);
+  if (!repoPath) {
     return false;
   }
   for (const raw of patterns) {
     const pattern = raw.trim();
     if (!pattern) continue;
-    if (matchGlob(path, pattern)) {
+    if (matchIgnoreGlob(repoPath, pattern)) {
       return true;
     }
   }
@@ -124,7 +131,7 @@ export function entryMatchesIgnore(
         const pattern = normalizeRepoRelative(p.trim());
         if (!pattern.endsWith("/**")) return false;
         const dirPat = pattern.slice(0, -3);
-        return matchGlob(base, dirPat) || matchGlob(base, pattern);
+        return matchIgnoreGlob(base, dirPat) || matchIgnoreGlob(base, pattern);
       })
     );
   }
@@ -145,10 +152,11 @@ function normalizeRepoRelative(value: string): string {
 }
 
 /**
- * Glob match for repository-relative paths.
- * `**` matches across `/`; `*` does not match `/`; `?` is one non-slash char.
+ * Product ignore match for a normalized repository-relative path.
+ * Uses Node `path.matchesGlob` for `*` / `?` / `**`; keeps bare-dir and
+ * trailing-`/**` directory-tree semantics that native matching does not provide.
  */
-function matchGlob(path: string, pattern: string): boolean {
+function matchIgnoreGlob(repoPath: string, pattern: string): boolean {
   const normalizedPattern = normalizeRepoRelative(pattern);
   if (!normalizedPattern) {
     return false;
@@ -158,19 +166,23 @@ function matchGlob(path: string, pattern: string): boolean {
   if (normalizedPattern.endsWith("/**")) {
     const dirPattern = normalizedPattern.slice(0, -3);
     // Exact directory (or glob-equivalent directory) matches.
-    if (dirPattern && matchGlobExact(path, dirPattern)) {
+    if (dirPattern && nativeGlobMatch(repoPath, dirPattern)) {
       return true;
     }
     // Path under a matching directory: any ancestor matches dirPattern.
-    const parts = path.split("/").filter(Boolean);
+    const parts = repoPath.split("/").filter(Boolean);
     for (let i = 1; i <= parts.length; i++) {
       const ancestor = parts.slice(0, i).join("/");
-      if (dirPattern && matchGlobExact(ancestor, dirPattern)) {
+      if (dirPattern && nativeGlobMatch(ancestor, dirPattern)) {
         return true;
       }
     }
     // Full path against the original ** pattern (files deep under).
-    if (matchGlobExact(path, normalizedPattern)) {
+    if (nativeGlobMatch(repoPath, normalizedPattern)) {
+      return true;
+    }
+    // Native quirk: "dir/**" often matches "dir/" but not bare "dir".
+    if (nativeGlobMatch(`${repoPath}/`, normalizedPattern)) {
       return true;
     }
     return false;
@@ -179,61 +191,27 @@ function matchGlob(path: string, pattern: string): boolean {
   // Bare directory name as pattern: treat as that tree (ADR-style noise dirs).
   // Only when pattern has no glob metacharacters and path is dir or under it.
   if (!hasGlobMeta(normalizedPattern)) {
-    if (path === normalizedPattern || path.startsWith(`${normalizedPattern}/`)) {
+    if (repoPath === normalizedPattern || repoPath.startsWith(`${normalizedPattern}/`)) {
       return true;
     }
   }
 
-  return matchGlobExact(path, normalizedPattern);
+  return nativeGlobMatch(repoPath, normalizedPattern);
 }
 
 function hasGlobMeta(pattern: string): boolean {
   return pattern.includes("*") || pattern.includes("?");
 }
 
-function matchGlobExact(path: string, pattern: string): boolean {
-  return globToRegExp(pattern).test(path);
-}
-
-function globToRegExp(pattern: string): RegExp {
-  let out = "^";
-  let i = 0;
-  while (i < pattern.length) {
-    const ch = pattern[i]!;
-    if (ch === "*" && pattern[i + 1] === "*") {
-      // ** or **/
-      if (pattern[i + 2] === "/") {
-        out += "(?:.*/)?";
-        i += 3;
-      } else if (i + 2 === pattern.length) {
-        // trailing **
-        out += ".*";
-        i += 2;
-      } else {
-        out += ".*";
-        i += 2;
-      }
-      continue;
-    }
-    if (ch === "*") {
-      out += "[^/]*";
-      i += 1;
-      continue;
-    }
-    if (ch === "?") {
-      out += "[^/]";
-      i += 1;
-      continue;
-    }
-    if ("+^$()[]{}|.\\".includes(ch)) {
-      out += `\\${ch}`;
-    } else {
-      out += ch;
-    }
-    i += 1;
+/** Native glob match; returns false on invalid patterns rather than throwing. */
+function nativeGlobMatch(repoPath: string, pattern: string): boolean {
+  try {
+    // Repository-relative paths are POSIX-style; prefer posix matcher when present.
+    const matcher = path.posix.matchesGlob ?? path.matchesGlob;
+    return matcher(repoPath, pattern);
+  } catch {
+    return false;
   }
-  out += "$";
-  return new RegExp(out);
 }
 
 /** Convenience: effective ignores for a full WorkspaceSource. */
