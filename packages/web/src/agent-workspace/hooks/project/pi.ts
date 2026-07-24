@@ -203,12 +203,19 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
   if (kind === "message_update") {
     if (role && role !== "assistant") return state;
 
-    // Replay onto completed hist_*: ignore while turn active with no stream.
-    if (state.turnActive && state.lastAssistantId && !state.streamingMessage) {
+    // Replay / redelivery: do not open a new streaming shell on top of a
+    // completed last assistant (hist_* cold load, or post-agent_end ring).
+    // turnActive is not required — agent_end clears it before redelivery.
+    if (!state.streamingMessage && state.lastAssistantId) {
       const idx = findMessageIndex(state.messages, state.lastAssistantId);
       if (idx >= 0) {
         const last = state.messages[idx]!;
-        if (last.status === "done" || last.status === "error") return state;
+        if (
+          last.role === "assistant" &&
+          (last.status === "done" || last.status === "error")
+        ) {
+          return state;
+        }
       }
     }
 
@@ -245,19 +252,19 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
     if (role === "user") return state;
     if (role === "toolResult" || role === "tool") return state;
 
-    // Replay guard: cold JSONL already has completed assistant as last chat row.
-    if (state.turnActive && !state.streamingMessage) {
-      for (let i = state.messages.length - 1; i >= 0; i -= 1) {
-        const m = state.messages[i]!;
-        if (m.role === "user") break;
-        if (m.role === "assistant" && (m.status === "done" || m.status === "error")) {
-          return {
-            ...state,
-            lastAssistantId: m.id,
-            streamingMessage: null,
-          };
+    // Replay guard only when the agent turn is settled (!turnActive).
+    // While turnActive, allow another message_start (tool-loop second asst).
+    // agent_start clears lastAssistantId for a brand-new operator turn.
+    if (!state.streamingMessage && !state.turnActive && state.lastAssistantId) {
+      const idx = findMessageIndex(state.messages, state.lastAssistantId);
+      if (idx >= 0) {
+        const last = state.messages[idx]!;
+        if (
+          last.role === "assistant" &&
+          (last.status === "done" || last.status === "error")
+        ) {
+          return state;
         }
-        if (m.role === "assistant") break;
       }
     }
 
@@ -306,12 +313,22 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
       return state;
     }
 
-    // Replay onto completed hist_*.
-    if (state.turnActive && state.lastAssistantId && !state.streamingMessage) {
+    // Replay / redelivery guard (pi-web: one assistant shell per message_start).
+    // Do NOT require turnActive: agent_end clears it, and host tools / ring
+    // dumps often omit agent_start. Late message_end after finalize must not
+    // open a peer bubble on top of hist_* or the just-finalized card.
+    // Legitimate new turns always open message_start first (Pi agent-loop +
+    // parent wiki_produce host tool), which sets streamingMessage.
+    if (!state.streamingMessage && state.lastAssistantId) {
       const idx = findMessageIndex(state.messages, state.lastAssistantId);
       if (idx >= 0) {
         const last = state.messages[idx]!;
-        if (last.status === "done" || last.status === "error") return state;
+        if (
+          last.role === "assistant" &&
+          (last.status === "done" || last.status === "error")
+        ) {
+          return state;
+        }
       }
     }
 

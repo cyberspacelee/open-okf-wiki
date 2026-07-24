@@ -374,6 +374,156 @@ describe("reducePiEvent — snapshot streaming", () => {
     assert.equal(state.streamingMessage?.thinking, undefined);
     assert.equal(state.streamingMessage?.status, "streaming");
   });
+
+  it("late message_end after agent_end does not open a second assistant card", () => {
+    // Pi agent-loop emits message_end then agent_end; host/retry/ring can
+    // redeliver message_end after turnActive is cleared. Must not peer-bubble.
+    const final = {
+      role: "assistant" as const,
+      content: [
+        { type: "thinking" as const, thinking: "plan" },
+        { type: "text" as const, text: "Hello" },
+      ],
+      stopReason: "stop" as const,
+    };
+    const state = applyAll([
+      { kind: "agent_start" },
+      {
+        kind: "message_start",
+        payload: { type: "message_start", message: { role: "assistant", content: [] } },
+      },
+      {
+        kind: "message_update",
+        payload: { type: "message_update", message: final },
+      },
+      { kind: "message_end", payload: { type: "message_end", message: final } },
+      { kind: "agent_end", payload: { type: "agent_end", messages: [] } },
+      // late / ring redelivery
+      { kind: "message_end", payload: { type: "message_end", message: final } },
+    ]);
+    const assts = viewMessages(state).filter((m) => m.role === "assistant");
+    assert.equal(assts.length, 1);
+    assert.equal(assts[0]!.content, "Hello");
+    assert.equal(assts[0]!.thinking, "plan");
+  });
+
+  it("message_end without agent_start does not duplicate a completed last assistant", () => {
+    // Host wiki_produce and partial ring dumps may omit agent_start; after the
+    // first finalize, a second message_end must not invent a peer card.
+    const msg = {
+      role: "assistant" as const,
+      content: [{ type: "text" as const, text: "A" }],
+      stopReason: "stop" as const,
+    };
+    const state = applyAll([
+      {
+        kind: "message_start",
+        payload: { type: "message_start", message: msg },
+      },
+      { kind: "message_end", payload: { type: "message_end", message: msg } },
+      { kind: "message_end", payload: { type: "message_end", message: msg } },
+    ]);
+    assert.equal(assistantCount(viewMessages(state)), 1);
+  });
+
+  it("cold history + ring message_end without agent_start stays single card", () => {
+    // Bootstrap skip should avoid this; projector must still be safe if a
+    // completed hist_* row is present when message_end is applied.
+    let state = createPiStreamState([
+      {
+        id: "hist_asst_1",
+        role: "assistant",
+        content: "Hello",
+        thinking: "plan",
+        thinkingStatus: "done",
+        createdAt: new Date().toISOString(),
+        status: "done",
+      },
+    ]);
+    state = reducePiEvent(state, "message_end", {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "plan" },
+          { type: "text", text: "Hello" },
+        ],
+        stopReason: "stop",
+      },
+    });
+    const assts = viewMessages(state).filter((m) => m.role === "assistant");
+    assert.equal(assts.length, 1);
+    assert.equal(assts[0]!.id, "hist_asst_1");
+    assert.equal(assts[0]!.thinking, "plan");
+  });
+
+  it("tool-loop second assistant after first finalize still opens a new card", () => {
+    // Within one agent_start, tool results then a second model message must
+    // not be swallowed by the completed-last-assistant guard.
+    const state = applyAll([
+      { kind: "agent_start" },
+      {
+        kind: "message_start",
+        payload: {
+          type: "message_start",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "text", text: "calling" },
+              { type: "toolCall", id: "tc1", name: "read", arguments: { path: "a" } },
+            ],
+          },
+        },
+      },
+      {
+        kind: "message_end",
+        payload: {
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "text", text: "calling" },
+              { type: "toolCall", id: "tc1", name: "read", arguments: { path: "a" } },
+            ],
+            stopReason: "toolUse",
+          },
+        },
+      },
+      {
+        kind: "tool_execution_end",
+        payload: {
+          type: "tool_execution_end",
+          toolCallId: "tc1",
+          toolName: "read",
+          result: { content: [{ type: "text", text: "file" }] },
+          isError: false,
+        },
+      },
+      {
+        kind: "message_start",
+        payload: {
+          type: "message_start",
+          message: { role: "assistant", content: [{ type: "text", text: "done" }] },
+        },
+      },
+      {
+        kind: "message_end",
+        payload: {
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "done" }],
+            stopReason: "stop",
+          },
+        },
+      },
+      { kind: "agent_end", payload: { type: "agent_end", messages: [] } },
+    ]);
+    const assts = viewMessages(state).filter((m) => m.role === "assistant");
+    assert.equal(assts.length, 2);
+    assert.equal(assts[0]!.content, "calling");
+    assert.equal(assts[1]!.content, "done");
+  });
 });
 
 describe("applyProductEvent — thin strips only", () => {
