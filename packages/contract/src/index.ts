@@ -65,8 +65,6 @@ export {
 export {
   type AnalysisReceipt,
   AnalysisReceiptSchema,
-  type HandoffRef,
-  HandoffRefSchema,
   ReceiptEvidenceSchema,
   type ReceiptStatus,
   ReceiptStatusSchema,

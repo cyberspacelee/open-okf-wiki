@@ -422,13 +422,6 @@ export async function listRecentWorkspaces(
   return [...state.recentRootPaths];
 }
 
-/** Alias of {@link listRecentWorkspaces}. */
-export async function listWorkspaces(
-  appStatePath: string = defaultAppStatePath(),
-): Promise<string[]> {
-  return listRecentWorkspaces(appStatePath);
-}
-
 /** Load summaries for roots still present in the app index (skips broken entries). */
 export async function listWorkspaceSummaries(
   appStatePath: string = defaultAppStatePath(),

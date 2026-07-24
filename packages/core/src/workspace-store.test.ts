@@ -9,7 +9,6 @@ import {
   addSource,
   createWorkspace,
   listRecentWorkspaces,
-  listWorkspaces,
   loadWorkspace,
   registerWorkspaceInAppIndex,
   saveWorkspace,
@@ -177,9 +176,6 @@ test("registerWorkspaceInAppIndex and listRecentWorkspaces", async () => {
 
   const recent = await listRecentWorkspaces(appStatePath);
   assert.deepEqual(recent, [path.resolve(a), path.resolve(b)]);
-
-  const listed = await listWorkspaces(appStatePath);
-  assert.deepEqual(listed, recent);
 
   const emptyHome = await tempDir("okf-wiki-app-empty-");
   const emptyList = await listRecentWorkspaces(path.join(emptyHome, "missing-app.json"));

@@ -171,7 +171,6 @@ export {
   getLoadHomeSkills,
   listRecentWorkspaces,
   listWorkspaceSummaries,
-  listWorkspaces,
   loadWorkspace,
   loadWorkspaceById,
   readAppState,

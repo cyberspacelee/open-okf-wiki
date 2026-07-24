@@ -76,8 +76,8 @@ export async function listSkillFiles(skillRoot: string): Promise<string[]> {
 /**
  * Stable content digest of a Producer Skill tree (sha256 hex).
  *
- * Hashes sorted relative paths and file bytes so Manual Retry can freeze the
- * exact Skill Version. Requires SKILL.md at the root.
+ * Hashes sorted relative paths and file bytes so the Run Boundary can freeze
+ * an exact Skill Version. Requires SKILL.md at the root.
  */
 export async function skillDigest(skillRoot: string): Promise<string> {
   const root = path.resolve(skillRoot);

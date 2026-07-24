@@ -126,16 +126,6 @@ function httpStatusFromError(text: string): number | undefined {
 }
 
 /**
- * True when live LLM work can proceed (stored profile or env fallback).
- * Prefer this over env-only checks after the provider catalog exists.
- */
-export function hasLiveProviderCredentials(env: NodeJS.ProcessEnv = process.env): boolean {
-  // Sync check: env alone is enough. Full catalog is async — callers that
-  // already loaded config should use hasProviderCredentials(config, env).
-  return Boolean(env.OPENAI_API_KEY?.trim() || env.OPENAI_BASE_URL?.trim());
-}
-
-/**
  * Build an isolated ModelRuntime + Model from a resolved provider runtime.
  * Does not read ~/.pi or product provider.json — pure from inputs.
  */
