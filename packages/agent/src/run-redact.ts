@@ -8,20 +8,22 @@ const MAX_DEEP_DEPTH = 10;
 
 /** Shared secret / credential / path patterns for operator-facing strings. */
 export function redactSensitiveText(text: string): string {
-  return text
-    // Allow hyphens in key material (e.g. sk-proj-..., sk-svcacct-...).
-    .replace(/\bsk-[a-zA-Z0-9-]{6,}\b/g, "[redacted-key]")
-    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
-    .replace(/api[_-]?key["']?\s*[:=]\s*["']?[^"'\s]+/gi, "api_key=[redacted]")
-    // user:pass@host credentials in URLs
-    .replace(/(https?:\/\/)([^/\s:@]+):([^/\s@]+)@/gi, "$1[redacted]:[redacted]@")
-    // Absolute unix home/system paths that commonly leak from provider/runtime errors
-    .replace(
-      /(?:^|[\s"'`=(])(\/(?:home|Users|tmp|var|private|opt|root)\/[^\s"'`)]+)/g,
-      (match, pathPart: string) => match.replace(pathPart, "[redacted-path]"),
-    )
-    // Windows absolute paths
-    .replace(/\b[A-Za-z]:\\[^\s"']+/g, "[redacted-path]");
+  return (
+    text
+      // Allow hyphens in key material (e.g. sk-proj-..., sk-svcacct-...).
+      .replace(/\bsk-[a-zA-Z0-9-]{6,}\b/g, "[redacted-key]")
+      .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
+      .replace(/api[_-]?key["']?\s*[:=]\s*["']?[^"'\s]+/gi, "api_key=[redacted]")
+      // user:pass@host credentials in URLs
+      .replace(/(https?:\/\/)([^/\s:@]+):([^/\s@]+)@/gi, "$1[redacted]:[redacted]@")
+      // Absolute unix home/system paths that commonly leak from provider/runtime errors
+      .replace(
+        /(?:^|[\s"'`=(])(\/(?:home|Users|tmp|var|private|opt|root)\/[^\s"'`)]+)/g,
+        (match, pathPart: string) => match.replace(pathPart, "[redacted-path]"),
+      )
+      // Windows absolute paths
+      .replace(/\b[A-Za-z]:\\[^\s"']+/g, "[redacted-path]")
+  );
 }
 
 export function truncate(value: string, max: number): string {

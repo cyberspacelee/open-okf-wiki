@@ -11,30 +11,26 @@ import {
   writeAnalysisReceipt,
 } from "./analysis-scratch.js";
 
-const sampleReceipt = (runId: string, nodeId: string) =>
-  ({
-    version: 1 as const,
-    runId,
-    nodeId,
-    parentId: "root",
-    attempt: 1,
-    status: "complete" as const,
-    scope: "staged wiki",
-    summary: "NO_DEFECTS",
-    findings: ["clean"],
-    evidence: [],
-    childReceipts: [],
-    openQuestions: [],
-  });
+const sampleReceipt = (runId: string, nodeId: string) => ({
+  version: 1 as const,
+  runId,
+  nodeId,
+  parentId: "root",
+  attempt: 1,
+  status: "complete" as const,
+  scope: "staged wiki",
+  summary: "NO_DEFECTS",
+  findings: ["clean"],
+  evidence: [],
+  childReceipts: [],
+  openQuestions: [],
+});
 
 test("writeAnalysisReceipt stores validated JSON under analysis/receipts only", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-scratch-"));
   const filePath = await writeAnalysisReceipt(root, sampleReceipt("run-1", "reviewer"));
 
-  assert.equal(
-    filePath,
-    path.join(analysisReceiptsDir(root, "run-1"), "reviewer.json"),
-  );
+  assert.equal(filePath, path.join(analysisReceiptsDir(root, "run-1"), "reviewer.json"));
   assert.ok(filePath.startsWith(analysisReceiptsDir(root, "run-1")));
   assert.ok(filePath.startsWith(analysisScratchDir(root, "run-1")));
 
@@ -45,7 +41,10 @@ test("writeAnalysisReceipt stores validated JSON under analysis/receipts only", 
 
   // No dual-write to flat analysis/*.json
   const analysisNames = await readdir(analysisScratchDir(root, "run-1"));
-  assert.deepEqual(analysisNames.filter((n) => n.endsWith(".json")), []);
+  assert.deepEqual(
+    analysisNames.filter((n) => n.endsWith(".json")),
+    [],
+  );
   assert.ok(analysisNames.includes("receipts"));
 });
 

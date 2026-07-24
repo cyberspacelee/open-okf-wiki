@@ -4,6 +4,8 @@
  * Pi owns conversation and tool lifecycle. Core owns the Run Boundary.
  */
 
+/** Re-export Core skill roots helper (single resolution algorithm lives in Core). */
+export { resolveWikiSkillPaths } from "@okf-wiki/core";
 export { createOperatorFixtureModel } from "./pi/operator-fixture-model.js";
 export {
   createOperatorSession,
@@ -18,8 +20,6 @@ export {
   testProviderConnection,
 } from "./pi/provider-model.js";
 export { resolveModelSelection } from "./pi/role-model.js";
-/** Re-export Core skill roots helper (single resolution algorithm lives in Core). */
-export { resolveWikiSkillPaths } from "@okf-wiki/core";
 export { shouldUsePiFixtureMode } from "./produce/live-pi.js";
 export {
   type WikiProduceGateCoordinator,

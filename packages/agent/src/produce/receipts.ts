@@ -8,11 +8,7 @@ import {
   AnalysisReceiptSchema,
   type ReceiptStatus,
 } from "@okf-wiki/contract";
-import {
-  listAnalysisReceipts,
-  safeReceiptNodeId,
-  writeAnalysisReceipt,
-} from "@okf-wiki/core";
+import { listAnalysisReceipts, safeReceiptNodeId, writeAnalysisReceipt } from "@okf-wiki/core";
 
 const SUMMARY_CAP = 4_000;
 const FINDINGS_CAP = 24;

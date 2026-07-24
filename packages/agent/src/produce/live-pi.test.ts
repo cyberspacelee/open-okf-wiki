@@ -46,10 +46,7 @@ describe("produce/live-pi fixture mode", () => {
       true,
     );
     // Explicit injection still works even under production NODE_ENV.
-    assert.equal(
-      shouldUsePiFixtureMode({ fixture: true }, { NODE_ENV: "production" }),
-      true,
-    );
+    assert.equal(shouldUsePiFixtureMode({ fixture: true }, { NODE_ENV: "production" }), true);
   });
 
   it("writes wiki overview + index without LLM", async () => {

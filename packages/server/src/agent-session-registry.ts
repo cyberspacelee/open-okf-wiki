@@ -69,10 +69,7 @@ const openingSessions = new Map<string, Promise<RegisteredAgentSession>>();
  * the same promise; create/open check `.has(key)` so they cannot registerLive while
  * a cascade is in progress. Cleared only when that flight finishes.
  */
-const deletingSessions = new Map<
-  string,
-  Promise<{ sessionId: string; removed: number }>
->();
+const deletingSessions = new Map<string, Promise<{ sessionId: string; removed: number }>>();
 
 function sessionKey(workspaceId: string, sessionId: string): string {
   return `${workspaceId}::${sessionId}`;
@@ -426,9 +423,11 @@ export async function deleteAgentSession(
   const inFlightDelete = deletingSessions.get(key);
   if (inFlightDelete) return inFlightDelete;
 
-  // Assign via let so the finally closure can compare the owning flight.
-  let deletePromise!: Promise<{ sessionId: string; removed: number }>;
-  deletePromise = (async (): Promise<{ sessionId: string; removed: number }> => {
+  // Box so the finally ownership check can compare the same promise without TDZ.
+  const flight: {
+    promise?: Promise<{ sessionId: string; removed: number }>;
+  } = {};
+  flight.promise = (async (): Promise<{ sessionId: string; removed: number }> => {
     try {
       // Unblock gate waiters before filesystem cascade so tool catch can finish.
       pendingGates.get(key)?.reject(new Error("Wiki Run cancelled"));
@@ -466,15 +465,15 @@ export async function deleteAgentSession(
       };
     } finally {
       // Only the owning flight clears the barrier (single-flight, not refcount).
-      if (deletingSessions.get(key) === deletePromise) {
+      if (deletingSessions.get(key) === flight.promise) {
         deletingSessions.delete(key);
       }
     }
   })();
 
   // Mark before any outer await so concurrent create/open/delete see the barrier.
-  deletingSessions.set(key, deletePromise);
-  return deletePromise;
+  deletingSessions.set(key, flight.promise);
+  return flight.promise;
 }
 
 /**

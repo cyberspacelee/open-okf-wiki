@@ -159,8 +159,7 @@ test("H1: prompt failure message redacts secrets from assistant errorMessage", a
   await registerAgentSession({ workspace, sessionId });
   const entry = await ensureRegistered(workspace, sessionId);
 
-  const secret =
-    "provider exploded Bearer sk-proj-ABCDEFGHIJKLMNOP path=/home/runner/work/okf/key";
+  const secret = "provider exploded Bearer sk-proj-ABCDEFGHIJKLMNOP path=/home/runner/work/okf/key";
   // Force the prompt catch path (assignment shadows the prototype method).
   Object.defineProperty(entry.handle.session, "prompt", {
     configurable: true,
@@ -569,16 +568,10 @@ test("H3: delete mid-gate aborts, settles, and cascades run data", async (t) => 
   await assert.rejects(access(runDir));
   await assert.rejects(access(path.join(workspace.rootPath, ".okf-wiki", "runs", `${runId}.json`)));
   const remaining = await listRuns(workspace.rootPath);
-  assert.equal(
-    remaining.filter((run) => run.sessionId === sessionId).length,
-    0,
-  );
+  assert.equal(remaining.filter((run) => run.sessionId === sessionId).length, 0);
 
   // Brief settle: no new run dirs reappear for this session.
   await new Promise((r) => setTimeout(r, 200));
   const remainingAfter = await listRuns(workspace.rootPath);
-  assert.equal(
-    remainingAfter.filter((run) => run.sessionId === sessionId).length,
-    0,
-  );
+  assert.equal(remainingAfter.filter((run) => run.sessionId === sessionId).length, 0);
 });
