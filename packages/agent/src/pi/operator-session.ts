@@ -2,6 +2,7 @@
 
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
+import type { Message } from "@earendil-works/pi-ai";
 import type { Model } from "@earendil-works/pi-ai/compat";
 import {
   type ModelRuntime,
@@ -17,40 +18,10 @@ import {
 import { createWikiSession, type WikiSessionHandle } from "./create-wiki-session.js";
 import { piSessionsDir } from "./session-paths.js";
 
-export type PiTextContent = { type: "text"; text: string };
-export type PiThinkingContent = { type: "thinking"; thinking: string; redacted?: boolean };
-export type PiImageContent = { type: "image"; data: string; mimeType: string };
-export type PiToolCallContent = {
-  type: "toolCall";
-  id: string;
-  name: string;
-  arguments: Record<string, unknown>;
-};
-export type PiUserMessage = {
-  role: "user";
-  content: string | (PiTextContent | PiImageContent)[];
-  timestamp?: number;
-};
-export type PiAssistantMessage = {
-  role: "assistant";
-  content: (PiTextContent | PiThinkingContent | PiToolCallContent)[];
-  stopReason?: string;
-  errorMessage?: string;
-  timestamp?: number;
-};
-export type PiToolResultMessage = {
-  role: "toolResult";
-  toolCallId: string;
-  toolName?: string;
-  content: (PiTextContent | PiImageContent)[];
-  isError?: boolean;
-  timestamp?: number;
-};
-export type PiHistoryMessage = PiUserMessage | PiAssistantMessage | PiToolResultMessage;
-
+/** Durable SessionManager branch — Pi owns the message shape. */
 export type OperatorSessionHistory = {
   sessionId: string;
-  messages: PiHistoryMessage[];
+  messages: Message[];
 };
 
 export type OperatorSessionSummary = {
@@ -187,7 +158,7 @@ export async function loadOperatorSessionHistory(
   const messages = manager
     .getBranch()
     .filter((entry) => entry.type === "message")
-    .map((entry) => entry.message as PiHistoryMessage);
+    .map((entry) => entry.message as Message);
   return {
     sessionId: manager.getSessionId(),
     messages,

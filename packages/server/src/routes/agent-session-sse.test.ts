@@ -62,7 +62,7 @@ test("Operator Session SSE starts with a durable snapshot then forwards genuine 
     name: "Session SSE",
     rootPath: root,
     publicationPath: path.join(root, "published"),
-    modelId: "openai/test",
+    resolvedModelId: "openai/test",
   });
   await saveWorkspace(workspace);
 
@@ -174,7 +174,7 @@ test("a live Pi Session supports SSE before its first assistant message is persi
     name: "Live Session SSE",
     rootPath: root,
     publicationPath: path.join(root, "published"),
-    modelId: "openai/test",
+    resolvedModelId: "openai/test",
   });
   await saveWorkspace(workspace);
 
@@ -220,7 +220,7 @@ test("SSE snapshots precede queued live events and include the genuine active to
     name: "Ordered Session SSE",
     rootPath: root,
     publicationPath: path.join(root, "published"),
-    modelId: "openai/test",
+    resolvedModelId: "openai/test",
   });
   await saveWorkspace(workspace);
 
@@ -281,6 +281,7 @@ test("SSE snapshots precede queued live events and include the genuine active to
     emitAgentSessionEvent(workspace.id, sessionId, piEvent);
     history.resolve({
       sessionId,
+      // Partial Pi assistant row for projector coverage; product does not re-type messages.
       messages: [
         {
           role: "assistant",
@@ -293,7 +294,7 @@ test("SSE snapshots precede queued live events and include the genuine active to
             },
           ],
           timestamp: Date.now(),
-        },
+        } as OperatorSessionHistory["messages"][number],
       ],
     });
 
@@ -326,7 +327,7 @@ test("SSE disconnect during history load unsubscribes exactly once", async () =>
     name: "Early Close SSE",
     rootPath: root,
     publicationPath: path.join(root, "published"),
-    modelId: "openai/test",
+    resolvedModelId: "openai/test",
   });
   await saveWorkspace(workspace);
 

@@ -181,14 +181,13 @@ export type AgentSseEvent = z.infer<typeof AgentSseEventSchema>;
 // Session list / create DTOs
 // ---------------------------------------------------------------------------
 
-export const PiSessionSummarySchema = z.object({
-  id: z.string().min(1),
-  title: z.string().min(1).max(200).optional(),
+/** Outbound session list row — typed for HTTP responses, never inbound-validated. */
+export type PiSessionSummary = {
+  id: string;
+  title?: string;
   /** ISO mtime when known. */
-  updatedAt: z.string().datetime().optional(),
-});
-
-export type PiSessionSummary = z.infer<typeof PiSessionSummarySchema>;
+  updatedAt?: string;
+};
 
 export const CreatePiAgentSessionBodySchema = z.object({
   /** Optional client-supplied id; server generates UUID when omitted. */
@@ -198,24 +197,22 @@ export const CreatePiAgentSessionBodySchema = z.object({
 
 export type CreatePiAgentSessionBody = z.infer<typeof CreatePiAgentSessionBodySchema>;
 
-export const CreatePiAgentSessionResponseSchema = z.object({
-  session: z.object({
-    id: z.string().min(1),
-    workspaceId: z.string().min(1),
-    title: z.string(),
-    createdAt: z.string().datetime(),
-  }),
-});
+/** Outbound create-session response — typed only. */
+export type CreatePiAgentSessionResponse = {
+  session: {
+    id: string;
+    workspaceId: string;
+    title: string;
+    createdAt: string;
+  };
+};
 
-export type CreatePiAgentSessionResponse = z.infer<typeof CreatePiAgentSessionResponseSchema>;
-
-export const AgentCommandResponseSchema = z.object({
-  ok: z.boolean(),
-  sessionId: z.string().min(1),
-  command: z.enum(["prompt", "steer", "abort", "compact", "resume_gate"]),
-  status: z.enum(["accepted", "failed"]),
-  message: z.string().optional(),
-  runId: z.string().optional(),
-});
-
-export type AgentCommandResponse = z.infer<typeof AgentCommandResponseSchema>;
+/** Outbound command ack — typed only. */
+export type AgentCommandResponse = {
+  ok: boolean;
+  sessionId: string;
+  command: "prompt" | "steer" | "abort" | "compact" | "resume_gate";
+  status: "accepted" | "failed";
+  message?: string;
+  runId?: string;
+};

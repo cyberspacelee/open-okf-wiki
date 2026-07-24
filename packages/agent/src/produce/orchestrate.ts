@@ -8,11 +8,7 @@
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { MergedDefectReport, WikiRunSpec, WorkspaceConfig } from "@okf-wiki/contract";
-import {
-  evaluateWikiPublishable,
-  type PublishabilityResult,
-  writeMergedDefects,
-} from "../defects.js";
+import { evaluateWikiPublishable, type PublishabilityResult } from "../defects.js";
 import { resolveOrchestration } from "../limits.js";
 import type { RunWorkdirLayout } from "../pi/run-workdir.js";
 import type { SourceIgnoreInput } from "../pi/tool-operations.js";
@@ -60,9 +56,8 @@ export type ProduceWikiInput = {
   additionalSkillPaths?: readonly string[];
   maxContextTokens?: number;
   contextTargetTokens?: number;
+  /** Progress callbacks for the owning wiki_produce tool (and tests). */
   onEvent?: ProduceEventSink;
-  research?: boolean;
-  review?: boolean;
   sourceIgnores?: SourceIgnoreInput;
 };
 
@@ -131,120 +126,118 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
 
   // 3) Domain + Leaf research with receipts.
   const criticalDomainFailures: string[] = [];
-  if (input.research !== false) {
-    events.progress?.({ phase: "researching", label: "domain + leaf research" });
-    const domains = (spec.domains ?? []).slice(0, orch.maxDomainFanOut);
-    const workerModel = input.models?.worker ?? input.models?.writer;
+  events.progress?.({ phase: "researching", label: "domain + leaf research" });
+  const domains = (spec.domains ?? []).slice(0, orch.maxDomainFanOut);
+  const workerModel = input.models?.worker ?? input.models?.writer;
 
-    for (const d of domains) {
-      throwIfAborted(input.abortSignal);
-      metrics.domainStarts += 1;
-      const domainNodeId = `domain-${d.id}`;
+  for (const d of domains) {
+    throwIfAborted(input.abortSignal);
+    metrics.domainStarts += 1;
+    const domainNodeId = `domain-${d.id}`;
 
-      const leafQuestions = (d.questions ?? []).slice(0, orch.maxLeafFanOut);
-      const childReceiptPaths: string[] = [];
+    const leafQuestions = (d.questions ?? []).slice(0, orch.maxLeafFanOut);
+    const childReceiptPaths: string[] = [];
 
-      if (leafQuestions.length > 0 && orch.maxDepth >= 2) {
-        const leafTasks = leafQuestions.map((q, li) => {
-          metrics.leafStarts += 1;
-          const leafNodeId = `leaf-${d.id}-${li + 1}`;
-          return {
-            leafNodeId,
-            input: {
-              role: "leaf" as const,
-              runWorkDir: layout.runWorkDir,
-              task: leafResearchPrompt({
-                domainId: d.id,
-                question: q,
-                scope: d.scope ?? "",
-                nodeId: leafNodeId,
-                runId: input.runId,
-              }),
-              fixture,
-              model: workerModel?.model,
-              modelRuntime: workerModel?.modelRuntime,
-              maxContextTokens: workerModel?.maxContextTokens,
-              contextTargetTokens,
-              sourceIgnores: input.sourceIgnores,
-              abortSignal: input.abortSignal,
-            },
-          };
-        });
-
-        try {
-          const leafResults = await runChildrenParallel(
-            leafTasks.map((t) => t.input),
-            { concurrency: Math.min(2, leafTasks.length) },
-          );
-          for (let i = 0; i < leafResults.length; i++) {
-            const leafNodeId = leafTasks[i]!.leafNodeId;
-            const lr = leafResults[i]!;
-            const persisted = await persistResearchReceipt({
-              workspaceRoot: input.workspace.rootPath,
-              runId: input.runId,
+    if (leafQuestions.length > 0 && orch.maxDepth >= 2) {
+      const leafTasks = leafQuestions.map((q, li) => {
+        metrics.leafStarts += 1;
+        const leafNodeId = `leaf-${d.id}-${li + 1}`;
+        return {
+          leafNodeId,
+          input: {
+            role: "leaf" as const,
+            runWorkDir: layout.runWorkDir,
+            task: leafResearchPrompt({
+              domainId: d.id,
+              question: q,
+              scope: d.scope ?? "",
               nodeId: leafNodeId,
-              parentId: domainNodeId,
-              scope: `${d.id}: ${leafQuestions[i]}`,
-              summary: lr.summary,
-              status: "complete",
-            });
-            childReceiptPaths.push(persisted.relativePath);
-          }
-        } catch (err) {
-          if (err instanceof Error && err.name === "AbortError") {
-            return cancelledResult(spec, fixture, metrics, layout);
-          }
-        }
-      }
+              runId: input.runId,
+            }),
+            fixture,
+            model: workerModel?.model,
+            modelRuntime: workerModel?.modelRuntime,
+            maxContextTokens: workerModel?.maxContextTokens,
+            contextTargetTokens,
+            sourceIgnores: input.sourceIgnores,
+            abortSignal: input.abortSignal,
+          },
+        };
+      });
 
       try {
-        const domainResult = await runChildSession({
-          role: "domain",
-          runWorkDir: layout.runWorkDir,
-          task: domainResearchPrompt({
-            domainId: d.id,
-            title: d.title ?? d.id,
-            scope: d.scope ?? "",
-            questions: d.questions ?? [],
-            nodeId: domainNodeId,
+        const leafResults = await runChildrenParallel(
+          leafTasks.map((t) => t.input),
+          { concurrency: Math.min(2, leafTasks.length) },
+        );
+        for (let i = 0; i < leafResults.length; i++) {
+          const leafNodeId = leafTasks[i]!.leafNodeId;
+          const lr = leafResults[i]!;
+          const persisted = await persistResearchReceipt({
+            workspaceRoot: input.workspace.rootPath,
             runId: input.runId,
-          }),
-          fixture,
-          model: workerModel?.model,
-          modelRuntime: workerModel?.modelRuntime,
-          maxContextTokens: workerModel?.maxContextTokens,
-          contextTargetTokens,
-          sourceIgnores: input.sourceIgnores,
-          abortSignal: input.abortSignal,
-        });
-        await persistResearchReceipt({
-          workspaceRoot: input.workspace.rootPath,
-          runId: input.runId,
-          nodeId: domainNodeId,
-          parentId: "root",
-          scope: d.scope ?? d.title ?? d.id,
-          summary: domainResult.summary,
-          status: "complete",
-          childReceipts: childReceiptPaths,
-        });
+            nodeId: leafNodeId,
+            parentId: domainNodeId,
+            scope: `${d.id}: ${leafQuestions[i]}`,
+            summary: lr.summary,
+            status: "complete",
+          });
+          childReceiptPaths.push(persisted.relativePath);
+        }
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") {
           return cancelledResult(spec, fixture, metrics, layout);
         }
-        const msg = err instanceof Error ? err.message : String(err);
-        await persistResearchReceipt({
-          workspaceRoot: input.workspace.rootPath,
-          runId: input.runId,
+      }
+    }
+
+    try {
+      const domainResult = await runChildSession({
+        role: "domain",
+        runWorkDir: layout.runWorkDir,
+        task: domainResearchPrompt({
+          domainId: d.id,
+          title: d.title ?? d.id,
+          scope: d.scope ?? "",
+          questions: d.questions ?? [],
           nodeId: domainNodeId,
-          parentId: "root",
-          scope: d.scope ?? d.title ?? d.id,
-          summary: `FAILED: ${msg}`,
-          status: "failed",
-          childReceipts: childReceiptPaths,
-        });
-        if (d.critical !== false) {
-          criticalDomainFailures.push(`${d.id}: ${msg}`);
-        }
+          runId: input.runId,
+        }),
+        fixture,
+        model: workerModel?.model,
+        modelRuntime: workerModel?.modelRuntime,
+        maxContextTokens: workerModel?.maxContextTokens,
+        contextTargetTokens,
+        sourceIgnores: input.sourceIgnores,
+        abortSignal: input.abortSignal,
+      });
+      await persistResearchReceipt({
+        workspaceRoot: input.workspace.rootPath,
+        runId: input.runId,
+        nodeId: domainNodeId,
+        parentId: "root",
+        scope: d.scope ?? d.title ?? d.id,
+        summary: domainResult.summary,
+        status: "complete",
+        childReceipts: childReceiptPaths,
+      });
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        return cancelledResult(spec, fixture, metrics, layout);
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      await persistResearchReceipt({
+        workspaceRoot: input.workspace.rootPath,
+        runId: input.runId,
+        nodeId: domainNodeId,
+        parentId: "root",
+        scope: d.scope ?? d.title ?? d.id,
+        summary: `FAILED: ${msg}`,
+        status: "failed",
+        childReceipts: childReceiptPaths,
+      });
+      if (d.critical !== false) {
+        criticalDomainFailures.push(`${d.id}: ${msg}`);
       }
     }
   }
@@ -315,136 +308,125 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
   const councilSize = Math.max(1, orch.reviewCouncilSize ?? 1);
   const lenses = ["grounding", "coverage", "consistency", "general"] as const;
 
-  if (input.review !== false) {
-    for (let round = 1; round <= maxRepair + 1; round++) {
-      throwIfAborted(input.abortSignal);
-      events.progress?.({
-        phase: "reviewing",
-        label: `review council round ${round}`,
-      });
+  for (let round = 1; round <= maxRepair + 1; round++) {
+    throwIfAborted(input.abortSignal);
+    events.progress?.({
+      phase: "reviewing",
+      label: `review council round ${round}`,
+    });
 
-      const reviewers: Array<{ id: string; text: string }> = [];
-      if (fixture || !input.models?.reviewer?.model) {
-        for (let i = 0; i < councilSize; i++) {
-          const reviewerId = `reviewer-${i + 1}`;
+    const reviewers: Array<{ id: string; text: string }> = [];
+    if (fixture || !input.models?.reviewer?.model) {
+      for (let i = 0; i < councilSize; i++) {
+        const reviewerId = `reviewer-${i + 1}`;
+        reviewers.push({
+          id: reviewerId,
+          text: JSON.stringify({
+            clean: true,
+            defects: [],
+            summary: "NO_DEFECTS",
+          }),
+        });
+      }
+    } else {
+      for (let i = 0; i < councilSize; i++) {
+        const reviewerId = `reviewer-${i + 1}`;
+        const lens = lenses[i % lenses.length]!;
+        try {
+          const child = await runChildSession({
+            role: "reviewer",
+            runWorkDir: layout.runWorkDir,
+            task: reviewerPrompt({ pages: produced.pages, lens }),
+            model: input.models.reviewer.model,
+            modelRuntime: input.models.reviewer.modelRuntime,
+            maxContextTokens: input.models.reviewer.maxContextTokens,
+            contextTargetTokens,
+            sourceIgnores: input.sourceIgnores,
+            abortSignal: input.abortSignal,
+          });
+          reviewers.push({ id: reviewerId, text: child.summary });
+        } catch (err) {
+          if (err instanceof Error && err.name === "AbortError") {
+            return cancelledResult(spec, fixture, metrics, layout, produced);
+          }
+          // Fail-closed: reviewer error is a blocking defect, not clean.
+          const msg = err instanceof Error ? err.message : String(err);
           reviewers.push({
             id: reviewerId,
             text: JSON.stringify({
-              clean: true,
-              defects: [],
-              summary: "NO_DEFECTS",
+              clean: false,
+              defects: [
+                {
+                  severity: "blocking",
+                  code: "reviewer_error",
+                  issue: `Reviewer failed: ${msg}`,
+                },
+              ],
+              summary: `reviewer error: ${msg}`,
             }),
           });
         }
-      } else {
-        for (let i = 0; i < councilSize; i++) {
-          const reviewerId = `reviewer-${i + 1}`;
-          const lens = lenses[i % lenses.length]!;
-          try {
-            const child = await runChildSession({
-              role: "reviewer",
-              runWorkDir: layout.runWorkDir,
-              task: reviewerPrompt({ pages: produced.pages, lens }),
-              model: input.models.reviewer.model,
-              modelRuntime: input.models.reviewer.modelRuntime,
-              maxContextTokens: input.models.reviewer.maxContextTokens,
-              contextTargetTokens,
-              sourceIgnores: input.sourceIgnores,
-              abortSignal: input.abortSignal,
-            });
-            reviewers.push({ id: reviewerId, text: child.summary });
-          } catch (err) {
-            if (err instanceof Error && err.name === "AbortError") {
-              return cancelledResult(spec, fixture, metrics, layout, produced);
-            }
-            // Fail-closed: reviewer error is a blocking defect, not clean.
-            const msg = err instanceof Error ? err.message : String(err);
-            reviewers.push({
-              id: reviewerId,
-              text: JSON.stringify({
-                clean: false,
-                defects: [
-                  {
-                    severity: "blocking",
-                    code: "reviewer_error",
-                    issue: `Reviewer failed: ${msg}`,
-                  },
-                ],
-                summary: `reviewer error: ${msg}`,
-              }),
-            });
-          }
-        }
-      }
-
-      defects = await runReviewCouncil({
-        reviewers,
-        pages: produced.pages,
-        workspaceRoot: input.workspace.rootPath,
-        runId: input.runId,
-        round,
-      });
-      events.defects?.({
-        round,
-        clean: defects.clean,
-        defectCount: defects.defects.length,
-        summary: defects.summary,
-      });
-
-      const blocking = (spec.acceptance?.blockingSeverities ?? ["blocking"]) as string[];
-      const hasBlocking = defects.defects.some((d) => blocking.includes(d.severity));
-      if (defects.clean || !hasBlocking) {
-        break;
-      }
-      if (round > maxRepair) {
-        break;
-      }
-
-      // Repair round
-      metrics.repairRounds += 1;
-      events.progress?.({
-        phase: "repairing",
-        label: `repair round ${metrics.repairRounds}`,
-        defectCount: defects.defects.length,
-      });
-      const defectText = defects.defects
-        .map((d) => `- [${d.severity}] ${d.path ?? "?"} ${d.code ?? ""}: ${d.issue}`)
-        .join("\n");
-      try {
-        produced = await produceWithPi({
-          layout,
-          spec,
-          workspaceName: input.workspace.name,
-          fixture,
-          abortSignal: input.abortSignal,
-          model: input.models?.writer?.model,
-          modelRuntime: input.models?.writer?.modelRuntime,
-          maxContextTokens: input.maxContextTokens ?? input.models?.writer?.maxContextTokens,
-          contextTargetTokens,
-          additionalSkillPaths: input.additionalSkillPaths,
-          sourceIgnores: input.sourceIgnores,
-          wikiLanguage,
-          multiSource,
-          receiptIndex,
-          repairDefects: defectText,
-        });
-        await emitPlanProgressFromDisk(events, produced.layout.wikiDir, spec);
-      } catch (err) {
-        if (err instanceof Error && err.name === "AbortError") {
-          return cancelledResult(spec, fixture, metrics, layout, produced);
-        }
-        throw err;
       }
     }
-  } else {
-    defects = {
-      version: 1,
-      clean: true,
-      defects: [],
-      reviewerIds: ["skipped"],
-      summary: "NO_DEFECTS",
-    };
-    await writeMergedDefects(input.workspace.rootPath, input.runId, defects);
+
+    defects = await runReviewCouncil({
+      reviewers,
+      pages: produced.pages,
+      workspaceRoot: input.workspace.rootPath,
+      runId: input.runId,
+      round,
+    });
+    events.defects?.({
+      round,
+      clean: defects.clean,
+      defectCount: defects.defects.length,
+      summary: defects.summary,
+    });
+
+    const blocking = (spec.acceptance?.blockingSeverities ?? ["blocking"]) as string[];
+    const hasBlocking = defects.defects.some((d) => blocking.includes(d.severity));
+    if (defects.clean || !hasBlocking) {
+      break;
+    }
+    if (round > maxRepair) {
+      break;
+    }
+
+    // Repair round
+    metrics.repairRounds += 1;
+    events.progress?.({
+      phase: "repairing",
+      label: `repair round ${metrics.repairRounds}`,
+      defectCount: defects.defects.length,
+    });
+    const defectText = defects.defects
+      .map((d) => `- [${d.severity}] ${d.path ?? "?"} ${d.code ?? ""}: ${d.issue}`)
+      .join("\n");
+    try {
+      produced = await produceWithPi({
+        layout,
+        spec,
+        workspaceName: input.workspace.name,
+        fixture,
+        abortSignal: input.abortSignal,
+        model: input.models?.writer?.model,
+        modelRuntime: input.models?.writer?.modelRuntime,
+        maxContextTokens: input.maxContextTokens ?? input.models?.writer?.maxContextTokens,
+        contextTargetTokens,
+        additionalSkillPaths: input.additionalSkillPaths,
+        sourceIgnores: input.sourceIgnores,
+        wikiLanguage,
+        multiSource,
+        receiptIndex,
+        repairDefects: defectText,
+      });
+      await emitPlanProgressFromDisk(events, produced.layout.wikiDir, spec);
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        return cancelledResult(spec, fixture, metrics, layout, produced);
+      }
+      throw err;
+    }
   }
 
   // 6) Hard score

@@ -61,8 +61,6 @@ export type WikiProduceGateCoordinator = {
   ): Promise<WikiProduceGateDecision>;
 };
 
-export type { WikiProduceToolDetails, WikiProduceToolStatus } from "@okf-wiki/contract";
-
 export type CreateWikiProduceToolInput = {
   /** Bootstrap snapshot used when no live resolver is provided. */
   workspace: WorkspaceConfig;

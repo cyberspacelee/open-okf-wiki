@@ -33,19 +33,6 @@ export type AgentMessage = {
   errorMessage?: string;
 };
 
-/** Durable Pi message shape retained by SessionManager. */
-export type PiHistoryMessage = {
-  role?: string;
-  content?: unknown;
-  stopReason?: string;
-  errorMessage?: string;
-  toolCallId?: string;
-  toolName?: string;
-  details?: unknown;
-  isError?: boolean;
-  timestamp?: number;
-};
-
 /** Shared transport interface. Pi still owns event payload internals. */
 export type AgentSseLike = AgentSseEvent;
 

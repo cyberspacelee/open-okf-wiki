@@ -16,7 +16,6 @@ import type {
   AgentMessage,
   AgentSseLike,
   AgentToolCall,
-  PiHistoryMessage,
   PiStreamState,
 } from "./types.ts";
 
@@ -545,21 +544,23 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
   return state;
 }
 
-function historyTimestamp(row: PiHistoryMessage): string {
-  if (typeof row.timestamp !== "number") return nowIso();
+function historyTimestamp(row: unknown): string {
+  if (!isRecord(row) || typeof row.timestamp !== "number") return nowIso();
   const date = new Date(row.timestamp);
   return Number.isNaN(date.getTime()) ? nowIso() : date.toISOString();
 }
 
-/** Project the durable branch returned by Pi SessionManager. */
-export function projectPiHistory(rows: readonly PiHistoryMessage[]): AgentMessage[] {
+/** Project the durable branch returned by Pi SessionManager (opaque Pi messages). */
+export function projectPiHistory(rows: readonly unknown[]): AgentMessage[] {
   const messages: AgentMessage[] = [];
 
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index]!;
+    if (!isRecord(row)) continue;
     const createdAt = historyTimestamp(row);
+    const role = typeof row.role === "string" ? row.role : null;
 
-    if (row.role === "user") {
+    if (role === "user") {
       messages.push({
         id: `hist_user_${index + 1}`,
         role: "user",
@@ -570,7 +571,7 @@ export function projectPiHistory(rows: readonly PiHistoryMessage[]): AgentMessag
       continue;
     }
 
-    if (row.role === "assistant") {
+    if (role === "assistant") {
       const error = extractAssistantError(row);
       messages.push(
         assistantFromSnapshot(row, {
@@ -582,18 +583,21 @@ export function projectPiHistory(rows: readonly PiHistoryMessage[]): AgentMessag
       continue;
     }
 
-    if (row.role !== "toolResult" || typeof row.toolCallId !== "string") continue;
+    if (role !== "toolResult" || typeof row.toolCallId !== "string") continue;
     const output = formatToolResultText(row.content) ?? formatToolResultText(row);
     const details = wikiProduceDetails(row);
+    const toolCallId = row.toolCallId;
+    const toolName = typeof row.toolName === "string" ? row.toolName : undefined;
+    const isError = row.isError === true;
     for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
       const message = messages[messageIndex]!;
       if (message.role !== "assistant") continue;
-      if (!message.tools?.some((tool) => tool.id === row.toolCallId)) continue;
-      messages[messageIndex] = patchToolsOnAssistant(message, row.toolCallId, {
-        name: row.toolName,
+      if (!message.tools?.some((tool) => tool.id === toolCallId)) continue;
+      messages[messageIndex] = patchToolsOnAssistant(message, toolCallId, {
+        name: toolName,
         output,
         ...(details ? { details } : {}),
-        status: row.isError === true ? "error" : "done",
+        status: isError ? "error" : "done",
       });
       break;
     }
@@ -608,7 +612,7 @@ export function projectPiHistory(rows: readonly PiHistoryMessage[]): AgentMessag
  */
 export function projectAgentEvent(state: PiStreamState, event: AgentSseLike): PiStreamState {
   if (event.source === "server" && event.kind === "snapshot") {
-    const rows = event.payload.messages as PiHistoryMessage[];
+    const rows = Array.isArray(event.payload.messages) ? event.payload.messages : [];
     const snapshot = createPiStreamState(projectPiHistory(rows));
     const activeTool = event.payload.activeTool;
     if (!activeTool) return snapshot;

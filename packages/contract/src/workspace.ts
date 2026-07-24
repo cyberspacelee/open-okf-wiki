@@ -50,8 +50,12 @@ export const WorkspaceSourceSchema = z.object({
   path: z.string().trim().min(1),
   applyDefaultIgnores: z.boolean().default(true),
   ignore: z.array(IgnorePatternSchema).default([]),
-  /** Omitted on legacy records; treat as path-linked. */
-  origin: SourceOriginSchema.optional(),
+  /**
+   * How the source was attached. Always set on write.
+   * Legacy on-disk records without origin normalize to `{ type: "path" }` on parse
+   * so freeze/run keep working; subsequent save persists the default.
+   */
+  origin: SourceOriginSchema.default({ type: "path" }),
 });
 
 export type WorkspaceSource = z.infer<typeof WorkspaceSourceSchema>;
@@ -235,26 +239,22 @@ export type WorkspaceConfig = z.infer<typeof WorkspaceConfigSchema>;
 
 /**
  * App-index list row (not the full WorkspaceConfig document).
- * Shared by API, Web, and core listWorkspaceSummaries.
+ * Shared by API, Web, and core listWorkspaceSummaries. Outbound only.
  */
-export const WorkspaceSummarySchema = z.object({
-  id: z.string().min(1),
-  name: z.string().min(1),
-  rootPath: z.string().min(1),
-  lastOpenedAt: z.string().datetime().optional(),
-  sourceCount: z.number().int().nonnegative(),
-});
+export type WorkspaceSummary = {
+  id: string;
+  name: string;
+  rootPath: string;
+  lastOpenedAt?: string;
+  sourceCount: number;
+};
 
-export type WorkspaceSummary = z.infer<typeof WorkspaceSummarySchema>;
-
-/** Result of probing a local Git path (no network). */
-export const GitProbeSchema = z.object({
-  path: z.string(),
-  isGit: z.boolean(),
-  head: z.string().nullable(),
-  branch: z.string().nullable(),
-  dirty: z.boolean(),
-  error: z.string().nullable(),
-});
-
-export type GitProbe = z.infer<typeof GitProbeSchema>;
+/** Result of probing a local Git path (no network). Outbound only. */
+export type GitProbe = {
+  path: string;
+  isGit: boolean;
+  head: string | null;
+  branch: string | null;
+  dirty: boolean;
+  error: string | null;
+};

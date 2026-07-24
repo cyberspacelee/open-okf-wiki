@@ -7,9 +7,12 @@ export type ProviderApiShape = z.infer<typeof ProviderApiShapeSchema>;
 
 /**
  * Product provider kind (wire protocol family).
- * Only OpenAI-compatible gateways are supported today.
+ * Only OpenAI-compatible gateways are supported; kept as a single-value
+ * literal for wire/docs stability, not multi-provider selection.
  */
-export const ProviderKindSchema = z.enum(["openai-compatible"]);
+export const OPENAI_COMPATIBLE_PROVIDER_KIND = "openai-compatible" as const;
+
+export const ProviderKindSchema = z.literal(OPENAI_COMPATIBLE_PROVIDER_KIND);
 
 export type ProviderKind = z.infer<typeof ProviderKindSchema>;
 
@@ -48,7 +51,7 @@ export type CatalogModel = z.infer<typeof CatalogModelSchema>;
 export const ProviderEntrySchema = z.object({
   id: z.string().trim().min(1).max(64),
   name: z.string().trim().min(1).max(120),
-  kind: ProviderKindSchema.default("openai-compatible"),
+  kind: ProviderKindSchema.default(OPENAI_COMPATIBLE_PROVIDER_KIND),
   baseUrl: z.string().trim().default(""),
   /** Secret; never return raw value from HTTP APIs. */
   apiKey: z.string().default(""),
@@ -75,7 +78,7 @@ export type ProviderEntry = z.infer<typeof ProviderEntrySchema>;
 export const ModelProfileSchema = z.object({
   id: z.string().trim().min(1).max(64),
   name: z.string().trim().min(1).max(120),
-  providerKind: ProviderKindSchema.optional(),
+  providerKind: ProviderKindSchema.default(OPENAI_COMPATIBLE_PROVIDER_KIND),
   providerId: z.string().trim().min(1).max(64).optional(),
   modelId: z.string().trim().min(1).max(200),
   baseUrl: z.string().trim().default(""),
@@ -101,62 +104,54 @@ export const ProviderConfigSchema = z.object({
 
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
 
-/** Safe public view of one model (no raw secrets). */
-export const ModelProfilePublicSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  providerKind: ProviderKindSchema,
-  providerId: z.string().optional(),
-  providerName: z.string().optional(),
-  modelId: z.string(),
-  baseUrl: z.string(),
-  apiKeySet: z.boolean(),
-  apiKeyMasked: z.string().nullable(),
-  apiShape: ProviderApiShapeSchema,
-  maxContextTokens: z.number().int().positive().optional(),
-  headers: z.record(z.string(), z.string()).optional(),
-  supportsDeveloperRole: z.boolean().optional(),
-});
+/** Safe public view of one model (no raw secrets). Outbound HTTP DTO only. */
+export type ModelProfilePublic = {
+  id: string;
+  name: string;
+  providerKind: ProviderKind;
+  providerId?: string;
+  providerName?: string;
+  modelId: string;
+  baseUrl: string;
+  apiKeySet: boolean;
+  apiKeyMasked: string | null;
+  apiShape: ProviderApiShape;
+  maxContextTokens?: number;
+  headers?: Record<string, string>;
+  supportsDeveloperRole?: boolean;
+};
 
-export type ModelProfilePublic = z.infer<typeof ModelProfilePublicSchema>;
+/** Safe public view of one provider endpoint. Outbound HTTP DTO only. */
+export type ProviderEntryPublic = {
+  id: string;
+  name: string;
+  kind: ProviderKind;
+  baseUrl: string;
+  apiKeySet: boolean;
+  apiKeyMasked: string | null;
+  apiShape: ProviderApiShape;
+  headers?: Record<string, string>;
+  supportsDeveloperRole: boolean;
+  models: Array<{
+    id: string;
+    name: string;
+    modelId: string;
+    maxContextTokens?: number;
+    headers?: Record<string, string>;
+  }>;
+};
 
-/** Safe public view of one provider endpoint. */
-export const ProviderEntryPublicSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  kind: ProviderKindSchema,
-  baseUrl: z.string(),
-  apiKeySet: z.boolean(),
-  apiKeyMasked: z.string().nullable(),
-  apiShape: ProviderApiShapeSchema,
-  headers: z.record(z.string(), z.string()).optional(),
-  supportsDeveloperRole: z.boolean(),
-  models: z.array(
-    z.object({
-      id: z.string(),
-      name: z.string(),
-      modelId: z.string(),
-      maxContextTokens: z.number().int().positive().optional(),
-      headers: z.record(z.string(), z.string()).optional(),
-    }),
-  ),
-});
-
-export type ProviderEntryPublic = z.infer<typeof ProviderEntryPublicSchema>;
-
-/** Safe public catalog for operator UI. */
-export const ProviderPublicSchema = z.object({
-  version: z.literal(3),
-  models: z.array(ModelProfilePublicSchema),
-  providers: z.array(ProviderEntryPublicSchema),
-  defaultModelProfileId: z.string().optional(),
-  envFallback: z.object({
-    openaiBaseUrlSet: z.boolean(),
-    openaiApiKeySet: z.boolean(),
-  }),
-});
-
-export type ProviderPublic = z.infer<typeof ProviderPublicSchema>;
+/** Safe public catalog for operator UI. Outbound HTTP DTO only. */
+export type ProviderPublic = {
+  version: 3;
+  models: ModelProfilePublic[];
+  providers: ProviderEntryPublic[];
+  defaultModelProfileId?: string;
+  envFallback: {
+    openaiBaseUrlSet: boolean;
+    openaiApiKeySet: boolean;
+  };
+};
 
 /**
  * Create / update a catalog model (may include provider connection fields).
@@ -166,6 +161,10 @@ export const ModelProfileWriteSchema = z.object({
   name: z.string().trim().min(1).max(120),
   modelId: z.string().trim().min(1).max(200),
   baseUrl: z.string().trim().default(""),
+  /**
+   * Ignored on write — product only supports OpenAI-compatible gateways.
+   * Accepted for older clients; always stored as openai-compatible.
+   */
   providerKind: ProviderKindSchema.optional(),
   providerId: z.string().trim().min(1).max(64).optional(),
   providerName: z.string().trim().min(1).max(120).optional(),
@@ -186,6 +185,10 @@ export const ProviderEntryWriteSchema = z.object({
   baseUrl: z.string().trim().default(""),
   apiKey: z.union([z.string(), z.null()]).optional(),
   apiShape: ProviderApiShapeSchema.default("completions"),
+  /**
+   * Ignored on write — product only supports OpenAI-compatible gateways.
+   * Accepted for older clients; always stored as openai-compatible.
+   */
   kind: ProviderKindSchema.optional(),
   id: z.string().trim().min(1).max(64).optional(),
   headers: z.union([z.record(z.string(), z.string()), z.null()]).optional(),
@@ -194,12 +197,11 @@ export const ProviderEntryWriteSchema = z.object({
 
 export type ProviderEntryWrite = z.infer<typeof ProviderEntryWriteSchema>;
 
-export const ProviderTestResultSchema = z.object({
-  ok: z.boolean(),
-  apiShape: ProviderApiShapeSchema,
-  status: z.number().int().optional(),
-  message: z.string(),
-  latencyMs: z.number().nonnegative().optional(),
-});
-
-export type ProviderTestResult = z.infer<typeof ProviderTestResultSchema>;
+/** Outbound provider probe result — typed only. */
+export type ProviderTestResult = {
+  ok: boolean;
+  apiShape: ProviderApiShape;
+  status?: number;
+  message: string;
+  latencyMs?: number;
+};

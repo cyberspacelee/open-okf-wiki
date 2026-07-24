@@ -30,20 +30,17 @@ export const SkillInfoSchema = z.object({
 
 export type SkillInfo = z.infer<typeof SkillInfoSchema>;
 
-/** One skill file entry for the fork editor. */
-export const SkillFileEntrySchema = z.object({
+/** One skill file entry for the fork editor (outbound API DTO). */
+export type SkillFileEntry = {
   /** Skill-relative POSIX path. */
-  path: z.string().min(1),
-  kind: z.enum(["file", "directory"]),
-});
+  path: string;
+  kind: "file" | "directory";
+};
 
-export type SkillFileEntry = z.infer<typeof SkillFileEntrySchema>;
-
-export const SkillFileContentSchema = z.object({
-  path: z.string().min(1),
-  content: z.string(),
+/** Skill file body for the fork editor (outbound API DTO). */
+export type SkillFileContent = {
+  path: string;
+  content: string;
   /** Bytes of content (UTF-8). */
-  bytes: z.number().int().nonnegative(),
-});
-
-export type SkillFileContent = z.infer<typeof SkillFileContentSchema>;
+  bytes: number;
+};
