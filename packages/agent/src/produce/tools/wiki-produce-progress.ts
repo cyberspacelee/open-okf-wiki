@@ -19,6 +19,7 @@ import type {
   ProduceProgressMessage,
   ProduceProgressStatus,
   ProduceProgressTool,
+  ProduceProgressTrailItem,
 } from "../events.js";
 
 /** Durable parent Pi custom entry type (settle/fail only). */
@@ -40,6 +41,8 @@ export type ProduceToolDetails = {
   parentId?: string;
   tools?: ProduceProgressTool[];
   message?: ProduceProgressMessage;
+  /** Chronological message/tool trail for interleaved operator UI. */
+  trail?: ProduceProgressTrailItem[];
   summary?: string;
   receiptPath?: string;
   error?: string;
@@ -108,6 +111,7 @@ export function progressToDetails(p: ProduceProgress): ProduceToolDetails {
   if (p.parentId !== undefined) details.parentId = p.parentId;
   if (p.tools !== undefined) details.tools = p.tools;
   if (p.message !== undefined) details.message = p.message;
+  if (p.trail !== undefined) details.trail = p.trail;
   if (p.summary !== undefined) details.summary = p.summary;
   if (p.receiptPath !== undefined) details.receiptPath = p.receiptPath;
   if (p.error !== undefined) details.error = p.error;

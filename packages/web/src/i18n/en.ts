@@ -509,7 +509,7 @@ export const en = {
     jumpToLatest: "Jump to latest",
     agentTreeTitle: "Agents",
     agentTreeEmpty:
-      "Produce unit cards appear on the transcript during a wiki run. Live phase shows above.",
+      "Produce units nest under the wiki_produce tool on the timeline. Click a row to focus it.",
     agentTreeNoRun: "No linked run — start a wiki run to see produce progress.",
     produceUnitsTitle: "Produce",
     produceUnitRole: {

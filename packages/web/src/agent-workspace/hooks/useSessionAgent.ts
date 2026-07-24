@@ -174,6 +174,48 @@ function toolCallsFromContent(content: unknown): AgentToolCall[] {
   return tools;
 }
 
+/** Chronological parts from Pi history content blocks (text / thinking / tool). */
+function partsFromContent(content: unknown): AgentMessage["parts"] {
+  if (!Array.isArray(content)) return undefined;
+  const parts: NonNullable<AgentMessage["parts"]> = [];
+  let textBuf = "";
+  let thinkingBuf = "";
+  const flushText = () => {
+    if (textBuf) {
+      parts.push({ type: "text", text: textBuf });
+      textBuf = "";
+    }
+  };
+  const flushThinking = () => {
+    if (thinkingBuf) {
+      parts.push({ type: "thinking", thinking: thinkingBuf });
+      thinkingBuf = "";
+    }
+  };
+  for (const block of content) {
+    if (!isRecord(block)) continue;
+    if (block.type === "thinking" && typeof block.thinking === "string") {
+      flushText();
+      thinkingBuf += block.thinking;
+      continue;
+    }
+    if (block.type === "text" && typeof block.text === "string") {
+      flushThinking();
+      textBuf += block.text;
+      continue;
+    }
+    if (block.type === "toolCall") {
+      flushText();
+      flushThinking();
+      const id = typeof block.id === "string" ? block.id : makeId("tool");
+      parts.push({ type: "tool", toolId: id });
+    }
+  }
+  flushText();
+  flushThinking();
+  return parts.length > 0 ? parts : undefined;
+}
+
 /**
  * Map Pi-native history messages (content blocks) → thin UI view model.
  * toolResult rows attach output onto the matching toolCall on the prior assistant.
@@ -208,6 +250,7 @@ export function piHistoryToMessages(rows: PiHistoryMessage[] | undefined): Agent
       const thinking = extractMessageThinking(row);
       const err = extractAssistantError(row);
       const tools = toolCallsFromContent(row.content);
+      const parts = partsFromContent(row.content);
       out.push({
         id: `hist_asst_${seq}`,
         role: "assistant",
@@ -216,6 +259,7 @@ export function piHistoryToMessages(rows: PiHistoryMessage[] | undefined): Agent
         thinkingStatus: thinking ? "done" : undefined,
         createdAt,
         tools: tools.length > 0 ? tools : undefined,
+        parts,
         status: err.isError ? "error" : "done",
         errorMessage: err.errorMessage,
       });

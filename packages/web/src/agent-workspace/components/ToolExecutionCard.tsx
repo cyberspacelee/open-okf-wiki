@@ -4,8 +4,9 @@
  * Trigger (always visible):
  *   [status] [icon] title  subtitle  arg arg
  *
- * Expand (only when there is result / write body / console output):
+ * Expand (only when there is result / write body / console output / nested trail):
  *   plain result text — NO "Input" / "Output" section labels.
+ *   optional nested React node (wiki_produce → ProduceTrail).
  *
  * Known tools put args on the trigger line; they are never re-dumped as JSON.
  */
@@ -15,10 +16,13 @@ import {
   ChevronRightIcon,
   CircleAlertIcon,
   FileIcon,
+  LayersIcon,
   SearchIcon,
   TerminalIcon,
   WrenchIcon,
 } from "lucide-react";
+import type { ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
@@ -26,6 +30,7 @@ import {
   type AgentToolCall,
   formatToolDisplay,
   formatToolResultText,
+  WIKI_PRODUCE_TOOL_NAME,
 } from "../hooks/project-agent-events";
 
 export type ToolExecutionCardProps = {
@@ -35,10 +40,20 @@ export type ToolExecutionCardProps = {
    * Pass `false` while a unit is still active so non-done tools expand.
    */
   settled?: boolean;
+  /**
+   * Nested trail (e.g. produce units under wiki_produce).
+   * When set, the card always expands to host the trail.
+   */
+  nested?: ReactNode;
+  /** Force open while nested work is active (running produce units). */
+  nestedActive?: boolean;
 };
 
 function toolIcon(name: string) {
   const lower = name.toLowerCase();
+  if (lower === WIKI_PRODUCE_TOOL_NAME || lower === "wiki_produce") {
+    return LayersIcon;
+  }
   if (lower === "bash" || lower === "shell" || lower === "run") {
     return TerminalIcon;
   }
@@ -87,14 +102,12 @@ function expandBody(
   const { command, writePreview, output, isError } = opts;
 
   if (kind === "console") {
-    // pi BashRenderer: combine command + output, no labels
     if (command && output) return `$ ${command}\n\n${output}`;
     if (command) return `$ ${command}`;
     return output;
   }
 
   if (kind === "write-body") {
-    // Content preview then result — still no "Input"/"Output" chrome
     const parts: string[] = [];
     if (writePreview) parts.push(writePreview);
     if (output) parts.push(output);
@@ -105,18 +118,24 @@ function expandBody(
     return writePreview;
   }
 
-  // output-only (and raw with result): just the result
   if (output) return output;
   if (isError) return "";
   return "";
 }
 
-export function ToolExecutionCard({ tool, settled }: ToolExecutionCardProps) {
+export function ToolExecutionCard({
+  tool,
+  settled,
+  nested,
+  nestedActive = false,
+}: ToolExecutionCardProps) {
   const display = formatToolDisplay(tool.name, tool.input);
-  // Prefer already-extracted plain text; peel JSON envelopes if any remain.
   const output = formatToolResultText(tool.output) ?? "";
   const isError = tool.status === "error";
   const isRunning = tool.status === "running" || tool.status === "pending";
+  const hasNested = Boolean(nested);
+  const isWikiProduce =
+    tool.name === WIKI_PRODUCE_TOOL_NAME || tool.name.toLowerCase() === "wiki_produce";
 
   const body = expandBody(display.kind, {
     command: display.command,
@@ -125,18 +144,28 @@ export function ToolExecutionCard({ tool, settled }: ToolExecutionCardProps) {
     isError,
   });
 
-  // OpenCode: completed read is often header-only (no expand).
-  // Expand when there is result text, write preview, console command, or error.
+  // Expand when result exists, or when hosting a nested produce trail.
   const canExpand =
-    !display.headerOnly &&
-    (Boolean(body.trim()) ||
-      isError ||
-      (display.kind === "console" && Boolean(display.command)) ||
-      (display.kind === "write-body" && Boolean(display.writePreview)));
+    hasNested ||
+    (!display.headerOnly &&
+      (Boolean(body.trim()) ||
+        isError ||
+        (display.kind === "console" && Boolean(display.command)) ||
+        (display.kind === "write-body" && Boolean(display.writePreview))));
 
-  // Default open only while running/error — completed tools stay collapsed (OpenCode).
-  const openDefault =
-    isRunning || isError || (settled === false && tool.status !== "done" && canExpand);
+  const autoOpen =
+    isRunning ||
+    isError ||
+    nestedActive ||
+    (settled === false && tool.status !== "done" && canExpand) ||
+    // wiki_produce with nested units: open while nested active, else closed when done
+    (hasNested && (isRunning || nestedActive));
+
+  const [open, setOpen] = useState(autoOpen);
+  useEffect(() => {
+    if (autoOpen) setOpen(true);
+    else if (hasNested && !isRunning && !nestedActive && !isError) setOpen(false);
+  }, [autoOpen, hasNested, isRunning, nestedActive, isError]);
 
   const Icon = toolIcon(tool.name);
 
@@ -164,7 +193,7 @@ export function ToolExecutionCard({ tool, settled }: ToolExecutionCardProps) {
             isError && "text-destructive",
           )}
         >
-          {display.title}
+          {isWikiProduce ? "wiki_produce" : display.title}
         </span>
         {display.subtitle ? (
           <span className="ml-1.5 text-muted-foreground">{display.subtitle}</span>
@@ -179,7 +208,6 @@ export function ToolExecutionCard({ tool, settled }: ToolExecutionCardProps) {
   );
 
   if (!canExpand) {
-    // OpenCode read: single non-collapsible row
     return (
       <div
         className="w-full min-w-0 rounded-md"
@@ -195,17 +223,19 @@ export function ToolExecutionCard({ tool, settled }: ToolExecutionCardProps) {
 
   return (
     <Collapsible
-      defaultOpen={openDefault}
+      open={open}
+      onOpenChange={setOpen}
       className="group w-full min-w-0 rounded-md"
       data-testid="tool-execution-card"
       data-tool-name={tool.name}
       data-tool-status={tool.status}
+      data-has-nested={hasNested ? "true" : undefined}
     >
       <CollapsibleTrigger className="w-full min-w-0 rounded-md text-left">
         {trigger}
       </CollapsibleTrigger>
-      <CollapsibleContent className="min-w-0 overflow-hidden pl-8 pr-2 pb-1.5">
-        {body.trim() ? (
+      <CollapsibleContent className="min-w-0 overflow-hidden pl-4 pr-1 pb-1.5 sm:pl-6">
+        {body.trim() && !isWikiProduce ? (
           <pre
             className={cn(
               "okf-code-snippet max-h-64 overflow-auto text-[11px] leading-relaxed",
@@ -214,8 +244,19 @@ export function ToolExecutionCard({ tool, settled }: ToolExecutionCardProps) {
           >
             {body}
           </pre>
-        ) : isRunning ? (
+        ) : null}
+        {body.trim() && isWikiProduce && !hasNested ? (
+          <pre className="okf-code-snippet max-h-32 overflow-auto text-[11px] leading-relaxed text-muted-foreground">
+            {body}
+          </pre>
+        ) : null}
+        {isRunning && !body.trim() && !hasNested ? (
           <p className="text-[11px] text-muted-foreground">…</p>
+        ) : null}
+        {hasNested ? (
+          <div className="mt-1 min-w-0" data-testid="tool-nested-trail">
+            {nested}
+          </div>
         ) : null}
       </CollapsibleContent>
     </Collapsible>

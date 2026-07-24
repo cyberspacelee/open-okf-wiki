@@ -1,11 +1,12 @@
 /**
- * Agent Workspace transcript — chat track + thin product strips + produce units.
+ * Agent Workspace transcript — chat track + thin product strips.
  *
- * Produce trail: expandable ProduceUnitCard from last-by-unitId produceUnits
- * (SSE okf.produce_progress + cold custom entries). Not work_unit inject.
+ * Produce trail nests under the parent wiki_produce tool card (Claude/OpenCode
+ * subagent style). Flat end-of-timeline dump only as cold-load fallback.
  */
 
-import { BotIcon, ChevronRightIcon, CircleAlertIcon, UserIcon } from "lucide-react";
+import { BotIcon, ChevronRightIcon, CircleAlertIcon, FilterIcon, UserIcon } from "lucide-react";
+import { useMemo, useState } from "react";
 import { Bubble, BubbleContent, BubbleGroup } from "@/components/ui/bubble";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -29,13 +30,18 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { useI18n } from "../../i18n";
-import { ProduceUnitCard } from "../components/ProduceUnitCard";
+import { ProduceTrail } from "../components/ProduceTrail";
 import { ToolExecutionCard } from "../components/ToolExecutionCard";
 import type { ProduceUnit } from "../hooks/project/produce";
-import { formatProductCardContent } from "../hooks/project-agent-events";
+import {
+  formatProductCardContent,
+  produceUnitsActive,
+  WIKI_PRODUCE_TOOL_NAME,
+} from "../hooks/project-agent-events";
 import type {
   AgentMessage,
   AgentProductMeta,
+  AgentToolCall,
   PendingGate,
   ResumeGateInput,
 } from "../hooks/useSessionAgent";
@@ -53,6 +59,10 @@ export type TranscriptProps = {
   emptyActions?: boolean;
   /** Parent-visible produce units (last-by-unitId). */
   produceUnits?: ProduceUnit[];
+  /** AgentTree focus target — open + scroll produce card. */
+  focusedUnitId?: string | null;
+  /** When true (or auto with produce), prefer run-focused timeline. */
+  runFocusDefault?: boolean;
 };
 
 function ThinkingBlock({ thinking, streaming }: { thinking: string; streaming?: boolean }) {
@@ -91,6 +101,45 @@ function productKindLabel(product: AgentProductMeta, t: ReturnType<typeof useI18
     default:
       return t.agentWorkspace.cardRun;
   }
+}
+
+function isWikiProduceTool(tool: AgentToolCall): boolean {
+  return tool.name === WIKI_PRODUCE_TOOL_NAME || tool.name.toLowerCase() === "wiki_produce";
+}
+
+function messageHasWikiProduce(m: AgentMessage): boolean {
+  if (m.tools?.some(isWikiProduceTool)) return true;
+  if (!m.parts?.length || !m.tools?.length) return false;
+  const byId = new Map(m.tools.map((t) => [t.id, t]));
+  return m.parts.some((p) => p.type === "tool" && byId.has(p.toolId) && isWikiProduceTool(byId.get(p.toolId)!));
+}
+
+/** Run-focus: product strips, user turns, and messages that carry tools (esp. wiki_produce). */
+function filterRunFocus(messages: AgentMessage[]): AgentMessage[] {
+  return messages.filter((m) => {
+    if (m.product) return true;
+    if (m.role === "user") return true;
+    if (m.role === "system") return true;
+    if (m.status === "error") return true;
+    if (m.tools && m.tools.length > 0) return true;
+    if (m.parts?.some((p) => p.type === "tool")) return true;
+    return false;
+  });
+}
+
+function messagesHaveWikiProduce(messages: AgentMessage[]): boolean {
+  return messages.some(messageHasWikiProduce);
+}
+
+/** Only the latest wiki_produce tool hosts the live produce trail (no duplicates). */
+function lastWikiProduceToolId(messages: AgentMessage[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const tools = messages[i]!.tools ?? [];
+    for (let j = tools.length - 1; j >= 0; j -= 1) {
+      if (isWikiProduceTool(tools[j]!)) return tools[j]!.id;
+    }
+  }
+  return null;
 }
 
 function ProductStrip({
@@ -164,16 +213,48 @@ function ProductStrip({
   );
 }
 
-function ChatMessage({ message }: { message: AgentMessage }) {
+function ChatMessage({
+  message,
+  produceUnits,
+  focusedUnitId,
+  hostProduceToolId,
+}: {
+  message: AgentMessage;
+  produceUnits: ProduceUnit[];
+  focusedUnitId: string | null;
+  /** Only this tool id hosts the nested produce trail. */
+  hostProduceToolId: string | null;
+}) {
   const { t } = useI18n();
   const isUser = message.role === "user";
   const isError = message.status === "error" || Boolean(message.errorMessage);
   const isStreaming = message.status === "streaming";
+  const toolsById = new Map((message.tools ?? []).map((tool) => [tool.id, tool]));
+  const parts = message.parts;
+  const useParts = Boolean(parts?.length) && !isUser;
+  const produceActive = produceUnitsActive(produceUnits);
   const hasBody =
     Boolean(message.content?.trim()) ||
     Boolean(message.thinking?.trim()) ||
     Boolean(message.tools?.length) ||
+    Boolean(parts?.length) ||
     isError;
+
+  const renderTool = (tool: AgentToolCall) => {
+    const isHost = hostProduceToolId !== null && tool.id === hostProduceToolId;
+    return (
+      <ToolExecutionCard
+        key={tool.id}
+        tool={tool}
+        nested={
+          isHost && produceUnits.length > 0 ? (
+            <ProduceTrail units={produceUnits} focusedUnitId={focusedUnitId} />
+          ) : undefined
+        }
+        nestedActive={isHost && produceActive}
+      />
+    );
+  };
 
   if (message.role === "system" && message.status === "aborted") {
     return (
@@ -202,6 +283,52 @@ function ChatMessage({ message }: { message: AgentMessage }) {
       </div>
     );
   }
+
+  const orderedBody = useParts ? (
+    <div className="flex min-w-0 w-full flex-col gap-2" data-testid="message-parts">
+      {parts!.map((part, i) => {
+        if (part.type === "thinking") {
+          return (
+            <ThinkingBlock
+              key={`thinking-${i}`}
+              thinking={part.thinking}
+              streaming={
+                isStreaming && message.thinkingStatus === "streaming" && i === parts!.length - 1
+              }
+            />
+          );
+        }
+        if (part.type === "text") {
+          if (!part.text.trim()) return null;
+          return (
+            <AgentMarkdown
+              key={`text-${i}`}
+              content={part.text}
+              streaming={isStreaming && i === parts!.length - 1}
+            />
+          );
+        }
+        const tool = toolsById.get(part.toolId);
+        if (!tool) return null;
+        return renderTool(tool);
+      })}
+      {isStreaming &&
+      !message.content?.trim() &&
+      !message.thinking?.trim() &&
+      !message.tools?.length ? (
+        <div
+          className="flex items-center gap-2 text-muted-foreground"
+          data-testid="waiting-for-events"
+        >
+          <Spinner className="size-3.5" />
+          <span className="text-xs">{t.agentWorkspace.waitingForEvents}</span>
+        </div>
+      ) : null}
+      {isError && !message.content?.trim() ? (
+        <div className="whitespace-pre-wrap">{message.errorMessage ?? t.agentWorkspace.statusError}</div>
+      ) : null}
+    </div>
+  ) : null;
 
   return (
     <Message
@@ -234,7 +361,7 @@ function ChatMessage({ message }: { message: AgentMessage }) {
         </MessageHeader>
 
         <BubbleGroup className="min-w-0 w-full">
-          {message.thinking ? (
+          {!useParts && message.thinking ? (
             <ThinkingBlock
               thinking={message.thinking}
               streaming={message.thinkingStatus === "streaming"}
@@ -250,14 +377,15 @@ function ChatMessage({ message }: { message: AgentMessage }) {
               <BubbleContent
                 className={cn(!isUser && "w-full max-w-full min-w-0", isError && "w-full")}
               >
-                {message.content ? (
+                {useParts ? (
+                  orderedBody
+                ) : message.content ? (
                   isUser ? (
                     <div className="whitespace-pre-wrap break-words">{message.content}</div>
                   ) : (
                     <AgentMarkdown content={message.content} streaming={isStreaming} />
                   )
                 ) : isStreaming ? (
-                  // Empty streaming ≠ model "thinking" — waiting/phase copy only.
                   <div
                     className="flex items-center gap-2 text-muted-foreground"
                     data-testid="waiting-for-events"
@@ -271,11 +399,9 @@ function ChatMessage({ message }: { message: AgentMessage }) {
                   </div>
                 ) : null}
 
-                {message.tools && message.tools.length > 0 ? (
+                {!useParts && message.tools && message.tools.length > 0 ? (
                   <div className="mt-2 flex min-w-0 w-full flex-col gap-1">
-                    {message.tools.map((tool) => (
-                      <ToolExecutionCard key={tool.id} tool={tool} />
-                    ))}
+                    {message.tools.map((tool) => renderTool(tool))}
                   </div>
                 ) : null}
               </BubbleContent>
@@ -296,19 +422,38 @@ export function Transcript({
   onStartWikiRun,
   emptyActions = true,
   produceUnits = [],
+  focusedUnitId = null,
+  runFocusDefault,
 }: TranscriptProps) {
   const { t } = useI18n();
+  const hasProduce = produceUnits.length > 0;
+  const nestProduce = messagesHaveWikiProduce(messages);
+  const hostProduceToolId = lastWikiProduceToolId(messages);
+  const [runFocus, setRunFocus] = useState(
+    () => runFocusDefault ?? (hasProduce || nestProduce),
+  );
+
+  // Auto-enable run focus when produce starts (first time).
+  const showRunFocusToggle = hasProduce || nestProduce || messages.some((m) => m.product);
+
+  const visibleMessages = useMemo(
+    () => (runFocus ? filterRunFocus(messages) : messages),
+    [messages, runFocus],
+  );
 
   let activeGateMessageId: string | null = null;
   if (pendingGate) {
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      const m = messages[i]!;
+    for (let i = visibleMessages.length - 1; i >= 0; i -= 1) {
+      const m = visibleMessages[i]!;
       if (m.product?.kind === "gate" && m.product.gate === pendingGate.gate) {
         activeGateMessageId = m.id;
         break;
       }
     }
   }
+
+  // Fallback trail only when units exist but no wiki_produce tool on the timeline.
+  const showFallbackTrail = hasProduce && !nestProduce;
 
   if (messages.length === 0 && produceUnits.length === 0) {
     return (
@@ -343,47 +488,69 @@ export function Transcript({
   }
 
   return (
-    <MessageScrollerProvider autoScroll>
-      <MessageScroller data-testid="agent-transcript" className={cn("min-h-0 flex-1", className)}>
-        <MessageScrollerViewport>
-          <MessageScrollerContent className="gap-3 px-3 py-3 md:px-4">
-            {messages.map((m) => (
-              <MessageScrollerItem key={m.id} messageId={m.id} scrollAnchor={m.role === "user"}>
-                {m.product ? (
-                  <ProductStrip
-                    message={m}
-                    showGateActions={m.id === activeGateMessageId}
-                    pendingGate={pendingGate}
-                    gateBusy={gateBusy}
-                    onResumeGate={onResumeGate}
-                  />
-                ) : (
-                  <ChatMessage message={m} />
-                )}
-              </MessageScrollerItem>
-            ))}
-            {produceUnits.length > 0 ? (
-              <MessageScrollerItem messageId="produce-units" scrollAnchor={false}>
-                <div
-                  className="flex w-full min-w-0 flex-col items-center gap-2"
-                  data-testid="produce-units"
-                >
-                  <p className="w-full max-w-[min(100%,42rem)] text-[11px] font-medium text-muted-foreground">
-                    {t.agentWorkspace.produceUnitsTitle}
-                  </p>
-                  {produceUnits.map((unit) => (
-                    <ProduceUnitCard
-                      key={unit.unitId ?? `${unit.role}-${unit.status}`}
-                      unit={unit}
+    <div className={cn("flex min-h-0 flex-1 flex-col", className)}>
+      {showRunFocusToggle ? (
+        <div className="flex shrink-0 items-center justify-end gap-1 border-b border-border/50 px-3 py-1">
+          <Button
+            type="button"
+            size="xs"
+            variant={runFocus ? "secondary" : "ghost"}
+            data-testid="transcript-run-focus"
+            data-active={runFocus ? "true" : "false"}
+            onClick={() => setRunFocus((v) => !v)}
+            className="text-[11px]"
+          >
+            <FilterIcon data-icon="inline-start" className="size-3" />
+            {runFocus ? t.agentWorkspace.modeWikiRun : t.agentWorkspace.modeChat}
+          </Button>
+        </div>
+      ) : null}
+      <MessageScrollerProvider autoScroll>
+        <MessageScroller data-testid="agent-transcript" className="min-h-0 flex-1">
+          <MessageScrollerViewport>
+            <MessageScrollerContent className="gap-3 px-3 py-3 md:px-4">
+              {visibleMessages.map((m) => (
+                <MessageScrollerItem key={m.id} messageId={m.id} scrollAnchor={m.role === "user"}>
+                  {m.product ? (
+                    <ProductStrip
+                      message={m}
+                      showGateActions={m.id === activeGateMessageId}
+                      pendingGate={pendingGate}
+                      gateBusy={gateBusy}
+                      onResumeGate={onResumeGate}
                     />
-                  ))}
-                </div>
-              </MessageScrollerItem>
-            ) : null}
-          </MessageScrollerContent>
-        </MessageScrollerViewport>
-        <MessageScrollerButton aria-label={t.agentWorkspace.jumpToLatest} />
-      </MessageScroller>
-    </MessageScrollerProvider>
+                  ) : (
+                    <ChatMessage
+                      message={m}
+                      produceUnits={produceUnits}
+                      focusedUnitId={focusedUnitId}
+                      hostProduceToolId={hostProduceToolId}
+                    />
+                  )}
+                </MessageScrollerItem>
+              ))}
+              {showFallbackTrail ? (
+                <MessageScrollerItem messageId="produce-units-fallback" scrollAnchor={false}>
+                  <div
+                    className="flex w-full min-w-0 flex-col items-center gap-2"
+                    data-testid="produce-units"
+                  >
+                    <p className="w-full max-w-[min(100%,42rem)] text-[11px] font-medium text-muted-foreground">
+                      {t.agentWorkspace.produceUnitsTitle}
+                    </p>
+                    <ProduceTrail
+                      units={produceUnits}
+                      focusedUnitId={focusedUnitId}
+                      className="max-w-[min(100%,42rem)]"
+                    />
+                  </div>
+                </MessageScrollerItem>
+              ) : null}
+            </MessageScrollerContent>
+          </MessageScrollerViewport>
+          <MessageScrollerButton aria-label={t.agentWorkspace.jumpToLatest} />
+        </MessageScroller>
+      </MessageScrollerProvider>
+    </div>
   );
 }

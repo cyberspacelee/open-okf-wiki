@@ -16,6 +16,15 @@ export type AgentToolCall = {
   status: "pending" | "running" | "done" | "error";
 };
 
+/**
+ * Ordered transcript parts for one assistant turn (Pi content[] order).
+ * Tools are referenced by id; execution status lives on `AgentMessage.tools`.
+ */
+export type AgentContentPart =
+  | { type: "text"; text: string }
+  | { type: "thinking"; thinking: string }
+  | { type: "tool"; toolId: string };
+
 export type PlanProgressPage = {
   path: string;
   status: "pending" | "writing" | "done" | string;
@@ -46,6 +55,7 @@ export type AgentProductMeta = {
 /**
  * Thin view model derived from Pi message snapshots (not a dual store).
  * `content` / `thinking` / `tools` come from content blocks or tool_execution_*.
+ * `parts` preserves interleaving (text → tool → text) for chronological render.
  */
 export type AgentMessage = {
   id: string;
@@ -56,6 +66,11 @@ export type AgentMessage = {
   thinkingStatus?: "streaming" | "done";
   createdAt: string;
   tools?: AgentToolCall[];
+  /**
+   * Chronological body parts (text / thinking / tool refs).
+   * When present, UI renders these instead of dumping all text then all tools.
+   */
+  parts?: AgentContentPart[];
   status?: string;
   /** Provider / agent error when status is "error". */
   errorMessage?: string;

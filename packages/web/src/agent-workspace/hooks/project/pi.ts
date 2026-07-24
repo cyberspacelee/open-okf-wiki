@@ -16,7 +16,7 @@ import {
   makeId,
   nowIso,
 } from "./format.ts";
-import type { AgentMessage, AgentToolCall, PiStreamState } from "./types.ts";
+import type { AgentContentPart, AgentMessage, AgentToolCall, PiStreamState } from "./types.ts";
 
 export function createPiStreamState(seed: AgentMessage[] = []): PiStreamState {
   let lastAssistantId: string | null = null;
@@ -84,9 +84,92 @@ function extractToolCallsFromMessage(
 }
 
 /**
+ * Build chronological parts from Pi content[] (text / thinking / toolCall order).
+ * Tools that only exist via tool_execution_* (not yet in content) append at end.
+ */
+function extractPartsFromMessage(
+  message: unknown,
+  tools: AgentToolCall[] | undefined,
+  prevParts?: AgentContentPart[],
+): AgentContentPart[] | undefined {
+  const parts: AgentContentPart[] = [];
+  const toolIdsInContent = new Set<string>();
+
+  if (isRecord(message) && Array.isArray(message.content)) {
+    let textBuf = "";
+    let thinkingBuf = "";
+    const flushText = () => {
+      if (textBuf) {
+        parts.push({ type: "text", text: textBuf });
+        textBuf = "";
+      }
+    };
+    const flushThinking = () => {
+      if (thinkingBuf) {
+        parts.push({ type: "thinking", thinking: thinkingBuf });
+        thinkingBuf = "";
+      }
+    };
+    for (const block of message.content) {
+      if (!isRecord(block)) continue;
+      if (block.type === "thinking" && typeof block.thinking === "string") {
+        flushText();
+        thinkingBuf += block.thinking;
+        continue;
+      }
+      if (block.type === "text" && typeof block.text === "string") {
+        flushThinking();
+        textBuf += block.text;
+        continue;
+      }
+      if (block.type === "toolCall") {
+        flushText();
+        flushThinking();
+        const id = typeof block.id === "string" ? block.id : makeId("tool");
+        toolIdsInContent.add(id);
+        parts.push({ type: "tool", toolId: id });
+      }
+    }
+    flushText();
+    flushThinking();
+  }
+
+  // Preserve tools that only arrived via tool_execution_* (append if missing).
+  const seenTool = new Set(
+    parts.filter((p): p is { type: "tool"; toolId: string } => p.type === "tool").map((p) => p.toolId),
+  );
+  for (const t of tools ?? []) {
+    if (!seenTool.has(t.id)) {
+      parts.push({ type: "tool", toolId: t.id });
+      seenTool.add(t.id);
+    }
+  }
+
+  // If snapshot had no content array but we had prior parts, keep prior structure
+  // and merge new tool ids (tool_execution before content toolCall block).
+  if (parts.length === 0 && prevParts?.length) {
+    const merged = prevParts.slice();
+    const priorToolIds = new Set(
+      merged
+        .filter((p): p is { type: "tool"; toolId: string } => p.type === "tool")
+        .map((p) => p.toolId),
+    );
+    for (const t of tools ?? []) {
+      if (!priorToolIds.has(t.id)) {
+        merged.push({ type: "tool", toolId: t.id });
+        priorToolIds.add(t.id);
+      }
+    }
+    return merged;
+  }
+
+  return parts.length > 0 ? parts : undefined;
+}
+
+/**
  * Build thin AgentMessage from a Pi assistant message snapshot.
  * Snapshot is authority for text/thinking/toolCall list; prior tools keep
- * execution status/output.
+ * execution status/output. `parts` preserves content[] interleaving.
  */
 function assistantFromSnapshot(
   message: unknown,
@@ -102,6 +185,7 @@ function assistantFromSnapshot(
   const err = extractAssistantError(message);
   const isError = err.isError || opts.status === "error";
   const tools = extractToolCallsFromMessage(message, opts.prev?.tools);
+  const parts = extractPartsFromMessage(message, tools, opts.prev?.parts);
 
   let thinkingStatus = opts.prev?.thinkingStatus;
   if (thinking) {
@@ -120,6 +204,7 @@ function assistantFromSnapshot(
     thinkingStatus: thinking ? thinkingStatus : opts.prev?.thinkingStatus,
     createdAt: opts.prev?.createdAt ?? opts.ts,
     tools,
+    parts,
     status: isError ? "error" : opts.status,
     errorMessage: err.errorMessage ?? opts.prev?.errorMessage,
   };
@@ -143,7 +228,15 @@ function patchToolsOnAssistant(
       status: patch.status ?? "running",
     });
   }
-  return { ...msg, tools };
+  // Keep parts in chronological order: add tool part if missing.
+  let parts = msg.parts?.slice();
+  if (parts) {
+    const has = parts.some((p) => p.type === "tool" && p.toolId === toolCallId);
+    if (!has) parts = [...parts, { type: "tool", toolId: toolCallId }];
+  } else {
+    parts = [{ type: "tool", toolId: toolCallId }];
+  }
+  return { ...msg, tools, parts };
 }
 
 function updateToolInState(

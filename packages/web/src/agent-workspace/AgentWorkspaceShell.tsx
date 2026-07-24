@@ -2,11 +2,11 @@
  * Agent Workspace 3-pane shell (ADR 0030 / 0031 WP6).
  *
  * left: session list · center: transcript + composer · right: context panels
- * Produce trail = produceUnits cards on the transcript (SSE/cold okf.produce_progress).
+ * Produce trail nests under the wiki_produce tool card on the transcript.
  */
 
 import { LayoutListIcon, PanelRightIcon } from "lucide-react";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -105,6 +105,13 @@ export function AgentWorkspaceShell({
   const isMobile = useIsMobile();
   const [leftOpen, setLeftOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
+  const [focusedUnitId, setFocusedUnitId] = useState<string | null>(null);
+
+  const handleFocusUnit = useCallback((unitId: string) => {
+    setFocusedUnitId(unitId);
+    // On mobile, close the agents sheet so the transcript card is visible.
+    setRightOpen(false);
+  }, []);
 
   const sessionList = (
     <SessionList
@@ -113,6 +120,7 @@ export function AgentWorkspaceShell({
       onSelect={(id) => {
         onSelectSession(id);
         setLeftOpen(false);
+        setFocusedUnitId(null);
       }}
       onCreate={onCreateSession}
       onDelete={onDeleteSession}
@@ -131,6 +139,8 @@ export function AgentWorkspaceShell({
       phase={phase}
       recentRuns={recentRuns}
       produceUnits={produceUnits}
+      focusedUnitId={focusedUnitId}
+      onFocusUnit={handleFocusUnit}
     />
   );
 
@@ -187,6 +197,7 @@ export function AgentWorkspaceShell({
             phase={phase}
             onStartWikiRun={onStartWikiRun}
             produceUnits={produceUnits}
+            focusedUnitId={focusedUnitId}
           />
           <Composer
             input={input}

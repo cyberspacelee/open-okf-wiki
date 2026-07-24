@@ -487,7 +487,7 @@ export const zh: MessageTree = {
     waitingForEvents: "等待事件…",
     jumpToLatest: "跳到最新",
     agentTreeTitle: "代理",
-    agentTreeEmpty: "Wiki Run 期间产出单元卡片会出现在时间线；实时阶段见上方状态。",
+    agentTreeEmpty: "产出单元嵌在时间线 wiki_produce 工具卡内。点击一行可定位并展开。",
     agentTreeNoRun: "尚未关联 Run — 启动 Wiki Run 后可见产出进度。",
     produceUnitsTitle: "产出",
     produceUnitRole: {

@@ -48,6 +48,46 @@ describe("produce progress (onProgress)", () => {
     assert.equal(u.status, "running");
   });
 
+  it("builds chronological trail: text → tool → text", () => {
+    const r = createProgressTracker({
+      unitId: "leaf-trail",
+      role: "leaf",
+    });
+    r.open();
+    r.onPiEvent("message_update", {
+      type: "message_update",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "before tool" }],
+      },
+    });
+    r.onPiEvent("tool_execution_start", {
+      type: "tool_execution_start",
+      toolCallId: "tc1",
+      toolName: "read",
+      args: { path: "a.ts" },
+    });
+    r.onPiEvent("message_update", {
+      type: "message_update",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "before tool" },
+          { type: "toolCall", id: "tc1", name: "read", arguments: { path: "a.ts" } },
+          { type: "text", text: "after tool" },
+        ],
+      },
+    });
+    const trail = r.get().trail ?? [];
+    assert.equal(trail.length, 3);
+    assert.equal(trail[0]!.kind, "message");
+    if (trail[0]!.kind === "message") assert.equal(trail[0]!.text, "before tool");
+    assert.equal(trail[1]!.kind, "tool");
+    if (trail[1]!.kind === "tool") assert.equal(trail[1]!.tool.toolCallId, "tc1");
+    assert.equal(trail[2]!.kind, "message");
+    if (trail[2]!.kind === "message") assert.equal(trail[2]!.text, "after tool");
+  });
+
   it("tracks tools by toolCallId through start/update/end", () => {
     const r = createProgressTracker({
       unitId: "leaf-tools",

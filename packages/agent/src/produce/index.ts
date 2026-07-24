@@ -17,6 +17,7 @@ export {
   type ProduceProgressPhase,
   type ProduceProgressStatus,
   type ProduceProgressTool,
+  type ProduceProgressTrailItem,
   type ProduceProgressTracker,
   recordingProduceEvents,
   silentProduceEvents,

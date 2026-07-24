@@ -35,6 +35,14 @@ export type ProduceProgressMessage = {
 };
 
 /**
+ * Chronological trail: message segments interleaved with tools
+ * (text → tool → text), matching Pi turn order.
+ */
+export type ProduceProgressTrailItem =
+  | { kind: "message"; text?: string; thinking?: string }
+  | { kind: "tool"; tool: ProduceProgressTool };
+
+/**
  * Host-local produce unit progress (not a product inject / not work_unit).
  * Fold last-by-unitId on the host if desired; agent never emits product SSE.
  */
@@ -47,6 +55,8 @@ export type ProduceProgress = {
   summary?: string;
   tools?: ProduceProgressTool[];
   message?: ProduceProgressMessage;
+  /** Ordered message/tool trail for operator UI interleaving. */
+  trail?: ProduceProgressTrailItem[];
   error?: string;
   receiptPath?: string;
 };
@@ -144,14 +154,6 @@ export function messageFromPiContent(content: unknown): ProduceProgressMessage |
   return out;
 }
 
-function messageFromPayload(payload: unknown): ProduceProgressMessage | undefined {
-  if (!isRecord(payload)) return undefined;
-  if (!("message" in payload)) return undefined;
-  const msg = payload.message;
-  if (!isRecord(msg)) return undefined;
-  return messageFromPiContent(msg.content);
-}
-
 function toolFields(payload: unknown): {
   toolCallId?: string;
   toolName?: string;
@@ -184,9 +186,122 @@ export function createProgressTracker(opts: CreateProgressTrackerOpts): ProduceP
   let parentId = opts.parentId;
   let message: ProduceProgressMessage | undefined;
   const tools = new Map<string, ProduceProgressTool>();
+  /** Chronological trail: message segments and tools in arrival order. */
+  const trail: ProduceProgressTrailItem[] = [];
   let summary: string | undefined;
   let receiptPath: string | undefined;
   let error: string | undefined;
+
+  const upsertMessageTrail = (fromMsg: ProduceProgressMessage): void => {
+    message = fromMsg;
+    const last = trail[trail.length - 1];
+    if (last?.kind === "message") {
+      trail[trail.length - 1] = {
+        kind: "message",
+        ...(fromMsg.text !== undefined ? { text: fromMsg.text } : {}),
+        ...(fromMsg.thinking !== undefined ? { thinking: fromMsg.thinking } : {}),
+      };
+    } else {
+      trail.push({
+        kind: "message",
+        ...(fromMsg.text !== undefined ? { text: fromMsg.text } : {}),
+        ...(fromMsg.thinking !== undefined ? { thinking: fromMsg.thinking } : {}),
+      });
+    }
+  };
+
+  /**
+   * When the Pi message snapshot includes toolCall blocks, rebuild the trail
+   * from content[] order so text segments stay split around tools (no
+   * "all text then all tools", and no duplicated pre-tool text after tools).
+   */
+  const rebuildTrailFromContent = (content: unknown): boolean => {
+    if (!Array.isArray(content)) return false;
+    const hasToolCall = content.some((b) => isRecord(b) && b.type === "toolCall");
+    if (!hasToolCall) return false;
+
+    const next: ProduceProgressTrailItem[] = [];
+    let textBuf = "";
+    let thinkingBuf = "";
+    const seenTools = new Set<string>();
+    const flushMessage = () => {
+      if (!textBuf && !thinkingBuf) return;
+      next.push({
+        kind: "message",
+        ...(textBuf ? { text: textBuf } : {}),
+        ...(thinkingBuf ? { thinking: thinkingBuf } : {}),
+      });
+      textBuf = "";
+      thinkingBuf = "";
+    };
+    for (const block of content) {
+      if (!isRecord(block)) continue;
+      if (block.type === "thinking" && typeof block.thinking === "string") {
+        thinkingBuf += block.thinking;
+        continue;
+      }
+      if (block.type === "text" && typeof block.text === "string") {
+        textBuf += block.text;
+        continue;
+      }
+      if (block.type === "toolCall") {
+        flushMessage();
+        const id = typeof block.id === "string" ? block.id : "";
+        if (!id) continue;
+        seenTools.add(id);
+        const existing = tools.get(id);
+        const name = typeof block.name === "string" ? block.name : existing?.toolName ?? "tool";
+        const args =
+          "arguments" in block
+            ? block.arguments
+            : "args" in block
+              ? block.args
+              : existing?.input;
+        const tool: ProduceProgressTool = {
+          toolCallId: id,
+          toolName: name,
+          state: existing?.state ?? "input-available",
+          ...(args !== undefined ? { input: args } : {}),
+          ...(existing?.output !== undefined ? { output: existing.output } : {}),
+          ...(existing?.errorText !== undefined ? { errorText: existing.errorText } : {}),
+        };
+        tools.set(id, tool);
+        next.push({ kind: "tool", tool });
+      }
+    }
+    flushMessage();
+    // Keep tools that only arrived via tool_execution_* (not yet in content).
+    for (const [id, tool] of tools) {
+      if (!seenTools.has(id)) next.push({ kind: "tool", tool });
+    }
+    trail.length = 0;
+    trail.push(...next);
+    return true;
+  };
+
+  const applyMessagePayload = (payload: unknown): void => {
+    if (!isRecord(payload) || !("message" in payload)) return;
+    const msg = payload.message;
+    if (!isRecord(msg)) return;
+    if (rebuildTrailFromContent(msg.content)) {
+      message = messageFromPiContent(msg.content);
+      return;
+    }
+    const fromMsg = messageFromPiContent(msg.content);
+    if (fromMsg) upsertMessageTrail(fromMsg);
+  };
+
+  const upsertToolTrail = (tool: ProduceProgressTool): void => {
+    tools.set(tool.toolCallId, tool);
+    const idx = trail.findIndex(
+      (item) => item.kind === "tool" && item.tool.toolCallId === tool.toolCallId,
+    );
+    if (idx >= 0) {
+      trail[idx] = { kind: "tool", tool };
+    } else {
+      trail.push({ kind: "tool", tool });
+    }
+  };
 
   const snapshot = (): ProduceProgress => {
     const toolsArr = tools.size > 0 ? Array.from(tools.values()) : undefined;
@@ -198,6 +313,7 @@ export function createProgressTracker(opts: CreateProgressTrackerOpts): ProduceP
       ...(parentId !== undefined ? { parentId } : {}),
       ...(message !== undefined ? { message } : {}),
       ...(toolsArr !== undefined ? { tools: toolsArr } : {}),
+      ...(trail.length > 0 ? { trail: trail.slice() } : {}),
       ...(summary !== undefined ? { summary } : {}),
       ...(receiptPath !== undefined ? { receiptPath } : {}),
       ...(error !== undefined ? { error } : {}),
@@ -247,16 +363,14 @@ export function createProgressTracker(opts: CreateProgressTrackerOpts): ProduceP
         case "message_start":
         case "turn_start": {
           markRunning();
-          const fromMsg = messageFromPayload(payload);
-          if (fromMsg) message = fromMsg;
+          applyMessagePayload(payload);
           return snapshot();
         }
 
         case "message_update":
         case "message_end": {
           markRunning();
-          const fromMsg = messageFromPayload(payload);
-          if (fromMsg) message = fromMsg;
+          applyMessagePayload(payload);
           return snapshot();
         }
 
@@ -264,7 +378,7 @@ export function createProgressTracker(opts: CreateProgressTrackerOpts): ProduceP
           markRunning();
           const t = toolFields(payload);
           if (!t.toolCallId) return snapshot();
-          tools.set(t.toolCallId, {
+          upsertToolTrail({
             toolCallId: t.toolCallId,
             toolName: t.toolName ?? "tool",
             state: "input-available",
@@ -278,7 +392,7 @@ export function createProgressTracker(opts: CreateProgressTrackerOpts): ProduceP
           const t = toolFields(payload);
           if (!t.toolCallId) return snapshot();
           const prev = tools.get(t.toolCallId);
-          tools.set(t.toolCallId, {
+          upsertToolTrail({
             toolCallId: t.toolCallId,
             toolName: t.toolName ?? prev?.toolName ?? "tool",
             state: "input-available",
@@ -298,7 +412,7 @@ export function createProgressTracker(opts: CreateProgressTrackerOpts): ProduceP
           if (!t.toolCallId) return snapshot();
           const prev = tools.get(t.toolCallId);
           const isError = t.isError === true;
-          tools.set(t.toolCallId, {
+          upsertToolTrail({
             toolCallId: t.toolCallId,
             toolName: t.toolName ?? prev?.toolName ?? "tool",
             state: isError ? "output-error" : "output-available",
@@ -322,8 +436,7 @@ export function createProgressTracker(opts: CreateProgressTrackerOpts): ProduceP
         case "turn_end":
         case "error": {
           markRunning();
-          const fromMsg = messageFromPayload(payload);
-          if (fromMsg) message = fromMsg;
+          applyMessagePayload(payload);
           if (kind === "error" && isRecord(payload)) {
             const errMsg =
               typeof payload.error === "string"

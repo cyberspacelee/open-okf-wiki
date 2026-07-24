@@ -25,6 +25,8 @@ export type ContextPanelsProps = {
   phase?: string | null;
   recentRuns?: StoredRunRecord[];
   produceUnits?: ProduceUnit[];
+  focusedUnitId?: string | null;
+  onFocusUnit?: (unitId: string) => void;
   className?: string;
 };
 
@@ -40,6 +42,49 @@ function EmptyHint({ text }: { text: string }) {
   return <p className="text-xs text-muted-foreground">{text}</p>;
 }
 
+function PlanPageList({
+  pages,
+}: {
+  pages: Array<{ path: string; purpose?: string }>;
+}) {
+  const n = pages.length;
+  if (n === 0) return null;
+  return (
+    <div
+      className="flex min-w-0 flex-col gap-1 rounded border border-border/60 bg-background/40"
+      data-testid="context-plan-pages"
+    >
+      <div className="sticky top-0 z-[1] border-b border-border/40 bg-background/90 px-2 py-1 text-[10px] font-medium text-muted-foreground backdrop-blur-sm">
+        {n} page{n === 1 ? "" : "s"}
+      </div>
+      <ul
+        className={cn(
+          "min-w-0 overflow-y-auto overscroll-contain px-1.5 py-1 font-mono text-[11px] leading-snug",
+          n > 20 ? "max-h-72" : n > 10 ? "max-h-56" : "max-h-48",
+        )}
+      >
+        {pages.map((page, i) => (
+          <li
+            key={page.path}
+            className="min-w-0 break-all rounded px-1.5 py-1.5 text-foreground/90 odd:bg-muted/25"
+            title={page.path}
+          >
+            <span className="mr-1.5 tabular-nums text-muted-foreground/70">
+              {String(i + 1).padStart(2, "0")}
+            </span>
+            {page.path}
+            {page.purpose ? (
+              <span className="mt-0.5 block font-sans text-[10px] leading-snug text-muted-foreground">
+                {page.purpose}
+              </span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export function ContextPanels({
   workspaceId,
   rootPath,
@@ -48,6 +93,8 @@ export function ContextPanels({
   phase = null,
   recentRuns = [],
   produceUnits = [],
+  focusedUnitId = null,
+  onFocusUnit,
   className,
 }: ContextPanelsProps) {
   const { t } = useI18n();
@@ -109,7 +156,9 @@ export function ContextPanels({
                             <span className="text-muted-foreground"> — {d.title}</span>
                           ) : null}
                           {d.scope ? (
-                            <span className="mt-0.5 block text-muted-foreground">{d.scope}</span>
+                            <span className="mt-0.5 block break-words text-muted-foreground">
+                              {d.scope}
+                            </span>
                           ) : null}
                         </li>
                       ))}
@@ -119,21 +168,7 @@ export function ContextPanels({
                 {plan.notes ? (
                   <p className="text-xs text-muted-foreground whitespace-pre-wrap">{plan.notes}</p>
                 ) : null}
-                <ul className="flex flex-col gap-1">
-                  {(plan.pages ?? []).map((page) => (
-                    <li
-                      key={page.path}
-                      className="rounded border border-border/60 px-2 py-1 font-mono text-[11px]"
-                    >
-                      {page.path}
-                      {page.purpose ? (
-                        <span className="mt-0.5 block font-sans text-muted-foreground">
-                          {page.purpose}
-                        </span>
-                      ) : null}
-                    </li>
-                  ))}
-                </ul>
+                <PlanPageList pages={plan.pages ?? []} />
               </div>
             )}
             <EmptyHint text={t.agentWorkspace.planJumpToGate} />
@@ -145,7 +180,13 @@ export function ContextPanels({
           className="mt-0 flex min-h-0 flex-1 flex-col data-hidden:hidden"
         >
           <PanelShell>
-            <AgentTree hasRun={Boolean(linkedRunId)} phase={phase} produceUnits={produceUnits} />
+            <AgentTree
+              hasRun={Boolean(linkedRunId)}
+              phase={phase}
+              produceUnits={produceUnits}
+              focusedUnitId={focusedUnitId}
+              onFocusUnit={onFocusUnit}
+            />
           </PanelShell>
         </TabsContent>
 
@@ -167,7 +208,7 @@ export function ContextPanels({
             <dl className="grid gap-2 text-xs">
               <div>
                 <dt className="text-muted-foreground">{t.agentWorkspace.linkedRun}</dt>
-                <dd className="mt-0.5 font-mono">{linkedRunId ?? "—"}</dd>
+                <dd className="mt-0.5 break-all font-mono">{linkedRunId ?? "—"}</dd>
               </div>
               <div>
                 <dt className="text-muted-foreground">{t.agentWorkspace.phase}</dt>

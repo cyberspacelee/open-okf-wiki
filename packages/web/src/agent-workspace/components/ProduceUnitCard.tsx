@@ -1,19 +1,25 @@
 /**
- * Expandable parent-visible produce unit card (framework bridge trail).
+ * Expandable produce unit card (framework bridge trail).
+ * Nested domain → leaf; expand only running/error (or focused from AgentTree).
  * Empty/running without message/tools → waiting, not "thinking".
  */
 
 import { CheckIcon, ChevronRightIcon, CircleAlertIcon, LayersIcon } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { useI18n } from "../../i18n";
 import type { ProduceUnit, ProduceUnitTool } from "../hooks/project/produce";
+import { produceUnitKey } from "../hooks/project/produce";
 import { ToolExecutionCard } from "./ToolExecutionCard";
 
 export type ProduceUnitCardProps = {
   unit: ProduceUnit;
   className?: string;
+  /** Force open + highlight when AgentTree focuses this unit (or a descendant). */
+  focusedUnitId?: string | null;
+  depth?: number;
 };
 
 function StatusGlyph({ status }: { status: string }) {
@@ -53,25 +59,57 @@ function toolToAgentCall(tool: ProduceUnitTool) {
   };
 }
 
-export function ProduceUnitCard({ unit, className }: ProduceUnitCardProps) {
+function unitContainsFocus(unit: ProduceUnit, focusedUnitId: string | null | undefined): boolean {
+  if (!focusedUnitId) return false;
+  if (produceUnitKey(unit) === focusedUnitId) return true;
+  return (unit.children ?? []).some((c) => unitContainsFocus(c, focusedUnitId));
+}
+
+export function ProduceUnitCard({
+  unit,
+  className,
+  focusedUnitId = null,
+  depth = 0,
+}: ProduceUnitCardProps) {
   const { t } = useI18n();
+  const cardRef = useRef<HTMLDivElement>(null);
+  const unitId = produceUnitKey(unit);
+  const isSelfFocused = focusedUnitId === unitId;
+  const focusInTree = unitContainsFocus(unit, focusedUnitId);
   const isRunning = unit.status === "running" || unit.status === "pending";
   const isError = unit.status === "failed";
   const settled = unit.status === "settled" || unit.status === "failed";
   const tools = unit.tools ?? [];
+  const trail = unit.trail;
+  const children = unit.children ?? [];
   const messageText = unit.message?.text?.trim() || "";
   const messageThinking = unit.message?.thinking?.trim() || "";
   const summary = unit.summary?.trim() || "";
   const error = unit.error?.trim() || "";
+  const hasTrail = Boolean(trail?.length);
   const hasDetail =
+    hasTrail ||
     Boolean(messageText) ||
     Boolean(messageThinking) ||
     Boolean(summary) ||
     Boolean(error) ||
     tools.length > 0 ||
-    Boolean(unit.receiptPath);
+    Boolean(unit.receiptPath) ||
+    children.length > 0;
 
-  const openDefault = isRunning || isError;
+  // Auto-open: running, error, or AgentTree focus path. Settled stays closed unless user opens.
+  const autoOpen = isRunning || isError || focusInTree;
+  const [open, setOpen] = useState(autoOpen);
+
+  useEffect(() => {
+    if (autoOpen) setOpen(true);
+    else if (!isRunning && !isError && !focusInTree) setOpen(false);
+  }, [autoOpen, isRunning, isError, focusInTree]);
+
+  useEffect(() => {
+    if (!isSelfFocused || !cardRef.current) return;
+    cardRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [isSelfFocused, focusedUnitId]);
 
   const title =
     unit.task?.trim() ||
@@ -85,40 +123,46 @@ export function ProduceUnitCard({ unit, className }: ProduceUnitCardProps) {
 
   return (
     <Collapsible
-      defaultOpen={openDefault}
+      open={open}
+      onOpenChange={setOpen}
       className={cn(
-        "group w-full min-w-0 max-w-[min(100%,42rem)] rounded-lg border text-xs",
+        "group w-full min-w-0 rounded-lg border text-xs transition-shadow",
+        depth > 0 && "ml-2 border-l-2 border-l-border/80",
         isError
           ? "border-destructive/40 bg-destructive/5"
           : isRunning
             ? "border-border/60 bg-muted/15"
             : "border-border/60 bg-muted/20",
+        isSelfFocused && "ring-2 ring-primary/50 ring-offset-1 ring-offset-background",
         className,
       )}
       data-testid="produce-unit-card"
-      data-unit-id={unit.unitId}
+      data-unit-id={unitId}
       data-unit-role={unit.role}
       data-unit-status={unit.status}
+      data-focused={isSelfFocused ? "true" : undefined}
     >
-      <CollapsibleTrigger className="flex w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left hover:bg-muted/40">
-        <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-panel-open:rotate-90" />
-        <StatusGlyph status={String(unit.status)} />
-        <LayersIcon
-          className={cn(
-            "size-3.5 shrink-0",
-            isError ? "text-destructive" : "text-muted-foreground",
-          )}
-        />
-        <span className="min-w-0 flex-1 truncate">
-          <span className={cn("font-medium", isError && "text-destructive")}>{title}</span>
-          <span className="ml-1.5 text-muted-foreground">{statusLabel}</span>
-          {unit.role ? (
-            <span className="ml-1.5 font-mono text-[10px] text-muted-foreground/80">
-              {unit.role}
-            </span>
-          ) : null}
-        </span>
-      </CollapsibleTrigger>
+      <div ref={cardRef}>
+        <CollapsibleTrigger className="flex w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left hover:bg-muted/40">
+          <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-panel-open:rotate-90" />
+          <StatusGlyph status={String(unit.status)} />
+          <LayersIcon
+            className={cn(
+              "size-3.5 shrink-0",
+              isError ? "text-destructive" : "text-muted-foreground",
+            )}
+          />
+          <span className="min-w-0 flex-1 truncate">
+            <span className={cn("font-medium", isError && "text-destructive")}>{title}</span>
+            <span className="ml-1.5 text-muted-foreground">{statusLabel}</span>
+            {unit.role ? (
+              <span className="ml-1.5 font-mono text-[10px] text-muted-foreground/80">
+                {unit.role}
+              </span>
+            ) : null}
+          </span>
+        </CollapsibleTrigger>
+      </div>
       <CollapsibleContent className="min-w-0 border-t border-border/40 px-2.5 py-2">
         {!hasDetail && isRunning ? (
           <div
@@ -134,26 +178,74 @@ export function ProduceUnitCard({ unit, className }: ProduceUnitCardProps) {
         {error ? (
           <p className="mb-1 whitespace-pre-wrap break-words text-destructive">{error}</p>
         ) : null}
-        {messageText ? (
-          <p className="mb-1 whitespace-pre-wrap break-words text-muted-foreground">
-            {messageText}
-          </p>
-        ) : null}
-        {messageThinking ? (
-          <pre className="okf-code-snippet mb-1 max-h-32 overflow-auto text-[11px] text-muted-foreground">
-            {messageThinking}
-          </pre>
-        ) : null}
+        {hasTrail ? (
+          <div className="flex min-w-0 flex-col gap-1" data-testid="produce-unit-trail">
+            {trail!.map((item, i) => {
+              if (item.kind === "message") {
+                const text = item.text?.trim() || "";
+                const thinking = item.thinking?.trim() || "";
+                if (!text && !thinking) return null;
+                return (
+                  <div key={`msg-${i}`} className="min-w-0">
+                    {thinking ? (
+                      <pre className="okf-code-snippet mb-0.5 max-h-32 overflow-auto text-[11px] text-muted-foreground">
+                        {thinking}
+                      </pre>
+                    ) : null}
+                    {text ? (
+                      <p className="whitespace-pre-wrap break-words text-muted-foreground">{text}</p>
+                    ) : null}
+                  </div>
+                );
+              }
+              return (
+                <ToolExecutionCard
+                  key={item.tool.toolCallId}
+                  tool={toolToAgentCall(item.tool)}
+                  settled={settled}
+                />
+              );
+            })}
+          </div>
+        ) : (
+          <>
+            {messageText ? (
+              <p className="mb-1 whitespace-pre-wrap break-words text-muted-foreground">
+                {messageText}
+              </p>
+            ) : null}
+            {messageThinking ? (
+              <pre className="okf-code-snippet mb-1 max-h-32 overflow-auto text-[11px] text-muted-foreground">
+                {messageThinking}
+              </pre>
+            ) : null}
+            {tools.length > 0 ? (
+              <div className="mt-1 flex min-w-0 flex-col gap-0.5">
+                {tools.map((tool) => (
+                  <ToolExecutionCard
+                    key={tool.toolCallId}
+                    tool={toolToAgentCall(tool)}
+                    settled={settled}
+                  />
+                ))}
+              </div>
+            ) : null}
+          </>
+        )}
         {unit.receiptPath ? (
           <p className="mb-1 font-mono text-[10px] text-muted-foreground">{unit.receiptPath}</p>
         ) : null}
-        {tools.length > 0 ? (
-          <div className="mt-1 flex min-w-0 flex-col gap-0.5">
-            {tools.map((tool) => (
-              <ToolExecutionCard
-                key={tool.toolCallId}
-                tool={toolToAgentCall(tool)}
-                settled={settled}
+        {children.length > 0 ? (
+          <div
+            className="mt-1.5 flex min-w-0 flex-col gap-1 border-t border-border/30 pt-1.5"
+            data-testid="produce-unit-children"
+          >
+            {children.map((child) => (
+              <ProduceUnitCard
+                key={child.unitId ?? `${child.role}-${child.status}`}
+                unit={child}
+                focusedUnitId={focusedUnitId}
+                depth={depth + 1}
               />
             ))}
           </div>

@@ -13,6 +13,7 @@ import {
   extractAssistantError,
   extractMessageText,
   extractMessageThinking,
+  buildProduceTree,
   foldProduceUnit,
   formatPayloadText,
   formatProductCardContent,
@@ -22,6 +23,7 @@ import {
   type PiStreamState,
   type ProduceUnit,
   parseProduceUnitPayload,
+  produceDisplayRoots,
   reducePiEvent,
   seedProduceUnits,
   viewMessages,
@@ -86,6 +88,35 @@ describe("extractMessageThinking / extractAssistantError", () => {
 });
 
 describe("reducePiEvent — snapshot streaming", () => {
+  it("preserves text/tool interleaving in parts", () => {
+    let state = createPiStreamState();
+    state = reducePiEvent(state, "message_start", {
+      type: "message_start",
+      message: { role: "assistant", content: [] },
+    });
+    state = reducePiEvent(state, "message_update", {
+      type: "message_update",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "before" },
+          { type: "toolCall", id: "t1", name: "read", arguments: { path: "a.ts" } },
+          { type: "text", text: "after" },
+        ],
+      },
+    });
+    const parts = state.streamingMessage?.parts ?? [];
+    assert.equal(parts.length, 3);
+    assert.equal(parts[0]!.type, "text");
+    if (parts[0]!.type === "text") assert.equal(parts[0]!.text, "before");
+    assert.equal(parts[1]!.type, "tool");
+    if (parts[1]!.type === "tool") assert.equal(parts[1]!.toolId, "t1");
+    assert.equal(parts[2]!.type, "text");
+    if (parts[2]!.type === "text") assert.equal(parts[2]!.text, "after");
+    assert.equal(state.streamingMessage?.content, "beforeafter");
+    assert.equal(state.streamingMessage?.tools?.[0]?.id, "t1");
+  });
+
   it("message_update replaces content from full message snapshot (not delta append)", () => {
     let state = createPiStreamState();
     state = reducePiEvent(state, "message_start", {
@@ -626,6 +657,47 @@ describe("foldProduceUnit / seedProduceUnits", () => {
     });
     assert.equal(units.length, 2);
     assert.equal(units[1]!.error, "nope");
+  });
+
+  it("appends new domain units after older ones (chronological)", () => {
+    let units: ProduceUnit[] = [];
+    units = foldProduceUnit(units, {
+      role: "domain",
+      status: "settled",
+      unitId: "domain-old",
+      task: "Auth",
+    });
+    units = foldProduceUnit(units, {
+      role: "domain",
+      status: "running",
+      unitId: "domain-new",
+      task: "Billing",
+    });
+    assert.equal(units.map((u) => u.unitId).join(","), "domain-old,domain-new");
+    assert.ok((units[0]!.seq ?? 0) < (units[1]!.seq ?? 0));
+  });
+
+  it("buildProduceTree nests leaf under domain; produceDisplayRoots unwraps root", () => {
+    let units: ProduceUnit[] = [];
+    for (const u of [
+      { role: "root", status: "running", unitId: "root" },
+      { role: "domain", status: "running", unitId: "domain-1", parentId: "root", task: "Auth" },
+      { role: "leaf", status: "settled", unitId: "leaf-1", parentId: "domain-1", task: "q1" },
+      { role: "planner", status: "settled", unitId: "planner", parentId: "root" },
+    ] as ProduceUnit[]) {
+      units = foldProduceUnit(units, u);
+    }
+    const tree = buildProduceTree(units);
+    assert.equal(tree.length, 1);
+    assert.equal(tree[0]!.unitId, "root");
+    assert.equal(tree[0]!.children?.length, 2);
+    const domain = tree[0]!.children!.find((c) => c.unitId === "domain-1");
+    assert.ok(domain);
+    assert.equal(domain!.children?.[0]?.unitId, "leaf-1");
+
+    const display = produceDisplayRoots(units);
+    assert.equal(display.length, 2);
+    assert.ok(display.every((u) => u.unitId !== "root"));
   });
 
   it("seeds from cold-load array and ignores garbage", () => {

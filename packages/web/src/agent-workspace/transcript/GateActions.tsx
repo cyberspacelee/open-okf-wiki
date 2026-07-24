@@ -61,23 +61,71 @@ export function GateActions({
       ) : null}
 
       {isPlan && pending.plan?.pages && pending.plan.pages.length > 0 ? (
-        <ul className="flex max-h-32 flex-col gap-0.5 overflow-y-auto rounded border border-border/60 bg-background/50 p-1.5 font-mono text-[11px]">
-          {pending.plan.pages.map((page) => (
-            <li key={page.path} className="truncate px-1 py-0.5">
-              {page.path}
-            </li>
-          ))}
-        </ul>
+        <div
+          className="flex min-w-0 flex-col gap-1 rounded border border-border/60 bg-background/50"
+          data-testid="agent-gate-plan-pages"
+        >
+          <div className="sticky top-0 z-[1] flex items-center justify-between gap-2 border-b border-border/40 bg-background/90 px-2 py-1 text-[10px] font-medium text-muted-foreground backdrop-blur-sm">
+            <span>
+              {pageCount} page{pageCount === 1 ? "" : "s"}
+            </span>
+            {pageCount > 12 ? <span className="font-normal">scroll</span> : null}
+          </div>
+          <ul
+            className={cn(
+              "min-w-0 overflow-y-auto overscroll-contain px-1.5 py-1 font-mono text-[11px] leading-snug",
+              // Cap height by rows, not a tiny fixed box — avoid crushing long lists.
+              pageCount > 20 ? "max-h-56" : pageCount > 10 ? "max-h-48" : "max-h-40",
+            )}
+          >
+            {pending.plan.pages.map((page, i) => (
+              <li
+                key={page.path}
+                className="min-w-0 break-all rounded px-1.5 py-1 text-foreground/90 odd:bg-muted/25"
+                title={page.path}
+              >
+                <span className="mr-1.5 tabular-nums text-muted-foreground/70">
+                  {String(i + 1).padStart(2, "0")}
+                </span>
+                {page.path}
+              </li>
+            ))}
+          </ul>
+        </div>
       ) : null}
 
       {!isPlan && pending.pages && pending.pages.length > 0 ? (
-        <ul className="flex max-h-32 flex-col gap-0.5 overflow-y-auto rounded border border-border/60 bg-background/50 p-1.5 font-mono text-[11px]">
-          {pending.pages.map((p) => (
-            <li key={p} className="truncate px-1 py-0.5">
-              {p}
-            </li>
-          ))}
-        </ul>
+        <div
+          className="flex min-w-0 flex-col gap-1 rounded border border-border/60 bg-background/50"
+          data-testid="agent-gate-publish-pages"
+        >
+          <div className="sticky top-0 z-[1] border-b border-border/40 bg-background/90 px-2 py-1 text-[10px] font-medium text-muted-foreground backdrop-blur-sm">
+            {pending.pages.length} page{pending.pages.length === 1 ? "" : "s"}
+          </div>
+          <ul
+            className={cn(
+              "min-w-0 overflow-y-auto overscroll-contain px-1.5 py-1 font-mono text-[11px] leading-snug",
+              pending.pages.length > 20
+                ? "max-h-56"
+                : pending.pages.length > 10
+                  ? "max-h-48"
+                  : "max-h-40",
+            )}
+          >
+            {pending.pages.map((p, i) => (
+              <li
+                key={p}
+                className="min-w-0 break-all rounded px-1.5 py-1 text-foreground/90 odd:bg-muted/25"
+                title={p}
+              >
+                <span className="mr-1.5 tabular-nums text-muted-foreground/70">
+                  {String(i + 1).padStart(2, "0")}
+                </span>
+                {p}
+              </li>
+            ))}
+          </ul>
+        </div>
       ) : null}
 
       {revising && isPlan ? (

@@ -26,14 +26,19 @@ export {
   viewMessages,
 } from "./project/pi.ts";
 export {
+  buildProduceTree,
   flattenProduceTree,
   foldProduceToolDetails,
   foldProduceUnit,
+  orderProduceUnits,
+  produceDisplayRoots,
+  produceUnitsActive,
   type ProduceUnit,
   type ProduceUnitMessage,
   type ProduceUnitRole,
   type ProduceUnitStatus,
   type ProduceUnitTool,
+  type ProduceUnitTrailItem,
   parseProduceUnitPayload,
   produceUnitFromToolPayload,
   produceUnitKey,
@@ -50,6 +55,7 @@ export {
 } from "./project/product.ts";
 export { formatProductCardContent } from "./project/product-copy.ts";
 export type {
+  AgentContentPart,
   AgentMessage,
   AgentMessageRole,
   AgentProductMeta,
