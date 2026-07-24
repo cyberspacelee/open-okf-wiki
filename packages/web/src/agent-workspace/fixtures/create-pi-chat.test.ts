@@ -15,15 +15,16 @@ describe("createPiChat fixtures", () => {
     assert.equal(systems.length, 0);
   });
 
-  it("projects thinking then text", () => {
+  it("projects thinking then text from message snapshots", () => {
     const messages = scriptThinkingThenText().project();
-    assert.equal(messages.length, 1);
-    assert.equal(messages[0]!.thinking, "Let me think");
-    assert.equal(messages[0]!.content, "Hello!");
-    assert.equal(messages[0]!.status, "done");
+    const assistants = messages.filter((m) => m.role === "assistant");
+    assert.equal(assistants.length, 1);
+    assert.equal(assistants[0]!.thinking, "Let me think");
+    assert.equal(assistants[0]!.content, "Hello!");
+    assert.equal(assistants[0]!.status, "done");
   });
 
-  it("projects product failed phase with work_block anchor", () => {
+  it("projects product failed phase as a thin strip (no body channel)", () => {
     const messages = createPiChat()
       .product({
         kind: "run_phase",
@@ -33,9 +34,7 @@ describe("createPiChat fixtures", () => {
         message: "freeze failed: dirty worktree",
       })
       .project();
-    // run_phase with runId also ensures a work_block anchor for that run.
-    assert.equal(messages.length, 2);
-    assert.ok(messages.some((m) => m.product?.kind === "work_block"));
+    assert.equal(messages.length, 1);
     const phase = messages.find((m) => m.product?.kind === "run_phase");
     assert.ok(phase);
     assert.equal(phase!.product?.phase, "failed");

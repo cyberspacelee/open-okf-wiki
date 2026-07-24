@@ -6,7 +6,7 @@
  * (stopReason "error"). We fail closed instead of inventing empty success.
  *
  * Live operator UI: raw Pi events are forwarded via `onPiEvent(kind, payload)`.
- * Callers reduce them with parent-visibility → work_unit (ADR 0031).
+ * Callers reduce them locally and call onProgress only — never product work_unit.
  */
 
 import type { Model } from "@earendil-works/pi-ai/compat";
@@ -46,13 +46,13 @@ export type RunChildSessionInput = {
   /** Soft timeout in ms (host abort via session.abort). */
   timeoutMs?: number;
   /**
-   * Stable operator-visible unit id (matches work_unit.unitId).
+   * Stable operator-visible unit id (matches ProduceProgress.unitId).
    * Defaults to the child role name when omitted.
    */
   unitId?: string;
   /**
-   * Forward live Pi events (kind + payload) for parent-visibility reduction.
-   * Callers typically wire: attachWorkUnitSink(...).onPiEvent
+   * Forward live Pi events (kind + payload) for local progress reduction.
+   * Callers typically wire: attachProgress(...).onPiEvent
    */
   onPiEvent?: (kind: string, payload: unknown) => void;
 };

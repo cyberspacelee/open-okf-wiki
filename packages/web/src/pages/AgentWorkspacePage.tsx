@@ -65,34 +65,6 @@ export function AgentWorkspacePage() {
     [setSearchParams],
   );
 
-  // Deep-link expand: ?unit=planner | leaf-… (timeline expand, not a drawer).
-  const unitFromUrl = searchParams.get("unit");
-  useEffect(() => {
-    if (!activeSessionId) return;
-    if (unitFromUrl && unitFromUrl !== agent.expandedUnitId) {
-      agent.setExpandedUnitId(unitFromUrl);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional one-way seed
-  }, [activeSessionId, unitFromUrl]);
-
-  const handleExpandedUnitIdChange = useCallback(
-    (unitId: string | null) => {
-      agent.setExpandedUnitId(unitId);
-      setSearchParams(
-        (prev) => {
-          const next = new URLSearchParams(prev);
-          // Drop legacy focusAgent if present
-          next.delete("focusAgent");
-          if (unitId) next.set("unit", unitId);
-          else next.delete("unit");
-          return next;
-        },
-        { replace: true },
-      );
-    },
-    [agent, setSearchParams],
-  );
-
   const boot = useCallback(async () => {
     if (!id) return;
     setLoading(true);
@@ -304,14 +276,12 @@ export function AgentWorkspacePage() {
           pendingGate={agent.pendingGate}
           gateBusy={agent.gateBusy}
           onResumeGate={(input) => void agent.resumeGate(input)}
+          produceUnits={agent.produceUnits}
           recentRuns={recentRuns}
           models={models}
           wikiModelProfileId={wikiModelProfileId}
           onWikiModelProfileIdChange={setWikiModelProfileId}
           defaultModelProfileId={workspace.model?.profileId ?? defaultModelProfileId}
-          units={agent.units}
-          expandedUnitId={agent.expandedUnitId}
-          onExpandedUnitIdChange={handleExpandedUnitIdChange}
         />
       )}
     </WorkspaceShell>

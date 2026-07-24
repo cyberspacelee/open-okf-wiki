@@ -12,11 +12,23 @@ import { defaultWikiRunSpec } from "@okf-wiki/contract";
 import { publishStagingToPublication, resolveSkillPath } from "@okf-wiki/core";
 import { piRunWorkDir } from "./pi/session-paths.js";
 import { resolveWikiSkillPaths } from "./pi/skill-paths.js";
-import type { ProduceEventSink } from "./produce/events.js";
+import { attachProgress, type ProduceEventSink } from "./produce/events.js";
 import { produceWithPi, shouldUsePiFixtureMode } from "./produce/live-pi.js";
 import { produceWiki } from "./produce/orchestrate.js";
-import { createParentVisibilityReducer } from "./produce/parent-visibility.js";
 import { planWikiSpec } from "./produce/plan.js";
+import {
+  beginParentWikiProduceTool,
+  type ParentToolEventEmit,
+  type ParentToolSessionManager,
+  type ParentWikiProduceToolHandle,
+  WIKI_PRODUCE_TOOL_NAME,
+} from "./produce/tools/parent-wiki-produce-tool.js";
+import {
+  createProduceProgressBridge,
+  type ProduceProgressBridge,
+  type ProduceProgressSessionManager,
+  type ProduceToolDetails,
+} from "./produce/tools/wiki-produce-progress.js";
 import { redactErrorMessage } from "./run-redact.js";
 import {
   markAwaitingPublish,
@@ -88,6 +100,25 @@ export type StartWikiRunInput = {
   sourcePathMap?: Map<string, string>;
   onEvent?: (event: WikiWorkflowJobEvent) => void;
   abortSignal?: AbortSignal;
+  /**
+   * Optional parent Operator Session manager for custom entries
+   * (`okf.produce_progress`, not LLM context).
+   */
+  parentSessionManager?: ProduceProgressSessionManager;
+  /**
+   * Optional host-driven parent wiki_produce tool (Pi tool lifecycle).
+   * When set, progress streams as tool_execution_* on the parent Session.
+   * Prefer this over inventing product body injects.
+   */
+  parentWikiProduce?: ParentWikiProduceToolHandle;
+  /**
+   * When parentWikiProduce is omitted but parent tool I/O is provided,
+   * startWikiRun begins the tool for the full start path.
+   */
+  parentToolIO?: {
+    sessionManager: ParentToolSessionManager & ProduceProgressSessionManager;
+    emit: ParentToolEventEmit;
+  };
 };
 
 export type ResumeWikiRunInput = {
@@ -109,6 +140,10 @@ export type ResumeWikiRunInput = {
   sourcePathMap?: Map<string, string>;
   onEvent?: (event: WikiWorkflowJobEvent) => void;
   abortSignal?: AbortSignal;
+  /** See StartWikiRunInput.parentSessionManager. */
+  parentSessionManager?: ProduceProgressSessionManager;
+  parentWikiProduce?: ParentWikiProduceToolHandle;
+  parentToolIO?: StartWikiRunInput["parentToolIO"];
 };
 
 function emit(
@@ -149,7 +184,87 @@ function resolveSkipPlanConfirm(input: StartWikiRunInput): boolean {
   return false;
 }
 
-function produceEventsFromJob(onEvent?: StartWikiRunInput["onEvent"]): ProduceEventSink {
+/**
+ * Build produce progress bridge.
+ *
+ * Live authority: parent wiki_produce tool onUpdate (tool_execution_update).
+ * Optional job produce_progress kept for adapters that listen without a parent tool.
+ * Cold: toolResult.details + okf.produce_progress custom entries.
+ */
+export function createWikiRunProduceBridge(opts: {
+  onEvent?: StartWikiRunInput["onEvent"];
+  parentSessionManager?: ProduceProgressSessionManager;
+  parentWikiProduce?: ParentWikiProduceToolHandle;
+  /** When true, also emit job produce_progress (legacy adapters). Default false when parent tool set. */
+  emitJobProduceProgress?: boolean;
+}): ProduceProgressBridge {
+  const hasParentTool = Boolean(opts.parentWikiProduce);
+  const emitJob =
+    opts.emitJobProduceProgress === true || (!hasParentTool && opts.onEvent !== undefined);
+  return createProduceProgressBridge({
+    sessionManager: opts.parentSessionManager,
+    onDetails: (details: ProduceToolDetails) => {
+      if (emitJob) {
+        emit(opts.onEvent, "produce_progress", details.status, details);
+      }
+    },
+    onTree: (tree: ProduceToolDetails) => {
+      try {
+        opts.parentWikiProduce?.onUpdate(tree);
+      } catch {
+        // never break produce
+      }
+    },
+  });
+}
+
+/** Complete parent wiki_produce tool from a terminal / post-produce result. */
+export function completeParentWikiProduceTool(
+  tool: ParentWikiProduceToolHandle | undefined,
+  bridge: ProduceProgressBridge | undefined,
+  result: { status: string; summary?: string; error?: string },
+): void {
+  if (!tool) return;
+  const details = bridge?.getDetails() ?? {
+    role: "root" as const,
+    status:
+      result.status === "failed" || result.status === "cancelled"
+        ? ("failed" as const)
+        : ("settled" as const),
+    summary: result.summary ?? result.error,
+    error: result.error,
+  };
+  const isError = result.status === "failed" || result.status === "cancelled";
+  try {
+    tool.complete({
+      details: {
+        ...details,
+        status: isError ? "failed" : details.status === "running" ? "settled" : details.status,
+        summary: result.summary ?? details.summary,
+        error: result.error ?? details.error,
+      },
+      isError,
+      summaryText: result.summary ?? result.error,
+    });
+  } catch {
+    // best-effort
+  }
+}
+
+/**
+ * Map produce sink → job events.
+ * Child trail: onProgress → bridge → parent tool onUpdate / optional produce_progress.
+ * Never product work_unit inject (ADR 0031).
+ */
+function produceEventsFromJob(
+  onEvent?: StartWikiRunInput["onEvent"],
+  bridge?: ProduceProgressBridge,
+): ProduceEventSink {
+  const progressBridge =
+    bridge ??
+    createWikiRunProduceBridge({
+      onEvent,
+    });
   return {
     progress: (p) =>
       emit(onEvent, "phase", p.phase, {
@@ -160,9 +275,12 @@ function produceEventsFromJob(onEvent?: StartWikiRunInput["onEvent"]): ProduceEv
       }),
     planProgress: (p) => emit(onEvent, "plan_progress", undefined, p),
     defects: (p) => emit(onEvent, "defects", p.summary, p),
-    workUnit: (p) => emit(onEvent, "work_unit", p.status, p),
+    onProgress: progressBridge.onProgress,
   };
 }
+
+export type { ParentToolEventEmit, ParentToolSessionManager, ParentWikiProduceToolHandle };
+export { beginParentWikiProduceTool, WIKI_PRODUCE_TOOL_NAME };
 
 type RoleModel = {
   model: Model<any>;
@@ -200,7 +318,7 @@ async function resolveRoleModels(
 
 /**
  * Materialize run workdir + run Planner before plan gate / produce.
- * Emits planning progress and a planner work_unit with parent-visible detail.
+ * Emits planning progress and planner onProgress (host-local; no work_unit).
  */
 async function discoverWikiPlan(input: {
   runId: string;
@@ -212,6 +330,9 @@ async function discoverWikiPlan(input: {
   sourcePathMap?: Map<string, string>;
   /** Operator notes to fold into Spec changelog. */
   notes?: string;
+  parentSessionManager?: ProduceProgressSessionManager;
+  /** Shared bridge across discovery + produce when available. */
+  progressBridge?: ProduceProgressBridge;
 }): Promise<WikiRunPlan> {
   const fixture = shouldUsePiFixtureMode({});
   const runWorkDir = piRunWorkDir(input.workspace.rootPath, input.runId);
@@ -242,17 +363,24 @@ async function discoverWikiPlan(input: {
   });
 
   const models = await resolveRoleModels(input.resolveModel, fixture);
-  const planner = createParentVisibilityReducer({
+  // Bridge: onProgress → ProduceToolDetails → produce_progress job event.
+  // Settle/fail may append okf.produce_progress custom entry (not work_unit).
+  const bridge =
+    input.progressBridge ??
+    createWikiRunProduceBridge({
+      onEvent: input.onEvent,
+      parentSessionManager: input.parentSessionManager,
+    });
+  const progressSink: ProduceEventSink = {
+    onProgress: bridge.onProgress,
+  };
+  const planner = attachProgress(progressSink, {
     unitId: "planner",
     role: "planner",
     task: "Discover domains, pages, and acceptance criteria from sources/",
     parentId: "root",
-    runId: input.runId,
   });
-  const emitUnit = (u: ReturnType<typeof planner.getUnit>): void => {
-    emit(input.onEvent, "work_unit", u.status, { ...u, runId: input.runId });
-  };
-  emitUnit(planner.open());
+  planner.open();
 
   try {
     const planned = await planWikiSpec({
@@ -269,7 +397,7 @@ async function discoverWikiPlan(input: {
       abortSignal: input.abortSignal,
       useDefaultSpec: fixture,
       unitId: "planner",
-      onPiEvent: (kind, payload) => emitUnit(planner.onPiEvent(kind, payload)),
+      onPiEvent: planner.onPiEvent,
     });
 
     let spec = planned.spec;
@@ -290,14 +418,14 @@ async function discoverWikiPlan(input: {
         `pages: ${(spec.pages ?? []).map((p) => p.path).join(", ")}`,
         `domains: ${(spec.domains ?? []).map((d) => d.id).join(", ")}`,
       ].join("\n");
-    emitUnit(planner.settle(summary.slice(0, 4000)));
+    planner.settle(summary.slice(0, 4000));
     emit(input.onEvent, "phase", "planning", {
       label: `plan ready (${spec.pages?.length ?? 0} pages)`,
     });
     return spec;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    emitUnit(planner.fail(msg.slice(0, 4000)));
+    planner.fail(msg.slice(0, 4000));
     throw err;
   }
 }
@@ -313,6 +441,8 @@ async function runProducePhase(input: {
   sourcePathMap?: Map<string, string>;
   /** When true, keep existing run workdir (after pre-gate plan discovery). */
   preserveWorkdir?: boolean;
+  parentSessionManager?: ProduceProgressSessionManager;
+  progressBridge?: ProduceProgressBridge;
 }): Promise<
   | { ok: true; pages: string[]; summary: string; wikiDir: string }
   | { ok: false; pages: string[]; summary: string; wikiDir: string; reasons: string[] }
@@ -340,6 +470,13 @@ async function runProducePhase(input: {
     skillPath: input.workspace.skillPath,
   }).catch(() => [] as string[]);
 
+  const bridge =
+    input.progressBridge ??
+    createWikiRunProduceBridge({
+      onEvent: input.onEvent,
+      parentSessionManager: input.parentSessionManager,
+    });
+
   const result = await produceWiki({
     runId: input.runId,
     workspace: input.workspace,
@@ -364,7 +501,7 @@ async function runProducePhase(input: {
     maxContextTokens: models.writer?.maxContextTokens,
     contextTargetTokens: input.workspace.limits?.contextTargetTokens,
     additionalSkillPaths: skillPaths,
-    onEvent: produceEventsFromJob(input.onEvent),
+    onEvent: produceEventsFromJob(input.onEvent, bridge),
   });
 
   if (result.status === "cancelled") {
@@ -511,6 +648,45 @@ export async function startWikiRun(input: StartWikiRunInput): Promise<WikiRunOrc
   });
   let preserveWorkdir = false;
 
+  // Host-driven parent wiki_produce tool (Pi tool_execution_* + JSONL messages).
+  let parentTool = input.parentWikiProduce;
+  let ownsParentTool = false;
+  if (!parentTool && input.parentToolIO) {
+    parentTool = beginParentWikiProduceTool({
+      sessionManager: input.parentToolIO.sessionManager,
+      emit: input.parentToolIO.emit,
+      runId: input.runId,
+    });
+    ownsParentTool = true;
+  }
+
+  const sessionManager =
+    input.parentSessionManager ??
+    (input.parentToolIO?.sessionManager as ProduceProgressSessionManager | undefined);
+
+  // One bridge for discovery + produce; streams tree to parent tool onUpdate.
+  const progressBridge = createWikiRunProduceBridge({
+    onEvent: input.onEvent,
+    parentSessionManager: sessionManager,
+    parentWikiProduce: parentTool,
+  });
+
+  const finishTool = (result: WikiWorkflowTerminal): WikiWorkflowTerminal => {
+    // Keep tool open across plan-gate HITL so resume can continue the same row.
+    if (result.suspended && result.suspendGate === "plan") {
+      return result;
+    }
+    // Produce body done (incl. publication gate / published / failed / cancelled).
+    if (ownsParentTool || input.parentWikiProduce) {
+      completeParentWikiProduceTool(parentTool, progressBridge, {
+        status: result.status,
+        summary: result.summary,
+        error: result.error,
+      });
+    }
+    return result;
+  };
+
   try {
     let plan: WikiRunPlan;
     if (shouldDiscover) {
@@ -524,6 +700,8 @@ export async function startWikiRun(input: StartWikiRunInput): Promise<WikiRunOrc
         skillRoot: input.skillRoot,
         sourcePathMap: input.sourcePathMap,
         notes: input.notes,
+        parentSessionManager: sessionManager,
+        progressBridge,
       });
       preserveWorkdir = true;
     } else {
@@ -537,6 +715,7 @@ export async function startWikiRun(input: StartWikiRunInput): Promise<WikiRunOrc
         summary: "Awaiting plan confirmation after source analysis",
       });
       emit(input.onEvent, "gate", "awaiting_plan", { plan: shell.plan });
+      // Tool stays open (running) until resume or decline.
       return {
         status: "awaiting_plan",
         plan: shell.plan,
@@ -559,30 +738,34 @@ export async function startWikiRun(input: StartWikiRunInput): Promise<WikiRunOrc
       skillRoot: input.skillRoot,
       sourcePathMap: input.sourcePathMap,
       preserveWorkdir,
+      parentSessionManager: sessionManager,
+      progressBridge,
     });
-    return afterProduce({
-      runId: input.runId,
-      workspace: input.workspace,
-      plan: shell.plan,
-      produced,
-      autoApprove: input.autoApprove,
-      shell,
-      onEvent: input.onEvent,
-      abortSignal: input.abortSignal,
-    });
+    return finishTool(
+      await afterProduce({
+        runId: input.runId,
+        workspace: input.workspace,
+        plan: shell.plan,
+        produced,
+        autoApprove: input.autoApprove,
+        shell,
+        onEvent: input.onEvent,
+        abortSignal: input.abortSignal,
+      }),
+    );
   } catch (err) {
     if (err instanceof Error && (err.name === "AbortError" || /cancel/i.test(err.message))) {
-      return cancelledResult(shell);
+      return finishTool(cancelledResult(shell));
     }
     const message = redactErrorMessage(err instanceof Error ? err.message : String(err));
     shell = markFailed(shell, message);
     emit(input.onEvent, "error", message);
-    return {
+    return finishTool({
       status: "failed",
       error: message,
       summary: message,
       shell,
-    };
+    });
   }
 }
 
@@ -619,22 +802,47 @@ export async function resumeWikiRun(
       feedback: input.resumeData.feedback,
     });
 
+    let parentTool = input.parentWikiProduce;
+    if (!parentTool && input.parentToolIO && gate === "plan") {
+      // Fresh tool if prior handle was lost (process restart after plan gate).
+      parentTool = beginParentWikiProduceTool({
+        sessionManager: input.parentToolIO.sessionManager,
+        emit: input.parentToolIO.emit,
+        runId: input.runId,
+        args: { resume: true },
+      });
+    }
+    const sessionManager =
+      input.parentSessionManager ??
+      (input.parentToolIO?.sessionManager as ProduceProgressSessionManager | undefined);
+
+    const finishTool = (result: WikiWorkflowTerminal): WikiWorkflowTerminal => {
+      if (result.suspended && result.suspendGate === "plan") return result;
+      completeParentWikiProduceTool(parentTool, progressBridgeRef.bridge, {
+        status: result.status,
+        summary: result.summary,
+        error: result.error,
+      });
+      return result;
+    };
+    const progressBridgeRef: { bridge?: ProduceProgressBridge } = {};
+
     if (shell.phase === "cancelled") {
-      return {
+      return finishTool({
         status: "cancelled",
         plan: shell.plan,
         summary: shell.summary ?? "Plan declined",
         shell,
-      };
+      });
     }
     if (shell.phase === "publication_declined") {
-      return {
+      return finishTool({
         status: "publication_declined",
         pages: shell.pages,
         plan: shell.plan,
         summary: shell.summary ?? "Publication declined",
         shell,
-      };
+      });
     }
     if (shell.phase === "awaiting_plan") {
       return {
@@ -650,6 +858,12 @@ export async function resumeWikiRun(
     // Plan approved → produce (workdir already materialised during discovery)
     if (gate === "plan" && shell.phase === "idle" && shell.plan) {
       shell = markProducing(shell);
+      const progressBridge = createWikiRunProduceBridge({
+        onEvent: input.onEvent,
+        parentSessionManager: sessionManager,
+        parentWikiProduce: parentTool,
+      });
+      progressBridgeRef.bridge = progressBridge;
       const produced = await runProducePhase({
         runId: input.runId,
         workspace: input.workspace,
@@ -660,17 +874,21 @@ export async function resumeWikiRun(
         skillRoot: input.skillRoot,
         sourcePathMap: input.sourcePathMap,
         preserveWorkdir: true,
+        parentSessionManager: sessionManager,
+        progressBridge,
       });
-      return afterProduce({
-        runId: input.runId,
-        workspace: input.workspace,
-        plan: shell.plan,
-        produced,
-        autoApprove: input.autoApprove,
-        shell,
-        onEvent: input.onEvent,
-        abortSignal: input.abortSignal,
-      });
+      return finishTool(
+        await afterProduce({
+          runId: input.runId,
+          workspace: input.workspace,
+          plan: shell.plan,
+          produced,
+          autoApprove: input.autoApprove,
+          shell,
+          onEvent: input.onEvent,
+          abortSignal: input.abortSignal,
+        }),
+      );
     }
 
     // Publish approved — resumeGate already transitioned to published.
@@ -683,22 +901,22 @@ export async function resumeWikiRun(
         wikiDir,
         autoApprove: true,
       });
-      return {
+      return finishTool({
         status: "published",
         pages: shell.pages ?? input.pages,
         plan: shell.plan,
         summary: shell.summary,
         publicationPath: pub.publicationPath,
         shell,
-      };
+      });
     }
 
-    return {
+    return finishTool({
       status: "failed",
       error: `unexpected shell phase after resume: ${shell.phase}`,
       summary: shell.summary,
       shell,
-    };
+    });
   } catch (err) {
     if (err instanceof Error && (err.name === "AbortError" || /cancel/i.test(err.message))) {
       return cancelledResult(shell);

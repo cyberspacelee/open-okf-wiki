@@ -27,8 +27,6 @@ export function formatProductCardContent(
 ): string {
   const c = t.productCopy;
   switch (product.kind) {
-    case "work_block":
-      return "";
     case "run_phase": {
       const head = phaseHead(product.phase, t);
       const msg = product.label?.trim();
@@ -54,12 +52,6 @@ export function formatProductCardContent(
         });
       }
       return formatMessage(c.runLink, { id });
-    }
-    case "progress": {
-      const head = phaseHead(product.phase, t);
-      const label = product.label?.trim();
-      if (label) return formatMessage(c.withDetail, { head, detail: label });
-      return head;
     }
     case "plan_progress": {
       const pages = Array.isArray(product.pages) ? product.pages : [];

@@ -1,10 +1,10 @@
 /**
- * Pure projection of Operator Session → transcript + work units fold.
+ * Pure projection of Operator Session → transcript + thin product strips.
  *
  * ADR 0031:
- * - Parent Pi events → main timeline (applyPiEvent)
- * - Product whitelist → cards + work_block anchors; work_unit → units fold only
- * - WorkUnits is a fold cache only (last-by-unitId), not durability authority
+ * - Parent Pi events → snapshot reducer (reducePiEvent)
+ * - Product whitelist → thin cards only (no body channel)
+ * - Produce units → last-by-unitId fold from wiki_produce tool details / cold load
  */
 
 export {
@@ -20,16 +20,33 @@ export {
   type ToolDisplaySummary,
   toolPathLabel,
 } from "./project/format.ts";
-export { applyPiEvent } from "./project/pi.ts";
+export {
+  createPiStreamState,
+  reducePiEvent,
+  viewMessages,
+} from "./project/pi.ts";
+export {
+  flattenProduceTree,
+  foldProduceToolDetails,
+  foldProduceUnit,
+  type ProduceUnit,
+  type ProduceUnitMessage,
+  type ProduceUnitRole,
+  type ProduceUnitStatus,
+  type ProduceUnitTool,
+  parseProduceUnitPayload,
+  produceUnitFromToolPayload,
+  produceUnitKey,
+  produceUnitRoles,
+  seedProduceUnits,
+  WIKI_PRODUCE_TOOL_NAME,
+} from "./project/produce.ts";
 export {
   applyProductEvent,
-  ensureWorkBlockAnchors,
-  findWorkBlockIndex,
   isTerminalOrWaitingPhase,
   lastAssistantIsError,
   productCardContent,
   productMeta,
-  unitsForRun,
 } from "./project/product.ts";
 export { formatProductCardContent } from "./project/product-copy.ts";
 export type {
@@ -37,19 +54,8 @@ export type {
   AgentMessageRole,
   AgentProductMeta,
   AgentToolCall,
+  PiStreamState,
   PlanProgressPage,
   ProductSseLike,
-  StreamCursor,
   StreamingRefs,
-  WorkUnitEventLike,
-  WorkUnits,
-  WorkUnitView,
 } from "./project/types.ts";
-export {
-  applyWorkUnit,
-  unitRecentActivity,
-  workBlockProgress,
-  workUnitHasBody,
-  workUnitsFromList,
-  workUnitToolsToAgentTools,
-} from "./project/work-unit.ts";

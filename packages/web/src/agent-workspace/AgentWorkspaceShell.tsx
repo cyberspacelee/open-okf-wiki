@@ -1,8 +1,8 @@
 /**
- * Agent Workspace 3-pane shell (ADR 0030 / 0031 UI cut).
+ * Agent Workspace 3-pane shell (ADR 0030 / 0031 WP6).
  *
  * left: session list · center: transcript + composer · right: context panels
- * Work unit body lives only on the timeline Work block (expand).
+ * Produce trail = produceUnits cards on the transcript (SSE/cold okf.produce_progress).
  */
 
 import { LayoutListIcon, PanelRightIcon } from "lucide-react";
@@ -21,12 +21,12 @@ import type {
 import { ErrorBanner } from "../components/ErrorBanner";
 import { useI18n } from "../i18n";
 import { Composer } from "./composer/Composer";
+import type { ProduceUnit } from "./hooks/project/produce";
 import type {
   AgentMessage,
   AgentStatus,
   PendingGate,
   ResumeGateInput,
-  WorkUnits,
 } from "./hooks/useSessionAgent";
 import { ContextPanels } from "./panels/ContextPanels";
 import { SessionList } from "./session-list/SessionList";
@@ -59,14 +59,12 @@ export type AgentWorkspaceShellProps = {
   gateBusy?: boolean;
   onResumeGate?: (input: ResumeGateInput) => void | Promise<void>;
   recentRuns?: StoredRunRecord[];
+  produceUnits?: ProduceUnit[];
   className?: string;
   models?: ModelProfilePublic[];
   wikiModelProfileId?: string;
   onWikiModelProfileIdChange?: (profileId: string) => void;
   defaultModelProfileId?: string;
-  units?: WorkUnits;
-  expandedUnitId?: string | null;
-  onExpandedUnitIdChange?: (unitId: string | null) => void;
 };
 
 export function AgentWorkspaceShell({
@@ -96,14 +94,12 @@ export function AgentWorkspaceShell({
   gateBusy = false,
   onResumeGate,
   recentRuns = [],
+  produceUnits = [],
   className,
   models = [],
   wikiModelProfileId = "",
   onWikiModelProfileIdChange,
   defaultModelProfileId,
-  units = {},
-  expandedUnitId = null,
-  onExpandedUnitIdChange,
 }: AgentWorkspaceShellProps) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
@@ -132,15 +128,9 @@ export function AgentWorkspaceShell({
       workspace={workspace}
       plan={plan}
       linkedRunId={linkedRunId}
-      messages={messages}
       phase={phase}
       recentRuns={recentRuns}
-      units={units}
-      selectedUnitId={expandedUnitId}
-      onSelectUnit={(unitId) => {
-        onExpandedUnitIdChange?.(unitId);
-        setRightOpen(false);
-      }}
+      produceUnits={produceUnits}
     />
   );
 
@@ -194,11 +184,9 @@ export function AgentWorkspaceShell({
             pendingGate={pendingGate}
             gateBusy={gateBusy}
             onResumeGate={onResumeGate}
-            units={units}
             phase={phase}
-            expandedUnitId={expandedUnitId}
-            onExpandedUnitIdChange={onExpandedUnitIdChange}
             onStartWikiRun={onStartWikiRun}
+            produceUnits={produceUnits}
           />
           <Composer
             input={input}

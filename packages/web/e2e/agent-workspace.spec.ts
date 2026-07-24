@@ -1,34 +1,21 @@
 /**
- * Agent Workspace operator surface (ADR 0030 / 0031 UI cut).
+ * Agent Workspace operator surface (ADR 0030 / 0031 WP6).
  *
- * Route + shell, session chrome, fixture wiki run → Work block,
- * unit row empty-state contract (waiting-for-events, never Thinking alone).
+ * Route + shell, session chrome, fixture wiki run → phase/gate strips.
+ * Empty streaming uses waiting-for-events (never Thinking alone).
  *
  * E2E webServer always sets OKF_WIKI_AGENT_MODE=fixture (see playwright.config.ts).
  */
 import { expect, type Page, test } from "@playwright/test";
 import { addSourceViaUi, createTempGitRepo, createWorkspaceViaUi } from "./helpers";
 
-/** Assert unit expand empty-state is not mislabeled as model "Thinking" / 「思考中」. */
-async function expectUnitEmptyStateNotThinking(page: Page): Promise<void> {
-  const row = page.getByTestId("work-unit-row").first();
-  await expect(row).toBeVisible({ timeout: 10_000 });
-
+/** Assert empty streaming / waiting chrome is not mislabeled as model "Thinking". */
+async function expectWaitingNotThinking(page: Page): Promise<void> {
   const waiting = page.getByTestId("waiting-for-events");
-  const waitingCount = await waiting.count();
-  if (waitingCount > 0) {
-    await expect(waiting.first()).toBeVisible();
-    await expect(waiting.first()).toContainText(/Waiting for events|等待事件/i);
-    await expect(waiting.first()).not.toContainText(/Thinking|思考中/);
-    return;
-  }
-
-  const text = (await row.innerText()).replace(/\s+/g, " ").trim();
-  const thinkingOnly = /^(Thinking…?|思考中…?|Reasoning…?|推理中…?)$/i.test(text);
-  expect(
-    thinkingOnly,
-    `work-unit empty state must not be Thinking/Reasoning alone; got: ${JSON.stringify(text.slice(0, 200))}`,
-  ).toBe(false);
+  if ((await waiting.count()) === 0) return;
+  await expect(waiting.first()).toBeVisible();
+  await expect(waiting.first()).toContainText(/Waiting for events|等待事件/i);
+  await expect(waiting.first()).not.toContainText(/Thinking|思考中/);
 }
 
 async function startWikiRunFromComposer(page: Page): Promise<void> {
@@ -87,7 +74,7 @@ test.describe("agent workspace operator surface (ADR 0031)", () => {
     }
   });
 
-  test("fixture wiki run shows Work block; unit row is not Thinking-only empty", async ({
+  test("fixture wiki run shows phase or gate strip (no work_unit body channel)", async ({
     page,
   }) => {
     await createWorkspaceViaUi(page, "E2E Agent Work Surface");
@@ -100,33 +87,38 @@ test.describe("agent workspace operator surface (ADR 0031)", () => {
 
     await startWikiRunFromComposer(page);
 
-    const workBlock = page.getByTestId("work-block");
-    const workUnit = page.getByTestId("work-unit-row");
+    const phaseStrip = page.locator('[data-product-kind="run_phase"]');
+    const gateStrip = page.locator('[data-product-kind="gate"]');
     const gateApprove = page.getByTestId("agent-gate-approve");
+    const toolCard = page.getByTestId("tool-execution-card");
+    const waiting = page.getByTestId("waiting-for-events");
 
     await expect
       .poll(
         async () => {
-          if ((await workUnit.count()) > 0) return "units";
           if ((await gateApprove.count()) > 0) return "gate";
+          if ((await gateStrip.count()) > 0) return "gate-strip";
+          if ((await phaseStrip.count()) > 0) return "phase";
+          if ((await toolCard.count()) > 0) return "tool";
+          if ((await waiting.count()) > 0) return "waiting";
           return "pending";
         },
         {
           timeout: 90_000,
-          message: "expected work-unit-row or HITL gate after fixture wiki run",
+          message: "expected phase/gate/tool strip after fixture wiki run",
         },
       )
       .not.toBe("pending");
 
-    if ((await workUnit.count()) === 0 && (await gateApprove.count()) > 0) {
+    // Legacy work_unit body channel must not reappear.
+    await expect(page.getByTestId("work-block")).toHaveCount(0);
+    await expect(page.getByTestId("work-unit-row")).toHaveCount(0);
+
+    await expectWaitingNotThinking(page);
+
+    if ((await gateApprove.count()) > 0) {
       await gateApprove.click();
     }
-
-    await expect(workBlock.first()).toBeVisible({ timeout: 90_000 });
-    await expect(workUnit.first()).toBeVisible({ timeout: 30_000 });
-
-    await workUnit.first().click();
-    await expectUnitEmptyStateNotThinking(page);
   });
 
   test("workspaces picker loads and can open agent workspace route", async ({ page }) => {

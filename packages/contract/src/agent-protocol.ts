@@ -2,12 +2,13 @@
  * Pi agent harness protocol (ADR 0030 / 0031).
  *
  * Operator conversation truth = Pi JSONL under `.okf-wiki/pi-sessions/`.
- * Product injects (thin strip only) = `operator-trajectory.jsonl` (session-scoped).
+ * Product injects (thin strip only) = live SSE whitelist kinds; cold product
+ * state from session meta + Run Record (no second body store).
  * Live transport = AgentSession commands + SSE (pi + whitelist product).
  *
- * No UIMessage history. No agent_span / work_unit body channel. No child_pi / okfAgent side path.
+ * No UIMessage history. No agent_span / body channel. No child_pi / okfAgent side path.
  * Produce child visibility lands on the parent Session as framework-shaped units
- * (tool result / parent-visible card), not a second product body inject.
+ * (tool result / parent-visible card / okf.produce_progress custom entry).
  *
  * `source:"pi"` events are opaque parent AgentSession events: the contract only
  * freezes envelope shape (`source`, `kind`, `sessionId`, optional `payload` /
@@ -20,9 +21,6 @@ import { WikiRunPlanSchema, WikiRunRecordStatusSchema } from "./run.js";
 
 /** Relative dir under workspace meta: `{root}/.okf-wiki/pi-sessions/`. */
 export const PI_SESSIONS_DIR = "pi-sessions" as const;
-
-/** Filename for session-scoped product trajectory (beside Pi JSONL). */
-export const OPERATOR_TRAJECTORY_FILE = "operator-trajectory.jsonl" as const;
 
 // ---------------------------------------------------------------------------
 // Agent commands (client → server → AgentSession / WikiRunShell)

@@ -212,13 +212,10 @@ test("ProductSseEventSchema: rejects work_unit, progress, agent_span body channe
 });
 
 test("assertProductInject: whitelist only", () => {
-  assert.deepEqual([...PRODUCT_INJECT_KINDS], [
-    "run_link",
-    "run_phase",
-    "gate",
-    "plan_progress",
-    "defects",
-  ]);
+  assert.deepEqual(
+    [...PRODUCT_INJECT_KINDS],
+    ["run_link", "run_phase", "gate", "plan_progress", "defects"],
+  );
   for (const kind of PRODUCT_INJECT_KINDS) {
     assert.equal(isProductInjectKind(kind), true);
     assertProductInject(kind);

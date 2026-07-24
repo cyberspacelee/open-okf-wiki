@@ -144,4 +144,4 @@ export async function readAnalysisReceipt(
 }
 
 // Operator Work surface (operator-work.json) was removed under ADR 0031.
-// Parent-visible produce units live on session operator-trajectory.jsonl.
+// Parent-visible produce trail: Pi custom entries (okf.produce_progress) + parent tools.

@@ -16,7 +16,7 @@ import {
   type PiSessionSummary,
   safeParseAgentCommand,
 } from "@okf-wiki/contract";
-import { isPathInside, loadRun, loadWorkspaceById } from "@okf-wiki/core";
+import { isPathInside, listRuns, loadRun, loadWorkspaceById } from "@okf-wiki/core";
 import {
   getRecentAgentSessionEvents,
   subscribeAgentSessionEvents,
@@ -27,19 +27,13 @@ import {
   dispatchAgentCommand,
   ensurePiSessionsDir,
   ensureRegistered,
-  foldWorkUnits,
   getRegisteredAgentSession,
-  lastGateFromTrajectory,
-  lastLinkedRunId,
-  lastPlanFromTrajectory,
-  lastRunPhase,
-  loadTrajectory,
   registerAgentSession,
   resolveColdLoadPhase,
   resolveSessionHistoryFile,
 } from "../agent-session-registry.ts";
 import { readJsonBody, sendError, sendJson } from "../http-util.ts";
-import { readSessionMeta } from "../session/parent-session.ts";
+import { readSessionMeta, sessionMetaPath } from "../session/parent-session.ts";
 
 const HEARTBEAT_MS = 15_000;
 
@@ -285,7 +279,7 @@ export async function handleGetAgentSession(
   }
 
   // Ensure registry entry exists so re-entry after process restart can rehydrate
-  // runId / shell from durable trajectory + Run Record (not only live memory).
+  // runId / shell from session meta + Run Record (not only live memory).
   let reg = getRegisteredAgentSession(workspace.id, sessionId);
   if (!reg) {
     try {
@@ -302,21 +296,22 @@ export async function handleGetAgentSession(
     preferredPath,
   });
 
-  // Cold-load product trajectory (work_unit fold + last run_phase / plan / runId).
-  const trajectory = await loadTrajectory(workspace.rootPath, sessionId);
-  const workUnits = [...foldWorkUnits(trajectory).values()];
-  const trajRunId = lastLinkedRunId(trajectory);
-  const runId = reg?.runId ?? trajRunId;
-  const trajPlan = lastPlanFromTrajectory(trajectory);
-  const trajGate = lastGateFromTrajectory(trajectory);
-  const productPhase = resolveColdLoadPhase({
-    shellPhase: reg?.shell?.phase,
-    lastPhaseFromTrajectory: lastRunPhase(trajectory),
-  });
+  // Product state from live shell / session meta / Run Record (no trajectory body).
+  const diskMeta = await readSessionMeta(sessionMetaPath(workspace.rootPath, sessionId));
+  let runId = reg?.runId ?? diskMeta?.runId;
+  if (!runId) {
+    try {
+      const runs = await listRuns(workspace.rootPath);
+      const linked = runs.find((r) => r.sessionId === sessionId);
+      if (linked) runId = linked.runId;
+    } catch {
+      // ignore
+    }
+  }
 
   let runStatus: string | undefined;
-  let plan = reg?.shell?.plan ?? trajPlan ?? null;
-  let runPages: string[] | undefined = reg?.shell?.pages ?? trajGate?.pages ?? undefined;
+  let plan = reg?.shell?.plan ?? null;
+  let runPages: string[] | undefined = reg?.shell?.pages;
 
   if (runId) {
     try {
@@ -332,6 +327,11 @@ export async function handleGetAgentSession(
       // ignore
     }
   }
+
+  const productPhase = resolveColdLoadPhase({
+    shellPhase: reg?.shell?.phase,
+    runStatus,
+  });
 
   // Rehydrate in-memory registry so subsequent commands (resume / abort) see
   // the linked run after a cold re-entry.
@@ -376,29 +376,29 @@ export async function handleGetAgentSession(
 
   const pendingGateFromDurable =
     !pendingGateFromShell &&
-    (productPhase === "awaiting_plan" || productPhase === "awaiting_publish") &&
-    trajGate
+    (productPhase === "awaiting_plan" || productPhase === "awaiting_publish")
       ? {
-          gate: trajGate.gate,
-          plan: trajGate.plan ?? plan ?? undefined,
-          pages: trajGate.pages ?? runPages,
+          gate: productPhase === "awaiting_plan" ? ("plan" as const) : ("publication" as const),
+          plan: plan ?? undefined,
+          pages: runPages,
         }
-      : productPhase === "awaiting_plan" || productPhase === "awaiting_publish"
-        ? {
-            gate: productPhase === "awaiting_plan" ? ("plan" as const) : ("publication" as const),
-            plan: plan ?? undefined,
-            pages: runPages,
-          }
-        : null;
+      : null;
 
   sendJson(res, 200, {
     session: {
       id: sessionId,
       workspaceId: workspace.id,
-      title: reg?.title,
+      title: reg?.title ?? diskMeta?.title,
       sessionFile: history.sessionFile,
     },
+    /** Pi-native messages as-is (WP5); no product work fold. */
     messages: history.messages,
+    /**
+     * Parent-visible produce units from durable okf.produce_progress custom
+     * entries (last-by-unitId). Not workUnits / not product inject.
+     * Live mid-run updates arrive via SSE kind okf.produce_progress.
+     */
+    produceUnits: history.produceUnits ?? [],
     product: {
       runId,
       runStatus,
@@ -406,9 +406,8 @@ export async function handleGetAgentSession(
       busy: reg?.busy === true,
       pendingGate: pendingGateFromShell ?? pendingGateFromDurable,
       plan,
-      workUnits,
-      /** Full product inject history for cold project (optional for clients). */
-      trajectory,
+      /** Same list nested under product for clients that prefer one object. */
+      produceUnits: history.produceUnits ?? [],
     },
   });
 }

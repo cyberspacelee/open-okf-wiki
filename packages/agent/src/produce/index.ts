@@ -1,13 +1,23 @@
 /**
  * Produce module surface (Pi path, ADR 0030 / 0031).
  * Deep entry: produceWiki. Primitive: produceWithPi.
- * Operator body channel: parent-visible work_unit only.
+ * Child visibility: host-local onProgress → ProduceToolDetails bridge (WP3).
+ * No product work_unit inject.
  */
 
 export {
+  attachProgress,
+  type CreateProgressTrackerOpts,
+  createProgressTracker,
+  messageFromPiContent,
   type ProduceAgentRole,
   type ProduceEventSink,
+  type ProduceProgress,
+  type ProduceProgressMessage,
   type ProduceProgressPhase,
+  type ProduceProgressStatus,
+  type ProduceProgressTool,
+  type ProduceProgressTracker,
   recordingProduceEvents,
   silentProduceEvents,
 } from "./events.js";
@@ -25,17 +35,6 @@ export {
   type ProduceWikiResult,
   produceWiki,
 } from "./orchestrate.js";
-export {
-  attachWorkUnitSink,
-  type CreateParentVisibilityReducerOpts,
-  createParentVisibilityReducer,
-  messageFromPiContent,
-  type ParentUnitMessage,
-  type ParentUnitStatus,
-  type ParentUnitToolState,
-  type ParentUnitUpdate,
-  type ParentVisibilityReducer,
-} from "./parent-visibility.js";
 export { type PlanWikiSpecInput, type PlanWikiSpecResult, planWikiSpec } from "./plan.js";
 export { parsePlanFromAgentText } from "./plan-parse.js";
 export {
@@ -48,6 +47,16 @@ export {
   buildReceiptIndex,
   persistResearchReceipt,
 } from "./receipts.js";
+export {
+  aggregateProduceDetails,
+  type CreateProduceProgressBridgeOpts,
+  createProduceProgressBridge,
+  OKF_PRODUCE_PROGRESS_CUSTOM_TYPE,
+  type ProduceProgressBridge,
+  type ProduceProgressSessionManager,
+  type ProduceToolDetails,
+  progressToDetails,
+} from "./tools/wiki-produce-progress.js";
 export {
   buildSourceMap,
   normalizeWikiPath,

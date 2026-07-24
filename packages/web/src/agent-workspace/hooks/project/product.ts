@@ -1,20 +1,13 @@
 /**
- * Product inject projection: phase/gate/progress strips + work_block anchors.
+ * Product inject projection: thin phase/gate/progress strips only.
  *
- * work_unit body never lands as a message card — it updates the units fold
- * (applyWorkUnit). Timeline only gets a thin work_block anchor per runId so
- * the Work block has a stable scroll position (ADR 0031 UI cut).
+ * ADR 0031 whitelist: run_link | run_phase | gate | plan_progress | defects.
+ * No body channel. Produce trail is separate: SSE/cold `okf.produce_progress`
+ * → produceUnits fold (see project/produce.ts), not product inject.
  */
 
 import { makeId, nowIso } from "./format.ts";
-import type {
-  AgentMessage,
-  AgentProductMeta,
-  PlanProgressPage,
-  ProductSseLike,
-  WorkUnits,
-  WorkUnitView,
-} from "./types.ts";
+import type { AgentMessage, AgentProductMeta, PlanProgressPage, ProductSseLike } from "./types.ts";
 
 /**
  * English fallback body for product cards (tests / cold-load dump).
@@ -44,10 +37,6 @@ export function productCardContent(event: ProductSseLike): string {
       }
       return `run ${short}`;
     }
-    case "progress": {
-      const head = event.phase?.replace(/_/g, " ") || "progress";
-      return event.label?.trim() ? `${head} — ${event.label.trim()}` : head;
-    }
     case "plan_progress": {
       const pages = Array.isArray(event.pages) ? event.pages : [];
       const done = pages.filter(
@@ -56,8 +45,6 @@ export function productCardContent(event: ProductSseLike): string {
       ).length;
       return `pages ${done}/${pages.length}`;
     }
-    case "work_unit":
-      return "";
     case "defects": {
       if (event.clean) return `review clean · round ${event.round ?? 1}`;
       return `review defects ${event.defectCount ?? 0} · round ${event.round ?? 1}`;
@@ -96,21 +83,12 @@ export function productMeta(event: ProductSseLike): AgentProductMeta | null {
         runId: event.runId,
         status: event.status,
       };
-    case "progress":
-      return {
-        kind: "progress",
-        phase: event.phase,
-        runId: event.runId,
-        label: event.label,
-      };
     case "plan_progress":
       return {
         kind: "plan_progress",
         runId: event.runId,
         pages: event.pages,
       };
-    case "work_unit":
-      return null;
     case "defects":
       return {
         kind: "defects",
@@ -125,37 +103,6 @@ export function productMeta(event: ProductSseLike): AgentProductMeta | null {
       return _exhaustive;
     }
   }
-}
-
-/** Find work_block anchor for runId (newest-first). */
-export function findWorkBlockIndex(messages: readonly AgentMessage[], runId?: string): number {
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const m = messages[i]!;
-    if (m.product?.kind !== "work_block") continue;
-    if (runId && m.product.runId && m.product.runId !== runId) continue;
-    return i;
-  }
-  return -1;
-}
-
-function ensureWorkBlockAnchor(
-  prev: AgentMessage[],
-  runId: string | undefined,
-  timestamp?: string,
-): AgentMessage[] {
-  if (!runId?.trim()) return prev;
-  if (findWorkBlockIndex(prev, runId) >= 0) return prev;
-  return [
-    ...prev,
-    {
-      id: makeId("work_block"),
-      role: "system",
-      content: "",
-      createdAt: typeof timestamp === "string" ? timestamp : nowIso(),
-      product: { kind: "work_block", runId },
-      status: "work_block",
-    },
-  ];
 }
 
 /**
@@ -182,15 +129,21 @@ function upsertProductStrip(
 }
 
 /**
- * Apply a product inject to the timeline.
- * work_unit only ensures a work_block anchor (body → units fold).
+ * Apply a product inject to the timeline (thin strips only).
  *
- * Stateful strips (phase / gate / progress / run_link / plan_progress / defects)
+ * Stateful strips (phase / gate / run_link / plan_progress / defects)
  * upsert in place per run so the scroller never stacks identical job cards.
  */
 export function applyProductEvent(prev: AgentMessage[], event: ProductSseLike): AgentMessage[] {
-  if (event.kind === "work_unit") {
-    return ensureWorkBlockAnchor(prev, event.runId, event.timestamp);
+  // Ignore unknown / removed kinds defensively (e.g. stale ring frames).
+  if (
+    event.kind !== "run_phase" &&
+    event.kind !== "gate" &&
+    event.kind !== "run_link" &&
+    event.kind !== "plan_progress" &&
+    event.kind !== "defects"
+  ) {
+    return prev;
   }
 
   const meta = productMeta(event);
@@ -215,9 +168,8 @@ export function applyProductEvent(prev: AgentMessage[], event: ProductSseLike): 
     if (bootstrapIdle) {
       return prev;
     }
-    const base = ensureWorkBlockAnchor(prev, event.runId, event.timestamp);
-    const upserted = upsertProductStrip(base, card, "run_phase", event.runId);
-    return upserted ?? [...base, card];
+    const upserted = upsertProductStrip(prev, card, "run_phase", event.runId);
+    return upserted ?? [...prev, card];
   }
 
   if (event.kind === "plan_progress") {
@@ -238,13 +190,7 @@ export function applyProductEvent(prev: AgentMessage[], event: ProductSseLike): 
   }
 
   if (event.kind === "run_link") {
-    const base = ensureWorkBlockAnchor(prev, event.runId, event.timestamp);
-    const upserted = upsertProductStrip(base, card, "run_link", event.runId);
-    return upserted ?? [...base, card];
-  }
-
-  if (event.kind === "progress") {
-    const upserted = upsertProductStrip(prev, card, "progress", event.runId);
+    const upserted = upsertProductStrip(prev, card, "run_link", event.runId);
     return upserted ?? [...prev, card];
   }
 
@@ -254,50 +200,6 @@ export function applyProductEvent(prev: AgentMessage[], event: ProductSseLike): 
   }
 
   return [...prev, card];
-}
-
-/**
- * Cold-load: ensure every runId in the units fold has a work_block anchor.
- * Does not invent agent chips on the timeline.
- */
-export function ensureWorkBlockAnchors(messages: AgentMessage[], units: WorkUnits): AgentMessage[] {
-  let next = messages;
-  const seen = new Set<string>();
-  for (const unit of Object.values(units)) {
-    const runId = unit.runId?.trim();
-    if (!runId || seen.has(runId)) continue;
-    seen.add(runId);
-    next = ensureWorkBlockAnchor(next, runId);
-  }
-  return next;
-}
-
-/** Units for a run, stable order (parent-before-child when parentId known). */
-export function unitsForRun(units: WorkUnits, runId?: string | null): WorkUnitView[] {
-  const list = Object.values(units).filter((u) => {
-    if (!runId) return true;
-    return !u.runId || u.runId === runId;
-  });
-  const byId = new Map(list.map((u) => [u.unitId, u]));
-  const roots = list.filter((u) => !u.parentId || u.parentId === "root" || !byId.has(u.parentId));
-  const out: WorkUnitView[] = [];
-  const visit = (u: WorkUnitView) => {
-    out.push(u);
-    for (const child of list
-      .filter((c) => c.parentId === u.unitId)
-      .sort((a, b) => a.unitId.localeCompare(b.unitId))) {
-      visit(child);
-    }
-  };
-  for (const r of roots.sort((a, b) => a.unitId.localeCompare(b.unitId))) {
-    visit(r);
-  }
-  // Orphans already visited as roots; dedupe
-  const seen = new Set(out.map((u) => u.unitId));
-  for (const u of list) {
-    if (!seen.has(u.unitId)) out.push(u);
-  }
-  return out;
 }
 
 /** Whether a product run_phase should clear the busy/streaming chrome. */

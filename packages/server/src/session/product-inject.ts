@@ -1,8 +1,9 @@
 /**
  * Product inject boundary (ADR 0031).
  *
- * assertProductInject → live SSE bus → optional trajectory append.
- * Whitelist product injects only (ADR 0031).
+ * assertProductInject → live SSE bus only.
+ * Whitelist: run_link | run_phase | gate | plan_progress | defects.
+ * No trajectory body store (operator thin strip is live + Run Record / shell).
  */
 
 import {
@@ -13,7 +14,6 @@ import {
 } from "@okf-wiki/contract";
 import { updateRunRecord } from "@okf-wiki/core";
 import { emitProductAgentEvent } from "../agent-session-events.ts";
-import { appendTrajectory } from "./trajectory-store.ts";
 
 /** Minimal session target for product injects. */
 export type ProductInjectTarget = {
@@ -30,14 +30,13 @@ function nowIso(): string {
 }
 
 /**
- * Assert whitelist, fan out on the session SSE bus, append trajectory (async).
+ * Assert whitelist and fan out on the session SSE bus.
+ * Durability for cold-load is Run Record + session meta + Pi JSONL — not a
+ * second product body store.
  */
 export function injectProductEvent(target: ProductInjectTarget, event: ProductSseEvent): void {
   assertProductInject(event.kind);
   emitProductAgentEvent(target.workspaceId, event);
-  void appendTrajectory(target.workspaceRoot, target.sessionId, event).catch(() => {
-    // best-effort durability; live SSE still delivered
-  });
 }
 
 /** Emit run_phase product inject (+ optional Run Record status sync). */

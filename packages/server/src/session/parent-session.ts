@@ -64,6 +64,11 @@ export type RegisteredAgentSession = {
   abortController?: AbortController;
   /** True while prompt/produce is running. */
   busy: boolean;
+  /**
+   * Open parent wiki_produce tool handle (survives plan-gate suspend).
+   * Cleared when the tool completes.
+   */
+  parentWikiProduce?: import("@okf-wiki/agent").ParentWikiProduceToolHandle;
 };
 
 type SessionMetaDisk = {
@@ -75,6 +80,8 @@ type SessionMetaDisk = {
   updatedAt?: string;
   sessionWorkDir?: string;
   sessionFile?: string;
+  /** Last linked Wiki Run id (cold re-entry without trajectory body store). */
+  runId?: string;
   stub?: boolean;
 };
 
@@ -165,9 +172,19 @@ export async function writeSessionMeta(
     updatedAt: nowIso(),
     sessionWorkDir: entry.sessionWorkDir,
     sessionFile: patch.sessionFile ?? entry.sessionFile ?? existing.sessionFile,
+    runId: patch.runId ?? entry.runId ?? existing.runId,
     stub: false,
   };
   await writeFile(entry.metaPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+}
+
+/** Persist linked Wiki Run id on product meta for cold re-entry. */
+export async function writeSessionMetaRunId(
+  entry: RegisteredAgentSession,
+  runId: string | undefined,
+): Promise<void> {
+  entry.runId = runId;
+  await writeSessionMeta(entry, { runId });
 }
 
 /** Persist / refresh sessionFile on product meta so cold history can find Pi JSONL. */

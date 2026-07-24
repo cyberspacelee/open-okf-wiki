@@ -6,6 +6,7 @@
 
 import { randomUUID } from "node:crypto";
 import {
+  beginParentWikiProduceTool,
   isTerminalPhase,
   markCancelled,
   markFailed,
@@ -29,6 +30,7 @@ import {
   persistTerminal,
   preferPiFixture,
   type RegisteredAgentSession,
+  writeSessionMetaRunId,
 } from "./parent-session.ts";
 import { emitPi, mapOrchestratorOnEvent } from "./produce-adapter.ts";
 import { emitPhase, emitRunLink } from "./product-inject.ts";
@@ -366,13 +368,16 @@ export async function handleStartWikiRun(
   }
 
   entry.runId = frozen.runId;
-  // Ensure parent Operator Session exists so settle PVUs can appendCustomEntry
-  // onto parent Pi JSONL (not in LLM context). Live chat handle is optional
-  // for produce itself but required for parent-visible durability.
+  // Ensure parent Operator Session for host-driven wiki_produce tool + custom entries.
   try {
     await ensureLiveHandle(entry, workspace, "operator_chat");
   } catch {
-    // produce still runs; trajectory remains the live body channel
+    // produce still runs; live trail is SSE after server forward (not product inject)
+  }
+  try {
+    await writeSessionMetaRunId(entry, frozen.runId);
+  } catch {
+    // best-effort; live registry still has runId
   }
   // Shell snapshot before startWikiRun returns — cold-load can still see a run.
   entry.shell = startShell({ skipPlanConfirm: true });
@@ -391,6 +396,20 @@ export async function handleStartWikiRun(
   // Share controller with REST cancel so Jobs cancel and Stop agent both work.
   registerRunAbortController(frozen.runId, controller);
 
+  const parentSessionManager = entry.handle?.session?.sessionManager;
+  const emitParentToolEvent = (event: Record<string, unknown>): void => {
+    const type = typeof event.type === "string" && event.type.length > 0 ? event.type : "event";
+    emitPi(entry.workspaceId, entry.sessionId, type, event);
+  };
+  // Official Pi tool row on the Operator Session (host-driven, not LLM-chosen).
+  if (!entry.parentWikiProduce && parentSessionManager) {
+    entry.parentWikiProduce = beginParentWikiProduceTool({
+      sessionManager: parentSessionManager,
+      emit: emitParentToolEvent,
+      runId: frozen.runId,
+    });
+  }
+
   const runOpts = {
     runId: frozen.runId,
     workspace,
@@ -403,6 +422,8 @@ export async function handleStartWikiRun(
     skillRoot: frozen.skillPath,
     sourcePathMap: frozen.sourcePathMap,
     abortSignal: controller.signal,
+    parentSessionManager,
+    parentWikiProduce: entry.parentWikiProduce,
     onEvent: mapOrchestratorOnEvent(entry),
   };
 
@@ -412,6 +433,10 @@ export async function handleStartWikiRun(
   void startWikiRun(runOpts)
     .then(async (result) => {
       if (result.shell) entry.shell = result.shell;
+      // Keep parent tool open across plan-gate; clear after produce tool completes.
+      if (!(result.suspended && result.suspendGate === "plan")) {
+        entry.parentWikiProduce = undefined;
+      }
       await persistTerminal(entry, workspace, result);
     })
     .catch((err) => {
@@ -421,6 +446,7 @@ export async function handleStartWikiRun(
         entry.shell = markFailed(entry.shell, message);
         emitPhase(entry, "failed", message, "failed");
       }
+      entry.parentWikiProduce = undefined;
     })
     .finally(() => {
       entry.busy = false;
@@ -472,6 +498,18 @@ export async function handleResumeGate(
     };
   }
 
+  // Parent Session for wiki_produce tool + custom entries (Pi JSONL authority).
+  try {
+    await ensureLiveHandle(entry, workspace, "operator_chat");
+  } catch {
+    // resume still runs without parent tool durability
+  }
+  try {
+    await writeSessionMetaRunId(entry, entry.runId);
+  } catch {
+    // best-effort
+  }
+
   const step = command.gate === "publication" ? "publish-gate" : "plan-gate";
   const controller = new AbortController();
   entry.abortController = controller;
@@ -481,9 +519,20 @@ export async function handleResumeGate(
     // Surface writing/busy for cold-load + UI before resumeWikiRun returns.
     // Keep shell at awaiting_plan until resumeGate transitions it — mutating
     // shell here would break resumeGate's phase assertions.
-    // Phase is durable via trajectory run_phase (no dual in-memory phase).
     emitPhase(entry, "writing", "plan approved — producing", "running");
   }
+
+  const parentSessionManager = entry.handle?.session?.sessionManager;
+  const parentToolIO = parentSessionManager
+    ? {
+        sessionManager: parentSessionManager,
+        emit: (event: Record<string, unknown>) => {
+          const type =
+            typeof event.type === "string" && event.type.length > 0 ? event.type : "event";
+          emitPi(entry.workspaceId, entry.sessionId, type, event);
+        },
+      }
+    : undefined;
 
   try {
     const result = await resumeWikiRun({
@@ -502,9 +551,15 @@ export async function handleResumeGate(
         command.gate === "publication" && command.action === "approve" ? true : undefined,
       resolveModel: preferPiFixture() ? undefined : makeResolveModel(workspace, entry),
       abortSignal: controller.signal,
+      parentSessionManager,
+      parentWikiProduce: entry.parentWikiProduce,
+      parentToolIO,
       onEvent: mapOrchestratorOnEvent(entry),
     });
 
+    if (!(result.suspended && result.suspendGate === "plan")) {
+      entry.parentWikiProduce = undefined;
+    }
     await persistTerminal(entry, workspace, result);
 
     return {

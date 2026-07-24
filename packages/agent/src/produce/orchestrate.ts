@@ -25,15 +25,13 @@ import type { SourceIgnoreInput } from "../pi/tool-operations.js";
 import { runReviewCouncil } from "../review-council.js";
 import { writeWikiRunSpec } from "../spec-store.js";
 import { runChildrenParallel, runChildSession } from "./children.js";
-import type { ProduceEventSink } from "./events.js";
-import { silentProduceEvents } from "./events.js";
+import { attachProgress, type ProduceEventSink, silentProduceEvents } from "./events.js";
 import {
   listWikiMarkdown,
   type ProduceWithPiResult,
   produceWithPi,
   shouldUsePiFixtureMode,
 } from "./live-pi.js";
-import { attachWorkUnitSink } from "./parent-visibility.js";
 import { planWikiSpec } from "./plan.js";
 import {
   domainResearchPrompt,
@@ -187,12 +185,11 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
       spec = defaultWikiRunSpec(input.workspace.name);
     } else {
       events.progress?.({ phase: "planning", label: "planner session" });
-      const plannerUnit = attachWorkUnitSink(events, {
+      const plannerUnit = attachProgress(events, {
         unitId: "planner",
         role: "planner",
         task: "Draft WikiRunSpec from sources",
         parentId: "root",
-        runId: input.runId,
       });
       plannerUnit.open();
       try {
@@ -267,12 +264,11 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
       throwIfAborted(input.abortSignal);
       metrics.domainStarts += 1;
       const domainNodeId = `domain-${d.id}`;
-      const domainUnit = attachWorkUnitSink(events, {
+      const domainUnit = attachProgress(events, {
         unitId: domainNodeId,
         role: "domain",
         task: d.title ?? d.id,
         parentId: "root",
-        runId: input.runId,
       });
       domainUnit.open();
 
@@ -283,12 +279,11 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
         const leafTasks = leafQuestions.map((q, li) => {
           metrics.leafStarts += 1;
           const leafNodeId = `leaf-${d.id}-${li + 1}`;
-          const leafUnit = attachWorkUnitSink(events, {
+          const leafUnit = attachProgress(events, {
             unitId: leafNodeId,
             role: "leaf",
             task: q.slice(0, 2000),
             parentId: domainNodeId,
-            runId: input.runId,
           });
           leafUnit.open();
           return {
@@ -506,12 +501,11 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
           const reviewerId = `reviewer-${i + 1}`;
           // Distinct unitId per review round so fold last-by-unitId stays truthful.
           const unitId = `${reviewerId}-r${round}`;
-          const unit = attachWorkUnitSink(events, {
+          const unit = attachProgress(events, {
             unitId,
             role: "reviewer",
             task: `Review round ${round}`,
             parentId: "root",
-            runId: input.runId,
           });
           unit.open();
           reviewers.push({
@@ -529,12 +523,11 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
           const reviewerId = `reviewer-${i + 1}`;
           const unitId = `${reviewerId}-r${round}`;
           const lens = lenses[i % lenses.length]!;
-          const unit = attachWorkUnitSink(events, {
+          const unit = attachProgress(events, {
             unitId,
             role: "reviewer",
             task: `Review lens: ${lens}`,
             parentId: "root",
-            runId: input.runId,
           });
           unit.open();
           try {

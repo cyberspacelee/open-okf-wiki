@@ -1,6 +1,8 @@
 /**
- * Agent Workspace transcript — chat track + product strips + Work blocks.
- * Two visual languages only (ADR 0031 UI cut / Hallmark audit).
+ * Agent Workspace transcript — chat track + thin product strips + produce units.
+ *
+ * Produce trail: expandable ProduceUnitCard from last-by-unitId produceUnits
+ * (SSE okf.produce_progress + cold custom entries). Not work_unit inject.
  */
 
 import { BotIcon, ChevronRightIcon, CircleAlertIcon, UserIcon } from "lucide-react";
@@ -27,9 +29,10 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { useI18n } from "../../i18n";
+import { ProduceUnitCard } from "../components/ProduceUnitCard";
 import { ToolExecutionCard } from "../components/ToolExecutionCard";
-import { WorkBlock } from "../components/WorkBlock";
-import { formatProductCardContent, type WorkUnits } from "../hooks/project-agent-events";
+import type { ProduceUnit } from "../hooks/project/produce";
+import { formatProductCardContent } from "../hooks/project-agent-events";
 import type {
   AgentMessage,
   AgentProductMeta,
@@ -45,12 +48,11 @@ export type TranscriptProps = {
   pendingGate?: PendingGate | null;
   gateBusy?: boolean;
   onResumeGate?: (input: ResumeGateInput) => void | Promise<void>;
-  units?: WorkUnits;
   phase?: string | null;
-  expandedUnitId?: string | null;
-  onExpandedUnitIdChange?: (unitId: string | null) => void;
   onStartWikiRun?: () => void;
   emptyActions?: boolean;
+  /** Parent-visible produce units (last-by-unitId). */
+  produceUnits?: ProduceUnit[];
 };
 
 function ThinkingBlock({ thinking, streaming }: { thinking: string; streaming?: boolean }) {
@@ -80,16 +82,12 @@ function productKindLabel(product: AgentProductMeta, t: ReturnType<typeof useI18
       return t.agentWorkspace.cardGate;
     case "run_phase":
       return t.agentWorkspace.cardPhase;
-    case "progress":
-      return t.agentWorkspace.cardProgress;
     case "plan_progress":
       return t.agentWorkspace.cardPages;
     case "defects":
       return t.agentWorkspace.cardReview;
     case "run_link":
       return t.agentWorkspace.cardRun;
-    case "work_block":
-      return t.agentWorkspace.cardWork;
     default:
       return t.agentWorkspace.cardRun;
   }
@@ -101,38 +99,16 @@ function ProductStrip({
   pendingGate,
   gateBusy,
   onResumeGate,
-  units,
-  phase,
-  expandedUnitId,
-  onExpandedUnitIdChange,
 }: {
   message: AgentMessage;
   showGateActions: boolean;
   pendingGate: PendingGate | null;
   gateBusy: boolean;
   onResumeGate?: (input: ResumeGateInput) => void | Promise<void>;
-  units: WorkUnits;
-  phase?: string | null;
-  expandedUnitId?: string | null;
-  onExpandedUnitIdChange?: (unitId: string | null) => void;
 }) {
   const { t } = useI18n();
   const product = message.product;
   if (!product) return null;
-
-  if (product.kind === "work_block") {
-    return (
-      <div className="flex w-full min-w-0 justify-center">
-        <WorkBlock
-          runId={product.runId}
-          phase={phase ?? product.phase}
-          units={units}
-          expandedUnitId={expandedUnitId}
-          onExpandedUnitIdChange={onExpandedUnitIdChange}
-        />
-      </div>
-    );
-  }
 
   const isError =
     message.status === "error" || (product.kind === "run_phase" && product.phase === "failed");
@@ -281,9 +257,13 @@ function ChatMessage({ message }: { message: AgentMessage }) {
                     <AgentMarkdown content={message.content} streaming={isStreaming} />
                   )
                 ) : isStreaming ? (
-                  <div className="flex items-center gap-2 text-muted-foreground">
+                  // Empty streaming ≠ model "thinking" — waiting/phase copy only.
+                  <div
+                    className="flex items-center gap-2 text-muted-foreground"
+                    data-testid="waiting-for-events"
+                  >
                     <Spinner className="size-3.5" />
-                    <span className="text-xs">{t.agentWorkspace.statusBusy}</span>
+                    <span className="text-xs">{t.agentWorkspace.waitingForEvents}</span>
                   </div>
                 ) : isError ? (
                   <div className="whitespace-pre-wrap">
@@ -313,12 +293,9 @@ export function Transcript({
   pendingGate = null,
   gateBusy = false,
   onResumeGate,
-  units = {},
-  phase = null,
-  expandedUnitId = null,
-  onExpandedUnitIdChange,
   onStartWikiRun,
   emptyActions = true,
+  produceUnits = [],
 }: TranscriptProps) {
   const { t } = useI18n();
 
@@ -333,7 +310,7 @@ export function Transcript({
     }
   }
 
-  if (messages.length === 0) {
+  if (messages.length === 0 && produceUnits.length === 0) {
     return (
       <div
         data-testid="agent-transcript-empty"
@@ -379,16 +356,30 @@ export function Transcript({
                     pendingGate={pendingGate}
                     gateBusy={gateBusy}
                     onResumeGate={onResumeGate}
-                    units={units}
-                    phase={phase}
-                    expandedUnitId={expandedUnitId}
-                    onExpandedUnitIdChange={onExpandedUnitIdChange}
                   />
                 ) : (
                   <ChatMessage message={m} />
                 )}
               </MessageScrollerItem>
             ))}
+            {produceUnits.length > 0 ? (
+              <MessageScrollerItem messageId="produce-units" scrollAnchor={false}>
+                <div
+                  className="flex w-full min-w-0 flex-col items-center gap-2"
+                  data-testid="produce-units"
+                >
+                  <p className="w-full max-w-[min(100%,42rem)] text-[11px] font-medium text-muted-foreground">
+                    {t.agentWorkspace.produceUnitsTitle}
+                  </p>
+                  {produceUnits.map((unit) => (
+                    <ProduceUnitCard
+                      key={unit.unitId ?? `${unit.role}-${unit.status}`}
+                      unit={unit}
+                    />
+                  ))}
+                </div>
+              </MessageScrollerItem>
+            ) : null}
           </MessageScrollerContent>
         </MessageScrollerViewport>
         <MessageScrollerButton aria-label={t.agentWorkspace.jumpToLatest} />

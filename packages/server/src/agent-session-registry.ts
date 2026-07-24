@@ -51,19 +51,10 @@ export {
   sessionMetaPath,
 } from "./session/parent-session.ts";
 export {
+  productPhaseFromRunStatus,
   productPhaseFromShell,
   resolveColdLoadPhase,
 } from "./session/produce-adapter.ts";
-// Re-export session helpers used by routes / tests.
-export {
-  foldWorkUnits,
-  lastGateFromTrajectory,
-  lastLinkedRunId,
-  lastPlanFromTrajectory,
-  lastRunPhase,
-  loadTrajectory,
-  operatorTrajectoryPath,
-} from "./session/trajectory-store.ts";
 
 // ---------------------------------------------------------------------------
 // Registry CRUD
@@ -223,6 +214,7 @@ export async function ensureRegistered(
     metaPath,
     sessionWorkDir,
     sessionFile: diskMeta?.sessionFile,
+    runId: diskMeta?.runId,
     busy: false,
   };
   sessions.set(regKey(workspace.id, sessionId), entry);

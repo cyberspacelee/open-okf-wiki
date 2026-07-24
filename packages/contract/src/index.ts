@@ -26,7 +26,6 @@ export {
   type CreatePiAgentSessionResponse,
   CreatePiAgentSessionResponseSchema,
   isProductInjectKind,
-  OPERATOR_TRAJECTORY_FILE,
   PI_SESSIONS_DIR,
   type PiSessionSummary,
   PiSessionSummarySchema,

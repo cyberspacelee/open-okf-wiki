@@ -14,7 +14,7 @@
     "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src --max-warnings 0",
-    "test": "tsc -p tsconfig.json && node --test dist/*.test.js dist/**/*.test.js",
+    "test": "tsc -p tsconfig.json && node --test 'dist/**/*.test.js'",
     "spike:pi": "node scripts/pi-spike.mjs"
   },
   "dependencies": {

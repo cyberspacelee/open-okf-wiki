@@ -1,5 +1,5 @@
 /**
- * Right-pane context: Plan | Agents tree (nav) | Run status.
+ * Right-pane context: Plan | Agents (nav) | Run status.
  * HITL actions live only on the Transcript. Nav to Sources/Wiki/Settings is Subnav.
  */
 
@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 import type { StoredRunRecord, WikiRunPlan, WorkspaceConfig } from "../../api";
 import { useI18n } from "../../i18n";
 import { workspaceHref } from "../../lib/workspace-path";
-import type { AgentMessage, WorkUnits } from "../hooks/useSessionAgent";
+import type { ProduceUnit } from "../hooks/project/produce";
 import { AgentTree } from "./AgentTree";
 
 export type ContextPanelsProps = {
@@ -24,10 +24,7 @@ export type ContextPanelsProps = {
   linkedRunId?: string | null;
   phase?: string | null;
   recentRuns?: StoredRunRecord[];
-  messages?: AgentMessage[];
-  units?: WorkUnits;
-  selectedUnitId?: string | null;
-  onSelectUnit?: (unitId: string) => void;
+  produceUnits?: ProduceUnit[];
   className?: string;
 };
 
@@ -50,9 +47,7 @@ export function ContextPanels({
   linkedRunId = null,
   phase = null,
   recentRuns = [],
-  units = {},
-  selectedUnitId = null,
-  onSelectUnit,
+  produceUnits = [],
   className,
 }: ContextPanelsProps) {
   const { t } = useI18n();
@@ -150,12 +145,7 @@ export function ContextPanels({
           className="mt-0 flex min-h-0 flex-1 flex-col data-hidden:hidden"
         >
           <PanelShell>
-            <AgentTree
-              units={units}
-              selectedUnitId={selectedUnitId}
-              onSelectUnit={onSelectUnit}
-              hasRun={Boolean(linkedRunId)}
-            />
+            <AgentTree hasRun={Boolean(linkedRunId)} phase={phase} produceUnits={produceUnits} />
           </PanelShell>
         </TabsContent>
 

@@ -1,12 +1,16 @@
 /**
- * Client hook for the Pi Agent Workspace (ADR 0030 / 0031 Wave 3).
+ * Client hook for the Pi Agent Workspace (ADR 0030 / 0031 WP6).
  *
  * Live transport:
  * - POST AgentCommand → /command
  * - EventSource ← /events (product injects + parent Pi AgentSession events)
  *
- * Pure projection: WorkUnits is a fold cache of product work_unit events.
- * Session bootstrap is a single effect: reset → cold-load history → open SSE.
+ * Projection:
+ * - Pi message snapshots → reducePiEvent (no string-delta machine)
+ * - Product whitelist only (run_link | run_phase | gate | plan_progress | defects)
+ * - Produce units: wiki_produce tool_execution_* details + cold produceUnits
+ *   (last-by-unitId fold; not work_unit / not product inject)
+ * - Cold load: Pi history content blocks + thin product meta + produceUnits
  *
  * Command failures use `ok === false` / `status === "failed"` (not string matching).
  */
@@ -20,35 +24,43 @@ import type {
 } from "@okf-wiki/contract";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  type AgentSessionHistoryMessage,
   agentSessionCommand,
   agentSessionEventsUrl,
   getAgentSession,
+  type PiHistoryMessage,
 } from "../../api";
 import { isCommandFailed } from "./command-result";
+import { isRecord } from "./project/format";
 import {
   type AgentMessage,
-  applyPiEvent,
+  type AgentToolCall,
   applyProductEvent,
-  applyWorkUnit,
-  ensureWorkBlockAnchors,
+  compactToolInput,
+  createPiStreamState,
+  extractAssistantError,
+  extractMessageText,
+  extractMessageThinking,
+  foldProduceToolDetails,
+  foldProduceUnit,
+  formatToolResultText,
   isTerminalOrWaitingPhase,
+  makeId,
+  type PiStreamState,
+  type ProduceUnit,
   type ProductSseLike,
-  type StreamingRefs,
-  type WorkUnitEventLike,
-  type WorkUnits,
-  type WorkUnitView,
-  workUnitsFromList,
+  parseProduceUnitPayload,
+  produceUnitFromToolPayload,
+  reducePiEvent,
+  seedProduceUnits,
+  viewMessages,
 } from "./project-agent-events";
 
 export { isCommandFailed } from "./command-result";
-
 export type {
   AgentMessage,
   AgentProductMeta,
   AgentToolCall,
-  WorkUnits,
-  WorkUnitView,
+  ProduceUnit,
 } from "./project-agent-events";
 
 export type AgentMessageRole = AgentMessage["role"];
@@ -76,8 +88,21 @@ export type UseSessionAgentArgs = {
   rootPath?: string;
 };
 
+/** Thin product state (not a body channel). */
+export type ProductViewState = {
+  phase: string | null;
+  runId: string | null;
+  pendingGate: PendingGate | null;
+  plan: WikiRunPlan | null;
+  pages: Array<{ path: string; status: string }> | null;
+  defects: { round: number; clean: boolean; defectCount: number; summary?: string } | null;
+  busy: boolean;
+};
+
 export type UseSessionAgentResult = {
   messages: AgentMessage[];
+  /** Latest assistant snapshot while streaming (also folded into messages). */
+  streamingMessage: AgentMessage | null;
   status: AgentStatus;
   error: string | null;
   input: string;
@@ -95,40 +120,29 @@ export type UseSessionAgentResult = {
   /** Absolute EventSource URL for Pi + product SSE. */
   eventsUrl: string | null;
   lastCommandResponse: AgentCommandResponse | null;
-  /** Latest product run phase (from SSE). */
+  /** Latest product run phase (from SSE / cold meta). */
   phase: string | null;
   /** Linked product run id (from run_link / run_phase). */
   linkedRunId: string | null;
-  /** Plan from the latest product gate inject. */
+  /** Plan from the latest product gate inject / cold meta. */
   plan: WikiRunPlan | null;
   /** Active HITL gate, if any. */
   pendingGate: PendingGate | null;
   /** True while a resume_gate command is in flight. */
   gateBusy: boolean;
+  /** Thin product snapshot (phase / gate / plan progress / defects). */
+  product: ProductViewState;
   /**
-   * Produce work units fold cache (last-by-unitId).
-   * Body authority for Work block rows on the timeline.
+   * Parent-visible produce units (last-by-unitId fold from SSE + cold load).
+   * Not workUnits / not product inject.
    */
-  units: WorkUnits;
-  /** Expanded unit id (timeline expand + tree nav scroll target). */
-  expandedUnitId: string | null;
-  setExpandedUnitId: (unitId: string | null) => void;
-  /** Convenience: unit for the expanded id, if any. */
-  expandedUnit: WorkUnitView | null;
+  produceUnits: ProduceUnit[];
 };
 
 const RECONNECT_MS = 1500;
 
 function nowIso(): string {
   return new Date().toISOString();
-}
-
-function makeId(prefix: string): string {
-  return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function eventSequence(event: AgentSseEvent): number | undefined {
@@ -138,58 +152,104 @@ function eventSequence(event: AgentSseEvent): number | undefined {
   return undefined;
 }
 
-function historyToMessages(rows: AgentSessionHistoryMessage[] | undefined): AgentMessage[] {
-  return (rows ?? []).map((m) => ({
-    id: m.id,
-    role: m.role === "system" ? "system" : m.role,
-    content: m.text,
-    thinking: m.thinking,
-    thinkingStatus: m.thinking ? ("done" as const) : undefined,
-    createdAt: m.createdAt ?? nowIso(),
-    status: m.status === "error" ? "error" : m.status,
-    errorMessage: m.errorMessage,
-    tools: m.tools?.map((t) => ({
-      id: t.id,
-      name: t.name,
-      input: t.input,
-      output: t.output,
-      status:
-        t.status === "running"
-          ? ("running" as const)
-          : t.status === "error"
-            ? ("error" as const)
-            : ("done" as const),
-    })),
-  }));
-}
-
 function asProductSseLike(event: ProductSseEvent | ProductSseLike): ProductSseLike {
   return event as ProductSseLike;
 }
 
-function coldWorkUnitRow(row: unknown): WorkUnitEventLike | null {
-  if (!isRecord(row)) return null;
-  if (typeof row.unitId !== "string" || !row.unitId.trim()) return null;
-  return {
-    kind: "work_unit",
-    unitId: row.unitId.trim(),
-    role: typeof row.role === "string" ? row.role : "agent",
-    status: typeof row.status === "string" ? row.status : "pending",
-    runId: typeof row.runId === "string" ? row.runId : undefined,
-    task: typeof row.task === "string" ? row.task : undefined,
-    parentId: typeof row.parentId === "string" ? row.parentId : undefined,
-    message: isRecord(row.message)
-      ? {
-          thinking: typeof row.message.thinking === "string" ? row.message.thinking : undefined,
-          text: typeof row.message.text === "string" ? row.message.text : undefined,
-        }
-      : undefined,
-    tools: Array.isArray(row.tools) ? (row.tools as WorkUnitView["tools"]) : undefined,
-    summary: typeof row.summary === "string" ? row.summary : undefined,
-    receiptPath: typeof row.receiptPath === "string" ? row.receiptPath : undefined,
-    error: typeof row.error === "string" ? row.error : undefined,
-    updatedAt: typeof row.updatedAt === "number" ? row.updatedAt : undefined,
-  };
+function toolCallsFromContent(content: unknown): AgentToolCall[] {
+  if (!Array.isArray(content)) return [];
+  const tools: AgentToolCall[] = [];
+  for (const block of content) {
+    if (!isRecord(block) || block.type !== "toolCall") continue;
+    const id = typeof block.id === "string" ? block.id : makeId("tool");
+    const name = typeof block.name === "string" ? block.name : "tool";
+    const args = "arguments" in block ? block.arguments : undefined;
+    tools.push({
+      id,
+      name,
+      input: compactToolInput(args),
+      status: "pending",
+    });
+  }
+  return tools;
+}
+
+/**
+ * Map Pi-native history messages (content blocks) → thin UI view model.
+ * toolResult rows attach output onto the matching toolCall on the prior assistant.
+ */
+export function piHistoryToMessages(rows: PiHistoryMessage[] | undefined): AgentMessage[] {
+  if (!rows?.length) return [];
+  const out: AgentMessage[] = [];
+  let seq = 0;
+
+  for (const row of rows) {
+    seq += 1;
+    const createdAt =
+      typeof row.timestamp === "number" ? new Date(row.timestamp).toISOString() : nowIso();
+
+    if (row.role === "user") {
+      const text =
+        typeof row.content === "string"
+          ? row.content
+          : extractMessageText({ content: row.content });
+      out.push({
+        id: `hist_user_${seq}`,
+        role: "user",
+        content: text,
+        createdAt,
+        status: "done",
+      });
+      continue;
+    }
+
+    if (row.role === "assistant") {
+      const text = extractMessageText(row);
+      const thinking = extractMessageThinking(row);
+      const err = extractAssistantError(row);
+      const tools = toolCallsFromContent(row.content);
+      out.push({
+        id: `hist_asst_${seq}`,
+        role: "assistant",
+        content: text || (err.isError ? (err.errorMessage ?? "") : ""),
+        thinking: thinking || undefined,
+        thinkingStatus: thinking ? "done" : undefined,
+        createdAt,
+        tools: tools.length > 0 ? tools : undefined,
+        status: err.isError ? "error" : "done",
+        errorMessage: err.errorMessage,
+      });
+      continue;
+    }
+
+    if (row.role === "toolResult") {
+      const toolCallId = typeof row.toolCallId === "string" ? row.toolCallId : "";
+      if (!toolCallId) continue;
+      const output = formatToolResultText(row.content) ?? formatToolResultText(row);
+      const isError = row.isError === true;
+      // Attach onto nearest prior assistant that has this toolCall.
+      for (let i = out.length - 1; i >= 0; i -= 1) {
+        const m = out[i]!;
+        if (m.role !== "assistant" || !m.tools?.length) continue;
+        const tIdx = m.tools.findIndex((t) => t.id === toolCallId);
+        if (tIdx < 0) continue;
+        const tools = m.tools.slice();
+        tools[tIdx] = {
+          ...tools[tIdx]!,
+          output: output ?? tools[tIdx]!.output,
+          status: isError ? "error" : "done",
+          name:
+            typeof row.toolName === "string" && row.toolName.trim()
+              ? row.toolName
+              : tools[tIdx]!.name,
+        };
+        out[i] = { ...m, tools };
+        break;
+      }
+    }
+  }
+
+  return out;
 }
 
 export function useSessionAgent({
@@ -198,6 +258,7 @@ export function useSessionAgent({
   rootPath,
 }: UseSessionAgentArgs): UseSessionAgentResult {
   const [messages, setMessages] = useState<AgentMessage[]>([]);
+  const [streamingMessage, setStreamingMessage] = useState<AgentMessage | null>(null);
   const [status, setStatus] = useState<AgentStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [input, setInput] = useState("");
@@ -207,8 +268,13 @@ export function useSessionAgent({
   const [plan, setPlan] = useState<WikiRunPlan | null>(null);
   const [pendingGate, setPendingGate] = useState<PendingGate | null>(null);
   const [gateBusy, setGateBusy] = useState(false);
-  const [units, setUnits] = useState<WorkUnits>({});
-  const [expandedUnitId, setExpandedUnitId] = useState<string | null>(null);
+  const [planProgressPages, setPlanProgressPages] = useState<Array<{
+    path: string;
+    status: string;
+  }> | null>(null);
+  const [defects, setDefects] = useState<ProductViewState["defects"]>(null);
+  const [productBusy, setProductBusy] = useState(false);
+  const [produceUnits, setProduceUnits] = useState<ProduceUnit[]>([]);
 
   const sendInFlight = useRef(false);
   const planRef = useRef<WikiRunPlan | null>(null);
@@ -218,11 +284,7 @@ export function useSessionAgent({
   const esRef = useRef<EventSource | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSequenceRef = useRef<number>(-1);
-  const streamRefs = useRef<StreamingRefs>({
-    streamingAssistantId: null,
-    lastAssistantId: null,
-    turnActive: false,
-  });
+  const streamStateRef = useRef<PiStreamState>(createPiStreamState());
   /** Generation counter so stale reconnects do not reopen closed sessions. */
   const streamGenRef = useRef(0);
 
@@ -231,119 +293,198 @@ export function useSessionAgent({
     return agentSessionEventsUrl(workspaceId, sessionId, rootPath);
   }, [workspaceId, sessionId, rootPath]);
 
-  const handleSseEvent = useCallback((raw: unknown) => {
-    if (!isRecord(raw) || typeof raw.source !== "string") return;
-    const event = raw as AgentSseEvent;
+  const publishStream = useCallback((state: PiStreamState) => {
+    streamStateRef.current = state;
+    setMessages(viewMessages(state));
+    setStreamingMessage(state.streamingMessage);
+  }, []);
 
-    const seq = eventSequence(event);
-    if (seq !== undefined) {
-      if (seq <= lastSequenceRef.current) return;
-      lastSequenceRef.current = seq;
-    }
+  const handleSseEvent = useCallback(
+    (raw: unknown) => {
+      if (!isRecord(raw) || typeof raw.source !== "string") return;
+      const event = raw as AgentSseEvent;
 
-    if (event.source === "server" && event.kind === "heartbeat") {
-      return;
-    }
-
-    if (event.source === "product") {
-      const product = event as ProductSseEvent;
-      setMessages((prev) => applyProductEvent(prev, asProductSseLike(product)));
-
-      if (product.kind === "work_unit") {
-        setUnits((prev) => applyWorkUnit(prev, product));
-        if (product.status === "running" || product.status === "pending") {
-          setStatus("streaming");
-        }
+      const seq = eventSequence(event);
+      if (seq !== undefined) {
+        if (seq <= lastSequenceRef.current) return;
+        lastSequenceRef.current = seq;
       }
 
-      if (product.kind === "run_phase") {
-        setPhase(product.phase);
-        if (product.runId) setLinkedRunId(product.runId);
-        if (isTerminalOrWaitingPhase(product.phase)) {
-          setStatus((s) => (s === "error" ? s : "idle"));
-        } else {
-          setStatus("streaming");
-        }
-        if (product.phase !== "awaiting_plan" && product.phase !== "awaiting_publish") {
-          setPendingGate(null);
-        }
-        if (product.phase === "failed" && product.message) {
-          setError(product.message);
-          setStatus("error");
-        }
-      } else if (product.kind === "run_link") {
-        setLinkedRunId(product.runId);
-      } else if (product.kind === "gate") {
-        if (product.runId) setLinkedRunId(product.runId);
-        if (product.plan) setPlan(product.plan);
-        const isResumeEcho =
-          typeof product.question === "string" && product.question.startsWith("resume_gate ");
-        if (!isResumeEcho && product.gate) {
-          setPendingGate({
-            gate: product.gate,
-            runId: product.runId,
-            question: product.question,
-            plan: product.plan,
-            pages: product.pages,
-          });
-          setStatus((s) => (s === "error" ? s : "idle"));
-        } else if (isResumeEcho && product.gate) {
-          setPendingGate((prev) => {
-            if (!prev || prev.gate !== product.gate) return prev;
-            return {
-              ...prev,
-              runId: product.runId ?? prev.runId,
-              plan: product.plan ?? prev.plan,
-              pages: product.pages ?? prev.pages,
-            };
-          });
-        }
+      if (event.source === "server" && event.kind === "heartbeat") {
+        return;
       }
-      return;
-    }
 
-    if (event.source === "pi") {
-      const kind = event.kind;
+      if (event.source === "product") {
+        const product = event as ProductSseEvent;
+        // Product strips live on the finalized timeline (not in Pi stream state body).
+        setMessages((prev) => {
+          // Drop streaming tail, apply product, re-append streaming if any.
+          const stream = streamStateRef.current.streamingMessage;
+          const base = stream ? prev.filter((m) => m.id !== stream.id) : prev;
+          const next = applyProductEvent(base, asProductSseLike(product));
+          streamStateRef.current = {
+            ...streamStateRef.current,
+            messages: next,
+          };
+          return stream ? [...next, stream] : next;
+        });
 
-      if (kind === "agent_start" || kind === "prompt" || kind === "steer") {
-        setStatus("streaming");
-      } else if (kind === "agent_end" || kind === "agent_settled") {
-        setStatus((s) => (s === "error" ? s : "idle"));
-      } else if (kind === "error") {
-        const payload = event.payload;
-        const message =
-          isRecord(payload) && typeof payload.message === "string"
-            ? payload.message
-            : "Agent error";
-        setError(message);
-        setStatus("error");
-      } else if (kind === "message_end") {
-        const payload = event.payload;
-        const msg = isRecord(payload) && isRecord(payload.message) ? payload.message : null;
+        if (product.kind === "run_phase") {
+          setPhase(product.phase);
+          if (product.runId) setLinkedRunId(product.runId);
+          if (isTerminalOrWaitingPhase(product.phase)) {
+            setStatus((s) => (s === "error" ? s : "idle"));
+            setProductBusy(false);
+          } else {
+            setStatus("streaming");
+            setProductBusy(true);
+          }
+          if (product.phase !== "awaiting_plan" && product.phase !== "awaiting_publish") {
+            setPendingGate(null);
+          }
+          if (product.phase === "failed" && product.message) {
+            setError(product.message);
+            setStatus("error");
+          }
+        } else if (product.kind === "run_link") {
+          setLinkedRunId(product.runId);
+        } else if (product.kind === "gate") {
+          if (product.runId) setLinkedRunId(product.runId);
+          if (product.plan) setPlan(product.plan);
+          const isResumeEcho =
+            typeof product.question === "string" && product.question.startsWith("resume_gate ");
+          if (!isResumeEcho && product.gate) {
+            setPendingGate({
+              gate: product.gate,
+              runId: product.runId,
+              question: product.question,
+              plan: product.plan,
+              pages: product.pages,
+            });
+            setStatus((s) => (s === "error" ? s : "idle"));
+            setProductBusy(false);
+          } else if (isResumeEcho && product.gate) {
+            setPendingGate((prev) => {
+              if (!prev || prev.gate !== product.gate) return prev;
+              return {
+                ...prev,
+                runId: product.runId ?? prev.runId,
+                plan: product.plan ?? prev.plan,
+                pages: product.pages ?? prev.pages,
+              };
+            });
+          }
+        } else if (product.kind === "plan_progress") {
+          setPlanProgressPages(
+            Array.isArray(product.pages)
+              ? product.pages.map((p) =>
+                  typeof p === "string"
+                    ? { path: p, status: "pending" }
+                    : { path: p.path, status: p.status },
+                )
+              : null,
+          );
+        } else if (product.kind === "defects") {
+          setDefects({
+            round: product.round,
+            clean: product.clean,
+            defectCount: product.defectCount,
+            summary: product.summary,
+          });
+        }
+        return;
+      }
+
+      if (event.source === "pi") {
+        const kind = event.kind;
+
+        // Official parent wiki_produce tool partials / result details.
         if (
-          msg &&
-          (msg.stopReason === "error" ||
-            msg.stopReason === "aborted" ||
-            (typeof msg.errorMessage === "string" && msg.errorMessage.trim()))
+          kind === "tool_execution_update" ||
+          kind === "tool_execution_end" ||
+          kind === "tool_execution_start"
         ) {
+          const payload = event.payload;
+          const toolName =
+            isRecord(payload) && typeof payload.toolName === "string" ? payload.toolName : "";
+          if (toolName === "wiki_produce" || kind !== "tool_execution_start") {
+            const raw =
+              isRecord(payload) && kind === "tool_execution_end"
+                ? payload.result
+                : isRecord(payload)
+                  ? payload.partialResult
+                  : undefined;
+            const unit =
+              kind === "tool_execution_start"
+                ? {
+                    role: "root" as const,
+                    status: "running" as const,
+                    unitId: "root",
+                    task: "wiki_produce",
+                  }
+                : produceUnitFromToolPayload(raw);
+            if (unit) {
+              setProduceUnits((prev) =>
+                kind === "tool_execution_start"
+                  ? foldProduceUnit(prev, unit)
+                  : foldProduceToolDetails(prev, unit),
+              );
+            }
+          }
+          // Fall through to reducePiEvent for tool chrome on the assistant row.
+        }
+
+        // Legacy custom-entry frames (mid-run durability); still fold if present.
+        if (kind === "okf.produce_progress") {
+          const unit = parseProduceUnitPayload(event.payload);
+          if (unit) {
+            setProduceUnits((prev) => foldProduceUnit(prev, unit));
+          }
+          return;
+        }
+
+        if (kind === "agent_start" || kind === "prompt" || kind === "steer") {
+          setStatus("streaming");
+        } else if (kind === "agent_end" || kind === "agent_settled") {
+          setStatus((s) => (s === "error" ? s : "idle"));
+        } else if (kind === "error") {
+          const payload = event.payload;
           const message =
-            typeof msg.errorMessage === "string" && msg.errorMessage.trim()
-              ? msg.errorMessage.trim()
-              : "Agent response failed";
+            isRecord(payload) && typeof payload.message === "string"
+              ? payload.message
+              : "Agent error";
           setError(message);
           setStatus("error");
+        } else if (kind === "message_end") {
+          const payload = event.payload;
+          const msg = isRecord(payload) && isRecord(payload.message) ? payload.message : null;
+          if (
+            msg &&
+            (msg.stopReason === "error" ||
+              msg.stopReason === "aborted" ||
+              (typeof msg.errorMessage === "string" && msg.errorMessage.trim()))
+          ) {
+            const message =
+              typeof msg.errorMessage === "string" && msg.errorMessage.trim()
+                ? msg.errorMessage.trim()
+                : "Agent response failed";
+            setError(message);
+            setStatus("error");
+          }
         }
-      }
 
-      setMessages((prev) => applyPiEvent(prev, kind, event.payload, streamRefs.current));
-    }
-  }, []);
+        const next = reducePiEvent(streamStateRef.current, kind, event.payload);
+        publishStream(next);
+      }
+    },
+    [publishStream],
+  );
 
   // Bootstrap: reset → await cold history → open SSE.
   // On first connect, skip ring-buffer replay of parent Pi (only advance
   // sequence until the server hello heartbeat) so history + SSE do not
   // double-apply the same turn. Product frames from the buffer still apply
-  // so refresh mid-wiki-run restores phase / work units.
+  // so refresh mid-wiki-run restores phase / gate strips.
   // Reconnects apply the buffer with sequence dedup for live catch-up.
   useEffect(() => {
     setStatus("idle");
@@ -355,15 +496,14 @@ export function useSessionAgent({
     setPlan(null);
     setPendingGate(null);
     setGateBusy(false);
-    setUnits({});
-    setExpandedUnitId(null);
+    setPlanProgressPages(null);
+    setDefects(null);
+    setProductBusy(false);
+    setProduceUnits([]);
+    setStreamingMessage(null);
     sendInFlight.current = false;
     lastSequenceRef.current = -1;
-    streamRefs.current = {
-      streamingAssistantId: null,
-      lastAssistantId: null,
-      turnActive: false,
-    };
+    streamStateRef.current = createPiStreamState();
 
     if (esRef.current) {
       esRef.current.close();
@@ -425,6 +565,12 @@ export function useSessionAgent({
               handleSseEvent(parsed);
               return;
             }
+            // Live produce units are not in message history (only settle custom
+            // entries seed cold produceUnits). Apply ring-buffer patches.
+            if (parsed.source === "pi" && parsed.kind === "okf.produce_progress") {
+              handleSseEvent(parsed);
+              return;
+            }
             // Operator-chat Pi frames: advance sequence only (history already has them).
             const seq = eventSequence(parsed as AgentSseEvent);
             if (seq !== undefined && seq > lastSequenceRef.current) {
@@ -459,34 +605,19 @@ export function useSessionAgent({
       try {
         const snap = await getAgentSession(workspaceId, sessionId, rootPath);
         if (cancelled || streamGenRef.current !== gen) return;
-        let timeline = historyToMessages(snap.messages);
-        const trajectory = snap.product?.trajectory;
 
-        // Recover plan / runId from durable trajectory when registry shell is cold.
-        let restoredRunId =
+        const timeline = piHistoryToMessages(snap.messages);
+        streamStateRef.current = createPiStreamState(timeline);
+        setMessages(timeline);
+        setStreamingMessage(null);
+
+        // Cold produce units from durable okf.produce_progress custom entries.
+        const coldUnits = seedProduceUnits(snap.produceUnits ?? snap.product?.produceUnits ?? []);
+        setProduceUnits(coldUnits);
+
+        const restoredRunId =
           typeof snap.product?.runId === "string" ? snap.product.runId : undefined;
-        let restoredPlan = snap.product?.plan ?? null;
-        if (Array.isArray(trajectory)) {
-          for (let i = trajectory.length - 1; i >= 0; i -= 1) {
-            const row = trajectory[i];
-            if (!isRecord(row)) continue;
-            if (
-              !restoredRunId &&
-              typeof row.runId === "string" &&
-              row.runId.trim() &&
-              (row.kind === "run_link" ||
-                row.kind === "work_unit" ||
-                row.kind === "run_phase" ||
-                row.kind === "gate")
-            ) {
-              restoredRunId = row.runId.trim();
-            }
-            if (!restoredPlan && row.kind === "gate" && isRecord(row.plan)) {
-              restoredPlan = row.plan as WikiRunPlan;
-            }
-            if (restoredRunId && restoredPlan) break;
-          }
-        }
+        const restoredPlan = snap.product?.plan ?? null;
 
         if (restoredRunId) setLinkedRunId(restoredRunId);
         if (snap.product?.phase) setPhase(snap.product.phase);
@@ -500,46 +631,33 @@ export function useSessionAgent({
           });
         }
 
-        // Seed units fold cache from durable workUnits (last-by-unitId).
-        const coldUnits = workUnitsFromList(
-          (snap.product?.workUnits ?? [])
-            .map(coldWorkUnitRow)
-            .filter((u): u is WorkUnitEventLike => u !== null),
-        );
-        setUnits(coldUnits);
-
-        // Project product trajectory for phase/gate/… strips + work_block anchors.
-        // Unit bodies live in coldUnits fold only (not timeline chips).
-        if (Array.isArray(trajectory) && trajectory.length > 0) {
-          for (const row of trajectory) {
-            if (!isRecord(row) || typeof row.kind !== "string") continue;
-            timeline = applyProductEvent(timeline, row as ProductSseLike);
+        // Thin phase strip when meta has phase but timeline has no product card yet.
+        if (snap.product?.phase) {
+          const phase = snap.product.phase as
+            | "idle"
+            | "planning"
+            | "awaiting_plan"
+            | "writing"
+            | "awaiting_publish"
+            | "done"
+            | "failed"
+            | "cancelled";
+          if (phase !== "idle") {
+            const withPhase = applyProductEvent(timeline, {
+              kind: "run_phase",
+              phase,
+              runId: restoredRunId ?? snap.product?.runId,
+            });
+            streamStateRef.current = createPiStreamState(withPhase);
+            setMessages(withPhase);
           }
         }
-        if (Object.keys(coldUnits).length > 0) {
-          timeline = ensureWorkBlockAnchors(timeline, coldUnits);
-        }
-        if (snap.product?.phase && !timeline.some((m) => m.product?.kind === "run_phase")) {
-          timeline = applyProductEvent(timeline, {
-            kind: "run_phase",
-            phase: snap.product.phase as
-              | "idle"
-              | "planning"
-              | "awaiting_plan"
-              | "writing"
-              | "awaiting_publish"
-              | "done"
-              | "failed"
-              | "cancelled",
-            runId: restoredRunId ?? snap.product?.runId,
-          });
-        }
 
-        setMessages(timeline);
         // Restore streaming chrome when a wiki run / produce is still live.
         const phase = snap.product?.phase;
         const runStatus = snap.product?.runStatus;
         const busy = snap.product?.busy === true;
+        setProductBusy(busy);
         const phaseBusy = Boolean(phase) && !isTerminalOrWaitingPhase(phase);
         const runBusy =
           runStatus === "running" ||
@@ -618,7 +736,16 @@ export function useSessionAgent({
         content: body,
         createdAt: nowIso(),
       };
-      setMessages((prev) => [...prev, userMsg]);
+      setMessages((prev) => {
+        const next = [...prev, userMsg];
+        streamStateRef.current = {
+          ...streamStateRef.current,
+          messages: streamStateRef.current.streamingMessage
+            ? next.filter((m) => m.id !== streamStateRef.current.streamingMessage!.id)
+            : next,
+        };
+        return next;
+      });
 
       try {
         setStatus("streaming");
@@ -650,16 +777,20 @@ export function useSessionAgent({
       setPlan(null);
       setPendingGate(null);
       setPhase(null);
-      setUnits({});
+      setPlanProgressPages(null);
+      setDefects(null);
+      setProduceUnits([]);
 
       try {
         setStatus("streaming");
+        setProductBusy(true);
         const profileId = options?.modelProfileId?.trim();
         const res = await runCommand({
           type: "start_wiki_run",
           ...(profileId ? { modelProfileId: profileId } : {}),
         });
         if (applyCommandFailure(res, "Failed to start wiki run (see transcript for details)")) {
+          setProductBusy(false);
           return;
         }
         if (res?.runId) {
@@ -669,6 +800,7 @@ export function useSessionAgent({
         const message = err instanceof Error ? err.message : String(err);
         setError(message);
         setStatus("error");
+        setProductBusy(false);
       } finally {
         sendInFlight.current = false;
       }
@@ -723,32 +855,43 @@ export function useSessionAgent({
       // Server may reject if session missing — still mark local idle.
     }
     setStatus("idle");
-    streamRefs.current = {
-      streamingAssistantId: null,
-      lastAssistantId: streamRefs.current.lastAssistantId,
+    setProductBusy(false);
+    const aborted: AgentMessage = {
+      id: makeId("sys"),
+      role: "system",
+      content: "Aborted.",
+      createdAt: nowIso(),
+      status: "aborted",
+    };
+    const base = streamStateRef.current.messages;
+    streamStateRef.current = {
+      messages: [...base, aborted],
+      streamingMessage: null,
+      lastAssistantId: streamStateRef.current.lastAssistantId,
       turnActive: false,
     };
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: makeId("sys"),
-        role: "system",
-        content: "Aborted.",
-        createdAt: nowIso(),
-        status: "aborted",
-      },
-    ]);
+    setStreamingMessage(null);
+    setMessages(viewMessages(streamStateRef.current));
   }, [sessionId, runCommand]);
 
   const clearError = useCallback(() => setError(null), []);
 
-  const expandedUnit = useMemo(() => {
-    if (!expandedUnitId) return null;
-    return units[expandedUnitId] ?? null;
-  }, [expandedUnitId, units]);
+  const product: ProductViewState = useMemo(
+    () => ({
+      phase,
+      runId: linkedRunId,
+      pendingGate,
+      plan,
+      pages: planProgressPages,
+      defects,
+      busy: productBusy || status === "streaming" || status === "sending",
+    }),
+    [phase, linkedRunId, pendingGate, plan, planProgressPages, defects, productBusy, status],
+  );
 
   return {
     messages,
+    streamingMessage,
     status,
     error,
     input,
@@ -765,9 +908,7 @@ export function useSessionAgent({
     plan,
     pendingGate,
     gateBusy,
-    units,
-    expandedUnitId,
-    setExpandedUnitId,
-    expandedUnit,
+    product,
+    produceUnits,
   };
 }

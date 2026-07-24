@@ -27,7 +27,7 @@ export type PlanWikiSpecInput = {
   /** When true, skip LLM and return defaultWikiRunSpec. */
   useDefaultSpec?: boolean;
   /**
-   * Forward planner Pi events for parent-visibility → work_unit.
+   * Forward planner Pi events for local onProgress reduction.
    * Signature matches runChildSession.onPiEvent.
    */
   onPiEvent?: (kind: string, payload: unknown) => void;

@@ -1,11 +1,10 @@
 /**
- * Shared types for Operator Session projection (transcript + work units).
+ * Shared types for Operator Session projection (Pi-native + thin product).
  *
- * ADR 0031: pure fold types only. work_unit body lives in WorkUnits fold;
- * timeline may carry a thin work_block anchor (UI-only, not a product inject).
+ * ADR 0031: authority is parent Pi message snapshots (live SSE / cold JSONL).
+ * Product injects are thin strips only (run_link | run_phase | gate |
+ * plan_progress | defects). No second body channel.
  */
-
-import type { WorkUnitStatus, WorkUnitToolState } from "@okf-wiki/contract";
 
 export type AgentMessageRole = "user" | "assistant" | "tool" | "system";
 
@@ -23,17 +22,16 @@ export type PlanProgressPage = {
 };
 
 /**
- * Product / view meta on a timeline row.
- * `work_block` is a client-only anchor for the Work block (not an SSE inject kind).
+ * Product / view meta on a timeline row (whitelist injects only).
  */
 export type AgentProductMeta = {
-  kind: "run_phase" | "gate" | "run_link" | "progress" | "plan_progress" | "defects" | "work_block";
+  kind: "run_phase" | "gate" | "run_link" | "plan_progress" | "defects";
   phase?: string;
   gate?: "plan" | "publication";
   runId?: string;
   status?: string;
   question?: string;
-  /** Publication gate page paths (when known). */
+  /** Publication gate / plan_progress page paths. */
   pages?: string[] | PlanProgressPage[];
   label?: string;
   parentId?: string;
@@ -46,39 +44,14 @@ export type AgentProductMeta = {
 };
 
 /**
- * Fold-cache view of one produce work unit (from product work_unit events).
- * Empty running (no message/tools) must not be labeled as model "thinking".
+ * Thin view model derived from Pi message snapshots (not a dual store).
+ * `content` / `thinking` / `tools` come from content blocks or tool_execution_*.
  */
-export type WorkUnitView = {
-  unitId: string;
-  role: string;
-  status: WorkUnitStatus;
-  runId?: string;
-  task?: string;
-  parentId?: string;
-  message?: { thinking?: string; text?: string };
-  tools?: Array<{
-    toolCallId: string;
-    toolName: string;
-    state: WorkUnitToolState["state"];
-    input?: unknown;
-    output?: unknown;
-    errorText?: string;
-  }>;
-  summary?: string;
-  receiptPath?: string;
-  error?: string;
-  updatedAt?: number;
-};
-
-/** unitId → last-write fold (cache only). */
-export type WorkUnits = Record<string, WorkUnitView>;
-
 export type AgentMessage = {
   id: string;
   role: AgentMessageRole;
   content: string;
-  /** Streamed / final thinking (Pi type:"thinking" blocks + thinking_delta). */
+  /** Streamed / final thinking (Pi type:"thinking" blocks). */
   thinking?: string;
   thinkingStatus?: "streaming" | "done";
   createdAt: string;
@@ -89,23 +62,25 @@ export type AgentMessage = {
   product?: AgentProductMeta;
 };
 
-export type StreamCursor = {
-  /** In-flight assistant bubble id (null between assistant messages). */
-  streamingAssistantId: string | null;
-  /** Last assistant bubble in the current turn (tools attach here). */
+/**
+ * Pi-web style stream state: finalized messages + one streaming snapshot.
+ */
+export type PiStreamState = {
+  messages: AgentMessage[];
+  /** Latest in-flight assistant snapshot, or null when idle. */
+  streamingMessage: AgentMessage | null;
+  /** Last finalized (or streaming) assistant id — tools attach here. */
   lastAssistantId: string | null;
-  /**
-   * True between agent_start and agent_end/agent_settled.
-   * While active, pre-tool and post-tool assistant segments share one bubble.
-   */
+  /** True between agent_start and agent_end/agent_settled. */
   turnActive: boolean;
 };
 
-export type StreamingRefs = StreamCursor;
+/** @deprecated Use PiStreamState; kept as alias for fixture imports during migration. */
+export type StreamingRefs = PiStreamState;
 
-/** Loose product SSE / trajectory row accepted by projectors. */
+/** Loose product SSE row accepted by projectors (whitelist kinds only). */
 export type ProductSseLike = {
-  kind: "run_phase" | "gate" | "run_link" | "progress" | "plan_progress" | "defects" | "work_unit";
+  kind: "run_phase" | "gate" | "run_link" | "plan_progress" | "defects";
   phase?: string;
   gate?: "plan" | "publication";
   runId?: string;
@@ -124,27 +99,4 @@ export type ProductSseLike = {
   clean?: boolean;
   defectCount?: number;
   summary?: string;
-  /** work_unit fields */
-  unitId?: string;
-  role?: string;
-  tools?: WorkUnitView["tools"];
-  error?: string;
-  updatedAt?: number;
-};
-
-/** Subset of ProductWorkUnitEvent used by applyWorkUnit (no source/sessionId required). */
-export type WorkUnitEventLike = {
-  kind?: "work_unit";
-  unitId: string;
-  role: string;
-  status: WorkUnitStatus | string;
-  runId?: string;
-  task?: string;
-  parentId?: string;
-  message?: { thinking?: string; text?: string };
-  tools?: WorkUnitView["tools"];
-  summary?: string;
-  receiptPath?: string;
-  error?: string;
-  updatedAt?: number;
 };

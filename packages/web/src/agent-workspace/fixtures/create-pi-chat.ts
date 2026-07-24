@@ -1,17 +1,18 @@
 /**
- * Deterministic Pi + product event scripts for UI tests (shadcn helpers idea,
- * without AI SDK — ADR 0030).
+ * Deterministic Pi + product event scripts for UI tests.
  *
- * Scripts emit the same shapes the server SSE bus uses, so applyPiEvent /
- * applyProductEvent exercise the real projection path.
+ * Scripts emit the same shapes the server SSE bus uses, so reducePiEvent /
+ * applyProductEvent exercise the real projection path (snapshot authority).
  */
 
-import type { StreamingRefs } from "../hooks/project-agent-events.ts";
+import type { PiStreamState } from "../hooks/project-agent-events.ts";
 import {
   type AgentMessage,
-  applyPiEvent,
   applyProductEvent,
+  createPiStreamState,
   type ProductSseLike,
+  reducePiEvent,
+  viewMessages,
 } from "../hooks/project-agent-events.ts";
 
 export type PiChatEvent = {
@@ -73,8 +74,12 @@ function assistantWriter(push: (e: PiChatEvent) => void): PiAssistantWriter {
           type: "message_update",
           message: {
             role: "assistant",
-            content: [{ type: "text", text: contentText }],
+            content: [
+              ...(thinkingText ? [{ type: "thinking", thinking: thinkingText }] : []),
+              { type: "text", text: contentText },
+            ],
           },
+          // Delta is transport detail; snapshot is authority.
           assistantMessageEvent: { type: "text_delta", delta },
         },
       });
@@ -248,20 +253,33 @@ export function createPiChat(): CreatePiChat {
       return events.slice();
     },
     project() {
-      const refs: StreamingRefs = {
-        streamingAssistantId: null,
-        lastAssistantId: null,
-        turnActive: false,
-      };
-      let messages: AgentMessage[] = [];
+      let state: PiStreamState = createPiStreamState();
+      let productMessages: AgentMessage[] = [];
       for (const e of events) {
         if (e.source === "product" && e.product) {
-          messages = applyProductEvent(messages, e.product);
+          // Product strips attach to finalized timeline.
+          const base = state.messages;
+          productMessages = applyProductEvent(
+            productMessages.length ? productMessages : base,
+            e.product,
+          );
+          // Keep product rows in state.messages while streaming is separate.
+          state = {
+            ...state,
+            messages: productMessages,
+          };
         } else if (e.source === "pi") {
-          messages = applyPiEvent(messages, e.kind, e.payload, refs);
+          state = reducePiEvent(state, e.kind, e.payload);
+          // Re-home product strips that were on prior messages.
+          if (productMessages.some((m) => m.product)) {
+            const productOnly = productMessages.filter((m) => m.product);
+            const chat = state.messages.filter((m) => !m.product);
+            state = { ...state, messages: [...productOnly, ...chat] };
+            productMessages = state.messages;
+          }
         }
       }
-      return messages;
+      return viewMessages(state);
     },
   };
 
@@ -277,7 +295,7 @@ export function scriptProvider403(): CreatePiChat {
     });
 }
 
-/** Thinking then answer. */
+/** Thinking then answer (snapshot path). */
 export function scriptThinkingThenText(): CreatePiChat {
   return createPiChat()
     .user("hi")

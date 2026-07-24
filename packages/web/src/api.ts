@@ -873,24 +873,34 @@ export function agentSessionEventsUrl(
   )}`;
 }
 
-/** Cold-load Pi JSONL history + product meta (reload / reconnect). */
-export type AgentSessionHistoryMessage = {
-  id: string;
-  role: "user" | "assistant" | "system";
-  text: string;
-  thinking?: string;
-  status?: "done" | "error" | string;
+/**
+ * Cold-load Pi JSONL history message (content blocks intact).
+ * Matches agent `PiHistoryMessage` — web maps to thin UI view model.
+ */
+export type PiHistoryMessage = {
+  role: "user" | "assistant" | "toolResult" | "system";
+  content?: unknown;
+  stopReason?: string;
   errorMessage?: string;
-  createdAt?: string;
-  tools?: Array<{
-    id: string;
-    name: string;
-    status: "running" | "done" | "error";
-    /** Compact JSON args when known (cold-load from toolCall.arguments). */
-    input?: string;
-    /** Plain-text result when paired toolResult is available. */
-    output?: string;
-  }>;
+  toolCallId?: string;
+  toolName?: string;
+  isError?: boolean;
+  timestamp?: number;
+};
+
+/** Parent-visible produce unit from cold load / SSE (not workUnit). */
+export type ProduceUnitSnapshot = {
+  role: string;
+  status: string;
+  unitId?: string;
+  task?: string;
+  parentId?: string;
+  summary?: string;
+  receiptPath?: string;
+  error?: string;
+  tools?: unknown[];
+  message?: { text?: string; thinking?: string };
+  children?: ProduceUnitSnapshot[];
 };
 
 export type AgentSessionSnapshot = {
@@ -900,7 +910,13 @@ export type AgentSessionSnapshot = {
     title?: string;
     sessionFile?: string;
   };
-  messages: AgentSessionHistoryMessage[];
+  /** Pi-native messages (content blocks); no product work fold. */
+  messages: PiHistoryMessage[];
+  /**
+   * Parent-visible produce units from durable okf.produce_progress custom entries
+   * (last-by-unitId). Live updates via SSE kind okf.produce_progress.
+   */
+  produceUnits?: ProduceUnitSnapshot[];
   product: {
     runId?: string;
     runStatus?: string;
@@ -913,30 +929,8 @@ export type AgentSessionSnapshot = {
       pages?: string[];
     } | null;
     plan?: WikiRunPlan | null;
-    /** Durable Work surface units (last-by-unitId fold from trajectory). */
-    workUnits?: Array<{
-      unitId: string;
-      role: string;
-      status: string;
-      runId?: string;
-      task?: string;
-      parentId?: string;
-      message?: { thinking?: string; text?: string };
-      tools?: Array<{
-        toolCallId: string;
-        toolName: string;
-        state: string;
-        input?: unknown;
-        output?: unknown;
-        errorText?: string;
-      }>;
-      summary?: string;
-      receiptPath?: string;
-      error?: string;
-      updatedAt?: number;
-    }>;
-    /** Full product inject history for cold project (optional). */
-    trajectory?: unknown[];
+    /** Same list nested under product when present. */
+    produceUnits?: ProduceUnitSnapshot[];
   };
 };
 

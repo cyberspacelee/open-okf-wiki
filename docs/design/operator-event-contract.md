@@ -69,11 +69,11 @@ Any new product `kind` requires an ADR or explicit contract revision.
 
 | Store | Path | Content |
 |-------|------|---------|
-| Pi JSONL | `.okf-wiki/pi-sessions/<id>/` (framework) | Parent conversation (including parent-visible produce tool units) |
-| Operator trajectory | same session dir / `operator-trajectory.jsonl` | Whitelist product rows only (thin strip) |
+| Pi JSONL | `.okf-wiki/pi-sessions/<id>/` (framework) | Parent conversation (including parent-visible produce tool units / `okf.produce_progress` custom entries) |
+| Session meta + Run Record | session meta + `.okf-wiki/runs/<runId>/` | runId, shell/phase, gate payload sources for cold product strip |
 | Job artifacts | `.okf-wiki/runs/<runId>/analysis/` | Spec, receipts, defects — **not** a second chat body store |
 
-Cold load: `project(Pi history) + project(trajectory thin injects)`. Ring buffer is catch-up only.
+Cold load: `project(Pi history) + product from meta/shell/Run Record`. Ring buffer is catch-up only. **No** `operator-trajectory.jsonl` body authority.
 
 ## Streaming projection (framework-aligned)
 
@@ -108,8 +108,8 @@ Operator contract: expandable **parent tool / parent-visible card** on the Opera
 ## Wipe
 
 Old `.okf-wiki/sessions/*.json` (UIMessage) and Mastra stores remain non-migrated.  
-`operator-work.json` and trajectory `work_unit` folds are **removed**.  
-Pi sessions + thin-inject `operator-trajectory.jsonl` only.
+`operator-work.json`, `operator-trajectory.jsonl` body authority, and `work_unit` PVU folds are **removed**.  
+Pi sessions + thin product SSE/meta only.
 
 ## Non-goals
 
