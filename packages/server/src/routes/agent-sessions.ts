@@ -96,7 +96,7 @@ export async function handleCreateAgentSession(
     });
   } catch (error) {
     const message = redactErrorMessage(error);
-    if (message.includes("already exists")) {
+    if (message.includes("already exists") || message.includes("being deleted")) {
       sendError(res, 409, message);
       return;
     }

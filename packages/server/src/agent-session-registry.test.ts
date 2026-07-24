@@ -424,6 +424,76 @@ test("H2: delete wins over concurrent cold ensureRegistered (no reanimation)", a
   );
 });
 
+test("H2: concurrent delete is single-flight; create blocked mid-cascade", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-registry-delete-flight-"));
+  const oldMode = process.env.OKF_WIKI_AGENT_MODE;
+  process.env.OKF_WIKI_AGENT_MODE = "fixture";
+  t.after(async () => {
+    resetAgentSessionRegistryForTests();
+    if (oldMode === undefined) delete process.env.OKF_WIKI_AGENT_MODE;
+    else process.env.OKF_WIKI_AGENT_MODE = oldMode;
+    await removeRunRoot(root);
+  });
+
+  const workspace = await createWorkspace({
+    name: "Delete Flight",
+    rootPath: root,
+    publicationPath: path.join(root, "published"),
+    resolvedModelId: "openai/test",
+  });
+  await saveWorkspace(workspace);
+  const sessionId = "delete-flight";
+
+  await registerAgentSession({ workspace, sessionId });
+  const entry = await ensureRegistered(workspace, sessionId);
+
+  // Hold waitForSessionQuiet via registry busy (do not force isIdle=false —
+  // that can stall session.abort() and empty the event loop).
+  entry.busy = true;
+
+  const deleteA = deleteAgentSession(workspace, sessionId);
+  // Yield so delete marks the barrier and enters waitForSessionQuiet.
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const deleteB = deleteAgentSession(workspace, sessionId);
+
+  // Create with the same id must fail cleanly while delete is in flight.
+  await assert.rejects(
+    () => registerAgentSession({ workspace, sessionId }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /being deleted/i);
+      return true;
+    },
+  );
+  // Cold open must also refuse while the cascade holds the barrier.
+  await assert.rejects(
+    () => ensureRegistered(workspace, sessionId),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /being deleted/i);
+      return true;
+    },
+  );
+
+  // Release settle so both delete waiters can finish the shared flight.
+  entry.busy = false;
+
+  const [a, b] = await Promise.all([deleteA, deleteB]);
+  assert.equal(a.sessionId, sessionId);
+  assert.equal(b.sessionId, sessionId);
+  assert.equal(a.removed, b.removed);
+  assert.ok(a.removed >= 1);
+  // Shared flight: no live entry left, no mid-cascade reopen window.
+  assert.equal(listLiveAgentSessionSummaries(workspace.id).length, 0);
+
+  // After delete completes, create may reuse the id as a brand-new session.
+  const recreated = await registerAgentSession({ workspace, sessionId });
+  assert.equal(recreated.id, sessionId);
+  assert.equal(listLiveAgentSessionSummaries(workspace.id).length, 1);
+});
+
 test("H3: delete mid-gate aborts, settles, and cascades run data", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-registry-delete-gate-"));
   const oldMode = process.env.OKF_WIKI_AGENT_MODE;

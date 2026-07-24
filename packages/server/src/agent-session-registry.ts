@@ -65,10 +65,14 @@ const pendingGates = new Map<string, PendingGate>();
 /** Single-flight open for cold ensureRegistered (one SessionManager per JSONL). */
 const openingSessions = new Map<string, Promise<RegisteredAgentSession>>();
 /**
- * Keys undergoing delete. In-flight cold opens check this after openOperatorSession
- * and dispose without registerLive so a deleted session cannot reanimate.
+ * Single-flight delete per key (mirrors openingSessions). Concurrent deletes await
+ * the same promise; create/open check `.has(key)` so they cannot registerLive while
+ * a cascade is in progress. Cleared only when that flight finishes.
  */
-const deletingSessions = new Set<string>();
+const deletingSessions = new Map<
+  string,
+  Promise<{ sessionId: string; removed: number }>
+>();
 
 function sessionKey(workspaceId: string, sessionId: string): string {
   return `${workspaceId}::${sessionId}`;
@@ -282,8 +286,16 @@ export async function registerAgentSession(input: {
   title?: string;
 }): Promise<LiveAgentSessionSummary> {
   const requestedId = input.sessionId?.trim();
-  if (requestedId && liveSessions.has(sessionKey(input.workspace.id, requestedId))) {
-    throw new Error(`Operator Session already exists: ${requestedId}`);
+  if (requestedId) {
+    const key = sessionKey(input.workspace.id, requestedId);
+    // Delete barrier first: mid-cascade the dying live entry may still be present,
+    // but create must report "being deleted" rather than "already exists".
+    if (deletingSessions.has(key)) {
+      throw new Error(`Operator Session is being deleted: ${requestedId}`);
+    }
+    if (liveSessions.has(key)) {
+      throw new Error(`Operator Session already exists: ${requestedId}`);
+    }
   }
 
   // A generated id must be known before constructing the gate coordinator. Pi
@@ -299,12 +311,25 @@ export async function registerAgentSession(input: {
     },
   };
   const runtime = await runtimeInput(input.workspace, input.sessionId);
+  // Re-check after await: a delete may have started for the requested id.
+  if (requestedId && deletingSessions.has(sessionKey(input.workspace.id, requestedId))) {
+    throw new Error(`Operator Session is being deleted: ${requestedId}`);
+  }
   const handle = await createOperatorSession({
     ...runtime.input,
     ...(input.sessionId ? { sessionId: input.sessionId } : {}),
     wikiProduce: { ...runtime.input.wikiProduce, gateCoordinator: coordinator },
   });
   resolvedSessionId = handle.sessionId;
+  // Final barrier before registerLive (covers client-chosen id races mid-create).
+  if (deletingSessions.has(sessionKey(input.workspace.id, handle.sessionId))) {
+    try {
+      handle.dispose();
+    } catch {
+      // Already disposed.
+    }
+    throw new Error(`Operator Session is being deleted: ${handle.sessionId}`);
+  }
   handle.session.setSessionName(input.title?.trim() || defaultTitle(input.workspace));
   return projectLiveSession(registerLive(input.workspace.id, handle, runtime.queueFixtureTurn));
 }
@@ -387,9 +412,10 @@ export function listLiveAgentSessionSummaries(workspaceId: string): LiveAgentSes
  * cascade v2 Run data + SessionManager JSONL. Gate waiters are rejected first
  * so wiki_produce cannot keep writing after delete begins.
  *
- * Serialized against cold open on the same key: marks the session deleting,
- * awaits any in-flight ensureRegistered open (disposing a late-arriving handle
- * via the deleting flag), then tears down live state and cascades disk.
+ * Single-flight per key (like ensureRegistered open): concurrent deletes await
+ * the same promise so the deleting barrier stays up until the cascade finishes.
+ * Also serialized against cold open: marks deleting, awaits any in-flight open
+ * (disposing a late-arriving handle via the deleting map), then tears down.
  */
 export async function deleteAgentSession(
   workspace: WorkspaceConfig,
@@ -397,46 +423,58 @@ export async function deleteAgentSession(
 ): Promise<{ sessionId: string; removed: number }> {
   const key = sessionKey(workspace.id, sessionId);
 
-  // Mark first so concurrent/in-flight opens cannot registerLive after we cascade.
-  deletingSessions.add(key);
-  try {
-    // Unblock gate waiters before filesystem cascade so tool catch can finish.
-    pendingGates.get(key)?.reject(new Error("Wiki Run cancelled"));
+  const inFlightDelete = deletingSessions.get(key);
+  if (inFlightDelete) return inFlightDelete;
 
-    // Await the cold-open single-flight so we can dispose its handle. Without
-    // this, openOperatorSession + registerLive can finish after disk delete and
-    // reanimate a “deleted” session.
-    const inFlight = openingSessions.get(key);
-    if (inFlight) {
-      try {
-        await inFlight;
-      } catch {
-        // Open failed or was cancelled by the deleting flag — nothing to dispose
-        // from that path (handle disposed inside ensureRegistered if needed).
+  // Assign via let so the finally closure can compare the owning flight.
+  let deletePromise!: Promise<{ sessionId: string; removed: number }>;
+  deletePromise = (async (): Promise<{ sessionId: string; removed: number }> => {
+    try {
+      // Unblock gate waiters before filesystem cascade so tool catch can finish.
+      pendingGates.get(key)?.reject(new Error("Wiki Run cancelled"));
+
+      // Await the cold-open single-flight so we can dispose its handle. Without
+      // this, openOperatorSession + registerLive can finish after disk delete and
+      // reanimate a “deleted” session.
+      const inFlightOpen = openingSessions.get(key);
+      if (inFlightOpen) {
+        try {
+          await inFlightOpen;
+        } catch {
+          // Open failed or was cancelled by the deleting flag — nothing to dispose
+          // from that path (handle disposed inside ensureRegistered if needed).
+        }
+      }
+
+      const live = liveSessions.get(key);
+      const hadLive = Boolean(live);
+
+      if (live) {
+        await live.handle.session.abort().catch(() => undefined);
+        await waitForSessionQuiet(live, DELETE_SETTLE_TIMEOUT_MS);
+        disposeLive(live);
+        liveSessions.delete(key);
+      }
+
+      // Open's finally may already have cleared this; drop any stale entry.
+      openingSessions.delete(key);
+
+      const result = await deleteOperatorSession(workspace.rootPath, sessionId);
+      return {
+        sessionId,
+        removed: (hadLive || result.deleted ? 1 : 0) + result.removedRunIds.length,
+      };
+    } finally {
+      // Only the owning flight clears the barrier (single-flight, not refcount).
+      if (deletingSessions.get(key) === deletePromise) {
+        deletingSessions.delete(key);
       }
     }
+  })();
 
-    const live = liveSessions.get(key);
-    const hadLive = Boolean(live);
-
-    if (live) {
-      await live.handle.session.abort().catch(() => undefined);
-      await waitForSessionQuiet(live, DELETE_SETTLE_TIMEOUT_MS);
-      disposeLive(live);
-      liveSessions.delete(key);
-    }
-
-    // Open's finally may already have cleared this; drop any stale entry.
-    openingSessions.delete(key);
-
-    const result = await deleteOperatorSession(workspace.rootPath, sessionId);
-    return {
-      sessionId,
-      removed: (hadLive || result.deleted ? 1 : 0) + result.removedRunIds.length,
-    };
-  } finally {
-    deletingSessions.delete(key);
-  }
+  // Mark before any outer await so concurrent create/open/delete see the barrier.
+  deletingSessions.set(key, deletePromise);
+  return deletePromise;
 }
 
 /**
