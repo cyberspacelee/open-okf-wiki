@@ -202,10 +202,7 @@ export function AgentWorkspacePage() {
 
   // Refresh session list titles after first prompt auto-titles the active session.
   const activeListTitle = sessions.find((s) => s.id === activeSessionId)?.title ?? "";
-  const activeTitleLooksDefault =
-    !activeListTitle ||
-    activeListTitle.startsWith("Wiki Agent · ") ||
-    activeListTitle === "New session";
+  const activeTitleLooksDefault = activeListTitle === `Wiki Agent · ${workspace?.name ?? id}`;
   const userMessageCount = agent.messages.filter((m) => m.role === "user").length;
   useEffect(() => {
     if (!id || !activeSessionId || !rootPath) return;

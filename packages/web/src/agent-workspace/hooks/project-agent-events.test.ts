@@ -1,12 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
-import {
-  createPiStreamState,
-  projectAgentEvent,
-  reducePiEvent,
-  viewMessages,
-} from "./project-agent-events.ts";
+import { reducePiEvent } from "./project/pi.ts";
+import { createPiStreamState, projectAgentEvent, viewMessages } from "./project-agent-events.ts";
 
 describe("projectAgentEvent", () => {
   it("uses the server snapshot as the complete durable SessionManager view", () => {

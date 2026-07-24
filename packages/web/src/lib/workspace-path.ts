@@ -35,17 +35,12 @@ export function agentWorkspaceHref(
 
 /**
  * Secondary workspace pages under `/workspaces/:id{suffix}`.
- * Prefer `agentWorkspaceHref` for the operate surface (not `/session` or bare id).
  */
 export function workspaceHref(
   workspaceId: string,
-  suffix = "",
+  suffix: "/sources" | "/wiki" | "/settings",
   rootPath?: string | null,
   extraQuery?: Record<string, string>,
 ): string {
-  // Legacy callers sometimes used "" or "/session" for the operate surface.
-  if (suffix === "" || suffix === "/session") {
-    return agentWorkspaceHref(workspaceId, rootPath, extraQuery);
-  }
   return withQuery(`/workspaces/${encodeURIComponent(workspaceId)}${suffix}`, rootPath, extraQuery);
 }

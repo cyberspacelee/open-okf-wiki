@@ -144,11 +144,6 @@ export type UpdateSourceInput = {
   ignore?: string[];
 };
 
-export type IgnoreCatalog = {
-  defaultSourceIgnores: string[];
-  presets: Record<string, { label: string; patterns: string[] }>;
-};
-
 export type AddSourceInput = {
   path: string;
   id?: string;
@@ -400,10 +395,6 @@ export function updateSource(
       body: JSON.stringify(input),
     },
   );
-}
-
-export function getIgnoreCatalog(): Promise<IgnoreCatalog> {
-  return request<IgnoreCatalog>("/api/ignore-catalog");
 }
 
 export function addSource(

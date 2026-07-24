@@ -42,9 +42,10 @@ test("Operator Session HTTP uses only SessionManager and cascades v2 Run data on
   });
   assert.equal(createdResponse.status, 201, await createdResponse.clone().text());
   const created = (await createdResponse.json()) as {
-    session: { id: string };
+    session: { id: string; title: string };
   };
   assert.equal(created.session.id, "operator-http-1");
+  assert.equal(created.session.title, "Wiki Agent · Session HTTP");
 
   // Legacy side metadata is ignored rather than merged or deleted.
   const legacyMeta = path.join(root, ".okf-wiki", "pi-sessions", "legacy.json");
@@ -61,12 +62,7 @@ test("Operator Session HTTP uses only SessionManager and cascades v2 Run data on
   assert.equal(prompt.command, "prompt");
 
   const getResponse = await fetch(`${base}/operator-http-1${query}`);
-  assert.equal(getResponse.status, 200);
-  const snapshot = (await getResponse.json()) as { messages: Array<{ role: string }> };
-  assert.deepEqual(
-    snapshot.messages.map((message) => message.role),
-    ["user", "assistant"],
-  );
+  assert.equal(getResponse.status, 404);
 
   const listResponse = await fetch(`${base}${query}`);
   assert.equal(listResponse.status, 200);
@@ -76,6 +72,27 @@ test("Operator Session HTTP uses only SessionManager and cascades v2 Run data on
     ["operator-http-1"],
   );
   assert.equal(listed.sessions[0]?.title, "Build a concise wiki");
+
+  const pinnedResponse = await fetch(`${base}${query}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "pinned-title", title: "Wiki Agent · pinned" }),
+  });
+  assert.equal(pinnedResponse.status, 201, await pinnedResponse.clone().text());
+  const pinnedPrompt = await fetch(`${base}/pinned-title/command${query}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ type: "prompt", text: "Do not replace my title" }),
+  });
+  assert.equal(pinnedPrompt.status, 202, await pinnedPrompt.clone().text());
+  const relistedResponse = await fetch(`${base}${query}`);
+  const relisted = (await relistedResponse.json()) as {
+    sessions: Array<{ id: string; title?: string }>;
+  };
+  assert.equal(
+    relisted.sessions.find((session) => session.id === "pinned-title")?.title,
+    "Wiki Agent · pinned",
+  );
 
   await registerRunRecord(root, workspace.id, {
     runId: "owned-run",
@@ -97,4 +114,13 @@ test("Operator Session HTTP uses only SessionManager and cascades v2 Run data on
   assert.deepEqual(await listRuns(root), []);
   assert.equal(await readFile(published, "utf8"), "# Published\n");
   assert.equal(await readFile(legacyMeta, "utf8"), JSON.stringify({ id: "legacy", cwd: root }));
+
+  const missingCommand = await fetch(`${base}/missing/command${query}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ type: "abort" }),
+  });
+  assert.equal(missingCommand.status, 404);
+  const missingDelete = await fetch(`${base}/missing${query}`, { method: "DELETE" });
+  assert.equal(missingDelete.status, 404);
 });

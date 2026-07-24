@@ -13,19 +13,6 @@ export function makeId(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export function safeStringify(value: unknown, max = 4000): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value === "string") {
-    return value.length > max ? `${value.slice(0, max)}…` : value;
-  }
-  try {
-    const s = JSON.stringify(value, null, 2);
-    return s.length > max ? `${s.slice(0, max)}…` : s;
-  } catch {
-    return String(value);
-  }
-}
-
 /**
  * Compact JSON for tool *inputs* (still parseable by formatToolDisplay).
  * Prefer one-line when short so headers stay light.
@@ -221,16 +208,13 @@ export type ToolDisplaySummary = {
   args?: string[];
   /**
    * How to expand:
-   * - output-only: only tool result text (read/grep/list when completed)
-   * - console: shell — `$ cmd` then result (pi BashRenderer)
+   * - output-only: only tool result text (read/grep/ls when completed)
    * - write-body: write/edit content preview + result
    * - raw: unknown tools — pretty args only when there is no structured header
    */
-  kind: "output-only" | "console" | "write-body" | "raw";
+  kind: "output-only" | "write-body" | "raw";
   /** For write/edit: content preview in expand (not labeled "Input"). */
   writePreview?: string;
-  /** For console: full command for the `$ …` line. */
-  command?: string;
   /** True when this tool is fully described by the header (no expand needed). */
   headerOnly?: boolean;
 };
@@ -299,8 +283,8 @@ export function formatToolDisplay(toolName: string, inputRaw?: string): ToolDisp
     };
   }
 
-  // ---- read / ls / list — OpenCode: header only (filename + offset/limit) ----
-  if (lower === "read" || lower === "ls" || lower === "list") {
+  // ---- read / ls — OpenCode: header only (filename + offset/limit) ----
+  if (lower === "read" || lower === "ls") {
     const path =
       asString(params.path) ??
       asString(params.file_path) ??
@@ -310,11 +294,11 @@ export function formatToolDisplay(toolName: string, inputRaw?: string): ToolDisp
     if (params.offset !== undefined) args.push(`offset=${params.offset}`);
     if (params.limit !== undefined) args.push(`limit=${params.limit}`);
     return {
-      title: lower === "list" ? "list" : lower,
+      title: lower,
       subtitle: path ? toolPathLabel(path) : undefined,
       args: args.length ? args : undefined,
       kind: "output-only",
-      // read rarely needs expand; list/ls may show directory listing as output
+      // read rarely needs expand; ls may show directory listing as output
       headerOnly: lower === "read",
     };
   }
@@ -336,9 +320,9 @@ export function formatToolDisplay(toolName: string, inputRaw?: string): ToolDisp
     };
   }
 
-  // ---- grep / find / glob — title + pattern/path; expand = matches only ----
-  if (lower === "grep" || lower === "find" || lower === "glob") {
-    const pattern = asString(params.pattern) ?? asString(params.query) ?? asString(params.glob);
+  // ---- grep / find — title + pattern/path; expand = matches only ----
+  if (lower === "grep" || lower === "find") {
+    const pattern = asString(params.pattern) ?? asString(params.query);
     const path = asString(params.path);
     const include = asString(params.include);
     // OpenCode: subtitle = directory, args = pattern=…
@@ -358,17 +342,6 @@ export function formatToolDisplay(toolName: string, inputRaw?: string): ToolDisp
       title: lower,
       subtitle: pattern ? truncateOneLine(pattern, 56) : include,
       kind: "output-only",
-    };
-  }
-
-  // ---- bash / shell — pi BashRenderer: header "shell", expand console ----
-  if (lower === "bash" || lower === "shell" || lower === "run") {
-    const command = asString(params.command) ?? asString(params.cmd) ?? asString(params.script);
-    return {
-      title: lower === "run" ? "run" : "shell",
-      subtitle: command ? truncateOneLine(command, 64) : undefined,
-      kind: "console",
-      command: command ?? undefined,
     };
   }
 

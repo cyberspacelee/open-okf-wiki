@@ -4,9 +4,9 @@
  * Trigger (always visible):
  *   [status] [icon] title  subtitle  arg arg
  *
- * Expand (only when there is result / write body / console output):
+ * Expand (only when there is a result or write body):
  *   plain result text — NO "Input" / "Output" section labels.
- *   optional nested React node (wiki_produce → ProduceTrail).
+ *   structured details for the real wiki_produce tool.
  *
  * Known tools put args on the trigger line; they are never re-dumped as JSON.
  */
@@ -19,7 +19,6 @@ import {
   FileIcon,
   LayersIcon,
   SearchIcon,
-  TerminalIcon,
   WrenchIcon,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -201,22 +200,13 @@ function WikiProduceDetailsPanel({
 
 function toolIcon(name: string) {
   const lower = name.toLowerCase();
-  if (lower === WIKI_PRODUCE_TOOL_NAME || lower === "wiki_produce") {
+  if (lower === WIKI_PRODUCE_TOOL_NAME) {
     return LayersIcon;
   }
-  if (lower === "bash" || lower === "shell" || lower === "run") {
-    return TerminalIcon;
-  }
-  if (
-    lower === "read" ||
-    lower === "write" ||
-    lower === "edit" ||
-    lower === "ls" ||
-    lower === "list"
-  ) {
+  if (lower === "read" || lower === "write" || lower === "edit" || lower === "ls") {
     return FileIcon;
   }
-  if (lower === "grep" || lower === "find" || lower === "glob") {
+  if (lower === "grep" || lower === "find") {
     return SearchIcon;
   }
   return WrenchIcon;
@@ -238,24 +228,15 @@ function StatusGlyph({ status }: { status: AgentToolCall["status"] }) {
 /**
  * Build expand body text.
  * OpenCode: expand children are result only (markdown/pre), never labeled Input.
- * pi-web bash: `> command\n\noutput` in one console block.
  */
 function expandBody(
   kind: ReturnType<typeof formatToolDisplay>["kind"],
   opts: {
-    command?: string;
     writePreview?: string;
     output: string;
-    isError: boolean;
   },
 ): string {
-  const { command, writePreview, output, isError } = opts;
-
-  if (kind === "console") {
-    if (command && output) return `$ ${command}\n\n${output}`;
-    if (command) return `$ ${command}`;
-    return output;
-  }
+  const { writePreview, output } = opts;
 
   if (kind === "write-body") {
     const parts: string[] = [];
@@ -268,9 +249,7 @@ function expandBody(
     return writePreview;
   }
 
-  if (output) return output;
-  if (isError) return "";
-  return "";
+  return output;
 }
 
 export function ToolExecutionCard({ tool, onResumeGate, settled }: ToolExecutionCardProps) {
@@ -278,15 +257,12 @@ export function ToolExecutionCard({ tool, onResumeGate, settled }: ToolExecution
   const output = formatToolResultText(tool.output) ?? "";
   const isError = tool.status === "error";
   const isRunning = tool.status === "running" || tool.status === "pending";
-  const isWikiProduce =
-    tool.name === WIKI_PRODUCE_TOOL_NAME || tool.name.toLowerCase() === "wiki_produce";
+  const isWikiProduce = tool.name.toLowerCase() === WIKI_PRODUCE_TOOL_NAME;
   const wikiDetails = isWikiProduce ? tool.details : undefined;
 
   const body = expandBody(display.kind, {
-    command: display.command,
     writePreview: display.writePreview,
     output,
-    isError,
   });
 
   const canExpand =
@@ -294,7 +270,6 @@ export function ToolExecutionCard({ tool, onResumeGate, settled }: ToolExecution
     (!display.headerOnly &&
       (Boolean(body.trim()) ||
         isError ||
-        (display.kind === "console" && Boolean(display.command)) ||
         (display.kind === "write-body" && Boolean(display.writePreview))));
 
   const autoOpen =

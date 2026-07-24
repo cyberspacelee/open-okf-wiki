@@ -11,11 +11,9 @@ import {
 import { loadWorkspaceById } from "@okf-wiki/core";
 import { subscribeAgentSessionEvents } from "../agent-session-events.ts";
 import {
-  agentSessionExists,
   deleteAgentSession,
   dispatchAgentCommand,
   getActiveAgentSessionTool,
-  getLiveAgentSessionSummary,
   listLiveAgentSessionSummaries,
   loadAgentSessionHistory,
   registerAgentSession,
@@ -110,41 +108,6 @@ export async function handleCreateAgentSession(
   }
 }
 
-/** GET reads the exact active SessionManager branch; no product metadata merge. */
-export async function handleGetAgentSession(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  id: string,
-  sessionId: string,
-  url: URL,
-): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
-  if (!workspace) return;
-  const info = (await listOperatorSessions(workspace.rootPath)).find(
-    (session) => session.id === sessionId,
-  );
-  const live = getLiveAgentSessionSummary(workspace.id, sessionId);
-  if (!info && !live) {
-    sendError(res, 404, `agent session not found: ${sessionId}`);
-    return;
-  }
-  const history = await loadAgentSessionHistory(workspace, sessionId);
-  if (!history) {
-    sendError(res, 404, `agent session not found: ${sessionId}`);
-    return;
-  }
-  sendJson(res, 200, {
-    session: {
-      id: info?.id ?? history.sessionId,
-      workspaceId: workspace.id,
-      title: info?.title ?? live?.title,
-      createdAt: info?.createdAt ?? live?.createdAt,
-      updatedAt: info?.updatedAt ?? live?.updatedAt,
-    },
-    messages: history.messages,
-  });
-}
-
 /** DELETE Session JSONL and all associated v2 Run data. */
 export async function handleDeleteAgentSession(
   _req: IncomingMessage,
@@ -155,12 +118,12 @@ export async function handleDeleteAgentSession(
 ): Promise<void> {
   const workspace = await loadWorkspaceOr404(res, id, url);
   if (!workspace) return;
-  if (!(await agentSessionExists(workspace, sessionId))) {
-    sendError(res, 404, `agent session not found: ${sessionId}`);
-    return;
-  }
   try {
     const deleted = await deleteAgentSession(workspace, sessionId);
+    if (deleted.removed === 0) {
+      sendError(res, 404, `agent session not found: ${sessionId}`);
+      return;
+    }
     sendJson(res, 200, {
       ok: true,
       sessionId: deleted.sessionId,
@@ -181,10 +144,6 @@ export async function handleAgentSessionCommand(
 ): Promise<void> {
   const workspace = await loadWorkspaceOr404(res, id, url);
   if (!workspace) return;
-  if (!(await agentSessionExists(workspace, sessionId))) {
-    sendError(res, 404, `agent session not found: ${sessionId}`);
-    return;
-  }
 
   const parsed = safeParseAgentCommand(await readJsonBody(req));
   if (!parsed.success) {

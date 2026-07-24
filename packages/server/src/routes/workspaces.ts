@@ -2,7 +2,6 @@ import { rm } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 import {
-  IGNORE_PRESETS,
   WikiLanguageSchema,
   type WorkspaceConfig,
   WorkspaceLimitsSchema,
@@ -14,7 +13,6 @@ import {
   cloneIntoWorkspace,
   createSkillFork,
   createWorkspace,
-  DEFAULT_SOURCE_IGNORES,
   deleteWorkspaceMeta,
   getSkillInfo,
   listSkillDir,
@@ -444,21 +442,6 @@ export async function handleUpdateSource(
     }
     sendError(res, 400, message);
   }
-}
-
-export async function handleIgnoreCatalog(
-  _req: IncomingMessage,
-  res: ServerResponse,
-): Promise<void> {
-  sendJson(res, 200, {
-    defaultSourceIgnores: [...DEFAULT_SOURCE_IGNORES],
-    presets: Object.fromEntries(
-      Object.entries(IGNORE_PRESETS).map(([id, meta]) => [
-        id,
-        { label: meta.label, patterns: [...meta.patterns] },
-      ]),
-    ),
-  });
 }
 
 export async function handleProbeSources(

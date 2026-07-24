@@ -19,7 +19,7 @@ type Tab =
     }
   | {
       kind: "path";
-      suffix: string;
+      suffix: "/sources" | "/wiki" | "/settings";
       label: string;
       end: boolean;
       testId: string;

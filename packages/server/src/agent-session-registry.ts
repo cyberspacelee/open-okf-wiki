@@ -4,7 +4,6 @@ import {
   createOperatorFixtureModel,
   createOperatorSession,
   deleteOperatorSession,
-  listOperatorSessions,
   loadOperatorSessionHistory,
   type OperatorSessionHistory,
   openOperatorSession,
@@ -59,30 +58,19 @@ function sessionKey(workspaceId: string, sessionId: string): string {
   return `${workspaceId}::${sessionId}`;
 }
 
-function pendingGateKey(workspaceId: string, sessionId: string): string {
-  return sessionKey(workspaceId, sessionId);
-}
-
-function titleFromPrompt(text: string, max = 60): string {
-  const firstLine =
-    text
-      .trim()
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find(Boolean) ?? "New session";
+function titleFromPrompt(text: string, max = 60): string | undefined {
+  const firstLine = text
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
+  if (!firstLine) return undefined;
   const compact = firstLine.replace(/\s+/g, " ");
   return compact.length <= max ? compact : `${compact.slice(0, max - 1)}…`;
 }
 
 function defaultTitle(workspace: WorkspaceConfig): string {
   return `Wiki Agent · ${workspace.name.trim() || "workspace"}`;
-}
-
-function shouldAutoTitle(name: string | undefined): boolean {
-  const value = name?.trim();
-  return (
-    !value || value === "New session" || value === "新会话" || value.startsWith("Wiki Agent · ")
-  );
 }
 
 function disposeLive(entry: RegisteredAgentSession): void {
@@ -174,7 +162,7 @@ function projectLiveSession(entry: RegisteredAgentSession): LiveAgentSessionSumm
 function gateCoordinator(workspaceId: string, sessionId: string): WikiProduceGateCoordinator {
   return {
     waitForDecision(request, signal) {
-      const key = pendingGateKey(workspaceId, sessionId);
+      const key = sessionKey(workspaceId, sessionId);
       if (pendingGates.has(key)) {
         return Promise.reject(new Error("Operator Session already has a pending Wiki Run gate"));
       }
@@ -317,14 +305,6 @@ export async function ensureRegistered(
   return registerLive(workspace.id, handle, runtime.queueFixtureTurn);
 }
 
-export function getLiveAgentSessionSummary(
-  workspaceId: string,
-  sessionId: string,
-): LiveAgentSessionSummary | undefined {
-  const entry = liveSessions.get(sessionKey(workspaceId, sessionId));
-  return entry ? projectLiveSession(entry) : undefined;
-}
-
 /** Current genuine Pi tool update for an SSE snapshot; never reconstructed from a Run Record. */
 export function getActiveAgentSessionTool(
   workspaceId: string,
@@ -358,21 +338,6 @@ export async function deleteAgentSession(
     sessionId,
     removed: (hadLive || result.deleted ? 1 : 0) + result.removedRunIds.length,
   };
-}
-
-/**
- * A newly-created Pi Session remains live-only until its first assistant
- * message. SessionManager deliberately owns that lifecycle, so callers must
- * not create placeholder files just to make the empty Session discoverable.
- */
-export async function agentSessionExists(
-  workspace: WorkspaceConfig,
-  sessionId: string,
-): Promise<boolean> {
-  return (
-    liveSessions.has(sessionKey(workspace.id, sessionId)) ||
-    (await listOperatorSessions(workspace.rootPath)).some((session) => session.id === sessionId)
-  );
 }
 
 /** Read the active SessionManager branch, including a not-yet-flushed Session. */
@@ -418,6 +383,7 @@ function providerFailure(messages: readonly unknown[]): string | null {
 
 async function prompt(
   entry: RegisteredAgentSession,
+  workspace: WorkspaceConfig,
   text: string,
   canProduce: boolean,
 ): Promise<AgentCommandResponse> {
@@ -432,8 +398,9 @@ async function prompt(
   }
   entry.busy = true;
   try {
-    if (shouldAutoTitle(entry.handle.session.sessionManager.getSessionName())) {
-      entry.handle.session.setSessionName(titleFromPrompt(text));
+    if (entry.handle.session.sessionManager.getSessionName()?.trim() === defaultTitle(workspace)) {
+      const title = titleFromPrompt(text);
+      if (title) entry.handle.session.setSessionName(title);
     }
     entry.queueFixtureTurn?.(text, canProduce);
     await entry.handle.session.prompt(text);
@@ -472,7 +439,7 @@ function resumeGate(
   sessionId: string,
   command: Extract<AgentCommand, { type: "resume_gate" }>,
 ): AgentCommandResponse {
-  const pending = pendingGates.get(pendingGateKey(workspace.id, sessionId));
+  const pending = pendingGates.get(sessionKey(workspace.id, sessionId));
   if (!pending) {
     return {
       ok: false,
@@ -524,10 +491,12 @@ export async function dispatchAgentCommand(
   sessionId: string,
   command: AgentCommand,
 ): Promise<AgentCommandResponse> {
-  if (command.type === "resume_gate") return resumeGate(workspace, sessionId, command);
   const entry = await ensureRegistered(workspace, sessionId);
+  if (command.type === "resume_gate") return resumeGate(workspace, sessionId, command);
 
-  if (command.type === "prompt") return prompt(entry, command.text, workspace.sources.length > 0);
+  if (command.type === "prompt") {
+    return prompt(entry, workspace, command.text, workspace.sources.length > 0);
+  }
   if (command.type === "steer") {
     try {
       await entry.handle.session.steer(command.text);

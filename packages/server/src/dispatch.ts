@@ -14,7 +14,6 @@ import {
   handleAgentSessionEvents,
   handleCreateAgentSession,
   handleDeleteAgentSession,
-  handleGetAgentSession,
   handleListAgentSessions,
 } from "./routes/agent-sessions.ts";
 import { handleGetAppSettings, handlePatchAppSettings } from "./routes/app-settings.ts";
@@ -42,7 +41,6 @@ import {
   handleDeleteWorkspace,
   handleGetSkill,
   handleGetWorkspace,
-  handleIgnoreCatalog,
   handleListSkillFiles,
   handleListWorkspaces,
   handlePatchWorkspace,
@@ -74,10 +72,6 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
     }
     if (method === "GET" && pathname === "/api/doctor") {
       await handleDoctor(req, res);
-      return;
-    }
-    if (method === "GET" && pathname === "/api/ignore-catalog") {
-      await handleIgnoreCatalog(req, res);
       return;
     }
     if (method === "GET" && pathname === "/api/app-settings") {
@@ -219,8 +213,7 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
         return;
       }
     }
-    // Pi agent sessions (ADR 0030) — conversational entry.
-    // Legacy /sessions is list/create meta only; chat returns 410.
+    // Pi agent sessions (ADR 0032) — sole conversational entry.
     {
       const params = matchRoute(pathname, "/api/workspaces/:id/agent/sessions/:sessionId/command");
       if (params && method === "POST") {
@@ -237,10 +230,6 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
     }
     {
       const params = matchRoute(pathname, "/api/workspaces/:id/agent/sessions/:sessionId");
-      if (params && method === "GET") {
-        await handleGetAgentSession(req, res, params.id!, params.sessionId!, url);
-        return;
-      }
       if (params && method === "DELETE") {
         await handleDeleteAgentSession(req, res, params.id!, params.sessionId!, url);
         return;
