@@ -90,6 +90,10 @@ export {
   SkillSourceKindSchema,
 } from "./skill.js";
 export {
+  type WikiProduceChildItem,
+  WikiProduceChildItemSchema,
+  type WikiProduceChildSpan,
+  WikiProduceChildSpanSchema,
   type WikiProduceToolDetails,
   WikiProduceToolDetailsSchema,
   type WikiProduceToolStatus,

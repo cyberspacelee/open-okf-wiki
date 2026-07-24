@@ -410,5 +410,6 @@ export const zh: MessageTree = {
     /** 空流式壳（尚无正文/工具）— 禁止显示「思考中」。 */
     waitingForEvents: "等待事件…",
     jumpToLatest: "跳到最新",
+    childAgents: "子智能体",
   },
 };

@@ -7,7 +7,13 @@
 
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import type { MergedDefectReport, WikiRunSpec, WorkspaceConfig } from "@okf-wiki/contract";
+import type {
+  MergedDefectReport,
+  WikiProduceChildSpan,
+  WikiProduceToolDetails,
+  WikiRunSpec,
+  WorkspaceConfig,
+} from "@okf-wiki/contract";
 import { evaluateWikiPublishable, type PublishabilityResult } from "../defects.js";
 import { resolveOrchestration } from "../limits.js";
 import type { RunWorkdirLayout } from "../pi/run-workdir.js";
@@ -15,7 +21,6 @@ import type { SourceIgnoreInput } from "../pi/tool-operations.js";
 import { runReviewCouncil } from "../review-council.js";
 import { writeWikiRunSpec } from "../spec-store.js";
 import { runChildrenParallel, runChildSession } from "./children.js";
-import { type ProduceEventSink, silentProduceEvents } from "./events.js";
 import {
   listWikiMarkdown,
   type ProduceWithPiResult,
@@ -24,6 +29,9 @@ import {
 } from "./live-pi.js";
 import { domainResearchPrompt, leafResearchPrompt, reviewerPrompt } from "./prompts.js";
 import { buildReceiptIndex, persistResearchReceipt } from "./receipts.js";
+
+/** Coarse progress into the owning wiki_produce tool (Pi onUpdate details). */
+export type ProduceUpdatePatch = Partial<WikiProduceToolDetails>;
 
 export type ProduceWikiModels = {
   writer?: {
@@ -56,8 +64,10 @@ export type ProduceWikiInput = {
   additionalSkillPaths?: readonly string[];
   maxContextTokens?: number;
   contextTargetTokens?: number;
-  /** Progress callbacks for the owning wiki_produce tool (and tests). */
-  onEvent?: ProduceEventSink;
+  /** Optional patch sink for the owning wiki_produce tool (and tests). */
+  onUpdatePatch?: (patch: ProduceUpdatePatch) => void;
+  /** Optional child span projection for details.children. */
+  onChildProgress?: (span: WikiProduceChildSpan) => void;
   sourceIgnores?: SourceIgnoreInput;
 };
 
@@ -85,25 +95,27 @@ function throwIfAborted(signal?: AbortSignal): void {
   }
 }
 
+function emitPatch(
+  onUpdatePatch: ProduceWikiInput["onUpdatePatch"],
+  patch: ProduceUpdatePatch,
+): void {
+  try {
+    onUpdatePatch?.(patch);
+  } catch {
+    // Display subscribers must not break the Wiki Run.
+  }
+}
+
 async function emitPlanProgressFromDisk(
-  events: ProduceEventSink,
+  onUpdatePatch: ProduceWikiInput["onUpdatePatch"],
   wikiDir: string,
   spec: WikiRunSpec,
-  writingPath?: string,
 ): Promise<void> {
   const existing = new Set(await listWikiMarkdown(wikiDir));
-  events.planProgress?.({
-    pages: (spec.pages ?? []).map((p) => {
-      const norm = p.path.replace(/^\.?\//, "");
-      if (existing.has(norm)) {
-        return { path: p.path, status: "done" as const };
-      }
-      if (writingPath && writingPath === norm) {
-        return { path: p.path, status: "writing" as const };
-      }
-      return { path: p.path, status: "pending" as const };
-    }),
-  });
+  const done = (spec.pages ?? [])
+    .map((p) => p.path)
+    .filter((pagePath) => existing.has(pagePath.replace(/^\.?\//, "")));
+  emitPatch(onUpdatePatch, { pages: done });
 }
 
 /**
@@ -111,7 +123,8 @@ async function emitPlanProgressFromDisk(
  */
 export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiResult> {
   throwIfAborted(input.abortSignal);
-  const events = input.onEvent ?? silentProduceEvents;
+  const patch = input.onUpdatePatch;
+  const onChild = input.onChildProgress;
   const orch = resolveOrchestration(input.workspace);
   const fixture = shouldUsePiFixtureMode({ fixture: input.fixture });
   const metrics = { domainStarts: 0, leafStarts: 0, repairRounds: 0 };
@@ -122,11 +135,11 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
   const { layout, spec } = input;
 
   await writeWikiRunSpec(input.workspace.rootPath, input.runId, spec);
-  await emitPlanProgressFromDisk(events, layout.wikiDir, spec);
+  await emitPlanProgressFromDisk(patch, layout.wikiDir, spec);
 
   // 3) Domain + Leaf research with receipts.
   const criticalDomainFailures: string[] = [];
-  events.progress?.({ phase: "researching", label: "domain + leaf research" });
+  emitPatch(patch, { status: "producing", summary: "domain + leaf research" });
   const domains = (spec.domains ?? []).slice(0, orch.maxDomainFanOut);
   const workerModel = input.models?.worker ?? input.models?.writer;
 
@@ -146,6 +159,7 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
           leafNodeId,
           input: {
             role: "leaf" as const,
+            spanId: leafNodeId,
             runWorkDir: layout.runWorkDir,
             task: leafResearchPrompt({
               domainId: d.id,
@@ -161,6 +175,7 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
             contextTargetTokens,
             sourceIgnores: input.sourceIgnores,
             abortSignal: input.abortSignal,
+            onProgress: onChild,
           },
         };
       });
@@ -194,6 +209,7 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
     try {
       const domainResult = await runChildSession({
         role: "domain",
+        spanId: domainNodeId,
         runWorkDir: layout.runWorkDir,
         task: domainResearchPrompt({
           domainId: d.id,
@@ -210,6 +226,7 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
         contextTargetTokens,
         sourceIgnores: input.sourceIgnores,
         abortSignal: input.abortSignal,
+        onProgress: onChild,
       });
       await persistResearchReceipt({
         workspaceRoot: input.workspace.rootPath,
@@ -243,9 +260,9 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
   }
 
   if (criticalDomainFailures.length > 0 && !fixture) {
-    events.progress?.({
-      phase: "failed",
-      label: `critical domain research failed: ${criticalDomainFailures[0]}`,
+    emitPatch(patch, {
+      status: "producing",
+      summary: `critical domain research failed: ${criticalDomainFailures[0]}`,
     });
     return {
       status: "failed",
@@ -267,7 +284,7 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
 
   // 4) Root write
   throwIfAborted(input.abortSignal);
-  events.progress?.({ phase: "writing", label: "root_write" });
+  emitPatch(patch, { status: "producing", summary: "root_write" });
   const receiptIndex = await buildReceiptIndex(input.workspace.rootPath, input.runId);
   let produced: ProduceWithPiResult;
   try {
@@ -286,6 +303,7 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
       wikiLanguage,
       multiSource,
       receiptIndex,
+      onProgress: onChild,
     });
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
@@ -294,12 +312,11 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
     throw err;
   }
 
-  await emitPlanProgressFromDisk(events, produced.layout.wikiDir, spec);
-  events.progress?.({
-    phase: "writing",
-    label: "root_write complete",
-    written: produced.pages.length,
-    total: spec.pages?.length,
+  await emitPlanProgressFromDisk(patch, produced.layout.wikiDir, spec);
+  emitPatch(patch, {
+    status: "producing",
+    summary: `root_write complete (${produced.pages.length} pages)`,
+    pages: produced.pages,
   });
 
   // 5) Review + repair loop
@@ -310,9 +327,9 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
 
   for (let round = 1; round <= maxRepair + 1; round++) {
     throwIfAborted(input.abortSignal);
-    events.progress?.({
-      phase: "reviewing",
-      label: `review council round ${round}`,
+    emitPatch(patch, {
+      status: "producing",
+      summary: `review council round ${round}`,
     });
 
     const reviewers: Array<{ id: string; text: string }> = [];
@@ -335,6 +352,7 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
         try {
           const child = await runChildSession({
             role: "reviewer",
+            spanId: `${reviewerId}-${lens}`,
             runWorkDir: layout.runWorkDir,
             task: reviewerPrompt({ pages: produced.pages, lens }),
             model: input.models.reviewer.model,
@@ -343,6 +361,7 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
             contextTargetTokens,
             sourceIgnores: input.sourceIgnores,
             abortSignal: input.abortSignal,
+            onProgress: onChild,
           });
           reviewers.push({ id: reviewerId, text: child.summary });
         } catch (err) {
@@ -376,11 +395,11 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
       runId: input.runId,
       round,
     });
-    events.defects?.({
-      round,
-      clean: defects.clean,
-      defectCount: defects.defects.length,
-      summary: defects.summary,
+    emitPatch(patch, {
+      summary:
+        defects.summary ??
+        `Review round ${round}: ${defects.defects.length} defect(s)`,
+      defects,
     });
 
     const blocking = (spec.acceptance?.blockingSeverities ?? ["blocking"]) as string[];
@@ -394,10 +413,9 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
 
     // Repair round
     metrics.repairRounds += 1;
-    events.progress?.({
-      phase: "repairing",
-      label: `repair round ${metrics.repairRounds}`,
-      defectCount: defects.defects.length,
+    emitPatch(patch, {
+      status: "producing",
+      summary: `repair round ${metrics.repairRounds} (${defects.defects.length} defects)`,
     });
     const defectText = defects.defects
       .map((d) => `- [${d.severity}] ${d.path ?? "?"} ${d.code ?? ""}: ${d.issue}`)
@@ -419,8 +437,9 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
         multiSource,
         receiptIndex,
         repairDefects: defectText,
+        onProgress: onChild,
       });
-      await emitPlanProgressFromDisk(events, produced.layout.wikiDir, spec);
+      await emitPlanProgressFromDisk(patch, produced.layout.wikiDir, spec);
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") {
         return cancelledResult(spec, fixture, metrics, layout, produced);
@@ -446,10 +465,10 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
   });
 
   if (!publishability.publishable) {
-    events.progress?.({
-      phase: "failed",
-      label: publishability.reasons.slice(0, 3).join("; "),
-      defectCount: defects?.defects.length,
+    emitPatch(patch, {
+      status: "producing",
+      summary: publishability.reasons.slice(0, 3).join("; "),
+      ...(defects ? { defects } : {}),
     });
     return {
       status: "failed",
@@ -464,11 +483,10 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
     };
   }
 
-  events.progress?.({
-    phase: "done",
-    label: produced.summary,
-    written: produced.pages.length,
-    total: spec.pages?.length,
+  emitPatch(patch, {
+    status: "producing",
+    summary: produced.summary,
+    pages: produced.pages,
   });
 
   return {

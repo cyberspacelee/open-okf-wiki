@@ -25,7 +25,7 @@ export {
   type WikiProduceGateCoordinator,
   type WikiProduceGateDecision,
   type WikiProduceGateRequest,
-} from "./produce/tools/wiki-produce-tool.js";
+} from "./produce/wiki-produce-tool.js";
 /** Operator-facing redaction for server HTTP/SSE surfaces. */
 export {
   redactErrorMessage,

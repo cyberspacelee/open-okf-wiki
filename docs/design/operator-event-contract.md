@@ -28,7 +28,7 @@ There are no product event injects, event sequence numbers, replay cursors, or i
 
 ## `wiki_produce`
 
-`wiki_produce` is a real Pi custom tool called by the Operator Agent. Pi owns its `tool_execution_start`, update, and end lifecycle. The same `execute()` call waits for plan and publication decisions, and its details/result expose current Run and gate state. Child sessions remain implementation details and may only become visible through that parent tool execution.
+`wiki_produce` is a real Pi custom tool called by the Operator Agent. Pi owns its `tool_execution_start`, update, and end lifecycle. The same `execute()` call waits for plan and publication decisions, and its details/result expose current Run and gate state. Child sessions remain implementation details: they must not write Operator Session JSONL and must not inject product SSE events. They may only become operator-visible through the parent tool’s structured `details` (including optional `details.children[]` projections of text/toolCall/usage).
 
 The server may resolve a pending structured gate, but it does not start, resume, or patch a Run through a separate mutable Run route.
 

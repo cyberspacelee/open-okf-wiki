@@ -8,15 +8,19 @@ import { runChildrenParallel, runChildSession } from "./children.js";
 describe("produce/children", () => {
   it("fixture child returns summary without LLM", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "okf-child-"));
+    const spans: Array<{ id: string; status: string }> = [];
     const r = await runChildSession({
       role: "domain",
+      spanId: "domain-auth",
       runWorkDir: dir,
       task: "Investigate auth module",
       fixture: true,
+      onProgress: (span) => spans.push({ id: span.id, status: span.status }),
     });
     assert.equal(r.mode, "fixture");
     assert.match(r.summary, /domain/);
     assert.match(r.summary, /auth/);
+    assert.ok(spans.some((s) => s.id === "domain-auth" && s.status === "done"));
   });
 
   it("parallel fan-out respects order", async () => {

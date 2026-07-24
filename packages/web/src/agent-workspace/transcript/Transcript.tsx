@@ -70,7 +70,12 @@ function ChatMessage({
   const useParts = !isUser && Boolean(message.parts?.length);
 
   const renderTool = (tool: AgentToolCall) => (
-    <ToolExecutionCard key={tool.id} tool={tool} onResumeGate={onResumeGate} />
+    <ToolExecutionCard
+      key={tool.id}
+      tool={tool}
+      onResumeGate={onResumeGate}
+      settled={!isStreaming && message.status !== "streaming"}
+    />
   );
 
   if (message.role === "system" && message.status === "aborted") {

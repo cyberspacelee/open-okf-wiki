@@ -14,9 +14,14 @@ import { deleteSessionRuns, isPathInside, WORKSPACE_DIR_NAME } from "@okf-wiki/c
 import {
   type CreateWikiProduceToolInput,
   createWikiProduceTool,
-} from "../produce/tools/wiki-produce-tool.js";
+} from "../produce/wiki-produce-tool.js";
 import { createWikiSession, type WikiSessionHandle } from "./create-wiki-session.js";
-import { piSessionsDir } from "./session-paths.js";
+import { createSessionStatusTool } from "./session-status-tool.js";
+
+/** Pi JSONL session tree root for a workspace. */
+export function piSessionsDir(workspaceRoot: string): string {
+  return path.join(path.resolve(workspaceRoot), WORKSPACE_DIR_NAME, "pi-sessions");
+}
 
 /** Durable SessionManager branch — Pi owns the message shape. */
 export type OperatorSessionHistory = {
@@ -94,6 +99,12 @@ async function buildOperatorSession(
 ): Promise<OperatorSessionHandle> {
   const root = workspaceRoot(input.workspace.rootPath);
   const sessionId = manager.getSessionId();
+  const sessionStatus = createSessionStatusTool({
+    workspace: input.workspace,
+    model: input.model,
+    maxContextTokens: input.maxContextTokens,
+    contextTargetTokens: input.contextTargetTokens,
+  });
   const wikiProduce = createWikiProduceTool({
     ...input.wikiProduce,
     workspace: input.workspace,
@@ -111,7 +122,8 @@ async function buildOperatorSession(
     maxContextTokens: input.maxContextTokens,
     contextTargetTokens: input.contextTargetTokens,
     scopedTools: false,
-    customTools: [wikiProduce],
+    // status first so meta questions prefer it over wiki_produce
+    customTools: [sessionStatus, wikiProduce],
   });
   return { ...handle, sessionId };
 }

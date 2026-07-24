@@ -425,6 +425,7 @@ export const en = {
     /** Empty streaming shell (no text/tools yet) — never "Thinking". */
     waitingForEvents: "Waiting for events…",
     jumpToLatest: "Jump to latest",
+    childAgents: "Child agents",
   },
 } as const;
 

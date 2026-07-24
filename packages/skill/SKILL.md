@@ -31,8 +31,10 @@ Use only Pi built-in tools (no shell / bash):
 
 Do **not** invent Host tool names (`list_source`, `read_source`, `write_wiki`, `publish_receipt`, …).
 Path guards reject writes outside `wiki/` and `analysis/`, and apply Effective Source Ignores under
-`sources/`. The Operator Agent selects `wiki_produce` to start a Wiki Run; inside the run, use only
-the Pi tools above.
+`sources/`. The Operator Agent selects `wiki_produce` **only** when the operator explicitly asks to
+produce, build, regenerate, refresh, or rewrite the Wiki — not for model/context/token questions,
+settings, source management, greetings, or general Q&A. Inside a Wiki Run, use only the Pi tools
+above.
 
 ## Run one semantic loop
 

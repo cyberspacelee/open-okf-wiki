@@ -3,9 +3,12 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
-import { defaultWikiRunSpec, WorkspaceConfigSchema } from "@okf-wiki/contract";
+import {
+  defaultWikiRunSpec,
+  type WikiProduceToolDetails,
+  WorkspaceConfigSchema,
+} from "@okf-wiki/contract";
 import { runWorkdirLayout } from "../pi/run-workdir.js";
-import { recordingProduceEvents } from "./events.js";
 import { produceWiki } from "./orchestrate.js";
 
 const temps: string[] = [];
@@ -48,7 +51,7 @@ describe("produceWiki fixture", () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "okf-produce-"));
     temps.push(root);
     const { workspace } = await makeWorkspace(root);
-    const { sink, events } = recordingProduceEvents();
+    const patches: Partial<WikiProduceToolDetails>[] = [];
     const runWorkDir = path.join(root, ".okf-wiki", "runs", "run-1");
     const source = path.join(runWorkDir, "sources", "main");
     await mkdir(path.join(runWorkDir, "skill"), { recursive: true });
@@ -63,7 +66,7 @@ describe("produceWiki fixture", () => {
       layout,
       spec: defaultWikiRunSpec(workspace.name),
       fixture: true,
-      onEvent: sink,
+      onUpdatePatch: (p) => patches.push(p),
     });
 
     assert.equal(result.status, "ready_for_publish");
@@ -77,12 +80,8 @@ describe("produceWiki fixture", () => {
     );
     assert.match(specRaw, /overview\.md/);
 
-    const kinds = events.map((e) => e.kind);
-    assert.ok(kinds.includes("progress"));
-    assert.ok(kinds.includes("defects"));
-    assert.ok(kinds.includes("plan_progress"));
-    const allowed = new Set(["progress", "defects", "plan_progress"]);
-    assert.ok(kinds.every((k) => allowed.has(k)));
+    assert.ok(patches.some((p) => /research|root_write|review/i.test(p.summary ?? "")));
+    assert.ok(patches.some((p) => (p.pages?.length ?? 0) > 0 || p.defects != null));
     assert.ok(result.metrics.domainStarts >= 1);
     // Default Spec domain has questions → Produce leaf fan-out runs.
     assert.ok(result.metrics.leafStarts >= 1);

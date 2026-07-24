@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
-import { parsePlanFromAgentText } from "./produce/plan-parse.js";
+import { parsePlanFromAgentText } from "./plan.js";
 
 test("parsePlanFromAgentText accepts a complete fenced WikiRunSpec", () => {
   const expected = defaultWikiRunSpec("Demo");

@@ -11,7 +11,11 @@
  * Known tools put args on the trigger line; they are never re-dumped as JSON.
  */
 
-import type { AgentResumeGateCommand, WikiProduceToolDetails } from "@okf-wiki/contract";
+import type {
+  AgentResumeGateCommand,
+  WikiProduceChildSpan,
+  WikiProduceToolDetails,
+} from "@okf-wiki/contract";
 import {
   CheckIcon,
   ChevronRightIcon,
@@ -28,11 +32,8 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { useI18n } from "../../i18n";
-import {
-  type AgentToolCall,
-  formatToolDisplay,
-  formatToolResultText,
-} from "../hooks/project-agent-events";
+import { formatToolDisplay, formatToolResultText } from "../hooks/project/format";
+import type { AgentToolCall } from "../hooks/project/types";
 
 const WIKI_PRODUCE_TOOL_NAME = "wiki_produce";
 
@@ -136,6 +137,19 @@ function WikiProduceDetailsPanel({
         </div>
       ) : null}
 
+      {details.children && details.children.length > 0 ? (
+        <div className="space-y-1 border-t border-border/60 pt-2" data-testid="wiki-produce-children">
+          <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            {t.agentWorkspace.childAgents} · {details.children.length}
+          </p>
+          <ul className="space-y-1">
+            {details.children.map((child) => (
+              <WikiProduceChildRow key={child.id} child={child} />
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
       {gate && details.runId ? (
         <div
           className="space-y-2 border-t border-border/60 pt-2"
@@ -195,6 +209,59 @@ function WikiProduceDetailsPanel({
         </div>
       ) : null}
     </div>
+  );
+}
+
+function WikiProduceChildRow({ child }: { child: WikiProduceChildSpan }) {
+  const running = child.status === "running";
+  const items = child.items ?? [];
+  return (
+    <Collapsible
+      defaultOpen={running}
+      className="rounded border border-border/50 bg-background/40"
+      data-testid="wiki-produce-child"
+      data-child-id={child.id}
+      data-child-role={child.role}
+      data-child-status={child.status}
+    >
+      <CollapsibleTrigger className="group flex w-full min-w-0 items-center gap-1.5 px-2 py-1 text-left text-[11px] hover:bg-muted/40">
+        <ChevronRightIcon className="size-3 shrink-0 transition-transform group-data-panel-open:rotate-90" />
+        {running ? <Spinner className="size-3 shrink-0" /> : null}
+        <span className="font-medium">{child.role}</span>
+        <span className="truncate text-muted-foreground">{child.summary ?? child.status}</span>
+        {child.usage?.contextTokens != null ? (
+          <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground">
+            ctx:{child.usage.contextTokens}
+          </span>
+        ) : null}
+      </CollapsibleTrigger>
+      {items.length > 0 ? (
+        <CollapsibleContent className="border-t border-border/40 px-2 py-1.5">
+          <ul className="space-y-1">
+            {items.map((item, index) => (
+              <li
+                key={`${child.id}-${index}`}
+                className="font-mono text-[10px] leading-relaxed text-muted-foreground"
+              >
+                {item.type === "text" ? (
+                  <span className="whitespace-pre-wrap break-words">{item.text}</span>
+                ) : (
+                  <span>
+                    <span className="text-foreground/80">{item.name}</span>
+                    {item.argsSummary ? (
+                      <span className="text-muted-foreground"> {item.argsSummary}</span>
+                    ) : null}
+                    {item.status ? (
+                      <span className="text-muted-foreground"> · {item.status}</span>
+                    ) : null}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </CollapsibleContent>
+      ) : null}
+    </Collapsible>
   );
 }
 

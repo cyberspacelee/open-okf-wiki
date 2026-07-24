@@ -16,6 +16,29 @@ test("WikiProduceToolDetailsSchema exposes only stable Run and gate facts", () =
   assert.equal(details.spec?.pages.length, 1);
 });
 
+test("WikiProduceToolDetailsSchema accepts optional children projection", () => {
+  const details = WikiProduceToolDetailsSchema.parse({
+    status: "planning",
+    runId: "run-1",
+    summary: "Planning WikiRunSpec",
+    children: [
+      {
+        id: "plan",
+        role: "plan",
+        status: "running",
+        summary: "Inspecting sources…",
+        items: [
+          { type: "text", text: "Looking at sources/main" },
+          { type: "toolCall", name: "ls", argsSummary: "sources/", status: "done" },
+        ],
+        usage: { turns: 1, contextTokens: 1200 },
+      },
+    ],
+  });
+  assert.equal(details.children?.[0]?.role, "plan");
+  assert.equal(details.children?.[0]?.items?.length, 2);
+});
+
 test("WikiProduceToolDetailsSchema rejects duplicate Pi framing and phase", () => {
   assert.equal(
     WikiProduceToolDetailsSchema.safeParse({

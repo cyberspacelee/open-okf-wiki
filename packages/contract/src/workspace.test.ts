@@ -58,3 +58,30 @@ test("WorkspaceConfigSchema accepts wikiLanguage zh", () => {
   });
   assert.equal(ws.wikiLanguage, "zh");
 });
+
+test("WorkspaceConfigSchema strips legacy orchestration MaxSteps keys", () => {
+  const ws = WorkspaceConfigSchema.parse({
+    id: "ws_1",
+    name: "Demo",
+    rootPath: "D:/ws/demo",
+    sources: [],
+    model: { id: "openai/corp-model" },
+    publicationPath: "D:/ws/demo/wiki",
+    createdAt: new Date().toISOString(),
+    orchestration: {
+      maxDepth: 2,
+      maxDomainFanOut: 3,
+      maxLeafFanOut: 5,
+      rootMaxSteps: 96,
+      domainMaxSteps: 12,
+      leafMaxSteps: 8,
+      reviewerMaxSteps: 8,
+      planMaxSteps: 24,
+      reviewCouncilSize: 2,
+    },
+  });
+  assert.equal(ws.orchestration.maxDomainFanOut, 3);
+  assert.equal(ws.orchestration.reviewCouncilSize, 2);
+  assert.equal("rootMaxSteps" in ws.orchestration, false);
+  assert.equal("planMaxSteps" in ws.orchestration, false);
+});

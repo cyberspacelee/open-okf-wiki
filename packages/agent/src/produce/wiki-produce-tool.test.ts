@@ -131,6 +131,11 @@ describe("real Pi wiki_produce tool", () => {
       fixture: true,
     });
     assert.equal(definition.name, "wiki_produce");
+    assert.match(definition.description, /ONLY when the operator explicitly asks/i);
+    assert.match(definition.description, /Do NOT call/i);
+    assert.ok(definition.promptGuidelines?.some((g) => /explicit Wiki produce/i.test(g)));
+    assert.ok(definition.promptGuidelines?.some((g) => /never wiki_produce/i.test(g)));
+    assert.match(definition.promptSnippet ?? "", /explicit operator request only/i);
 
     const execute = definition.execute as unknown as ExecuteWikiProduce;
     const resultPromise = execute("tool-call-1", { notes: "Focus on runtime." }, undefined, (u) => {
@@ -141,6 +146,10 @@ describe("real Pi wiki_produce tool", () => {
     assert.equal(planGate.toolCallId, "tool-call-1");
     assert.equal(planGate.gate, "plan");
     assert.ok(planGate.spec.pages.length > 0);
+    assert.ok(
+      updates.some((u) => u.children?.some((c) => c.role === "plan")),
+      "fixture planner should project a plan child span",
+    );
     gates.resolve({ action: "revise", feedback: "Emphasize the runtime seam." });
 
     const revisedPlanGate = await gates.nextRequest();

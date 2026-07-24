@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
 import { createWikiSession, resolveWikiSessionTools } from "./create-wiki-session.js";
-import { piSessionsDir } from "./session-paths.js";
+import { piSessionsDir } from "./operator-session.js";
 import { assertSafeWikiToolList, toolNamesForRole } from "./tool-policy.js";
 
 const temps: string[] = [];

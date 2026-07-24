@@ -9,7 +9,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import type { WikiRunSpec } from "@okf-wiki/contract";
+import type { WikiProduceChildSpan, WikiRunSpec } from "@okf-wiki/contract";
 import { scanWikiTree } from "@okf-wiki/core";
 import { lastAssistantOutcome } from "../pi/assistant-outcome.js";
 import { createWikiSession } from "../pi/create-wiki-session.js";
@@ -40,7 +40,28 @@ export type ProduceWithPiInput = {
   contextTargetTokens?: number;
   additionalSkillPaths?: readonly string[];
   sourceIgnores?: SourceIgnoreInput;
+  /** Parent wiki_produce details.children projection. */
+  onProgress?: (span: WikiProduceChildSpan) => void;
 };
+
+function emitWriterProgress(
+  onProgress: ProduceWithPiInput["onProgress"],
+  status: WikiProduceChildSpan["status"],
+  summary?: string,
+  items?: WikiProduceChildSpan["items"],
+): void {
+  try {
+    onProgress?.({
+      id: "root_write",
+      role: "root_write",
+      status,
+      ...(summary ? { summary } : {}),
+      ...(items ? { items } : {}),
+    });
+  } catch {
+    // Display must not break produce.
+  }
+}
 
 export type ProduceWithPiResult = {
   mode: "fixture" | "live";
@@ -144,12 +165,17 @@ export async function produceWithPi(input: ProduceWithPiInput): Promise<ProduceW
   const useFixture = shouldUsePiFixtureMode(input);
 
   if (useFixture) {
+    emitWriterProgress(input.onProgress, "running", "Fixture root_write");
     const pages = await writeFixtureWiki(layout, title);
+    const summary = "Pi fixture mode wrote overview.md + listing index.md";
+    emitWriterProgress(input.onProgress, "done", summary, [
+      { type: "text", text: `wrote ${pages.join(", ")}` },
+    ]);
     return {
       mode: "fixture",
       layout,
       pages,
-      summary: "Pi fixture mode wrote overview.md + listing index.md",
+      summary,
     };
   }
 
@@ -196,20 +222,48 @@ export async function produceWithPi(input: ProduceWithPiInput): Promise<ProduceW
 
   try {
     throwIfAborted(input.abortSignal);
-    await handle.session.prompt(
-      rootWritePrompt({
-        layout,
-        spec: input.spec,
-        wikiLanguage: input.wikiLanguage,
-        multiSource: input.multiSource,
-        receiptIndex: input.receiptIndex,
-        repairDefects: input.repairDefects,
-      }),
-    );
+    emitWriterProgress(input.onProgress, "running", "root_write started");
+    let streamed = "";
+    const unsub = handle.session.subscribe((event) => {
+      if (!event || typeof event !== "object" || !("type" in event)) return;
+      if (String((event as { type: unknown }).type) !== "message_update") return;
+      const raw = event as unknown as Record<string, unknown>;
+      const ame =
+        raw.assistantMessageEvent &&
+        typeof raw.assistantMessageEvent === "object" &&
+        raw.assistantMessageEvent !== null
+          ? (raw.assistantMessageEvent as Record<string, unknown>)
+          : null;
+      if (ame?.type === "text_delta" && typeof ame.delta === "string") {
+        streamed += ame.delta;
+        emitWriterProgress(input.onProgress, "running", undefined, [
+          { type: "text", text: streamed.slice(-1500) },
+        ]);
+      }
+    });
+    try {
+      await handle.session.prompt(
+        rootWritePrompt({
+          layout,
+          spec: input.spec,
+          wikiLanguage: input.wikiLanguage,
+          multiSource: input.multiSource,
+          receiptIndex: input.receiptIndex,
+          repairDefects: input.repairDefects,
+        }),
+      );
+    } finally {
+      unsub();
+    }
     throwIfAborted(input.abortSignal);
 
     const outcome = lastAssistantOutcome(handle.session.messages);
     if (outcome?.isError) {
+      emitWriterProgress(
+        input.onProgress,
+        "error",
+        outcome.errorMessage || `stopReason=${outcome.stopReason ?? "error"}`,
+      );
       throw new Error(
         outcome.errorMessage ||
           `Pi live produce failed (stopReason=${outcome.stopReason ?? "error"})`,
@@ -218,13 +272,18 @@ export async function produceWithPi(input: ProduceWithPiInput): Promise<ProduceW
 
     const pages = await listWikiMarkdown(layout.wikiDir);
     if (pages.length === 0) {
+      emitWriterProgress(input.onProgress, "error", "No wiki markdown pages written");
       throw new Error("Pi live produce finished without writing any wiki markdown pages");
     }
+    const summary = `Pi live produce wrote ${pages.length} page(s)`;
+    emitWriterProgress(input.onProgress, "done", summary, [
+      { type: "text", text: pages.join(", ") },
+    ]);
     return {
       mode: "live",
       layout,
       pages,
-      summary: `Pi live produce wrote ${pages.length} page(s)`,
+      summary,
     };
   } finally {
     if (input.abortSignal) {

@@ -116,18 +116,14 @@ export const WorkspaceRoleModelsSchema = z.object({
 export type WorkspaceRoleModels = z.infer<typeof WorkspaceRoleModelsSchema>;
 
 /**
- * Host-enforced orchestration budgets for the dynamic supervisor tree.
- * Fan-out/depth are enforced via delegation hooks, not prompt-only.
+ * Supervisor-tree budgets: fan-out/depth/council enforced by produce orchestration.
+ * There is no per-role maxSteps API on Pi AgentSession; turn budgets are abort/timeout only.
+ * Unknown legacy keys (e.g. rootMaxSteps) are stripped on parse.
  */
 export const WorkspaceOrchestrationSchema = z.object({
   maxDepth: z.number().int().min(1).max(4).default(2),
   maxDomainFanOut: z.number().int().min(1).max(16).default(4),
   maxLeafFanOut: z.number().int().min(1).max(16).default(6),
-  rootMaxSteps: z.number().int().min(8).max(200).default(96),
-  domainMaxSteps: z.number().int().min(2).max(40).default(12),
-  leafMaxSteps: z.number().int().min(2).max(30).default(8),
-  reviewerMaxSteps: z.number().int().min(2).max(30).default(8),
-  planMaxSteps: z.number().int().min(4).max(60).default(24),
   /**
    * Independent review council size (Host-owned).
    * Default 1 for cost/latency; set 2+ for decorrelated multi-lens review
@@ -211,9 +207,7 @@ export const WorkspaceConfigSchema = z.object({
    * Omitted roles use `model`.
    */
   roleModels: WorkspaceRoleModelsSchema.default(() => WorkspaceRoleModelsSchema.parse({})),
-  /**
-   * Supervisor tree budgets and fan-out (Host-enforced where possible).
-   */
+  /** Supervisor tree fan-out, depth, and review council size. */
   orchestration: WorkspaceOrchestrationSchema.default(() => WorkspaceOrchestrationSchema.parse({})),
   /**
    * When true, interactive Wiki Runs pause for operator Spec confirmation

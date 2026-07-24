@@ -8,20 +8,22 @@ import type {
 import { AgentSseEventSchema } from "@okf-wiki/contract";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { agentSessionCommand, agentSessionEventsUrl } from "../../api";
-import { isCommandFailed } from "./command-result";
-import { isRecord } from "./project/format";
-import {
-  type AgentMessage,
-  type AgentSseLike,
-  createPiStreamState,
-  makeId,
-  type PiStreamState,
-  projectAgentEvent,
-  viewMessages,
-} from "./project-agent-events";
+import { isRecord, makeId } from "./project/format";
+import { createPiStreamState, projectAgentEvent, viewMessages } from "./project/pi";
+import type {
+  AgentMessage,
+  AgentSseLike,
+  AgentToolCall,
+  PiStreamState,
+} from "./project/types";
 
-export { isCommandFailed } from "./command-result";
-export type { AgentMessage, AgentToolCall } from "./project-agent-events";
+/** Unified command failure check (server uses ok/status, not string heuristics). */
+export function isCommandFailed(res: AgentCommandResponse | null | undefined): boolean {
+  if (!res) return false;
+  return res.ok === false || res.status === "failed";
+}
+
+export type { AgentMessage, AgentToolCall };
 
 export type AgentMessageRole = AgentMessage["role"];
 export type AgentStatus = "idle" | "sending" | "streaming" | "error";

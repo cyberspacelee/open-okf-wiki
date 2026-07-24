@@ -14,18 +14,19 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {
+  type WikiProduceChildSpan,
   type WikiProduceToolDetails,
   type WikiRunSpec,
   WikiRunSpecSchema,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
 import { freezeWikiRun, publishStagingToPublication, updateRunRecord } from "@okf-wiki/core";
-import { runWorkdirLayout } from "../../pi/run-workdir.js";
-import { redactErrorMessage } from "../../run-redact.js";
-import { writeWikiRunSpec } from "../../spec-store.js";
-import { shouldUsePiFixtureMode } from "../live-pi.js";
-import { type ProduceWikiModels, produceWiki } from "../orchestrate.js";
-import { planWikiSpec } from "../plan.js";
+import { runWorkdirLayout } from "../pi/run-workdir.js";
+import { redactErrorMessage } from "../run-redact.js";
+import { writeWikiRunSpec } from "../spec-store.js";
+import { shouldUsePiFixtureMode } from "./live-pi.js";
+import { type ProduceWikiModels, produceWiki } from "./orchestrate.js";
+import { planWikiSpec } from "./plan.js";
 
 export const WIKI_PRODUCE_TOOL_NAME = "wiki_produce" as const;
 
@@ -172,16 +173,37 @@ export function createWikiProduceTool(
   return defineTool({
     name: WIKI_PRODUCE_TOOL_NAME,
     label: "Produce wiki",
-    description:
-      "Create or refresh the source-grounded repository Wiki. Use when the operator asks to produce, build, regenerate, or refresh the Wiki.",
-    promptSnippet: "Produce the repository Wiki with plan and publication approval gates",
+    description: [
+      "Create or refresh the source-grounded repository Wiki.",
+      "ONLY when the operator explicitly asks to produce, build, regenerate, refresh, or rewrite the Wiki.",
+      "Do NOT call for: model/context/token questions, settings, sources management, greetings, or general Q&A.",
+    ].join(" "),
+    promptSnippet: "Produce/refresh Wiki (explicit operator request only)",
+    promptGuidelines: [
+      "Call wiki_produce only on explicit Wiki produce/refresh intent.",
+      "For questions about context window, tokens, session status, or configuration: answer in text or use session_status if available — never wiki_produce.",
+      "Pass operator focus via notes; do not invent a run for exploratory chat.",
+    ],
     parameters: wikiProduceParameters,
     async execute(toolCallId, args, signal, onUpdate) {
       let runId: string | undefined;
       let workspace = input.workspace;
       let details: WikiProduceToolDetails = { status: "freezing" };
+      const mergeChildren = (
+        existing: WikiProduceChildSpan[] | undefined,
+        incoming: WikiProduceChildSpan[] | undefined,
+      ): WikiProduceChildSpan[] | undefined => {
+        if (!incoming?.length) return existing;
+        const byId = new Map((existing ?? []).map((c) => [c.id, c]));
+        for (const span of incoming) byId.set(span.id, span);
+        return [...byId.values()].slice(-32);
+      };
       const update = (patch: Partial<WikiProduceToolDetails>): void => {
-        details = { ...details, ...patch };
+        details = {
+          ...details,
+          ...patch,
+          children: mergeChildren(details.children, patch.children),
+        };
         try {
           onUpdate?.({
             content: [
@@ -195,6 +217,9 @@ export function createWikiProduceTool(
         } catch {
           // A display subscriber must not break the Wiki Run.
         }
+      };
+      const onChildProgress = (span: WikiProduceChildSpan): void => {
+        update({ children: [span] });
       };
 
       update({ summary: "Freezing Repository Snapshot Set and Producer Skill" });
@@ -241,6 +266,7 @@ export function createWikiProduceTool(
             operatorNotes,
             priorSpec,
             revisionFeedback,
+            onProgress: onChildProgress,
           });
           const feedback = revisionFeedback?.trim();
           return WikiRunSpecSchema.parse({
@@ -332,24 +358,8 @@ export function createWikiProduceTool(
           contextTargetTokens: workspace.limits?.contextTargetTokens,
           additionalSkillPaths: [frozen.skillPath],
           sourceIgnores: frozen.sourceIgnores,
-          onEvent: {
-            progress: (progress) => {
-              update({
-                status: "producing",
-                summary: progress.label ?? `Wiki production: ${progress.phase}`,
-              });
-            },
-            planProgress: (progress) =>
-              update({
-                pages: progress.pages.filter((p) => p.status === "done").map((p) => p.path),
-              }),
-            defects: (defects) =>
-              update({
-                summary:
-                  defects.summary ??
-                  `Review round ${defects.round}: ${defects.defectCount} defect(s)`,
-              }),
-          },
+          onUpdatePatch: (producePatch) => update(producePatch),
+          onChildProgress,
         });
 
         if (produced.status === "cancelled") throw abortError();

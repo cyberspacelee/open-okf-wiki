@@ -56,7 +56,10 @@ describe("SessionManager-owned Operator Sessions", () => {
     try {
       assert.equal(created.sessionId, "operator-1");
       assert.equal(created.session.sessionManager.getCwd(), path.resolve(workspace.rootPath));
-      assert.deepEqual(created.session.getActiveToolNames(), ["wiki_produce"]);
+      assert.deepEqual(created.session.getActiveToolNames(), [
+        "session_status",
+        "wiki_produce",
+      ]);
 
       created.session.sessionManager.appendMessage({
         role: "user",
@@ -92,7 +95,10 @@ describe("SessionManager-owned Operator Sessions", () => {
     });
     try {
       assert.equal(opened.sessionId, "operator-1");
-      assert.deepEqual(opened.session.getActiveToolNames(), ["wiki_produce"]);
+      assert.deepEqual(opened.session.getActiveToolNames(), [
+        "session_status",
+        "wiki_produce",
+      ]);
     } finally {
       opened.dispose();
     }

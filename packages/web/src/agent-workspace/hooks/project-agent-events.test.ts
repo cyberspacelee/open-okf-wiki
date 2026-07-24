@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
-import { reducePiEvent } from "./project/pi.ts";
-import { createPiStreamState, projectAgentEvent, viewMessages } from "./project-agent-events.ts";
+import {
+  createPiStreamState,
+  projectAgentEvent,
+  reducePiEvent,
+  viewMessages,
+} from "./project/pi.ts";
 
 describe("projectAgentEvent", () => {
   it("uses the server snapshot as the complete durable SessionManager view", () => {
@@ -246,11 +250,25 @@ describe("reducePiEvent", () => {
       toolCallId: "tool-1",
       partialResult: {
         content: [{ type: "text", text: "Awaiting WikiRunSpec approval" }],
-        details: { status: "awaiting_plan", runId: "run-1", spec },
+        details: {
+          status: "awaiting_plan",
+          runId: "run-1",
+          spec,
+          children: [
+            {
+              id: "plan",
+              role: "plan",
+              status: "done",
+              summary: "Fixture default WikiRunSpec",
+              items: [{ type: "text", text: "pages=1" }],
+            },
+          ],
+        },
       },
     });
     assert.equal(viewMessages(state)[0]!.tools?.[0]?.details?.status, "awaiting_plan");
     assert.equal(viewMessages(state)[0]!.tools?.[0]?.details?.spec?.pages[0]?.path, "overview.md");
+    assert.equal(viewMessages(state)[0]!.tools?.[0]?.details?.children?.[0]?.role, "plan");
     state = reducePiEvent(state, "tool_execution_end", {
       type: "tool_execution_end",
       toolCallId: "tool-1",

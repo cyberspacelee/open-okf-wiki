@@ -205,11 +205,6 @@ export function WorkspaceSettingsPage() {
         maxDepth: baseOrch?.maxDepth ?? 2,
         maxDomainFanOut: Math.max(1, Number(maxDomainFanOut) || 4),
         maxLeafFanOut: Math.max(1, Number(maxLeafFanOut) || 6),
-        rootMaxSteps: baseOrch?.rootMaxSteps ?? 96,
-        domainMaxSteps: baseOrch?.domainMaxSteps ?? 12,
-        leafMaxSteps: baseOrch?.leafMaxSteps ?? 8,
-        reviewerMaxSteps: baseOrch?.reviewerMaxSteps ?? 8,
-        planMaxSteps: baseOrch?.planMaxSteps ?? 24,
         reviewCouncilSize: Math.min(4, Math.max(1, Number(reviewCouncilSize) || 1)),
       };
       const result = await patchWorkspace(
