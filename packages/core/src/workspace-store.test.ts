@@ -60,7 +60,8 @@ test("create/load/save workspace roundtrip", async () => {
   let config = await createWorkspace({
     name: "Demo Workspace",
     rootPath: root,
-    modelId: "openai/corp-model",
+    modelProfileId: "corp-profile",
+    resolvedModelId: "openai/corp-model",
   });
 
   assert.equal(config.name, "Demo Workspace");
@@ -68,6 +69,7 @@ test("create/load/save workspace roundtrip", async () => {
   assert.equal(config.publicationPath, path.join(path.resolve(root), "wiki"));
   assert.equal(config.version, 1);
   assert.equal(config.model.id, "openai/corp-model");
+  assert.equal(config.model.profileId, "corp-profile");
   assert.equal(config.sources.length, 0);
   assert.ok(config.id.length > 0);
   assert.ok(config.createdAt);
@@ -79,6 +81,7 @@ test("create/load/save workspace roundtrip", async () => {
   assert.equal(config.sources.length, 1);
   assert.equal(config.sources[0]?.id, "application");
   assert.equal(config.sources[0]?.path, path.resolve(sourceRoot));
+  assert.deepEqual(config.sources[0]?.origin, { type: "path" });
 
   await saveWorkspace(config);
 
@@ -121,6 +124,33 @@ test("loadWorkspace rejects missing and invalid files", async () => {
     "utf8",
   );
   await assert.rejects(() => loadWorkspace(root), /invalid workspace config/);
+});
+
+test("loadWorkspace normalizes legacy sources without origin to path-linked", async () => {
+  const root = await tempDir("okf-wiki-ws-legacy-origin-");
+  const sourceRoot = await tempDir("okf-wiki-src-legacy-");
+  await initGitRepo(sourceRoot);
+  const okfDir = path.join(root, ".okf-wiki");
+  await mkdir(okfDir, { recursive: true });
+  const now = new Date().toISOString();
+  await writeFile(
+    path.join(okfDir, "workspace.json"),
+    JSON.stringify({
+      version: 1,
+      id: "legacy-ws",
+      name: "Legacy",
+      rootPath: root,
+      sources: [{ id: "application", path: sourceRoot }],
+      model: { id: "openai/corp-model" },
+      publicationPath: path.join(root, "wiki"),
+      createdAt: now,
+    }),
+    "utf8",
+  );
+
+  const loaded = await loadWorkspace(root);
+  assert.equal(loaded.sources.length, 1);
+  assert.deepEqual(loaded.sources[0]?.origin, { type: "path" });
 });
 
 test("addSource fails for non-git and dirty when requireClean", async () => {

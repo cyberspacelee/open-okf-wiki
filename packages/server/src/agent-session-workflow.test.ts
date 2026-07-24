@@ -65,7 +65,7 @@ test("fixture prompt emits genuine wiki_produce gate updates through Pi", async 
     name: "Fixture Workflow",
     rootPath: root,
     publicationPath: path.join(root, "published"),
-    modelId: "openai/test",
+    resolvedModelId: "openai/test",
   });
   await saveWorkspace(workspace);
 

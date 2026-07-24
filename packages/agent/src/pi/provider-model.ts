@@ -6,13 +6,16 @@
  * registers one in-memory provider per selected profile and returns the
  * Model that createWikiSession / produceWithPi need.
  *
- * Currently only `openai-compatible` (completions | responses). Other
- * provider kinds are reserved for a later multi-provider catalog.
+ * Product only supports OpenAI-compatible (completions | responses).
  */
 
 import { type Api, InMemoryCredentialStore, type Model } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import type { ProviderApiShape, ProviderTestResult } from "@okf-wiki/contract";
+import {
+  OPENAI_COMPATIBLE_PROVIDER_KIND,
+  type ProviderApiShape,
+  type ProviderTestResult,
+} from "@okf-wiki/contract";
 import {
   flattenModels,
   hasProviderCredentials,
@@ -22,11 +25,11 @@ import {
 } from "@okf-wiki/core";
 import { resolveContextBudget } from "./context-budget.js";
 
-/** Supported product provider kinds. Extend when non-OpenAI APIs land. */
-export type OkfProviderKind = "openai-compatible";
+/** Sole product provider kind (wire/docs; not a multi-provider switch). */
+export type OkfProviderKind = typeof OPENAI_COMPATIBLE_PROVIDER_KIND;
 
 export const OKF_PROVIDER_KINDS = [
-  "openai-compatible",
+  OPENAI_COMPATIBLE_PROVIDER_KIND,
 ] as const satisfies readonly OkfProviderKind[];
 
 export type ResolvePiModelInput = {
@@ -38,11 +41,6 @@ export type ResolvePiModelInput = {
   profileId?: string;
   profileName?: string;
   maxContextTokens?: number;
-  /**
-   * Product provider kind. Only openai-compatible is implemented.
-   * Defaults to openai-compatible.
-   */
-  providerKind?: OkfProviderKind;
   /**
    * Extra HTTP headers (User-Agent, etc.) from provider settings.
    * Merged over the product default User-Agent: node.
@@ -132,13 +130,7 @@ function httpStatusFromError(text: string): number | undefined {
 export async function resolvePiModelFromProvider(
   input: ResolvePiModelInput,
 ): Promise<ResolvedPiModel> {
-  const providerKind = input.providerKind ?? "openai-compatible";
-  if (providerKind !== "openai-compatible") {
-    throw new Error(
-      `Unsupported provider kind "${providerKind}". ` +
-        `Currently only openai-compatible (chat completions / responses) is supported.`,
-    );
-  }
+  const providerKind = OPENAI_COMPATIBLE_PROVIDER_KIND;
 
   const modelId = input.modelId?.trim();
   if (!modelId) {
@@ -413,7 +405,6 @@ export async function resolveWorkspacePiModel(input: {
     profileId: runtime.profileId,
     profileName: runtime.profileName,
     maxContextTokens: runtime.maxContextTokens,
-    providerKind: runtime.providerKind,
     headers: runtime.headers,
     supportsDeveloperRole: runtime.supportsDeveloperRole,
   });

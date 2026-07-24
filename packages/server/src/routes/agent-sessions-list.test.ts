@@ -23,7 +23,7 @@ test("Operator Session HTTP uses only SessionManager and cascades v2 Run data on
     name: "Session HTTP",
     rootPath: root,
     publicationPath: path.join(root, "published"),
-    modelId: "openai/test",
+    resolvedModelId: "openai/test",
   });
   await saveWorkspace(workspace);
 

@@ -117,16 +117,14 @@ export type CreateWorkspaceInput = {
   name: string;
   rootPath: string;
   publicationPath?: string;
-  /** Preferred: select a Settings model profile. */
+  /** Catalog model profile id (required when Settings has models). */
   modelProfileId?: string;
-  /** Legacy free-text model id. */
-  modelId?: string;
 };
 
 export type PatchWorkspaceInput = {
   name?: string;
+  /** Catalog model profile id; denormalized model.id is resolved server-side. */
   modelProfileId?: string;
-  modelId?: string;
   publicationPath?: string;
   planConfirm?: boolean;
   wikiLanguage?: WikiLanguage;

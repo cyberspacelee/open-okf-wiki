@@ -9,6 +9,8 @@ test("WorkspaceSourceSchema accepts a clean local source", () => {
   });
   assert.equal(source.applyDefaultIgnores, true);
   assert.deepEqual(source.ignore, []);
+  // Legacy records without origin normalize to path-linked on parse.
+  assert.deepEqual(source.origin, { type: "path" });
 });
 
 test("WorkspaceSourceSchema accepts clone origin", () => {
@@ -21,7 +23,7 @@ test("WorkspaceSourceSchema accepts clone origin", () => {
       clonedAt: new Date().toISOString(),
     },
   });
-  assert.equal(source.origin?.type, "clone");
+  assert.equal(source.origin.type, "clone");
 });
 
 test("WorkspaceConfigSchema rejects secrets-shaped extra keys only via strict parse of known fields", () => {
@@ -40,6 +42,7 @@ test("WorkspaceConfigSchema rejects secrets-shaped extra keys only via strict pa
   assert.deepEqual(ws.roleModels.reviewers, []);
   assert.equal(ws.version, 1);
   assert.equal(ws.wikiLanguage, "en");
+  assert.deepEqual(ws.sources[0]?.origin, { type: "path" });
 });
 
 test("WorkspaceConfigSchema accepts wikiLanguage zh", () => {

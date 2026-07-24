@@ -8,6 +8,7 @@ import {
   type ModelProfilePublic,
   ModelProfileSchema,
   type ModelProfileWrite,
+  OPENAI_COMPATIBLE_PROVIDER_KIND,
   type ProviderApiShape,
   type ProviderConfig,
   ProviderConfigSchema,
@@ -20,6 +21,9 @@ import {
 import { WORKSPACE_DIR_NAME } from "./workspace-store.js";
 
 export const PROVIDER_FILE_NAME = "provider.json";
+
+/** Sole supported product provider kind (not a multi-provider switch). */
+const PROVIDER_KIND = OPENAI_COMPATIBLE_PROVIDER_KIND;
 
 /**
  * User-level provider config path.
@@ -88,7 +92,7 @@ export function flattenModels(config: ProviderConfig): ModelProfile[] {
         ModelProfileSchema.parse({
           id: m.id,
           name: m.name,
-          providerKind: p.kind ?? "openai-compatible",
+          providerKind: PROVIDER_KIND,
           providerId: p.id,
           modelId: m.modelId,
           baseUrl: p.baseUrl ?? "",
@@ -216,7 +220,7 @@ export function toModelProfilePublic(
   return {
     id: profile.id,
     name: profile.name,
-    providerKind: profile.providerKind ?? "openai-compatible",
+    providerKind: PROVIDER_KIND,
     ...(profile.providerId ? { providerId: profile.providerId } : {}),
     ...(providerName ? { providerName } : {}),
     modelId: profile.modelId,
@@ -237,7 +241,7 @@ export function toProviderEntryPublic(p: ProviderEntry): ProviderEntryPublic {
   return {
     id: p.id,
     name: p.name,
-    kind: p.kind ?? "openai-compatible",
+    kind: PROVIDER_KIND,
     baseUrl: p.baseUrl?.trim() ?? "",
     apiKeySet: apiKey.length > 0,
     apiKeyMasked: maskSecret(apiKey),
@@ -305,7 +309,7 @@ export async function createProviderEntry(
   const provider = ProviderEntrySchema.parse({
     id,
     name: input.name.trim(),
-    kind: input.kind ?? "openai-compatible",
+    kind: PROVIDER_KIND,
     baseUrl: (input.baseUrl ?? "").trim(),
     apiKey: typeof input.apiKey === "string" ? input.apiKey : "",
     apiShape: input.apiShape ?? "completions",
@@ -360,7 +364,7 @@ export async function updateProviderEntry(
   const provider = ProviderEntrySchema.parse({
     id: existing.id,
     name: input.name.trim(),
-    kind: input.kind ?? existing.kind ?? "openai-compatible",
+    kind: PROVIDER_KIND,
     baseUrl: (input.baseUrl ?? "").trim(),
     apiKey,
     apiShape: input.apiShape ?? existing.apiShape,
@@ -422,7 +426,7 @@ export async function createModelProfile(
     modelId: input.modelId.trim(),
     baseUrl: (input.baseUrl ?? "").trim(),
     apiShape: input.apiShape ?? "completions",
-    providerKind: input.providerKind ?? "openai-compatible",
+    providerKind: PROVIDER_KIND,
     apiKey: typeof input.apiKey === "string" ? input.apiKey : "",
     providerId: input.providerId?.trim(),
     providerName: input.providerName?.trim(),
@@ -431,11 +435,6 @@ export async function createModelProfile(
   };
   if (!write.name || !write.modelId) {
     throw new Error("name and modelId are required");
-  }
-  if (write.providerKind !== "openai-compatible") {
-    throw new Error(
-      `Unsupported provider kind "${write.providerKind}". Currently only openai-compatible is supported.`,
-    );
   }
 
   const current = await loadProviderConfig(providerPath);
@@ -497,7 +496,7 @@ export async function createModelProfile(
       ProviderEntrySchema.parse({
         id: providerId,
         name: (write.providerName || write.name || "Provider").slice(0, 120),
-        kind: "openai-compatible",
+        kind: PROVIDER_KIND,
         baseUrl: write.baseUrl,
         apiKey: write.apiKey,
         apiShape: write.apiShape,
@@ -573,7 +572,7 @@ export async function updateModelProfile(
   const nextProvider = ProviderEntrySchema.parse({
     id: provider.id,
     name: input.providerName?.trim() || provider.name,
-    kind: input.providerKind ?? provider.kind ?? "openai-compatible",
+    kind: PROVIDER_KIND,
     baseUrl: (input.baseUrl ?? provider.baseUrl ?? "").trim(),
     apiKey,
     apiShape: input.apiShape ?? provider.apiShape,
@@ -667,7 +666,7 @@ export type ResolvedProviderRuntime = {
   baseUrl: string | undefined;
   apiKey: string;
   apiShape: ProviderApiShape;
-  providerKind: "openai-compatible";
+  providerKind: typeof OPENAI_COMPATIBLE_PROVIDER_KIND;
   modelId: string | undefined;
   profileId: string | undefined;
   profileName: string | undefined;
@@ -749,7 +748,7 @@ export function resolveProviderRuntime(
     baseUrl,
     apiKey: apiKey || "local",
     apiShape: profile?.apiShape ?? "completions",
-    providerKind: profile?.providerKind ?? "openai-compatible",
+    providerKind: PROVIDER_KIND,
     modelId: profile?.modelId ?? options.modelId,
     profileId: profile?.id,
     profileName: profile?.name,

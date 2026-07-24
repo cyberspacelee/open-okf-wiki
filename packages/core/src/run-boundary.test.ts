@@ -49,6 +49,7 @@ async function makeWorkspace(opts?: {
         path: src,
         applyDefaultIgnores: true,
         ignore: [],
+        origin: { type: "path" },
       },
     ];
   }

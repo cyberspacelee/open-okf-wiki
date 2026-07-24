@@ -264,10 +264,13 @@ export async function handleTestProvider(req: IncomingMessage, res: ServerRespon
   }
 }
 
-/** Resolve modelProfileId → denormalized model ref for workspace create/patch. */
+/**
+ * Resolve catalog profile → denormalized model ref for workspace create/patch.
+ * Free-text modelId is not accepted; selection must come from the provider catalog.
+ * When modelProfileId is omitted on create, fall back to default / sole catalog profile.
+ */
 export async function resolveWorkspaceModelSelection(input: {
   modelProfileId?: string;
-  modelId?: string;
 }): Promise<{ id: string; profileId?: string }> {
   const catalog = await loadProviderConfig();
 
@@ -276,12 +279,7 @@ export async function resolveWorkspaceModelSelection(input: {
     return { id: profile.modelId, profileId: profile.id };
   }
 
-  if (input.modelId?.trim()) {
-    // Legacy free-text: keep id only (no profile link).
-    return { id: input.modelId.trim() };
-  }
-
-  // Default profile when available.
+  // Default profile when available (create with empty form / sole catalog entry).
   if (catalog.defaultModelProfileId) {
     const profile = getModelProfile(catalog, catalog.defaultModelProfileId);
     return { id: profile.modelId, profileId: profile.id };
@@ -292,6 +290,7 @@ export async function resolveWorkspaceModelSelection(input: {
     return { id: profile.modelId, profileId: profile.id };
   }
 
+  // Empty catalog: denormalized placeholder only (operator must configure Settings later).
   return { id: "openai/default" };
 }
 

@@ -50,7 +50,6 @@ export async function handleCreateWorkspace(
     name?: unknown;
     rootPath?: unknown;
     publicationPath?: unknown;
-    modelId?: unknown;
     modelProfileId?: unknown;
   };
   if (typeof body.name !== "string" || !body.name.trim()) {
@@ -65,7 +64,6 @@ export async function handleCreateWorkspace(
     const model = await resolveWorkspaceModelSelection({
       modelProfileId:
         typeof body.modelProfileId === "string" ? body.modelProfileId.trim() : undefined,
-      modelId: typeof body.modelId === "string" ? body.modelId : undefined,
     });
     const workspace = await createWorkspace({
       name: body.name,
@@ -73,7 +71,6 @@ export async function handleCreateWorkspace(
       publicationPath: typeof body.publicationPath === "string" ? body.publicationPath : undefined,
       modelProfileId: model.profileId,
       resolvedModelId: model.id,
-      modelId: model.id,
     });
     await saveWorkspace(workspace);
     await registerWorkspaceInAppIndex(workspace.rootPath);
@@ -134,43 +131,28 @@ export async function handlePatchWorkspace(
     next.name = body.name.trim();
   }
 
-  if (body.modelProfileId !== undefined || body.modelId !== undefined || body.model !== undefined) {
+  if (body.modelProfileId !== undefined || body.model !== undefined) {
     try {
+      let profileId: string | undefined;
       if (typeof body.modelProfileId === "string" && body.modelProfileId.trim()) {
-        const model = await resolveWorkspaceModelSelection({
-          modelProfileId: body.modelProfileId.trim(),
-        });
-        next.model = {
-          id: model.id,
-          ...(model.profileId ? { profileId: model.profileId } : {}),
-        };
-      } else if (typeof body.modelId === "string" && body.modelId.trim()) {
-        // Legacy free-text path (no profile).
-        next.model = { id: body.modelId.trim() };
+        profileId = body.modelProfileId.trim();
       } else if (
         body.model &&
         typeof body.model === "object" &&
         typeof (body.model as { profileId?: unknown }).profileId === "string" &&
         (body.model as { profileId: string }).profileId.trim()
       ) {
-        const model = await resolveWorkspaceModelSelection({
-          modelProfileId: (body.model as { profileId: string }).profileId.trim(),
-        });
-        next.model = {
-          id: model.id,
-          ...(model.profileId ? { profileId: model.profileId } : {}),
-        };
-      } else if (
-        body.model &&
-        typeof body.model === "object" &&
-        typeof (body.model as { id?: unknown }).id === "string" &&
-        (body.model as { id: string }).id.trim()
-      ) {
-        next.model = { id: (body.model as { id: string }).id.trim() };
-      } else {
-        sendError(res, 400, "modelProfileId or modelId is required");
+        profileId = (body.model as { profileId: string }).profileId.trim();
+      }
+      if (!profileId) {
+        sendError(res, 400, "modelProfileId is required (catalog profile selection)");
         return;
       }
+      const model = await resolveWorkspaceModelSelection({ modelProfileId: profileId });
+      next.model = {
+        id: model.id,
+        ...(model.profileId ? { profileId: model.profileId } : {}),
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       sendError(res, 400, message);

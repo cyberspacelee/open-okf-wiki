@@ -53,11 +53,12 @@ export type CreateWorkspaceOptions = {
   name: string;
   rootPath: string;
   publicationPath?: string;
-  /** @deprecated Prefer modelProfileId — free-text model id only as fallback. */
-  modelId?: string;
-  /** Settings model profile id; denormalizes model.id from the catalog. */
+  /** Settings model profile id; workspace model must come from the catalog. */
   modelProfileId?: string;
-  /** Denormalized served model id when profile is known. */
+  /**
+   * Denormalized served model id from the selected profile (display/runtime).
+   * Must be resolved from catalog profile — not free-text API input.
+   */
   resolvedModelId?: string;
 };
 
@@ -97,7 +98,7 @@ export async function createWorkspace(options: CreateWorkspaceOptions): Promise<
       : path.join(rootPath, "wiki");
   await mkdir(publicationPath, { recursive: true });
 
-  const modelId = options.resolvedModelId?.trim() || options.modelId?.trim() || DEFAULT_MODEL_ID;
+  const modelId = options.resolvedModelId?.trim() || DEFAULT_MODEL_ID;
   const modelProfileId = options.modelProfileId?.trim() || undefined;
 
   const now = new Date().toISOString();

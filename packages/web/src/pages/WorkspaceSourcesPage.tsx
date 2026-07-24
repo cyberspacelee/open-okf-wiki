@@ -344,7 +344,7 @@ export function WorkspaceSourcesPage() {
                       <TableRow key={source.id} data-source-id={source.id}>
                         <TableCell className="mono">{source.id}</TableCell>
                         <TableCell className="muted small">
-                          {source.origin?.type === "clone"
+                          {source.origin.type === "clone"
                             ? `${t.sources.originClone} · ${source.origin.remoteUrl}`
                             : t.sources.originPath}
                         </TableCell>

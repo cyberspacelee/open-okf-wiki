@@ -48,14 +48,15 @@ export function modelRefForRole(
 
 /**
  * Resolve model selection for a live call.
- * `overrideProfileId` wins when set (operator run-time choice).
+ * `overrideProfileId` wins when set (operator run-time catalog choice).
+ * Denormalized id may be supplied only alongside a profile (from catalog resolve).
  */
 export function resolveModelSelection(input: {
   workspace: WorkspaceConfig;
   role?: WikiModelRole;
-  /** Explicit profile id selected for the Operator Session. */
+  /** Explicit catalog profile id selected for the Operator Session. */
   overrideProfileId?: string;
-  /** Explicit free-text model id (legacy). */
+  /** Denormalized served model id from the selected profile (not free-text alone). */
   overrideModelId?: string;
 }): ResolvedModelRef {
   const role = input.role ?? "default";
@@ -64,17 +65,6 @@ export function resolveModelSelection(input: {
     return {
       id: input.overrideModelId?.trim() || input.workspace.model.id,
       profileId: input.overrideProfileId.trim(),
-      role,
-      overridden: true,
-    };
-  }
-
-  if (input.overrideModelId?.trim() && !input.overrideProfileId) {
-    // Free-text model only (no profile) — still honor as override of id.
-    const base = modelRefForRole(input.workspace, role);
-    return {
-      id: input.overrideModelId.trim(),
-      profileId: base.profileId,
       role,
       overridden: true,
     };

@@ -13,7 +13,7 @@ test("Run HTTP surface exposes only the Agent Workspace read model", async () =>
     name: "Read-only Run Surface",
     rootPath: root,
     publicationPath: path.join(root, "published"),
-    modelId: "openai/test",
+    resolvedModelId: "openai/test",
   });
   await saveWorkspace(workspace);
   const server = createServer((req, res) => void dispatch(req, res));
