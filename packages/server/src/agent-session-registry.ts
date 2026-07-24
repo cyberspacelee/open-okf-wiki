@@ -7,6 +7,8 @@ import {
   loadOperatorSessionHistory,
   type OperatorSessionHistory,
   openOperatorSession,
+  redactErrorMessage,
+  redactSensitiveValue,
   resolveModelSelection,
   resolveWorkspacePiModel,
   shouldUsePiFixtureMode,
@@ -50,8 +52,14 @@ type PendingGate = {
   detachAbort?: () => void;
 };
 
+/** Bound wait for abort/idle before cascading Session delete. */
+const DELETE_SETTLE_TIMEOUT_MS = 5_000;
+const DELETE_SETTLE_POLL_MS = 25;
+
 const liveSessions = new Map<string, RegisteredAgentSession>();
 const pendingGates = new Map<string, PendingGate>();
+/** Single-flight open for cold ensureRegistered (one SessionManager per JSONL). */
+const openingSessions = new Map<string, Promise<RegisteredAgentSession>>();
 
 function sessionKey(workspaceId: string, sessionId: string): string {
   return `${workspaceId}::${sessionId}`;
@@ -134,11 +142,12 @@ function registerLive(
     if (activeTool === null) delete entry.activeTool;
     else if (activeTool) entry.activeTool = activeTool;
     const kind = event.type;
+    // Redact before fan-out so operator SSE never carries raw secrets/paths.
     emitAgentSessionEvent(workspaceId, handle.sessionId, {
       source: "pi",
       kind,
       sessionId: handle.sessionId,
-      payload: event,
+      payload: redactSensitiveValue(event),
       timestamp: new Date().toISOString(),
     } satisfies PiAgentSseEvent);
   });
@@ -291,7 +300,11 @@ export async function registerAgentSession(input: {
   return projectLiveSession(registerLive(input.workspace.id, handle, runtime.queueFixtureTurn));
 }
 
-/** Open the exact SessionManager id; never scan legacy metadata or cwd stores. */
+/**
+ * Open the exact SessionManager id; never scan legacy metadata or cwd stores.
+ * Concurrent cold opens share one in-flight promise so only one SessionManager
+ * is constructed against the JSONL.
+ */
 export async function ensureRegistered(
   workspace: WorkspaceConfig,
   sessionId: string,
@@ -299,9 +312,30 @@ export async function ensureRegistered(
   const key = sessionKey(workspace.id, sessionId);
   const existing = liveSessions.get(key);
   if (existing) return existing;
-  const runtime = await runtimeInput(workspace, sessionId);
-  const handle = await openOperatorSession({ ...runtime.input, sessionId });
-  return registerLive(workspace.id, handle, runtime.queueFixtureTurn);
+
+  const inFlight = openingSessions.get(key);
+  if (inFlight) return inFlight;
+
+  const openPromise = (async (): Promise<RegisteredAgentSession> => {
+    // Re-check after any prior await inside open; another path may have registered.
+    const raced = liveSessions.get(key);
+    if (raced) return raced;
+    const runtime = await runtimeInput(workspace, sessionId);
+    const again = liveSessions.get(key);
+    if (again) return again;
+    const handle = await openOperatorSession({ ...runtime.input, sessionId });
+    return registerLive(workspace.id, handle, runtime.queueFixtureTurn);
+  })();
+
+  openingSessions.set(key, openPromise);
+  try {
+    return await openPromise;
+  } finally {
+    // Clear on both success and failure so retries can re-open after a failed open.
+    if (openingSessions.get(key) === openPromise) {
+      openingSessions.delete(key);
+    }
+  }
 }
 
 /** Current genuine Pi tool update for an SSE snapshot; never reconstructed from a Run Record. */
@@ -319,7 +353,11 @@ export function listLiveAgentSessionSummaries(workspaceId: string): LiveAgentSes
     .map(projectLiveSession);
 }
 
-/** Dispose the live handle, then let the Agent Session module cascade v2 Runs. */
+/**
+ * Abort any live turn, wait briefly for idle/settle, dispose the handle, then
+ * cascade v2 Run data + SessionManager JSONL. Gate waiters are rejected first
+ * so wiki_produce cannot keep writing after delete begins.
+ */
 export async function deleteAgentSession(
   workspace: WorkspaceConfig,
   sessionId: string,
@@ -327,16 +365,69 @@ export async function deleteAgentSession(
   const key = sessionKey(workspace.id, sessionId);
   const live = liveSessions.get(key);
   const hadLive = Boolean(live);
+
+  // Unblock gate waiters before filesystem cascade so tool catch can finish.
+  pendingGates.get(key)?.reject(new Error("Wiki Run cancelled"));
+
   if (live) {
+    await live.handle.session.abort().catch(() => undefined);
+    await waitForSessionQuiet(live, DELETE_SETTLE_TIMEOUT_MS);
     disposeLive(live);
     liveSessions.delete(key);
   }
-  pendingGates.get(key)?.reject(new Error("Operator Session deleted"));
+
+  // Drop any cold-open still racing this id.
+  openingSessions.delete(key);
+
   const result = await deleteOperatorSession(workspace.rootPath, sessionId);
   return {
     sessionId,
     removed: (hadLive || result.deleted ? 1 : 0) + result.removedRunIds.length,
   };
+}
+
+/**
+ * Wait until the AgentSession reports idle and the registry busy flag clears,
+ * or until the timeout elapses (delete still proceeds).
+ */
+async function waitForSessionQuiet(
+  entry: RegisteredAgentSession,
+  timeoutMs: number,
+): Promise<void> {
+  if (entry.handle.session.isIdle && !entry.busy) return;
+
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearInterval(poll);
+      clearTimeout(timer);
+      try {
+        unsubscribe();
+      } catch {
+        // Listener already gone with dispose.
+      }
+      resolve();
+    };
+
+    const check = () => {
+      if (entry.handle.session.isIdle && !entry.busy) finish();
+    };
+
+    const unsubscribe = entry.handle.session.subscribe((event) => {
+      if (
+        event.type === "agent_settled" ||
+        event.type === "agent_end" ||
+        event.type === "tool_execution_end"
+      ) {
+        check();
+      }
+    });
+    const poll = setInterval(check, DELETE_SETTLE_POLL_MS);
+    const timer = setTimeout(finish, timeoutMs);
+    check();
+  });
 }
 
 /** Read the active SessionManager branch, including a not-yet-flushed Session. */
@@ -347,21 +438,41 @@ export async function loadAgentSessionHistory(
   const live = liveSessions.get(sessionKey(workspace.id, sessionId));
   if (live) {
     const manager = live.handle.session.sessionManager;
+    const messages = manager
+      .getBranch()
+      .filter((entry) => entry.type === "message")
+      .map((entry) => entry.message as OperatorSessionHistory["messages"][number]);
     return {
       sessionId: manager.getSessionId(),
-      messages: manager
-        .getBranch()
-        .filter((entry) => entry.type === "message")
-        .map((entry) => entry.message as OperatorSessionHistory["messages"][number]),
+      // Operator snapshot only — do not mutate Pi-owned message objects.
+      messages: redactSensitiveValue(messages),
     };
   }
-  return loadOperatorSessionHistory(workspace.rootPath, sessionId);
+  const history = await loadOperatorSessionHistory(workspace.rootPath, sessionId);
+  if (!history) return null;
+  return {
+    sessionId: history.sessionId,
+    messages: redactSensitiveValue(history.messages),
+  };
+}
+
+/** Test helper: drop the live handle without cascading disk delete. */
+export function evictLiveAgentSessionForTests(workspaceId: string, sessionId: string): void {
+  const key = sessionKey(workspaceId, sessionId);
+  const live = liveSessions.get(key);
+  if (live) {
+    disposeLive(live);
+    liveSessions.delete(key);
+  }
+  openingSessions.delete(key);
+  pendingGates.get(key)?.reject(new Error("test evict"));
 }
 
 /** Test helper. */
 export function resetAgentSessionRegistryForTests(): void {
   for (const entry of liveSessions.values()) disposeLive(entry);
   liveSessions.clear();
+  openingSessions.clear();
   for (const pending of pendingGates.values()) pending.reject(new Error("test reset"));
   pendingGates.clear();
 }
@@ -373,7 +484,8 @@ function providerFailure(messages: readonly unknown[]): string | null {
     const row = message as { role?: string; stopReason?: string; errorMessage?: string };
     if (row.role !== "assistant") continue;
     if (row.stopReason === "error" || row.stopReason === "aborted" || row.errorMessage?.trim()) {
-      return row.errorMessage?.trim() || `assistant stopReason=${row.stopReason ?? "error"}`;
+      const raw = row.errorMessage?.trim() || `assistant stopReason=${row.stopReason ?? "error"}`;
+      return redactErrorMessage(raw);
     }
     return null;
   }
@@ -420,13 +532,12 @@ async function prompt(
           message: "prompt completed",
         };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     return {
       ok: false,
       sessionId: entry.handle.sessionId,
       command: "prompt",
       status: "failed",
-      message: `prompt failed: ${message}`,
+      message: `prompt failed: ${redactErrorMessage(error)}`,
     };
   } finally {
     entry.busy = false;
@@ -506,7 +617,7 @@ export async function dispatchAgentCommand(
         sessionId,
         command: "steer",
         status: "failed",
-        message: error instanceof Error ? error.message : String(error),
+        message: redactErrorMessage(error),
       };
     }
   }

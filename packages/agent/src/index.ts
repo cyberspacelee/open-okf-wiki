@@ -26,3 +26,10 @@ export {
   type WikiProduceGateDecision,
   type WikiProduceGateRequest,
 } from "./produce/tools/wiki-produce-tool.js";
+/** Operator-facing redaction for server HTTP/SSE surfaces. */
+export {
+  redactErrorMessage,
+  redactSensitiveText,
+  redactSensitiveValue,
+  sanitizeSummary,
+} from "./run-redact.js";

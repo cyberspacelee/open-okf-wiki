@@ -1,0 +1,386 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { access, chmod, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import test from "node:test";
+import type { WikiProduceToolDetails } from "@okf-wiki/contract";
+import { addSource, createWorkspace, listRuns, saveWorkspace } from "@okf-wiki/core";
+import { subscribeAgentSessionEvents } from "./agent-session-events.ts";
+import {
+  deleteAgentSession,
+  dispatchAgentCommand,
+  ensureRegistered,
+  evictLiveAgentSessionForTests,
+  listLiveAgentSessionSummaries,
+  loadAgentSessionHistory,
+  registerAgentSession,
+  resetAgentSessionRegistryForTests,
+} from "./agent-session-registry.ts";
+
+function git(cwd: string, ...args: string[]): void {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  if (result.status !== 0) throw new Error(result.stderr || `git ${args.join(" ")} failed`);
+}
+
+async function removeRunRoot(root: string): Promise<void> {
+  const makeWritable = async (entryPath: string): Promise<void> => {
+    await chmod(entryPath, 0o700).catch(() => undefined);
+    const entries = await readdir(entryPath, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const child = path.join(entryPath, entry.name);
+      if (entry.isDirectory()) await makeWritable(child);
+      else await chmod(child, 0o600).catch(() => undefined);
+    }
+  };
+  await makeWritable(root);
+  await rm(root, { recursive: true, force: true });
+}
+
+function detailsFromEvent(event: { payload?: unknown }): WikiProduceToolDetails | undefined {
+  const payload = event.payload as {
+    partialResult?: { details?: WikiProduceToolDetails };
+    result?: { details?: WikiProduceToolDetails };
+  };
+  return payload?.partialResult?.details ?? payload?.result?.details;
+}
+
+async function fixtureWorkspace(root: string) {
+  const source = path.join(root, "source");
+  await mkdir(source, { recursive: true });
+  git(source, "init");
+  git(source, "config", "user.email", "fixture@example.test");
+  git(source, "config", "user.name", "Fixture");
+  await writeFile(path.join(source, "README.md"), "# Fixture\n", "utf8");
+  git(source, "add", "README.md");
+  git(source, "commit", "-m", "fixture");
+
+  let workspace = await createWorkspace({
+    name: "Registry Fixture",
+    rootPath: root,
+    publicationPath: path.join(root, "published"),
+    resolvedModelId: "openai/test",
+  });
+  await saveWorkspace(workspace);
+  workspace = {
+    ...(await addSource(workspace, { id: "main", path: source })).config,
+    planConfirm: true,
+  };
+  await saveWorkspace(workspace);
+  return workspace;
+}
+
+const SECRET_ERROR =
+  "HTTP 401 Authorization: Bearer sk-live-abcdefghijklmnopqrstuvwxyz " +
+  "api_key=super-secret-value path=/home/cyberspace/projects/secret/key.json";
+
+test("H1: history snapshot redacts secrets while Pi storage stays intact", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-registry-history-redact-"));
+  const oldMode = process.env.OKF_WIKI_AGENT_MODE;
+  process.env.OKF_WIKI_AGENT_MODE = "fixture";
+  t.after(async () => {
+    resetAgentSessionRegistryForTests();
+    if (oldMode === undefined) delete process.env.OKF_WIKI_AGENT_MODE;
+    else process.env.OKF_WIKI_AGENT_MODE = oldMode;
+    await removeRunRoot(root);
+  });
+
+  const workspace = await createWorkspace({
+    name: "History Redact",
+    rootPath: root,
+    publicationPath: path.join(root, "published"),
+    resolvedModelId: "openai/test",
+  });
+  await saveWorkspace(workspace);
+
+  const sessionId = "history-redact";
+  await registerAgentSession({ workspace, sessionId });
+  const entry = await ensureRegistered(workspace, sessionId);
+
+  entry.handle.session.sessionManager.appendMessage({
+    role: "assistant",
+    content: [{ type: "text", text: "failed" }],
+    api: "openai-completions",
+    provider: "fixture",
+    model: "fixture",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "error",
+    errorMessage: SECRET_ERROR,
+    timestamp: Date.now(),
+  } as never);
+
+  const history = await loadAgentSessionHistory(workspace, sessionId);
+  assert.ok(history);
+  const serialized = JSON.stringify(history.messages);
+  assert.equal(serialized.includes("sk-live"), false);
+  assert.equal(serialized.includes("super-secret-value"), false);
+  assert.equal(serialized.includes("/home/cyberspace"), false);
+  assert.match(
+    serialized,
+    /\[redacted-key\]|Bearer \[redacted\]|api_key=\[redacted\]|\[redacted-path\]/,
+  );
+
+  // Pi-owned durable messages must not be mutated by the operator snapshot.
+  const liveSerialized = JSON.stringify(
+    entry.handle.session.sessionManager
+      .getBranch()
+      .filter((row) => row.type === "message")
+      .map((row) => row.message),
+  );
+  assert.equal(liveSerialized.includes("sk-live-abcdefghijklmnopqrstuvwxyz"), true);
+});
+
+test("H1: prompt failure message redacts secrets from assistant errorMessage", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-registry-prompt-redact-"));
+  const oldMode = process.env.OKF_WIKI_AGENT_MODE;
+  process.env.OKF_WIKI_AGENT_MODE = "fixture";
+  t.after(async () => {
+    resetAgentSessionRegistryForTests();
+    if (oldMode === undefined) delete process.env.OKF_WIKI_AGENT_MODE;
+    else process.env.OKF_WIKI_AGENT_MODE = oldMode;
+    await removeRunRoot(root);
+  });
+
+  const workspace = await createWorkspace({
+    name: "Prompt Redact",
+    rootPath: root,
+    publicationPath: path.join(root, "published"),
+    resolvedModelId: "openai/test",
+  });
+  await saveWorkspace(workspace);
+  const sessionId = "prompt-redact";
+  await registerAgentSession({ workspace, sessionId });
+  const entry = await ensureRegistered(workspace, sessionId);
+
+  const secret =
+    "provider exploded Bearer sk-proj-ABCDEFGHIJKLMNOP path=/home/runner/work/okf/key";
+  // Force the prompt catch path (assignment shadows the prototype method).
+  Object.defineProperty(entry.handle.session, "prompt", {
+    configurable: true,
+    value: async () => {
+      throw new Error(secret);
+    },
+  });
+
+  const response = await dispatchAgentCommand(workspace, sessionId, {
+    type: "prompt",
+    text: "hi",
+  });
+  assert.equal(response.ok, false);
+  assert.equal(response.status, "failed");
+  assert.ok(response.message);
+  assert.equal(response.message.includes("sk-proj"), false);
+  assert.equal(response.message.includes("/home/runner"), false);
+  assert.match(response.message, /\[redacted-key\]|Bearer \[redacted\]|\[redacted-path\]/);
+});
+
+test("H1: live Pi subscribe emits redacted SSE payloads", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-registry-sse-redact-"));
+  const oldMode = process.env.OKF_WIKI_AGENT_MODE;
+  process.env.OKF_WIKI_AGENT_MODE = "fixture";
+  t.after(async () => {
+    resetAgentSessionRegistryForTests();
+    if (oldMode === undefined) delete process.env.OKF_WIKI_AGENT_MODE;
+    else process.env.OKF_WIKI_AGENT_MODE = oldMode;
+    await removeRunRoot(root);
+  });
+
+  const workspace = await createWorkspace({
+    name: "SSE Redact",
+    rootPath: root,
+    publicationPath: path.join(root, "published"),
+    resolvedModelId: "openai/test",
+  });
+  await saveWorkspace(workspace);
+  const sessionId = "sse-redact";
+  await registerAgentSession({ workspace, sessionId });
+  const entry = await ensureRegistered(workspace, sessionId);
+
+  const seen: unknown[] = [];
+  const unsub = subscribeAgentSessionEvents(workspace.id, sessionId, (event) => {
+    seen.push(event.payload);
+  });
+  t.after(unsub);
+
+  const secretEvent = {
+    type: "auto_retry_start",
+    errorMessage: SECRET_ERROR,
+  };
+
+  // AgentSession keeps listeners in `_eventListeners` (pi-coding-agent). The
+  // registry's redacting fan-out is one of them — fire it with a secret payload.
+  const listeners = (
+    entry.handle.session as unknown as {
+      _eventListeners: Array<(event: unknown) => void>;
+    }
+  )._eventListeners;
+  assert.ok(Array.isArray(listeners) && listeners.length > 0);
+  for (const listener of listeners) {
+    listener(secretEvent);
+  }
+
+  assert.ok(seen.length > 0, "registry should have fanned out a Pi SSE event");
+  const blob = JSON.stringify(seen);
+  assert.equal(blob.includes("sk-live"), false);
+  assert.equal(blob.includes("super-secret-value"), false);
+  assert.equal(blob.includes("/home/cyberspace"), false);
+  assert.match(blob, /\[redacted-key\]|Bearer \[redacted\]|api_key=\[redacted\]|\[redacted-path\]/);
+});
+
+test("H2: concurrent ensureRegistered opens a single live SessionManager", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-registry-open-race-"));
+  const oldMode = process.env.OKF_WIKI_AGENT_MODE;
+  process.env.OKF_WIKI_AGENT_MODE = "fixture";
+  t.after(async () => {
+    resetAgentSessionRegistryForTests();
+    if (oldMode === undefined) delete process.env.OKF_WIKI_AGENT_MODE;
+    else process.env.OKF_WIKI_AGENT_MODE = oldMode;
+    await removeRunRoot(root);
+  });
+
+  const workspace = await createWorkspace({
+    name: "Open Race",
+    rootPath: root,
+    publicationPath: path.join(root, "published"),
+    resolvedModelId: "openai/test",
+  });
+  await saveWorkspace(workspace);
+  const sessionId = "open-race";
+
+  // Persist a real SessionManager JSONL (Pi only flushes after an assistant
+  // message), then drop the live handle so the next ensureRegistered is cold.
+  await registerAgentSession({ workspace, sessionId });
+  const warm = await ensureRegistered(workspace, sessionId);
+  warm.handle.session.sessionManager.appendMessage({
+    role: "user",
+    content: [{ type: "text", text: "persist me" }],
+    timestamp: Date.now(),
+  } as never);
+  warm.handle.session.sessionManager.appendMessage({
+    role: "assistant",
+    content: [{ type: "text", text: "ok" }],
+    api: "openai-completions",
+    provider: "fixture",
+    model: "fixture",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "stop",
+    timestamp: Date.now(),
+  } as never);
+  evictLiveAgentSessionForTests(workspace.id, sessionId);
+  assert.equal(listLiveAgentSessionSummaries(workspace.id).length, 0);
+
+  const [a, b, c] = await Promise.all([
+    ensureRegistered(workspace, sessionId),
+    ensureRegistered(workspace, sessionId),
+    ensureRegistered(workspace, sessionId),
+  ]);
+
+  assert.equal(a, b);
+  assert.equal(b, c);
+  assert.equal(a.handle, b.handle);
+  assert.equal(listLiveAgentSessionSummaries(workspace.id).length, 1);
+  assert.equal(listLiveAgentSessionSummaries(workspace.id)[0]?.id, sessionId);
+});
+
+test("H3: delete mid-gate aborts, settles, and cascades run data", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-registry-delete-gate-"));
+  const oldMode = process.env.OKF_WIKI_AGENT_MODE;
+  process.env.OKF_WIKI_AGENT_MODE = "fixture";
+  t.after(async () => {
+    resetAgentSessionRegistryForTests();
+    if (oldMode === undefined) delete process.env.OKF_WIKI_AGENT_MODE;
+    else process.env.OKF_WIKI_AGENT_MODE = oldMode;
+    await removeRunRoot(root);
+  });
+
+  const workspace = await fixtureWorkspace(root);
+  const sessionId = "delete-mid-gate";
+  await registerAgentSession({ workspace, sessionId });
+
+  const events: Array<{ kind: string; payload?: unknown }> = [];
+  const waiters = new Map<string, () => void>();
+  const unsubscribe = subscribeAgentSessionEvents(workspace.id, sessionId, (event) => {
+    events.push(event);
+    const status = detailsFromEvent(event)?.status;
+    if (status) waiters.get(status)?.();
+  });
+  t.after(unsubscribe);
+
+  const waitForStatus = (status: string) =>
+    new Promise<void>((resolve, reject) => {
+      if (events.some((event) => detailsFromEvent(event)?.status === status)) {
+        resolve();
+        return;
+      }
+      const timer = setTimeout(
+        () =>
+          reject(
+            new Error(
+              `missing ${status}; saw ${events
+                .map((event) => detailsFromEvent(event)?.status ?? event.kind)
+                .join(", ")}`,
+            ),
+          ),
+        10_000,
+      );
+      waiters.set(status, () => {
+        clearTimeout(timer);
+        waiters.delete(status);
+        resolve();
+      });
+    });
+
+  const prompt = dispatchAgentCommand(workspace, sessionId, {
+    type: "prompt",
+    text: "Produce the wiki",
+  });
+  await waitForStatus("awaiting_plan");
+  const plan = detailsFromEvent(
+    events.find((event) => detailsFromEvent(event)?.status === "awaiting_plan")!,
+  )!;
+  assert.ok(plan.runId);
+  const runId = plan.runId;
+  const runDir = path.join(workspace.rootPath, ".okf-wiki", "runs", runId);
+  await access(runDir);
+
+  const deleted = await deleteAgentSession(workspace, sessionId);
+  assert.ok(deleted.removed >= 1);
+
+  // Prompt should settle without throw storms.
+  const promptResult = await prompt;
+  assert.equal(typeof promptResult.ok, "boolean");
+
+  // Live cache cleared.
+  assert.equal(listLiveAgentSessionSummaries(workspace.id).length, 0);
+
+  // Run artifacts and session gone.
+  await assert.rejects(access(runDir));
+  await assert.rejects(access(path.join(workspace.rootPath, ".okf-wiki", "runs", `${runId}.json`)));
+  const remaining = await listRuns(workspace.rootPath);
+  assert.equal(
+    remaining.filter((run) => run.sessionId === sessionId).length,
+    0,
+  );
+
+  // Brief settle: no new run dirs reappear for this session.
+  await new Promise((r) => setTimeout(r, 200));
+  const remainingAfter = await listRuns(workspace.rootPath);
+  assert.equal(
+    remainingAfter.filter((run) => run.sessionId === sessionId).length,
+    0,
+  );
+});

@@ -23,6 +23,7 @@ import {
   type ResolvedProviderRuntime,
   resolveProviderRuntime,
 } from "@okf-wiki/core";
+import { redactSensitiveText } from "../run-redact.js";
 import { resolveContextBudget } from "./context-budget.js";
 
 /** Sole product provider kind (wire/docs; not a multi-provider switch). */
@@ -111,11 +112,7 @@ function missingModelMessage(): string {
 }
 
 function redactProviderError(text: string): string {
-  return text
-    .replace(/\bsk-[a-zA-Z0-9-]{6,}\b/g, "[redacted-key]")
-    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
-    .replace(/api[_-]?key["']?\s*[:=]\s*["']?[^"'\s]+/gi, "api_key=[redacted]")
-    .slice(0, 240);
+  return redactSensitiveText(text).slice(0, 240);
 }
 
 function httpStatusFromError(text: string): number | undefined {

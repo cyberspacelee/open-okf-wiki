@@ -1,7 +1,7 @@
 /** Thin HTTP adapter over Pi-native Operator Sessions (ADR 0032). */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { listOperatorSessions } from "@okf-wiki/agent";
+import { listOperatorSessions, redactErrorMessage } from "@okf-wiki/agent";
 import {
   type AgentSseEvent,
   type AgentSseSnapshot,
@@ -95,7 +95,7 @@ export async function handleCreateAgentSession(
       },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = redactErrorMessage(error);
     if (message.includes("already exists")) {
       sendError(res, 409, message);
       return;
@@ -130,7 +130,7 @@ export async function handleDeleteAgentSession(
       removed: deleted.removed,
     });
   } catch (error) {
-    sendError(res, 500, error instanceof Error ? error.message : String(error));
+    sendError(res, 500, redactErrorMessage(error));
   }
 }
 
@@ -153,7 +153,7 @@ export async function handleAgentSessionCommand(
   try {
     sendJson(res, 202, await dispatchAgentCommand(workspace, sessionId, parsed.data));
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = redactErrorMessage(error);
     sendError(res, message.includes("not found") ? 404 : 500, message);
   }
 }
@@ -224,7 +224,7 @@ export async function handleAgentSessionEvents(
     history = await (dependencies.loadHistory ?? loadAgentSessionHistory)(workspace, sessionId);
   } catch (error) {
     if (closed) return;
-    sendError(res, 500, error instanceof Error ? error.message : String(error));
+    sendError(res, 500, redactErrorMessage(error));
     cleanup();
     return;
   }
