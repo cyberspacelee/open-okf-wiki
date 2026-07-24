@@ -1,4 +1,4 @@
-import { FolderKanban, PanelLeftClose, PanelLeftOpen, Settings } from "lucide-react";
+import { BookOpen, FolderKanban, PanelLeftClose, PanelLeftOpen, Settings } from "lucide-react";
 import type { ComponentProps } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
@@ -61,17 +61,24 @@ export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
       {...props}
     >
       <SidebarHeader>
-        <div
-          className={cn(
-            "flex min-w-0 flex-col gap-0.5 px-2 py-1.5",
-            collapsed && "items-center px-0 text-center",
-          )}
-        >
-          <strong className="text-sm tracking-tight">{t.app.brand}</strong>
-          {!collapsed ? (
-            <span className="text-xs text-muted-foreground">{t.app.operator}</span>
-          ) : null}
-        </div>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              size="lg"
+              tooltip={`${t.app.brand} · ${t.app.operator}`}
+              className="cursor-default hover:bg-transparent active:bg-transparent data-active:bg-transparent"
+              aria-label={`${t.app.brand} · ${t.app.operator}`}
+            >
+              <div className="flex aspect-square size-8 shrink-0 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
+                <BookOpen className="size-4" />
+              </div>
+              <div className="grid min-w-0 flex-1 text-left text-sm leading-tight">
+                <span className="truncate font-semibold tracking-tight">{t.app.brand}</span>
+                <span className="truncate text-xs text-muted-foreground">{t.app.operator}</span>
+              </div>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
       </SidebarHeader>
 
       <SidebarSeparator />
