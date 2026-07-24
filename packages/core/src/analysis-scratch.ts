@@ -1,21 +1,26 @@
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { type AnalysisReceipt, AnalysisReceiptSchema } from "@okf-wiki/contract";
+import { atomicWriteJson } from "./atomic-write.js";
 import { isPathInside, WORKSPACE_DIR_NAME } from "./workspace-store.js";
 
 /**
  * Analysis dir for one Wiki Run under the run workdir (ADR 0030):
  * `{root}/.okf-wiki/runs/{runId}/analysis`
  *
- * Co-located with Staging Wiki (`…/wiki`) and source mounts. Not the
- * legacy `{root}/.okf-wiki/analysis/{runId}` tree (deleted; no-compat).
+ * Co-located with Staging Wiki (`…/wiki`) and source mounts. Holds
+ * `spec.json`, `defects.json`, and the `receipts/` subdirectory.
  */
 export function analysisScratchDir(workspaceRoot: string, runId: string): string {
   const safe = runId.replace(/[/\\]/g, "_");
   return path.join(path.resolve(workspaceRoot), WORKSPACE_DIR_NAME, "runs", safe, "analysis");
 }
 
-/** Subdir preferred by Host research fan-out for agent discovery. */
+/**
+ * Canonical Analysis Receipt directory (sole write/list locality):
+ * `{root}/.okf-wiki/runs/{runId}/analysis/receipts`
+ * (= `{runWorkDir}/analysis/receipts` when the run lives under `.okf-wiki/runs/`).
+ */
 export function analysisReceiptsDir(workspaceRoot: string, runId: string): string {
   return path.join(analysisScratchDir(workspaceRoot, runId), "receipts");
 }
@@ -25,7 +30,8 @@ export function safeReceiptNodeId(nodeId: string): string {
 }
 
 /**
- * Write a validated Analysis Receipt under the run's analysis scratch.
+ * Write a validated Analysis Receipt under the run's analysis/receipts.
+ * Single write authority — one file, no dual-location copies.
  * Returns the absolute path of the written JSON file.
  */
 export async function writeAnalysisReceipt(
@@ -33,21 +39,17 @@ export async function writeAnalysisReceipt(
   receipt: AnalysisReceipt,
 ): Promise<string> {
   const parsed = AnalysisReceiptSchema.parse(receipt);
-  const dir = analysisScratchDir(workspaceRoot, parsed.runId);
+  const dir = analysisReceiptsDir(workspaceRoot, parsed.runId);
   const root = path.resolve(workspaceRoot);
   if (!isPathInside(root, dir)) {
-    throw new Error("analysis scratch escapes workspace root");
+    throw new Error("analysis receipts dir escapes workspace root");
   }
-  await mkdir(dir, { recursive: true });
   const safeNode = safeReceiptNodeId(parsed.nodeId);
   const filePath = path.join(dir, `${safeNode}.json`);
   if (!isPathInside(dir, filePath)) {
-    throw new Error("receipt path escapes analysis scratch");
+    throw new Error("receipt path escapes analysis receipts dir");
   }
-  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  const body = `${JSON.stringify(parsed, null, 2)}\n`;
-  await writeFile(tempPath, body, "utf8");
-  await rename(tempPath, filePath);
+  await atomicWriteJson(filePath, parsed);
   return filePath;
 }
 
@@ -73,54 +75,45 @@ async function tryReadReceiptFile(absPath: string): Promise<AnalysisReceipt | nu
 }
 
 /**
- * List analysis receipts for a run (analysis/*.json + analysis/receipts/*.json).
- * Dedupes by nodeId; prefers the receipts/ copy when both exist.
+ * List analysis receipts for a run from the canonical analysis/receipts/ dir only.
  */
 export async function listAnalysisReceipts(
   workspaceRoot: string,
   runId: string,
 ): Promise<AnalysisReceiptSummary[]> {
-  const analysisDir = analysisScratchDir(workspaceRoot, runId);
-  const receiptsSub = analysisReceiptsDir(workspaceRoot, runId);
+  const receiptsDir = analysisReceiptsDir(workspaceRoot, runId);
   const byNode = new Map<string, AnalysisReceiptSummary>();
 
-  async function scan(dir: string, relPrefix: string): Promise<void> {
-    let names: string[];
-    try {
-      names = await readdir(dir);
-    } catch {
-      return;
-    }
-    for (const name of names) {
-      if (!name.endsWith(".json") || name === "spec.json" || name === "defects.json") {
-        continue;
-      }
-      const abs = path.join(dir, name);
-      const receipt = await tryReadReceiptFile(abs);
-      if (!receipt) continue;
-      byNode.set(receipt.nodeId, {
-        nodeId: receipt.nodeId,
-        parentId: receipt.parentId,
-        status: receipt.status,
-        scope: receipt.scope,
-        summary: receipt.summary.slice(0, 500),
-        relativePath: `${relPrefix}${name}`.replace(/\\/g, "/"),
-        findingsCount: receipt.findings?.length ?? 0,
-        childReceipts: receipt.childReceipts ?? [],
-      });
-    }
+  let names: string[];
+  try {
+    names = await readdir(receiptsDir);
+  } catch {
+    return [];
   }
 
-  // Base analysis first, then receipts/ overwrites (preferred).
-  await scan(analysisDir, "");
-  await scan(receiptsSub, "receipts/");
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    const abs = path.join(receiptsDir, name);
+    const receipt = await tryReadReceiptFile(abs);
+    if (!receipt) continue;
+    byNode.set(receipt.nodeId, {
+      nodeId: receipt.nodeId,
+      parentId: receipt.parentId,
+      status: receipt.status,
+      scope: receipt.scope,
+      summary: receipt.summary.slice(0, 500),
+      relativePath: `receipts/${name}`.replace(/\\/g, "/"),
+      findingsCount: receipt.findings?.length ?? 0,
+      childReceipts: receipt.childReceipts ?? [],
+    });
+  }
 
   return [...byNode.values()].sort((a, b) => a.nodeId.localeCompare(b.nodeId));
 }
 
 /**
- * Load one receipt by nodeId (or safe filename stem).
- * Searches analysis/receipts/ then analysis/.
+ * Load one receipt by nodeId (or safe filename stem) from analysis/receipts/.
+ * Also accepts a path relative to the analysis dir (e.g. receipts/foo.json).
  */
 export async function readAnalysisReceipt(
   workspaceRoot: string,
@@ -128,15 +121,16 @@ export async function readAnalysisReceipt(
   nodeId: string,
 ): Promise<AnalysisReceipt | null> {
   const safe = safeReceiptNodeId(nodeId);
-  const candidates = [
-    path.join(analysisReceiptsDir(workspaceRoot, runId), `${safe}.json`),
-    path.join(analysisScratchDir(workspaceRoot, runId), `${safe}.json`),
-    // Allow callers to pass relative path like receipts/foo.json
-    path.join(analysisScratchDir(workspaceRoot, runId), nodeId.replace(/^\/+/, "")),
-  ];
+  const analysisDir = analysisScratchDir(workspaceRoot, runId);
+  const receiptsDir = analysisReceiptsDir(workspaceRoot, runId);
   const root = path.resolve(workspaceRoot);
+  const candidates = [
+    path.join(receiptsDir, `${safe}.json`),
+    // Explicit relative path under analysis (e.g. receipts/foo.json from childReceipts).
+    path.join(analysisDir, nodeId.replace(/^\/+/, "")),
+  ];
   for (const abs of candidates) {
-    if (!isPathInside(root, abs)) continue;
+    if (!isPathInside(root, abs) || !isPathInside(analysisDir, abs)) continue;
     const receipt = await tryReadReceiptFile(abs);
     if (receipt) return receipt;
   }

@@ -181,7 +181,6 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
             const lr = leafResults[i]!;
             const persisted = await persistResearchReceipt({
               workspaceRoot: input.workspace.rootPath,
-              runWorkDir: layout.runWorkDir,
               runId: input.runId,
               nodeId: leafNodeId,
               parentId: domainNodeId,
@@ -220,7 +219,6 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
         });
         await persistResearchReceipt({
           workspaceRoot: input.workspace.rootPath,
-          runWorkDir: layout.runWorkDir,
           runId: input.runId,
           nodeId: domainNodeId,
           parentId: "root",
@@ -236,7 +234,6 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
         const msg = err instanceof Error ? err.message : String(err);
         await persistResearchReceipt({
           workspaceRoot: input.workspace.rootPath,
-          runWorkDir: layout.runWorkDir,
           runId: input.runId,
           nodeId: domainNodeId,
           parentId: "root",
@@ -278,7 +275,7 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
   // 4) Root write
   throwIfAborted(input.abortSignal);
   events.progress?.({ phase: "writing", label: "root_write" });
-  const receiptIndex = await buildReceiptIndex(layout.runWorkDir);
+  const receiptIndex = await buildReceiptIndex(input.workspace.rootPath, input.runId);
   let produced: ProduceWithPiResult;
   try {
     produced = await produceWithPi({
