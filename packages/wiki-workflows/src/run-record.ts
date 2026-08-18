@@ -122,7 +122,8 @@ export function createWikiRunRecord(rootDirectory: string, options: WikiRunRecor
       staleJournal: path.join(directory, "pending-transaction.json"),
       agent: (target: WikiAgentTarget) => target.kind === "lead"
         ? path.join(directory, "agents", "lead.json")
-        : path.join(directory, "agents", "tasks", `${safeTaskId(target.taskId)}.json`),
+        : path.join(directory, "agents", "tasks", String(target.batch), `${safeTaskId(target.taskId)}.json`),
+      legacyTask: (taskId: string) => path.join(directory, "agents", "tasks", `${safeTaskId(taskId)}.json`),
     };
   };
 
@@ -195,6 +196,13 @@ export function createWikiRunRecord(rootDirectory: string, options: WikiRunRecor
       if (isMissing(error)) return undefined;
       throw error;
     }
+  };
+
+  const readAgentTail = async (runId: string, target: WikiAgentTarget): Promise<WikiAgentRecord | undefined> => {
+    const runPaths = paths(runId);
+    const current = await readTailFile(runPaths.agent(target));
+    if (current || target.kind === "lead") return current;
+    return await readTailFile(runPaths.legacyTask(target.taskId));
   };
 
   return {
@@ -379,7 +387,7 @@ export function createWikiRunRecord(rootDirectory: string, options: WikiRunRecor
       if (!current || current.status !== "running" || current.attempt !== authority.attempt
         || current.executionToken !== authority.executionToken) return;
       const target = sample.target;
-      const existing = await readTailFile(paths(runId).agent(target));
+      const existing = await readAgentTail(runId, target);
       const telemetry = sample.kind === "telemetry" ? sample.telemetry : undefined;
       const at = sample.kind === "telemetry" ? sample.telemetry.sampledAt : sample.at;
       const sessionFile = telemetry?.sessionFile ?? existing?.sessionFile;
@@ -412,7 +420,7 @@ export function createWikiRunRecord(rootDirectory: string, options: WikiRunRecor
 
     async readTail(runId: string, target: WikiAgentTarget): Promise<WikiAgentRecord | undefined> {
       if (!(await ensure(runId))) throw new Error(`Unknown Wiki run: ${runId}`);
-      return await readTailFile(paths(runId).agent(target));
+      return await readAgentTail(runId, target);
     },
 
     async assertActive(runId: string, authority: WikiExecutionAuthority): Promise<void> {
@@ -436,7 +444,10 @@ export type WikiRunRecord = ReturnType<typeof createWikiRunRecord>;
 export function projectRunView(facts: WikiRunFacts, tails: readonly WikiAgentRecord[] = []): WikiRunView {
   const batches = facts.lead.delegates.batches.map((batch) => projectBatch(batch, facts.updatedAt, tails));
   const currentBatch = batches.at(-1);
-  const leadTail = tails.find((tail) => tail.agent.target.kind === "lead")?.agent;
+  const leadRecord = tails.find((tail) => tail.agent.target.kind === "lead");
+  const leadTail = leadRecord?.process.length
+    ? { ...leadRecord.agent, process: leadRecord.process }
+    : leadRecord?.agent;
   const recentActivity = projectRecentActivity(tails);
   const usage = projectUsageFromTails(tails);
   const progress: WikiRunProgress = {
@@ -481,7 +492,7 @@ const AGGREGATE_USAGE_FIELDS = ["turns", "toolCalls", "input", "output", "cacheR
 
 function projectRecentActivity(tails: readonly WikiAgentRecord[]): WikiActivityEntry[] {
   return tails.flatMap((tail) => tail.process)
-    .sort((left, right) => left.sequence - right.sequence || left.at.localeCompare(right.at))
+    .sort((left, right) => left.at.localeCompare(right.at) || left.sequence - right.sequence)
     .slice(-20);
 }
 
@@ -505,8 +516,9 @@ function projectTask(
   batch: number,
   tails: readonly WikiAgentRecord[],
 ): WikiTaskSnapshot {
-  const tail = tails.find((entry) => entry.agent.target.kind === "task"
-    && entry.agent.target.batch === batch && entry.agent.target.taskId === task.task.id)?.agent;
+  const record = tails.find((entry) => entry.agent.target.kind === "task"
+    && entry.agent.target.batch === batch && entry.agent.target.taskId === task.task.id);
+  const tail = record?.agent;
   const status = task.phase === "queued" ? "queued"
     : task.phase === "running" || task.phase === "paused" ? "running"
       : task.receipt!.status;
@@ -523,6 +535,7 @@ function projectTask(
     ...(tail?.activeTools[0] ? { activeTool: tail.activeTools[0] } : {}),
     ...(tail?.health ? { health: tail.health } : {}),
     ...(tail?.usage ? { usage: tail.usage } : {}),
+    ...(record?.process.length ? { process: record.process } : {}),
   };
 }
 

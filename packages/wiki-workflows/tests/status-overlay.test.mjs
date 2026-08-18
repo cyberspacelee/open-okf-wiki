@@ -83,27 +83,32 @@ function navigationColumn(lines, width) {
   }).join("\n");
 }
 
-test("process tab pins the latest activity to the inspector bottom", async () => {
+function withLeadProcess(process) {
+  return { ...view, progress: { ...view.progress, lead: { ...lead, process } } };
+}
+
+test("process tab lists activity from the top, oldest then newest", async () => {
   const process = [
     { sequence: 1, at: "2026-08-12T00:00:00.000Z", kind: "tool", severity: "info", message: "", toolName: "read", summary: "src/a.ts", completed: true },
+    { sequence: 2, at: "2026-08-12T00:00:01.000Z", kind: "tool", severity: "info", message: "", toolName: "grep", summary: "TODO  src", completed: true },
   ];
   const { component } = await componentFor(handle({
-    async view() { return { ...view, progress: { ...view.progress, recentActivity: process } }; },
+    async view() { return withLeadProcess(process); },
   }), 24, { kind: "lead" }, { fg: (_color, text) => text }, { process: true });
   const rendered = component.render(80).map((line) => plain(line));
-  const processRow = rendered.findIndex((line) => /read/.test(line) && /src\/a\.ts/.test(line));
   const tabsRow = rendered.findIndex((line) => /\[Process\]/.test(line));
+  const firstRow = rendered.findIndex((line) => /read/.test(line) && /src\/a\.ts/.test(line));
+  const secondRow = rendered.findIndex((line) => /grep/.test(line) && /TODO/.test(line));
   const contextRule = rendered.findIndex((line) => /context/.test(line) && /─/.test(line));
   assert.ok(tabsRow >= 0, "expected process tabs");
-  assert.ok(processRow > tabsRow, "expected the process row below the tabs");
-  assert.ok(contextRule > processRow, "expected context chrome below the process row");
-  assert.ok(contextRule - processRow <= 2, `process row should sit on the bottom, gap=${contextRule - processRow}`);
-  const gap = rendered.slice(tabsRow + 2, processRow).filter((line) => !line.replace(/[│\s]/g, ""));
-  assert.ok(gap.length >= 3, `expected empty space above the latest process row, got ${gap.length}`);
+  assert.ok(firstRow > tabsRow, "expected the first process row below the tabs");
+  assert.ok(secondRow > firstRow, "expected later process rows below earlier ones");
+  assert.ok(firstRow - tabsRow <= 3, `process should start at the top, gap=${firstRow - tabsRow}`);
+  assert.ok(contextRule - secondRow >= 3, `expected empty space below the process rows, gap=${contextRule - secondRow}`);
   component.dispose();
 });
 
-test("up arrow leaves the bottom after overscrolling or tailing", async () => {
+test("process tab starts at the oldest row and t jumps to the newest", async () => {
   const process = Array.from({ length: 40 }, (_, index) => ({
     sequence: index,
     at: "2026-08-12T00:00:00.000Z",
@@ -115,14 +120,12 @@ test("up arrow leaves the bottom after overscrolling or tailing", async () => {
     completed: true,
   }));
   const { component } = await componentFor(handle({
-    async view() { return { ...view, progress: { ...view.progress, recentActivity: process } }; },
+    async view() { return withLeadProcess(process); },
   }), 16, { kind: "lead" }, { fg: (_color, text) => text }, { process: true });
   await new Promise((resolve) => setImmediate(resolve));
-  assert.match(plain(component.render(80).join("\n")), /tool-39/);
-  for (let index = 0; index < 80; index += 1) component.handleInput("\u001b[B");
-  assert.match(plain(component.render(80).join("\n")), /tool-39/);
-  component.handleInput("\u001b[A");
-  assert.doesNotMatch(plain(component.render(80).join("\n")), /tool-39/);
+  const top = plain(component.render(80).join("\n"));
+  assert.match(top, /tool-0/);
+  assert.doesNotMatch(top, /tool-39/);
   component.handleInput("t");
   assert.match(plain(component.render(80).join("\n")), /tool-39/);
   component.handleInput("\u001b[A");
@@ -407,7 +410,7 @@ test("process tab shows running tools without assistant text and output wraps ma
     { sequence: 2, at: "2026-08-12T00:00:02.000Z", kind: "tool", severity: "info", message: "", toolName: "grep", summary: "TODO  src", completed: true },
   ];
   const { component } = await componentFor(handle({
-    async view() { return { ...view, progress: { ...view.progress, recentActivity: process } }; },
+    async view() { return withLeadProcess(process); },
     async inspectAgent(target, options) {
       inspected.push({ target, options });
       return {
@@ -437,6 +440,41 @@ test("process tab shows running tools without assistant text and output wraps ma
   assert.match(outputText, /auth flow/);
   assert.ok(outputPage.every((line) => visibleWidth(line) <= 48));
   assert.ok(outputPage.filter((line) => /alpha-|word/.test(plain(line))).length >= 2);
+  component.dispose();
+});
+
+test("process tab keeps an earlier batch task after later batches fill recent activity", async () => {
+  const older = {
+    sequence: 1, at: "2026-08-12T00:00:01.000Z", kind: "tool", severity: "info",
+    message: "", toolName: "read", summary: "wiki/auth.md", completed: true,
+    target: { kind: "task", batch: 1, taskId: "old" },
+  };
+  const recentActivity = Array.from({ length: 20 }, (_, index) => ({
+    sequence: 80 + index, at: "2026-08-12T01:00:00.000Z", kind: "tool", severity: "info",
+    message: "", toolName: "read", summary: `lead-${index}.md`, completed: true,
+    target: { kind: "lead" },
+  }));
+  const history = {
+    batch: 1, status: "complete", completed: 1, total: 1,
+    tasks: [{ id: "old", role: "review", status: "complete", summary: "reviewed auth", process: [older] }],
+  };
+  const current = { batch: 2, status: "running", completed: 0, total: 1, tasks: [{ id: "current", role: "write", status: "running" }] };
+  const crowded = {
+    ...view,
+    progress: { ...view.progress, currentBatch: current, batches: [history, current], recentActivity },
+  };
+  const { component } = await componentFor(handle({ async view() { return crowded; } }));
+  await new Promise((resolve) => setImmediate(resolve));
+  component.handleInput("j");
+  component.handleInput("CONFIRM");
+  component.handleInput("j");
+  component.handleInput("CONFIRM");
+  component.handleInput("\u001b[C");
+  const processPage = plain(component.render(80).join("\n"));
+  assert.match(processPage, /\[Process\]/);
+  assert.match(processPage, /wiki\/auth\.md/);
+  assert.doesNotMatch(processPage, /lead-19\.md/);
+  assert.doesNotMatch(processPage, /暂无过程记录|no process tail/);
   component.dispose();
 });
 

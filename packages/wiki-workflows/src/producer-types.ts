@@ -65,6 +65,7 @@ export interface WikiTaskSnapshot {
   activity?: WikiTaskActivity;
   activeTool?: WikiActiveTool;
   usage?: WikiContextStats;
+  process?: WikiActivityEntry[];
 }
 
 export type WikiTaskActivity = "responding" | "tool" | "idle" | "compacting";
@@ -108,6 +109,7 @@ export interface WikiAgentSnapshot {
   deadlineAt?: string;
   usage?: WikiContextStats;
   summary?: string;
+  process?: WikiActivityEntry[];
 }
 
 export type WikiActivityKind = "agent" | "tool" | "retry" | "compaction" | "warning" | "failure";

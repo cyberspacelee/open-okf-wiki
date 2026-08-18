@@ -16,7 +16,6 @@ import {
   type WikiTextSpan,
 } from "./observability.js";
 import type {
-  WikiActivityEntry,
   WikiAgentInspection,
   WikiAgentSnapshot,
   WikiAgentTarget,
@@ -74,7 +73,7 @@ function initialWikiOverlayState(input: { runId: string; initialTarget?: WikiAge
   return {
     kind: input.initialTarget ? "agent" : "run",
     cursor: 0,
-    fromBottom: input.process ? 0 : INSPECTOR_TOP,
+    fromBottom: INSPECTOR_TOP,
     runId: input.runId,
     target: input.initialTarget,
     tab: input.process ? "process" : "overview",
@@ -264,7 +263,7 @@ function createStatusOverlay(args: {
       const stats = contextLine(current, view, language, args.theme);
       const framed = frameWikiOverlay({
         width, title: styledTitle(view, args.theme), body: body.lines, stats, footer, theme: args.theme, viewport,
-        fromBottom: state.fromBottom, fixedTop: body.fixedTop, pinBottom: state.tab === "process",
+        fromBottom: state.fromBottom, fixedTop: body.fixedTop,
       });
       if (state.fromBottom > framed.maxScroll) state = { ...state, fromBottom: framed.maxScroll };
       cached = { width, viewport, lines: framed.lines };
@@ -385,7 +384,7 @@ function inspectorPanel(
   const heading = wrapLines(agent ? [tabs, liveAgentLine(agent, now, theme)] : [tabs], width);
 
   if (state.tab === "process") {
-    const process = selected?.kind === "agent" ? processFromView(view, selected.target) : [];
+    const process = selected?.kind === "agent" ? agentFromView(view, selected.target)?.process ?? [] : [];
     const empty = view.progress?.language === "zh" ? "暂无过程记录" : "no process tail";
     if (process.length === 0 || !agent) {
       return { heading, content: wrapLines([paint(theme, "muted", empty)], width) };
@@ -514,13 +513,8 @@ function taskSnapshotToAgent(target: Extract<WikiAgentTarget, { kind: "task" }>,
     ...(task.updatedAt ? { updatedAt: task.updatedAt } : {}),
     ...(task.usage ? { usage: task.usage } : {}),
     ...(task.summary ? { summary: task.summary } : {}),
+    ...(task.process?.length ? { process: task.process } : {}),
   };
-}
-
-function processFromView(view: WikiRunView, target: WikiAgentTarget): WikiActivityEntry[] {
-  return (view.progress?.recentActivity ?? []).filter((entry) => (
-    entry.target ? sameTarget(entry.target, target) : target.kind === "lead"
-  ));
 }
 
 function outputIdentity(view: WikiRunView, target: WikiAgentTarget): string {
@@ -555,7 +549,7 @@ function liveAgentLine(agent: WikiAgentSnapshot, now: number, theme: unknown): s
   return `${paint(theme, statusColor, presentation.marker)} ${paint(theme, statusColor, agent.status)} ${paint(theme, "text", `· ${parts[0] ?? ""}`)} ${parts.slice(1).map((part) => paint(theme, "dim", `· ${part}`)).join(" ")}`.trimEnd();
 }
 
-function frameWikiOverlay(input: { width: number; title: string; body: string[]; stats?: string; footer: string; theme?: unknown; viewport?: number; fromBottom?: number; fixedTop?: number; pinBottom?: boolean }): { lines: string[]; maxScroll: number } {
+function frameWikiOverlay(input: { width: number; title: string; body: string[]; stats?: string; footer: string; theme?: unknown; viewport?: number; fromBottom?: number; fixedTop?: number }): { lines: string[]; maxScroll: number } {
   const width = Math.max(8, Math.floor(input.width));
   const inner = Math.max(1, width - 2);
   const chrome = 2 + (input.stats ? 2 : 0);
@@ -568,8 +562,7 @@ function frameWikiOverlay(input: { width: number; title: string; body: string[];
   const fromBottom = input.fromBottom === undefined ? maxScroll : clamp(input.fromBottom, 0, maxScroll);
   const scroll = maxScroll - fromBottom;
   const slice = scrollable.slice(scroll, scroll + scrollableViewport);
-  const pad = input.pinBottom && fromBottom === 0 ? Math.max(0, scrollableViewport - slice.length) : 0;
-  const visible = [...fixed, ...Array.from({ length: pad }, () => ""), ...slice];
+  const visible = [...fixed, ...slice];
   while (visible.length < viewport) visible.push("");
   const border = (text: string) => paint(input.theme, "border", text);
   const mutedBorder = (text: string) => paint(input.theme, "borderMuted", text);
@@ -647,7 +640,7 @@ function cycleAgentTab(state: WikiOverlayState, direction: 1 | -1): WikiOverlayS
   const tabs: InspectorTab[] = ["overview", "process", "output"];
   const index = tabs.indexOf(state.tab);
   const tab = tabs[(index + direction + tabs.length) % tabs.length]!;
-  return { ...state, tab, fromBottom: tab === "process" ? 0 : INSPECTOR_TOP };
+  return { ...state, tab, fromBottom: INSPECTOR_TOP };
 }
 
 function padLine(value: string, width: number): string { const clipped = truncateToWidth(value, width, "...", true); return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped))); }

@@ -201,3 +201,139 @@ test("a dead pid is stale and interrupt keeps delegates", async (t) => {
   assert.equal(facts.lead.delegates.batches[0].tasks[0].phase, "terminal");
   assert.equal(facts.lead.delegates.batches[0].tasks[0].receipt.summary, "written");
 });
+
+function processTail(target, summaries, atBase, role = target.kind === "lead" ? "lead" : "write") {
+  return {
+    agent: {
+      target, role, status: "running", attempt: 1, activity: "waiting_model",
+      activeTools: [], health: "healthy", updatedAt: atBase,
+    },
+    process: summaries.map((summary, index) => ({
+      sequence: index + 1,
+      at: new Date(Date.parse(atBase) + index * 1000).toISOString(),
+      kind: "tool",
+      severity: "info",
+      message: "",
+      toolName: "read",
+      summary,
+      completed: true,
+      target,
+    })),
+  };
+}
+
+test("run view keeps each agent's process after later batches", () => {
+  const leadTarget = { kind: "lead" };
+  const first = { kind: "task", batch: 1, taskId: "write-b1-t1" };
+  const second = { kind: "task", batch: 2, taskId: "write-b2-t1" };
+  const third = { kind: "task", batch: 3, taskId: "write-b3-t1" };
+  const facts = {
+    version: WIKI_RUN_FORMAT,
+    id: "run-1",
+    cwd: "/repo",
+    status: "running",
+    createdAt: "2026-08-12T00:00:00.000Z",
+    updatedAt: "2026-08-12T01:00:00.000Z",
+    attempt: 1,
+    executionToken: token,
+    pid: 1,
+    stage: "lead",
+    lead: emptyLead({
+      delegates: {
+        batches: [1, 2, 3].map((batch) => ({
+          batchId: batch,
+          tasks: [terminalTask(createWikiDelegateContract(batch, {
+            id: `write-b${batch}-t1`, role: "write", instruction: "write",
+            sourceScopeIds: ["source"], contextRefs: [], writePaths: ["wiki/overview.md"],
+          }))],
+        })),
+      },
+    }),
+  };
+  const view = projectRunView(facts, [
+    processTail(leadTarget, Array.from({ length: 8 }, (_, index) => `lead-${index + 1}.md`), "2026-08-12T00:00:00.000Z"),
+    processTail(first, Array.from({ length: 12 }, (_, index) => `b1-${index + 1}.md`), "2026-08-12T00:10:00.000Z"),
+    processTail(second, Array.from({ length: 12 }, (_, index) => `b2-${index + 1}.md`), "2026-08-12T00:20:00.000Z"),
+    processTail(third, Array.from({ length: 12 }, (_, index) => `b3-${index + 1}.md`), "2026-08-12T00:30:00.000Z"),
+  ]);
+  assert.equal(view.progress.lead.process.length, 8);
+  assert.equal(view.progress.lead.process[0].summary, "lead-1.md");
+  assert.equal(view.progress.batches[0].tasks[0].process.length, 12);
+  assert.equal(view.progress.batches[0].tasks[0].process[0].summary, "b1-1.md");
+  assert.equal(view.progress.batches[2].tasks[0].process.at(-1).summary, "b3-12.md");
+  assert.equal(view.progress.recentActivity.length, 20);
+  assert.equal(view.progress.recentActivity[0].summary, "b2-5.md");
+  assert.equal(view.progress.recentActivity.at(-1).summary, "b3-12.md");
+});
+
+test("duplicate task ids keep independent process tails across batches", async (t) => {
+  const workspace = await root(t);
+  const record = createWikiRunRecord(workspace);
+  await running(record, workspace);
+  const first = createWikiDelegateContract(1, {
+    id: "write-auth", role: "write", instruction: "write", sourceScopeIds: ["source"],
+    contextRefs: [], writePaths: ["wiki/overview.md"],
+  });
+  const second = createWikiDelegateContract(2, {
+    id: "write-auth", role: "write", instruction: "write", sourceScopeIds: ["source"],
+    contextRefs: [], writePaths: ["wiki/overview.md"],
+  });
+  await record.commitLead("run-1", emptyLead({
+    delegates: { batches: [
+      { batchId: 1, tasks: [terminalTask(first)] },
+      { batchId: 2, tasks: [runningTask(second)] },
+    ] },
+  }), authority);
+  await record.noteLive("run-1", {
+    kind: "telemetry",
+    target: { kind: "task", batch: 1, taskId: "write-auth" },
+    telemetry: {
+      target: { kind: "task", batch: 1, taskId: "write-auth" },
+      attempt: 1,
+      sampledAt: "2026-01-01T02:00:00.000Z",
+      activity: "settled",
+      process: [{
+        sequence: 1, at: "2026-01-01T02:00:00.000Z", kind: "tool", severity: "info",
+        message: "", toolName: "read", summary: "batch-1.md", completed: true,
+        target: { kind: "task", batch: 1, taskId: "write-auth" },
+      }],
+    },
+  }, authority);
+  await record.noteLive("run-1", {
+    kind: "telemetry",
+    target: { kind: "task", batch: 2, taskId: "write-auth" },
+    telemetry: {
+      target: { kind: "task", batch: 2, taskId: "write-auth" },
+      attempt: 1,
+      sampledAt: "2026-01-01T03:00:00.000Z",
+      activity: "using_tool",
+      process: [{
+        sequence: 1, at: "2026-01-01T03:00:00.000Z", kind: "tool", severity: "info",
+        message: "", toolName: "read", summary: "batch-2.md", completed: true,
+        target: { kind: "task", batch: 2, taskId: "write-auth" },
+      }],
+    },
+  }, authority);
+  assert.equal((await record.readTail("run-1", { kind: "task", batch: 1, taskId: "write-auth" })).process[0].summary, "batch-1.md");
+  assert.equal((await record.readTail("run-1", { kind: "task", batch: 2, taskId: "write-auth" })).process[0].summary, "batch-2.md");
+});
+
+test("legacy task tails without a batch directory remain readable", async (t) => {
+  const workspace = await root(t);
+  const record = createWikiRunRecord(workspace);
+  await running(record, workspace);
+  const legacy = path.join(workspace, "runs", "run-1", "agents", "tasks", "write-1.json");
+  await mkdir(path.dirname(legacy), { recursive: true });
+  await writeFile(legacy, `${JSON.stringify({
+    agent: {
+      target: { kind: "task", batch: 1, taskId: "write-1" },
+      role: "write", status: "running", attempt: 1, activity: "waiting_model",
+      activeTools: [], health: "healthy", updatedAt: "2026-01-01T02:00:00.000Z",
+    },
+    process: [{
+      sequence: 1, at: "2026-01-01T02:00:00.000Z", kind: "tool", severity: "info",
+      message: "", toolName: "read", summary: "legacy.md", completed: true,
+    }],
+  })}\n`);
+  assert.equal((await record.readTail("run-1", { kind: "task", batch: 1, taskId: "write-1" })).process[0].summary, "legacy.md");
+});
