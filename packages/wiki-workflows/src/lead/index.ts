@@ -1,7 +1,6 @@
 export {
   parseWikiSpec,
   sameWikiCluster,
-  wikiPlanParameters,
   wikiSpecClusterId,
   wikiSpecClusterParent,
   wikiSpecClusterPaths,
@@ -10,7 +9,6 @@ export {
   wikiSpecDomainIds,
   wikiSpecDomainId,
   wikiSpecDomainKey,
-  wikiSpecPagePaths,
   wikiSpecPageType,
   wikiSpecPages,
   wikiSpecRelativePath,
@@ -26,7 +24,6 @@ export {
   researchTaxonomyDecisions,
   mergeTaxonomyDecisions,
   wikiLeadMayWrite,
-  wikiNextAction,
   type WikiBoardCluster,
   type WikiBoardClusterStatus,
   type WikiBoardModel,
@@ -45,13 +42,11 @@ export {
   clusterSourceScopeIds,
   contextRefsForSources,
   selectReadyClusters,
-  wikiDispatchWave,
   type WikiDispatchInput,
   type WikiDispatchTaskInput,
-  type WikiLogicalWave,
 } from "./dispatch.js";
 export { isReservedWikiPagePath, isSafeWikiPagePath, isWikiTaxonomySlug } from "./path.js";
-export { derivedIndexPaths } from "./validate.js";
+export { derivedIndexPaths } from "./indexes.js";
 export {
   WikiCandidateCorruptionError,
   WikiLeadExecutionFencedError,

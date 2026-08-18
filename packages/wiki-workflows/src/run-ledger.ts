@@ -11,8 +11,8 @@ import type { WikiProductionPlan } from "./runtime-types.js";
 export const WIKI_FORMAT = 1 as const;
 
 export class UnsupportedWikiRunVersionError extends Error {
-  constructor(readonly location: string, readonly found: unknown) {
-    super(`Unsupported Wiki format at ${location}: expected ${WIKI_FORMAT}, found ${String(found)}. Preserve needed evidence, then delete stale .okf-wiki Run state. The Published Wiki is independent.`);
+  constructor(readonly location: string, readonly found: unknown, readonly expected: number) {
+    super(`Unsupported Wiki format at ${location}: expected ${expected}, found ${String(found)}. Preserve needed evidence, then delete stale .okf-wiki Run state. The Published Wiki is independent.`);
     this.name = "UnsupportedWikiRunVersionError";
   }
 }

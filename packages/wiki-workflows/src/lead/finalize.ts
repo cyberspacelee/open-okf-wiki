@@ -2,24 +2,25 @@ import { lstat, readdir, rmdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parsePage, stringifyPage } from "../frontmatter.js";
 import { readText } from "../files.js";
-import type { WikiFinalization } from "../types.js";
+import { formatIssue, type WikiFinalization } from "../types.js";
 import type { WikiSpec } from "./spec.js";
-import { materializeWikiIndexes } from "./indexes.js";
+import {
+  materializeWikiIndexes,
+  removeRegularWikiFile,
+  resolveWikiRoots,
+  safeWikiPath,
+  scanWikiTree,
+  specPagePaths,
+  type ResolvedWikiRoots,
+} from "./indexes.js";
 import { isReservedWikiPagePath } from "./path.js";
 import {
   GENERATED_BY,
   VERIFIED_BY,
-  formatIssue,
   isIsoTimestamp,
   isPublisherActor,
-  removeRegularWikiFile,
-  resolveWikiRoots,
   sameStrings,
-  safeWikiPath,
-  scanWikiTree,
-  specPagePaths,
   validateWikiCandidate,
-  type ResolvedWikiRoots,
 } from "./validate.js";
 
 export type WikiFinalizeFaultPoint =

@@ -16,7 +16,6 @@ import type {
   WikiRunStatus,
   WikiRunView,
   WikiRunWarning,
-  WikiTaskSnapshot,
 } from "./producer-types.js";
 import type {
   WikiAgentRecord,
@@ -24,16 +23,9 @@ import type {
   WikiTaskRuntimeState,
   WikiTaskRuntimeTaskState,
 } from "./runtime-types.js";
-import { parseProductionPlan, type WikiExecutionAuthority, type WikiProductionTransition } from "./run-ledger.js";
+import { parseProductionPlan, UnsupportedWikiRunVersionError, type WikiExecutionAuthority, type WikiProductionTransition } from "./run-ledger.js";
 
 export const WIKI_RUN_FORMAT = 2 as const;
-
-export class UnsupportedWikiRunVersionError extends Error {
-  constructor(readonly location: string, readonly found: unknown) {
-    super(`Unsupported Wiki format at ${location}: expected ${WIKI_RUN_FORMAT}, found ${String(found)}. Preserve needed evidence, then delete stale .okf-wiki Run state. The Published Wiki is independent.`);
-    this.name = "UnsupportedWikiRunVersionError";
-  }
-}
 
 export interface WikiLeadFacts {
   candidateRevision: number;
@@ -136,7 +128,7 @@ export function createWikiRunRecord(rootDirectory: string, options: WikiRunRecor
     const runPaths = paths(runId);
     if (await exists(runPaths.staleLead) || await exists(runPaths.staleState)
       || await exists(runPaths.staleEvents) || await exists(runPaths.staleJournal)) {
-      throw new UnsupportedWikiRunVersionError(`runs/${runId}`, "legacy process files");
+      throw new UnsupportedWikiRunVersionError(`runs/${runId}`, "legacy process files", WIKI_RUN_FORMAT);
     }
   };
 
@@ -515,25 +507,29 @@ function projectTask(
   task: WikiTaskRuntimeTaskState,
   batch: number,
   tails: readonly WikiAgentRecord[],
-): WikiTaskSnapshot {
+): WikiAgentSnapshot {
   const record = tails.find((entry) => entry.agent.target.kind === "task"
     && entry.agent.target.batch === batch && entry.agent.target.taskId === task.task.id);
   const tail = record?.agent;
   const status = task.phase === "queued" ? "queued"
     : task.phase === "running" || task.phase === "paused" ? "running"
       : task.receipt!.status;
+  const activity = tail?.activity
+    ?? (status === "queued" ? "starting" : status === "running" ? "waiting_model" : "settled");
   return {
-    id: task.task.id,
+    target: { kind: "task", batch, taskId: task.task.id },
     role: task.task.role,
     status,
     attempt: task.attempt,
+    activity,
+    activeTools: tail?.activeTools ?? [],
+    health: tail?.health ?? "healthy",
     ...(task.receipt?.summary ? { summary: task.receipt.summary } : {}),
-    ...(task.receipt ? { attempts: task.receipt.attempts } : {}),
-    ...(tail?.activity && ["responding", "tool", "idle", "compacting"].includes(tail.activity)
-      ? { activity: tail.activity as WikiTaskSnapshot["activity"] }
-      : {}),
-    ...(tail?.activeTools[0] ? { activeTool: tail.activeTools[0] } : {}),
-    ...(tail?.health ? { health: tail.health } : {}),
+    ...(tail?.startedAt ? { startedAt: tail.startedAt } : {}),
+    ...(tail?.updatedAt ? { updatedAt: tail.updatedAt } : {}),
+    ...(tail?.lastActivityAt ? { lastActivityAt: tail.lastActivityAt } : {}),
+    ...(tail?.lastHeartbeatAt ? { lastHeartbeatAt: tail.lastHeartbeatAt } : {}),
+    ...(tail?.deadlineAt ? { deadlineAt: tail.deadlineAt } : {}),
     ...(tail?.usage ? { usage: tail.usage } : {}),
     ...(record?.process.length ? { process: record.process } : {}),
   };
@@ -543,7 +539,7 @@ function parseFacts(value: unknown, expectedId: string): WikiRunFacts {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid Wiki run state: ${expectedId}`);
   const raw = value as Record<string, unknown>;
   if (raw.version !== WIKI_RUN_FORMAT) {
-    throw new UnsupportedWikiRunVersionError(`runs/${expectedId}/run.json`, raw.version);
+    throw new UnsupportedWikiRunVersionError(`runs/${expectedId}/run.json`, raw.version, WIKI_RUN_FORMAT);
   }
   if (raw.id !== expectedId || typeof raw.cwd !== "string"
     || !["running", "paused", "succeeded", "failed", "cancelled"].includes(String(raw.status))
@@ -718,7 +714,7 @@ async function activeRunId(file: string): Promise<string | undefined> {
   try {
     const value = JSON.parse(await readFile(file, "utf8")) as { version?: unknown; runId?: unknown };
     if (value.version !== WIKI_RUN_FORMAT || typeof value.runId !== "string") {
-      throw new UnsupportedWikiRunVersionError(file, value.version);
+      throw new UnsupportedWikiRunVersionError(file, value.version, WIKI_RUN_FORMAT);
     }
     assertSafeId(value.runId, "Wiki run ID");
     return value.runId;

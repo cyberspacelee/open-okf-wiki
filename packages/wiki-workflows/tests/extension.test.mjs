@@ -351,7 +351,10 @@ test("hasUI refreshes footer and widget after a run", async (t) => {
     progress: {
       stage: "lead",
       lead: { target: { kind: "lead" }, role: "lead", status: "running", attempt: 1, activity: "delegating", activeTools: [] },
-      currentBatch: { batch: 1, status: "running", completed: 1, total: 3, tasks: [{ id: "pages/auth.md", role: "write", status: "running" }] },
+      currentBatch: { batch: 1, status: "running", completed: 1, total: 3, tasks: [{
+        target: { kind: "task", batch: 1, taskId: "pages/auth.md" },
+        role: "write", status: "running", attempt: 1, activity: "waiting_model", activeTools: [], health: "healthy",
+      }] },
     },
   });
   await subject.run("status run-1");
@@ -390,7 +393,10 @@ test("live widget truncates ANSI lines to the current terminal width after resiz
     progress: {
       stage: "lead",
       lead: { target: { kind: "lead" }, role: "lead", status: "running", attempt: 1, activity: "delegating", activeTools: [] },
-      currentBatch: { batch: 1, status: "running", completed: 0, total: 1, tasks: [{ id: identity, role: "write", status: "running" }] },
+      currentBatch: { batch: 1, status: "running", completed: 0, total: 1, tasks: [{
+        target: { kind: "task", batch: 1, taskId: identity },
+        role: "write", status: "running", attempt: 1, activity: "waiting_model", activeTools: [], health: "healthy",
+      }] },
     },
   });
   await subject.run("status run-1");

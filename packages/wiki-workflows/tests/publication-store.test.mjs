@@ -416,7 +416,7 @@ test("reconcile projects a published terminal fact after install crashes before 
   assert.deepEqual(await recoveryStore.reconcile("terminal-gap"), {
     state: "published",
     runId: "terminal-gap",
-    pages: ["overview.md", "source/core/domain.md", "source/source.md"],
+    pages: ["overview.md", "source/source.md", "source/core/domain.md"],
     sourceFingerprint: "source-sha256",
     finalTreeDigest,
   });

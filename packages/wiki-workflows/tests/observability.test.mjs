@@ -9,8 +9,22 @@ import {
   projectWikiRunObservability,
   runStatusSemantics,
   wikiContextPressureTone,
-  wikiTaskClusterLabel,
 } from "../dist/ui/observability.js";
+
+function batchTask(id, role, status, extra = {}) {
+  const { activeTool, attempts, batch = 2, activity, activeTools, health, attempt, ...rest } = extra;
+  const terminal = ["complete", "incomplete", "failed", "cancelled"].includes(status);
+  return {
+    target: { kind: "task", batch, taskId: id },
+    role,
+    status,
+    attempt: attempt ?? attempts ?? 1,
+    activity: activity ?? (status === "queued" ? "starting" : status === "running" && activeTool ? "using_tool" : terminal ? "settled" : "waiting_model"),
+    activeTools: activeTools ?? (activeTool ? [activeTool] : []),
+    health: health ?? "healthy",
+    ...rest,
+  };
+}
 
 const now = Date.parse("2026-08-15T00:02:00.000Z");
 
@@ -48,7 +62,7 @@ test("strict run events have one semantic projection without a compatibility dat
   const base = { version: 1, runId: "run-1", at: "2026-08-15T00:00:00.000Z" };
   assert.deepEqual(projectWikiRunEvent({
     ...base, type: "stage", stage: "validate", message: "Validating candidate",
-  }), { text: "[validate] Validating candidate", tone: "accent", visible: true });
+  }), { text: "[validate] Validating candidate", tone: "accent", visible: false });
   assert.deepEqual(projectWikiRunEvent({
     ...base, type: "delegate", phase: "settled", batch: 2, completed: 3, total: 4,
     taskId: "review-auth", message: "Reviewing",
@@ -63,8 +77,8 @@ test("run projection includes batch, task lines, tool outcomes, context pressure
     progress: {
       stage: "lead", language: "zh", lead: lead(),
       currentBatch: { batch: 2, status: "running", completed: 1, total: 3, tasks: [
-        { id: "a", role: "write", status: "running", activeTool: { name: "read", startedAt: "2026-08-15T00:01:50.000Z", summary: "src/a.ts" } },
-        { id: "b", role: "review", status: "queued" },
+        batchTask("a", "write", "running", { activeTool: { name: "read", startedAt: "2026-08-15T00:01:50.000Z", summary: "src/a.ts" } }),
+        batchTask("b", "review", "queued"),
       ] },
     },
   }), now);
@@ -116,22 +130,6 @@ test("run projection maps recent tool outcomes without inventing start verbs", (
   ]);
 });
 
-test("cluster labels come from a path-like or domain/concept task id only", () => {
-  assert.equal(wikiTaskClusterLabel({ id: "core/runtime" }), "core/runtime");
-  assert.equal(wikiTaskClusterLabel({ id: "wiki/billing/invoice/models/line-item.md" }), undefined);
-  assert.equal(wikiTaskClusterLabel({ id: "wiki/overview.md" }), "_root");
-  assert.equal(wikiTaskClusterLabel({ id: "overview.md" }), "_root");
-  assert.equal(wikiTaskClusterLabel({ id: "write-auth" }), undefined);
-  assert.equal(wikiTaskClusterLabel({
-    id: "write-runtime",
-    writePaths: ["wiki/core/runtime/concept.md", "wiki/core/runtime/flows.md"],
-  }), undefined);
-  assert.equal(wikiTaskClusterLabel({
-    id: "review-core",
-    reviewPaths: ["wiki/core/domain.md"],
-  }), undefined);
-});
-
 test("process tab projection includes incomplete tool entries", () => {
   const inspection = {
     runId: "run-1",
@@ -173,7 +171,6 @@ test("degraded, silent-live, and terminal states are distinct", () => {
   assert.equal(degraded.liveness, "degraded");
   assert.equal(degraded.healthNotice, "observability degraded");
   assert.equal(degraded.leadMarker, "!");
-  assert.equal(degraded.leadTone, "warning");
   const silent = projectWikiRunObservability(run({ progress: { stage: "lead", lead: lead({ lastActivityAt: "2026-08-14T23:58:00.000Z" }) } }), now);
   assert.equal(silent.liveness, "alive_without_activity");
   assert.equal(silent.activityAge, "4m");

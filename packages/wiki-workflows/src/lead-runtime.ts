@@ -35,7 +35,7 @@ import { inspectEvidenceHandoff, type EvidenceLedgerCitation } from "./evidence-
 import { inside } from "./files.js";
 import { WikiRejectedError } from "./wiki-reject.js";
 import { decodeUtf8Fatal, inspectResearchHandoff, inspectReviewHandoff, summarizeWikiMarkdown } from "./wiki-work-files.js";
-import type { WikiAgentTelemetry, WikiContextStats, WikiTaskSnapshot } from "./producer-types.js";
+import type { WikiAgentSnapshot, WikiAgentTelemetry, WikiContextStats } from "./producer-types.js";
 import type { WikiLeadObservation, WikiLeadRuntime, WikiPinnedSourcePlan } from "./runtime-types.js";
 import type { WikiExecutionBudgets } from "./producer-types.js";
 import { PiSessionObserver, readSessionUsage, type PiSessionObserverOptions } from "./pi-session-observer.js";
@@ -51,7 +51,6 @@ import {
   mergeTaxonomyDecisions,
   parseWikiSpec,
   wikiLeadMayWrite,
-  wikiSpecPagePaths,
   WikiLeadRun,
   type WikiBoardTaxonomyDecision,
   type WikiDelegateCancelReasonCode,
@@ -89,7 +88,7 @@ export interface PiWikiLeadAgentOptions {
   sourcePlan?: WikiPinnedSourcePlan;
 }
 
-export interface CreatePiLeadRuntimeOptions extends PiWikiLeadAgentOptions {
+export interface CreatePiLeadRuntimeOptions extends Omit<PiWikiLeadAgentOptions, "sessionDir" | "sessionFile" | "skillPath"> {
   leadBudgets?: Pick<WikiExecutionBudgets, "maxTurnsPerSession" | "maxToolCallsPerSession">;
   concurrency?: number;
   transientRetries?: number;
@@ -174,8 +173,8 @@ async function runLeadSession(
       const sourceScopes = request.sourcePlan.sources.map((source) => source.scopeId);
       const budgets = request.budgets ?? options.budgets;
       const roleModels = options.models;
-      const runSessionDirectory = request.runSessionDirectory ?? options.runSessionDirectory ?? options.sessionDir;
-      const batchTasks = new Map<number, Map<string, WikiTaskSnapshot>>();
+      const runSessionDirectory = request.runSessionDirectory ?? options.runSessionDirectory;
+      const batchTasks = new Map<number, Map<string, WikiAgentSnapshot>>();
       let leadSession: AgentSession | undefined;
       const snapshotNow = () => new Date((options.now ?? Date.now)()).toISOString();
       const onTask = async (event: WikiTaskProgressEvent): Promise<void> => {
@@ -185,17 +184,25 @@ async function runLeadSession(
           batchTasks.set(event.batchId, projection);
         }
         const taskId = event.task.id;
+        const target = { kind: "task" as const, batch: event.batchId, taskId };
         if (event.phase === "queued") {
-          projection.set(taskId, { id: taskId, role: event.task.role, status: "queued" });
+          projection.set(taskId, {
+            target, role: event.task.role, status: "queued", attempt: 1,
+            activity: "starting", activeTools: [], health: "healthy",
+          });
           const tasks = [...projection.values()];
           await observe({ kind: "batch", phase: "queued", batch: event.batchId, tasks });
           return;
         }
-        const current = projection.get(taskId) ?? { id: taskId, role: event.task.role, status: "queued" as const };
+        const current = projection.get(taskId) ?? {
+          target, role: event.task.role, status: "queued" as const, attempt: 1,
+          activity: "starting" as const, activeTools: [], health: "healthy" as const,
+        };
         if (event.phase === "start") {
           current.status = "running";
           current.startedAt = snapshotNow();
           current.updatedAt = current.startedAt;
+          if (current.activity === "starting") current.activity = "waiting_model";
           applyTelemetry(current, event.telemetry);
           projection.set(taskId, current);
           await observe({ kind: "batch", phase: "started", batch: event.batchId, tasks: [...projection.values()], taskId });
@@ -209,8 +216,9 @@ async function runLeadSession(
         }
         current.status = event.receipt?.status ?? "failed";
         current.summary = event.receipt?.summary;
-        current.attempts = event.receipt?.attempts;
+        if (event.receipt?.attempts !== undefined) current.attempt = event.receipt.attempts;
         current.updatedAt = snapshotNow();
+        current.activity = "settled";
         if (event.usage) current.usage = event.usage;
         applyTelemetry(current, event.telemetry);
         projection.set(taskId, current);
@@ -322,7 +330,7 @@ async function runLeadSession(
           specRecord = await leadRun.saveSpec(spec, specRecord?.revision ?? 0);
           return withBoard(leadRun.compactionObserved, {
             revision: specRecord.revision,
-            pages: wikiSpecPagePaths(spec),
+            pages: spec.pages,
             directWriteAllowed: wikiLeadMayWrite(spec, leadRun.compactionObserved),
           });
         }),
@@ -377,7 +385,7 @@ async function runLeadSession(
           try {
             const leadSessionDir = runSessionDirectory ? path.join(runSessionDirectory, "lead") : undefined;
             const resumeFile = retryIndex === 0
-              ? request.leadSessionFile ?? options.leadSessionFile ?? options.sessionFile
+              ? request.leadSessionFile ?? options.leadSessionFile
               : undefined;
             await runPiSession(policy.workspaceRoot, leadTools, leadSessionPrompt(request.prompt, request.sourcePlan.sources.length), controller.signal, {
               ...sessionOptions,
@@ -487,7 +495,7 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
     const taskFileSlots = createTaskFileSlots(policy.workspaceRoot, context, task, role);
     const spec = this.currentSpec?.();
     const reviewIndexes = task.role === "review" && spec
-      ? derivedIndexPaths(wikiSpecPagePaths(spec)).map(addWikiPrefix)
+      ? derivedIndexPaths(spec.pages).map(addWikiPrefix)
       : [];
     await writeWikiWorkflowFile(
       policy.workspaceRoot,
@@ -496,34 +504,56 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
     );
     const tools = withExecutionModes([
       ...workflowTools(policy, role, task.writePaths, declaredSources, task.reviewPaths, this.pageWriter, reviewIndexes, taskFileSlots.slots),
-      ...(role === "reviewer" ? [reviewFinishTool(async (verdict) => {
-        if (review) throw new Error("wiki_review_finish may be accepted only once");
-        const bytes = await readWikiWorkflowFile(policy.workspaceRoot, taskFileSlots.output);
-        const markdown = Buffer.from(bytes).toString("utf8");
-        const parsed = inspectReviewHandoff(bytes, verdict, task.reviewPaths ?? []);
-        const evidence = parsed.structural ? { defects: [] as string[] } : inspectEvidenceHandoff({ markdown, contract: task, fileLines });
-        rejectHandoffDefects([...parsed.defects, ...evidence.defects]);
-        markdownSnapshot = markdown;
-        review = parsed.result!;
+      ...(role === "reviewer" ? [leafFinishTool({
+        name: "wiki_review_finish",
+        label: "Finish Wiki review",
+        description: "Finish after writing the complete review to .okf-wiki/task/review.md.",
+        promptSnippet: "Finish the file-based Wiki review",
+        field: "verdict",
+        allowed: ["pass", "changes_requested"],
+        finish: async (verdict) => {
+          if (review) throw new Error("wiki_review_finish may be accepted only once");
+          const bytes = await readWikiWorkflowFile(policy.workspaceRoot, taskFileSlots.output);
+          const markdown = Buffer.from(bytes).toString("utf8");
+          const parsed = inspectReviewHandoff(bytes, verdict as "pass" | "changes_requested", task.reviewPaths ?? []);
+          const evidence = parsed.structural ? { defects: [] as string[] } : inspectEvidenceHandoff({ markdown, contract: task, fileLines });
+          rejectHandoffDefects([...parsed.defects, ...evidence.defects]);
+          markdownSnapshot = markdown;
+          review = parsed.result!;
+        },
       })] : []),
-      ...(role === "researcher" ? [researchFinishTool(async (status) => {
-        if (researchSignal) throw new Error("wiki_research_finish may be accepted only once");
-        if (task.role !== "research") throw new Error("Research completion requires a research contract");
-        const bytes = await readWikiWorkflowFile(policy.workspaceRoot, taskFileSlots.output);
-        const markdown = Buffer.from(bytes).toString("utf8");
-        const parsed = inspectResearchHandoff(bytes, status, task.sourceScopeIds);
-        const evidence = parsed.structural ? { defects: [] as string[] } : inspectEvidenceHandoff({ markdown, contract: task, fileLines });
-        rejectHandoffDefects([...parsed.defects, ...evidence.defects]);
-        markdownSnapshot = markdown;
-        researchSignal = parsed.signal!;
+      ...(role === "researcher" ? [leafFinishTool({
+        name: "wiki_research_finish",
+        label: "Finish Wiki research",
+        description: "Finish after writing the complete research handoff to .okf-wiki/task/handoff.md.",
+        promptSnippet: "Finish the file-based research task",
+        field: "status",
+        allowed: ["complete", "incomplete"],
+        finish: async (status) => {
+          if (researchSignal) throw new Error("wiki_research_finish may be accepted only once");
+          if (task.role !== "research") throw new Error("Research completion requires a research contract");
+          const bytes = await readWikiWorkflowFile(policy.workspaceRoot, taskFileSlots.output);
+          const markdown = Buffer.from(bytes).toString("utf8");
+          const parsed = inspectResearchHandoff(bytes, status as "complete" | "incomplete", task.sourceScopeIds);
+          const evidence = parsed.structural ? { defects: [] as string[] } : inspectEvidenceHandoff({ markdown, contract: task, fileLines });
+          rejectHandoffDefects([...parsed.defects, ...evidence.defects]);
+          markdownSnapshot = markdown;
+          researchSignal = parsed.signal!;
+        },
       })] : []),
-      ...(role === "writer" ? [writeFinishTool(async () => {
-        if (writeFinished) throw new Error("wiki_write_finish may be accepted only once");
-        const bytes = await readWikiWorkflowFile(policy.workspaceRoot, taskFileSlots.output);
-        const markdown = Buffer.from(bytes).toString("utf8");
-        rejectHandoffDefects(inspectEvidenceHandoff({ markdown, contract: task, fileLines }).defects);
-        markdownSnapshot = markdown;
-        writeFinished = true;
+      ...(role === "writer" ? [leafFinishTool({
+        name: "wiki_write_finish",
+        label: "Finish Wiki write",
+        description: "Finish after writing the complete write handoff to .okf-wiki/task/handoff.md.",
+        promptSnippet: "Finish the file-based write task",
+        finish: async () => {
+          if (writeFinished) throw new Error("wiki_write_finish may be accepted only once");
+          const bytes = await readWikiWorkflowFile(policy.workspaceRoot, taskFileSlots.output);
+          const markdown = Buffer.from(bytes).toString("utf8");
+          rejectHandoffDefects(inspectEvidenceHandoff({ markdown, contract: task, fileLines }).defects);
+          markdownSnapshot = markdown;
+          writeFinished = true;
+        },
       })] : []),
     ]);
     const taskSessionDir = this.options.sessionDir
@@ -588,66 +618,42 @@ function withExecutionModes(tools: ToolDefinition<any, any, any>[]): ToolDefinit
   } as ToolDefinition<any, any, any>));
 }
 
-function researchFinishTool(finish: (status: "complete" | "incomplete") => void | Promise<void>): ToolDefinition<any, any, any> {
+function leafFinishTool(input: {
+  name: string;
+  label: string;
+  description: string;
+  promptSnippet: string;
+  field?: string;
+  allowed?: readonly string[];
+  finish: (value?: string) => void | Promise<void>;
+}): ToolDefinition<any, any, any> {
+  const { name, label, description, promptSnippet, field, allowed, finish } = input;
   return {
-    name: "wiki_research_finish",
-    label: "Finish Wiki research",
-    description: "Finish after writing the complete research handoff to .okf-wiki/task/handoff.md.",
-    promptSnippet: "Finish the file-based research task",
-    parameters: Type.Object({
-      status: StringEnum(["complete", "incomplete"]),
-    }, { additionalProperties: false }),
+    name,
+    label,
+    description,
+    promptSnippet,
+    parameters: field && allowed
+      ? Type.Object({ [field]: StringEnum([...allowed]) }, { additionalProperties: false })
+      : Type.Object({}, { additionalProperties: false }),
     constrainedSampling: JSON_SCHEMA_PREFER,
     async execute(_id, params) {
-      const input = exactLeafFinishInput(params, "status", ["complete", "incomplete"], "wiki_research_finish");
-      try {
-        await finish(input as "complete" | "incomplete");
-      } catch (error) {
-        rejectWikiTool("wiki_research_finish", error);
-      }
-      return toolResult({ accepted: true });
-    },
-  } as ToolDefinition<any, any, any>;
-}
-
-function writeFinishTool(finish: () => void | Promise<void>): ToolDefinition<any, any, any> {
-  return {
-    name: "wiki_write_finish",
-    label: "Finish Wiki write",
-    description: "Finish after writing the complete write handoff to .okf-wiki/task/handoff.md.",
-    promptSnippet: "Finish the file-based write task",
-    parameters: Type.Object({}, { additionalProperties: false }),
-    constrainedSampling: JSON_SCHEMA_PREFER,
-    async execute(_id, params) {
-      if (!params || typeof params !== "object" || Array.isArray(params)) throw new Error("wiki_write_finish requires an object");
-      const unknown = Object.keys(params as Record<string, unknown>);
-      if (unknown.length) throw new Error(`wiki_write_finish has unknown fields: ${unknown.join(", ")}`);
-      try {
-        await finish();
-      } catch (error) {
-        rejectWikiTool("wiki_write_finish", error);
-      }
-      return toolResult({ accepted: true });
-    },
-  } as ToolDefinition<any, any, any>;
-}
-
-function reviewFinishTool(finish: (verdict: "pass" | "changes_requested") => void | Promise<void>): ToolDefinition<any, any, any> {
-  return {
-    name: "wiki_review_finish",
-    label: "Finish Wiki review",
-    description: "Finish after writing the complete review to .okf-wiki/task/review.md.",
-    promptSnippet: "Finish the file-based Wiki review",
-    parameters: Type.Object({
-      verdict: StringEnum(["pass", "changes_requested"]),
-    }, { additionalProperties: false }),
-    constrainedSampling: JSON_SCHEMA_PREFER,
-    async execute(_id, params) {
-      const input = exactLeafFinishInput(params, "verdict", ["pass", "changes_requested"], "wiki_review_finish");
-      try {
-        await finish(input as "pass" | "changes_requested");
-      } catch (error) {
-        rejectWikiTool("wiki_review_finish", error);
+      if (field && allowed) {
+        const value = exactLeafFinishInput(params, field, allowed, name);
+        try {
+          await finish(value);
+        } catch (error) {
+          rejectWikiTool(name, error);
+        }
+      } else {
+        if (!params || typeof params !== "object" || Array.isArray(params)) throw new Error(`${name} requires an object`);
+        const unknown = Object.keys(params as Record<string, unknown>);
+        if (unknown.length) throw new Error(`${name} has unknown fields: ${unknown.join(", ")}`);
+        try {
+          await finish();
+        } catch (error) {
+          rejectWikiTool(name, error);
+        }
       }
       return toolResult({ accepted: true });
     },
@@ -937,23 +943,20 @@ function firstLine(value: string): string {
   return value.split(/\r?\n/, 1)[0].replace(/^#+\s*/, "").trim() || "Delegated task completed";
 }
 
-function applyTelemetry(snapshot: WikiTaskSnapshot, telemetry?: WikiAgentTelemetry): void {
+function applyTelemetry(snapshot: WikiAgentSnapshot, telemetry?: WikiAgentTelemetry): void {
   if (!telemetry) return;
   snapshot.attempt = telemetry.attempt;
   snapshot.updatedAt = telemetry.sampledAt;
-  if (telemetry.activity) snapshot.activity = taskActivity(telemetry.activity);
-  snapshot.activeTool = telemetry.activeTools?.at(-1);
+  if (telemetry.activity) snapshot.activity = telemetry.activity;
+  if (telemetry.activeTools) snapshot.activeTools = telemetry.activeTools;
   if (telemetry.usage) snapshot.usage = telemetry.usage;
+  if (telemetry.lastActivityAt) snapshot.lastActivityAt = telemetry.lastActivityAt;
+  if (telemetry.lastHeartbeatAt) snapshot.lastHeartbeatAt = telemetry.lastHeartbeatAt;
+  if (telemetry.deadlineAt) snapshot.deadlineAt = telemetry.deadlineAt;
+  if (telemetry.process) snapshot.process = telemetry.process;
 }
 
 function addWikiPrefix(value: string): string { return `wiki/${value}`; }
-
-function taskActivity(activity: NonNullable<WikiAgentTelemetry["activity"]>): NonNullable<WikiTaskSnapshot["activity"]> {
-  if (activity === "compacting") return "compacting";
-  if (activity === "using_tool" || activity === "delegating" || activity === "finishing") return "tool";
-  if (activity === "settled") return "idle";
-  return "responding";
-}
 
 type ThinkingClock = {
   pause(): void;

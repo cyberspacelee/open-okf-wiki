@@ -1,3 +1,4 @@
+/// <reference lib="es2024.promise" />
 import type { WikiArtifactRef, WikiArtifactStore } from "./artifact-store.js";
 import {
   boundedDelegateSummary,
@@ -8,9 +9,7 @@ import {
   type WikiDelegateError,
   type WikiDelegateGap,
   type WikiDelegateReceipt,
-  type WikiDelegateRole,
   type WikiDelegateContract,
-  type WikiTaskFailureCode,
   createWikiResearchCompletion,
   type WikiResearchCompletion,
   type WikiResearchSignal,
@@ -689,7 +688,7 @@ type TaskExecutionOutcome = {
 };
 
 function createAsyncTask(input: WikiTaskRuntimeTaskState): AsyncTask {
-  const deferred = promiseWithResolvers<void>();
+  const deferred = Promise.withResolvers<void>();
   const state = structuredClone(input);
   const settled = state.phase === "terminal";
   if (settled) deferred.resolve();
@@ -704,7 +703,7 @@ function createAsyncTask(input: WikiTaskRuntimeTaskState): AsyncTask {
 }
 
 function resetAsyncTask(record: AsyncTask): void {
-  const deferred = promiseWithResolvers<void>();
+  const deferred = Promise.withResolvers<void>();
   record.done = deferred.promise;
   record.resolveDone = deferred.resolve;
   record.settled = false;
@@ -719,12 +718,6 @@ function settleAsyncTask(record: AsyncTask): void {
 function terminalReceipt(state: WikiTaskRuntimeTaskState): WikiDelegateReceipt {
   if (state.phase !== "terminal" || !state.receipt) throw new Error(`Terminal task ${state.task.id} requires a receipt`);
   return state.receipt;
-}
-
-function promiseWithResolvers<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((value) => { resolve = value; });
-  return { promise, resolve };
 }
 
 function validateRestoredState(state: WikiTaskRuntimeState): void {

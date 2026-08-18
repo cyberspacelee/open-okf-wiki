@@ -140,11 +140,11 @@ test("renders a progress card with stage, batch, and task icons", () => {
       stage: "lead",
       lastMessage: "Wrote auth/domain.md",
       currentBatch: { batch: 2, status: "running", completed: 3, total: 5, tasks: [
-        { role: "research", id: "t1", status: "complete", attempts: 1 },
-        { role: "write", id: "t2", status: "running", attempts: 2 },
-        { role: "review", id: "t3", status: "queued" },
-        { role: "write", id: "t4", status: "failed", attempts: 1 },
-        { role: "review", id: "t5", status: "incomplete" },
+        { target: { kind: "task", batch: 2, taskId: "t1" }, role: "research", status: "complete", attempt: 1, activity: "settled", activeTools: [], health: "healthy" },
+        { target: { kind: "task", batch: 2, taskId: "t2" }, role: "write", status: "running", attempt: 2, activity: "waiting_model", activeTools: [], health: "healthy" },
+        { target: { kind: "task", batch: 2, taskId: "t3" }, role: "review", status: "queued", attempt: 1, activity: "starting", activeTools: [], health: "healthy" },
+        { target: { kind: "task", batch: 2, taskId: "t4" }, role: "write", status: "failed", attempt: 1, activity: "settled", activeTools: [], health: "healthy" },
+        { target: { kind: "task", batch: 2, taskId: "t5" }, role: "review", status: "incomplete", attempt: 1, activity: "settled", activeTools: [], health: "healthy" },
       ] },
     },
   });
@@ -155,9 +155,9 @@ test("renders a progress card with stage, batch, and task icons", () => {
     "",
     "  ✓ research  t1  [attempt 1]",
     "  ◆ write  t2  [attempt 2]",
-    "  · review  t3",
+    "  · review  t3  [attempt 1]",
     "  ✗ write  t4  [attempt 1]",
-    "  ◐ review  t5",
+    "  ◐ review  t5  [attempt 1]",
     "last  Wrote auth/domain.md",
   ].join("\n"));
 });

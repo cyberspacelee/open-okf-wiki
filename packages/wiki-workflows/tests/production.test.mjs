@@ -205,7 +205,7 @@ test("successful publication keeps provenance and run history while removing tra
   } }) });
   const run = await producer.start({ cwd: root });
   const result = await run.result();
-  assert.deepEqual(result.pages, ["overview.md", "source/runtime/domain.md", "source/source.md"]);
+  assert.deepEqual(result.pages, ["overview.md", "source/source.md", "source/runtime/domain.md"]);
   const runRoot = path.join(root, ".okf-wiki", "runs", run.id);
   const state = JSON.parse(await readFile(path.join(runRoot, "run.json"), "utf8"));
   assert.equal(state.status, "succeeded");

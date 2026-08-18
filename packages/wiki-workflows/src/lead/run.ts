@@ -19,9 +19,11 @@ import {
 import type { WikiLeadFacts } from "../run-record.js";
 import type { WikiPinnedSourcePlan, WikiTaskRuntimeState } from "../runtime-types.js";
 import type { WikiDelegateBatchSnapshot } from "../delegate-contracts.js";
+import { formatIssue } from "../types.js";
 import { finalizeWiki, materializeValidatedWikiIndexes, type WikiFinalizeFaultPoint } from "./finalize.js";
-import { parseWikiSpec, wikiSpecClusterPaths, wikiSpecDomainId, wikiSpecDomainIds, wikiSpecPagePaths, wikiSpecRelativePath, wikiSpecSourceId, wikiSpecSourceIds, type WikiSpec } from "./spec.js";
-import { canonicalizeWikiPageContent, formatIssue, resolvePinnedWikiRoots, validateWikiPageContent, type ResolvedWikiRoots } from "./validate.js";
+import { parseWikiSpec, wikiSpecClusterPaths, wikiSpecDomainId, wikiSpecDomainIds, wikiSpecRelativePath, wikiSpecSourceId, wikiSpecSourceIds, type WikiSpec } from "./spec.js";
+import { resolvePinnedWikiRoots, type ResolvedWikiRoots } from "./indexes.js";
+import { canonicalizeWikiPageContent, validateWikiPageContent } from "./validate.js";
 import { parseWikiReviewResult, type WikiReviewResult } from "../delegate-contracts.js";
 import {
   digestWikiTree,
@@ -293,7 +295,7 @@ export class WikiLeadRun {
       await this.recover();
       const spec = this.requireSpec();
       const relative = stripWikiPrefix(input.path);
-      if (!wikiSpecPagePaths(spec).includes(relative)) throw new Error(`Wiki page is not declared by the current WikiSpec: ${input.path}`);
+      if (!spec.pages.includes(relative)) throw new Error(`Wiki page is not declared by the current WikiSpec: ${input.path}`);
       if (input.actor === "lead" && !wikiLeadMayWrite(spec, this.state.compactionObserved)) {
         throw new Error("Lead direct writing is disabled for this WikiSpec or after context compaction; delegate an exact-path writer");
       }
@@ -477,7 +479,7 @@ export class WikiLeadRun {
   async finish(requiredPaths?: readonly string[], requiredProfileCoverage: readonly string[] = []): Promise<void> {
     await this.serial(async () => {
       await this.recover();
-      const paths = requiredPaths ?? wikiSpecPagePaths(this.requireSpec()).map((page) => `wiki/${page}`);
+      const paths = requiredPaths ?? this.requireSpec().pages.map((page) => `wiki/${page}`);
       await this.assertPublishableAtTree(paths, requiredProfileCoverage, await digestWikiTree(this.candidateWikiRoot));
     });
   }
@@ -506,7 +508,7 @@ export class WikiLeadRun {
         runId: this.runId,
         executionToken: this.executionToken,
         candidateRoot: this.candidateWikiRoot,
-        pages: wikiSpecPagePaths(this.requireSpec()),
+        pages: this.requireSpec().pages,
         spec: this.requireSpec(),
         sourceFingerprint: input.sourceFingerprint,
         summary: input.summary,
@@ -539,7 +541,7 @@ export class WikiLeadRun {
   }
 
   private reviewBasis(paths: readonly string[], treeDigest: string): WikiReviewBasis {
-    const declared = new Set(wikiSpecPagePaths(this.requireSpec()).map((value) => `wiki/${value}`));
+    const declared = new Set(this.requireSpec().pages.map((value) => `wiki/${value}`));
     const unique = [...new Set(paths)].sort();
     if (!unique.length || unique.some((value) => !declared.has(value))) throw new Error("Review paths must be non-empty and declared by the current WikiSpec");
     return { version: WIKI_FORMAT, candidateRevision: this.state.candidateRevision, treeDigest, policyDigest: this.state.policyDigest, paths: unique };
@@ -599,7 +601,7 @@ export class WikiLeadRun {
   }): Promise<PublicationFinalizationTransaction> {
     const runRoot = this.runRoot;
     const transactionFile = path.join(runRoot, "publication-finalization.json");
-    const requiredPaths = input.requiredPaths ?? wikiSpecPagePaths(this.requireSpec()).map((page) => `wiki/${page}`);
+    const requiredPaths = input.requiredPaths ?? this.requireSpec().pages.map((page) => `wiki/${page}`);
     const saved = await readPublicationTransaction(transactionFile, this.runId);
     if (saved) {
       if (path.resolve(saved.preimageRoot) !== path.join(runRoot, "publication-preimage")) throw new Error("Publication preimage path is not run-owned");
@@ -1130,7 +1132,7 @@ async function readPublicationTransaction(location: string, runId: string): Prom
     const raw = JSON.parse(await readFile(location, "utf8")) as Record<string, unknown>;
     const allowed = ["version", "runId", "candidateRevision", "policyDigest", "preTreeDigest", "publicationAt", "requiredPaths", "requiredProfileCoverage", "preimageRoot"];
     if (Object.keys(raw).some((key) => !allowed.includes(key))) throw new Error("Invalid Wiki publication finalization transaction");
-    if (raw.version !== WIKI_FORMAT) throw new UnsupportedWikiRunVersionError(`runs/${runId}/publication-finalization.json`, raw.version);
+    if (raw.version !== WIKI_FORMAT) throw new UnsupportedWikiRunVersionError(`runs/${runId}/publication-finalization.json`, raw.version, WIKI_FORMAT);
     if (raw.runId !== runId
       || !Number.isSafeInteger(raw.candidateRevision) || (raw.candidateRevision as number) < 0
       || typeof raw.policyDigest !== "string" || !/^[a-f0-9]{64}$/.test(raw.policyDigest)

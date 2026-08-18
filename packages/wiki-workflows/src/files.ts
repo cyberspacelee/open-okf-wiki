@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmod, lstat, mkdir, open, readdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
 export async function exists(location: string): Promise<boolean> {
@@ -9,28 +9,6 @@ export async function exists(location: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-export async function markdownFiles(root: string, relative = ""): Promise<string[]> {
-  const directory = path.join(root, relative);
-  let entries;
-  try {
-    entries = await readdir(directory, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const files: string[] = [];
-  for (const entry of entries) {
-    if (entry.name.startsWith(".")) continue;
-    const child = relative ? `${relative}/${entry.name}` : entry.name;
-    if (entry.isDirectory()) files.push(...await markdownFiles(root, child));
-    else if (entry.isFile() && entry.name.endsWith(".md")) files.push(child);
-  }
-  return files.sort();
-}
-
-export function relativePosix(root: string, candidate: string): string {
-  return path.relative(root, candidate).split(path.sep).join("/");
 }
 
 export function inside(root: string, candidate: string): string {

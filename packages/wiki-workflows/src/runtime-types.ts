@@ -7,7 +7,6 @@ import type {
   WikiAgentTelemetry,
   WikiExecutionBudgets,
   WikiRunPause,
-  WikiTaskSnapshot,
 } from "./producer-types.js";
 import type { WikiLeadFacts } from "./run-record.js";
 import type { WikiGenerationProfile, WikiRoleModelConfig } from "./workspace.js";
@@ -20,16 +19,13 @@ export interface WikiTaskRuntimePartial {
   gaps: WikiDelegateGap[];
 }
 
-export interface WikiTaskRuntimeExecution {
+export interface WikiTaskRuntimeTaskState {
   task: WikiDelegateContract;
   phase: "queued" | "running" | "paused" | "terminal";
   attempt: number;
   collected: boolean;
   pause?: WikiDelegateError;
   partial?: WikiTaskRuntimePartial;
-}
-
-export interface WikiTaskRuntimeTaskState extends WikiTaskRuntimeExecution {
   sessionFile?: string;
   receipt?: WikiDelegateReceipt;
 }
@@ -43,16 +39,10 @@ export interface WikiTaskRuntimeState {
   batches: WikiTaskRuntimeBatchState[];
 }
 
-export interface WikiAgentExecution extends WikiTaskRuntimeExecution {
-  batchId: number;
-}
-
 export interface WikiAgentRecord {
   agent: WikiAgentSnapshot;
   process: WikiActivityEntry[];
-  receipt?: WikiDelegateReceipt;
   sessionFile?: string;
-  execution?: WikiAgentExecution;
 }
 
 export interface WikiRunAdapterContext {
@@ -106,7 +96,7 @@ export interface WikiProductionPlan {
 
 export type WikiLeadObservation =
   | { kind: "progress"; message: string }
-  | { kind: "batch"; phase: "queued" | "started" | "updated" | "completed"; batch: number; tasks: WikiTaskSnapshot[]; taskId?: string }
+  | { kind: "batch"; phase: "queued" | "started" | "completed"; batch: number; tasks: WikiAgentSnapshot[]; taskId?: string }
   | { kind: "telemetry"; target: WikiAgentTarget; telemetry: WikiAgentTelemetry }
   | { kind: "health"; target: WikiAgentTarget; status: "degraded" | "healthy"; at: string; message?: string };
 

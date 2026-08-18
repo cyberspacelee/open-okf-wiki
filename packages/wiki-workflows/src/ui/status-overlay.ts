@@ -3,6 +3,7 @@ import { Key, Markdown, matchesKey, truncateToWidth, visibleWidth, wrapTextWithA
 import {
   agentStatusSemantics,
   batchStatusSemantics,
+  formatAge,
   formatWikiContext,
   projectWikiAgentLines,
   projectWikiProcessLines,
@@ -22,9 +23,8 @@ import type {
   WikiRunHandle,
   WikiRunUpdate,
   WikiRunView,
-  WikiTaskSnapshot,
 } from "../producer-types.js";
-import { errorMessage } from "../util.js";
+import { errorMessage } from "../failures.js";
 
 type WikiOverlayKind = "run" | "agent";
 type InspectorTab = "overview" | "process" | "output";
@@ -290,8 +290,8 @@ function navigationRows(view: WikiRunView, state?: Pick<WikiOverlayState, "openB
       for (const task of batch.tasks) {
         const taskPresentation = agentStatusSemantics(task.status);
         rows.push({
-          spans: [{ text: "  ", role: "primary" }, ...statusLabel(taskPresentation, ` ${task.role}  ${taskIdentity(task)}`)],
-          target: { kind: "agent", target: { kind: "task", batch: batch.batch, taskId: task.id } },
+          spans: [{ text: "  ", role: "primary" }, ...statusLabel(taskPresentation, ` ${task.role}  ${wikiTaskIdentity(task)}`)],
+          target: { kind: "agent", target: { kind: "task", batch: batch.batch, taskId: wikiTaskIdentity(task) } },
         });
       }
     }
@@ -301,10 +301,6 @@ function navigationRows(view: WikiRunView, state?: Pick<WikiOverlayState, "openB
 
 function statusLabel(presentation: WikiStatusSemantics, label: string): WikiTextSpan[] {
   return [{ text: presentation.marker, role: presentation.tone }, { text: label, role: "primary" }];
-}
-
-function taskIdentity(task: { id: string }): string {
-  return wikiTaskIdentity(task);
 }
 
 function renderBody(
@@ -422,7 +418,7 @@ function batchInspectorLines(view: WikiRunView, batchId: number, theme: unknown)
   for (const task of batch.tasks) {
     const taskPresentation = agentStatusSemantics(task.status);
     const summary = task.summary ? `  ${task.summary}` : "";
-    lines.push(`${paint(theme, textRoleColor(taskPresentation.tone), taskPresentation.marker)} ${task.role}  ${taskIdentity(task)}${summary}`);
+    lines.push(`${paint(theme, textRoleColor(taskPresentation.tone), taskPresentation.marker)} ${task.role}  ${wikiTaskIdentity(task)}${summary}`);
   }
   lines.push(paint(theme, "dim", language === "zh" ? "Enter 展开或收起任务  再选中任务查看输出" : "Enter expands tasks  then open a task for output"));
   return lines;
@@ -495,26 +491,8 @@ function matchingInspection(selected: NavTarget | undefined, inspection: WikiAge
 function agentFromView(view: WikiRunView, target: WikiAgentTarget): WikiAgentSnapshot | undefined {
   if (target.kind === "lead") return view.progress?.lead;
   const batches = view.progress?.batches ?? (view.progress?.currentBatch ? [view.progress.currentBatch] : []);
-  const task = batches.find((batch) => batch.batch === target.batch)?.tasks.find((entry) => entry.id === target.taskId);
-  return task ? taskSnapshotToAgent(target, task) : undefined;
-}
-
-function taskSnapshotToAgent(target: Extract<WikiAgentTarget, { kind: "task" }>, task: WikiTaskSnapshot): WikiAgentSnapshot {
-  const settled = task.status === "complete" || task.status === "incomplete" || task.status === "failed";
-  return {
-    target,
-    role: task.role,
-    status: task.status,
-    attempt: task.attempt ?? task.attempts ?? 1,
-    activity: task.activity ?? (settled ? "settled" : "starting"),
-    activeTools: task.activeTool ? [task.activeTool] : [],
-    health: task.health ?? "healthy",
-    ...(task.startedAt ? { startedAt: task.startedAt } : {}),
-    ...(task.updatedAt ? { updatedAt: task.updatedAt } : {}),
-    ...(task.usage ? { usage: task.usage } : {}),
-    ...(task.summary ? { summary: task.summary } : {}),
-    ...(task.process?.length ? { process: task.process } : {}),
-  };
+  return batches.find((batch) => batch.batch === target.batch)?.tasks.find((entry) =>
+    entry.target.kind === "task" && entry.target.batch === target.batch && entry.target.taskId === target.taskId);
 }
 
 function outputIdentity(view: WikiRunView, target: WikiAgentTarget): string {
@@ -656,7 +634,6 @@ function selectedKey(value: NavTarget | undefined): string {
   if (value.kind === "batch") return `batch:${value.batch}`;
   return JSON.stringify(value.target);
 }
-function formatAge(value: string | undefined, now: number): string | undefined { const parsed = value ? Date.parse(value) : NaN; if (!Number.isFinite(parsed)) return undefined; const seconds = Math.max(0, Math.floor((now - parsed) / 1000)); return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m`; }
 function runElapsed(view: WikiRunView, now: number): string | undefined { const start = Date.parse(view.createdAt); const end = view.completedAt ? Date.parse(view.completedAt) : now; if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return undefined; const seconds = Math.floor((end - start) / 1000); const hours = Math.floor(seconds / 3600); const minutes = Math.floor(seconds % 3600 / 60); const rest = seconds % 60; return hours ? `${hours}h${minutes}m${rest}s` : minutes ? `${minutes}m${rest}s` : `${rest}s`; }
 function clamp(value: number, min: number, max: number): number { return Math.min(max, Math.max(min, value)); }
 function paint(theme: unknown, color: ThemeColor, text: string): string {

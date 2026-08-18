@@ -3,12 +3,6 @@ export const TOOL_RESULT_MAX_LINES = 400;
 export const TOOL_RESULT_MAX_BYTES = 48 * 1024;
 export const TOOL_RESULT_MAX_MATCH_LINES = 80;
 
-export interface BoundToolResult {
-  content: Array<{ type: "text"; text: string }>;
-  details?: unknown;
-  truncated: boolean;
-}
-
 /**
  * Bound a tool result's text so survey/research transcripts cannot explode the
  * context window. Keeps head + tail when truncating.

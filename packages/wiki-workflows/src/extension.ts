@@ -28,7 +28,7 @@ import {
   wikiWidgetLinesFingerprint,
 } from "./ui/live-surface.js";
 import { openWikiStatusOverlay } from "./ui/status-overlay.js";
-import { errorMessage } from "./util.js";
+import { errorMessage } from "./failures.js";
 import { loadWikiWorkspace, wikiWorkspaceManagement, type ResolvedWikiWorkspace } from "./workspace.js";
 
 export interface WikiExtensionOptions {
@@ -345,7 +345,7 @@ async function streamRun(
       if (signal?.aborted) break;
       const event = projectWikiRunEvent(update.event);
       const key = `${update.event.type}:${update.event.at}:${update.event.message}`;
-      if (shouldNotifyRunEvent(update.event) && event.visible && !notified.has(key)) {
+      if (event.visible && !notified.has(key)) {
         notified.add(key);
         output(pi, context, event.text, event.tone === "error" ? "error" : event.tone === "warning" ? "warning" : "info");
       }
@@ -375,12 +375,6 @@ function attachStream(
   void streamRun(pi, context, handle, controller.signal, refresh).finally(() => {
     if (streams.get(handle.id) === controller) streams.delete(handle.id);
   });
-}
-
-function shouldNotifyRunEvent(event: { type: string; phase?: string }): boolean {
-  if (event.type === "delegate") return event.phase === "queued" || event.phase === "settled";
-  return event.type === "paused" || event.type === "failed" || event.type === "completed"
-    || event.type === "cancelled" || event.type === "warning";
 }
 
 type LiveSurfaceRefresh = (context: ExtensionCommandContext, view: WikiRunView) => void;

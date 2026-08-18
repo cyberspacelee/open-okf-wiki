@@ -4,7 +4,7 @@ import path from "node:path";
 import { ensureDirectory, removePath, renamePath, withExclusiveLock, writeText } from "./files.js";
 import { stableStringify } from "./util.js";
 import { ensureWikiWorkspaceInternalIgnore } from "./workspace.js";
-import { parseWikiSpec, wikiSpecPagePaths, type WikiSpec } from "./lead.js";
+import { parseWikiSpec, type WikiSpec } from "./lead.js";
 import { digestWikiTree, verifyWikiPublicationSeal, type WikiPublicationSeal } from "./wiki-publication-seal.js";
 import { UnsupportedWikiRunVersionError, WIKI_FORMAT } from "./run-ledger.js";
 
@@ -126,7 +126,7 @@ export function createWikiPublicationStore(options: WikiPublicationStoreOptions)
       const value = JSON.parse(await readFile(publishedMetadataFile, "utf8")) as unknown;
       if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid published Wiki metadata");
       const metadata = value as Record<string, unknown>;
-      if (metadata.version !== WIKI_FORMAT) throw new UnsupportedWikiRunVersionError(publishedMetadataFile, metadata.version);
+      if (metadata.version !== WIKI_FORMAT) throw new UnsupportedWikiRunVersionError(publishedMetadataFile, metadata.version, WIKI_FORMAT);
       return parsePublishedMetadata(metadata);
     } catch (error) {
       if (isMissing(error)) return undefined;
@@ -244,7 +244,7 @@ export function createWikiPublicationStore(options: WikiPublicationStoreOptions)
           runId,
           publishedAt: timestamp,
           ...parsePublicationResult({ sourceFingerprint: verified.sourceFingerprint, summary: verified.summary }),
-          pages: wikiSpecPagePaths(verified.spec),
+          pages: verified.spec.pages,
           finalTreeDigest: verified.finalTreeDigest,
           wikiSpec: verified.spec,
         };
@@ -432,7 +432,7 @@ function parsePublicationMetadata(value: unknown): Pick<WikiPublishedMetadata, "
   const metadata = recordValue(value, "Wiki publication metadata");
   const wikiSpec = parseWikiSpec(metadata.wikiSpec);
   const pages = stringList(metadata.pages, "Wiki publication pages");
-  if (!sameOrderedStrings(pages, wikiSpecPagePaths(wikiSpec))) throw new Error("Wiki publication pages do not match its WikiSpec");
+  if (!sameOrderedStrings(pages, wikiSpec.pages)) throw new Error("Wiki publication pages do not match its WikiSpec");
   return {
     ...parsePublicationResult(metadata),
     pages,
@@ -461,7 +461,7 @@ function parsePublicationResult(value: unknown): WikiPublicationResult {
 
 function parsePublishedMetadata(metadata: Record<string, unknown>): WikiPublishedMetadata {
   exactKeys(metadata, ["version", "runId", "publishedAt", "sourceFingerprint", "summary", "pages", "finalTreeDigest", "wikiSpec"], "published Wiki metadata");
-  if (metadata.version !== WIKI_FORMAT) throw new UnsupportedWikiRunVersionError("published.json", metadata.version);
+  if (metadata.version !== WIKI_FORMAT) throw new UnsupportedWikiRunVersionError("published.json", metadata.version, WIKI_FORMAT);
   assertPublishedIdentity(metadata);
   return {
     ...parsePublicationMetadata(metadata),
@@ -512,7 +512,7 @@ function publicationMetadataDigest(metadata: WikiPublishedMetadata): string {
 function parsePublishJournal(value: unknown, runId: string): WikiPublishJournal {
   const journal = recordValue(value, `Wiki publish journal for run ${runId}`);
   exactKeys(journal, ["version", "runId", "state", "hadPublishedWiki", "preparedAt", "updatedAt", "publishedMetadata", "metadataDigest"], "Wiki publish journal");
-  if (journal.version !== WIKI_FORMAT) throw new UnsupportedWikiRunVersionError(`runs/${runId}/publish.json`, journal.version);
+  if (journal.version !== WIKI_FORMAT) throw new UnsupportedWikiRunVersionError(`runs/${runId}/publish.json`, journal.version, WIKI_FORMAT);
   if (journal.runId !== runId
     || !["prepared", "backed_up", "installed", "committed", "rolled_back"].includes(String(journal.state))
     || typeof journal.hadPublishedWiki !== "boolean"

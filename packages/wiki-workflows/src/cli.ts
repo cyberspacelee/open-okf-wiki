@@ -140,9 +140,9 @@ function renderWikiRunCard(run: WikiRunView, progress: WikiRunProgress): string 
   if (semantics.batch && semantics.batch.tasks.length > 0) {
     lines.push("");
     for (const task of semantics.batch.tasks) {
-      const attempt = task.attempts !== undefined ? `  [attempt ${task.attempts}]` : "";
+      const attempt = `  [attempt ${task.attempt}]`;
       const activity = task.activity ? `  ·  ${task.activity}` : "";
-      lines.push(`  ${task.marker} ${task.role}  ${task.id}${attempt}${activity}`);
+      lines.push(`  ${task.marker} ${task.role}  ${task.identity}${attempt}${activity}`);
     }
   }
 

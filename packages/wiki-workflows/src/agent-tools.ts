@@ -17,15 +17,11 @@ import {
   pathIsInside,
   type PermittedToolRoot,
   type WorkspaceToolPolicy,
-  workspaceToolPolicy,
 } from "./path-policy.js";
 import { boundToolExecutionResult } from "./tool-budget.js";
 import { isSafeWikiPagePath } from "./lead.js";
 
 export type WikiToolRole = "lead" | "researcher" | "writer" | "reviewer";
-
-export type { WorkspaceToolPolicy, PermittedToolRoot };
-export { workspaceToolPolicy };
 
 export interface WikiPageWriter {
   replacePage(input: { path: string; content: string; actor: "lead" | "writer" }): Promise<void>;
@@ -376,14 +372,6 @@ function exactWikiPaths(
   return allowed;
 }
 
-/** Keep model-facing `wiki/*` paths stable while redirecting I/O to a run candidate. */
-function resolveActiveWikiPath(policy: WorkspaceToolPolicy, activeWikiRoot: string, rawPath: string): string {
-  if (policy.candidateWikiRoot && (rawPath === "wiki" || rawPath.startsWith("wiki/"))) {
-    return path.resolve(activeWikiRoot, rawPath === "wiki" ? "." : rawPath.slice("wiki/".length));
-  }
-  return insideWorkspace(policy.workspaceRoot, rawPath);
-}
-
 function remapToolPath(
   definition: ToolDefinition<any, any, any>,
   policy: WorkspaceToolPolicy,
@@ -405,7 +393,7 @@ function remapToolPath(
 
 function resolveToolPath(policy: WorkspaceToolPolicy, activeWikiRoot: string, rawPath: string): string | undefined {
   if (policy.candidateWikiRoot && (rawPath === "wiki" || rawPath.startsWith("wiki/"))) {
-    return resolveActiveWikiPath(policy, activeWikiRoot, rawPath);
+    return path.resolve(activeWikiRoot, rawPath === "wiki" ? "." : rawPath.slice("wiki/".length));
   }
   return resolveSkillRelativePath(policy, rawPath);
 }

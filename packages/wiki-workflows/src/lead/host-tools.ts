@@ -10,55 +10,71 @@ const emptyParameters = Type.Object({}, { additionalProperties: false });
 export const WIKI_DELEGATE_CANCEL_REASON_CODES = ["superseded", "blocked", "user_requested"] as const;
 export type WikiDelegateCancelReasonCode = typeof WIKI_DELEGATE_CANCEL_REASON_CODES[number];
 
-export function createWikiPlanTool(save: () => Promise<unknown>): ToolDefinition<any, any, any> {
+function createEmptyParamsWikiTool(
+  name: string,
+  label: string,
+  description: string,
+  promptSnippet: string,
+  promptGuidelines: string[],
+  run: () => unknown | Promise<unknown>,
+): ToolDefinition<any, any, any> {
   return {
-    name: "wiki_plan",
-    label: "Submit Wiki plan",
-    description: "Accept the WikiSpec from the Run's fixed plan file.",
-    promptSnippet: "Accept the prepared WikiSpec",
-    promptGuidelines: ["Prepare the plan file before calling wiki_plan."],
+    name,
+    label,
+    description,
+    promptSnippet,
+    promptGuidelines,
     parameters: emptyParameters,
     constrainedSampling: JSON_SCHEMA_PREFER,
     async execute(_id, params) {
+      return await run();
+    },
+  } as ToolDefinition<any, any, any>;
+}
+
+export function createWikiPlanTool(save: () => Promise<unknown>): ToolDefinition<any, any, any> {
+  return createEmptyParamsWikiTool(
+    "wiki_plan",
+    "Submit Wiki plan",
+    "Accept the WikiSpec from the Run's fixed plan file.",
+    "Accept the prepared WikiSpec",
+    ["Prepare the plan file before calling wiki_plan."],
+    async () => {
       try {
         return toolResult(await save());
       } catch (error) {
         rejectWikiTool("wiki_plan", error);
       }
     },
-  } as ToolDefinition<any, any, any>;
+  );
 }
 
 export function createWikiTaxonomyTool(save: () => Promise<unknown>): ToolDefinition<any, any, any> {
-  return {
-    name: "wiki_taxonomy",
-    label: "Accept Wiki taxonomy",
-    description: "Accept the taxonomy from the Run's fixed taxonomy file.",
-    promptSnippet: "Accept the prepared taxonomy",
-    promptGuidelines: ["Prepare the taxonomy file after discovery."],
-    parameters: emptyParameters,
-    constrainedSampling: JSON_SCHEMA_PREFER,
-    async execute(_id, params) {
+  return createEmptyParamsWikiTool(
+    "wiki_taxonomy",
+    "Accept Wiki taxonomy",
+    "Accept the taxonomy from the Run's fixed taxonomy file.",
+    "Accept the prepared taxonomy",
+    ["Prepare the taxonomy file after discovery."],
+    async () => {
       try { return toolResult(await save()); }
       catch (error) { rejectWikiTool("wiki_taxonomy", error); }
     },
-  } as ToolDefinition<any, any, any>;
+  );
 }
 
 export function createWikiDelegateStartTool(start: () => Promise<unknown>): ToolDefinition<any, any, any> {
-  return {
-    name: "wiki_delegate_start",
-    label: "Start Wiki tasks",
-    description: "Start the unique next wave derived from durable Run state.",
-    promptSnippet: "Start the next ready Wiki wave",
-    promptGuidelines: ["Prepare the discovery file before the first wave."],
-    parameters: emptyParameters,
-    constrainedSampling: JSON_SCHEMA_PREFER,
-    async execute(_id, params) {
+  return createEmptyParamsWikiTool(
+    "wiki_delegate_start",
+    "Start Wiki tasks",
+    "Start the unique next wave derived from durable Run state.",
+    "Start the next ready Wiki wave",
+    ["Prepare the discovery file before the first wave."],
+    async () => {
       const result = await start();
       return toolResult(result);
     },
-  } as ToolDefinition<any, any, any>;
+  );
 }
 
 export function createWikiDelegateCollectTool(
@@ -113,22 +129,20 @@ export function createWikiDelegateCancelTool(
 }
 
 export function createWikiFinishTool(finish: () => unknown | Promise<unknown>): ToolDefinition<any, any, any> {
-  return {
-    name: "wiki_finish",
-    label: "Finish Wiki workflow",
-    description: "Finish after the candidate Wiki is complete and sufficiently grounded.",
-    promptSnippet: "Finish after the candidate Wiki is complete and reviewed",
-    promptGuidelines: ["Call wiki_finish only after current passing reviews."],
-    parameters: emptyParameters,
-    constrainedSampling: JSON_SCHEMA_PREFER,
-    async execute(_id, params) {
+  return createEmptyParamsWikiTool(
+    "wiki_finish",
+    "Finish Wiki workflow",
+    "Finish after the candidate Wiki is complete and sufficiently grounded.",
+    "Finish after the candidate Wiki is complete and reviewed",
+    ["Call wiki_finish only after current passing reviews."],
+    async () => {
       try {
         return toolResult(await finish());
       } catch (error) {
         rejectWikiTool("wiki_finish", error);
       }
     },
-  } as ToolDefinition<any, any, any>;
+  );
 }
 
 function toolResult(value: unknown) {

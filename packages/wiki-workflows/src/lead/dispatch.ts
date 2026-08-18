@@ -6,13 +6,10 @@ import {
   wikiSpecClusterPaths,
   wikiSpecClusters,
   wikiSpecClusterSourceId,
-  wikiSpecPagePaths,
   wikiSpecRelativePath,
   wikiSpecSourceIds,
   type WikiSpec,
 } from "./spec.js";
-
-export type WikiLogicalWave = "discovery" | "supplement" | "write" | "review";
 
 export interface WikiDispatchTaskInput {
   id?: string;
@@ -199,12 +196,6 @@ function writeFrontierReady<T extends { id: string; nextStep: string }>(cluster:
   return clusters.every((child) => wikiSpecClusterParent(child.id) !== cluster.id || child.nextStep !== "write");
 }
 
-export function wikiDispatchWave(task: Pick<WikiDispatchTaskInput, "role" | "mode">): WikiLogicalWave {
-  if (task.role === "write") return "write";
-  if (task.role === "review") return "review";
-  return task.mode === "supplement" ? "supplement" : "discovery";
-}
-
 /** Resolve a write/review cluster id from the Lead-facing cluster field, or from internal path lists. */
 function dispatchCluster(task: WikiDispatchTaskInput, spec: WikiSpec): string {
   const labeled = typeof task.cluster === "string" ? task.cluster.trim() : "";
@@ -218,7 +209,7 @@ function dispatchCluster(task: WikiDispatchTaskInput, spec: WikiSpec): string {
   const paths = task.role === "write" ? task.writePaths ?? [] : task.reviewPaths ?? [];
   if (!paths.length) throw new Error(`Delegate ${task.role} task ${task.id} requires a cluster`);
   const clusterId = wikiSpecClusterId(paths[0]);
-  const declared = new Set(wikiSpecPagePaths(spec).flatMap((page) => [page, `wiki/${page}`]));
+  const declared = new Set(spec.pages.flatMap((page) => [page, `wiki/${page}`]));
   if (!clusterId || !sameWikiCluster(paths) || !wikiSpecClusters(spec).includes(clusterId) || !wikiSpecClusterPaths(spec, clusterId).length) {
     throw new Error(`Unknown Wiki cluster: ${clusterId ?? paths[0]}`);
   }

@@ -1,4 +1,3 @@
-import { Type } from "typebox";
 import { WikiRejectedError, listed } from "../wiki-reject.js";
 import { isWikiSourceSegment } from "./path.js";
 
@@ -20,11 +19,6 @@ export type WikiSpecPageType = "overview" | "architecture" | "source" | "domain"
 export type WikiSpecPage = { path: string; pageType: WikiSpecPageType };
 /** Wiki-relative authored paths, no wiki/ prefix; unique; input order preserved. */
 export type WikiSpec = { pages: string[]; topologyVersion?: 2 };
-
-export const wikiPlanParameters = Type.Object({
-  pages: Type.Array(Type.String(), { minItems: 3 }),
-  topologyVersion: Type.Optional(Type.Literal(TOPOLOGY_VERSION)),
-}, { additionalProperties: false });
 
 export function wikiSpecRelativePath(pagePath: string): string {
   return pagePath.startsWith("wiki/") ? pagePath.slice("wiki/".length) : pagePath;
@@ -50,10 +44,6 @@ export function wikiSpecPageType(pagePath: string): WikiSpecPageType | undefined
 
 export function wikiSpecPages(spec: WikiSpec): WikiSpecPage[] {
   return spec.pages.map((path) => ({ path, pageType: wikiSpecPageType(path)! }));
-}
-
-export function wikiSpecPagePaths(spec: WikiSpec): string[] {
-  return spec.pages;
 }
 
 /** Extract the source namespace from any source/domain/concept page. */
@@ -130,12 +120,12 @@ export function wikiSpecClusterId(pagePath: string): string | undefined {
 }
 
 export function wikiSpecClusterPaths(spec: WikiSpec, clusterId: string): string[] {
-  return wikiSpecPagePaths(spec).filter((pagePath) => wikiSpecClusterId(pagePath) === clusterId);
+  return spec.pages.filter((pagePath) => wikiSpecClusterId(pagePath) === clusterId);
 }
 
 export function wikiSpecClusters(spec: WikiSpec): string[] {
   const clusters = new Set<string>();
-  for (const pagePath of wikiSpecPagePaths(spec)) {
+  for (const pagePath of spec.pages) {
     const clusterId = wikiSpecClusterId(pagePath);
     if (clusterId) clusters.add(clusterId);
   }

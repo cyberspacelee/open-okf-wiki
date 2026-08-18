@@ -71,8 +71,3 @@ export class WikiValidationInfrastructureError extends Error {
     this.name = "WikiValidationInfrastructureError";
   }
 }
-
-export function isWikiValidationInfrastructureError(error: unknown): error is WikiValidationInfrastructureError {
-  return error instanceof WikiValidationInfrastructureError
-    || (!!error && typeof error === "object" && (error as { name?: unknown }).name === "WikiValidationInfrastructureError");
-}

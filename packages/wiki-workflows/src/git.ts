@@ -66,12 +66,8 @@ export async function git(cwd: string, args: string[]): Promise<GitResult> {
   });
 }
 
-export async function gitText(cwd: string, args: string[]): Promise<string> {
-  const result = await git(cwd, args);
-  if (result.code !== 0) throw new Error(result.stderr.trim() || `git ${args.join(" ")} failed`);
-  return result.stdout.trim();
-}
-
 export async function repositoryRoot(cwd: string): Promise<string> {
-  return await gitText(cwd, ["rev-parse", "--show-toplevel"]);
+  const result = await git(cwd, ["rev-parse", "--show-toplevel"]);
+  if (result.code !== 0) throw new Error(result.stderr.trim() || "git rev-parse --show-toplevel failed");
+  return result.stdout.trim();
 }

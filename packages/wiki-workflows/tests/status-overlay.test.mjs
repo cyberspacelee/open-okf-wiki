@@ -3,6 +3,21 @@ import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { openWikiStatusOverlay } from "../dist/ui/status-overlay.js";
 
+function batchTask(id, role, status, extra = {}) {
+  const { activeTool, attempts, batch = 2, activity, activeTools, health, attempt, ...rest } = extra;
+  const terminal = ["complete", "incomplete", "failed", "cancelled"].includes(status);
+  return {
+    target: { kind: "task", batch, taskId: id },
+    role,
+    status,
+    attempt: attempt ?? attempts ?? 1,
+    activity: activity ?? (status === "queued" ? "starting" : status === "running" && activeTool ? "using_tool" : terminal ? "settled" : "waiting_model"),
+    activeTools: activeTools ?? (activeTool ? [activeTool] : []),
+    health: health ?? "healthy",
+    ...rest,
+  };
+}
+
 const lead = {
   target: { kind: "lead" }, role: "lead", status: "running", attempt: 1, activity: "synthesizing",
   health: "healthy",
@@ -13,7 +28,7 @@ const lead = {
 const view = {
   id: "run-1", cwd: "/repo", status: "running",
   createdAt: "2026-08-12T00:00:00Z", updatedAt: "2026-08-12T00:00:03Z",
-  progress: { stage: "lead", language: "en", lead, currentBatch: { batch: 2, status: "running", completed: 0, total: 1, tasks: [{ id: "write-auth", role: "write", status: "running" }] } },
+  progress: { stage: "lead", language: "en", lead, currentBatch: { batch: 2, status: "running", completed: 0, total: 1, tasks: [batchTask("write-auth", "write", "running")] } },
 };
 
 function inspection(target = { kind: "lead" }, summary = "current") {
@@ -240,16 +255,16 @@ test("loading, loaded inspection, context, and health keep the frame geometry st
 
 test("theme records semantic status, navigation, chrome, and context threshold tokens", async () => {
   const mixedBatch = { ...view.progress.currentBatch, total: 4, tasks: [
-    { id: "running", role: "write", status: "running" },
-    { id: "waiting", role: "review", status: "queued" },
-    { id: "partial", role: "write", status: "incomplete" },
-    { id: "failed", role: "review", status: "failed" },
+    batchTask("running", "write", "running"),
+    batchTask("waiting", "review", "queued"),
+    batchTask("partial", "write", "incomplete"),
+    batchTask("failed", "review", "failed"),
   ] };
   const semanticView = {
     ...view,
     progress: {
       ...view.progress,
-      batches: [{ batch: 1, status: "complete", completed: 1, total: 1, tasks: [{ id: "done", role: "review", status: "complete" }] }, mixedBatch],
+      batches: [{ batch: 1, status: "complete", completed: 1, total: 1, tasks: [batchTask("done", "review", "complete", { batch: 1 })] }, mixedBatch],
       currentBatch: mixedBatch,
     },
   };
@@ -308,7 +323,7 @@ test("long task ids and Chinese content remain within every rendered width", asy
     progress: {
       ...view.progress,
       language: "zh",
-      currentBatch: { batch: 2, status: "running", completed: 0, total: 1, tasks: [{ id: longId, role: "write", status: "running" }] },
+      currentBatch: { batch: 2, status: "running", completed: 0, total: 1, tasks: [batchTask(longId, "write", "running")] },
     },
   };
   const { theme } = recordingTheme();
@@ -328,9 +343,9 @@ test("long task ids and Chinese content remain within every rendered width", asy
 });
 
 test("small viewports keep the selected target visible and Enter opens that target", async () => {
-  const tasks = Array.from({ length: 18 }, (_, index) => ({ id: `task-${index + 1}`, role: index % 2 ? "review" : "write", status: "running" }));
+  const tasks = Array.from({ length: 18 }, (_, index) => batchTask(`task-${index + 1}`, index % 2 ? "review" : "write", "running"));
   const batches = [
-    { batch: 1, status: "complete", completed: 1, total: 1, tasks: [{ id: "hidden", role: "review", status: "complete" }] },
+    { batch: 1, status: "complete", completed: 1, total: 1, tasks: [batchTask("hidden", "review", "complete", { batch: 1 })] },
     { batch: 2, status: "partial", completed: 0, total: 6, tasks: tasks.slice(0, 6) },
     { batch: 3, status: "failed", completed: 0, total: 6, tasks: tasks.slice(6, 12) },
     { batch: 4, status: "running", completed: 0, total: 6, tasks: tasks.slice(12) },
@@ -456,9 +471,9 @@ test("process tab keeps an earlier batch task after later batches fill recent ac
   }));
   const history = {
     batch: 1, status: "complete", completed: 1, total: 1,
-    tasks: [{ id: "old", role: "review", status: "complete", summary: "reviewed auth", process: [older] }],
+    tasks: [batchTask("old", "review", "complete", { batch: 1, summary: "reviewed auth", process: [older] })],
   };
-  const current = { batch: 2, status: "running", completed: 0, total: 1, tasks: [{ id: "current", role: "write", status: "running" }] };
+  const current = { batch: 2, status: "running", completed: 0, total: 1, tasks: [batchTask("current", "write", "running")] };
   const crowded = {
     ...view,
     progress: { ...view.progress, currentBatch: current, batches: [history, current], recentActivity },
@@ -710,8 +725,8 @@ test("prepare stage always selects a leader navigation target before inspection 
 });
 
 test("completed batches stay collapsed until expanded and then inspect their tasks", async () => {
-  const history = { batch: 1, status: "complete", completed: 1, total: 1, tasks: [{ id: "old", role: "review", status: "complete", summary: "reviewed auth" }] };
-  const current = { batch: 2, status: "running", completed: 0, total: 1, tasks: [{ id: "current", role: "write", status: "running" }] };
+  const history = { batch: 1, status: "complete", completed: 1, total: 1, tasks: [batchTask("old", "review", "complete", { batch: 1, summary: "reviewed auth" })] };
+  const current = { batch: 2, status: "running", completed: 0, total: 1, tasks: [batchTask("current", "write", "running")] };
   const withHistory = { ...view, progress: { ...view.progress, currentBatch: current, batches: [history, current] } };
   for (const width of [80, 120]) {
     const inspected = [];
@@ -754,8 +769,8 @@ test("navigation and batch inspector show a cluster label from the task id", asy
       currentBatch: {
         batch: 2, status: "running", completed: 0, total: 2,
         tasks: [
-          { id: "wiki/api/core/runtime/concept.md", role: "write", status: "running" },
-          { id: "wiki/api/core/runtime/flows.md", role: "review", status: "queued" },
+          batchTask("wiki/api/core/runtime/concept.md", "write", "running"),
+          batchTask("wiki/api/core/runtime/flows.md", "review", "queued"),
         ],
       },
     },
@@ -763,12 +778,12 @@ test("navigation and batch inspector show a cluster label from the task id", asy
   const { component } = await componentFor(handle({ async view() { return clustered; } }));
   await new Promise((resolve) => setImmediate(resolve));
   const nav = plain(component.render(80).join("\n"));
-  assert.match(nav, /write  api\/core\/runtime  wiki\/api\/core\/runtime\/concept\.md/);
-  assert.match(nav, /review  api\/core\/runtime  wiki\/api\/core\/runtime\/flows\.md/);
+  assert.match(nav, /write  wiki\/api\/core\/runtime\/concept\.md/);
+  assert.match(nav, /review  wiki\/api\/core\/runtime\/flows\.md/);
   component.handleInput("j");
   await new Promise((resolve) => setImmediate(resolve));
   const inspector = plain(component.render(120).join("\n"));
-  assert.match(inspector, /write  api\/core\/runtime  wiki\/api\/core\/runtime\/concept\.md/);
+  assert.match(inspector, /write  wiki\/api\/core\/runtime\/concept\.md/);
   component.dispose();
 });
 

@@ -12,7 +12,6 @@ import {
   wikiSpecDomainId,
   wikiSpecDomainIds,
   wikiSpecDomainKey,
-  wikiSpecPagePaths,
   wikiSpecPageType,
   wikiSpecPages,
   wikiSpecSourceId,
@@ -37,7 +36,7 @@ const validSpec = () => ({ pages: [...validPages] });
 test("accepts a source-aware pages spec and derives host-owned page types", () => {
   const spec = parseWikiSpec(validSpec());
   assert.deepEqual(spec, { pages: validPages });
-  assert.deepEqual(wikiSpecPagePaths(spec), validPages);
+  assert.deepEqual(spec.pages, validPages);
   assert.deepEqual(wikiSpecPages(spec), [
     { path: "overview.md", pageType: "overview" },
     { path: "architecture.md", pageType: "architecture" },

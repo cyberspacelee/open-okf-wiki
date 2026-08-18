@@ -16,6 +16,21 @@ function lead(overrides = {}) {
   return { target: { kind: "lead" }, role: "lead", status: "running", attempt: 1, activity: "synthesizing", activeTools: [], health: "healthy", lastActivityAt: "2026-08-12T00:00:57.000Z", lastHeartbeatAt: "2026-08-12T00:00:59.000Z", usage: { turns: 8, contextPercent: 24 }, ...overrides };
 }
 
+function batchTask(id, role, status, extra = {}) {
+  const { activeTool, attempts, batch = 1, activity, activeTools, health, attempt, ...rest } = extra;
+  const terminal = ["complete", "incomplete", "failed", "cancelled"].includes(status);
+  return {
+    target: { kind: "task", batch, taskId: id },
+    role,
+    status,
+    attempt: attempt ?? attempts ?? 1,
+    activity: activity ?? (status === "queued" ? "starting" : status === "running" && activeTool ? "using_tool" : terminal ? "settled" : "waiting_model"),
+    activeTools: activeTools ?? (activeTool ? [activeTool] : []),
+    health: health ?? "healthy",
+    ...rest,
+  };
+}
+
 test("footer accepts terminal, quota, and quiet running states", () => {
   assert.equal(wikiFooterStatus(view({ progress: { stage: "lead", lead: lead() } }), now), "wiki ◆ lead · synthesizing · activity 3s · ctx 24%");
   assert.equal(wikiFooterStatus(view({ progress: { stage: "lead" } }), now), "wiki ◆ generate");
@@ -28,11 +43,11 @@ test("footer accepts terminal, quota, and quiet running states", () => {
 test("widget accepts a compact batch card without start verbs", () => {
   assert.deepEqual(wikiWidgetLines(view()), ["◆ lead"]);
   const tasks = [
-    { id: "bad", role: "review", status: "failed", summary: "validation" },
-    { id: "active", role: "write", status: "running", health: "degraded", activeTool: { name: "read", startedAt: "2026-08-12T00:00:50Z", summary: "src/a.ts" } },
-    { id: "queued", role: "research", status: "queued" },
-    { id: "done", role: "write", status: "complete" },
-    { id: "done-2", role: "review", status: "complete" },
+    batchTask("bad", "review", "failed", { batch: 2, summary: "validation" }),
+    batchTask("active", "write", "running", { batch: 2, health: "degraded", activeTool: { name: "read", startedAt: "2026-08-12T00:00:50Z", summary: "src/a.ts" } }),
+    batchTask("queued", "research", "queued", { batch: 2 }),
+    batchTask("done", "write", "complete", { batch: 2 }),
+    batchTask("done-2", "review", "complete", { batch: 2 }),
   ];
   const lines = wikiWidgetLines(view({ progress: { stage: "lead", lead: lead(), currentBatch: { batch: 2, status: "running", completed: 2, total: 5, tasks } } }));
   assert.deepEqual(lines, [
@@ -72,8 +87,8 @@ test("widget accepts Chinese labels for the live card", () => {
       language: "zh",
       lead: lead({ activity: "delegating" }),
       currentBatch: { batch: 1, status: "running", completed: 0, total: 2, tasks: [
-        { id: "auth", role: "write", status: "running" },
-        { id: "old", role: "review", status: "complete" },
+        batchTask("auth", "write", "running"),
+        batchTask("old", "review", "complete"),
       ] },
     },
   }));
@@ -91,9 +106,9 @@ test("widget shows a cluster label when the task id is a cluster or wiki path", 
       stage: "lead",
       lead: lead(),
       currentBatch: { batch: 1, status: "running", completed: 0, total: 3, tasks: [
-        { id: "wiki/core/runtime/concept.md", role: "write", status: "running" },
-        { id: "wiki/core/runtime/flows.md", role: "review", status: "queued" },
-        { id: "core/runtime", role: "research", status: "queued" },
+        batchTask("wiki/core/runtime/concept.md", "write", "running"),
+        batchTask("wiki/core/runtime/flows.md", "review", "queued"),
+        batchTask("core/runtime", "research", "queued"),
       ] },
     },
   }));
@@ -109,7 +124,7 @@ test("widget shows a cluster label when the task id is a cluster or wiki path", 
       stage: "lead",
       lead: lead(),
       currentBatch: { batch: 1, status: "running", completed: 0, total: 1, tasks: [
-        { id: "write-auth", role: "write", status: "running" },
+        batchTask("write-auth", "write", "running"),
       ] },
     },
   }));

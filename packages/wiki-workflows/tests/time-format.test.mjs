@@ -4,10 +4,9 @@ import test from "node:test";
 
 test("formats absolute timestamps in the system timezone", () => {
   const script = [
-    'import { formatLocalDateTime, formatLocalTime } from "./dist/ui/time-format.js";',
+    'import { formatLocalDateTime } from "./dist/ui/time-format.js";',
     'process.stdout.write(JSON.stringify({',
     '  dateTime: formatLocalDateTime("2026-08-12T00:01:02.000Z"),',
-    '  time: formatLocalTime("2026-08-12T00:01:02.000Z"),',
     '}));',
   ].join("\n");
   const output = execFileSync(process.execPath, ["--input-type=module", "--eval", script], {
@@ -17,12 +16,10 @@ test("formats absolute timestamps in the system timezone", () => {
   });
   assert.deepEqual(JSON.parse(output), {
     dateTime: "Aug 12, 2026, 8:01:02 AM",
-    time: "08:01:02",
   });
 });
 
 test("preserves invalid timestamp text", async () => {
-  const { formatLocalDateTime, formatLocalTime } = await import("../dist/ui/time-format.js");
+  const { formatLocalDateTime } = await import("../dist/ui/time-format.js");
   assert.equal(formatLocalDateTime("not-a-date"), "not-a-date");
-  assert.equal(formatLocalTime("not-a-date"), "not-a-date");
 });

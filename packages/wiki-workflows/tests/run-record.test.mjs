@@ -7,9 +7,9 @@ import { createWikiDelegateContract } from "../dist/delegate-contracts.js";
 import {
   createWikiRunRecord,
   projectRunView,
-  UnsupportedWikiRunVersionError,
   WIKI_RUN_FORMAT,
 } from "../dist/run-record.js";
+import { UnsupportedWikiRunVersionError } from "../dist/run-ledger.js";
 
 async function root(t) {
   const value = await mkdtemp(path.join(os.tmpdir(), "wiki-run-record-"));
@@ -156,8 +156,6 @@ test("telemetry does not change a durable task phase", async (t) => {
   assert.equal(disk.version, WIKI_RUN_FORMAT);
   const tail = await record.readTail("run-1", { kind: "task", batch: 1, taskId: "write-1" });
   assert.equal(tail.agent.activity, "using_tool");
-  assert.equal(tail.receipt, undefined);
-  assert.equal(tail.execution, undefined);
 });
 
 test("format 1 snapshots and leftover lead-state fail closed", async (t) => {

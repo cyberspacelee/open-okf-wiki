@@ -27,6 +27,4 @@ export {
   type WikiRunUpdate,
   type WikiRunView,
   type WikiRunWarning,
-  type WikiTaskActivity,
-  type WikiTaskSnapshot,
 } from "./producer-types.js";

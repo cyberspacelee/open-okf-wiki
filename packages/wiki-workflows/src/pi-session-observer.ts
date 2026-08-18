@@ -396,11 +396,7 @@ export class PiSessionObserver {
   }
 
   private findProcess(match: (entry: WikiActivityEntry) => boolean): WikiActivityEntry | undefined {
-    for (let index = this.process.length - 1; index >= 0; index--) {
-      const entry = this.process[index];
-      if (match(entry)) return entry;
-    }
-    return undefined;
+    return this.process.findLast(match);
   }
 
   private patchProcess(match: (entry: WikiActivityEntry) => boolean, patch: Partial<WikiActivityEntry>): boolean {

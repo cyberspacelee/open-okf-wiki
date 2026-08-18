@@ -3,15 +3,14 @@ import type {
   WikiAgentInspection,
   WikiAgentSnapshot,
   WikiAgentStatus,
+  WikiAgentTarget,
   WikiContextStats,
   WikiDelegationBatchSummary,
   WikiRunEvent,
   WikiRunStage,
   WikiRunView,
-  WikiTaskSnapshot,
 } from "../producer-types.js";
 import { formatLocalDateTime } from "./time-format.js";
-import { wikiSpecClusterId } from "../lead.js";
 
 export type WikiTone = "muted" | "accent" | "success" | "warning" | "error";
 export type WikiMarker = "·" | "◆" | "✓" | "◐" | "✗" | "○" | "!" | "⏸";
@@ -24,16 +23,15 @@ export interface WikiStatusSemantics {
 }
 
 export interface WikiProjectedTaskLine {
-  id: string;
-  role: WikiTaskSnapshot["role"];
-  status: WikiTaskSnapshot["status"];
+  target: WikiAgentTarget;
+  role: "research" | "write" | "review";
+  status: WikiAgentStatus;
   marker: WikiMarker;
   tone: WikiTone;
   identity: string;
-  cluster?: string;
   detail?: string;
   healthNotice?: string;
-  attempts?: number;
+  attempt: number;
   activity?: string;
   sortRank: number;
 }
@@ -75,11 +73,9 @@ export interface WikiRunObservability {
   leadPresent: boolean;
   leadLabel: string;
   leadMarker: WikiMarker;
-  leadTone: WikiTone;
   leadDetail?: string;
   activityLabel?: string;
   activityAge?: string;
-  heartbeatAge?: string;
   healthNotice?: string;
   silenceNotice?: string;
   batch?: WikiProjectedBatch;
@@ -98,7 +94,7 @@ export function projectWikiRunEvent(event: WikiRunEvent): WikiRunEventObservabil
   const message = event.message.trim() || eventLabel(event.type);
   switch (event.type) {
     case "stage":
-      return { text: `[${event.stage}] ${message}`, tone: "accent", visible: true };
+      return { text: `[${event.stage}] ${message}`, tone: "accent", visible: false };
     case "delegate": {
       const task = event.taskId ? ` ${event.taskId}` : "";
       return { text: `[batch ${event.batch} ${event.completed}/${event.total}] ${message}${task}`, tone: "accent", visible: event.phase === "queued" || event.phase === "settled" };
@@ -115,7 +111,7 @@ export function projectWikiRunEvent(event: WikiRunEvent): WikiRunEventObservabil
       return { text: message, tone: "muted", visible: true };
     case "started":
     case "resumed":
-      return { text: message, tone: "accent", visible: true };
+      return { text: message, tone: "accent", visible: false };
   }
 }
 
@@ -147,11 +143,9 @@ export function projectWikiRunObservability(view: WikiRunView, now = Date.now())
     leadPresent: Boolean(lead),
     leadLabel: language === "zh" ? "主导" : "lead",
     leadMarker: leadView.marker,
-    leadTone: leadView.tone,
     ...(leadView.detail ? { leadDetail: leadView.detail } : {}),
     ...(activityLabel ? { activityLabel } : {}),
     ...(activityAge ? { activityAge } : {}),
-    ...(heartbeatAge ? { heartbeatAge } : {}),
     ...(health === "degraded" ? { healthNotice: healthNotice(language) } : {}),
     ...(liveness === "alive_without_activity" ? { silenceNotice: silenceNotice(language, activityAge, heartbeatAge) } : {}),
     ...(batch ? { batch } : {}),
@@ -234,7 +228,7 @@ export function projectWikiAgentLines(
   const status = agentStatusSemantics(agent.status);
   const lines: WikiTextLine[] = [
     [span(header, "primary", true)],
-    [span(`${agent.role}  `, "primary"), span(agent.status, status.tone, true), span(`  ·  ${localizedActivity(agent.activity, "en")}  ·  attempt ${agent.attempt}`, "muted")],
+    [span(`${agent.role}  `, "primary"), span(agent.status, status.tone, true), span(`  ·  ${agent.activity.replaceAll("_", " ")}  ·  attempt ${agent.attempt}`, "muted")],
   ];
   if (agent.activeTools.length) lines.push(fieldLine("tools", agent.activeTools.map((tool) => tool.name).join(", "), "accent"));
   if (agent.lastHeartbeatAt) lines.push(fieldLine("heartbeat", formatLocalDateTime(agent.lastHeartbeatAt), "muted"));
@@ -250,23 +244,8 @@ export function projectWikiProcessLines(process: readonly WikiActivityEntry[]): 
   return process.map(processLine);
 }
 
-/** Cluster id from a path-like or `domain/concept` task id. Snapshots do not carry writePaths. */
-export function wikiTaskClusterLabel(task: { id?: string }): string | undefined {
-  return clusterIdFromTaskId(task.id);
-}
-
-export function wikiTaskIdentity(task: { id: string }): string {
-  const cluster = wikiTaskClusterLabel(task);
-  return cluster && cluster !== task.id ? `${cluster}  ${task.id}` : task.id;
-}
-
-function clusterIdFromTaskId(id: string | undefined): string | undefined {
-  if (!id) return undefined;
-  if (id.startsWith("wiki/") || id.includes(".md")) return wikiSpecClusterId(id);
-  if (!id.includes("/")) return undefined;
-  const segments = id.split("/");
-  if (segments.length !== 2 || segments.some((segment) => !segment || segment.includes("."))) return undefined;
-  return id;
+export function wikiTaskIdentity(agent: Pick<WikiAgentSnapshot, "target">): string {
+  return agent.target.kind === "task" ? agent.target.taskId : "lead";
 }
 
 export function formatWikiContext(usage: WikiContextStats | undefined): string | undefined {
@@ -304,51 +283,53 @@ function projectBatch(batch: WikiDelegationBatchSummary, language: "zh" | "en"):
   };
 }
 
-const TASK_SORT_RANK: Record<WikiTaskSnapshot["status"], number> = {
+const TASK_SORT_RANK: Record<WikiAgentStatus, number> = {
   failed: 0,
   incomplete: 0,
+  retrying: 0,
   running: 1,
   queued: 2,
   complete: 3,
+  cancelled: 3,
 };
 
-function projectTaskLine(task: WikiTaskSnapshot, language: "zh" | "en"): WikiProjectedTaskLine {
+function projectTaskLine(task: WikiAgentSnapshot, language: "zh" | "en"): WikiProjectedTaskLine {
   const degraded = task.health === "degraded";
   const status = agentStatusSemantics(task.status);
-  const cluster = wikiTaskClusterLabel(task);
   const detail = taskLineDetail(task);
   const activity = taskLineActivity(task);
+  const role = task.role === "lead" ? "research" : task.role;
   return {
-    id: task.id,
-    role: task.role,
+    target: task.target,
+    role,
     status: task.status,
     marker: degraded ? "!" : status.marker,
     tone: degraded ? "warning" : status.tone,
     identity: wikiTaskIdentity(task),
-    ...(cluster ? { cluster } : {}),
     ...(detail ? { detail } : {}),
     ...(degraded ? { healthNotice: healthNotice(language) } : {}),
-    ...(task.attempts !== undefined ? { attempts: task.attempts } : {}),
+    attempt: task.attempt,
     ...(activity ? { activity } : {}),
     sortRank: TASK_SORT_RANK[task.status],
   };
 }
 
-function taskLineDetail(task: WikiTaskSnapshot): string | undefined {
+function taskLineDetail(task: WikiAgentSnapshot): string | undefined {
   if (task.status === "running") {
-    const tool = task.activeTool;
+    const tool = task.activeTools[0];
     if (!tool) return undefined;
     return tool.summary ? `${tool.name}  ${tool.summary}` : tool.name;
   }
   return task.summary;
 }
 
-function taskLineActivity(task: WikiTaskSnapshot): string | undefined {
+function taskLineActivity(task: WikiAgentSnapshot): string | undefined {
   if (task.status !== "running") return undefined;
-  if (task.activeTool?.name) return `${task.activeTool.name}…`;
+  if (task.activeTools[0]?.name) return `${task.activeTools[0].name}…`;
   switch (task.activity) {
     case "responding": return "responding…";
     case "tool": return "tool…";
+    case "using_tool": return "using tool…";
     case "compacting": return "compacting…";
     default: return undefined;
   }
@@ -447,19 +428,13 @@ function localizedStage(stage: WikiRunStage, language: "zh" | "en"): string {
   return labels[stage];
 }
 
-function localizedActivity(activity: string, language: "zh" | "en"): string {
-  const key = activity.replaceAll("_", " ");
-  if (language === "en") return key;
-  return ({ starting: "启动", waiting_model: "等待模型", streaming: "生成", using_tool: "使用工具", delegating: "委派", synthesizing: "汇总", retry_wait: "等待重试", finishing: "收尾", settled: "完成", responding: "生成", tool: "使用工具", idle: "空闲", compacting: "压缩上下文" } as Record<string, string>)[activity] ?? key;
-}
-
 function isLongWait(activityAt: string | undefined, heartbeatAt: string | undefined, now: number): boolean {
   const activity = activityAt ? Date.parse(activityAt) : NaN;
   const heartbeat = heartbeatAt ? Date.parse(heartbeatAt) : NaN;
   return Number.isFinite(activity) && now - activity >= 120_000 && Number.isFinite(heartbeat) && now - heartbeat < 15_000;
 }
 
-function formatAge(value: string | undefined, now: number): string | undefined {
+export function formatAge(value: string | undefined, now: number): string | undefined {
   const parsed = value ? Date.parse(value) : NaN;
   if (!Number.isFinite(parsed)) return undefined;
   const seconds = Math.max(0, Math.floor((now - parsed) / 1000));

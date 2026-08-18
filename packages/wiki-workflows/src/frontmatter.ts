@@ -37,7 +37,3 @@ export function okfSources(value: unknown): OkfSource[] | undefined {
   }
   return sources;
 }
-
-export function sourceResources(value: unknown): string[] {
-  return okfSources(value)?.map((source) => source.resource) ?? [];
-}

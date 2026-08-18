@@ -24,7 +24,7 @@ export type WikiRunEvent = WikiRunEventBase & (
       batch: number;
       completed: number;
       total: number;
-      tasks?: WikiTaskSnapshot[];
+      tasks?: WikiAgentSnapshot[];
       taskId?: string;
     }
   | { type: "paused"; reason?: WikiRunPause["reason"]; retryAt?: string }
@@ -52,24 +52,6 @@ export interface WikiContextStats {
   model?: string;
 }
 
-export interface WikiTaskSnapshot {
-  id: string;
-  role: "research" | "write" | "review";
-  status: "queued" | "running" | "complete" | "incomplete" | "failed";
-  health?: "healthy" | "degraded";
-  summary?: string;
-  attempts?: number;
-  attempt?: number;
-  startedAt?: string;
-  updatedAt?: string;
-  activity?: WikiTaskActivity;
-  activeTool?: WikiActiveTool;
-  usage?: WikiContextStats;
-  process?: WikiActivityEntry[];
-}
-
-export type WikiTaskActivity = "responding" | "tool" | "idle" | "compacting";
-
 export interface WikiActiveTool {
   id?: string;
   name: string;
@@ -83,7 +65,11 @@ export type WikiAgentTarget =
 
 export type WikiAgentStatus = "queued" | "running" | "retrying" | "complete" | "incomplete" | "failed" | "cancelled";
 
-export type WikiAgentActivity = WikiTaskActivity
+export type WikiAgentActivity =
+  | "responding"
+  | "tool"
+  | "idle"
+  | "compacting"
   | "starting"
   | "waiting_model"
   | "streaming"
@@ -96,7 +82,7 @@ export type WikiAgentActivity = WikiTaskActivity
 
 export interface WikiAgentSnapshot {
   target: WikiAgentTarget;
-  role: "lead" | WikiTaskSnapshot["role"];
+  role: "lead" | "research" | "write" | "review";
   status: WikiAgentStatus;
   attempt: number;
   activity: WikiAgentActivity;
@@ -135,7 +121,7 @@ export interface WikiDelegationBatchSummary {
   total: number;
   startedAt?: string;
   completedAt?: string;
-  tasks: WikiTaskSnapshot[];
+  tasks: WikiAgentSnapshot[];
 }
 
 /** Normalized checkpoint emitted by a Pi session observer. */

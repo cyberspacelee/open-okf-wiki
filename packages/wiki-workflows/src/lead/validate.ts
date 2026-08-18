@@ -1,17 +1,22 @@
-import { lstat, readFile, readdir, realpath, stat, unlink } from "node:fs/promises";
+import { lstat, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
-import { WikiValidationInfrastructureError, errorMessage } from "../failures.js";
+import { errorMessage } from "../failures.js";
 import { inside, readText } from "../files.js";
 import { okfSources, parsePage, stringifyPage } from "../frontmatter.js";
-import type { WikiValidation, WikiValidationIssue } from "../types.js";
+import { issue, type WikiValidation, type WikiValidationIssue } from "../types.js";
 import { isRecord } from "../util.js";
 import { parseSourceCitation, sourceCitationsEqual } from "../citations.js";
-import { wikiSourceSlug } from "../inspect.js";
+import type { ResolvedWikiSource } from "../workspace.js";
 import { isReservedWikiPagePath, isSafeWikiPagePath } from "./path.js";
-import { wikiSpecPagePaths, wikiSpecPages, wikiSpecPageType, type WikiSpec, type WikiSpecPage } from "./spec.js";
-import { loadWikiWorkspace, type ResolvedWikiSource } from "../workspace.js";
-import { validateWikiIndexes } from "./indexes.js";
-import type { WikiPinnedSourcePlan } from "../runtime-types.js";
+import { wikiSpecPages, wikiSpecPageType, type WikiSpec, type WikiSpecPage } from "./spec.js";
+import {
+  derivedIndexPaths,
+  resolveWikiRoots,
+  scanWikiTree,
+  specPagePaths,
+  validateWikiIndexes,
+  type ResolvedWikiRoots,
+} from "./indexes.js";
 
 const MERMAID_FLOW_DIRECTIONS = new Set(["TB", "TD", "BT", "RL", "LR"]);
 const MERMAID_DIAGRAM_TYPES = new Set(["sequenceDiagram", "classDiagram", "stateDiagram-v2", "erDiagram"]);
@@ -54,20 +59,6 @@ interface MermaidProblem {
 }
 
 type WikiValidationMode = "candidate" | "global";
-
-export interface ResolvedWikiRoots {
-  language: "zh" | "en";
-  /** Sources keyed by scopeId (original directory name, or `source` when implicit). */
-  sources: Map<string, Pick<ResolvedWikiSource, "path" | "absolutePath" | "realPath" | "repositoryRoot">>;
-  wiki: string;
-  workspace: string;
-  excludedPaths: readonly string[];
-}
-
-export interface WikiTreeScan {
-  markdown: string[];
-  issues: WikiValidationIssue[];
-}
 
 /**
  * Validate only the candidate pages declared by the final WikiSpec.
@@ -211,138 +202,6 @@ async function validateWikiPageContentWithRoots(
   await validatePageContent(roots, specPage, content, plannedTargets, "candidate", requiredSections, issues);
   return issues;
 }
-
-export async function resolveWikiRoots(root: string, wikiDirectory = "wiki", excludedPaths?: readonly string[]): Promise<ResolvedWikiRoots> {
-  try {
-    const configured = await loadWikiWorkspace(root);
-    const requestedWorkspace = path.resolve(configured.root);
-    const workspace = await realpath(requestedWorkspace);
-    if (!wikiDirectory || path.isAbsolute(wikiDirectory)) throw new WikiValidationInfrastructureError("Wiki directory must be workspace-relative");
-    const requestedWiki = inside(requestedWorkspace, path.resolve(requestedWorkspace, wikiDirectory));
-    let wikiEntry;
-    try {
-      wikiEntry = await lstat(requestedWiki);
-    } catch {
-      throw new WikiValidationInfrastructureError("wiki directory is missing");
-    }
-    if (wikiEntry.isSymbolicLink()) throw new WikiValidationInfrastructureError("wiki directory must not be a symbolic link");
-    if (!wikiEntry.isDirectory()) throw new WikiValidationInfrastructureError(`wiki directory is not a directory: ${wikiDirectory}`);
-    const wiki = await realpath(requestedWiki);
-    inside(workspace, wiki);
-    return {
-      workspace,
-      wiki,
-      language: configured.language,
-      sources: new Map(configured.sources.map((source) => [wikiSourceSlug(source.path), source])),
-      excludedPaths: excludedPaths ?? configured.wiki.exclude,
-    };
-  } catch (error) {
-    if (error instanceof WikiValidationInfrastructureError) throw error;
-    throw new WikiValidationInfrastructureError(errorMessage(error), { cause: error });
-  }
-}
-
-/** Resolve validation roots exclusively from the immutable production plan. */
-export async function resolvePinnedWikiRoots(
-  plan: WikiPinnedSourcePlan,
-  language: "zh" | "en",
-  wikiDirectory = "wiki",
-): Promise<ResolvedWikiRoots> {
-  try {
-    const requestedWorkspace = path.resolve(plan.workspaceRoot);
-    const workspace = await realpath(requestedWorkspace);
-    if (workspace !== path.resolve(plan.workspaceRealPath)) throw new WikiValidationInfrastructureError("Pinned workspace identity changed");
-    if (!wikiDirectory || path.isAbsolute(wikiDirectory)) throw new WikiValidationInfrastructureError("Wiki directory must be workspace-relative");
-    const requestedWiki = inside(requestedWorkspace, path.resolve(requestedWorkspace, wikiDirectory));
-    const wikiEntry = await lstat(requestedWiki).catch(() => undefined);
-    if (!wikiEntry) throw new WikiValidationInfrastructureError("wiki directory is missing");
-    if (wikiEntry.isSymbolicLink()) throw new WikiValidationInfrastructureError("wiki directory must not be a symbolic link");
-    if (!wikiEntry.isDirectory()) throw new WikiValidationInfrastructureError(`wiki directory is not a directory: ${wikiDirectory}`);
-    const wiki = await realpath(requestedWiki);
-    inside(workspace, wiki);
-    return {
-      workspace,
-      wiki,
-      language,
-      sources: new Map(plan.sources.map((source) => [source.scopeId, {
-        path: source.logicalPath,
-        absolutePath: source.absolutePath,
-        realPath: source.realPath,
-        repositoryRoot: source.repositoryRoot,
-      }])),
-      excludedPaths: [...plan.excludes],
-    };
-  } catch (error) {
-    if (error instanceof WikiValidationInfrastructureError) throw error;
-    throw new WikiValidationInfrastructureError(errorMessage(error), { cause: error });
-  }
-}
-
-export function specPagePaths(spec: WikiSpec): string[] {
-  return wikiSpecPagePaths(spec).sort();
-}
-
-export function derivedIndexPaths(pages: readonly string[]): string[] {
-  const directories = new Set<string>([""]);
-  for (const page of pages) {
-    let directory = path.posix.dirname(page);
-    while (directory && directory !== ".") {
-      directories.add(directory);
-      directory = path.posix.dirname(directory);
-    }
-  }
-  return [...directories]
-    .map((directory) => directory ? `${directory}/index.md` : "index.md")
-    .sort();
-}
-
-export async function scanWikiTree(wikiRoot: string, relative = ""): Promise<WikiTreeScan> {
-  const markdown: string[] = [];
-  const issues: WikiValidationIssue[] = [];
-  const directory = relative ? path.join(wikiRoot, ...relative.split("/")) : wikiRoot;
-  const entries = (await readdir(directory, { withFileTypes: true })).sort((left, right) => left.name.localeCompare(right.name));
-  for (const entry of entries) {
-    const child = relative ? `${relative}/${entry.name}` : entry.name;
-    if (entry.isSymbolicLink()) {
-      issue(issues, "wiki-safety", `Wiki tree must not contain symbolic links: ${child}`);
-    } else if (entry.isDirectory()) {
-      const nested = await scanWikiTree(wikiRoot, child);
-      markdown.push(...nested.markdown);
-      issues.push(...nested.issues);
-    } else if (entry.isFile()) {
-      if (entry.name.endsWith(".md")) markdown.push(child);
-    } else {
-      issue(issues, "wiki-safety", `Wiki tree contains a non-regular entry: ${child}`);
-    }
-  }
-  return { markdown: markdown.sort(), issues };
-}
-
-export async function removeRegularWikiFile(wikiRoot: string, relative: string): Promise<boolean> {
-  const absolute = safeWikiPath(wikiRoot, relative);
-  let entry;
-  try {
-    entry = await lstat(absolute);
-  } catch (error) {
-    if (isMissing(error)) return false;
-    throw error;
-  }
-  if (entry.isSymbolicLink()) throw new Error(`Refusing to remove a symbolic link from wiki/: ${relative}`);
-  if (!entry.isFile()) throw new Error(`Refusing to remove a non-regular Wiki file: ${relative}`);
-  inside(wikiRoot, await realpath(absolute));
-  await unlink(absolute);
-  return true;
-}
-
-export function safeWikiPath(wikiRoot: string, relative: string): string {
-  if (!relative || relative.includes("\\") || relative.startsWith("/")) throw new Error(`Unsafe Wiki path: ${relative}`);
-  const normalized = path.posix.normalize(relative);
-  if (normalized !== relative || normalized === "." || normalized.startsWith("../")) throw new Error(`Unsafe Wiki path: ${relative}`);
-  const absolute = inside(wikiRoot, path.resolve(wikiRoot, ...relative.split("/")));
-  if (absolute === path.resolve(wikiRoot)) throw new Error("Refusing to operate on the Wiki root directory");
-  return absolute;
-}
-
 
 async function validateTargetPage(
   roots: ResolvedWikiRoots,
@@ -975,19 +834,11 @@ export function validationResult(issues: WikiValidationIssue[], pages: string[],
   return { ok: issues.length === 0, issues, pages, obsoletePages };
 }
 
-export function issue(issues: WikiValidationIssue[], code: string, message: string, page?: string): void {
-  issues.push(page ? { code, page, message } : { code, message });
-}
-
-export function formatIssue(value: WikiValidationIssue): string {
-  return value.page ? `${value.page}: ${value.message}` : value.message;
-}
-
 export function sameStrings(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
-export function isMissing(error: unknown): boolean {
+function isMissing(error: unknown): boolean {
   return error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT";
 }
 

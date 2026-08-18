@@ -249,7 +249,7 @@ class WikiProductionRun {
         commitLead: async (facts) => { await this.record.commitLead(this.runId, facts, authority); },
         readLead: async () => (await this.record.read(this.runId))?.lead,
         record: async (observation) => {
-          await this.applyLeadObservations([observation], authority, controller.signal);
+          await this.applyLeadObservations(observation, authority, controller.signal);
         },
       };
       const outcome = await lead.run(request);
@@ -361,43 +361,41 @@ class WikiProductionRun {
   }
 
   private async applyLeadObservations(
-    observations: readonly WikiLeadObservation[],
+    observation: WikiLeadObservation,
     authority: WikiExecutionAuthority,
     signal: AbortSignal,
   ): Promise<void> {
-    for (const observation of observations) {
-      await this.assertCurrent(authority, signal);
-      if (observation.kind === "telemetry") {
-        await this.record.noteLive(this.runId, {
-          kind: "telemetry", target: observation.target, telemetry: observation.telemetry,
-        }, authority);
-        if (await this.refreshLiveIfFenced(authority)) await this.applyLiveTail(observation.target);
-        continue;
+    await this.assertCurrent(authority, signal);
+    if (observation.kind === "telemetry") {
+      await this.record.noteLive(this.runId, {
+        kind: "telemetry", target: observation.target, telemetry: observation.telemetry,
+      }, authority);
+      if (await this.refreshLiveIfFenced(authority)) await this.applyLiveTail(observation.target);
+      return;
+    }
+    if (observation.kind === "health") {
+      await this.record.noteLive(this.runId, {
+        kind: "health", target: observation.target, status: observation.status, at: observation.at,
+        ...(observation.message ? { message: observation.message } : {}),
+      }, authority);
+      if (await this.refreshLiveIfFenced(authority)) await this.applyLiveTail(observation.target);
+      return;
+    }
+    if (observation.kind === "progress") {
+      if (await this.refreshLiveIfFenced(authority)) {
+        this.lastMessage = observation.message;
+        this.emitLive(this.lastEvent ?? syntheticProgress(this.liveFacts!, this.lastMessage));
       }
-      if (observation.kind === "health") {
-        await this.record.noteLive(this.runId, {
-          kind: "health", target: observation.target, status: observation.status, at: observation.at,
-          ...(observation.message ? { message: observation.message } : {}),
-        }, authority);
-        if (await this.refreshLiveIfFenced(authority)) await this.applyLiveTail(observation.target);
-        continue;
-      }
-      if (observation.kind === "progress") {
-        if (await this.refreshLiveIfFenced(authority)) {
-          this.lastMessage = observation.message;
-          this.emitLive(this.lastEvent ?? syntheticProgress(this.liveFacts!, this.lastMessage));
-        }
-        continue;
-      }
-      if (observation.kind === "batch") {
-        if (!(await this.refreshLiveIfFenced(authority))) continue;
-        const facts = await this.record.read(this.runId);
-        if (facts) await this.replaceLive(facts);
-        if (observation.phase === "queued" || observation.phase === "completed") {
-          this.emitLive(delegateEvent(this.runId, observation, this.liveFacts ?? facts));
-        } else {
-          this.emitLive(this.lastEvent ?? syntheticProgress(this.liveFacts!, this.lastMessage));
-        }
+      return;
+    }
+    if (observation.kind === "batch") {
+      if (!(await this.refreshLiveIfFenced(authority))) return;
+      const facts = await this.record.read(this.runId);
+      if (facts) await this.replaceLive(facts);
+      if (observation.phase === "queued" || observation.phase === "completed") {
+        this.emitLive(delegateEvent(this.runId, observation, this.liveFacts ?? facts));
+      } else {
+        this.emitLive(this.lastEvent ?? syntheticProgress(this.liveFacts!, this.lastMessage));
       }
     }
   }

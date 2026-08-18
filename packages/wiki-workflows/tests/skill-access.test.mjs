@@ -4,8 +4,8 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { workflowTools, workspaceToolPolicy } from "../dist/agent-tools.js";
-import { pinnedWorkspaceToolPolicy } from "../dist/path-policy.js";
+import { workflowTools } from "../dist/agent-tools.js";
+import { pinnedWorkspaceToolPolicy, workspaceToolPolicy } from "../dist/path-policy.js";
 import { materializeProductionSkill, skillWorkspacePath } from "../dist/skill-store.js";
 
 async function workspace(t) {
