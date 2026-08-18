@@ -1,6 +1,6 @@
 import { wikiSpecClusterId, wikiSpecClusterPaths, wikiSpecClusters, wikiSpecDomainIds, wikiSpecRelativePath, type WikiSpec } from "./spec.js";
 import type { WikiArtifactRef } from "../artifact-store.js";
-import type { WikiFollowupKind } from "../delegate-contracts.js";
+import type { WikiFollowupKind, WikiResearchDomain } from "../delegate-contracts.js";
 
 export type WikiBoardWaveName = "discovery" | "supplement" | "write" | "review";
 export type WikiBoardWaveStatus = "pending" | "queued" | "running" | "complete" | "blocked";
@@ -45,6 +45,7 @@ export interface WikiBoardTask {
   followups?: Array<{ id: string; kind: WikiFollowupKind; question: string; sourceScopeIds: string[] }>;
   conflicts?: string[];
   needsFollowup?: boolean;
+  domains?: WikiResearchDomain[];
   artifactRefs?: WikiArtifactRef[];
   blockingReasons?: string[];
 }
@@ -89,11 +90,7 @@ export interface WikiBoardModel {
   conflicts?: string[];
 }
 
-export interface WikiBoardTaxonomyDecision {
-  sourceScopeId: string;
-  domainId: string;
-  conceptIds: string[];
-}
+export type WikiBoardTaxonomyDecision = WikiResearchDomain;
 
 export interface WikiBoardTaxonomyCheckpoint {
   accepted: true;
@@ -131,6 +128,7 @@ export interface WikiBoardProjectionTask {
     followups?: readonly { id: string; kind: WikiFollowupKind; question: string; sourceScopeIds: readonly string[] }[];
     coverage?: readonly string[];
     gaps?: readonly { question: string; sourceScopeIds?: readonly string[] }[];
+    domains?: readonly WikiResearchDomain[];
     review?: { verdict: "pass" | "changes_requested" };
   };
 }
@@ -366,6 +364,7 @@ function toBoardTask(task: WikiBoardProjectionTask, batchId?: number): WikiBoard
     ...(followups.length ? { followups: followups.map((followup) => ({ id: followup.id, kind: followup.kind, question: followup.question, sourceScopeIds: [...followup.sourceScopeIds] })) } : {}),
     ...(conflicts.length ? { conflicts } : {}),
     ...(receipt?.needsFollowup !== undefined ? { needsFollowup: receipt.needsFollowup } : {}),
+    ...(receipt?.domains ? { domains: receipt.domains.map((domain) => ({ ...domain, conceptIds: [...domain.conceptIds] })) } : {}),
     ...(receipt?.outputs ? { artifactRefs: [...receipt.outputs] } : {}),
     ...(blockingReasons.length ? { blockingReasons } : {}),
   };
@@ -476,8 +475,9 @@ export function renderWikiBoard(model: WikiBoardModel): string {
       if (assignment.domainScopeIds.length) lines.push(`  - domains: ${assignment.domainScopeIds.join(", ")}`);
     }
     for (const task of tasks.filter((task) => task.role === "research")) {
-      if (task.contextRefs?.length) lines.push(`- task \`${task.id}\` context: ${task.contextRefs.join(", ")}`);
-      for (const artifact of task.artifactRefs ?? []) lines.push(`- task \`${task.id}\` artifact: ${artifact.nodeId}`);
+      for (const domain of task.domains ?? []) {
+        lines.push(`- ${domain.sourceScopeId}/${domain.domainId}: ${domain.conceptIds.join(", ") || "(none)"}`);
+      }
       for (const coverage of task.coverage ?? []) lines.push(`- coverage: ${coverage}`);
       for (const gap of task.gaps ?? []) lines.push(`- blocker: ${gap}`);
       for (const gap of task.gapQuestions ?? []) lines.push(`  - question: ${gap.question}`);
@@ -508,6 +508,37 @@ function formatTask(task: WikiBoardTask): string {
 
 function yesNo(value: boolean): string {
   return value ? "yes" : "no";
+}
+
+/** Latest complete research inventory per Source, as taxonomy decisions. */
+export function researchTaxonomyDecisions(
+  tasks: readonly {
+    role: string;
+    phase: string;
+    sourceScopeIds?: readonly string[];
+    receipt?: { domains?: readonly WikiResearchDomain[] };
+  }[],
+): WikiBoardTaxonomyDecision[] {
+  const bySource = new Map<string, WikiBoardTaxonomyDecision[]>();
+  for (const task of tasks) {
+    if (task.role !== "research" || task.phase !== "terminal" || !task.receipt?.domains?.length) continue;
+    const source = task.sourceScopeIds?.[0] ?? task.receipt.domains[0]?.sourceScopeId;
+    if (!source) continue;
+    bySource.set(source, structuredClone([...task.receipt.domains]));
+  }
+  return [...bySource.values()].flat();
+}
+
+export function mergeTaxonomyDecisions(
+  current: readonly WikiBoardTaxonomyDecision[],
+  incoming: readonly WikiBoardTaxonomyDecision[],
+  replaceSourceIds: readonly string[],
+): WikiBoardTaxonomyDecision[] {
+  const replace = new Set(replaceSourceIds);
+  return [
+    ...current.filter((decision) => !replace.has(decision.sourceScopeId)),
+    ...incoming.filter((decision) => replace.has(decision.sourceScopeId)),
+  ];
 }
 
 function compareText(left: string, right: string): number {

@@ -56,10 +56,12 @@ async function settleResearch(run, contracts, extra = {}) {
   for (const contract of contracts) {
     const followups = extra.followups ?? [];
     await run.taskTransitions.taskStarted(contract.batchId, contract.id, { attempt: 1 });
+    const status = extra.status ?? "complete";
     await run.taskTransitions.taskSettled(contract.batchId, contract.id, { attempt: 1, receipt: {
-      id: contract.id, role: "research", status: extra.status ?? "complete", summary: "complete", outputs: [],
-      completedAssignmentIds: extra.status === "complete" || extra.status === undefined ? contract.assignmentIds : [],
+      id: contract.id, role: "research", status, summary: "complete", outputs: [],
+      completedAssignmentIds: status === "complete" ? contract.assignmentIds : [],
       needsFollowup: followups.length > 0, followups, coverage: contract.assignmentIds, gaps: [], attempts: 1,
+      ...(status === "failed" ? {} : { domains: extra.domains ?? (status === "complete" ? [{ sourceScopeId: contract.sourceScopeIds[0], domainId: "core", conceptIds: [] }] : []) }),
       ...(extra.error ? { error: extra.error } : {}), contractId: contract.contractId, contractDigest: contract.contractDigest,
     } });
   }
@@ -163,6 +165,8 @@ test("supplement splits one task per Source and keeps questions source-local", a
   assert.ok(supplement.contracts.every((contract) => contract.sourceScopeIds.length === 1));
   assert.deepEqual(supplement.contracts[0].domainScopeIds, []);
   assert.deepEqual(supplement.contracts[0].lensScopeIds, []);
+  assert.match(supplement.contracts[0].instruction, /Answer only these research blockers with locators/);
+  assert.match(supplement.contracts[0].instruction, /Finish complete with empty followups once they are answered/);
   assert.match(supplement.contracts[0].instruction, /Which fallback is authoritative\?/);
   assert.doesNotMatch(supplement.contracts[0].instruction, /Who owns the widget schema\?/);
   assert.doesNotMatch(supplement.contracts[0].instruction, /gap-a/);

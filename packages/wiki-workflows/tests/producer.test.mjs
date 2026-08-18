@@ -49,6 +49,7 @@ async function completeDiscovery(lead, sourceScopeId) {
     await lead.taskTransitions.taskSettled(batchId, contract.id, { attempt: 1, receipt: {
       id: contract.id, role: "research", status: "complete", summary: "complete", outputs: [],
       completedAssignmentIds: contract.assignmentIds, needsFollowup: false, followups: [],
+      domains: [{ sourceScopeId: contract.sourceScopeIds[0], domainId: "core", conceptIds: [] }],
       coverage: contract.assignmentIds, gaps: [], attempts: 1,
       contractId: contract.contractId, contractDigest: contract.contractDigest,
     } });

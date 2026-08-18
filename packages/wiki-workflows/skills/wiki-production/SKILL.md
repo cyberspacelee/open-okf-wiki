@@ -13,26 +13,27 @@ to its durable Source, Task Receipt, and Candidate state.
 1. Read `.okf-wiki/current/board.md`. It is the read-only authority for the
    next ready wave and remaining work.
 2. For discovery, read every host-created
-   `.okf-wiki/current/research/source-NNN.md` slot. Add concise research
-   direction in place only when the generated direction needs refinement, then
-   call `wiki_delegate_start` with no arguments. The host binds slots to pinned
-   Sources and queues the complete ready wave.
+   `.okf-wiki/current/research/source-NNN.md` slot. These are dispatch
+   directions, not research results. Refine in place only to name that Source
+   or a known isolation boundary, then call `wiki_delegate_start` with no
+   arguments. The host binds slots to pinned Sources and queues the complete
+   ready wave.
 3. After `wiki_delegate_start`, continue useful Lead work, then call
    `wiki_delegate_collect` and re-read the board. Use `wiki_delegate_collect`
    only for a non-blocking snapshot (`timeoutSeconds: 0`) or one long wait
-   (`until: "all"`). Do not poll with short timeouts. When evidence prose is
-   needed, use Pi `read` on the read-only artifact or resource paths shown on
-   the board. A failed or incomplete Task Receipt is missing coverage, never
-   evidence of absence. When the board makes a supplement ready, call
-   `wiki_delegate_start` again with no arguments; the host derives its scope
-   from current blockers.
-4. When research is ready, edit the host-provided
-   `.okf-wiki/current/taxonomy.yaml` in place. Preserve its shape, keep each
-   `sourceScopeId` as the matching Wiki source folder, and reconcile
-   source-local domains, cross-source relations, conflicts, and minority
-   evidence. Call `wiki_taxonomy` with no arguments; it consumes that file.
-   If the host rejects the file, fix every named defect in the same rewrite,
-   then submit again.
+   (`until: "all"`). Do not poll with short timeouts. A failed or incomplete
+   Task Receipt is missing coverage, never evidence of absence. Follow
+   `nextAction` on the board: call `wiki_delegate_start` again when it is
+   `supplement`; the host derives that wave from current blockers.
+4. When `nextAction` is `taxonomy`, edit `.okf-wiki/current/taxonomy.yaml`.
+   The board `## Research` list and that file share the same
+   `sourceScopeId/domainId/conceptIds` inventory; the host may already have
+   drafted the file. Preserve its shape, keep each `sourceScopeId` as the
+   matching Wiki source folder, and reconcile source-local domains,
+   cross-source relations, conflicts, and minority evidence. Call
+   `wiki_taxonomy` with no arguments; it consumes that file. If the host
+   rejects the file, fix every named defect in the same rewrite, then submit
+   again.
 5. Read [topology](references/topology.md), edit
    `.okf-wiki/current/wiki-spec.yaml` in place under the host-written source
    folders, then call `wiki_plan` with no arguments. It consumes that file.

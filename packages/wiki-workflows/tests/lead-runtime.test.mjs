@@ -105,7 +105,7 @@ function leafContext(_cwd, candidateWikiRoot) {
 
 function researchHandoff(coverage = "Surveyed the source.") {
   return [
-    "---", "followups: []", "---",
+    "---", "followups: []", "domains:", "  - id: runtime", "    conceptIds: [session]", "---",
     "# Research Handoff",
     "## Scope", "- **Source:** source",
     "## Coverage", coverage,
@@ -508,12 +508,12 @@ test("Pi research finish schema is ID-free and host injects complete assignment 
       await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: researchHandoff() });
       await assert.rejects(
         execute(options.customTools, "wiki_research_finish", {
-          status: "complete", summary: "incorrectly complete", completedAssignmentIds: [], needsFollowup: false, followups: [],
+          status: "complete", summary: "incorrectly complete", completedAssignmentIds: [], needsFollowup: false, followups: [], domains: [{ id: "runtime", conceptIds: ["session"] }],
         }),
         /unknown fields/,
       );
       await execute(options.customTools, "wiki_research_finish", { status: "complete" });
-      await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: "---\nfollowups: []\n---\nMutated after finish.\n" });
+      await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: "---\nfollowups: []\ndomains:\n  - id: runtime\n    conceptIds: [session]\n---\nMutated after finish.\n" });
     }, { text: "# Research Handoff\n\nSurveyed the source." })(options),
   });
   const result = await agent.run(
@@ -617,7 +617,7 @@ test("Pi research finish reports every named defect from one rejected finish", a
     skillRoot,
     createSession: async (options) => sessionFactory(async () => {
       await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: [
-        "---", "followups: []", "summary: forged", "---",
+        "---", "followups: []", "domains:", "  - id: runtime", "    conceptIds: [session]", "summary: forged", "---",
         "# Research Handoff",
         "## Coverage", "assignment:forged",
         "## Evidence", "repo:source/a.ts#L1-L1",
@@ -751,7 +751,7 @@ test("Lead taxonomy tool durably accepts a compact source-qualified checkpoint",
     createSession: async (options) => sessionFactory(async () => {
       const names = new Set(options.customTools.map((tool) => tool.name));
       if (names.has("wiki_research_finish")) {
-        await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: "---\nfollowups: []\n---\n# Research Handoff\n## Scope\nCovered the assigned Source.\n## Coverage\nComplete.\n## Conflicts and alternatives\nNone.\n## Gaps and failed reads\nNone.\n## Evidence\nsource/a.ts#L1-L1\n" });
+        await execute(options.customTools, "write", { path: ".okf-wiki/task/handoff.md", content: "---\nfollowups: []\ndomains:\n  - id: runtime\n    conceptIds: [session]\n---\n# Research Handoff\n## Scope\nCovered the assigned Source.\n## Coverage\nComplete.\n## Conflicts and alternatives\nNone.\n## Gaps and failed reads\nNone.\n## Evidence\nsource/a.ts#L1-L1\n" });
         await execute(options.customTools, "wiki_research_finish", { status: "complete" });
         return;
       }

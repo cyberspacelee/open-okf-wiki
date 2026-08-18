@@ -27,8 +27,8 @@ test("delegate contract and receipt parsers reject forged identity, digest, atte
 test("delegate receipt codec requires exact durable contract identity and projects a public-only outcome", () => {
   const receipt = {
     id: "research", role: "research", status: "complete", summary: "done", outputs: [],
-    completedAssignmentIds: ["assignment-1"], needsFollowup: true,
-    followups: [{ id: "f-1", kind: "evidence_gap", question: "Anything else?", sourceScopeIds: ["source"] }],
+    completedAssignmentIds: ["assignment-1"], needsFollowup: false, followups: [],
+    domains: [{ sourceScopeId: "source", domainId: "core", conceptIds: ["session"] }],
     attempts: 1,
     contractId: "b1-research", contractDigest: "a".repeat(64),
   };
@@ -39,7 +39,7 @@ test("delegate receipt codec requires exact durable contract identity and projec
   assert.throws(() => parseWikiDelegateReceipt(missingId), /contract id/);
   assert.deepEqual(projectWikiAgentOutcome(receipt), {
     id: "research", role: "research", status: "complete", summary: "done", coverage: ["assignment-1"], gaps: [], attempts: 1,
-    completedAssignmentIds: ["assignment-1"], followups: receipt.followups,
+    completedAssignmentIds: ["assignment-1"], domains: receipt.domains,
   });
 });
 
@@ -48,6 +48,7 @@ test("research completion accepts every concrete followup kind", () => {
   const completion = parseWikiResearchCompletion({
     status: "incomplete", summary: "needs targeted follow-up", completedAssignmentIds: ["assignment-1"], needsFollowup: true,
     followups: kinds.map((kind) => ({ kind, question: `Question for ${kind}`, sourceScopeIds: ["source"] })),
+    domains: [],
   });
   assert.deepEqual(completion.followups.map((followup) => followup.kind), kinds);
 });
@@ -56,17 +57,18 @@ test("incomplete research completion may report no completed assignments", () =>
   const completion = parseWikiResearchCompletion({
     status: "incomplete", summary: "no assignment completed", completedAssignmentIds: [], needsFollowup: true,
     followups: [{ kind: "tool_failure", question: "Source read failed", sourceScopeIds: ["source"] }],
+    domains: [],
   });
   assert.deepEqual(completion.completedAssignmentIds, []);
 });
 
 test("incomplete research completion requires a follow-up blocker", () => {
   assert.throws(() => parseWikiResearchCompletion({
-    status: "incomplete", summary: "blocked", completedAssignmentIds: [], needsFollowup: false, followups: [],
+    status: "incomplete", summary: "blocked", completedAssignmentIds: [], needsFollowup: false, followups: [], domains: [],
   }), /requires followups/);
   assert.throws(() => parseWikiDelegateReceipt({
     id: "research", role: "research", status: "incomplete", summary: "blocked", outputs: [],
-    completedAssignmentIds: [], needsFollowup: false, followups: [], attempts: 1,
+    completedAssignmentIds: [], needsFollowup: false, followups: [], domains: [], attempts: 1,
     contractId: "b1-research", contractDigest: "a".repeat(64),
   }), /requires followups/);
 });

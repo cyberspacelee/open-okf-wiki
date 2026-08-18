@@ -23,6 +23,8 @@ export {
 export {
   projectWikiBoard,
   renderWikiBoard,
+  researchTaxonomyDecisions,
+  mergeTaxonomyDecisions,
   wikiLeadMayWrite,
   wikiNextAction,
   type WikiBoardCluster,
@@ -48,7 +50,7 @@ export {
   type WikiDispatchTaskInput,
   type WikiLogicalWave,
 } from "./dispatch.js";
-export { isReservedWikiPagePath, isSafeWikiPagePath } from "./path.js";
+export { isReservedWikiPagePath, isSafeWikiPagePath, isWikiTaxonomySlug } from "./path.js";
 export { derivedIndexPaths } from "./validate.js";
 export {
   WikiCandidateCorruptionError,

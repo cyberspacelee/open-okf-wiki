@@ -29,7 +29,7 @@ import {
   type WikiPublicationSeal,
 } from "../wiki-publication-seal.js";
 import { sameStringSet, stableStringify } from "../util.js";
-import { projectWikiBoard, renderWikiBoard, wikiLeadMayWrite, wikiOpenResearchBlockerIds, type WikiBoardProjectionInput, type WikiBoardTaxonomyCheckpoint, type WikiBoardTaxonomyDecision } from "./board.js";
+import { projectWikiBoard, renderWikiBoard, researchTaxonomyDecisions, wikiLeadMayWrite, wikiOpenResearchBlockerIds, type WikiBoardProjectionInput, type WikiBoardTaxonomyCheckpoint, type WikiBoardTaxonomyDecision } from "./board.js";
 import { assertDispatchable, clusterSourceScopeIds, contextRefsForSources, selectReadyClusters, type WikiDispatchTaskInput } from "./dispatch.js";
 import { UnsupportedWikiRunVersionError, WIKI_FORMAT } from "../run-ledger.js";
 import { WikiRejectedError, allowedList, listed } from "../wiki-reject.js";
@@ -208,6 +208,19 @@ export class WikiLeadRun {
 
   get taxonomyCheckpoint(): WikiBoardTaxonomyCheckpoint | undefined {
     return this.state.taxonomy ? structuredClone(this.state.taxonomy) : undefined;
+  }
+
+  researchTaxonomyDecisions(): WikiBoardTaxonomyDecision[] {
+    return researchTaxonomyDecisions(this.state.delegates.batches.flatMap((batch) => batch.tasks.map((task) => ({
+      role: task.task.role,
+      phase: task.phase,
+      sourceScopeIds: task.task.sourceScopeIds,
+      receipt: task.receipt,
+    }))));
+  }
+
+  get nextAction() {
+    return projectWikiBoard(boardInput(this.state)).nextAction;
   }
 
   get compactionObserved(): boolean { return this.state.compactionObserved; }
@@ -1024,7 +1037,7 @@ function supplementInstruction(
 ): string {
   const questions = unique(blockers.flatMap((blocker) => tasks.flatMap((task) => blockerQuestion(blocker, task))));
   if (!questions.length) throw new Error("Open research blockers have no human-readable question or gap");
-  return ["Resolve these open research questions using grounded source evidence:", ...questions.map((question) => `- ${question}`), "Produce a complete evidence handoff."].join("\n");
+  return ["Answer only these research blockers with locators:", ...questions.map((question) => `- ${question}`), "Finish complete with empty followups once they are answered."].join("\n");
 }
 
 function blockerQuestion(blocker: string, task: WikiTaskRuntimeState["batches"][number]["tasks"][number]): string[] {
@@ -1246,6 +1259,7 @@ function boardInput(state: WikiLeadRunState): WikiBoardProjectionInput {
             ...(task.receipt.followups ? { followups: task.receipt.followups } : {}),
             ...(task.receipt.coverage ? { coverage: task.receipt.coverage } : {}),
             ...(task.receipt.gaps ? { gaps: task.receipt.gaps } : {}),
+            ...(task.receipt.domains ? { domains: task.receipt.domains } : {}),
             ...(task.receipt.review ? { review: { verdict: task.receipt.review.verdict } } : {}),
           } } : {}),
         })),

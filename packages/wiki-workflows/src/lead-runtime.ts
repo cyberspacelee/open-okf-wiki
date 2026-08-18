@@ -48,13 +48,16 @@ import {
   createWikiPlanTool,
   createWikiTaxonomyTool,
   derivedIndexPaths,
+  mergeTaxonomyDecisions,
   parseWikiSpec,
   wikiLeadMayWrite,
   wikiSpecPagePaths,
   WikiLeadRun,
+  type WikiBoardTaxonomyDecision,
   type WikiDelegateCancelReasonCode,
   type WikiSpec,
 } from "./lead.js";
+import type { WikiAgentOutcome } from "./producer-types.js";
 import { wikiToolRejected } from "./wiki-tool-error.js";
 import type { WikiReviewResult } from "./delegate-contracts.js";
 import { existsSync, readFileSync } from "node:fs";
@@ -282,8 +285,11 @@ async function runLeadSession(
         if (!active) throw new Error(`No active Wiki wave to ${operation}`);
         return active;
       };
-      const presentBatch = async (snapshot: Awaited<ReturnType<WikiTaskRuntime["collect"]>>) =>
-        projectWikiLeadSnapshot(await leadRun.presentSnapshot(snapshot));
+      const presentBatch = async (snapshot: Awaited<ReturnType<WikiTaskRuntime["collect"]>>) => {
+        const presented = projectWikiLeadSnapshot(await leadRun.presentSnapshot(snapshot));
+        await prefillTaxonomyDraft(leadRun, policy.workspaceRoot, leadFileSlots, presented);
+        return presented;
+      };
       const thinkingClock = createThinkingClock(sessionOptions.sessionTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS);
       const collectCurrent = async (collectOptions: { until: "any" | "all"; timeoutSeconds?: number }) => {
         const active = await requireActiveWave("collect");
@@ -781,7 +787,7 @@ async function ensureLeadFileDrafts(workspaceRoot: string, slots: readonly WikiW
   ]);
   const research = slots.filter((slot) => slot.logicalPath.startsWith(".okf-wiki/current/research/"));
   for (let index = 0; index < sourceScopeIds.length; index += 1) {
-    defaults.set(research[index].logicalPath, "Survey this pinned Source completely, preserving its local terminology, evidence, conflicts, and cross-source relationships.\n");
+    defaults.set(research[index].logicalPath, "Inventory this pinned Source: domains, concepts, entry points, public interfaces, important flows, and cross-source relationships. Cite locators and preserve local terminology, conflicts, and minority evidence.\n");
   }
   for (const [logicalPath, content] of defaults) {
     const slot = leadSlot(slots, logicalPath);
@@ -791,6 +797,37 @@ async function ensureLeadFileDrafts(workspaceRoot: string, slots: readonly WikiW
       await writeWikiWorkflowFile(workspaceRoot, slot, content);
     }
   }
+}
+
+async function prefillTaxonomyDraft(
+  leadRun: WikiLeadRun,
+  workspaceRoot: string,
+  slots: readonly WikiWorkflowFileSlot[],
+  snapshot: { status: string; receipts: WikiAgentOutcome[] },
+): Promise<void> {
+  if (leadRun.taxonomyCheckpoint || snapshot.status !== "complete") return;
+  if (leadRun.nextAction !== "taxonomy") return;
+  const incoming = leadRun.researchTaxonomyDecisions();
+  if (!incoming.length) return;
+  const slot = leadSlot(slots, ".okf-wiki/current/taxonomy.yaml");
+  let current: { revision?: unknown; decisions?: unknown; conflictIds?: unknown } = {};
+  try {
+    current = YAML.parse(decodeUtf8Fatal(await readWikiWorkflowFile(workspaceRoot, slot))) as typeof current;
+  } catch (error) {
+    if (!error || typeof error !== "object" || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const currentDecisions = Array.isArray(current.decisions) ? current.decisions as WikiBoardTaxonomyDecision[] : [];
+  const collectedSources = [...new Set(snapshot.receipts.flatMap((receipt) => receipt.domains ?? []).map((domain) => domain.sourceScopeId))];
+  const decisions = currentDecisions.length === 0
+    ? incoming
+    : mergeTaxonomyDecisions(currentDecisions, incoming, collectedSources);
+  const conflictIds = Array.isArray(current.conflictIds) ? current.conflictIds.filter((id): id is string => typeof id === "string") : [];
+  const revision = Number.isSafeInteger(current.revision) && (current.revision as number) >= 1 ? current.revision as number : 1;
+  await writeWikiWorkflowFile(workspaceRoot, slot, formatTaxonomyDraft(revision, decisions, conflictIds));
+}
+
+function formatTaxonomyDraft(revision: number, decisions: readonly WikiBoardTaxonomyDecision[], conflictIds: readonly string[]): string {
+  return YAML.stringify({ revision, decisions, conflictIds });
 }
 
 function leadSlot(slots: readonly WikiWorkflowFileSlot[], logicalPath: string): WikiWorkflowFileSlot {

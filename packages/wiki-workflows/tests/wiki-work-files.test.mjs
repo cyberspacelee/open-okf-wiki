@@ -13,6 +13,7 @@ import {
 
 const research = (frontmatter, body = "Summary paragraph.\n\nDetailed evidence.") =>
   `---\n${frontmatter}\n---\n${body}\n`;
+const inventory = "domains:\n  - id: runtime\n    conceptIds: [session]";
 
 test("truncateUtf8 respects ASCII, Han, emoji, and combining code point boundaries", () => {
   assert.equal(truncateUtf8("abcd", 3), "abc");
@@ -31,21 +32,17 @@ test("decodeUtf8Fatal decodes valid bytes and rejects malformed UTF-8", () => {
 test("parseResearchHandoff derives a byte-bounded summary and injects Source scopes", () => {
   const longSummary = "😀".repeat(300);
   const result = parseResearchHandoff(research([
-    "followups:",
-    "  - kind: evidence_gap",
-    "    question: Verify the fallback path",
+    "followups: []",
+    inventory,
   ].join("\n"), `${longSummary}\n\nMore detail.`), "complete", ["source-a", "source-b"]);
   assert.equal(Buffer.byteLength(result.summary, "utf8"), 1024);
   assert.equal(result.summary, "😀".repeat(256));
   assert.deepEqual(result, {
     status: "complete",
     summary: "😀".repeat(256),
-    needsFollowup: true,
-    followups: [{
-      kind: "evidence_gap",
-      question: "Verify the fallback path",
-      sourceScopeIds: ["source-a", "source-b"],
-    }],
+    needsFollowup: false,
+    followups: [],
+    domains: [{ id: "runtime", conceptIds: ["session"] }],
   });
 });
 
@@ -67,7 +64,7 @@ test("parseResearchHandoff derives its summary from Skill-format substantive pro
     "",
     "- [runtime.ts](source/runtime.ts#L1-L10)",
   ].join("\n");
-  const result = parseResearchHandoff(research("followups: []", body), "complete", ["source"]);
+  const result = parseResearchHandoff(research(`followups: []\n${inventory}`, body), "complete", ["source"]);
   assert.equal(result.summary, "The runtime maps each request to a pinned Source and preserves conflicts for later synthesis.");
 });
 
@@ -90,7 +87,7 @@ test("parseResearchHandoff accepts every followup kind", () => {
     `  - kind: ${kind}`,
     `    question: Question for ${kind}`,
   ])].join("\n");
-  const result = parseResearchHandoff(research(yaml), "incomplete", ["source"]);
+  const result = parseResearchHandoff(research(`${yaml}\ndomains: []`), "incomplete", ["source"]);
   assert.deepEqual(result.followups.map((followup) => followup.kind), kinds);
 });
 
@@ -99,6 +96,7 @@ test("parseResearchHandoff preserves an empty allowed Source scope set", () => {
     "followups:",
     "  - kind: tool_failure",
     "    question: Artifact read failed",
+    "domains: []",
   ].join("\n")), "incomplete", []);
   assert.deepEqual(result.followups[0].sourceScopeIds, []);
 });
@@ -109,6 +107,7 @@ test("parseResearchHandoff truncates oversized followup questions to 512 UTF-8 b
     "followups:",
     "  - kind: evidence_gap",
     `    question: ${oversized}`,
+    "domains: []",
   ].join("\n")), "incomplete", ["source"]);
   assert.equal(result.followups[0].question, truncateUtf8(oversized, 512));
   assert.ok(Buffer.byteLength(result.followups[0].question, "utf8") <= 512);
@@ -121,7 +120,7 @@ test("parseResearchHandoff collects every work-file semantic defect", () => {
     (error) => {
       assert.ok(error instanceof WikiRejectedError);
       assert.match(error.message, /handoff\.md frontmatter has unknown fields: summary/);
-      assert.match(error.message, /handoff\.md frontmatter missing fields: followups/);
+      assert.match(error.message, /handoff\.md frontmatter missing fields: followups, domains/);
       return true;
     },
   );
@@ -132,6 +131,7 @@ test("parseResearchHandoff collects every work-file semantic defect", () => {
       "    question: ",
       "    source: forged",
       "  - kind: evidence_gap",
+      "domains: []",
     ].join("\n")), "incomplete", ["source"]),
     (error) => {
       assert.match(error.message, /followups\[0\] has unknown fields: source/);
@@ -142,20 +142,24 @@ test("parseResearchHandoff collects every work-file semantic defect", () => {
     },
   );
   assert.throws(
-    () => parseResearchHandoff(research("followups: []"), "incomplete", ["source"]),
+    () => parseResearchHandoff(research("followups: []\ndomains: []"), "incomplete", ["source"]),
     /incomplete research requires followups/,
+  );
+  assert.throws(
+    () => parseResearchHandoff(research("followups: []\ndomains: []"), "complete", ["source"]),
+    /complete research requires domains/,
   );
 });
 
 test("inspectResearchHandoff keeps structural defects from later semantic collection", () => {
-  const inspected = inspectResearchHandoff("---\nfollowups: []\n---\n   ", "complete", ["source"]);
+  const inspected = inspectResearchHandoff("---\nfollowups: []\ndomains: []\n---\n   ", "complete", ["source"]);
   assert.equal(inspected.structural, true);
   assert.deepEqual(inspected.defects, ["handoff.md body must be nonempty"]);
   assert.equal(inspected.signal, undefined);
 });
 
 test("parseResearchHandoff accepts an outline-only body and falls back for the summary", () => {
-  const result = parseResearchHandoff(research("followups: []", [
+  const result = parseResearchHandoff(research(`followups: []\n${inventory}`, [
     "# Research Handoff",
     "## Scope",
     "- **Source:** source",
@@ -167,8 +171,8 @@ test("parseResearchHandoff accepts an outline-only body and falls back for the s
 });
 
 test("handoff parsers reject empty bodies, malformed bytes, and files over 256 KiB", () => {
-  assert.throws(() => parseResearchHandoff(research("followups: []", "   "), "complete", ["source"]), /handoff\.md body must be nonempty/);
-  const malformed = Buffer.concat([Buffer.from("---\nfollowups: []\n---\nbody\n"), Buffer.from([0xc3, 0x28])]);
+  assert.throws(() => parseResearchHandoff(research(`followups: []\n${inventory}`, "   "), "complete", ["source"]), /handoff\.md body must be nonempty/);
+  const malformed = Buffer.concat([Buffer.from("---\nfollowups: []\ndomains: []\n---\nbody\n"), Buffer.from([0xc3, 0x28])]);
   assert.throws(() => parseResearchHandoff(malformed, "complete", ["source"]), /Malformed UTF-8/);
   assert.throws(() => parseResearchHandoff("x".repeat(MAX_WIKI_WORK_FILE_BYTES + 1), "complete", ["source"]), /handoff\.md exceeds 256 KiB/);
 });

@@ -43,6 +43,7 @@ function runtime(agent, values = {}) {
             summary: result.summary,
             needsFollowup: false,
             followups: [],
+            domains: [{ id: "core", conceptIds: [] }],
           },
         } : {}),
         markdown: testHandoff(contract, result.markdown),
@@ -135,7 +136,7 @@ test("durable queued contract commit completes before an Agent can launch", asyn
   const transitions = memoryTransitions({ batches: [] });
   const subject = new WikiTaskRuntime({
     runId: "run-1", sourceScopes: ["api"], artifactStore: store(),
-    agent: { async run(value) { launched = true; return { summary: "ok", markdown: testHandoff(value, "ok"), research: { status: "complete", summary: "ok", needsFollowup: false, followups: [] } }; } },
+    agent: { async run(value) { launched = true; return { summary: "ok", markdown: testHandoff(value, "ok"), research: { status: "complete", summary: "ok", needsFollowup: false, followups: [], domains: [{ id: "core", conceptIds: [] }] } }; } },
     transitions: { ...transitions, async batchQueued(contracts) { await queued; await transitions.batchQueued(contracts); } },
   });
   const starting = subject.start([contract(1, task("ordered"))], new AbortController().signal);
@@ -151,7 +152,7 @@ test("durable transition failure is consumed and surfaced by collect", async () 
   const transitions = memoryTransitions({ batches: [] });
   const subject = new WikiTaskRuntime({
     runId: "run-1", sourceScopes: ["api"], artifactStore: store(),
-    agent: { async run(value) { return { summary: "ok", markdown: testHandoff(value, "ok"), research: { status: "complete", summary: "ok", needsFollowup: false, followups: [] } }; } },
+    agent: { async run(value) { return { summary: "ok", markdown: testHandoff(value, "ok"), research: { status: "complete", summary: "ok", needsFollowup: false, followups: [], domains: [{ id: "core", conceptIds: [] }] } }; } },
     transitions: { ...transitions, async taskSettled() { throw new Error("durable settle failed"); } },
   });
   const { batchId } = await subject.start([contract(1, task("persist-failure"))], new AbortController().signal);
@@ -228,7 +229,7 @@ test("research leaf without completion becomes schema-incomplete and retains its
 test("TaskRuntime injects all host assignments for complete and none for incomplete", async () => {
   const complete = runtime({ run: async () => ({
     summary: "complete", markdown: "# Findings", research: {
-      status: "complete", summary: "complete", needsFollowup: false, followups: [],
+      status: "complete", summary: "complete", needsFollowup: false, followups: [], domains: [{ id: "core", conceptIds: [] }],
     },
   }) }, { autoResearchCompletion: false });
   const completeResult = await runBatch(complete, [task("complete-host-coverage")]);
@@ -239,6 +240,7 @@ test("TaskRuntime injects all host assignments for complete and none for incompl
     summary: "incomplete", markdown: "# Findings", research: {
       status: "incomplete", summary: "incomplete", needsFollowup: true,
       followups: [{ kind: "tool_failure", question: "Retry source", sourceScopeIds: ["api"] }],
+      domains: [],
     },
   }) }, { autoResearchCompletion: false });
   const incompleteResult = await runBatch(incomplete, [task("incomplete-host-coverage")]);
@@ -247,7 +249,7 @@ test("TaskRuntime injects all host assignments for complete and none for incompl
 
   const invalid = runtime({ run: async () => ({
     summary: "missing blocker", markdown: "# Findings", research: {
-      status: "incomplete", summary: "missing blocker", needsFollowup: false, followups: [],
+      status: "incomplete", summary: "missing blocker", needsFollowup: false, followups: [], domains: [],
     },
   }) }, { autoResearchCompletion: false });
   const invalidResult = await runBatch(invalid, [task("invalid-incomplete")]);
@@ -594,7 +596,7 @@ test("failed start that never registered does not poison a later start of the sa
   let failQueue = true;
   const subject = new WikiTaskRuntime({
     runId: "run-1", sourceScopes: ["api"], artifactStore: store(),
-    agent: { async run(value) { return { summary: "ok", markdown: testHandoff(value, "ok"), research: { status: "complete", summary: "ok", needsFollowup: false, followups: [] } }; } },
+    agent: { async run(value) { return { summary: "ok", markdown: testHandoff(value, "ok"), research: { status: "complete", summary: "ok", needsFollowup: false, followups: [], domains: [{ id: "core", conceptIds: [] }] } }; } },
     transitions: {
       ...transitions,
       async batchQueued(contracts) {

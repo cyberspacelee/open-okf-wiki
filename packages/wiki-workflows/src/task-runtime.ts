@@ -514,8 +514,15 @@ export class WikiTaskRuntime {
         await this.fireProgress({ batchId: batch, phase: "start", task, telemetry: startedTelemetry });
         const result = await this.options.agent.run(task, this.contextFor(task, batch, attempt, signal, onTelemetry, record.state.sessionFile));
         const researchSignal = result.research;
+        if (task.role === "research" && researchSignal && !task.sourceScopeIds[0]) {
+          throw new WikiTaskExecutionError(
+            "Research completion requires a Source scope",
+            "schema",
+            { partialMarkdown: result.markdown, coverage: result.coverage, gaps: result.gaps },
+          );
+        }
         const completion = task.role === "research" && researchSignal
-          ? createWikiResearchCompletion(researchSignal, task.assignmentIds)
+          ? createWikiResearchCompletion(researchSignal, task.assignmentIds, task.sourceScopeIds[0])
           : undefined;
         if (task.role === "research" && !researchSignal) {
           throw new WikiTaskExecutionError(
@@ -870,6 +877,7 @@ function receipt(
       completedAssignmentIds: [...(completedAssignmentIds ?? [])],
       needsFollowup: research?.needsFollowup ?? status === "incomplete",
       ...(followups ? { followups } : {}),
+      domains: research?.domains ?? [],
     } : {}),
   };
 }

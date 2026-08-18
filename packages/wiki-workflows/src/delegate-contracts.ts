@@ -1,7 +1,7 @@
 import { MAX_WIKI_RESEARCH_ARTIFACT_BYTES, type WikiArtifactKind, type WikiArtifactRef } from "./artifact-store.js";
 import { createHash } from "node:crypto";
 import type { WikiBudgetExhaustedCode } from "./failures.js";
-import { isSafeWikiPagePath } from "./lead.js";
+import { isSafeWikiPagePath, isWikiTaxonomySlug } from "./lead.js";
 import { sameStringSet, stableStringify } from "./util.js";
 import type { WikiAgentOutcome } from "./producer-types.js";
 
@@ -33,20 +33,37 @@ export interface WikiDelegateFollowup extends WikiResearchFollowupDraft {
   id: string;
 }
 
+export interface WikiResearchDomainDraft {
+  id: string;
+  conceptIds: string[];
+}
+
+export interface WikiResearchDomain {
+  sourceScopeId: string;
+  domainId: string;
+  conceptIds: string[];
+}
+
 export interface WikiResearchSignal {
   status: "complete" | "incomplete";
   summary: string;
   needsFollowup: boolean;
   followups: WikiResearchFollowupDraft[];
+  domains: WikiResearchDomainDraft[];
 }
 
-export interface WikiResearchCompletion extends WikiResearchSignal {
+export interface WikiResearchCompletion {
+  status: "complete" | "incomplete";
+  summary: string;
+  needsFollowup: boolean;
+  followups: WikiResearchFollowupDraft[];
   completedAssignmentIds: string[];
+  domains: WikiResearchDomain[];
 }
 
 export function parseWikiResearchSignal(value: unknown): WikiResearchSignal {
   const raw = record(value, "Wiki research signal");
-  exactKeys(raw, ["status", "summary", "needsFollowup", "followups"], "Wiki research signal");
+  exactKeys(raw, ["status", "summary", "needsFollowup", "followups", "domains"], "Wiki research signal");
   if (raw.status !== "complete" && raw.status !== "incomplete") throw new Error("Invalid Wiki research completion status");
   const summary = nonEmpty(raw.summary, "Wiki research completion summary");
   if (Buffer.byteLength(summary, "utf8") > 1024) throw new Error("Wiki research completion summary exceeds 1024 bytes");
@@ -54,33 +71,90 @@ export function parseWikiResearchSignal(value: unknown): WikiResearchSignal {
   const followups = parseResearchFollowups(raw.followups);
   if (raw.needsFollowup !== (followups.length > 0)) throw new Error("Wiki research needsFollowup must match followups");
   if (raw.status === "incomplete" && !raw.needsFollowup) throw new Error("Incomplete Wiki research requires followups");
-  return { status: raw.status, summary, needsFollowup: raw.needsFollowup, followups };
+  if (raw.status === "complete" && followups.length > 0) throw new Error("Complete Wiki research requires empty followups");
+  const domains = parseResearchDomainDrafts(raw.domains);
+  if (raw.status === "complete" && domains.length === 0) throw new Error("Complete Wiki research requires domains");
+  return { status: raw.status, summary, needsFollowup: raw.needsFollowup, followups, domains };
 }
 
-/** Add host-owned assignment coverage after an agent has submitted its signal. */
+/** Add host-owned assignment coverage and Source identity after an agent has submitted its signal. */
 export function createWikiResearchCompletion(
   signal: WikiResearchSignal,
   assignmentIds: readonly string[],
+  sourceScopeId: string,
 ): WikiResearchCompletion {
+  const scope = nonEmpty(sourceScopeId, "Wiki research sourceScopeId");
   return {
-    ...signal,
+    status: signal.status,
+    summary: signal.summary,
+    needsFollowup: signal.needsFollowup,
+    followups: structuredClone(signal.followups),
     completedAssignmentIds: signal.status === "complete" ? [...assignmentIds] : [],
+    domains: bindResearchDomains(signal.domains, scope),
   };
 }
 
 /** Parse the durable shape when reading persisted/internal completion data. */
 export function parseWikiResearchCompletion(value: unknown): WikiResearchCompletion {
   const raw = record(value, "Wiki research completion");
-  exactKeys(raw, ["status", "summary", "completedAssignmentIds", "needsFollowup", "followups"], "Wiki research completion");
+  exactKeys(raw, ["status", "summary", "completedAssignmentIds", "needsFollowup", "followups", "domains"], "Wiki research completion");
+  const domains = parseResearchDomains(raw.domains);
   const signal = parseWikiResearchSignal({
     status: raw.status,
     summary: raw.summary,
     needsFollowup: raw.needsFollowup,
     followups: raw.followups,
+    domains: domains.map((domain) => ({ id: domain.domainId, conceptIds: domain.conceptIds })),
   });
   const completedAssignmentIds = strings(raw.completedAssignmentIds, "Wiki research completedAssignmentIds");
   if (new Set(completedAssignmentIds).size !== completedAssignmentIds.length) throw new Error("Wiki research completedAssignmentIds must be unique");
-  return { ...signal, completedAssignmentIds };
+  return {
+    status: signal.status,
+    summary: signal.summary,
+    needsFollowup: signal.needsFollowup,
+    followups: signal.followups,
+    completedAssignmentIds,
+    domains,
+  };
+}
+
+function bindResearchDomains(drafts: readonly WikiResearchDomainDraft[], sourceScopeId: string): WikiResearchDomain[] {
+  return drafts.map((draft) => ({ sourceScopeId, domainId: draft.id, conceptIds: [...draft.conceptIds] }));
+}
+
+function parseResearchDomainDrafts(value: unknown): WikiResearchDomainDraft[] {
+  if (!Array.isArray(value)) throw new Error("Invalid Wiki research domains");
+  const domains = value.map((item, index) => {
+    const raw = record(item, `Wiki research domain ${index + 1}`);
+    exactKeys(raw, ["id", "conceptIds"], `Wiki research domain ${index + 1}`);
+    const id = nonEmpty(raw.id, "Wiki research domain id");
+    if (!isWikiTaxonomySlug(id)) throw new Error(`Wiki research domain id must be a lowercase ASCII slug: ${id}`);
+    const conceptIds = strings(raw.conceptIds, "Wiki research domain conceptIds");
+    if (conceptIds.some((conceptId) => !isWikiTaxonomySlug(conceptId))) throw new Error("Wiki research conceptIds must be lowercase ASCII slugs");
+    if (new Set(conceptIds).size !== conceptIds.length) throw new Error("Wiki research conceptIds must be unique");
+    return { id, conceptIds };
+  });
+  if (new Set(domains.map((domain) => domain.id)).size !== domains.length) throw new Error("Wiki research domain ids must be unique");
+  return domains;
+}
+
+function parseResearchDomains(value: unknown): WikiResearchDomain[] {
+  if (!Array.isArray(value)) throw new Error("Invalid Wiki research domains");
+  const domains = value.map((item, index) => {
+    const raw = record(item, `Wiki research domain ${index + 1}`);
+    exactKeys(raw, ["sourceScopeId", "domainId", "conceptIds"], `Wiki research domain ${index + 1}`);
+    const sourceScopeId = nonEmpty(raw.sourceScopeId, "Wiki research domain sourceScopeId");
+    const domainId = nonEmpty(raw.domainId, "Wiki research domain id");
+    if (!isWikiTaxonomySlug(domainId)) throw new Error(`Wiki research domain id must be a lowercase ASCII slug: ${domainId}`);
+    const conceptIds = strings(raw.conceptIds, "Wiki research domain conceptIds");
+    if (conceptIds.some((conceptId) => !isWikiTaxonomySlug(conceptId))) throw new Error("Wiki research conceptIds must be lowercase ASCII slugs");
+    if (new Set(conceptIds).size !== conceptIds.length) throw new Error("Wiki research conceptIds must be unique");
+    return { sourceScopeId, domainId, conceptIds };
+  });
+  if (new Set(domains.map((domain) => `${domain.sourceScopeId}/${domain.domainId}`)).size !== domains.length) {
+    throw new Error("Wiki research domains must be unique per source");
+  }
+  return domains;
 }
 
 export function parseWikiReviewResult(value: unknown): WikiReviewResult {
@@ -190,6 +264,7 @@ export interface WikiDelegateReceipt {
   completedAssignmentIds?: string[];
   needsFollowup?: boolean;
   followups?: WikiDelegateFollowup[];
+  domains?: WikiResearchDomain[];
   coverage?: string[];
   gaps?: WikiDelegateGap[];
   error?: WikiDelegateError;
@@ -364,7 +439,7 @@ export function parseWikiDelegateError(value: unknown): WikiDelegateError {
 
 export function parseWikiDelegateReceipt(value: unknown): WikiDelegateReceipt {
   const raw = record(value, "Wiki delegate receipt");
-  exactKeys(raw, ["id", "role", "status", "summary", "outputs", "completedAssignmentIds", "needsFollowup", "followups", "coverage", "gaps", "error", "attempts", "review", "contractId", "contractDigest"], "Wiki delegate receipt");
+  exactKeys(raw, ["id", "role", "status", "summary", "outputs", "completedAssignmentIds", "needsFollowup", "followups", "domains", "coverage", "gaps", "error", "attempts", "review", "contractId", "contractDigest"], "Wiki delegate receipt");
   const id = safeId(raw.id, "Wiki delegate receipt id");
   if (!["research", "write", "review"].includes(String(raw.role)) || !["complete", "incomplete", "failed"].includes(String(raw.status))
     || !Number.isSafeInteger(raw.attempts) || (raw.attempts as number) < 1 || !Array.isArray(raw.outputs)) {
@@ -385,12 +460,15 @@ export function parseWikiDelegateReceipt(value: unknown): WikiDelegateReceipt {
   const needsFollowup = raw.needsFollowup;
   if (needsFollowup !== undefined && typeof needsFollowup !== "boolean") throw new Error("Invalid Wiki delegate needsFollowup");
   const followups = raw.followups === undefined ? undefined : parseDelegateFollowups(raw.followups);
-  if (role === "research" && raw.status !== "failed" && (completedAssignmentIds === undefined || needsFollowup === undefined || followups === undefined)) {
+  const domains = raw.domains === undefined ? undefined : parseResearchDomains(raw.domains);
+  if (role === "research" && raw.status !== "failed" && (completedAssignmentIds === undefined || needsFollowup === undefined || followups === undefined || domains === undefined)) {
     throw new Error("Research receipts require completion controls");
   }
   if (role === "research" && followups && needsFollowup !== (followups.length > 0)) throw new Error("Research receipt needsFollowup must match followups");
   if (role === "research" && raw.status === "incomplete" && needsFollowup === false) throw new Error("Incomplete research receipt requires followups");
-  if (role !== "research" && (completedAssignmentIds !== undefined || needsFollowup !== undefined || followups !== undefined)) {
+  if (role === "research" && raw.status === "complete" && followups && followups.length > 0) throw new Error("Complete Wiki research requires empty followups");
+  if (role === "research" && raw.status === "complete" && domains && domains.length === 0) throw new Error("Complete Wiki research requires domains");
+  if (role !== "research" && (completedAssignmentIds !== undefined || needsFollowup !== undefined || followups !== undefined || domains !== undefined)) {
     throw new Error("Only research receipts may contain completion controls");
   }
   return {
@@ -406,6 +484,7 @@ export function parseWikiDelegateReceipt(value: unknown): WikiDelegateReceipt {
     ...(completedAssignmentIds ? { completedAssignmentIds } : {}),
     ...(needsFollowup !== undefined ? { needsFollowup } : {}),
     ...(followups ? { followups } : {}),
+    ...(domains ? { domains } : {}),
     ...(review ? { review } : {}),
     contractId,
     contractDigest,
@@ -423,28 +502,26 @@ export function projectWikiAgentOutcome(value: unknown): WikiAgentOutcome {
     coverage: [...(receipt.coverage ?? receipt.completedAssignmentIds ?? [])],
     gaps: structuredClone(receipt.gaps ?? []),
     ...(receipt.completedAssignmentIds ? { completedAssignmentIds: [...receipt.completedAssignmentIds] } : {}),
-    ...(receipt.followups ? { followups: structuredClone(receipt.followups) } : {}),
+    ...(receipt.followups?.length ? { followups: structuredClone(receipt.followups) } : {}),
+    ...(receipt.domains?.length ? { domains: structuredClone(receipt.domains) } : {}),
     ...(receipt.error ? { error: { ...receipt.error } } : {}),
     attempts: receipt.attempts,
     ...(receipt.review ? { review: structuredClone(receipt.review) } : {}),
   };
 }
 
-/** Lead-visible batch snapshot: no contract identity or full artifact records. */
+/** Lead-visible batch snapshot: inventory, not artifact identity. */
 export function projectWikiLeadSnapshot(snapshot: WikiDelegateBatchSnapshot): {
   batchId: number;
   status: WikiDelegateBatchSnapshot["status"];
   pendingTaskIds: string[];
-  receipts: Array<WikiAgentOutcome & { outputs: { nodeId: string }[] }>;
+  receipts: WikiAgentOutcome[];
 } {
   return {
     batchId: snapshot.batchId,
     status: snapshot.status,
     pendingTaskIds: [...snapshot.pendingTaskIds],
-    receipts: snapshot.receipts.map((receipt) => ({
-      ...projectWikiAgentOutcome(receipt),
-      outputs: receipt.outputs.map((output) => ({ nodeId: output.nodeId })),
-    })),
+    receipts: snapshot.receipts.map((receipt) => projectWikiAgentOutcome(receipt)),
   };
 }
 

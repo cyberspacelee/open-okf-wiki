@@ -12,6 +12,11 @@ export function isWikiSourceSegment(value: string): boolean {
   return SOURCE_NAME.test(value);
 }
 
+/** Domain and concept slugs: lowercase ASCII, hyphenated. */
+export function isWikiTaxonomySlug(value: string): boolean {
+  return WIKI_SLUG_SEGMENT.test(value);
+}
+
 /**
  * Wiki page paths are POSIX-relative. The first directory is the original
  * Source folder name; remaining segments and the filename stay ASCII slugs.

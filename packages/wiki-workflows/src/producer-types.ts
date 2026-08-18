@@ -194,6 +194,7 @@ export interface WikiAgentOutcome {
   gaps: Array<{ question: string; sourceScopeIds?: string[] }>;
   completedAssignmentIds?: string[];
   followups?: Array<{ id: string; kind: "unread_scope" | "evidence_gap" | "conflict" | "taxonomy_uncertain" | "tool_failure"; question: string; sourceScopeIds: string[] }>;
+  domains?: Array<{ sourceScopeId: string; domainId: string; conceptIds: string[] }>;
   error?: { code: string; message: string; retryable: boolean; retryAfterMs?: number };
   attempts: number;
   review?: {

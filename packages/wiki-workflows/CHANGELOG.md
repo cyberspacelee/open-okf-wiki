@@ -25,6 +25,10 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 
 ### Skills
 
+- Research handoff `domains` is the Lead-facing inventory. The host injects
+  Source identity, projects it to the board and a taxonomy.yaml draft, and
+  keeps blob paths on writer briefs only. YAML `followups` remain taxonomy
+  blockers; writer-facing questions stay in Gaps.
 - Split the host `/wiki` skill from the production Lead skill. Each run copies
   the production skill into `.okf-wiki/runs/<id>/skill/`, injects the assigned
   role brief, and allows read-only access to templates.

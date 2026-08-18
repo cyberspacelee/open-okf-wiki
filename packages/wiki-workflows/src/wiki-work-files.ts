@@ -5,10 +5,13 @@ import {
   parseWikiReviewResult,
   truncateUtf8,
   type WikiFollowupKind,
+  type WikiResearchDomainDraft,
   type WikiResearchSignal,
   type WikiReviewResult,
 } from "./delegate-contracts.js";
 import { WikiRejectedError, allowedList, listed } from "./wiki-reject.js";
+
+const TAXONOMY_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export const MAX_WIKI_WORK_FILE_BYTES = 256 * 1024;
 
@@ -59,10 +62,17 @@ export function inspectResearchHandoff(
   if (opened.structural) return { defects: opened.defects, structural: true };
   const scopes = uniqueStrings(allowedSourceScopes, "handoff.md allowedSourceScopes");
   const defects: string[] = [];
-  defects.push(...collectExactKeys(opened.frontmatter, ["followups"], "handoff.md frontmatter"));
+  defects.push(...collectExactKeys(opened.frontmatter, ["followups", "domains"], "handoff.md frontmatter"));
   const followups = collectResearchFollowups(opened.frontmatter.followups, scopes, defects);
+  const domains = collectResearchDomains(opened.frontmatter.domains, defects);
   if (status === "incomplete" && Array.isArray(opened.frontmatter.followups) && opened.frontmatter.followups.length === 0) {
     defects.push("incomplete research requires followups");
+  }
+  if (status === "complete" && Array.isArray(opened.frontmatter.followups) && opened.frontmatter.followups.length > 0) {
+    defects.push("complete research requires empty followups");
+  }
+  if (status === "complete" && Array.isArray(opened.frontmatter.domains) && opened.frontmatter.domains.length === 0) {
+    defects.push("complete research requires domains");
   }
   if (defects.length) return { defects, structural: false };
   return {
@@ -73,6 +83,7 @@ export function inspectResearchHandoff(
       summary: summarizeWikiMarkdown(opened.body),
       needsFollowup: followups.length > 0,
       followups,
+      domains,
     }),
   };
 }
@@ -188,6 +199,49 @@ function collectResearchFollowups(
     }
   }
   return followups;
+}
+
+function collectResearchDomains(raw: unknown, defects: string[]): WikiResearchDomainDraft[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    defects.push("handoff.md frontmatter.domains must be an array");
+    return [];
+  }
+  const domains: WikiResearchDomainDraft[] = [];
+  for (const [index, value] of raw.entries()) {
+    const field = `handoff.md frontmatter.domains[${index}]`;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      defects.push(`${field} must be a mapping`);
+      continue;
+    }
+    const item = value as Record<string, unknown>;
+    const before = defects.length;
+    defects.push(...collectExactKeys(item, ["id", "conceptIds"], field));
+    let id: string | undefined;
+    if (Object.hasOwn(item, "id")) {
+      if (typeof item.id === "string" && item.id.trim()) {
+        id = item.id.trim();
+        if (!TAXONOMY_SLUG.test(id)) defects.push(`${field}.id must be a lowercase ASCII slug`);
+      } else defects.push(`${field}.id must be a nonempty string`);
+    }
+    let conceptIds: string[] | undefined;
+    if (Object.hasOwn(item, "conceptIds")) {
+      if (!Array.isArray(item.conceptIds) || item.conceptIds.some((conceptId) => typeof conceptId !== "string" || !conceptId.trim())) {
+        defects.push(`${field}.conceptIds must be an array of nonempty strings`);
+      } else {
+        conceptIds = item.conceptIds.map((conceptId) => String(conceptId).trim());
+        if (conceptIds.some((conceptId) => !TAXONOMY_SLUG.test(conceptId))) {
+          defects.push(`${field}.conceptIds must be lowercase ASCII slugs`);
+        }
+        if (new Set(conceptIds).size !== conceptIds.length) defects.push(`${field}.conceptIds must be unique`);
+      }
+    }
+    if (defects.length === before && id && conceptIds) domains.push({ id, conceptIds });
+  }
+  if (new Set(domains.map((domain) => domain.id)).size !== domains.length) {
+    defects.push("handoff.md frontmatter.domains ids must be unique");
+  }
+  return domains;
 }
 
 function collectReviewFindings(

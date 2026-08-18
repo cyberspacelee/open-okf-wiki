@@ -162,6 +162,21 @@ test("Lead fixed current slots expose the board and mutable YAML drafts without 
   await assert.rejects(call(tools, "read", { path: ".okf-wiki/runs/run-1/board.md" }), /outside the permitted workspace scope/);
 });
 
+test("Lead cannot read research blobs; writers receive the exact blob path as context", async (t) => {
+  const { root, candidateWikiRoot, skillRoot } = await workspace(t);
+  const sha = "a".repeat(64);
+  const relativePath = `.okf-wiki/blobs/${sha}.md`;
+  await mkdir(path.join(root, ".okf-wiki", "blobs"), { recursive: true });
+  await writeFile(path.join(root, relativePath), "# Research Handoff\n");
+  const policy = pinnedWorkspaceToolPolicy(pinnedPlan(root, path.join(root, "source")), candidateWikiRoot, skillRoot);
+  const lead = workflowTools(policy, "lead", undefined, ["source"], undefined, { async replacePage() {} });
+  await assert.rejects(call(lead, "read", { path: relativePath }), /outside the permitted workspace scope/);
+
+  policy.sourceRoots.set(relativePath, { logicalRoot: path.resolve(root, relativePath), physicalRoot: path.resolve(root, relativePath) });
+  const writer = workflowTools(policy, "writer", ["wiki/overview.md"], ["source", relativePath], undefined, { async replacePage() {} });
+  assert.match(JSON.stringify(await call(writer, "read", { path: relativePath })), /Research Handoff/);
+});
+
 function pinnedPlan(root, sourceAbs) {
   return {
     workspaceRoot: root,

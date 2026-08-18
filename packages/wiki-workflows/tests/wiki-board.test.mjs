@@ -312,14 +312,17 @@ test("projects taxonomy, artifact context, assignment coverage, and blocker foll
         status: "incomplete", outputs: [{ nodeId: "b1-research-runtime", attempt: 1 }],
         completedAssignmentIds: [], coverage: ["api-entry"], needsFollowup: true,
         followups: [{ id: "gap-runtime", kind: "evidence_gap", question: "Where is retry state persisted?", sourceScopeIds: ["api"] }],
+        domains: [{ sourceScopeId: "api", domainId: "runtime", conceptIds: ["session"] }],
       },
     }] }] },
   });
   assert.equal(model.taxonomy?.revision, 2);
   assert.deepEqual(model.tasks[0].artifactRefs?.map((ref) => ref.nodeId), ["b1-research-runtime"]);
   assert.deepEqual(model.tasks[0].contextRefs, ["b1-research-runtime"]);
+  assert.deepEqual(model.tasks[0].domains, [{ sourceScopeId: "api", domainId: "runtime", conceptIds: ["session"] }]);
   assert.deepEqual(model.blockers, ["gap-runtime"]);
-  assert.match(renderWikiBoard(model), /b1-research-runtime/);
+  assert.match(renderWikiBoard(model), /api\/runtime: session/);
+  assert.doesNotMatch(renderWikiBoard(model), /artifact: b1-research-runtime/);
   assert.match(renderWikiBoard(model), /Where is retry state persisted\?/);
 });
 
