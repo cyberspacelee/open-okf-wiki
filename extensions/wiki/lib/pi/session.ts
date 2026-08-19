@@ -11,6 +11,7 @@ import {
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { WikiBudgetExhaustedError } from "../failures.js";
+import { exists } from "../files.js";
 
 export const DEFAULT_SESSION_TIMEOUT_MS = 20 * 60_000;
 
@@ -22,6 +23,8 @@ export interface RunWikiSessionOptions {
   sessionDir?: string;
   sessionFile?: string;
   maxToolCalls?: number;
+  onSessionReady?: (sessionFile: string | undefined) => void;
+  onCompaction?: () => string | Promise<string>;
 }
 
 export async function runWikiSession(
@@ -46,8 +49,9 @@ export async function runWikiSession(
     noContextFiles: true,
   });
   await loader.reload();
-  const sessionManager = options.sessionFile
-    ? SessionManager.open(options.sessionFile, options.sessionDir, cwd)
+  const resumeFile = options.sessionFile && await exists(options.sessionFile) ? options.sessionFile : undefined;
+  const sessionManager = resumeFile
+    ? SessionManager.open(resumeFile, options.sessionDir, cwd)
     : SessionManager.create(cwd, options.sessionDir);
   let session: AgentSession | undefined;
   let toolCalls = 0;
@@ -78,6 +82,20 @@ export async function runWikiSession(
   if (created.modelFallbackMessage) {
     session.dispose();
     throw new Error(`Could not restore the persisted Wiki model: ${created.modelFallbackMessage}`);
+  }
+  options.onSessionReady?.(session.sessionFile);
+  if (options.onCompaction) {
+    const onCompaction = options.onCompaction;
+    session.subscribe((event) => {
+      if (event.type !== "compaction_end" || event.aborted) return;
+      void Promise.resolve(onCompaction()).then((text) => {
+        if (!text || !session) return;
+        return session.sendCustomMessage(
+          { customType: "wiki-board", content: text, display: false },
+          { deliverAs: "nextTurn" },
+        );
+      });
+    });
   }
   const abort = () => {
     void session?.abort();

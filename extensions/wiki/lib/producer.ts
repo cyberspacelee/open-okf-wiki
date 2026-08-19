@@ -7,7 +7,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { inspectWiki, verifyPinnedSourcePlan, type WikiPinnedSourcePlan } from "./inspect.js";
 import { exists, renamePath, writeText } from "./files.js";
 import { errorMessage } from "./failures.js";
-import { loadWikiWorkspace } from "./workspace.js";
+import { loadWikiWorkspace, resolveWorkspaceDatabase, type ResolvedWikiWorkspace } from "./workspace.js";
 import {
   formatIssue,
   materializeWikiIndexes,
@@ -15,9 +15,12 @@ import {
   validateWikiTree,
 } from "./wiki-okf.js";
 import { writeGuardFromPlan } from "./path-policy.js";
-import { candidateTools } from "./pi/tools.js";
+import { candidateTools, createCatalogTools, createTodoTool } from "./pi/tools.js";
 import { runWikiSession, type RunWikiSessionOptions } from "./pi/session.js";
 import { createSubagentRuntime, createSubagentTool } from "./subagent.js";
+import { createBoardStore, emptyBoard, formatBoard, type WikiBoardStore } from "./board.js";
+import { createPostgresCatalog } from "./postgres.js";
+import type { WikiCatalog } from "./catalog.js";
 import type {
   WikiProducer,
   WikiProducerRequest,
@@ -40,6 +43,9 @@ export interface WikiLeadContext {
   candidateRoot: string;
   focus?: string;
   language: "zh" | "en";
+  resume: boolean;
+  board: WikiBoardStore;
+  catalog?: WikiCatalog;
   signal: AbortSignal;
   publish(): Promise<{ ok: boolean; message: string }>;
   note(agent: string, task: string, status: "running" | "complete" | "failed"): void;
@@ -50,6 +56,7 @@ interface RunRecord {
   cwd: string;
   status: WikiRunStatus;
   focus?: string;
+  language: "zh" | "en";
   createdAt: string;
   updatedAt: string;
   error?: string;
@@ -57,6 +64,7 @@ interface RunRecord {
   pageCount?: number;
   candidateRoot: string;
   fingerprint: string;
+  sessionFile?: string;
 }
 
 const active = new Map<string, LiveRun>();
@@ -73,8 +81,12 @@ export function createProductionWikiProducer(options: WikiProducerOptions = {}):
   return {
     async start(request) {
       const workspace = await loadWikiWorkspace(request.cwd);
-      const running = (await listRecords(workspace.root)).find((run) => run.status === "running");
-      if (running) throw new Error(`Wiki run ${running.id} is already running`);
+      const blocking = (await listRecords(workspace.root)).find((run) => run.status === "running" || run.status === "paused");
+      if (blocking) {
+        throw new Error(blocking.status === "paused"
+          ? `Wiki run ${blocking.id} is paused; use /wiki resume`
+          : `Wiki run ${blocking.id} is already running`);
+      }
       const plan = await inspectWiki(workspace.root);
       const id = randomUUID().slice(0, 8);
       const candidateRoot = path.join(workspace.root, ".okf-wiki", "runs", id, "candidate");
@@ -84,6 +96,7 @@ export function createProductionWikiProducer(options: WikiProducerOptions = {}):
         id,
         cwd: workspace.root,
         status: "running",
+        language: workspace.language,
         ...(request.focus ? { focus: request.focus } : {}),
         createdAt: now,
         updatedAt: now,
@@ -92,18 +105,24 @@ export function createProductionWikiProducer(options: WikiProducerOptions = {}):
         fingerprint: plan.fingerprint,
       };
       await writeRecord(record);
-      const live = startLive(record, plan, workspace.language, options, request.focus);
+      const live: LiveRun = {
+        record,
+        plan,
+        controller: new AbortController(),
+        done: Promise.resolve(),
+      };
+      startLive(live, workspace, options, { resume: false, focus: request.focus });
       active.set(runKey(workspace.root, id), live);
-      return handleFor(live);
+      return handleFor(live, options, workspace);
     },
     async list(cwd) {
       const workspace = await loadWikiWorkspace(cwd);
-      return (await listRecords(workspace.root)).map(toView);
+      return await Promise.all((await listRecords(workspace.root)).map(toView));
     },
     async open(runId, cwd) {
       const workspace = await loadWikiWorkspace(cwd);
       const live = active.get(runKey(workspace.root, runId));
-      if (live) return handleFor(live);
+      if (live) return handleFor(live, options, workspace);
       const record = await readRecord(workspace.root, runId);
       if (!record) return undefined;
       return handleFor({
@@ -119,35 +138,41 @@ export function createProductionWikiProducer(options: WikiProducerOptions = {}):
         })),
         controller: new AbortController(),
         done: Promise.resolve(),
-      });
+      }, options, workspace);
     },
   };
 }
 
 function startLive(
-  record: RunRecord,
-  plan: WikiPinnedSourcePlan,
-  language: "zh" | "en",
+  live: LiveRun,
+  workspace: ResolvedWikiWorkspace,
   options: WikiProducerOptions,
-  focus?: string,
-): LiveRun {
+  flags: { resume: boolean; focus?: string },
+): void {
+  const record = live.record;
+  const plan = live.plan;
   const controller = new AbortController();
-  const live: LiveRun = {
-    record,
-    plan,
-    controller,
-    done: Promise.resolve(),
-  };
+  live.controller = controller;
+  live.result = undefined;
   live.done = (async () => {
     try {
+      const initial = emptyBoard(flags.focus ?? "Generate a complete repository Wiki");
+      const board = createBoardStore(runDir(record.cwd, record.id), initial);
+      if (!flags.resume) await board.write(initial);
+      const catalog = workspace.database
+        ? createPostgresCatalog(resolveWorkspaceDatabase(workspace.database))
+        : undefined;
       const context: WikiLeadContext = {
         plan,
         candidateRoot: record.candidateRoot,
-        focus,
-        language,
+        focus: flags.focus,
+        language: record.language ?? workspace.language,
+        resume: flags.resume,
+        board,
+        ...(catalog ? { catalog } : {}),
         signal: controller.signal,
         async publish() {
-          return await publishCandidate(live, language);
+          return await publishCandidate(live, context.language);
         },
         note(agent, task, status) {
           live.record.agents = [
@@ -158,10 +183,10 @@ function startLive(
           void writeRecord(live.record);
         },
       };
-      const runLead = options.runLead ?? defaultRunLead(options);
+      const runLead = options.runLead ?? defaultRunLead(options, record);
       await runLead(context);
       if (live.record.status === "running") {
-        const published = await publishCandidate(live, language);
+        const published = await publishCandidate(live, context.language);
         if (!published.ok) throw new Error(published.message);
       }
     } catch (error) {
@@ -172,10 +197,12 @@ function startLive(
       await writeRecord(live.record);
     }
   })();
-  return live;
 }
 
-function defaultRunLead(options: WikiProducerOptions): (context: WikiLeadContext) => Promise<void> {
+function defaultRunLead(
+  options: WikiProducerOptions,
+  record: RunRecord,
+): (context: WikiLeadContext) => Promise<void> {
   return async (context) => {
     const runtime = await createSubagentRuntime(
       context.plan,
@@ -183,14 +210,31 @@ function defaultRunLead(options: WikiProducerOptions): (context: WikiLeadContext
       options.session ?? {},
       options.agentsDirectory,
       (agent, task, status) => context.note(agent, task, status),
+      context.catalog,
     );
     const tools: ToolDefinition<any, any, any>[] = [
       ...candidateTools(writeGuardFromPlan(context.plan, context.candidateRoot)),
+      createTodoTool(context.board),
+      ...(context.catalog ? createCatalogTools(context.catalog) : []),
       createSubagentTool(runtime),
       createPublishTool(() => context.publish()),
     ];
     const prompt = await leadPrompt(context);
-    await runWikiSession(context.plan.workspaceRoot, tools, prompt, context.signal, options.session);
+    await runWikiSession(context.plan.workspaceRoot, tools, prompt, context.signal, {
+      ...options.session,
+      sessionDir: path.join(runDir(record.cwd, record.id), "sessions"),
+      sessionFile: record.sessionFile,
+      onSessionReady(sessionFile) {
+        if (!sessionFile) return;
+        record.sessionFile = sessionFile;
+        record.updatedAt = new Date().toISOString();
+        void writeRecord(record);
+      },
+      async onCompaction() {
+        const board = await context.board.read();
+        return `The conversation was compacted. The Board is the source of truth for remaining work:\n${formatBoard(board)}`;
+      },
+    });
   };
 }
 
@@ -233,44 +277,75 @@ async function publishCandidate(live: LiveRun, language: "zh" | "en"): Promise<{
   return { ok: true, message: `Published ${validation.pages.length} pages to wiki/` };
 }
 
-function handleFor(live: LiveRun): WikiRunHandle {
+function handleFor(live: LiveRun, options: WikiProducerOptions, workspace: ResolvedWikiWorkspace): WikiRunHandle {
   return {
     id: live.record.id,
     async view() {
-      return toView(live.record);
+      return await toView(live.record);
     },
     async control(action: WikiRunControl) {
+      if (action === "resume") {
+        await resumeLive(live, options, workspace);
+        return await toView(live.record);
+      }
       if (action === "pause") {
         live.record.status = "paused";
         live.controller.abort();
       } else if (action === "cancel") {
         live.record.status = "cancelled";
         live.controller.abort();
-      } else if (action === "resume") {
-        throw new Error("Resume does not restore Pi sessions; run /wiki again");
       }
       live.record.updatedAt = new Date().toISOString();
       await writeRecord(live.record);
-      return toView(live.record);
+      return await toView(live.record);
     },
     async result() {
       await live.done;
       if (live.result) return live.result;
-      throw new WikiRunResultError(live.record.error ?? `Wiki run ${live.record.id} ${live.record.status}`, toView(live.record));
+      throw new WikiRunResultError(live.record.error ?? `Wiki run ${live.record.id} ${live.record.status}`, await toView(live.record));
     },
   };
 }
 
-function toView(record: RunRecord): WikiRunView {
+async function resumeLive(
+  live: LiveRun,
+  options: WikiProducerOptions,
+  workspace: ResolvedWikiWorkspace,
+): Promise<void> {
+  if (live.record.status === "running") return;
+  if (live.record.status !== "paused" && live.record.status !== "failed") {
+    throw new Error(`Cannot resume a ${live.record.status} Wiki run`);
+  }
+  if (!await exists(live.record.candidateRoot)) {
+    throw new Error(`Wiki run ${live.record.id} has no Candidate to continue`);
+  }
+  const plan = await inspectWiki(workspace.root);
+  if (plan.fingerprint !== live.record.fingerprint) {
+    throw new Error("Pinned sources changed; start a new Run instead of resume");
+  }
+  await verifyPinnedSourcePlan(plan);
+  live.plan = plan;
+  live.record.status = "running";
+  live.record.error = undefined;
+  live.record.updatedAt = new Date().toISOString();
+  await writeRecord(live.record);
+  startLive(live, workspace, options, { resume: true, focus: live.record.focus });
+  active.set(runKey(workspace.root, live.record.id), live);
+}
+
+async function toView(record: RunRecord): Promise<WikiRunView> {
+  const board = await createBoardStore(runDir(record.cwd, record.id)).read();
   return {
     id: record.id,
     cwd: record.cwd,
     status: record.status,
     ...(record.focus ? { focus: record.focus } : {}),
+    ...(board.goal ? { goal: board.goal } : {}),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     ...(record.error ? { error: record.error } : {}),
     agents: record.agents,
+    ...(board.tasks.length ? { tasks: board.tasks } : {}),
     ...(record.pageCount !== undefined ? { pageCount: record.pageCount } : {}),
   };
 }
@@ -316,5 +391,16 @@ async function leadPrompt(context: WikiLeadContext): Promise<string> {
   const body = await readFile(fileURLToPath(new URL("../../../prompts/lead.md", import.meta.url)), "utf8");
   const sources = context.plan.sources.map((source) => `- ${source.scopeId}: ${source.logicalPath}`).join("\n");
   const focus = context.focus ? `\nFocus: ${context.focus}\n` : "";
-  return `${body}\n\n# This run\n\nLanguage: ${context.language}.${focus}\nPinned sources:\n${sources}\n`;
+  const board = formatBoard(await context.board.read());
+  const catalog = context.catalog
+    ? `\nCatalog: Postgres schema \`${context.catalog.config.schema}\`${
+      context.catalog.config.tables.length
+        ? `; table patterns: ${context.catalog.config.tables.join(", ")}`
+        : "; no table filter — list first, then describe only the tables the Wiki must explain"
+    }.\nUse db_tables then db_describe. Do not dump the whole schema into pages.\n`
+    : "";
+  const resume = context.resume
+    ? "\nThis is a resumed Run. The Board is the source of truth. Do not restart completed Tasks. Read existing Candidate pages before writing.\n"
+    : "";
+  return `${body}\n\n# This run\n\nLanguage: ${context.language}.${focus}${resume}\nPinned sources:\n${sources}\n${catalog}\n# Board\n\n${board}\n`;
 }

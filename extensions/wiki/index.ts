@@ -151,7 +151,7 @@ const COMPLETIONS = [
   { value: "status ", label: "status", description: "Show a run" },
   { value: "runs", label: "runs", description: "List repository Wiki runs" },
   { value: "pause", label: "pause", description: "Pause the active run" },
-  { value: "resume ", label: "resume", description: "Does not restore Pi sessions; run /wiki again" },
+  { value: "resume ", label: "resume", description: "Continue a paused or failed run from its Board" },
   { value: "cancel ", label: "cancel", description: "Cancel a run" },
 ];
 

@@ -30,3 +30,15 @@ _Avoid_: Draft shared across runs, staging Wiki
 **Published Wiki**:
 The last successfully validated Candidate installed for a Workspace.
 _Avoid_: Current Candidate, mutable Wiki
+
+**Board**:
+The host-owned Task list for one Run. It lives outside the conversation and is the source of truth for remaining work after compaction or resume.
+_Avoid_: Todo list, session memory, plan file
+
+**Task**:
+A durable work item on a Board. Status and notes survive compaction and pause.
+_Avoid_: Todo, checklist item, agent note
+
+**Catalog**:
+A declared Postgres schema whose table definitions are admissible evidence for a Run.
+_Avoid_: Database dump, live query result, data source

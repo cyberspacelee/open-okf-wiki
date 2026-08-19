@@ -28,6 +28,7 @@
     "test": "pnpm check:boundaries && pnpm typecheck && tsx --test test/*.test.ts"
   },
   "dependencies": {
+    "pg": "^8.23.0",
     "yaml": "^2.8.1"
   },
   "peerDependencies": {
@@ -41,6 +42,7 @@
     "@earendil-works/pi-ai": "^0.82.1",
     "@earendil-works/pi-coding-agent": "^0.82.1",
     "@types/node": "^22.10.2",
+    "@types/pg": "^8.23.1",
     "tsx": "^4.20.5",
     "typebox": "^1.0.56",
     "typescript": "^5.7.3"

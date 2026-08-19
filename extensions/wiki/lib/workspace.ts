@@ -5,6 +5,7 @@ import { renamePath, withExclusiveLock, writeFileDurable } from "./files.js";
 import { git, repositoryRoot, type GitResult } from "./git.js";
 import { errorMessage } from "./failures.js";
 import { isWikiSourceDirectoryName } from "./path.js";
+import { parseDatabaseConfig, type WikiDatabaseConfig } from "./catalog.js";
 
 const WORKSPACE_FILE = "workspace.yaml";
 const WORKSPACE_LOCK_FILE = ".okf-wiki-workspace.lock";
@@ -34,6 +35,12 @@ export const DEFAULT_WORKSPACE_WIKI_CONFIG: WikiWorkspaceWikiConfig = {
   exclude: [],
 };
 
+export interface WikiWorkspaceDatabase {
+  url: string;
+  schema: string;
+  tables: string[];
+}
+
 export interface WikiWorkspace {
   version: 1;
   root: string;
@@ -41,6 +48,7 @@ export interface WikiWorkspace {
   language: "zh" | "en";
   defaultSourceIgnores: boolean;
   wiki: WikiWorkspaceWikiConfig;
+  database?: WikiWorkspaceDatabase;
   sources: WikiWorkspaceSource[];
 }
 
@@ -286,10 +294,25 @@ async function readWorkspaceConfig(configPath: string, root: string, required: b
   if (document.language !== "zh" && document.language !== "en") throw new Error("workspace.yaml language must be zh or en");
   if (typeof document.defaultSourceIgnores !== "boolean") throw new Error("workspace.yaml defaultSourceIgnores must be true or false");
   const wiki = document.wiki === undefined ? structuredClone(DEFAULT_WORKSPACE_WIKI_CONFIG) : parseWikiConfig(document.wiki);
+  const database = document.database === undefined ? undefined : parseWorkspaceDatabase(document.database);
   if (!Array.isArray(document.sources)) throw new Error("workspace.yaml sources must be an array");
   const seen = new Set<string>();
   const sources = document.sources.map((value) => parseSource(value, seen));
-  return { version: 1, root, configPath, language: document.language, defaultSourceIgnores: document.defaultSourceIgnores, wiki, sources };
+  return {
+    version: 1, root, configPath, language: document.language, defaultSourceIgnores: document.defaultSourceIgnores, wiki,
+    ...(database ? { database } : {}),
+    sources,
+  };
+}
+
+export function resolveWorkspaceDatabase(database: WikiWorkspaceDatabase): WikiDatabaseConfig {
+  return parseDatabaseConfig(database);
+}
+
+function parseWorkspaceDatabase(value: unknown): WikiWorkspaceDatabase {
+  const parsed = parseDatabaseConfig(value);
+  const raw = isRecord(value) && typeof value.url === "string" ? value.url.trim() : parsed.url;
+  return { url: raw, schema: parsed.schema, tables: parsed.tables };
 }
 
 function parseWikiConfig(value: unknown): WikiWorkspaceWikiConfig {
@@ -405,6 +428,7 @@ async function writeWorkspaceConfig(configPath: string, workspace: WikiWorkspace
     language: workspace.language,
     defaultSourceIgnores: workspace.defaultSourceIgnores,
     wiki: workspace.wiki,
+    ...(workspace.database ? { database: workspace.database } : {}),
     sources: workspace.sources,
   });
   await writeAtomic(configPath, content, exclusive);

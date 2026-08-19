@@ -163,12 +163,16 @@ function tokenize(raw: string): string[] {
 export function renderWikiRun(run: WikiRunView | undefined): string {
   if (!run) return "Wiki: no run.";
   const focus = run.focus ? ` | ${run.focus}` : "";
+  const goal = run.goal && run.goal !== run.focus ? `\n  goal  ${truncate(run.goal, 80)}` : "";
   const error = run.error ? `\n${run.error}` : "";
+  const tasks = run.tasks?.length
+    ? `\n${run.tasks.map((task) => `  ${task.status}  ${task.id}  ${truncate(task.content, 80)}`).join("\n")}`
+    : "";
   const agents = run.agents?.length
     ? `\n${run.agents.map((agent) => `  ${agent.status}  ${agent.agent}  ${truncate(agent.task, 80)}`).join("\n")}`
     : "";
   const pages = run.pageCount !== undefined ? ` | ${run.pageCount} pages` : "";
-  return `Wiki ${run.id} | ${run.status}${focus}${pages}${agents}${error}`;
+  return `Wiki ${run.id} | ${run.status}${focus}${pages}${goal}${tasks}${agents}${error}`;
 }
 
 export function renderWikiSnapshot(run: WikiRunView): string {
@@ -194,7 +198,7 @@ export function wikiCliHelp(): string {
     "  /wiki status [run-id]",
     "  /wiki runs",
     "  /wiki pause",
-    "  /wiki resume [run-id]  (does not restore Pi sessions; run /wiki again)",
+    "  /wiki resume [run-id]",
     "  /wiki cancel [run-id]",
   ].join("\n");
 }

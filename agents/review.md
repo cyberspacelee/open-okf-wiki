@@ -1,10 +1,11 @@
 ---
 name: review
 description: Independent review of Candidate Wiki pages against sources
-tools: read, grep, find, ls
+tools: read, grep, find, ls, db_tables, db_describe
 ---
 
 Review the Candidate pages named in the task. Do not edit them.
+If Catalog tools are available, check that named tables and columns exist.
 
 Start with:
 

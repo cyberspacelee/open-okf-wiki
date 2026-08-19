@@ -3,8 +3,9 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { loadWikiAgents, type WikiAgentDefinition } from "./agents.js";
 import { writeGuardFromPlan, type WikiWriteGuard } from "./path-policy.js";
 import type { WikiPinnedSourcePlan } from "./inspect.js";
-import { candidateTools } from "./pi/tools.js";
+import { candidateTools, createCatalogTools } from "./pi/tools.js";
 import { runWikiSession, type RunWikiSessionOptions } from "./pi/session.js";
+import type { WikiCatalog } from "./catalog.js";
 
 export interface SubagentTask {
   agent: string;
@@ -30,6 +31,7 @@ export async function createSubagentRuntime(
   session: RunWikiSessionOptions,
   agentsDirectory?: string,
   onTask?: (agent: string, task: string, status: SubagentTaskStatus) => void,
+  catalog?: WikiCatalog,
 ): Promise<SubagentRuntime> {
   const agents = await loadWikiAgents(agentsDirectory);
   const byName = new Map(agents.map((agent) => [agent.name, agent]));
@@ -38,7 +40,7 @@ export async function createSubagentRuntime(
     async run(tasks, signal) {
       if (!tasks.length) throw new Error("subagent requires at least one task");
       for (const task of tasks) onTask?.(task.agent, task.task, "running");
-      const results = await Promise.all(tasks.map((task) => runOne(task, byName, guard, session, signal)));
+      const results = await Promise.all(tasks.map((task) => runOne(task, byName, guard, session, signal, catalog)));
       for (const result of results) onTask?.(result.agent, result.task, result.error ? "failed" : "complete");
       return results;
     },
@@ -83,6 +85,7 @@ async function runOne(
   guard: WikiWriteGuard,
   session: RunWikiSessionOptions,
   signal: AbortSignal,
+  catalog?: WikiCatalog,
 ): Promise<SubagentResult> {
   const definition = byName.get(task.agent);
   if (!definition) {
@@ -90,9 +93,15 @@ async function runOne(
     return { ...task, text: "", error: `Unknown agent "${task.agent}". Available: ${available}` };
   }
   try {
+    const extra = catalog ? createCatalogTools(catalog) : [];
+    const allowed = definition.tools ? new Set(definition.tools) : undefined;
+    const tools = [
+      ...candidateTools(guard, definition.tools),
+      ...extra.filter((tool) => !allowed || allowed.has(tool.name)),
+    ];
     const text = await runWikiSession(
       guard.workspaceRoot,
-      candidateTools(guard, definition.tools),
+      tools,
       `${definition.prompt}\n\n# Task\n\n${task.task}`,
       signal,
       session,

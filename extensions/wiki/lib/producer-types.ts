@@ -1,3 +1,5 @@
+import type { WikiTask } from "./board.js";
+
 export type WikiRunStatus = "running" | "paused" | "succeeded" | "failed" | "cancelled";
 
 export type WikiRunControl = "pause" | "resume" | "cancel";
@@ -12,10 +14,12 @@ export interface WikiRunView {
   cwd: string;
   status: WikiRunStatus;
   focus?: string;
+  goal?: string;
   createdAt: string;
   updatedAt: string;
   error?: string;
   agents?: Array<{ agent: string; task: string; status: "running" | "complete" | "failed" }>;
+  tasks?: WikiTask[];
   pageCount?: number;
 }
 

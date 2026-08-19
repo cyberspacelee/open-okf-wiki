@@ -10,7 +10,8 @@ Invoke `/wiki`. The extension generates the Wiki from pinned Git sources. Leave 
 ## Produce
 
 1. `/wiki [focus]` starts a full generation in an empty Candidate.
-2. Report the Run id. Use `/wiki status [run-id]` for a text snapshot.
+2. Report the Run id. Use `/wiki status [run-id]` for a text snapshot of
+   status, Board Tasks, and agent notes.
 
 A Git repository without `workspace.yaml` is an implicit single-source Workspace.
 
@@ -20,4 +21,26 @@ A Git repository without `workspace.yaml` is an implicit single-source Workspace
 
 ## Control
 
-`/wiki runs`, `/wiki pause`, `/wiki resume [run-id]` (does not restore Pi sessions; run `/wiki` again), `/wiki cancel [run-id]`.
+`/wiki runs`, `/wiki pause`, `/wiki resume [run-id]`, `/wiki cancel [run-id]`.
+Resume continues the same Run: Candidate pages, Board (goal and remaining
+Tasks), and the persisted Lead session. Compaction re-injects the Board.
+
+## Catalog
+
+Optional Postgres evidence in `workspace.yaml`:
+
+```yaml
+database:
+  url: ${DATABASE_URL}
+  schema: public
+  tables: [user*, order%]
+```
+
+`url` is a `postgresql://` connection string (or `${ENV}` / `$ENV`). `schema`
+defaults to `public`. Omit `tables` to allow every table in that schema;
+otherwise names are fuzzy-matched (`user` → `users`, `user_account`;
+`order%` → `orders`). Agents list then describe matching tables. They do
+not dump the whole schema. Connections are read-only.
+
+A Catalog requires an explicit `workspace.yaml`. Implicit single-source
+workspaces have no database block. Put the password in the environment.

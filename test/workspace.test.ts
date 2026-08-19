@@ -67,6 +67,44 @@ test("initializes explicit workspace defaults and normalized Wiki excludes", asy
   await assert.rejects(wikiWorkspaceManagement.init({ cwd: parent, workspace: "docs" }), /already exists/);
 });
 
+test("loads an optional Postgres Catalog and keeps the raw URL", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-database-"));
+  temporaryDirectories.push(parent);
+  const root = await repository(parent, "configured");
+  const previous = process.env.WIKI_TEST_PG;
+  process.env.WIKI_TEST_PG = "postgresql://wiki:secret@localhost:5432/app";
+  try {
+    await writeFile(path.join(root, "workspace.yaml"), [
+      "version: 1",
+      "language: zh",
+      "defaultSourceIgnores: true",
+      "wiki:",
+      "  exclude: []",
+      "database:",
+      "  url: ${WIKI_TEST_PG}",
+      "  schema: billing",
+      "  tables: [user*, payment]",
+      "sources: []",
+      "",
+    ].join("\n"));
+    const loaded = await loadWikiWorkspace(root);
+    assert.deepEqual(loaded.database, {
+      url: "${WIKI_TEST_PG}",
+      schema: "billing",
+      tables: ["user*", "payment"],
+    });
+  } finally {
+    if (previous === undefined) delete process.env.WIKI_TEST_PG;
+    else process.env.WIKI_TEST_PG = previous;
+  }
+
+  await writeFile(path.join(root, "workspace.yaml"), [
+    "version: 1", "language: zh", "defaultSourceIgnores: true", "wiki:",
+    "  exclude: []", "database:", "  url: mysql://localhost/app", "sources: []", "",
+  ].join("\n"));
+  await assert.rejects(loadWikiWorkspace(root), /postgresql:\/\//);
+});
+
 test("wiki config only accepts exclude", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-runtime-config-"));
   temporaryDirectories.push(parent);

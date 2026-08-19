@@ -58,6 +58,15 @@ test("renders plain run, list, and snapshot output", () => {
     createdAt: "2026-08-12T00:00:00.000Z",
     updatedAt: "2026-08-12T00:00:00.000Z",
   }), "Wiki run-1 | running | auth");
+  assert.match(renderWikiRun({
+    id: "run-1",
+    cwd: "/repo",
+    status: "paused",
+    goal: "Auth wiki",
+    tasks: [{ id: "write", content: "Write overview", status: "in_progress" }],
+    createdAt: "2026-08-12T00:00:00.000Z",
+    updatedAt: "2026-08-12T00:00:00.000Z",
+  }), /in_progress  write  Write overview/);
   assert.equal(renderWikiRuns([]), "Wiki runs: none.");
   assert.match(renderWikiRuns([{ id: "run-1", status: "paused", updatedAt: "2026-08-12" }]), /run-1 \| paused/);
 });
@@ -81,6 +90,7 @@ test("help lists management and run commands", () => {
   assert.match(help, /\/wiki source add link/);
   assert.match(help, /\/wiki source add clone/);
   assert.match(help, /\/wiki status \[run-id\]/);
-  assert.match(help, /\/wiki resume \[run-id\].*does not restore Pi sessions/);
+  assert.match(help, /\/wiki resume \[run-id\]/);
+  assert.doesNotMatch(help, /does not restore Pi sessions/);
   assert.doesNotMatch(help, /batch-N|--process/);
 });

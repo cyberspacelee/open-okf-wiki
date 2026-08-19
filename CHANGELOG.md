@@ -4,6 +4,27 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 
 ## [Unreleased]
 
+### Board and resume
+
+- Each Run keeps a host-owned Board (`board.json`) for the goal and Tasks.
+  The Lead `todo` tool writes it. Compaction re-injects the Board. `/wiki resume`
+  continues the same Candidate, Board, and Lead session.
+- A Workspace admits one running or paused Run. Start a new Run only after
+  success, failure, or cancel.
+
+### Catalog
+
+- Optional `database` in `workspace.yaml`: Postgres URL, schema, and table
+  patterns. Agents list and describe matching tables; the host does not dump
+  the schema into the prompt. Connections are read-only. `${ENV}` / `$ENV`
+  keep secrets out of the file.
+
+### Docs
+
+- README matches the flattened package: no regenerate, no leftover
+  `wiki.maxConcurrentAgents` / generation profile, and it documents Board
+  plus Catalog.
+
 ### Packaging
 
 - The repo is a single Pi package at the root (`extensions/wiki/`, `skills/`,
