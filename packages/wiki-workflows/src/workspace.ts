@@ -4,12 +4,10 @@ import YAML from "yaml";
 import { renamePath, withExclusiveLock, writeFileDurable } from "./files.js";
 import { git, repositoryRoot, type GitResult } from "./git.js";
 import { errorMessage } from "./failures.js";
+import { isWikiSourceDirectoryName } from "./path.js";
 
 const WORKSPACE_FILE = "workspace.yaml";
 const WORKSPACE_LOCK_FILE = ".okf-wiki-workspace.lock";
-const WORKSPACE_GITIGNORE_FILE = ".gitignore";
-const WIKI_INTERNAL_DIRECTORY_IGNORE = ".okf-wiki/";
-const SOURCE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const RESERVED_WORKSPACE_DIRECTORIES = new Set(["wiki", ".okf-wiki"]);
 const WINDOWS_RESERVED_SOURCE_NAMES = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
 
@@ -30,73 +28,10 @@ export interface WikiWorkspaceSource {
 
 export interface WikiWorkspaceWikiConfig {
   exclude: string[];
-  /** Total concurrent model sessions, including the Lead. */
-  maxConcurrentAgents: number;
-  /** Fresh-session retries after a transient Lead or delegated Agent failure. */
-  transientRetries: number;
-  /** Full-jitter retry window when the provider supplies no Retry-After value. */
-  baseRetryDelayMs: number;
-  /** Seconds of thinking time for the Lead session; wall-clock deadline for each delegated Agent session. */
-  sessionTimeoutSeconds: number;
-  /** Run-wide hard limit for delegated tasks across every batch. */
-  maxDelegatedTasks: number;
-  /** Run-wide hard limit for delegation batches. */
-  maxDelegateBatches: number;
-  /** Hard turn limit for each delegated Agent session. */
-  maxTurnsPerSession: number;
-  /** Hard tool-call limit for each delegated Agent session. */
-  maxToolCallsPerSession: number;
-  /** Hard turn limit for the Lead session. */
-  maxTurnsPerLeadSession: number;
-  /** Hard tool-call limit for the Lead session. */
-  maxToolCallsPerLeadSession: number;
-  /** Optional role-specific Pi model selections. Missing roles inherit the active model. */
-  models: WikiRoleModelConfig;
-  generation: WikiGenerationProfile;
 }
-
-export type WikiAgentRole = "lead" | "research" | "write" | "review";
-
-export interface WikiModelConfig {
-  provider: string;
-  id: string;
-  thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-}
-
-export type WikiRoleModelConfig = Partial<Record<WikiAgentRole, WikiModelConfig>>;
-
-export interface WikiGenerationProfile {
-  audience: string[];
-  purpose: string;
-  focus: { include: string[]; exclude: string[] };
-  granularity: { preferChildPagesFor: string[] };
-  templates: { requiredSections: string[] };
-  review: { mustCover: string[] };
-}
-
-export const DEFAULT_WIKI_GENERATION_PROFILE: WikiGenerationProfile = {
-  audience: [],
-  purpose: "",
-  focus: { include: [], exclude: [] },
-  granularity: { preferChildPagesFor: [] },
-  templates: { requiredSections: [] },
-  review: { mustCover: [] },
-};
 
 export const DEFAULT_WORKSPACE_WIKI_CONFIG: WikiWorkspaceWikiConfig = {
   exclude: [],
-  maxConcurrentAgents: 3,
-  transientRetries: 1,
-  baseRetryDelayMs: 1_000,
-  sessionTimeoutSeconds: 1_200,
-  maxDelegatedTasks: 24,
-  maxDelegateBatches: 8,
-  maxTurnsPerSession: 60,
-  maxToolCallsPerSession: 120,
-  maxTurnsPerLeadSession: 200,
-  maxToolCallsPerLeadSession: 400,
-  models: {},
-  generation: structuredClone(DEFAULT_WIKI_GENERATION_PROFILE),
 };
 
 export interface WikiWorkspace {
@@ -358,71 +293,8 @@ async function readWorkspaceConfig(configPath: string, root: string, required: b
 }
 
 function parseWikiConfig(value: unknown): WikiWorkspaceWikiConfig {
-  const wiki = strictObject(value, "wiki", [
-    "exclude", "maxConcurrentAgents", "transientRetries", "baseRetryDelayMs", "sessionTimeoutSeconds",
-    "maxDelegatedTasks", "maxDelegateBatches", "maxTurnsPerSession", "maxToolCallsPerSession",
-    "maxTurnsPerLeadSession", "maxToolCallsPerLeadSession", "models", "generation",
-  ]);
-  const exclude = parseStringArray(wiki.exclude, "wiki.exclude");
-  return {
-    exclude,
-    maxConcurrentAgents: parseInteger(wiki.maxConcurrentAgents, "wiki.maxConcurrentAgents", DEFAULT_WORKSPACE_WIKI_CONFIG.maxConcurrentAgents, 2, 64),
-    transientRetries: parseInteger(wiki.transientRetries, "wiki.transientRetries", DEFAULT_WORKSPACE_WIKI_CONFIG.transientRetries, 0, 10),
-    baseRetryDelayMs: parseInteger(wiki.baseRetryDelayMs, "wiki.baseRetryDelayMs", DEFAULT_WORKSPACE_WIKI_CONFIG.baseRetryDelayMs, 0, 300_000),
-    sessionTimeoutSeconds: parseInteger(wiki.sessionTimeoutSeconds, "wiki.sessionTimeoutSeconds", DEFAULT_WORKSPACE_WIKI_CONFIG.sessionTimeoutSeconds, 1, 2_147_483),
-    maxDelegatedTasks: parseInteger(wiki.maxDelegatedTasks, "wiki.maxDelegatedTasks", DEFAULT_WORKSPACE_WIKI_CONFIG.maxDelegatedTasks, 1, 10_000),
-    maxDelegateBatches: parseInteger(wiki.maxDelegateBatches, "wiki.maxDelegateBatches", DEFAULT_WORKSPACE_WIKI_CONFIG.maxDelegateBatches, 1, 1_000),
-    maxTurnsPerSession: parseInteger(wiki.maxTurnsPerSession, "wiki.maxTurnsPerSession", DEFAULT_WORKSPACE_WIKI_CONFIG.maxTurnsPerSession, 1, 100_000),
-    maxToolCallsPerSession: parseInteger(wiki.maxToolCallsPerSession, "wiki.maxToolCallsPerSession", DEFAULT_WORKSPACE_WIKI_CONFIG.maxToolCallsPerSession, 1, 1_000_000),
-    maxTurnsPerLeadSession: parseInteger(wiki.maxTurnsPerLeadSession, "wiki.maxTurnsPerLeadSession", DEFAULT_WORKSPACE_WIKI_CONFIG.maxTurnsPerLeadSession, 1, 100_000),
-    maxToolCallsPerLeadSession: parseInteger(wiki.maxToolCallsPerLeadSession, "wiki.maxToolCallsPerLeadSession", DEFAULT_WORKSPACE_WIKI_CONFIG.maxToolCallsPerLeadSession, 1, 1_000_000),
-    models: parseRoleModels(wiki.models),
-    generation: parseGenerationProfile(wiki.generation),
-  };
-}
-
-function parseRoleModels(value: unknown): WikiRoleModelConfig {
-  if (value === undefined) return {};
-  const models = strictObject(value, "wiki.models", ["lead", "research", "write", "review"]);
-  return Object.fromEntries(Object.entries(models).map(([role, raw]) => {
-    const model = strictObject(raw, `wiki.models.${role}`, ["provider", "id", "thinkingLevel"]);
-    const provider = requiredTrimmedString(model.provider, `wiki.models.${role}.provider`);
-    const id = requiredTrimmedString(model.id, `wiki.models.${role}.id`);
-    const thinkingLevel = model.thinkingLevel;
-    if (thinkingLevel !== undefined && !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(String(thinkingLevel))) {
-      throw new Error(`workspace.yaml wiki.models.${role}.thinkingLevel must be a valid Pi thinking level`);
-    }
-    return [role, { provider, id, ...(thinkingLevel !== undefined ? { thinkingLevel } : {}) }];
-  })) as WikiRoleModelConfig;
-}
-
-function requiredTrimmedString(value: unknown, field: string): string {
-  if (typeof value !== "string" || !value.trim()) throw new Error(`workspace.yaml ${field} must be a non-empty string`);
-  return value.trim();
-}
-
-function parseGenerationProfile(value: unknown): WikiGenerationProfile {
-  if (value === undefined) return structuredClone(DEFAULT_WIKI_GENERATION_PROFILE);
-  const generation = strictObject(value, "wiki.generation", ["audience", "purpose", "focus", "granularity", "templates", "review"]);
-  const focus = optionalStrictObject(generation.focus, "wiki.generation.focus", ["include", "exclude"]);
-  const granularity = optionalStrictObject(generation.granularity, "wiki.generation.granularity", ["preferChildPagesFor"]);
-  const templates = optionalStrictObject(generation.templates, "wiki.generation.templates", ["requiredSections"]);
-  const review = optionalStrictObject(generation.review, "wiki.generation.review", ["mustCover"]);
-  return {
-    audience: parseStringArray(generation.audience, "wiki.generation.audience"),
-    purpose: parseOptionalString(generation.purpose, "wiki.generation.purpose"),
-    focus: {
-      include: parseStringArray(focus.include, "wiki.generation.focus.include"),
-      exclude: parseStringArray(focus.exclude, "wiki.generation.focus.exclude"),
-    },
-    granularity: {
-      preferChildPagesFor: parseStringArray(granularity.preferChildPagesFor, "wiki.generation.granularity.preferChildPagesFor"),
-    },
-    templates: {
-      requiredSections: parseStringArray(templates.requiredSections, "wiki.generation.templates.requiredSections"),
-    },
-    review: { mustCover: parseStringArray(review.mustCover, "wiki.generation.review.mustCover") },
-  };
+  const wiki = strictObject(value, "wiki", ["exclude"]);
+  return { exclude: parseStringArray(wiki.exclude, "wiki.exclude") };
 }
 
 function strictObject(value: unknown, field: string, allowed: readonly string[]): Record<string, unknown> {
@@ -430,24 +302,6 @@ function strictObject(value: unknown, field: string, allowed: readonly string[])
   const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
   if (unknown.length > 0) throw new Error(`workspace.yaml ${field} has unknown field: ${unknown[0]}`);
   return value;
-}
-
-function optionalStrictObject(value: unknown, field: string, allowed: readonly string[]): Record<string, unknown> {
-  return value === undefined ? {} : strictObject(value, field, allowed);
-}
-
-function parseOptionalString(value: unknown, field: string): string {
-  if (value === undefined) return "";
-  if (typeof value !== "string") throw new Error(`workspace.yaml ${field} must be a string`);
-  return value.trim();
-}
-
-function parseInteger(value: unknown, field: string, fallback: number, minimum: number, maximum: number): number {
-  if (value === undefined) return fallback;
-  if (!Number.isInteger(value) || (value as number) < minimum || (value as number) > maximum) {
-    throw new Error(`workspace.yaml ${field} must be an integer from ${minimum} to ${maximum}`);
-  }
-  return value as number;
 }
 
 function parseStringArray(value: unknown, field: string, required = false): string[] {
@@ -468,7 +322,7 @@ function normalizeStringArray(value: unknown, field: string): string[] {
 }
 
 function parseSource(value: unknown, seen: Set<string>): WikiWorkspaceSource {
-  if (!isRecord(value) || typeof value.path !== "string" || !SOURCE_NAME.test(value.path) || RESERVED_WORKSPACE_DIRECTORIES.has(value.path) || seen.has(value.path)) {
+  if (!isRecord(value) || typeof value.path !== "string" || !isWikiSourceDirectoryName(value.path) || RESERVED_WORKSPACE_DIRECTORIES.has(value.path) || seen.has(value.path)) {
     throw new Error("workspace.yaml source paths must be unique project directory names");
   }
   seen.add(value.path);
@@ -490,7 +344,7 @@ function sourceName(value: string, platform: NodeJS.Platform): string {
   if (platform === "win32" && (WINDOWS_RESERVED_SOURCE_NAMES.test(normalized) || /[. ]$/.test(value))) {
     throw new Error(`Project name is reserved on Windows: ${value}`);
   }
-  if (!SOURCE_NAME.test(normalized)) throw new Error(`Invalid source name: ${value}`);
+  if (!isWikiSourceDirectoryName(normalized)) throw new Error(`Invalid source name: ${value}`);
   return normalized;
 }
 
@@ -623,20 +477,6 @@ async function removeEmptyDirectory(directory: string): Promise<void> {
       throw error;
     }
   }
-}
-
-/** Keep private workflow handoffs out of a workspace's generated Wiki commits. */
-export async function ensureWikiWorkspaceInternalIgnore(root: string): Promise<void> {
-  const location = path.join(root, WORKSPACE_GITIGNORE_FILE);
-  let current = "";
-  try {
-    current = await readFile(location, "utf8");
-  } catch (error) {
-    if (!isMissing(error)) throw error;
-  }
-  if (current.split(/\r?\n/).some((line) => line.trim() === WIKI_INTERNAL_DIRECTORY_IGNORE)) return;
-  const separator = current.length === 0 || current.endsWith("\n") ? "" : "\n";
-  await writeFile(location, `${current}${separator}${WIKI_INTERNAL_DIRECTORY_IGNORE}\n`, "utf8");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -20,7 +20,9 @@
   },
   "files": [
     "dist/",
-    "skills/"
+    "skills/",
+    "agents/",
+    "prompts/"
   ],
   "pi": {
     "extensions": [

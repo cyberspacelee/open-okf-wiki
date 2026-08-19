@@ -2,8 +2,29 @@ import { createHash } from "node:crypto";
 import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { git } from "./git.js";
-import type { WikiPinnedSource, WikiPinnedSourcePlan } from "./runtime-types.js";
 import { loadWikiWorkspace, sourceIsIgnored, type ResolvedWikiSource } from "./workspace.js";
+
+export interface WikiPinnedSource {
+  scopeId: string;
+  logicalPath: string;
+  absolutePath: string;
+  realPath: string;
+  repositoryRoot: string;
+  repositoryIdentity: string;
+  origin: { type: "link"; localPath: string } | { type: "clone"; remoteUrl: string; ref?: string };
+  head: string;
+  dirtyFingerprint: string;
+}
+
+export interface WikiPinnedSourcePlan {
+  workspaceRoot: string;
+  workspaceRealPath: string;
+  configPath: string;
+  defaultSourceIgnores: boolean;
+  excludes: string[];
+  sources: WikiPinnedSource[];
+  fingerprint: string;
+}
 
 interface SourceChange { status: string; paths: string[] }
 

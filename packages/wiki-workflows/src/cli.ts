@@ -1,21 +1,21 @@
-import type {
-  WikiAgentInspection,
-  WikiAgentTarget,
-  WikiRunProgress,
-  WikiRunView,
-} from "./producer-types.js";
-import {
-  projectWikiAgentLines,
-  projectWikiRunObservability,
-} from "./ui/observability.js";
-import { formatLocalDateTime } from "./ui/time-format.js";
+import type { WikiRunView } from "./producer-types.js";
+
+const LOCAL_DATE_TIME = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "medium",
+});
+
+function formatLocalDateTime(value: string): string {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? LOCAL_DATE_TIME.format(timestamp) : value;
+}
 
 export type WikiCliCommand =
   | { action: "run"; focus?: string }
   | { action: "init"; workspace?: string; language: "zh" | "en"; exclude: string[]; defaultSourceIgnores: boolean }
   | { action: "source-add"; kind: "link"; localPath: string; name?: string; workspace?: string }
   | { action: "source-add"; kind: "clone"; url: string; ref?: string; name?: string; workspace?: string }
-  | { action: "status"; runId?: string; target?: WikiAgentTarget; process?: boolean }
+  | { action: "status"; runId?: string }
   | { action: "runs" }
   | { action: "pause" }
   | { action: "resume"; runId?: string }
@@ -41,9 +41,9 @@ export function parseWikiCliCommand(raw: string): WikiCliCommand {
       requireNoArguments(rest, "pause");
       return { action };
     case "resume":
-      return withOptionalRunId(action, optionalRunId(rest, "resume"));
+      return withOptionalRunId("resume", optionalRunId(rest, "resume"));
     case "cancel":
-      return withOptionalRunId(action, optionalRunId(rest, "cancel"));
+      return withOptionalRunId("cancel", optionalRunId(rest, "cancel"));
     default:
       return { action: "run", focus: joinedFocus(values) };
   }
@@ -57,112 +57,122 @@ function withOptionalRunId<T extends "resume" | "cancel">(
 }
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const BATCH_TARGET = /^batch-(\d+)\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
 
 function parseStatus(values: string[]): Extract<WikiCliCommand, { action: "status" }> {
-  let runId: string | undefined;
-  let target: WikiAgentTarget | undefined;
-  let process = false;
-  let extra = false;
-  for (const value of values) {
-    if (value === "--process") {
-      process = true;
+  if (values.length > 1) throw new Error("Usage: /wiki status [run-id]");
+  if (values[0] && !SAFE_ID.test(values[0])) throw new Error("Invalid Wiki run id");
+  return values[0] ? { action: "status", runId: values[0] } : { action: "status" };
+}
+
+function parseInit(values: string[]): Extract<WikiCliCommand, { action: "init" }> {
+  let workspace: string | undefined;
+  let language: "zh" | "en" = "zh";
+  const exclude: string[] = [];
+  let defaultSourceIgnores = true;
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index]!;
+    if (value === "--lang") {
+      const next = values[++index];
+      if (next !== "zh" && next !== "en") throw new Error("zh or en");
+      language = next;
       continue;
     }
-    if (runId === undefined) {
-      if (!SAFE_ID.test(value)) throw new Error("Invalid Wiki run id");
-      runId = value;
+    if (value === "--exclude") {
+      const next = values[++index];
+      if (!next) throw new Error("--exclude requires a value");
+      exclude.push(next);
       continue;
     }
-    if (target === undefined) {
-      if (value !== "lead" && !BATCH_TARGET.test(value)) throw new Error("Wiki agent target must be lead or batch-N/task-id");
-      target = parseAgentTarget(value);
+    if (value === "--no-default-ignores") {
+      defaultSourceIgnores = false;
       continue;
     }
-    extra = true;
+    if (value.startsWith("-")) throw new Error(`Unknown flag: ${value}`);
+    if (workspace) throw new Error("Usage: /wiki init [workspace] [--lang zh|en] [--exclude <glob>]... [--no-default-ignores]");
+    workspace = value;
   }
-  if (extra || (process && !target) || (target && !runId)) {
-    throw new Error("Usage: /wiki status [run-id] [lead|batch-N/task-id] [--process]");
+  return { action: "init", ...(workspace ? { workspace } : {}), language, exclude, defaultSourceIgnores };
+}
+
+function parseSource(values: string[]): Extract<WikiCliCommand, { action: "source-add" }> {
+  if (values[0] !== "add") throw new Error("Usage: /wiki source add link|clone ...");
+  const kind = values[1];
+  if (kind !== "link" && kind !== "clone") throw new Error("Usage: /wiki source add link|clone ...");
+  const rest = values.slice(2);
+  let name: string | undefined;
+  let workspace: string | undefined;
+  let ref: string | undefined;
+  const positional: string[] = [];
+  for (let index = 0; index < rest.length; index += 1) {
+    const value = rest[index]!;
+    if (value === "--name") {
+      name = rest[++index];
+      if (!name) throw new Error("--name requires a value");
+      continue;
+    }
+    if (value === "--workspace") {
+      workspace = rest[++index];
+      if (!workspace) throw new Error("--workspace requires a value");
+      continue;
+    }
+    if (value === "--ref") {
+      if (kind === "link") throw new Error("Unknown flag: --ref");
+      ref = rest[++index];
+      if (!ref) throw new Error("--ref requires a value");
+      continue;
+    }
+    if (value.startsWith("-")) throw new Error(`Unknown flag: ${value}`);
+    positional.push(value);
   }
+  if (kind === "link") {
+    if (positional.length !== 1) throw new Error("Usage: /wiki source add link <local-path>");
+    return { action: "source-add", kind: "link", localPath: positional[0]!, ...(name ? { name } : {}), ...(workspace ? { workspace } : {}) };
+  }
+  if (positional.length !== 1) throw new Error("Usage: /wiki source add clone <url>");
   return {
-    action: "status",
-    ...(runId ? { runId } : {}),
-    ...(target ? { target } : {}),
-    ...(process ? { process } : {}),
+    action: "source-add",
+    kind: "clone",
+    url: positional[0]!,
+    ...(ref ? { ref } : {}),
+    ...(name ? { name } : {}),
+    ...(workspace ? { workspace } : {}),
   };
 }
 
-function parseAgentTarget(value: string): WikiAgentTarget {
-  if (value === "lead") return { kind: "lead" };
-  const match = BATCH_TARGET.exec(value);
-  if (!match) throw new Error("Wiki agent target must be lead or batch-N/task-id");
-  return { kind: "task", batch: Number(match[1]), taskId: match[2]! };
+function optionalRunId(values: string[], action: string): string | undefined {
+  if (values.length > 1) throw new Error(`Usage: /wiki ${action} [run-id]`);
+  if (values[0] && !SAFE_ID.test(values[0])) throw new Error("Invalid Wiki run id");
+  return values[0];
+}
+
+function requireNoArguments(values: string[], action: string): void {
+  if (values.length) throw new Error(`/wiki ${action} does not accept arguments`);
+}
+
+function joinedFocus(values: string[]): string {
+  return values.join(" ").trim();
+}
+
+function tokenize(raw: string): string[] {
+  const tokens: string[] = [];
+  const pattern = /"([^"]*)"|(\S+)/g;
+  for (const match of raw.matchAll(pattern)) tokens.push(match[1] ?? match[2] ?? "");
+  return tokens;
 }
 
 export function renderWikiRun(run: WikiRunView | undefined): string {
   if (!run) return "Wiki: no run.";
-  if (!run.progress) {
-    const focus = run.focus ? ` | ${run.focus}` : "";
-    const error = run.error ? `\n${run.error}` : "";
-    return `Wiki ${run.id} | ${run.status}${focus}${error}`;
-  }
-  return renderWikiRunCard(run, run.progress);
+  const focus = run.focus ? ` | ${run.focus}` : "";
+  const error = run.error ? `\n${run.error}` : "";
+  const agents = run.agents?.length
+    ? `\n${run.agents.map((agent) => `  ${agent.status}  ${agent.agent}  ${truncate(agent.task, 80)}`).join("\n")}`
+    : "";
+  const pages = run.pageCount !== undefined ? ` | ${run.pageCount} pages` : "";
+  return `Wiki ${run.id} | ${run.status}${focus}${pages}${agents}${error}`;
 }
 
 export function renderWikiSnapshot(run: WikiRunView): string {
   return `${renderWikiRun(run)}\n\nsnapshot as of ${formatLocalDateTime(run.updatedAt)}`;
-}
-
-function renderWikiRunCard(run: WikiRunView, progress: WikiRunProgress): string {
-  const semantics = projectWikiRunObservability(run);
-  const elapsed = formatElapsed(run.createdAt, run.completedAt ?? run.updatedAt);
-  const elapsedPart = elapsed ? `  [${elapsed}]` : "";
-  const lines: string[] = [`Wiki ${run.id}  ${semantics.status.marker} ${semantics.status.label}${elapsedPart}`];
-
-  const stageSegments = [`stage  ${semantics.stage?.label ?? progress.stage}`];
-  if (semantics.batch) {
-    stageSegments.push(`batch ${semantics.batch.batch}`);
-    const { completed, total, running } = semantics.batch;
-    stageSegments.push(`${completed}/${total} done${running > 0 ? `, ${running} running` : ""}`);
-  }
-  lines.push(stageSegments.join(" · "));
-
-  if (run.focus) lines.push(`focus  ${run.focus}`);
-
-  if (run.pause) {
-    const retry = run.pause.retryAt ? ` · retry at ${formatLocalDateTime(run.pause.retryAt)}` : "";
-    lines.push(`pause  ${run.pause.reason}${retry}`);
-    if (run.pause.summary) lines.push(`       ${run.pause.summary}`);
-  }
-
-  if (run.error) lines.push(`error  ${run.error}`);
-
-  if (semantics.batch && semantics.batch.tasks.length > 0) {
-    lines.push("");
-    for (const task of semantics.batch.tasks) {
-      const attempt = `  [attempt ${task.attempt}]`;
-      const activity = task.activity ? `  ·  ${task.activity}` : "";
-      lines.push(`  ${task.marker} ${task.role}  ${task.identity}${attempt}${activity}`);
-    }
-  }
-
-  const last = textValue(progress.lastMessage);
-  if (last) lines.push(`last  ${last}`);
-
-  return lines.join("\n");
-}
-
-function formatElapsed(start: string, end: string): string | undefined {
-  const created = Date.parse(start);
-  const finished = Date.parse(end);
-  if (!Number.isFinite(created) || !Number.isFinite(finished) || finished < created) return undefined;
-  const totalSeconds = Math.floor((finished - created) / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  if (hours > 0) return `${hours}h${minutes}m${seconds}s`;
-  if (minutes > 0) return seconds > 0 ? `${minutes}m${seconds}s` : `${minutes}m`;
-  return `${seconds}s`;
 }
 
 export function renderWikiRuns(runs: readonly WikiRunView[]): string {
@@ -174,15 +184,6 @@ export function renderWikiRuns(runs: readonly WikiRunView[]): string {
   })].join("\n");
 }
 
-export function renderWikiAgent(
-  inspection: WikiAgentInspection,
-  tab: "overview" | "process" | "output" = "overview",
-): string {
-  return projectWikiAgentLines(inspection, tab)
-    .map((line) => line.map((span) => span.text).join(""))
-    .join("\n");
-}
-
 export function wikiCliHelp(): string {
   return [
     "Usage:",
@@ -190,105 +191,14 @@ export function wikiCliHelp(): string {
     "  /wiki init [workspace] [--lang zh|en] [--exclude <glob>]... [--no-default-ignores]",
     "  /wiki source add link <local-path> [--name <name>] [--workspace <dir>]",
     "  /wiki source add clone <url> [--ref <ref>] [--name <name>] [--workspace <dir>]",
-    "  /wiki status [run-id] [lead|batch-N/task-id] [--process]",
+    "  /wiki status [run-id]",
     "  /wiki runs",
     "  /wiki pause",
-    "  /wiki resume [run-id]",
+    "  /wiki resume [run-id]  (does not restore Pi sessions; run /wiki again)",
     "  /wiki cancel [run-id]",
   ].join("\n");
 }
 
-function parseInit(values: string[]): Extract<WikiCliCommand, { action: "init" }> {
-  let workspace: string | undefined;
-  let language: "zh" | "en" = "zh";
-  let languageSet = false;
-  let defaultSourceIgnores = true;
-  let ignoresSet = false;
-  const exclude: string[] = [];
-  for (let index = 0; index < values.length; index += 1) {
-    const value = values[index]!;
-    if (value === "--lang") {
-      if (languageSet) throw new Error("--lang may be specified only once");
-      const selected = optionValue(values, ++index, "--lang");
-      if (selected !== "zh" && selected !== "en") throw new Error("--lang must be zh or en");
-      language = selected;
-      languageSet = true;
-    } else if (value === "--exclude") {
-      exclude.push(optionValue(values, ++index, "--exclude"));
-    } else if (value === "--no-default-ignores") {
-      if (ignoresSet) throw new Error("--no-default-ignores may be specified only once");
-      defaultSourceIgnores = false;
-      ignoresSet = true;
-    } else if (value.startsWith("--")) {
-      throw new Error(`Unknown /wiki init option: ${value}`);
-    } else if (workspace === undefined) {
-      workspace = value;
-    } else {
-      throw new Error("Usage: /wiki init [workspace] [--lang zh|en] [--exclude <glob>]... [--no-default-ignores]");
-    }
-  }
-  return { action: "init", ...(workspace ? { workspace } : {}), language, exclude, defaultSourceIgnores };
-}
-
-function parseSource(values: string[]): Extract<WikiCliCommand, { action: "source-add" }> {
-  if (values[0] !== "add" || (values[1] !== "link" && values[1] !== "clone") || !values[2]) {
-    throw new Error("Usage: /wiki source add link <local-path> | clone <url>");
-  }
-  const kind = values[1];
-  const target = values[2];
-  let name: string | undefined;
-  let workspace: string | undefined;
-  let ref: string | undefined;
-  for (let index = 3; index < values.length; index += 1) {
-    const option = values[index]!;
-    if (option === "--name") {
-      if (name !== undefined) throw new Error("--name may be specified only once");
-      name = optionValue(values, ++index, "--name");
-    } else if (option === "--workspace") {
-      if (workspace !== undefined) throw new Error("--workspace may be specified only once");
-      workspace = optionValue(values, ++index, "--workspace");
-    } else if (option === "--ref" && kind === "clone") {
-      if (ref !== undefined) throw new Error("--ref may be specified only once");
-      ref = optionValue(values, ++index, "--ref");
-    } else {
-      throw new Error(`Unknown /wiki source add ${kind} option: ${option}`);
-    }
-  }
-  const common = { action: "source-add" as const, kind, ...(name ? { name } : {}), ...(workspace ? { workspace } : {}) };
-  return kind === "link" ? { ...common, kind, localPath: target } : { ...common, kind, url: target, ...(ref ? { ref } : {}) };
-}
-
-function optionValue(values: string[], index: number, option: string): string {
-  const value = values[index];
-  if (!value || value.startsWith("--")) throw new Error(`${option} requires a value`);
-  return value;
-}
-
-function tokenize(input: string): string[] {
-  const values: string[] = [];
-  for (const match of input.matchAll(/"([^\"]*)"|'([^']*)'|(\S+)/g)) {
-    values.push(match[1] ?? match[2] ?? match[3] ?? "");
-  }
-  return values;
-}
-
-function joinedFocus(values: string[]): string | undefined {
-  return values.join(" ").trim() || undefined;
-}
-
-function optionalRunId(values: string[], action: string): string | undefined {
-  if (values.length > 1) throw new Error(`Usage: /wiki ${action} [run-id]`);
-  const value = values[0];
-  if (value && !SAFE_ID.test(value)) {
-    throw new Error("Invalid Wiki run id");
-  }
-  return value;
-}
-
-function requireNoArguments(values: string[], action: string): void {
-  if (values.length > 0) throw new Error(`/wiki ${action} does not accept arguments`);
-}
-
-function textValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+function truncate(value: string, max: number): string {
+  return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
 }

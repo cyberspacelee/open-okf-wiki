@@ -43,7 +43,7 @@ test("loads a Git repository without workspace.yaml as an implicit self source",
   assert.equal(loaded.sources.length, 1);
   assert.equal(loaded.sources[0].path, ".");
   assert.equal(loaded.sources[0].realPath, root);
-  assert.equal(loaded.wiki.sessionTimeoutSeconds, 1200);
+  assert.deepEqual(loaded.wiki, { exclude: [] });
   assert.equal(sourceIsIgnored(loaded.sources[0], ".okf-wiki/runs/a/run.json", true), true);
   assert.equal(sourceIsIgnored(loaded.sources[0], "wiki/overview.md", true), true);
   assert.equal(sourceIsIgnored(loaded.sources[0], "src/index.ts", true), false);
@@ -61,28 +61,13 @@ test("initializes explicit workspace defaults and normalized Wiki excludes", asy
   assert.equal(workspace.root, path.join(parent, "docs"));
   assert.equal(workspace.language, "zh");
   assert.equal(workspace.defaultSourceIgnores, true);
-  assert.deepEqual(workspace.wiki.exclude, ["generated/**", "private/**"]);
-  assert.equal(workspace.wiki.maxConcurrentAgents, 3);
-  assert.equal(workspace.wiki.transientRetries, 1);
-  assert.equal(workspace.wiki.baseRetryDelayMs, 1000);
-  assert.equal(workspace.wiki.sessionTimeoutSeconds, 1200);
-  assert.equal(workspace.wiki.maxDelegatedTasks, 24);
-  assert.equal(workspace.wiki.maxDelegateBatches, 8);
-  assert.equal(workspace.wiki.maxTurnsPerSession, 60);
-  assert.equal(workspace.wiki.maxToolCallsPerSession, 120);
-  assert.equal(workspace.wiki.maxTurnsPerLeadSession, 200);
-  assert.equal(workspace.wiki.maxToolCallsPerLeadSession, 400);
-  assert.deepEqual(workspace.wiki.models, {});
-  assert.deepEqual(workspace.wiki.generation, {
-    audience: [], purpose: "", focus: { include: [], exclude: [] },
-    granularity: { preferChildPagesFor: [] }, templates: { requiredSections: [] }, review: { mustCover: [] },
-  });
+  assert.deepEqual(workspace.wiki, { exclude: ["generated/**", "private/**"] });
   assert.deepEqual(workspace.sources, []);
   assert.match(await readFile(workspace.configPath, "utf8"), /language: zh/);
   await assert.rejects(wikiWorkspaceManagement.init({ cwd: parent, workspace: "docs" }), /already exists/);
 });
 
-test("loads configurable Wiki concurrency and transient retry policy", async () => {
+test("wiki config only accepts exclude", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-runtime-config-"));
   temporaryDirectories.push(parent);
   const root = await repository(parent, "configured");
@@ -92,70 +77,18 @@ test("loads configurable Wiki concurrency and transient retry policy", async () 
     "language: zh",
     "defaultSourceIgnores: true",
     "wiki:",
-    "  exclude: []",
-    "  maxConcurrentAgents: 6",
-    "  transientRetries: 3",
-    "  baseRetryDelayMs: 2500",
-    "  sessionTimeoutSeconds: 3600",
-    "  maxDelegatedTasks: 48",
-    "  maxDelegateBatches: 12",
-    "  maxTurnsPerSession: 80",
-    "  maxToolCallsPerSession: 240",
-    "  models:",
-    "    research:",
-    "      provider: anthropic",
-    "      id: claude-sonnet",
-    "      thinkingLevel: high",
+    "  exclude: [generated/**]",
     "sources: []",
     "",
   ].join("\n");
   await writeFile(configPath, validConfig);
-
   const loaded = await loadWikiWorkspace(root);
-  assert.deepEqual(loaded.wiki, {
-    exclude: [],
-    maxConcurrentAgents: 6,
-    transientRetries: 3,
-    baseRetryDelayMs: 2500,
-    sessionTimeoutSeconds: 3600,
-    maxDelegatedTasks: 48,
-    maxDelegateBatches: 12,
-    maxTurnsPerSession: 80,
-    maxToolCallsPerSession: 240,
-    maxTurnsPerLeadSession: 200,
-    maxToolCallsPerLeadSession: 400,
-    models: { research: { provider: "anthropic", id: "claude-sonnet", thinkingLevel: "high" } },
-    generation: {
-      audience: [], purpose: "", focus: { include: [], exclude: [] },
-      granularity: { preferChildPagesFor: [] }, templates: { requiredSections: [] }, review: { mustCover: [] },
-    },
-  });
+  assert.deepEqual(loaded.wiki, { exclude: ["generated/**"] });
 
-  for (const [valid, invalid] of [
-    ["  maxConcurrentAgents: 6", "  maxConcurrentAgents: 1"],
-    ["  transientRetries: 3", "  transientRetries: -1"],
-    ["  baseRetryDelayMs: 2500", "  baseRetryDelayMs: 300001"],
-    ["  sessionTimeoutSeconds: 3600", "  sessionTimeoutSeconds: 0"],
-    ["  sessionTimeoutSeconds: 3600", "  sessionTimeoutSeconds: 1.5"],
-    ["  sessionTimeoutSeconds: 3600", "  sessionTimeoutSeconds: 2147484"],
-    ["  maxDelegatedTasks: 48", "  maxDelegatedTasks: 0"],
-    ["  maxDelegateBatches: 12", "  maxDelegateBatches: 0"],
-    ["  maxTurnsPerSession: 80", "  maxTurnsPerSession: 0"],
-    ["  maxToolCallsPerSession: 240", "  maxToolCallsPerSession: 0"],
-  ]) {
-    await writeFile(configPath, validConfig.replace(valid, invalid));
-    await assert.rejects(loadWikiWorkspace(root), /must be an integer/);
-  }
-
-  for (const invalid of [
-    validConfig.replace("      thinkingLevel: high", "      thinkingLevel: enormous"),
-    validConfig.replace("      provider: anthropic", "      provider: ''"),
-    validConfig.replace("      id: claude-sonnet", "      unknown: claude-sonnet"),
-    validConfig.replace("  exclude: []", "  unexpected: true"),
-  ]) {
-    await writeFile(configPath, invalid);
-    await assert.rejects(loadWikiWorkspace(root), /thinking level|non-empty string|unknown field/);
-  }
+  await writeFile(configPath, validConfig.replace("  exclude: [generated/**]", "  exclude: []\n  maxDelegateBatches: 12"));
+  await assert.rejects(loadWikiWorkspace(root), /unknown field/);
+  await writeFile(configPath, validConfig.replace("  exclude: [generated/**]", "  unexpected: true"));
+  await assert.rejects(loadWikiWorkspace(root), /unknown field/);
 });
 
 test("version errors identify the exact workspace config and require numeric version 1", async () => {
@@ -183,34 +116,16 @@ test("version errors identify the exact workspace config and require numeric ver
   await assert.rejects(loadWikiWorkspace(root), /expected numeric version 1, received "1" \(string\)/);
 });
 
-test("strictly loads the complete Wiki generation profile", async () => {
+test("rejects leftover generation and role-model wiki fields", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-generation-profile-"));
   temporaryDirectories.push(parent);
   const root = await repository(parent, "configured");
   const configPath = path.join(root, "workspace.yaml");
-  const config = [
-    "version: 1", "language: en", "defaultSourceIgnores: true", "wiki:", "  generation:",
-    "    audience: [operators, maintainers, operators]", "    purpose: Operational reference", "    focus:",
-    "      include: [payments]", "      exclude: [generated]", "    granularity:",
-    "      preferChildPagesFor: [lifecycles]", "    templates:", "      requiredSections: [Failure modes]",
-    "    review:", "      mustCover: [cross-domain contracts]", "sources: []", "",
-  ].join("\n");
-  await writeFile(configPath, config);
-  assert.deepEqual((await loadWikiWorkspace(root)).wiki.generation, {
-    audience: ["operators", "maintainers"], purpose: "Operational reference",
-    focus: { include: ["payments"], exclude: ["generated"] },
-    granularity: { preferChildPagesFor: ["lifecycles"] },
-    templates: { requiredSections: ["Failure modes"] }, review: { mustCover: ["cross-domain contracts"] },
-  });
-
-  for (const invalid of [
-    config.replace("      include: [payments]", "      unknown: [payments]"),
-    config.replace("    purpose: Operational reference", "    purpose: []"),
-    config.replace("      mustCover: [cross-domain contracts]", "      mustCover: [\"\"]"),
-  ]) {
-    await writeFile(configPath, invalid);
-    await assert.rejects(loadWikiWorkspace(root), /unknown field|must be a string|array of non-empty strings/);
-  }
+  await writeFile(configPath, [
+    "version: 1", "language: en", "defaultSourceIgnores: true", "wiki:",
+    "  exclude: []", "  generation:", "    purpose: leftover", "sources: []", "",
+  ].join("\n"));
+  await assert.rejects(loadWikiWorkspace(root), /unknown field/);
 });
 
 test("concurrent init never deletes the winning workspace", async () => {

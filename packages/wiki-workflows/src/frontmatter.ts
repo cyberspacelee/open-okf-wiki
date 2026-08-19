@@ -1,14 +1,20 @@
 import YAML from "yaml";
-import { isRecord, splitYamlFence } from "./util.js";
 
 export interface ParsedPage {
   frontmatter: Record<string, unknown>;
   body: string;
 }
 
-export interface OkfSource {
-  id: string;
-  resource: string;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function splitYamlFence(text: string): { yaml?: string; body: string; hasFence: boolean; terminated: boolean } {
+  const hasFence = text.startsWith("---\n") || text.startsWith("---\r\n");
+  if (!hasFence) return { body: text, hasFence: false, terminated: true };
+  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text);
+  if (!match) return { body: text, hasFence: true, terminated: false };
+  return { yaml: match[1], body: text.slice(match[0].length), hasFence: true, terminated: true };
 }
 
 export function parsePage(text: string): ParsedPage {
@@ -22,17 +28,4 @@ export function parsePage(text: string): ParsedPage {
 
 export function stringifyPage(page: ParsedPage): string {
   return `---\n${YAML.stringify(page.frontmatter).trimEnd()}\n---\n${page.body}`;
-}
-
-export function okfSources(value: unknown): OkfSource[] | undefined {
-  if (!Array.isArray(value) || !value.length) return undefined;
-  const sources: OkfSource[] = [];
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return undefined;
-    const source = entry as Record<string, unknown>;
-    if (typeof source.id !== "string" || !source.id.trim()) return undefined;
-    if (typeof source.resource !== "string" || !source.resource.trim()) return undefined;
-    sources.push({ id: source.id.trim(), resource: source.resource.trim() });
-  }
-  return sources;
 }
