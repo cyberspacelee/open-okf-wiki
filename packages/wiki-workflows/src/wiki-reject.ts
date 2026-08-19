@@ -12,6 +12,11 @@ export class WikiRejectedError extends Error {
   }
 }
 
+/** One-line reject for wiki_* tools — Pi's observer shows only the first error line. */
+export function wikiToolRejected(tool: string, reason: string): Error {
+  return new Error(`${oneLine(tool)} rejected: ${oneLine(reason)}`);
+}
+
 export function listed(values: readonly string[], limit = WIKI_DEFECT_LIST_LIMIT): string {
   const unique = [...new Set(values.filter(Boolean))];
   if (unique.length <= limit) return unique.join(", ");
@@ -22,6 +27,6 @@ export function allowedList(values: readonly string[]): string {
   return values.length ? listed(values) : "(none)";
 }
 
-function oneLine(value: string): string {
+export function oneLine(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }

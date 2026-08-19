@@ -17,9 +17,9 @@ import {
   pathIsInside,
   type PermittedToolRoot,
   type WorkspaceToolPolicy,
-} from "./path-policy.js";
-import { boundToolExecutionResult } from "./tool-budget.js";
-import { isSafeWikiPagePath } from "./lead.js";
+} from "../path-policy.js";
+import { boundToolExecutionResult } from "../tool-budget.js";
+import { isSafeWikiPagePath } from "../lead/path.js";
 
 export type WikiToolRole = "lead" | "researcher" | "writer" | "reviewer";
 

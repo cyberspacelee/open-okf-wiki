@@ -13,7 +13,7 @@ async function fixture(t) {
 
 test("writes and resumes content-addressed Markdown handoffs through the manifest", async (t) => {
   const { workspace, store } = await fixture(t);
-  const input = { runId: "run-1", nodeId: "research-1", attempt: 1, scope: ["source"], kind: "research-handoff", content: "# Finding\n" };
+  const input = { runId: "run-1", contractId: "research-1", attempt: 1, scope: ["source"], kind: "research-handoff", content: "# Finding\n" };
   const ref = await store.write(input);
   assert.equal(ref.mediaType, "text/markdown");
   assert.match(ref.relativePath, /^\.okf-wiki\/blobs\/[a-f0-9]{64}\.md$/);
@@ -26,9 +26,9 @@ test("writes and resumes content-addressed Markdown handoffs through the manifes
 
 test("rejects unsafe, oversized, forged, and symlinked handoffs", async (t) => {
   const { workspace, store } = await fixture(t);
-  await assert.rejects(() => store.write({ runId: "../bad", nodeId: "n", attempt: 1, scope: [], kind: "research-handoff", content: "x" }), /Invalid Wiki handoff run ID/);
-  await assert.rejects(() => store.write({ runId: "run", nodeId: "n", attempt: 1, scope: [], kind: "research-handoff", content: "x".repeat(MAX_WIKI_RESEARCH_ARTIFACT_BYTES + 1) }), /262144-byte limit/);
-  const ref = await store.write({ runId: "run", nodeId: "n", attempt: 1, scope: ["source"], kind: "research-handoff", content: "valid\n" });
+  await assert.rejects(() => store.write({ runId: "../bad", contractId: "n", attempt: 1, scope: [], kind: "research-handoff", content: "x" }), /Invalid Wiki handoff run ID/);
+  await assert.rejects(() => store.write({ runId: "run", contractId: "n", attempt: 1, scope: [], kind: "research-handoff", content: "x".repeat(MAX_WIKI_RESEARCH_ARTIFACT_BYTES + 1) }), /262144-byte limit/);
+  const ref = await store.write({ runId: "run", contractId: "n", attempt: 1, scope: ["source"], kind: "research-handoff", content: "valid\n" });
   await assert.rejects(() => store.read({ ...ref, relativePath: ".okf-wiki/blobs/forged.md" }), /Invalid Wiki handoff artifact reference/);
   const blob = path.join(workspace, ref.relativePath);
   const outside = path.join(workspace, "outside.md");

@@ -30,7 +30,7 @@ export interface WikiDispatchInput {
   tasks: readonly WikiDispatchTaskInput[];
   spec?: WikiSpec;
   pendingWritePaths?: readonly string[];
-  knownContextRefs?: readonly { nodeId: string; sourceScopeIds: readonly string[] }[];
+  knownContextRefs?: readonly { contractId: string; sourceScopeIds: readonly string[] }[];
   delegatedTasks?: number;
   delegateBatches?: number;
   maxDelegatedTasks?: number;
@@ -86,7 +86,7 @@ export function assertDispatchable(input: WikiDispatchInput): void {
   }
 
   const spec = input.spec;
-  const known = new Map((input.knownContextRefs ?? []).map((artifact) => [artifact.nodeId, artifact]));
+  const known = new Map((input.knownContextRefs ?? []).map((artifact) => [artifact.contractId, artifact]));
   const batchWritePaths = new Set<string>();
   const pending = new Set(pendingWritePaths);
   const priorResearch = input.existingResearchTasks ?? [];
@@ -181,12 +181,12 @@ export function clusterSourceScopeIds(clusterId: string, pinnedSourceIds: readon
 
 export function contextRefsForSources(
   sourceScopeIds: readonly string[],
-  artifacts: readonly { nodeId: string; sourceScopeIds: readonly string[] }[],
+  artifacts: readonly { contractId: string; sourceScopeIds: readonly string[] }[],
 ): string[] {
   const allowed = new Set(sourceScopeIds);
   return artifacts
     .filter((artifact) => artifact.sourceScopeIds.every((sourceId) => allowed.has(sourceId)))
-    .map((artifact) => artifact.nodeId);
+    .map((artifact) => artifact.contractId);
 }
 
 function writeFrontierReady<T extends { id: string; nextStep: string }>(cluster: T, clusters: readonly T[]): boolean {

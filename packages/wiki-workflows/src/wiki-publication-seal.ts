@@ -5,6 +5,9 @@ import { sameStringSet, stableStringify } from "./util.js";
 
 type WikiSpec = { pages: string[] };
 
+/** published.json, publish.json, publication-finalization.json, and review basis. */
+export const WIKI_PUBLICATION_FORMAT = 1 as const;
+
 const sealBrand: unique symbol = Symbol("WikiPublicationSeal");
 const sealPayloads = new WeakMap<WikiPublicationSeal, VerifiedWikiPublicationSealPayload>();
 

@@ -2,7 +2,7 @@ import { lstat, readdir, rmdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parsePage, stringifyPage } from "../frontmatter.js";
 import { readText } from "../files.js";
-import { formatIssue, type WikiFinalization } from "../types.js";
+import { formatIssue, type WikiFinalization } from "./validate.js";
 import type { WikiSpec } from "./spec.js";
 import {
   materializeWikiIndexes,

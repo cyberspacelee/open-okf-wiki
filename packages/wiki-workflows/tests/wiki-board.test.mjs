@@ -309,7 +309,7 @@ test("projects taxonomy, artifact context, assignment coverage, and blocker foll
       sourceScopeIds: ["api"], contextRefs: ["b1-research-runtime"], assignmentIds: ["api-runtime"],
       domainScopeIds: ["runtime"], lensScopeIds: ["entry"],
       receipt: {
-        status: "incomplete", outputs: [{ nodeId: "b1-research-runtime", attempt: 1 }],
+        status: "incomplete", outputs: [{ contractId: "b1-research-runtime", attempt: 1 }],
         completedAssignmentIds: [], coverage: ["api-entry"], needsFollowup: true,
         followups: [{ id: "gap-runtime", kind: "evidence_gap", question: "Where is retry state persisted?", sourceScopeIds: ["api"] }],
         domains: [{ sourceScopeId: "api", domainId: "runtime", conceptIds: ["session"] }],
@@ -317,7 +317,7 @@ test("projects taxonomy, artifact context, assignment coverage, and blocker foll
     }] }] },
   });
   assert.equal(model.taxonomy?.revision, 2);
-  assert.deepEqual(model.tasks[0].artifactRefs?.map((ref) => ref.nodeId), ["b1-research-runtime"]);
+  assert.deepEqual(model.tasks[0].artifactRefs?.map((ref) => ref.contractId), ["b1-research-runtime"]);
   assert.deepEqual(model.tasks[0].contextRefs, ["b1-research-runtime"]);
   assert.deepEqual(model.tasks[0].domains, [{ sourceScopeId: "api", domainId: "runtime", conceptIds: ["session"] }]);
   assert.deepEqual(model.blockers, ["gap-runtime"]);

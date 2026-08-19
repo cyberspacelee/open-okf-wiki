@@ -1,4 +1,5 @@
 import YAML from "yaml";
+import { isRecord, splitYamlFence } from "./util.js";
 
 export interface ParsedPage {
   frontmatter: Record<string, unknown>;
@@ -11,14 +12,12 @@ export interface OkfSource {
 }
 
 export function parsePage(text: string): ParsedPage {
-  if (!text.startsWith("---\n")) throw new Error("missing YAML frontmatter");
-  const end = text.indexOf("\n---", 4);
-  if (end < 0) throw new Error("unterminated YAML frontmatter");
-  const frontmatter = YAML.parse(text.slice(4, end));
-  if (!frontmatter || typeof frontmatter !== "object" || Array.isArray(frontmatter)) {
-    throw new Error("frontmatter must be a mapping");
-  }
-  return { frontmatter: frontmatter as Record<string, unknown>, body: text.slice(end + 4).replace(/^\r?\n/, "") };
+  const split = splitYamlFence(text);
+  if (!split.hasFence) throw new Error("missing YAML frontmatter");
+  if (!split.terminated || split.yaml === undefined) throw new Error("unterminated YAML frontmatter");
+  const frontmatter = YAML.parse(split.yaml);
+  if (!isRecord(frontmatter)) throw new Error("frontmatter must be a mapping");
+  return { frontmatter, body: split.body };
 }
 
 export function stringifyPage(page: ParsedPage): string {

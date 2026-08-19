@@ -5,7 +5,6 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createWikiArtifactStore } from "../dist/artifact-store.js";
-import { WikiLeadRun } from "../dist/lead.js";
 import { createConfiguredWikiProducer } from "../dist/production-run.js";
 
 async function fixture(t) {
@@ -20,20 +19,11 @@ async function fixture(t) {
 const spec = () => ({ pages: ["overview.md", "source/source.md", "source/runtime/domain.md"] });
 const markdown = (type, title) => ["---", `type: ${type}`, `title: ${title}`, "description: Runtime", "sources:", "  - id: runtime", "    resource: source/src/index.ts#L1-L1", "---", "", "Runtime.[^runtime]", "", "[^runtime]: [Source](source/src/index.ts#L1-L1)", ""].join("\n");
 
-function leadFence(request) {
-  return {
-    assertActive: request.assertActive,
-    executionToken: request.executionToken,
-    commitLead: request.commitLead,
-    readLead: request.readLead,
-  };
-}
-
 async function acceptTaxonomy(lead) {
   const discovery = await lead.startNextReadyWave([{ sourceScopeId: "source", instruction: "Survey the pinned Source" }]);
   for (const contract of discovery.contracts) {
-    await lead.taskTransitions.taskStarted(discovery.batchId, contract.id, { attempt: 1 });
-    await lead.taskTransitions.taskSettled(discovery.batchId, contract.id, { attempt: 1, receipt: {
+    await lead.taskStarted(discovery.batchId, contract.id, { attempt: 1 });
+    await lead.taskSettled(discovery.batchId, contract.id, { attempt: 1, receipt: {
       id: contract.id, role: "research", status: "complete", summary: "complete", outputs: [],
       completedAssignmentIds: contract.assignmentIds, needsFollowup: false, followups: [],
       domains: [{ sourceScopeId: contract.sourceScopeIds[0], domainId: "core", conceptIds: [] }],
@@ -41,7 +31,7 @@ async function acceptTaxonomy(lead) {
       contractId: contract.contractId, contractDigest: contract.contractDigest,
     } });
   }
-  await lead.taskTransitions.tasksCollected(discovery.batchId, discovery.contracts.map((contract) => contract.id));
+  await lead.tasksCollected(discovery.batchId, discovery.contracts.map((contract) => contract.id));
   await lead.saveTaxonomy({
     revision: 1,
     decisions: [{ sourceScopeId: "source", domainId: "runtime", conceptIds: [] }],
@@ -49,10 +39,7 @@ async function acceptTaxonomy(lead) {
   });
 }
 
-async function writeComplete(request) {
-  const lead = await WikiLeadRun.open({ workspace: request.cwd, runId: request.runId, candidateWikiRoot: request.candidateWikiRoot, policy: request.generation, requiredSections: request.generation.templates.requiredSections,
-    allowedSourceScopeIds: ["source"],
-    ...leadFence(request) });
+async function writeComplete(lead) {
   await acceptTaxonomy(lead);
   await lead.saveSpec(spec());
   await lead.replacePage({ path: "wiki/overview.md", content: markdown("Overview", "Overview"), actor: "lead" });
@@ -71,17 +58,17 @@ async function acceptDerivedReviews(lead) {
     }
     if (wave.wave !== "write") throw new Error(`expected write or review, got ${wave.wave}`);
     for (const contract of wave.contracts) {
-      await lead.taskTransitions.taskStarted(wave.batchId, contract.id, { attempt: 1 });
-      await lead.taskTransitions.taskSettled(wave.batchId, contract.id, { attempt: 1, receipt: {
+      await lead.taskStarted(wave.batchId, contract.id, { attempt: 1 });
+      await lead.taskSettled(wave.batchId, contract.id, { attempt: 1, receipt: {
         id: contract.id, role: "write", status: "complete", summary: "written", outputs: [], coverage: contract.writePaths, gaps: [], attempts: 1,
         contractId: contract.contractId, contractDigest: contract.contractDigest,
       } });
     }
-    await lead.taskTransitions.tasksCollected(wave.batchId, wave.contracts.map((contract) => contract.id));
+    await lead.tasksCollected(wave.batchId, wave.contracts.map((contract) => contract.id));
   }
   for (const contract of reviews.contracts) {
-    await lead.taskTransitions.taskStarted(reviews.batchId, contract.id, { attempt: 1 });
-    await lead.taskTransitions.taskSettled(reviews.batchId, contract.id, { attempt: 1, receipt: {
+    await lead.taskStarted(reviews.batchId, contract.id, { attempt: 1 });
+    await lead.taskSettled(reviews.batchId, contract.id, { attempt: 1, receipt: {
       id: contract.id, role: "review", status: "complete", summary: "pass", outputs: [], coverage: contract.reviewPaths, gaps: [], attempts: 1,
       contractId: contract.contractId, contractDigest: contract.contractDigest,
       review: { verdict: "pass", reviewedPaths: contract.reviewPaths, findings: [], profileCoverage: [] },
@@ -96,8 +83,9 @@ test("fresh production candidate is completely empty and never reads prior Wiki 
   await writeFile(path.join(root, "wiki", "log.md"), "old log\n");
   await writeFile(path.join(root, "wiki", "assets", "old.txt"), "old asset\n");
   let entries;
-  const producer = createConfiguredWikiProducer({ createLead(plan) {
-    return { async run() { entries = await readdir(plan.candidateWikiRoot); throw new Error("stop after fresh prepare"); } };
+  const producer = createConfiguredWikiProducer({ runLead: async (_lead, { plan }) => {
+    entries = await readdir(plan.candidateWikiRoot);
+    throw new Error("stop after fresh prepare");
   } });
   await assert.rejects((await producer.start({ cwd: root })).result(), /stop after fresh prepare/);
   assert.deepEqual(entries, []);
@@ -109,17 +97,14 @@ test("invalid full candidate fails deterministic validation and leaves published
   const root = await fixture(t);
   await mkdir(path.join(root, "wiki"));
   await writeFile(path.join(root, "wiki", "sentinel.md"), "published\n");
-  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
-    const lead = await WikiLeadRun.open({ workspace: request.cwd, runId: request.runId, candidateWikiRoot: request.candidateWikiRoot, policy: request.generation,
-      allowedSourceScopeIds: ["source"],
-      ...leadFence(request) });
+  const producer = createConfiguredWikiProducer({ runLead: async (lead) => {
     await acceptTaxonomy(lead);
     await lead.saveSpec(spec());
-    await mkdir(path.join(request.candidateWikiRoot, "runtime"), { recursive: true });
-    await writeFile(path.join(request.candidateWikiRoot, "overview.md"), "# invalid\n");
+    await mkdir(path.join(lead.candidateWikiRoot, "runtime"), { recursive: true });
+    await writeFile(path.join(lead.candidateWikiRoot, "overview.md"), "# invalid\n");
     await acceptDerivedReviews(lead);
     return { kind: "complete", summary: "invalid" };
-  } }) });
+  } });
   await assert.rejects((await producer.start({ cwd: root })).result(), /valid target Wiki|missing/i);
   assert.equal(await readFile(path.join(root, "wiki", "sentinel.md"), "utf8"), "published\n");
 });
@@ -136,9 +121,9 @@ test("initial production plan pins workspace policy and role models", async (t) 
   ].join("\n"));
   let pinned;
   const model = { provider: "test", id: "research" };
-  const producer = createConfiguredWikiProducer({ getModelRegistry: () => ({ find: () => model }), createLead(plan) {
+  const producer = createConfiguredWikiProducer({ getModelRegistry: () => ({ find: () => model }), runLead: async (_lead, { plan }) => {
     pinned = plan;
-    return { async run() { throw new Error("stop"); } };
+    throw new Error("stop");
   } });
   await assert.rejects((await producer.start({ cwd: root })).result(), /stop/);
   assert.equal(pinned.language, "zh");
@@ -169,14 +154,14 @@ test("resume keeps pinned language, models and generation settings after workspa
   let first;
   let calls = 0;
   let activeModel = { provider: "test", id: "active-first" };
-  const producer = createConfiguredWikiProducer({ getModel: () => activeModel, getThinkingLevel: () => "high", createLead(plan) {
+  const producer = createConfiguredWikiProducer({ getModel: () => activeModel, getThinkingLevel: () => "high", runLead: async (_lead, { plan }) => {
     calls += 1;
     if (!first) first = structuredClone(plan);
     else {
       const { leadSessionFile, leadSessionAttempt, ...resumed } = plan;
       assert.deepEqual(resumed, first);
     }
-    return { async run() { return { kind: "pause", reason: "quota", summary: "wait" }; } };
+    return { kind: "pause", reason: "quota", summary: "wait" };
   } });
   const run = await producer.start({ cwd: root });
   while ((await run.view()).status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
@@ -195,14 +180,14 @@ test("resume keeps pinned language, models and generation settings after workspa
 test("successful publication keeps provenance and run history while removing transient candidate and backup", async (t) => {
   const root = await fixture(t);
   let artifact;
-  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
-    await mkdir(request.runSessionDirectory, { recursive: true });
-    await writeFile(path.join(request.runSessionDirectory, "lead.jsonl"), "session\n");
-    await writeFile(path.join(root, ".okf-wiki", "runs", request.runId, ".orphan.tmp-1"), "temporary\n");
-    artifact = await createWikiArtifactStore({ workspace: root }).write({ runId: request.runId, nodeId: "research", attempt: 1, scope: ["api"], kind: "research-handoff", content: "handoff\n" });
-    await writeComplete(request);
+  const producer = createConfiguredWikiProducer({ runLead: async (lead, { record, plan, signal }) => {
+    await mkdir(plan.runSessionDirectory, { recursive: true });
+    await writeFile(path.join(plan.runSessionDirectory, "lead.jsonl"), "session\n");
+    await writeFile(path.join(root, ".okf-wiki", "runs", lead.runId, ".orphan.tmp-1"), "temporary\n");
+    artifact = await createWikiArtifactStore({ workspace: root }).write({ runId: lead.runId, contractId: "research", attempt: 1, scope: ["api"], kind: "research-handoff", content: "handoff\n" });
+    await writeComplete(lead);
     return { kind: "complete", summary: "done" };
-  } }) });
+  } });
   const run = await producer.start({ cwd: root });
   const result = await run.result();
   assert.deepEqual(result.pages, ["overview.md", "source/source.md", "source/runtime/domain.md"]);
@@ -234,7 +219,7 @@ test("open reconciles an installed publication when the process crashes before t
   let crashed = false;
   const producer = createConfiguredWikiProducer({
     fault(point) { if (!crashed && point === "afterPublication") { crashed = true; throw new Error("process crash"); } },
-    createLead: () => ({ async run(request) { await writeComplete(request); return { kind: "complete", summary: "recovered" }; } }),
+    runLead: async (lead, { record, plan, signal }) => { await writeComplete(lead); return { kind: "complete", summary: "recovered" }; },
   });
   const first = await producer.start({ cwd: root });
   const journalFile = path.join(root, ".okf-wiki", "runs", first.id, "publish.json");
@@ -243,7 +228,7 @@ test("open reconciles an installed publication when the process crashes before t
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   assert.equal((await first.view()).status, "running");
-  const recoveredProducer = createConfiguredWikiProducer({ createLead: () => { throw new Error("reconciliation must not regenerate"); } });
+  const recoveredProducer = createConfiguredWikiProducer({ runLead: () => { throw new Error("reconciliation must not regenerate"); } });
   const recovered = await recoveredProducer.open(first.id, root);
   assert.ok(recovered);
   assert.equal((await recovered.view()).status, "succeeded");
@@ -259,12 +244,12 @@ test("cleanup failure is durable, does not roll back publication, and reopen ret
       if (!failed && location.endsWith(`${path.sep}sessions`)) { failed = true; throw new Error("cleanup fault"); }
       await rm(location, { recursive: true, force: true });
     },
-    createLead: () => ({ async run(request) {
-      await mkdir(request.runSessionDirectory, { recursive: true });
-      await writeFile(path.join(request.runSessionDirectory, "lead.jsonl"), "session\n");
-      await writeComplete(request);
+    runLead: async (lead, { record, plan, signal }) => {
+      await mkdir(plan.runSessionDirectory, { recursive: true });
+      await writeFile(path.join(plan.runSessionDirectory, "lead.jsonl"), "session\n");
+      await writeComplete(lead);
       return { kind: "complete", summary: "published despite cleanup warning" };
-    } }),
+    },
   });
   const run = await producer.start({ cwd: root });
   await run.result();

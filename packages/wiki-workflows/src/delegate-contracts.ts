@@ -1,7 +1,7 @@
 import { MAX_WIKI_RESEARCH_ARTIFACT_BYTES, type WikiArtifactKind, type WikiArtifactRef } from "./artifact-store.js";
 import { createHash } from "node:crypto";
 import type { WikiBudgetExhaustedCode } from "./failures.js";
-import { isSafeWikiPagePath, isWikiTaxonomySlug } from "./lead.js";
+import { isSafeWikiPagePath, isWikiTaxonomySlug } from "./lead/path.js";
 import { sameStringSet, stableStringify } from "./util.js";
 import type { WikiAgentOutcome } from "./producer-types.js";
 
@@ -562,13 +562,13 @@ function digest(value: unknown, label: string): string {
 
 export function parseWikiArtifactRef(value: unknown): WikiArtifactRef {
   const raw = record(value, "Wiki artifact reference");
-  exactKeys(raw, ["version", "runId", "nodeId", "attempt", "scope", "kind", "relativePath", "sha256", "sizeBytes", "mediaType"], "Wiki artifact reference");
+  exactKeys(raw, ["version", "runId", "contractId", "attempt", "scope", "kind", "relativePath", "sha256", "sizeBytes", "mediaType"], "Wiki artifact reference");
   if (raw.version !== 1 || !["research-handoff", "write-handoff", "review-handoff"].includes(String(raw.kind)) || raw.mediaType !== "text/markdown"
     || !Number.isSafeInteger(raw.attempt) || (raw.attempt as number) < 1 || !Number.isSafeInteger(raw.sizeBytes) || (raw.sizeBytes as number) < 0 || (raw.sizeBytes as number) > MAX_WIKI_RESEARCH_ARTIFACT_BYTES) throw new Error("Invalid Wiki artifact reference");
   const sha256 = digest(raw.sha256, "Wiki artifact digest");
   if (raw.relativePath !== `.okf-wiki/blobs/${sha256}.md`) throw new Error("Invalid Wiki artifact path");
   const scope = strings(raw.scope, "Wiki artifact scope");
-  return { version: 1, runId: safeId(raw.runId, "Wiki artifact run id"), nodeId: safeId(raw.nodeId, "Wiki artifact node id"), attempt: raw.attempt as number, scope, kind: raw.kind as WikiArtifactKind, relativePath: raw.relativePath, sha256, sizeBytes: raw.sizeBytes as number, mediaType: "text/markdown" };
+  return { version: 1, runId: safeId(raw.runId, "Wiki artifact run id"), contractId: safeId(raw.contractId, "Wiki artifact contract id"), attempt: raw.attempt as number, scope, kind: raw.kind as WikiArtifactKind, relativePath: raw.relativePath, sha256, sizeBytes: raw.sizeBytes as number, mediaType: "text/markdown" };
 }
 
 export function parseWikiDelegateGap(value: unknown): WikiDelegateGap {

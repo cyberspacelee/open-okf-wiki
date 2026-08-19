@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
 import { WikiLeadRun } from "../dist/lead.js";
-import { createWikiPublicationStore } from "../dist/publication-store.js";
+import { createWikiPublicationStore, WIKI_PUBLICATION_FORMAT } from "../dist/publication-store.js";
 import { verifyWikiPublicationSeal } from "../dist/wiki-publication-seal.js";
 
 const finalSpec = {
@@ -23,8 +23,8 @@ function page(type, title, body = "new") {
 async function acceptTaxonomy(run) {
   const discovery = await run.startNextReadyWave([{ sourceScopeId: "source", instruction: "Survey the pinned Source" }]);
   for (const contract of discovery.contracts) {
-    await run.taskTransitions.taskStarted(discovery.batchId, contract.id, { attempt: 1 });
-    await run.taskTransitions.taskSettled(discovery.batchId, contract.id, { attempt: 1, receipt: {
+    await run.taskStarted(discovery.batchId, contract.id, { attempt: 1 });
+    await run.taskSettled(discovery.batchId, contract.id, { attempt: 1, receipt: {
       id: contract.id, role: "research", status: "complete", summary: "complete", outputs: [],
       completedAssignmentIds: contract.assignmentIds, needsFollowup: false, followups: [],
       domains: [{ sourceScopeId: contract.sourceScopeIds[0], domainId: "core", conceptIds: [] }],
@@ -32,7 +32,7 @@ async function acceptTaxonomy(run) {
       contractId: contract.contractId, contractDigest: contract.contractDigest,
     } });
   }
-  await run.taskTransitions.tasksCollected(discovery.batchId, discovery.contracts.map((contract) => contract.id));
+  await run.tasksCollected(discovery.batchId, discovery.contracts.map((contract) => contract.id));
   await run.saveTaxonomy({
     revision: 1,
     decisions: [{ sourceScopeId: "source", domainId: "core", conceptIds: [] }],
@@ -87,18 +87,18 @@ async function sealCandidate(workspace, runId, candidate, extra = {}) {
     }
     if (wave.wave !== "write") throw new Error(`expected write or review, got ${wave.wave}`);
     for (const contract of wave.contracts) {
-      await run.taskTransitions.taskStarted(wave.batchId, contract.id, { attempt: 1 });
-      await run.taskTransitions.taskSettled(wave.batchId, contract.id, { attempt: 1, receipt: {
+      await run.taskStarted(wave.batchId, contract.id, { attempt: 1 });
+      await run.taskSettled(wave.batchId, contract.id, { attempt: 1, receipt: {
         id: contract.id, role: "write", status: "complete", summary: "written", outputs: [], coverage: contract.writePaths, gaps: [], attempts: 1,
         contractId: contract.contractId, contractDigest: contract.contractDigest,
       } });
     }
-    await run.taskTransitions.tasksCollected(wave.batchId, wave.contracts.map((contract) => contract.id));
+    await run.tasksCollected(wave.batchId, wave.contracts.map((contract) => contract.id));
   }
   const { contracts } = reviews;
   for (const contract of contracts) {
-    await run.taskTransitions.taskStarted(contract.batchId, contract.id, { attempt: 1 });
-    await run.taskTransitions.taskSettled(contract.batchId, contract.id, {
+    await run.taskStarted(contract.batchId, contract.id, { attempt: 1 });
+    await run.taskSettled(contract.batchId, contract.id, {
       attempt: 1,
       receipt: {
         id: contract.id, role: "review", status: "complete", summary: "pass", outputs: [], coverage: [], gaps: [], attempts: 1,
@@ -144,7 +144,8 @@ test("candidate is isolated and completely empty", async (t) => {
   assert.equal(publication.state, "published");
   assert.match(await readFile(path.join(workspace, "wiki", "overview.md"), "utf8"), /new\./);
   const metadata = JSON.parse(await readFile(path.join(workspace, ".okf-wiki", "published.json"), "utf8"));
-  assert.equal(metadata.version, 1);
+  assert.equal(WIKI_PUBLICATION_FORMAT, 1);
+  assert.equal(metadata.version, WIKI_PUBLICATION_FORMAT);
   assert.equal(metadata.sourceFingerprint, "source-sha256");
   assert.equal(metadata.summary, "complete");
   assert.deepEqual([...metadata.pages].sort(), ["overview.md", "source/core/domain.md", "source/source.md"]);
@@ -158,7 +159,7 @@ test("published metadata carries a validated final WikiSpec and remains loadable
   await publish(store, workspace, "with-spec", candidate);
   const resumed = await createWikiPublicationStore({ workspace }).readPublishedMetadata();
   assert.deepEqual([...resumed.wikiSpec.pages].sort(), [...finalSpec.pages].sort());
-  assert.equal(resumed.version, 1);
+  assert.equal(resumed.version, WIKI_PUBLICATION_FORMAT);
   assert.equal(resumed.sourceFingerprint, "source-sha256");
 
   const metadataFile = path.join(workspace, ".okf-wiki", "published.json");
@@ -335,7 +336,7 @@ test("acknowledged journals are durable audit history and never recover against 
     const activeJournal = path.join(workspace, ".okf-wiki", "runs", runId, "publish.json");
     await assert.rejects(readFile(activeJournal), { code: "ENOENT" });
     const audit = JSON.parse(await readFile(path.join(workspace, ".okf-wiki", "publications", `${runId}.json`), "utf8"));
-    assert.equal(audit.version, 1);
+    assert.equal(audit.version, WIKI_PUBLICATION_FORMAT);
     assert.equal(audit.state, "committed");
     assert.equal(audit.publishedMetadata.summary, `summary-${runId}`);
     auditDigests.push(audit.metadataDigest);

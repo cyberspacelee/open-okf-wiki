@@ -13,7 +13,7 @@ import {
   createWikiFinishTool,
   createWikiPlanTool,
   createWikiTaxonomyTool,
-} from "../dist/lead/host-tools.js";
+} from "../dist/pi/host-tools.js";
 
 const policy = { templates: { requiredSections: [] }, review: { mustCover: [] } };
 const spec = { pages: ["overview.md", "source/source.md", "source/core/domain.md"] };
@@ -55,9 +55,9 @@ async function lead(t, sourceScopeIds = ["source"], maxDelegatedTasks) {
 async function settleResearch(run, contracts, extra = {}) {
   for (const contract of contracts) {
     const followups = extra.followups ?? [];
-    await run.taskTransitions.taskStarted(contract.batchId, contract.id, { attempt: 1 });
+    await run.taskStarted(contract.batchId, contract.id, { attempt: 1 });
     const status = extra.status ?? "complete";
-    await run.taskTransitions.taskSettled(contract.batchId, contract.id, { attempt: 1, receipt: {
+    await run.taskSettled(contract.batchId, contract.id, { attempt: 1, receipt: {
       id: contract.id, role: "research", status, summary: "complete", outputs: [],
       completedAssignmentIds: status === "complete" ? contract.assignmentIds : [],
       needsFollowup: followups.length > 0, followups, coverage: contract.assignmentIds, gaps: [], attempts: 1,
@@ -68,13 +68,13 @@ async function settleResearch(run, contracts, extra = {}) {
 }
 
 async function collect(run, contracts) {
-  await run.taskTransitions.tasksCollected(contracts[0].batchId, contracts.map((contract) => contract.id));
+  await run.tasksCollected(contracts[0].batchId, contracts.map((contract) => contract.id));
 }
 
 async function settleWrite(run, wave) {
   for (const contract of wave.contracts) {
-    await run.taskTransitions.taskStarted(wave.batchId, contract.id, { attempt: 1 });
-    await run.taskTransitions.taskSettled(wave.batchId, contract.id, { attempt: 1, receipt: {
+    await run.taskStarted(wave.batchId, contract.id, { attempt: 1 });
+    await run.taskSettled(wave.batchId, contract.id, { attempt: 1, receipt: {
       id: contract.id, role: "write", status: "complete", summary: "written", outputs: [],
       coverage: contract.writePaths, gaps: [], attempts: 1,
       contractId: contract.contractId, contractDigest: contract.contractDigest,

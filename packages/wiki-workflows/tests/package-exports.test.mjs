@@ -53,6 +53,6 @@ test("npm pack exposes a self-contained public declaration graph to a real TypeS
   ].join("\n"));
   execFileSync(path.join(packageRoot, "node_modules", ".bin", "tsc"), ["-p", path.join(consumer, "tsconfig.json")], { cwd: consumer, stdio: "inherit" });
 
-  const declarations = await Promise.all(["index.d.ts", "producer-types.d.ts", "production.d.ts"].map((file) => readFile(path.join(install, "dist", file), "utf8")));
+  const declarations = await Promise.all(["index.d.ts", "producer-types.d.ts", "production-run.d.ts"].map((file) => readFile(path.join(install, "dist", file), "utf8")));
   assert.doesNotMatch(declarations.join("\n"), /delegate-contracts|artifact-store|WikiDelegateReceipt|WikiArtifactRef/);
 });

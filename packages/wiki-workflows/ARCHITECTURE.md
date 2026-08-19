@@ -32,7 +32,7 @@ claim Workspace -> pin settings and Sources -> create empty Candidate
   -> recoverable publication -> terminal cleanup
 ```
 
-Inspection, Candidate preparation, validation, publication, lifecycle persistence, and cleanup are fixed Wiki implementation, not adapters. `WikiLeadRuntime` is a real seam with a Pi adapter and deterministic test adapter. The Lead chooses research scope, fan-out, and follow-up questions without exposing a workflow language. The host derives source-local write waves bottom-up (concept → domain → source page → root); root is the only cross-source assignment.
+Inspection, Candidate preparation, validation, publication, lifecycle persistence, and cleanup are fixed Wiki implementation, not adapters. `WikiLeadRun` owns the dynamic Lead loop (WikiSpec, Board, waves, Candidate, review, Publication Seal). Pi is a session adapter under `src/pi/` (`createAgentSession`, compaction, provider retry, `followUp`, abort, path-guarded tools, session observer). Tests inject `runLead` or `createAgents` on the already-opened `WikiLeadRun`. The Lead chooses research scope, fan-out, and follow-up questions without exposing a workflow language. The host derives source-local write waves bottom-up (concept → domain → source page → root); root is the only cross-source assignment. Artifact identity is `contractId` (the delegate contract id). One `inspectHandoff` accepts or rejects research/write/review work files.
 
 Pages sit beside their concept. There are no type-bucket directories.
 
@@ -63,9 +63,9 @@ Indexes are deterministic projections. Final governance issues an opaque Publica
 
 ## Durable Run state
 
-Lifecycle and Lead facts live in `run.json` format 2. Progress is a projection of those facts plus live tails. The pinned plan is `plan.json`. Files under `agents/` are tails only. There is no lead-state and no event log. Live `updates()` is an in-memory hub of the current view. Publication still uses `publish.json` because installing `wiki/` has a different filesystem lifetime. Atomic file replace uses the platform `rename`; Windows `MoveFileEx` lock windows (`EPERM`/`EACCES`/`EBUSY`, read-only attribute) are absorbed inside the durable-files module so a successful `writeText`/`renamePath` remains durable.
+Lifecycle and Lead facts live in `run.json` format 3. Progress is a projection of those facts plus live tails. The pinned plan is `plan.json`. Files under `agents/` are tails only. There is no event log and no ledger. Live `updates()` is an in-memory hub of the current view. Publication still uses `publish.json` because installing `wiki/` has a different filesystem lifetime. Atomic file replace uses the platform `rename`; Windows `MoveFileEx` lock windows (`EPERM`/`EACCES`/`EBUSY`, read-only attribute) are absorbed inside the durable-files module so a successful `writeText`/`renamePath` remains durable.
 
-The current Run format is 2; anything else fails closed. Opening another format reports an actionable compatibility error; a human preserves needed evidence and removes stale `.okf-wiki` Run state. Automatic cleanup applies only to transient data of a successfully published current-version Run. Published provenance remains durable. The Published Wiki is independent.
+The current Run format is 3; anything else fails closed. Opening another format reports an actionable compatibility error; a human preserves needed evidence and removes stale `.okf-wiki` Run state. Automatic cleanup applies only to transient data of a successfully published current-version Run. Published provenance remains durable. The Published Wiki is independent. The root package factory (`src/production.ts`) returns `WikiProducer` without leaking Pi types into the public declaration graph; CLI and the Pi extension import `production-run` explicitly.
 
 ## Observability
 
@@ -75,7 +75,7 @@ The overlay and Pi stream consume `updates()`, so a live fact is never rendered 
 
 ## Failure ownership
 
-Pi owns one Agent model loop, persistent session, compaction, cancellation, usage observation, and tool execution. The Wiki task runtime owns bounded fresh-session retry and task receipts. Throttling reduces shared admission and honors retry metadata; authentication, billing, schema, validation, hard quota, and usage-limit failures fail or durably pause without consuming transient retry budget.
+Pi owns one Agent model loop, persistent session, compaction, provider/turn retry, cancellation, usage observation, and tool execution. Wiki classifies the session's terminal outcome into a Task Receipt or a durable pause (`quota` / `usage_limit`). There is no wiki-level fresh-session retry for 429/5xx/network. Authentication, billing, schema, validation, hard quota, and usage-limit failures fail or durably pause.
 
 The current publication format is 1; anything else fails closed. Every new publication writes version 1 with the source fingerprint, summary, sealed WikiSpec, page set, and final tree digest. The journal binds that complete canonical metadata with its own digest, and reconciliation requires exact equality with current provenance. Publication journals, audit acknowledgement, active markers, artifact blobs and manifests, production-skill snapshots, and cleanup use fsynced file and directory transitions so recovery knowledge or a returned receipt is durable before the next lifecycle step.
 

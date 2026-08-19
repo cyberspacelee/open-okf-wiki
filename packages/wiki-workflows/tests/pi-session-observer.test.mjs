@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PiSessionObserver } from "../dist/pi-session-observer.js";
+import { PiSessionObserver } from "../dist/pi/observer.js";
 
 function createSession() {
   let listener;

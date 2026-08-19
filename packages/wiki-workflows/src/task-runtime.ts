@@ -17,10 +17,9 @@ import {
   truncateUtf8,
   type WikiDelegateFollowup,
 } from "./delegate-contracts.js";
-import { ingestEvidenceHandoff } from "./evidence-ledger.js";
+import { ingestEvidenceHandoff } from "./handoff.js";
 import { WikiRejectedError } from "./wiki-reject.js";
-import { classifyWikiAttemptFailure, decideWikiAgentAttempt } from "./agent-attempt-policy.js";
-import { WikiBudgetExhaustedError } from "./failures.js";
+import { classifyWikiAttemptFailure, decideWikiAgentTerminal, WikiBudgetExhaustedError } from "./failures.js";
 import { WIKI_MANUAL_PAUSE } from "./runtime-types.js";
 import type {
   WikiAgentTarget,
@@ -29,10 +28,9 @@ import type {
 } from "./producer-types.js";
 import type { WikiTaskRuntimeState, WikiTaskRuntimeTaskState } from "./runtime-types.js";
 import type { WikiReviewResult } from "./delegate-contracts.js";
-import type { WikiTaskRuntimeTransitions } from "./lead.js";
 
 type WikiObservabilityHealth = { target: WikiAgentTarget; status: "degraded" | "healthy"; at: string; message?: string };
-import { isSafeWikiPagePath } from "./lead.js";
+import { isSafeWikiPagePath } from "./lead/path.js";
 
 export type WikiTaskProgressPhase = "queued" | "start" | "update" | "end";
 
@@ -83,12 +81,25 @@ export interface WikiTaskRuntimeOptions {
   maxDelegatedTasks?: number;
   maxDelegateBatches?: number;
   restoredState?: WikiTaskRuntimeState;
-  transitions: WikiTaskRuntimeTransitions;
+  onBatchQueued: (contracts: readonly WikiDelegateContract[]) => Promise<void>;
+  onTaskStarted: (batchId: number, taskId: string, input: {
+    attempt: number;
+    sessionFile?: string;
+    partial?: WikiTaskRuntimeTaskState["partial"];
+  }) => Promise<void>;
+  onTaskPaused: (batchId: number, taskId: string, input: {
+    attempt: number;
+    pause?: WikiDelegateReceipt["error"];
+    sessionFile?: string;
+    partial?: WikiTaskRuntimeTaskState["partial"];
+  }) => Promise<void>;
+  onTaskSettled: (batchId: number, taskId: string, input: {
+    attempt: number;
+    receipt: WikiDelegateReceipt;
+    sessionFile?: string;
+  }) => Promise<void>;
+  onTasksCollected: (batchId: number, taskIds: readonly string[]) => Promise<void>;
   writeLease?: WikiWritePathLease;
-  transientRetries?: number;
-  baseRetryDelayMs?: number;
-  sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
-  random?: () => number;
   now?: () => number;
   onTask?: (event: WikiTaskProgressEvent) => void | Promise<void>;
   reportObservability?: (input: WikiObservabilityHealth) => void | Promise<void>;
@@ -98,10 +109,6 @@ export class WikiTaskRuntime {
   private readonly gate: SharedAdmissionGate;
   private readonly writePaths: WikiWritePathLease;
   private readonly contextArtifacts: Record<string, WikiArtifactRef>;
-  private readonly sleep: (ms: number, signal: AbortSignal) => Promise<void>;
-  private readonly random: () => number;
-  private readonly baseRetryDelayMs: number;
-  private readonly transientRetries: number;
   private readonly onTask?: (event: WikiTaskProgressEvent) => void | Promise<void>;
   private readonly batches = new Map<number, AsyncBatch>();
   private readonly maxDelegatedTasks: number;
@@ -111,19 +118,13 @@ export class WikiTaskRuntime {
   private stateFailure: unknown;
 
   constructor(private readonly options: WikiTaskRuntimeOptions) {
-    this.gate = new SharedAdmissionGate(options.concurrency ?? 2, options.now);
+    this.gate = new SharedAdmissionGate(options.concurrency ?? 2);
     this.writePaths = options.writeLease ?? new WikiWritePathLease();
-    this.sleep = options.sleep ?? abortableSleep;
-    this.random = options.random ?? Math.random;
-    this.baseRetryDelayMs = options.baseRetryDelayMs ?? 1_000;
-    this.transientRetries = options.transientRetries ?? 1;
     this.maxDelegatedTasks = options.maxDelegatedTasks ?? Number.POSITIVE_INFINITY;
     this.maxDelegateBatches = options.maxDelegateBatches ?? Number.POSITIVE_INFINITY;
-    if (!Number.isInteger(this.transientRetries) || this.transientRetries < 0) throw new Error("transientRetries must be a non-negative integer");
-    if (!Number.isFinite(this.baseRetryDelayMs) || this.baseRetryDelayMs < 0) throw new Error("baseRetryDelayMs must be non-negative");
     validateLimit(this.maxDelegatedTasks, "maxDelegatedTasks");
     validateLimit(this.maxDelegateBatches, "maxDelegateBatches");
-    this.contextArtifacts = Object.fromEntries(Object.values(options.contextArtifacts ?? {}).map((ref) => [ref.nodeId, ref]));
+    this.contextArtifacts = Object.fromEntries(Object.values(options.contextArtifacts ?? {}).map((ref) => [ref.contractId, ref]));
     this.onTask = options.onTask;
     if (options.restoredState) this.restore(options.restoredState);
   }
@@ -162,8 +163,12 @@ export class WikiTaskRuntime {
     const batchId = requests[0]?.batchId;
     if (batchId === undefined || requests.some((task) => task.batchId !== batchId)) throw new Error("Wiki delegate contracts must belong to one batch");
     if (this.batches.has(batchId)) throw new Error(`Duplicate delegate batch: ${batchId}`);
-    for (const task of requests) artifactNodeId(batchId, task.id);
-    await this.options.transitions.batchQueued(requests);
+    for (const existing of this.batches.values()) {
+      for (const task of requests) {
+        if (existing.records.has(task.id)) throw new Error(`Duplicate delegate task id across batches: ${task.id}`);
+      }
+    }
+    await this.options.onBatchQueued(requests);
     const records = new Map(requests.map((task) => [task.id, createAsyncTask({
       task,
       phase: "queued",
@@ -183,7 +188,7 @@ export class WikiTaskRuntime {
     for (const batch of this.batches.values()) {
       for (const record of batch.records.values()) {
         if (record.state.phase === "paused") {
-          await this.transition(() => this.options.transitions.taskStarted(batch.id, record.state.task.id, {
+          await this.transition(() => this.options.onTaskStarted(batch.id, record.state.task.id, {
             attempt: record.state.attempt,
             ...(record.state.sessionFile ? { sessionFile: record.state.sessionFile } : {}),
             ...(record.state.partial ? { partial: record.state.partial } : {}),
@@ -228,7 +233,7 @@ export class WikiTaskRuntime {
       }
     }
     if (collected.length) {
-      await this.transition(() => this.options.transitions.tasksCollected(batchId, collected));
+      await this.transition(() => this.options.onTasksCollected(batchId, collected));
       for (const id of collected) batch.records.get(id)!.state.collected = true;
     }
     return result;
@@ -249,11 +254,11 @@ export class WikiTaskRuntime {
       if (record.launched) record.controller.abort(cancellation);
       else {
         const failure = classifyWikiAttemptFailure(cancellation);
-        await this.transition(() => this.options.transitions.taskStarted(batchId, id, { attempt: 1 }));
+        await this.transition(() => this.options.onTaskStarted(batchId, id, { attempt: 1 }));
         record.state.phase = "running";
         record.state.attempt = 1;
         const terminal = receiptFromState(record.state, failure);
-        await this.transition(() => this.options.transitions.taskSettled(batchId, id, { attempt: 1, receipt: terminal }));
+        await this.transition(() => this.options.onTaskSettled(batchId, id, { attempt: 1, receipt: terminal }));
         record.state.phase = "terminal";
         record.state.receipt = terminal;
         delete record.state.pause;
@@ -279,7 +284,7 @@ export class WikiTaskRuntime {
       }
     }
     if (collected.length) {
-      await this.transition(() => this.options.transitions.tasksCollected(batchId, collected));
+      await this.transition(() => this.options.onTasksCollected(batchId, collected));
       for (const id of collected) batch.records.get(id)!.state.collected = true;
     }
     return result;
@@ -349,7 +354,7 @@ export class WikiTaskRuntime {
     }
     if (outcome!.kind === "paused") {
       if (record.state.attempt > 0) {
-        await this.transition(() => this.options.transitions.taskPaused(batch.id, record.state.task.id, {
+        await this.transition(() => this.options.onTaskPaused(batch.id, record.state.task.id, {
           attempt: record.state.attempt,
           ...(outcome!.pause ? { pause: outcome!.pause } : {}),
           ...(record.state.sessionFile ? { sessionFile: record.state.sessionFile } : {}),
@@ -365,7 +370,7 @@ export class WikiTaskRuntime {
       settleAsyncTask(record);
       return;
     }
-    await this.transition(() => this.options.transitions.taskSettled(batch.id, record.state.task.id, {
+    await this.transition(() => this.options.onTaskSettled(batch.id, record.state.task.id, {
       attempt: record.state.attempt,
       receipt: outcome!.receipt,
       ...(record.state.sessionFile ? { sessionFile: record.state.sessionFile } : {}),
@@ -375,7 +380,7 @@ export class WikiTaskRuntime {
     delete record.state.pause;
     delete record.state.partial;
     const output = outcome!.receipt.outputs.at(-1);
-    if (output) this.contextArtifacts[output.nodeId] = output;
+    if (output) this.contextArtifacts[output.contractId] = output;
     await this.fireProgress({
       batchId: batch.id,
       phase: "end",
@@ -439,7 +444,7 @@ export class WikiTaskRuntime {
       for (const saved of savedBatch.tasks) {
         if (saved.phase !== "terminal") continue;
         const output = terminalReceipt(saved).outputs.at(-1);
-        if (output) this.contextArtifacts[output.nodeId] = output;
+        if (output) this.contextArtifacts[output.contractId] = output;
       }
     }
     for (const savedBatch of state.batches) {
@@ -464,158 +469,129 @@ export class WikiTaskRuntime {
 
   private async execute(record: AsyncTask, batch: number, signal: AbortSignal): Promise<TaskExecutionOutcome> {
     const task = record.state.task;
-    let lastFailure: WikiDelegateError | undefined;
     const acceptedOutputs = [...(record.state.partial?.outputs ?? [])];
     const acceptedCoverage = new Set(record.state.partial?.coverage ?? []);
     const acceptedGaps = [...(record.state.partial?.gaps ?? [])];
-    const maxAttempts = this.transientRetries + 1;
-    let attempt = record.state.phase === "running" ? record.state.attempt : record.state.attempt + 1;
-    let resumeCurrentAttempt = record.state.phase === "running";
-    for (; attempt <= maxAttempts; attempt += 1) {
-      if (!resumeCurrentAttempt) {
-        await this.transition(() => this.options.transitions.taskStarted(batch, task.id, {
+    const resumeCurrentAttempt = record.state.phase === "running";
+    const attempt = resumeCurrentAttempt ? record.state.attempt : record.state.attempt + 1;
+    if (!resumeCurrentAttempt) {
+      await this.transition(() => this.options.onTaskStarted(batch, task.id, {
+        attempt,
+        ...(record.state.partial ? { partial: record.state.partial } : {}),
+      }));
+      record.state.phase = "running";
+      record.state.attempt = attempt;
+      record.state.sessionFile = undefined;
+    }
+    let release: (() => void) | undefined;
+    let latestTelemetry: WikiAgentTelemetry | undefined;
+    const onTelemetry = async (checkpoint: WikiAgentTelemetry): Promise<void> => {
+      latestTelemetry = checkpoint;
+      if (checkpoint.sessionFile && checkpoint.sessionFile !== record.state.sessionFile) {
+        await this.transition(() => this.options.onTaskStarted(batch, task.id, {
           attempt,
+          sessionFile: checkpoint.sessionFile,
           ...(record.state.partial ? { partial: record.state.partial } : {}),
         }));
-        record.state.phase = "running";
-        record.state.attempt = attempt;
-        record.state.sessionFile = undefined;
+        record.state.sessionFile = checkpoint.sessionFile;
       }
-      resumeCurrentAttempt = false;
-      let release: (() => void) | undefined;
-      let latestTelemetry: WikiAgentTelemetry | undefined;
-      const onTelemetry = async (checkpoint: WikiAgentTelemetry): Promise<void> => {
-        latestTelemetry = checkpoint;
-        if (checkpoint.sessionFile && checkpoint.sessionFile !== record.state.sessionFile) {
-          await this.transition(() => this.options.transitions.taskStarted(batch, task.id, {
-            attempt,
-            sessionFile: checkpoint.sessionFile,
-            ...(record.state.partial ? { partial: record.state.partial } : {}),
-          }));
-          record.state.sessionFile = checkpoint.sessionFile;
-        }
-        await this.fireProgress({
-          batchId: batch,
-          phase: "update",
-          task,
-          telemetry: checkpoint,
-        });
+      await this.fireProgress({
+        batchId: batch,
+        phase: "update",
+        task,
+        telemetry: checkpoint,
+      });
+    };
+    try {
+      release = await this.gate.acquire(signal);
+      const startedTelemetry: WikiAgentTelemetry = {
+        target: { kind: "task", batch, taskId: task.id },
+        attempt,
+        sampledAt: new Date((this.options.now ?? Date.now)()).toISOString(),
+        activity: "starting",
+        activeTools: [],
       };
-      try {
-        release = await this.gate.acquire(signal);
-        const startedTelemetry: WikiAgentTelemetry = {
-          target: { kind: "task", batch, taskId: task.id },
-          attempt,
-          sampledAt: new Date((this.options.now ?? Date.now)()).toISOString(),
-          activity: "starting",
-          activeTools: [],
-        };
-        await this.fireProgress({ batchId: batch, phase: "start", task, telemetry: startedTelemetry });
-        const result = await this.options.agent.run(task, this.contextFor(task, batch, attempt, signal, onTelemetry, record.state.sessionFile));
-        const researchSignal = result.research;
-        if (task.role === "research" && researchSignal && !task.sourceScopeIds[0]) {
-          throw new WikiTaskExecutionError(
-            "Research completion requires a Source scope",
-            "schema",
-            { partialMarkdown: result.markdown, coverage: result.coverage, gaps: result.gaps },
-          );
-        }
-        const completion = task.role === "research" && researchSignal
-          ? createWikiResearchCompletion(researchSignal, task.assignmentIds, task.sourceScopeIds[0])
-          : undefined;
-        if (task.role === "research" && !researchSignal) {
-          throw new WikiTaskExecutionError(
-            "Research leaf completed without wiki_research_finish",
-            "schema",
-            { partialMarkdown: result.markdown, coverage: result.coverage, gaps: result.gaps },
-          );
-        }
-        if (task.role === "research" && completion) {
-          const assigned = new Set(task.assignmentIds);
-          const completed = completion.completedAssignmentIds;
-          const invalid = new Set(completed).size !== completed.length
-            || completed.some((id) => !assigned.has(id))
-            || (completion.status === "complete" && (completed.length !== assigned.size || task.assignmentIds.some((id) => !completed.includes(id))))
-            || completion.needsFollowup !== (completion.followups.length > 0)
-            || (completion.status === "incomplete" && !completion.needsFollowup)
-            || (result.status !== undefined && result.status !== completion.status)
-            || completion.followups.some((followup) => followup.sourceScopeIds.some((scope) => !task.sourceScopeIds.includes(scope)));
-          if (invalid) {
-            throw new WikiTaskExecutionError(
-              "Research completion does not match its durable contract",
-              "schema",
-              { partialMarkdown: result.markdown, coverage: result.coverage, gaps: result.gaps },
-            );
-          }
-        }
-        const output = await this.persist(task, batch, attempt, result.markdown);
-        ingestEvidenceHandoff({
-          artifact: output,
-          markdown: result.markdown,
-          contract: task,
-          ...(completion ? { completedAssignmentIds: completion.completedAssignmentIds, followups: completion.followups } : {}),
-        });
-        const successReceipt = receipt(task, result.status ?? completion?.status ?? "complete", result.summary, [...acceptedOutputs, output], [...acceptedCoverage, ...(result.coverage ?? [])], [...acceptedGaps, ...(result.gaps ?? [])], undefined, attempt, result.review, completion);
-        return { kind: "terminal", receipt: successReceipt, usage: result.usage ?? latestTelemetry?.usage, telemetry: latestTelemetry };
-      } catch (error) {
-        if (pauseInterruption(signal) !== undefined) throw error;
-        let decision = decideWikiAgentAttempt({
-          error,
-          attempt,
-          maxAttempts,
-          aborted: signal.aborted,
-          baseRetryDelayMs: this.baseRetryDelayMs,
-          random: this.random,
-        });
-        let failure = decision.failure;
-        lastFailure = failure;
-        const partial = partialResult(error);
-        if (partial.markdown) {
-          try {
-            acceptedOutputs.push(await this.persist(task, batch, attempt, partial.markdown));
-            for (const value of partial.coverage ?? []) acceptedCoverage.add(value);
-            acceptedGaps.push(...(partial.gaps ?? []));
-            const partialState = { outputs: [...acceptedOutputs], coverage: [...acceptedCoverage], gaps: [...acceptedGaps] };
-            await this.transition(() => this.options.transitions.taskStarted(batch, task.id, {
-              attempt,
-              ...(record.state.sessionFile ? { sessionFile: record.state.sessionFile } : {}),
-              partial: partialState,
-            }));
-            record.state.partial = partialState;
-          } catch (artifactError) {
-            decision = decideWikiAgentAttempt({
-              error: artifactError,
-              attempt,
-              maxAttempts,
-              baseRetryDelayMs: this.baseRetryDelayMs,
-              random: this.random,
-            });
-            failure = decision.failure;
-          }
-        }
-        lastFailure = failure;
-        if (failure.code === "quota" || failure.code === "usage_limit") {
-          record.state.partial = { outputs: [...acceptedOutputs], coverage: [...acceptedCoverage], gaps: [...acceptedGaps] };
-          return { kind: "paused", pause: failure };
-        }
-        if (decision.action !== "retry") {
-          const status = acceptedOutputs.length > 0 || failure.code === "timeout" || failure.code === "context_exhausted"
-            ? "incomplete"
-            : "failed";
-          const terminalReceipt = receipt(task, status, failure.message, acceptedOutputs, [...acceptedCoverage], acceptedGaps, failure, attempt);
-          return { kind: "terminal", receipt: terminalReceipt, usage: latestTelemetry?.usage, telemetry: latestTelemetry };
-        }
-        if (failure.code === "rate_limit") this.gate.reportPressure(failure.retryAfterMs ?? this.baseRetryDelayMs);
-        release?.();
-        release = undefined;
-        const delay = decision.delayMs!;
-        await this.sleep(delay, signal);
-      } finally {
-        release?.();
+      await this.fireProgress({ batchId: batch, phase: "start", task, telemetry: startedTelemetry });
+      const result = await this.options.agent.run(task, this.contextFor(task, batch, attempt, signal, onTelemetry, record.state.sessionFile));
+      const researchSignal = result.research;
+      if (task.role === "research" && researchSignal && !task.sourceScopeIds[0]) {
+        throw new WikiTaskExecutionError(
+          "Research completion requires a Source scope",
+          "schema",
+          { partialMarkdown: result.markdown, coverage: result.coverage, gaps: result.gaps },
+        );
       }
+      const completion = task.role === "research" && researchSignal
+        ? createWikiResearchCompletion(researchSignal, task.assignmentIds, task.sourceScopeIds[0])
+        : undefined;
+      if (task.role === "research" && !researchSignal) {
+        throw new WikiTaskExecutionError(
+          "Research leaf completed without wiki_research_finish",
+          "schema",
+          { partialMarkdown: result.markdown, coverage: result.coverage, gaps: result.gaps },
+        );
+      }
+      if (task.role === "research" && completion) {
+        const assigned = new Set(task.assignmentIds);
+        const completed = completion.completedAssignmentIds;
+        const invalid = new Set(completed).size !== completed.length
+          || completed.some((id) => !assigned.has(id))
+          || (completion.status === "complete" && (completed.length !== assigned.size || task.assignmentIds.some((id) => !completed.includes(id))))
+          || completion.needsFollowup !== (completion.followups.length > 0)
+          || (completion.status === "incomplete" && !completion.needsFollowup)
+          || (result.status !== undefined && result.status !== completion.status)
+          || completion.followups.some((followup) => followup.sourceScopeIds.some((scope) => !task.sourceScopeIds.includes(scope)));
+        if (invalid) {
+          throw new WikiTaskExecutionError(
+            "Research completion does not match its durable contract",
+            "schema",
+            { partialMarkdown: result.markdown, coverage: result.coverage, gaps: result.gaps },
+          );
+        }
+      }
+      const output = await this.persist(task, attempt, result.markdown);
+      ingestEvidenceHandoff({
+        artifact: output,
+        markdown: result.markdown,
+        contract: task,
+        ...(completion ? { completedAssignmentIds: completion.completedAssignmentIds, followups: completion.followups } : {}),
+      });
+      const successReceipt = receipt(task, result.status ?? completion?.status ?? "complete", result.summary, [...acceptedOutputs, output], [...acceptedCoverage, ...(result.coverage ?? [])], [...acceptedGaps, ...(result.gaps ?? [])], undefined, attempt, result.review, completion);
+      return { kind: "terminal", receipt: successReceipt, usage: result.usage ?? latestTelemetry?.usage, telemetry: latestTelemetry };
+    } catch (error) {
+      if (pauseInterruption(signal) !== undefined) throw error;
+      let decision = decideWikiAgentTerminal(error, signal.aborted);
+      let failure = decision.failure;
+      const partial = partialResult(error);
+      if (partial.markdown) {
+        try {
+          acceptedOutputs.push(await this.persist(task, attempt, partial.markdown));
+          for (const value of partial.coverage ?? []) acceptedCoverage.add(value);
+          acceptedGaps.push(...(partial.gaps ?? []));
+          const partialState = { outputs: [...acceptedOutputs], coverage: [...acceptedCoverage], gaps: [...acceptedGaps] };
+          await this.transition(() => this.options.onTaskStarted(batch, task.id, {
+            attempt,
+            ...(record.state.sessionFile ? { sessionFile: record.state.sessionFile } : {}),
+            partial: partialState,
+          }));
+          record.state.partial = partialState;
+        } catch (artifactError) {
+          decision = decideWikiAgentTerminal(artifactError);
+          failure = decision.failure;
+        }
+      }
+      if (failure.code === "quota" || failure.code === "usage_limit") {
+        record.state.partial = { outputs: [...acceptedOutputs], coverage: [...acceptedCoverage], gaps: [...acceptedGaps] };
+        return { kind: "paused", pause: failure };
+      }
+      const status = acceptedOutputs.length > 0 || failure.code === "timeout" || failure.code === "context_exhausted"
+        ? "incomplete"
+        : "failed";
+      const terminalReceipt = receipt(task, status, failure.message, acceptedOutputs, [...acceptedCoverage], acceptedGaps, failure, attempt);
+      return { kind: "terminal", receipt: terminalReceipt, usage: latestTelemetry?.usage, telemetry: latestTelemetry };
+    } finally {
+      release?.();
     }
-    const fallbackReceipt = receipt(task, acceptedOutputs.length ? "incomplete" : "failed", lastFailure?.message ?? "Task failed", acceptedOutputs, [...acceptedCoverage], acceptedGaps, lastFailure, maxAttempts);
-    return { kind: "terminal", receipt: fallbackReceipt };
   }
 
   private contextFor(
@@ -639,11 +615,11 @@ export class WikiTaskRuntime {
     };
   }
 
-  private async persist(task: WikiDelegateContract, batch: number, attempt: number, markdown: string): Promise<WikiArtifactRef> {
+  private async persist(task: WikiDelegateContract, attempt: number, markdown: string): Promise<WikiArtifactRef> {
     try {
       return await this.options.artifactStore.write({
         runId: this.options.runId,
-        nodeId: artifactNodeId(batch, task.id),
+        contractId: task.contractId,
         attempt,
         kind: task.role === "research" ? "research-handoff" : task.role === "write" ? "write-handoff" : "review-handoff",
         scope: scopeForTask(task),
@@ -722,14 +698,15 @@ function terminalReceipt(state: WikiTaskRuntimeTaskState): WikiDelegateReceipt {
 
 function validateRestoredState(state: WikiTaskRuntimeState): void {
   const batchIds = new Set<number>();
+  const runTaskIds = new Set<string>();
   for (const batch of state.batches) {
     if (!Number.isSafeInteger(batch.batchId) || batch.batchId < 1 || batchIds.has(batch.batchId)) throw new Error(`Invalid or duplicate restored batch id: ${batch.batchId}`);
     batchIds.add(batch.batchId);
     const taskIds = new Set<string>();
     for (const saved of batch.tasks) {
-      artifactNodeId(batch.batchId, saved.task.id);
-      if (taskIds.has(saved.task.id)) throw new Error(`Duplicate restored task id in batch ${batch.batchId}: ${saved.task.id}`);
+      if (taskIds.has(saved.task.id) || runTaskIds.has(saved.task.id)) throw new Error(`Duplicate restored task id in batch ${batch.batchId}: ${saved.task.id}`);
       taskIds.add(saved.task.id);
+      runTaskIds.add(saved.task.id);
       if (!Number.isInteger(saved.attempt) || saved.attempt < 0) throw new Error(`Invalid restored attempt for task ${saved.task.id}`);
       if ((saved.phase === "running" || saved.phase === "paused") && saved.attempt < 1) throw new Error(`${saved.phase} restored task ${saved.task.id} requires an attempt`);
       if (saved.phase === "terminal" && !saved.receipt) throw new Error(`Terminal restored task ${saved.task.id} requires a receipt`);
@@ -763,12 +740,6 @@ function pauseInterruption(signal: AbortSignal): { pause?: WikiDelegateError } |
     };
   }
   return signal.reason === WIKI_MANUAL_PAUSE ? {} : undefined;
-}
-
-function artifactNodeId(batchId: number, taskId: string): string {
-  const value = `b${batchId}-${taskId}`;
-  if (value.length > 128) throw new Error(`Delegate task ${taskId} produces an oversized artifact handle`);
-  return value;
 }
 
 function validateLimit(value: number, name: string): void {
@@ -891,17 +862,6 @@ function scopeForTask(task: WikiDelegateContract): string[] {
   ])];
 }
 
-async function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) throw new WikiTaskExecutionError("Task cancelled", "cancelled");
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(resolve, Math.max(0, ms));
-    signal.addEventListener("abort", () => {
-      clearTimeout(timer);
-      reject(new WikiTaskExecutionError("Task cancelled", "cancelled"));
-    }, { once: true });
-  });
-}
-
 export class WikiWritePathLease {
   private readonly active = new Set<string>();
   private readonly waiters: Array<{
@@ -973,20 +933,15 @@ export class WikiWritePathLease {
 
 class SharedAdmissionGate {
   private active = 0;
-  private pressureUntil = 0;
   private readonly waiters: Array<{ resolve: (release: () => void) => void; signal: AbortSignal }> = [];
 
-  constructor(private readonly normalLimit: number, private readonly now: () => number = Date.now) {
-    if (!Number.isInteger(normalLimit) || normalLimit < 1) throw new Error("concurrency must be a positive integer");
-  }
-
-  reportPressure(delayMs: number): void {
-    this.pressureUntil = Math.max(this.pressureUntil, this.now() + Math.max(0, delayMs));
+  constructor(private readonly limit: number) {
+    if (!Number.isInteger(limit) || limit < 1) throw new Error("concurrency must be a positive integer");
   }
 
   async acquire(signal: AbortSignal): Promise<() => void> {
     if (signal.aborted) throw new WikiTaskExecutionError("Task cancelled", "cancelled");
-    if (this.active < this.limit()) return this.take();
+    if (this.active < this.limit) return this.take();
     return await new Promise<() => void>((resolve, reject) => {
       const waiter = { resolve, signal };
       const abort = (): void => {
@@ -1003,7 +958,6 @@ class SharedAdmissionGate {
     });
   }
 
-  private limit(): number { return this.now() < this.pressureUntil ? 1 : this.normalLimit; }
   private take(): () => void {
     this.active += 1;
     let done = false;
@@ -1011,7 +965,7 @@ class SharedAdmissionGate {
       if (done) return;
       done = true;
       this.active -= 1;
-      while (this.waiters.length && this.active < this.limit()) this.waiters.shift()!.resolve(this.take());
+      while (this.waiters.length && this.active < this.limit) this.waiters.shift()!.resolve(this.take());
     };
   }
 }

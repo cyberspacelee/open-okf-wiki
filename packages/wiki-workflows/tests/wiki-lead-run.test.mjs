@@ -57,8 +57,8 @@ async function fixture(t, fault, finalizeFault, planned = true) {
 
 async function settleResearchWave(run, wave) {
   for (const contract of wave.contracts) {
-    await run.taskTransitions.taskStarted(wave.batchId, contract.id, { attempt: 1 });
-    await run.taskTransitions.taskSettled(wave.batchId, contract.id, { attempt: 1, receipt: {
+    await run.taskStarted(wave.batchId, contract.id, { attempt: 1 });
+    await run.taskSettled(wave.batchId, contract.id, { attempt: 1, receipt: {
       id: contract.id, role: "research", status: "complete", summary: "complete", outputs: [],
       completedAssignmentIds: contract.assignmentIds, needsFollowup: false, followups: [],
       domains: [{ sourceScopeId: contract.sourceScopeIds[0], domainId: "core", conceptIds: [] }],
@@ -66,7 +66,7 @@ async function settleResearchWave(run, wave) {
       contractId: contract.contractId, contractDigest: contract.contractDigest,
     } });
   }
-  await run.taskTransitions.tasksCollected(wave.batchId, wave.contracts.map((contract) => contract.id));
+  await run.tasksCollected(wave.batchId, wave.contracts.map((contract) => contract.id));
 }
 
 function createFence(token) {
@@ -92,8 +92,8 @@ async function settleReviews(run) {
       contractId: contract.contractId, contractDigest: contract.contractDigest,
       review: { verdict: "pass", reviewedPaths: contract.reviewPaths, findings: [], profileCoverage: [] },
     };
-    await run.taskTransitions.taskStarted(contract.batchId, contract.id, { attempt: 1 });
-    await run.taskTransitions.taskSettled(contract.batchId, contract.id, { attempt: 1, receipt });
+    await run.taskStarted(contract.batchId, contract.id, { attempt: 1 });
+    await run.taskSettled(contract.batchId, contract.id, { attempt: 1, receipt });
   }
   return contracts;
 }
@@ -104,13 +104,13 @@ async function queueReviewWave(run) {
     if (wave.wave === "review") return wave.contracts;
     if (wave.wave !== "write") throw new Error(`expected write or review, got ${wave.wave}`);
     for (const contract of wave.contracts) {
-      await run.taskTransitions.taskStarted(wave.batchId, contract.id, { attempt: 1 });
-      await run.taskTransitions.taskSettled(wave.batchId, contract.id, { attempt: 1, receipt: {
+      await run.taskStarted(wave.batchId, contract.id, { attempt: 1 });
+      await run.taskSettled(wave.batchId, contract.id, { attempt: 1, receipt: {
         id: contract.id, role: "write", status: "complete", summary: "wrote", outputs: [], coverage: contract.writePaths, gaps: [], attempts: 1,
         contractId: contract.contractId, contractDigest: contract.contractDigest,
       } });
     }
-    await run.taskTransitions.tasksCollected(wave.batchId, wave.contracts.map((contract) => contract.id));
+    await run.tasksCollected(wave.batchId, wave.contracts.map((contract) => contract.id));
   }
 }
 
@@ -181,10 +181,10 @@ test("rollbackDelegateBatch removes an unlaunched queued batch so the next queue
 test("rollbackDelegateBatch rejects a launched or terminal batch", async (t) => {
   const { run } = await fixture(t, undefined, undefined, false);
   const { batchId, contracts: [contract] } = await run.startNextReadyWave([{ sourceScopeId: "source", instruction: "Research" }]);
-  await run.taskTransitions.taskStarted(batchId, contract.id, { attempt: 1 });
+  await run.taskStarted(batchId, contract.id, { attempt: 1 });
   await assert.rejects(run.rollbackDelegateBatch(batchId), /Cannot roll back delegate batch 1 after launch/);
   assert.equal(run.taskRuntimeState.batches.length, 1);
-  await run.taskTransitions.taskSettled(batchId, contract.id, {
+  await run.taskSettled(batchId, contract.id, {
     attempt: 1,
     receipt: {
       id: contract.id, role: contract.role, status: "complete", summary: "done", outputs: [], coverage: [], gaps: [], attempts: 1,
@@ -199,19 +199,19 @@ test("rollbackDelegateBatch rejects a launched or terminal batch", async (t) => 
 test("semantic task transitions reject rollback, collection before terminal, and forged receipts", async (t) => {
   const { run } = await fixture(t, undefined, undefined, false);
   const { contracts: [contract] } = await run.startNextReadyWave([{ sourceScopeId: "source", instruction: "Research" }]);
-  await assert.rejects(run.taskTransitions.tasksCollected(1, [contract.id]), /Only terminal/);
-  await assert.rejects(run.taskTransitions.taskSettled(1, contract.id, { attempt: 1, receipt: { id: contract.id } }), /Only the current running attempt/);
-  await run.taskTransitions.taskStarted(1, contract.id, { attempt: 1 });
-  await assert.rejects(run.taskTransitions.taskStarted(1, contract.id, { attempt: 3 }), /not monotonic/);
+  await assert.rejects(run.tasksCollected(1, [contract.id]), /Only terminal/);
+  await assert.rejects(run.taskSettled(1, contract.id, { attempt: 1, receipt: { id: contract.id } }), /Only the current running attempt/);
+  await run.taskStarted(1, contract.id, { attempt: 1 });
+  await assert.rejects(run.taskStarted(1, contract.id, { attempt: 3 }), /not monotonic/);
   const forged = { id: contract.id, role: contract.role, status: "failed", summary: "failed", outputs: [], coverage: [], gaps: [], attempts: 1, contractId: contract.contractId, contractDigest: "f".repeat(64), error: { code: "schema", message: "bad", retryable: false } };
-  await assert.rejects(run.taskTransitions.taskSettled(1, contract.id, { attempt: 1, receipt: forged }), /does not match durable contract/);
+  await assert.rejects(run.taskSettled(1, contract.id, { attempt: 1, receipt: forged }), /does not match durable contract/);
 });
 
 test("durable research receipts must cover only, and then all, contract assignments", async (t) => {
   const { run } = await fixture(t, undefined, undefined, false);
   const { contracts: [empty] } = await run.startNextReadyWave([{ sourceScopeId: "source", instruction: "Research" }]);
-  await run.taskTransitions.taskStarted(empty.batchId, empty.id, { attempt: 1 });
-  await assert.rejects(run.taskTransitions.taskSettled(empty.batchId, empty.id, {
+  await run.taskStarted(empty.batchId, empty.id, { attempt: 1 });
+  await assert.rejects(run.taskSettled(empty.batchId, empty.id, {
     attempt: 1,
     receipt: {
       id: empty.id, role: "research", status: "complete", summary: "done", outputs: [], coverage: [], gaps: [], attempts: 1,
@@ -223,8 +223,8 @@ test("durable research receipts must cover only, and then all, contract assignme
 
   const { run: other } = await fixture(t, undefined, undefined, false);
   const { contracts: [unknown] } = await other.startNextReadyWave([{ sourceScopeId: "source", instruction: "Research" }]);
-  await other.taskTransitions.taskStarted(unknown.batchId, unknown.id, { attempt: 1 });
-  await assert.rejects(other.taskTransitions.taskSettled(unknown.batchId, unknown.id, {
+  await other.taskStarted(unknown.batchId, unknown.id, { attempt: 1 });
+  await assert.rejects(other.taskSettled(unknown.batchId, unknown.id, {
     attempt: 1,
     receipt: {
       id: unknown.id, role: "research", status: "complete", summary: "done", outputs: [], coverage: [], gaps: [], attempts: 1,
@@ -238,8 +238,8 @@ test("durable research receipts must cover only, and then all, contract assignme
 test("durable research followups must stay within contract source scopes", async (t) => {
   const { run } = await fixture(t, undefined, undefined, false);
   const { contracts: [contract] } = await run.startNextReadyWave([{ sourceScopeId: "source", instruction: "Research" }]);
-  await run.taskTransitions.taskStarted(contract.batchId, contract.id, { attempt: 1 });
-  await assert.rejects(run.taskTransitions.taskSettled(contract.batchId, contract.id, {
+  await run.taskStarted(contract.batchId, contract.id, { attempt: 1 });
+  await assert.rejects(run.taskSettled(contract.batchId, contract.id, {
     attempt: 1,
     receipt: {
       id: contract.id, role: "research", status: "incomplete", summary: "needs evidence", outputs: [], coverage: [], gaps: [], attempts: 1,
@@ -254,7 +254,7 @@ test("durable research followups must stay within contract source scopes", async
 test("persisted delegate history cannot delete queued tasks or forge a phase rollback", async (t) => {
   const { root, candidate, run, fence, persist } = await fixture(t, undefined, undefined, false);
   const { contracts: [contract] } = await run.startNextReadyWave([{ sourceScopeId: "source", instruction: "Research" }]);
-  await run.taskTransitions.taskStarted(1, contract.id, { attempt: 1 });
+  await run.taskStarted(1, contract.id, { attempt: 1 });
   const forged = structuredClone(await persist.readLead());
   forged.delegates.batches[0].tasks[0].phase = "queued";
   persist.replace(forged);
@@ -288,20 +288,20 @@ test("durable execution token fence blocks stale write, settle, and seal after s
   });
   await stale.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
   const { contracts: [contract] } = await stale.startNextReadyWave();
-  await stale.taskTransitions.taskStarted(contract.batchId, contract.id, { attempt: 1 });
+  await stale.taskStarted(contract.batchId, contract.id, { attempt: 1 });
   const receipt = { id: contract.id, role: contract.role, status: "complete", summary: "done", outputs: [], coverage: contract.writePaths, gaps: [], attempts: 1, contractId: contract.contractId, contractDigest: contract.contractDigest };
   staleFence.retire("execution-new");
   await assert.rejects(
     stale.replacePage({ path: "wiki/source/core/domain.md", content: content("Domain", "Core"), actor: "lead" }),
     /no longer active/,
   );
-  await assert.rejects(stale.taskTransitions.taskSettled(contract.batchId, contract.id, { attempt: 1, receipt }), /no longer active/);
+  await assert.rejects(stale.taskSettled(contract.batchId, contract.id, { attempt: 1, receipt }), /no longer active/);
   await assert.rejects(stale.sealForPublication(sealInput()), /no longer active/);
   const current = await WikiLeadRun.open({
     workspace: root, runId: "run-1", candidateWikiRoot: candidate, policy,
     ...createFence("execution-new"), ...persist,
   });
-  await current.taskTransitions.taskSettled(contract.batchId, contract.id, { attempt: 1, receipt });
+  await current.taskSettled(contract.batchId, contract.id, { attempt: 1, receipt });
 });
 
 test("a fenced open performs no candidate or run-directory writes", async (t) => {
@@ -369,8 +369,8 @@ test("changes_requested and a later spec revision block finish", async (t) => {
   const contracts = await queueReviewWave(run);
   for (const contract of contracts) {
     const requestChanges = contract.reviewPaths.includes("wiki/overview.md");
-    await run.taskTransitions.taskStarted(contract.batchId, contract.id, { attempt: 1 });
-    await run.taskTransitions.taskSettled(contract.batchId, contract.id, {
+    await run.taskStarted(contract.batchId, contract.id, { attempt: 1 });
+    await run.taskSettled(contract.batchId, contract.id, {
       attempt: 1,
       receipt: {
         id: contract.id, role: "review", status: "complete", summary: requestChanges ? "changes" : "pass",

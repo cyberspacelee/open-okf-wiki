@@ -8,7 +8,6 @@ import type {
   WikiExecutionBudgets,
   WikiRunPause,
 } from "./producer-types.js";
-import type { WikiLeadFacts } from "./run-record.js";
 import type { WikiGenerationProfile, WikiRoleModelConfig } from "./workspace.js";
 
 export const WIKI_MANUAL_PAUSE = Symbol.for("okf-wiki.manual-pause");
@@ -43,14 +42,6 @@ export interface WikiAgentRecord {
   agent: WikiAgentSnapshot;
   process: WikiActivityEntry[];
   sessionFile?: string;
-}
-
-export interface WikiRunAdapterContext {
-  runId: string;
-  cwd: string;
-  focus?: string;
-  signal: AbortSignal;
-  preparation: "fresh" | "resume";
 }
 
 export interface WikiPinnedSource {
@@ -96,23 +87,10 @@ export interface WikiProductionPlan {
 
 export type WikiLeadObservation =
   | { kind: "progress"; message: string }
-  | { kind: "batch"; phase: "queued" | "started" | "completed"; batch: number; tasks: WikiAgentSnapshot[]; taskId?: string }
+  | { kind: "batch"; phase: "queued" | "started" | "completed"; batch: number; taskId?: string }
   | { kind: "telemetry"; target: WikiAgentTarget; telemetry: WikiAgentTelemetry }
   | { kind: "health"; target: WikiAgentTarget; status: "degraded" | "healthy"; at: string; message?: string };
-
-export interface WikiLeadExecutionRequest extends WikiRunAdapterContext, WikiProductionPlan {
-  attempt: number;
-  executionToken: string;
-  assertActive(): Promise<void>;
-  commitLead(facts: WikiLeadFacts): Promise<void>;
-  readLead(): Promise<WikiLeadFacts | undefined>;
-  record(observation: WikiLeadObservation): void | Promise<void>;
-}
 
 export type WikiLeadOutcome =
   | { kind: "complete"; summary: string }
   | { kind: "pause"; reason: WikiRunPause["reason"]; summary: string; retryAt?: string };
-
-export interface WikiLeadRuntime {
-  run(request: WikiLeadExecutionRequest): Promise<WikiLeadOutcome>;
-}

@@ -28,8 +28,8 @@ const writeFrontier = [
 ];
 
 const artifacts = [
-  { nodeId: "a", sourceScopeIds: ["api"] },
-  { nodeId: "b", sourceScopeIds: ["web"] },
+  { contractId: "a", sourceScopeIds: ["api"] },
+  { contractId: "b", sourceScopeIds: ["web"] },
 ];
 
 test("selectReadyClusters write frontier is leaves only", () => {
@@ -148,7 +148,7 @@ test("assertDispatchable accepts _root write covering every spec source", () => 
 test("assertDispatchable rejects contextRefs that are not source-local to the task", () => {
   assert.throws(() => assertDispatchable({
     spec,
-    knownContextRefs: [{ nodeId: "b", sourceScopeIds: ["web"] }],
+    knownContextRefs: [{ contractId: "b", sourceScopeIds: ["web"] }],
     tasks: [{
       id: "write-billing",
       role: "write",
@@ -163,7 +163,7 @@ test("assertDispatchable rejects contextRefs that are not source-local to the ta
 test("assertDispatchable accepts contextRefs whose sources are a subset of the task", () => {
   assert.doesNotThrow(() => assertDispatchable({
     spec,
-    knownContextRefs: [{ nodeId: "a", sourceScopeIds: ["api"] }],
+    knownContextRefs: [{ contractId: "a", sourceScopeIds: ["api"] }],
     tasks: [{
       id: "write-billing",
       role: "write",

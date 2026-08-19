@@ -7,9 +7,9 @@ import { createWikiDelegateContract } from "../dist/delegate-contracts.js";
 import {
   createWikiRunRecord,
   projectRunView,
+  UnsupportedWikiRunVersionError,
   WIKI_RUN_FORMAT,
 } from "../dist/run-record.js";
-import { UnsupportedWikiRunVersionError } from "../dist/run-ledger.js";
 
 async function root(t) {
   const value = await mkdtemp(path.join(os.tmpdir(), "wiki-run-record-"));
@@ -153,21 +153,26 @@ test("telemetry does not change a durable task phase", async (t) => {
   assert.equal(facts.lead.delegates.batches[0].tasks[0].phase, "running");
   const disk = JSON.parse(await readFile(path.join(workspace, "runs", "run-1", "run.json"), "utf8"));
   assert.equal(disk.progress, undefined);
+  assert.equal(disk.version, 3);
   assert.equal(disk.version, WIKI_RUN_FORMAT);
   const tail = await record.readTail("run-1", { kind: "task", batch: 1, taskId: "write-1" });
   assert.equal(tail.agent.activity, "using_tool");
 });
 
-test("format 1 snapshots and leftover lead-state fail closed", async (t) => {
+test("format 3 is current and older run.json snapshots fail closed", async (t) => {
+  assert.equal(WIKI_RUN_FORMAT, 3);
   const workspace = await root(t);
   const record = createWikiRunRecord(workspace);
   await running(record, workspace);
 
   const runFile = path.join(workspace, "runs", "run-1", "run.json");
   const snapshot = JSON.parse(await readFile(runFile, "utf8"));
-  snapshot.version = 1;
-  await writeFile(runFile, `${JSON.stringify(snapshot, null, 2)}\n`);
-  await assert.rejects(createWikiRunRecord(workspace).read("run-1"), UnsupportedWikiRunVersionError);
+  assert.equal(snapshot.version, 3);
+  for (const version of [1, 2]) {
+    snapshot.version = version;
+    await writeFile(runFile, `${JSON.stringify(snapshot, null, 2)}\n`);
+    await assert.rejects(createWikiRunRecord(workspace).read("run-1"), UnsupportedWikiRunVersionError);
+  }
 
   const other = await root(t);
   const runDir = path.join(other, "runs", "old-run");

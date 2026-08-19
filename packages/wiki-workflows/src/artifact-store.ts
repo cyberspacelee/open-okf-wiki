@@ -11,7 +11,7 @@ export type WikiArtifactKind = "research-handoff" | "write-handoff" | "review-ha
 export interface WikiArtifactRef {
   version: 1;
   runId: string;
-  nodeId: string;
+  contractId: string;
   attempt: number;
   /** Host-derived source/domain/lens scope. Model output never supplies this. */
   scope: string[];
@@ -24,7 +24,7 @@ export interface WikiArtifactRef {
 
 export interface WikiArtifactWrite {
   runId: string;
-  nodeId: string;
+  contractId: string;
   attempt: number;
   /** Host-derived source/domain/lens scope. Model output never supplies this. */
   scope: readonly string[];
@@ -75,7 +75,7 @@ export function createWikiArtifactStore(options: { workspace: string }): WikiArt
         const ref: WikiArtifactRef = {
           version: 1,
           runId: input.runId,
-          nodeId: input.nodeId,
+          contractId: input.contractId,
           attempt: input.attempt,
           scope,
           kind: input.kind,
@@ -99,10 +99,10 @@ export function createWikiArtifactStore(options: { workspace: string }): WikiArt
         const previous = manifest.artifacts.find((entry) => sameLocation(entry, ref));
         if (previous && (previous.sha256 !== ref.sha256 || previous.sizeBytes !== ref.sizeBytes || previous.relativePath !== ref.relativePath
           || previous.scope.length !== ref.scope.length || previous.scope.some((value, index) => value !== ref.scope[index]))) {
-          throw new Error(`Wiki handoff artifact is immutable: ${ref.runId}/${ref.nodeId}/${ref.attempt}/${ref.kind}`);
+          throw new Error(`Wiki handoff artifact is immutable: ${ref.runId}/${ref.contractId}/${ref.attempt}/${ref.kind}`);
         }
         const artifacts = [...manifest.artifacts.filter((entry) => !sameLocation(entry, ref)), previous ?? ref]
-          .sort((left, right) => `${left.nodeId}:${left.attempt}`.localeCompare(`${right.nodeId}:${right.attempt}`));
+          .sort((left, right) => `${left.contractId}:${left.attempt}`.localeCompare(`${right.contractId}:${right.attempt}`));
         await ensureSafeDirectory(okfRoot, path.dirname(manifestFile));
         await writeText(manifestFile, `${JSON.stringify({ version: 1, artifacts })}\n`);
         return ref;
@@ -148,9 +148,9 @@ function validateRef(value: WikiArtifactRef): WikiArtifactRef {
   return value;
 }
 
-function validateLocation(value: Pick<WikiArtifactWrite, "runId" | "nodeId" | "attempt" | "kind" | "scope">): void {
+function validateLocation(value: Pick<WikiArtifactWrite, "runId" | "contractId" | "attempt" | "kind" | "scope">): void {
   if (!SAFE_COMPONENT.test(value.runId)) throw new Error("Invalid Wiki handoff run ID");
-  if (!SAFE_COMPONENT.test(value.nodeId)) throw new Error("Invalid Wiki handoff node ID");
+  if (!SAFE_COMPONENT.test(value.contractId)) throw new Error("Invalid Wiki handoff contract ID");
   if (!Number.isInteger(value.attempt) || value.attempt < 1 || value.attempt > 1_000_000) throw new Error("Invalid Wiki handoff attempt");
   if (!isWikiArtifactKind(value.kind)) throw new Error("Invalid Wiki handoff artifact kind");
   if (!Array.isArray(value.scope) || value.scope.some((scope) => typeof scope !== "string" || !SAFE_COMPONENT.test(scope))) {
@@ -159,7 +159,7 @@ function validateLocation(value: Pick<WikiArtifactWrite, "runId" | "nodeId" | "a
 }
 
 function sameLocation(left: WikiArtifactRef, right: WikiArtifactRef): boolean {
-  return left.nodeId === right.nodeId && left.attempt === right.attempt && left.kind === right.kind;
+  return left.contractId === right.contractId && left.attempt === right.attempt && left.kind === right.kind;
 }
 
 function digest(bytes: Uint8Array): string {

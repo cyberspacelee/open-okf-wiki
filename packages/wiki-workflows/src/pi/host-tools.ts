@@ -1,7 +1,7 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { wikiToolRejected } from "../wiki-tool-error.js";
+import { wikiToolRejected } from "../wiki-reject.js";
 
 const JSON_SCHEMA_PREFER = { type: "json_schema", strict: "prefer" } as const;
 

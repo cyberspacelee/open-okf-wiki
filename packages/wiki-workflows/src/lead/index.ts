@@ -54,19 +54,12 @@ export {
   type WikiActiveWave,
   type WikiCandidateFaultPoint,
   type WikiDiscoveryPlanEntry,
+  type WikiLeadAgents,
   type WikiLeadFinalizeFaultPoint,
+  type WikiLeadHost,
+  type WikiLeadRunLoopOptions,
   type WikiLeadRunOptions,
+  type WikiLeadSessionRequest,
   type WikiLeadSpecRecord,
   type WikiQueuedWave,
-  type WikiTaskRuntimeTransitions,
 } from "./run.js";
-export {
-  createWikiDelegateCancelTool,
-  createWikiDelegateCollectTool,
-  createWikiDelegateStartTool,
-  createWikiFinishTool,
-  createWikiPlanTool,
-  createWikiTaxonomyTool,
-  WIKI_DELEGATE_CANCEL_REASON_CODES,
-  type WikiDelegateCancelReasonCode,
-} from "./host-tools.js";

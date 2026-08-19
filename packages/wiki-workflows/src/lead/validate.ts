@@ -3,7 +3,6 @@ import path from "node:path";
 import { errorMessage } from "../failures.js";
 import { inside, readText } from "../files.js";
 import { okfSources, parsePage, stringifyPage } from "../frontmatter.js";
-import { issue, type WikiValidation, type WikiValidationIssue } from "../types.js";
 import { isRecord } from "../util.js";
 import { parseSourceCitation, sourceCitationsEqual } from "../citations.js";
 import type { ResolvedWikiSource } from "../workspace.js";
@@ -17,6 +16,34 @@ import {
   validateWikiIndexes,
   type ResolvedWikiRoots,
 } from "./indexes.js";
+
+export interface WikiValidationIssue {
+  code: string;
+  page?: string;
+  message: string;
+}
+
+export function issue(issues: WikiValidationIssue[], code: string, message: string, page?: string): void {
+  issues.push(page ? { code, page, message } : { code, message });
+}
+
+export function formatIssue(value: WikiValidationIssue): string {
+  return value.page ? `${value.page}: ${value.message}` : value.message;
+}
+
+export interface WikiValidation {
+  ok: boolean;
+  issues: WikiValidationIssue[];
+  pages: string[];
+  obsoletePages: string[];
+}
+
+export interface WikiFinalization {
+  pages: string[];
+  obsoletePages: string[];
+  removedPages: string[];
+  rebuiltIndexes: string[];
+}
 
 const MERMAID_FLOW_DIRECTIONS = new Set(["TB", "TD", "BT", "RL", "LR"]);
 const MERMAID_DIAGRAM_TYPES = new Set(["sequenceDiagram", "classDiagram", "stateDiagram-v2", "erDiagram"]);

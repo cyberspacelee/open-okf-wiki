@@ -9,16 +9,15 @@ import { createWikiArtifactStore } from "./artifact-store.js";
 import { projectWikiAgentOutcome } from "./delegate-contracts.js";
 import { removePath } from "./files.js";
 import { inspectWiki, verifyPinnedSourcePlan } from "./inspect.js";
-import { WikiLeadRun } from "./lead.js";
-import { createPiLeadRuntime, type PiWikiRoleModels } from "./lead-runtime.js";
+import { WikiLeadRun, type WikiLeadAgents } from "./lead.js";
+import { createPiLeadAgents, type CreatePiLeadAgentsOptions } from "./pi/agents.js";
+import type { PiWikiRoleModels } from "./pi/leaf.js";
 import { createWikiPublicationStore } from "./publication-store.js";
-import {
-  type WikiProductionTransition,
-  type WikiExecutionAuthority,
-} from "./run-ledger.js";
 import {
   createWikiRunRecord,
   projectRunView,
+  type WikiExecutionAuthority,
+  type WikiProductionTransition,
   type WikiRunFacts,
   type WikiRunRecord,
 } from "./run-record.js";
@@ -41,9 +40,8 @@ import {
 import {
   WIKI_MANUAL_PAUSE,
   type WikiAgentRecord,
-  type WikiLeadExecutionRequest,
   type WikiLeadObservation,
-  type WikiLeadRuntime,
+  type WikiLeadOutcome,
   type WikiProductionPlan,
   type WikiTaskRuntimeTaskState,
 } from "./runtime-types.js";
@@ -59,8 +57,14 @@ export interface ProductionRuntimeOptions {
   getModel?: () => Model<Api> | undefined;
   getThinkingLevel?: () => ThinkingLevel | undefined;
   getModelRegistry?: () => ModelRegistry | undefined;
-  /** The only variable production seam: Pi in production, deterministic Lead in tests. */
-  createLead?: (plan: WikiProductionPlan) => WikiLeadRuntime;
+  /** Pi in production; tests may inject agents for WikiLeadRun.run. */
+  createAgents?: (lead: WikiLeadRun, plan: WikiProductionPlan) => WikiLeadAgents;
+  /** Scripted Lead loop: already-opened WikiLeadRun, no Pi. */
+  runLead?: (lead: WikiLeadRun, context: {
+    signal: AbortSignal;
+    record: (observation: WikiLeadObservation) => void | Promise<void>;
+    plan: WikiProductionPlan;
+  }) => Promise<WikiLeadOutcome>;
   /** @internal Deterministic lifecycle dependencies. */
   now?: () => Date;
   createId?: () => string;
@@ -229,7 +233,6 @@ class WikiProductionRun {
     try {
       let state = await this.state();
       let plan = state.productionPlan;
-      const preparation = plan ? "resume" as const : "fresh" as const;
       if (plan) await resumeProductionPlan(plan, this.runId);
       else {
         plan = await prepareProductionPlan(state.cwd, this.runId, state.focus, this.options);
@@ -242,17 +245,37 @@ class WikiProductionRun {
       const leadTail = await this.record.readTail(this.runId, { kind: "lead" });
       if (leadTail?.sessionFile) plan = { ...plan, leadSessionFile: leadTail.sessionFile, leadSessionAttempt: leadTail.agent.attempt };
       await this.commitForAttempt(authority, controller.signal, { kind: "stage_entered", at: this.timestamp(), stage: "lead", budgets: plan.budgets });
-      const lead = createProductionLead(plan, this.options, await leadSessionLimits(plan.sourcePlan.workspaceRoot));
-      const request: WikiLeadExecutionRequest = {
-        runId: this.runId, cwd: state.cwd, focus: state.focus, signal: controller.signal, preparation, attempt, executionToken, ...plan,
+      const lead = await WikiLeadRun.open({
+        workspace: plan.sourcePlan.workspaceRoot,
+        runId: this.runId,
+        candidateWikiRoot: plan.candidateWikiRoot,
+        policy: plan.generation,
+        requiredSections: plan.generation.templates.requiredSections,
+        requiredProfileCoverage: plan.generation.review.mustCover,
+        sourcePlan: plan.sourcePlan,
+        language: plan.language,
         assertActive: () => this.record.assertActive(this.runId, authority),
+        executionToken,
         commitLead: async (facts) => { await this.record.commitLead(this.runId, facts, authority); },
         readLead: async () => (await this.record.read(this.runId))?.lead,
-        record: async (observation) => {
-          await this.applyLeadObservations(observation, authority, controller.signal);
-        },
+        maxDelegatedTasks: plan.budgets.maxDelegatedTasks,
+      });
+      const record = async (observation: WikiLeadObservation) => {
+        await this.applyLeadObservations(observation, authority, controller.signal);
       };
-      const outcome = await lead.run(request);
+      const outcome = this.options.runLead
+        ? await this.options.runLead(lead, { signal: controller.signal, record, plan })
+        : await lead.run(
+          this.options.createAgents?.(lead, plan) ?? createProductionAgents(lead, plan, this.options, await leadSessionLimits(plan.sourcePlan.workspaceRoot)),
+          {
+            signal: controller.signal,
+            record,
+            concurrency: Math.max(1, plan.maxConcurrentAgents - 1),
+            maxDelegateBatches: plan.budgets.maxDelegateBatches,
+            now: () => (this.options.now?.() ?? new Date()).getTime(),
+            attempt: plan.leadSessionAttempt ?? attempt,
+          },
+        );
       await this.assertCurrent(authority, controller.signal);
       if (outcome.kind === "pause") {
         await this.commitForAttempt(authority, controller.signal, { kind: "paused", at: this.timestamp(), pause: {
@@ -264,7 +287,12 @@ class WikiProductionRun {
       await this.commitForAttempt(authority, controller.signal, { kind: "stage_entered", at: this.timestamp(), stage: "validate" });
       await verifyPinnedSourcePlan(plan.sourcePlan);
       await this.assertCurrent(authority, controller.signal);
-      const seal = await this.seal(plan, authority, outcome.summary);
+      const seal = await lead.sealForPublication({
+        requiredProfileCoverage: plan.generation.review.mustCover,
+        publicationAt: this.timestamp(),
+        sourceFingerprint: plan.sourcePlan.fingerprint,
+        summary: outcome.summary,
+      });
       await this.assertCurrent(authority, controller.signal);
       await verifyPinnedSourcePlan(plan.sourcePlan);
       await this.commitForAttempt(authority, controller.signal, { kind: "stage_entered", at: this.timestamp(), stage: "publish" });
@@ -288,28 +316,6 @@ class WikiProductionRun {
       const message = error instanceof Error ? error.message : String(error);
       await this.commit({ kind: "failed", at: this.timestamp(), error: message }, authority);
     }
-  }
-
-  private async seal(plan: WikiProductionPlan, authority: WikiExecutionAuthority, summary: string) {
-    const run = await WikiLeadRun.open({
-      workspace: plan.sourcePlan.workspaceRoot,
-      runId: this.runId,
-      candidateWikiRoot: plan.candidateWikiRoot,
-      policy: plan.generation,
-      sourcePlan: plan.sourcePlan,
-      language: plan.language,
-      requiredSections: plan.generation.templates.requiredSections,
-      assertActive: () => this.record.assertActive(this.runId, authority),
-      executionToken: authority.executionToken,
-      commitLead: async (facts) => { await this.record.commitLead(this.runId, facts, authority); },
-      readLead: async () => (await this.record.read(this.runId))?.lead,
-    });
-    return await run.sealForPublication({
-      requiredProfileCoverage: plan.generation.review.mustCover,
-      publicationAt: this.timestamp(),
-      sourceFingerprint: plan.sourcePlan.fingerprint,
-      summary,
-    });
   }
 
   private async cleanup(plan: WikiProductionPlan, recordWarning = true): Promise<void> {
@@ -508,7 +514,7 @@ class WikiProductionRun {
     const facts = this.liveFacts ?? await this.state();
     const task = taskState(facts, target);
     const record = this.agents.get(agentKey(target)) ?? await this.record.readTail(this.runId, target).catch(() => undefined);
-    const agent = record?.agent ?? (target.kind === "lead" ? this.viewFrom(facts).progress?.lead : task ? agentFromTask(task, target) : undefined);
+    const agent = record?.agent ?? agentFromView(this.viewFrom(facts), target);
     if (!agent) return undefined;
     const includeHandoff = options?.handoff === true;
     const includeTranscript = options?.transcript === true;
@@ -638,20 +644,21 @@ async function leadSessionLimits(workspaceRoot: string): Promise<{ maxTurnsPerSe
   }
 }
 
-function createProductionLead(
+function createProductionAgents(
+  lead: WikiLeadRun,
   plan: WikiProductionPlan,
   options: ProductionRuntimeOptions,
   leadBudgets: { maxTurnsPerSession: number; maxToolCallsPerSession: number },
-): WikiLeadRuntime {
-  if (options.createLead) return options.createLead(plan);
+): WikiLeadAgents {
   const models = resolveRoleModels(plan.models, options);
-  return createPiLeadRuntime({
-    model: models.lead.model, thinkingLevel: models.lead.thinkingLevel, models, budgets: plan.budgets,
+  const extras: CreatePiLeadAgentsOptions = {
+    model: models.lead.model,
+    thinkingLevel: models.lead.thinkingLevel,
+    models,
     leadBudgets,
-    runSessionDirectory: plan.runSessionDirectory, leadSessionFile: plan.leadSessionFile, leadSessionAttempt: plan.leadSessionAttempt,
-    language: plan.language, concurrency: plan.maxConcurrentAgents - 1, transientRetries: plan.transientRetries,
-    baseRetryDelayMs: plan.baseRetryDelayMs, sessionTimeoutMs: plan.sessionTimeoutMs,
-  });
+    now: options.now ? () => options.now!().getTime() : undefined,
+  };
+  return createPiLeadAgents(lead, plan, extras);
 }
 
 function leadPrompt(focus: string | undefined, scopeIds: readonly string[], runId: string, language: "zh" | "en", generation: WikiGenerationProfile): string {
@@ -762,7 +769,10 @@ function delegateEvent(
   observation: Extract<WikiLeadObservation, { kind: "batch" }>,
   facts: WikiRunFacts | undefined,
 ): WikiRunEvent {
-  const completed = observation.tasks.filter((task) => ["complete", "incomplete", "failed"].includes(task.status)).length;
+  const tasks = facts
+    ? (projectRunView(facts).progress?.batches?.find((batch) => batch.batch === observation.batch)?.tasks ?? [])
+    : [];
+  const completed = tasks.filter((task) => ["complete", "incomplete", "failed"].includes(task.status)).length;
   return {
     version: 1,
     runId,
@@ -771,9 +781,9 @@ function delegateEvent(
     message: `Wiki delegate batch ${observation.batch} ${observation.phase}`,
     phase: observation.phase === "queued" ? "queued" : "settled",
     batch: observation.batch,
-    tasks: [...observation.tasks],
+    tasks: [...tasks],
     completed,
-    total: observation.tasks.length,
+    total: tasks.length,
     ...(observation.taskId ? { taskId: observation.taskId } : {}),
   };
 }
@@ -784,21 +794,13 @@ function taskState(facts: WikiRunFacts, target: WikiAgentTarget): WikiTaskRuntim
     ?.tasks.find((task) => task.task.id === target.taskId);
 }
 
-function agentFromTask(task: WikiTaskRuntimeTaskState, target: Extract<WikiAgentTarget, { kind: "task" }>): WikiAgentSnapshot {
-  const status = task.phase === "queued" ? "queued"
-    : task.phase === "running" || task.phase === "paused" ? "running"
-      : task.receipt!.status;
-  return {
-    target,
-    role: task.task.role,
-    status,
-    attempt: task.attempt,
-    activity: task.phase === "queued" ? "starting" : task.phase === "running" ? "waiting_model" : "settled",
-    activeTools: [],
-    health: "healthy",
-    updatedAt: "",
-    ...(task.receipt?.summary ? { summary: task.receipt.summary } : {}),
-  };
+function agentFromView(view: WikiRunView, target: WikiAgentTarget): WikiAgentSnapshot | undefined {
+  if (target.kind === "lead") return view.progress?.lead;
+  const tasks = [
+    ...(view.progress?.currentBatch?.tasks ?? []),
+    ...(view.progress?.batches ?? []).flatMap((batch) => batch.tasks),
+  ];
+  return tasks.find((task) => task.target.kind === "task" && task.target.batch === target.batch && task.target.taskId === target.taskId);
 }
 
 async function removeStagedEntries(root: string, remove: (location: string) => Promise<void>): Promise<void> {

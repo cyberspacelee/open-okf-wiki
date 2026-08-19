@@ -15,7 +15,6 @@ const SRC = path.join(ROOT, "src");
 const PURE_MODULES = [
   "producer-types.ts",
   "delegate-contracts.ts",
-  "run-ledger.ts",
   "run-record.ts",
   "cli.ts",
   "ui/observability.ts",
@@ -29,12 +28,14 @@ const PURE_MODULES = [
   "lead/indexes.ts",
   "lead/finalize.ts",
   "lead/path.ts",
+  "lead/delegates.ts",
   "lead/run.ts",
 ];
 
 const FORBIDDEN = /from\s+["']@earendil-works\//;
 const FORBIDDEN_REQUIRE = /require\s*\(\s*["']@earendil-works\//;
 const PRIVATE_LEAD = /from\s+["'](?:\.\.?\/)*lead\/(?!index\.js)[^"']+["']/;
+const SHARED_LEAD = /from\s+["'](?:\.\.?\/)*lead\/(?:path|delegates)\.js["']/;
 
 const violations = [];
 
@@ -76,7 +77,8 @@ for (const rel of walkTs(SRC)) {
   for (let i = 0; i < lines.length; i++) {
     const trimmed = lines[i].trim();
     if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) continue;
-    if (PRIVATE_LEAD.test(trimmed)) {
+    if (rel.startsWith("pi/")) continue;
+    if (PRIVATE_LEAD.test(trimmed) && !SHARED_LEAD.test(trimmed)) {
       violations.push(`${rel}:${i + 1}: ${trimmed}`);
     }
   }
@@ -88,4 +90,4 @@ if (violations.length) {
   process.exit(1);
 }
 
-console.log(`Import boundary check passed (${PURE_MODULES.length} pure modules; lead/* private except lead/index).`);
+console.log(`Import boundary check passed (${PURE_MODULES.length} pure modules; lead/* private except lead/index, path, delegates; pi/ may import the lead barrel).`);

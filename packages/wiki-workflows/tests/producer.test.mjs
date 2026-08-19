@@ -4,7 +4,6 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { WikiLeadRun } from "../dist/lead.js";
 import { createConfiguredWikiProducer } from "../dist/production-run.js";
 
 async function workspace(t) {
@@ -24,15 +23,6 @@ function content(type, title) {
   return ["---", `type: ${type}`, `title: ${title}`, "description: Runtime behavior", "sources:", "  - id: runtime", "    resource: source/src/index.ts#L1-L1", "---", "", "Runtime behavior.[^runtime]", "", "[^runtime]: [Source](source/src/index.ts#L1-L1)", ""].join("\n");
 }
 
-function leadFence(request) {
-  return {
-    assertActive: request.assertActive,
-    executionToken: request.executionToken,
-    commitLead: request.commitLead,
-    readLead: request.readLead,
-  };
-}
-
 async function acceptTaxonomy(lead) {
   await completeDiscovery(lead, "source");
   await lead.saveTaxonomy({
@@ -45,8 +35,8 @@ async function acceptTaxonomy(lead) {
 async function completeDiscovery(lead, sourceScopeId) {
   const { batchId, contracts } = await lead.startNextReadyWave([{ sourceScopeId, instruction: "Survey the pinned Source" }]);
   for (const contract of contracts) {
-    await lead.taskTransitions.taskStarted(batchId, contract.id, { attempt: 1 });
-    await lead.taskTransitions.taskSettled(batchId, contract.id, { attempt: 1, receipt: {
+    await lead.taskStarted(batchId, contract.id, { attempt: 1 });
+    await lead.taskSettled(batchId, contract.id, { attempt: 1, receipt: {
       id: contract.id, role: "research", status: "complete", summary: "complete", outputs: [],
       completedAssignmentIds: contract.assignmentIds, needsFollowup: false, followups: [],
       domains: [{ sourceScopeId: contract.sourceScopeIds[0], domainId: "core", conceptIds: [] }],
@@ -54,16 +44,10 @@ async function completeDiscovery(lead, sourceScopeId) {
       contractId: contract.contractId, contractDigest: contract.contractDigest,
     } });
   }
-  await lead.taskTransitions.tasksCollected(batchId, contracts.map((contract) => contract.id));
+  await lead.tasksCollected(batchId, contracts.map((contract) => contract.id));
 }
 
-async function completeCandidate(request) {
-  const lead = await WikiLeadRun.open({
-    workspace: request.cwd, runId: request.runId, candidateWikiRoot: request.candidateWikiRoot,
-    policy: request.generation, requiredSections: request.generation.templates.requiredSections,
-    allowedSourceScopeIds: ["source"],
-    ...leadFence(request),
-  });
+async function completeCandidate(lead) {
   await acceptTaxonomy(lead);
   await lead.saveSpec(spec());
   await lead.replacePage({ path: "wiki/overview.md", content: content("Overview", "Overview"), actor: "lead" });
@@ -82,17 +66,17 @@ async function acceptReviews(lead) {
     }
     if (wave.wave !== "write") throw new Error(`expected write or review, got ${wave.wave}`);
     for (const contract of wave.contracts) {
-      await lead.taskTransitions.taskStarted(wave.batchId, contract.id, { attempt: 1 });
-      await lead.taskTransitions.taskSettled(wave.batchId, contract.id, { attempt: 1, receipt: {
+      await lead.taskStarted(wave.batchId, contract.id, { attempt: 1 });
+      await lead.taskSettled(wave.batchId, contract.id, { attempt: 1, receipt: {
         id: contract.id, role: "write", status: "complete", summary: "written", outputs: [], coverage: contract.writePaths, gaps: [], attempts: 1,
         contractId: contract.contractId, contractDigest: contract.contractDigest,
       } });
     }
-    await lead.taskTransitions.tasksCollected(wave.batchId, wave.contracts.map((contract) => contract.id));
+    await lead.tasksCollected(wave.batchId, wave.contracts.map((contract) => contract.id));
   }
   for (const contract of reviews.contracts) {
-    await lead.taskTransitions.taskStarted(reviews.batchId, contract.id, { attempt: 1 });
-    await lead.taskTransitions.taskSettled(reviews.batchId, contract.id, { attempt: 1, receipt: {
+    await lead.taskStarted(reviews.batchId, contract.id, { attempt: 1 });
+    await lead.taskSettled(reviews.batchId, contract.id, { attempt: 1, receipt: {
       id: contract.id, role: "review", status: "complete", summary: "pass", outputs: [], coverage: contract.reviewPaths, gaps: [], attempts: 1,
       contractId: contract.contractId, contractDigest: contract.contractDigest,
       review: { verdict: "pass", reviewedPaths: contract.reviewPaths, findings: [], profileCoverage: [] },
@@ -126,13 +110,13 @@ test("production applies lead observations during run, not only after it settles
   const root = await workspace(t);
   const live = deferred();
   const release = deferred();
-  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
-    await request.record({ kind: "progress", message: "live lead" });
+  const producer = createConfiguredWikiProducer({ runLead: async (lead, { record, plan, signal }) => {
+    await record({ kind: "progress", message: "live lead" });
     live.resolve();
     await release.promise;
-    await completeCandidate(request);
+    await completeCandidate(lead);
     return { kind: "complete", summary: "done" };
-  } }) });
+  } });
   const handle = await producer.start({ cwd: root });
   await live.promise;
   assert.equal((await handle.view()).progress?.lastMessage, "live lead");
@@ -144,12 +128,12 @@ test("record projects a running tool into view and inspectAgent immediately", as
   const root = await workspace(t);
   const live = deferred();
   const release = deferred();
-  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
-    await request.record({ kind: "telemetry", target: { kind: "lead" }, telemetry: runningToolTelemetry() });
+  const producer = createConfiguredWikiProducer({ runLead: async (lead, { record, plan, signal }) => {
+    await record({ kind: "telemetry", target: { kind: "lead" }, telemetry: runningToolTelemetry() });
     live.resolve();
     await release.promise;
     return { kind: "pause", reason: "quota", summary: "wait" };
-  } }) });
+  } });
   const handle = await producer.start({ cwd: root });
   await live.promise;
   const view = await handle.view();
@@ -173,11 +157,11 @@ test("live telemetry yields on updates without writing an event type", async (t)
   const live = deferred();
   const afterTool = deferred();
   const release = deferred();
-  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
-    await request.record({ kind: "telemetry", target: { kind: "lead" }, telemetry: runningToolTelemetry() });
+  const producer = createConfiguredWikiProducer({ runLead: async (lead, { record, plan, signal }) => {
+    await record({ kind: "telemetry", target: { kind: "lead" }, telemetry: runningToolTelemetry() });
     live.resolve();
     await afterTool.promise;
-    await request.record({
+    await record({
       kind: "telemetry", target: { kind: "lead" }, telemetry: runningToolTelemetry({
         sampledAt: "2026-08-12T00:00:02.000Z",
         lastHeartbeatAt: "2026-08-12T00:00:02.000Z",
@@ -186,7 +170,7 @@ test("live telemetry yields on updates without writing an event type", async (t)
     });
     await release.promise;
     return { kind: "pause", reason: "quota", summary: "wait" };
-  } }) });
+  } });
   const handle = await producer.start({ cwd: root });
   await live.promise;
   const seen = [];
@@ -225,12 +209,12 @@ test("reopened handle overlays persisted agent sidecars into its live view", asy
   const root = await workspace(t);
   const observed = deferred();
   const release = deferred();
-  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
-    await request.record({ kind: "telemetry", target: { kind: "lead" }, telemetry: runningToolTelemetry({ process: undefined, usage: { turns: 4 } }) });
+  const producer = createConfiguredWikiProducer({ runLead: async (lead, { record, plan, signal }) => {
+    await record({ kind: "telemetry", target: { kind: "lead" }, telemetry: runningToolTelemetry({ process: undefined, usage: { turns: 4 } }) });
     observed.resolve();
     await release.promise;
     return { kind: "pause", reason: "quota", summary: "wait" };
-  } }) });
+  } });
   const handle = await producer.start({ cwd: root });
   await observed.promise;
   release.resolve();
@@ -247,12 +231,12 @@ test("waitForResult resolves from a hub terminal without polling disk on a 50ms 
   const root = await workspace(t);
   const entered = deferred();
   const release = deferred();
-  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
+  const producer = createConfiguredWikiProducer({ runLead: async (lead, { record, plan, signal }) => {
     entered.resolve();
     await release.promise;
-    await completeCandidate(request);
+    await completeCandidate(lead);
     return { kind: "complete", summary: "hub-terminal" };
-  } }) });
+  } });
   const handle = await producer.start({ cwd: root });
   await entered.promise;
   const pending = handle.result();
@@ -262,11 +246,11 @@ test("waitForResult resolves from a hub terminal without polling disk on a 50ms 
 
 test("updates replay every durable transition with its same-sequence view including terminal", async (t) => {
   const root = await workspace(t);
-  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
-    await completeCandidate(request);
-    await request.record({ kind: "progress", message: "Lead is working" });
+  const producer = createConfiguredWikiProducer({ runLead: async (lead, { record, plan, signal }) => {
+    await completeCandidate(lead);
+    await record({ kind: "progress", message: "Lead is working" });
     return { kind: "complete", summary: "done" };
-  } }) });
+  } });
   const handle = await producer.start({ cwd: root, focus: " runtime " });
   const result = await handle.result();
   assert.equal(result.summary, "done");
@@ -283,7 +267,7 @@ test("paused run serializes its workspace and resume reuses the exact pinned pla
   const gate = deferred();
   let firstPlan;
   let calls = 0;
-  const producer = createConfiguredWikiProducer({ createLead(plan) {
+  const producer = createConfiguredWikiProducer({ runLead: async (lead, { plan, record, signal }) => {
     if (!firstPlan) firstPlan = structuredClone(plan);
     else {
       const { leadSessionFile, leadSessionAttempt, ...base } = plan;
@@ -291,19 +275,19 @@ test("paused run serializes its workspace and resume reuses the exact pinned pla
       assert.equal(leadSessionFile, path.join(root, "lead-session.jsonl"));
       assert.equal(leadSessionAttempt, 1);
     }
-    return { async run(request) {
+    
       calls += 1;
       if (calls === 1) {
-        await request.record({ kind: "telemetry", target: { kind: "lead" }, telemetry: {
+        await record({ kind: "telemetry", target: { kind: "lead" }, telemetry: {
           target: { kind: "lead" }, attempt: 1, sampledAt: "2026-01-01T00:00:00.000Z", activity: "streaming", activeTools: [],
           sessionFile: path.join(root, "lead-session.jsonl"),
         } });
         return { kind: "pause", reason: "quota", summary: "wait" };
       }
-      await completeCandidate(request);
+      await completeCandidate(lead);
       await gate.promise;
       return { kind: "complete", summary: "resumed" };
-    } };
+    
   } });
   const first = await producer.start({ cwd: root });
   while ((await first.view()).status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
@@ -316,11 +300,11 @@ test("paused run serializes its workspace and resume reuses the exact pinned pla
 
 test("source drift after Lead completion fails without publishing the candidate", async (t) => {
   const root = await workspace(t);
-  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
-    await completeCandidate(request);
+  const producer = createConfiguredWikiProducer({ runLead: async (lead, { record, plan, signal }) => {
+    await completeCandidate(lead);
     await writeFile(path.join(root, "src", "index.ts"), "export const answer = 43;\n");
     return { kind: "complete", summary: "stale" };
-  } }) });
+  } });
   const handle = await producer.start({ cwd: root });
   await assert.rejects(handle.result(), /sources changed while the Wiki run was active/);
   await assert.rejects(readFile(path.join(root, "wiki", "overview.md"), "utf8"), { code: "ENOENT" });
@@ -333,10 +317,10 @@ test("same deterministic run id in two workspaces keeps executions and update hu
   const seen = [];
   const producer = createConfiguredWikiProducer({
     createId: () => "same-run",
-    createLead: () => ({ async run(request) {
-      seen.push(request.cwd);
-      return { kind: "pause", reason: "quota", summary: `paused:${request.cwd}` };
-    } }),
+    runLead: async (lead, { record, plan, signal }) => {
+      seen.push(plan.sourcePlan.workspaceRoot);
+      return { kind: "pause", reason: "quota", summary: `paused:${plan.sourcePlan.workspaceRoot}` };
+    },
   });
   const [leftRun, rightRun] = await Promise.all([producer.start({ cwd: left }), producer.start({ cwd: right })]);
   while ((await leftRun.view()).status === "running" || (await rightRun.view()).status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
@@ -352,11 +336,11 @@ test("resume requested while an abort-ignoring attempt settles is deferred and e
   const root = await workspace(t);
   const release = deferred();
   let calls = 0;
-  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run() {
+  const producer = createConfiguredWikiProducer({ runLead: async () => {
     calls += 1;
     if (calls === 1) await release.promise;
     return { kind: "pause", reason: "quota", summary: `attempt ${calls}` };
-  } }) });
+  } });
   const run = await producer.start({ cwd: root });
   while (calls === 0) await new Promise((resolve) => setTimeout(resolve, 5));
   assert.equal((await run.control("pause")).status, "paused");
@@ -372,14 +356,14 @@ test("cancel fences observations from a slow prior attempt", async (t) => {
   const entered = deferred();
   const release = deferred();
   const attempted = deferred();
-  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
+  const producer = createConfiguredWikiProducer({ runLead: async (lead, { record, plan, signal }) => {
     entered.resolve();
     await release.promise;
     attempted.resolve();
-    try { await request.record({ kind: "progress", message: "late write" }); }
+    try { await record({ kind: "progress", message: "late write" }); }
     catch { /* attempt already fenced */ }
     return { kind: "complete", summary: "too late" };
-  } }) });
+  } });
   const run = await producer.start({ cwd: root });
   await entered.promise;
   await run.control("cancel");
@@ -395,13 +379,7 @@ test("cancel fences direct Candidate mutations from an abort-ignoring Lead", asy
   const release = deferred();
   const attempted = deferred();
   let lateError;
-  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
-    const lead = await WikiLeadRun.open({
-      workspace: request.cwd, runId: request.runId, candidateWikiRoot: request.candidateWikiRoot,
-      policy: request.generation, requiredSections: request.generation.templates.requiredSections,
-      allowedSourceScopeIds: ["source"],
-      ...leadFence(request),
-    });
+  const producer = createConfiguredWikiProducer({ runLead: async (lead) => {
     await acceptTaxonomy(lead);
     await lead.saveSpec(spec());
     ready.resolve();
@@ -410,7 +388,7 @@ test("cancel fences direct Candidate mutations from an abort-ignoring Lead", asy
     catch (error) { lateError = error; }
     finally { attempted.resolve(); }
     return { kind: "complete", summary: "too late" };
-  } }) });
+  } });
   const run = await producer.start({ cwd: root });
   await ready.promise;
   await run.control("cancel");
@@ -425,11 +403,11 @@ test("a second handle from the same producer attaches to the live run", async (t
   const entered = deferred();
   const release = deferred();
   let calls = 0;
-  const producer = createConfiguredWikiProducer({ createId: () => "shared-run", createLead: () => ({ async run() {
+  const producer = createConfiguredWikiProducer({ createId: () => "shared-run", runLead: async () => {
     calls += 1;
     if (calls === 1) { entered.resolve(); await release.promise; }
     return { kind: "pause", reason: "quota", summary: `attempt:${calls}` };
-  } }) });
+  } });
   const first = await producer.start({ cwd: root });
   await entered.promise;
   const before = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", first.id, "run.json"), "utf8"));
@@ -450,10 +428,10 @@ test("two producer instances do not intern the same Run handle; open/list use th
   const root = await workspace(t);
   let firstCalls = 0;
   let secondCalls = 0;
-  const firstProducer = createConfiguredWikiProducer({ createId: () => "workspace-run", createLead: () => ({ async run() {
+  const firstProducer = createConfiguredWikiProducer({ createId: () => "workspace-run", runLead: async () => {
     firstCalls += 1;
     return { kind: "pause", reason: "quota", summary: `first:${firstCalls}` };
-  } }) });
+  } });
   const started = await firstProducer.start({ cwd: root });
   while ((await started.view()).status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
 
@@ -469,10 +447,10 @@ test("two producer instances do not intern the same Run handle; open/list use th
   assert.equal(await firstProducer.open(started.id, stray), undefined);
   assert.deepEqual(await firstProducer.list(stray), []);
 
-  const secondProducer = createConfiguredWikiProducer({ createLead: () => ({ async run() {
+  const secondProducer = createConfiguredWikiProducer({ runLead: async () => {
     secondCalls += 1;
     throw new Error("second producer must not inherit first internment");
-  } }) });
+  } });
   const reopened = await secondProducer.open(started.id, nested);
   assert.ok(reopened);
   assert.notEqual(reopened, started);
@@ -505,15 +483,15 @@ test("inspectAgent without options does not read the session transcript", async 
   ].join("\n"));
   const live = deferred();
   const release = deferred();
-  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run(request) {
-    await request.record({ kind: "telemetry", target: { kind: "lead" }, telemetry: {
+  const producer = createConfiguredWikiProducer({ runLead: async (lead, { record, plan, signal }) => {
+    await record({ kind: "telemetry", target: { kind: "lead" }, telemetry: {
       target: { kind: "lead" }, attempt: 1, sampledAt: "2026-08-12T00:00:00.000Z", activity: "streaming", activeTools: [],
       sessionFile,
     } });
     live.resolve();
     await release.promise;
     return { kind: "pause", reason: "quota", summary: "wait" };
-  } }) });
+  } });
   const handle = await producer.start({ cwd: root });
   await live.promise;
   const overview = await handle.inspectAgent({ kind: "lead" });
@@ -530,10 +508,10 @@ test("inspectAgent without options does not read the session transcript", async 
 test("resume uses pinned paths even when workspace config becomes invalid", async (t) => {
   const root = await workspace(t);
   let calls = 0;
-  const producer = createConfiguredWikiProducer({ createId: () => "pinned-open", createLead: () => ({ async run() {
+  const producer = createConfiguredWikiProducer({ createId: () => "pinned-open", runLead: async () => {
     calls += 1;
     return { kind: "pause", reason: "quota", summary: "wait" };
-  } }) });
+  } });
   const run = await producer.start({ cwd: root });
   while ((await run.view()).status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
   await writeFile(path.join(root, "workspace.yaml"), "not: [valid\n");
@@ -545,9 +523,9 @@ test("resume uses pinned paths even when workspace config becomes invalid", asyn
 
 test("resume rejects a modified materialized production skill", async (t) => {
   const root = await workspace(t);
-  const producer = createConfiguredWikiProducer({ createLead: () => ({ async run() {
+  const producer = createConfiguredWikiProducer({ runLead: async () => {
     return { kind: "pause", reason: "quota", summary: "wait" };
-  } }) });
+  } });
   const run = await producer.start({ cwd: root });
   while ((await run.view()).status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
   await writeFile(path.join(root, ".okf-wiki", "runs", run.id, "skill", "references", "common.md"), "changed\n");

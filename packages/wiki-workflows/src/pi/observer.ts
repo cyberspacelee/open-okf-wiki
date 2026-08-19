@@ -7,7 +7,7 @@ import type {
   WikiAgentTarget,
   WikiAgentTelemetry,
   WikiContextStats,
-} from "./producer-types.js";
+} from "../producer-types.js";
 
 const HEARTBEAT_MS = 5_000;
 const UPDATE_COALESCE_MS = 250;
@@ -218,12 +218,12 @@ export class PiSessionObserver {
         return;
       case "auto_retry_start":
         this.activity = "retry_wait";
-        this.addProcess({ at, kind: "warning", severity: "warning", message: `Unexpected Pi auto retry ${event.attempt}/${event.maxAttempts}`, completed: false });
+        this.addProcess({ at, kind: "retry", severity: "info", message: `Pi retry ${event.attempt}/${event.maxAttempts}`, completed: false });
         this.emit(true);
         return;
       case "auto_retry_end":
         this.activity = event.success ? "waiting_model" : "settled";
-        this.addProcess({ at, kind: "warning", severity: "warning", message: `Unexpected Pi auto retry ${event.success ? "completed" : "failed"}`, completed: true });
+        this.addProcess({ at, kind: "retry", severity: event.success ? "info" : "warning", message: event.success ? "Pi retry succeeded" : "Pi retry failed", completed: true });
         this.emit(true);
         return;
       default:

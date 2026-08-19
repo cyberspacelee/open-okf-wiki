@@ -5,7 +5,7 @@ import { inside, readText, writeText } from "../files.js";
 import { parsePage } from "../frontmatter.js";
 import { wikiSourceSlug } from "../inspect.js";
 import type { WikiPinnedSourcePlan } from "../runtime-types.js";
-import { formatIssue, issue, type WikiValidationIssue } from "../types.js";
+import { formatIssue, issue, type WikiValidationIssue } from "./validate.js";
 import { loadWikiWorkspace, type ResolvedWikiSource } from "../workspace.js";
 import type { WikiSpec } from "./spec.js";
 

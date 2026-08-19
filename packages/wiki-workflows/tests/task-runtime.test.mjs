@@ -8,7 +8,7 @@ import { createWikiArtifactStore } from "../dist/artifact-store.js";
 import { createWikiDelegateContract, WikiTaskExecutionError, WikiTaskPauseError } from "../dist/delegate-contracts.js";
 import { WikiBudgetExhaustedError } from "../dist/failures.js";
 import { WIKI_MANUAL_PAUSE } from "../dist/runtime-types.js";
-import { classifyWikiAttemptFailure } from "../dist/agent-attempt-policy.js";
+import { classifyWikiAttemptFailure } from "../dist/failures.js";
 import { WikiTaskRuntime, WikiWritePathLease } from "../dist/task-runtime.js";
 
 function store() {
@@ -18,7 +18,7 @@ function store() {
     async write(input) {
       writes.push(input);
       const sha256 = createHash("sha256").update(input.content, "utf8").digest("hex");
-      return { version: 1, runId: input.runId, nodeId: input.nodeId, attempt: input.attempt, scope: [...input.scope], kind: input.kind, relativePath: `.okf-wiki/blobs/${sha256}.md`, sha256, sizeBytes: Buffer.byteLength(input.content, "utf8"), mediaType: "text/markdown" };
+      return { version: 1, runId: input.runId, contractId: input.contractId, attempt: input.attempt, scope: [...input.scope], kind: input.kind, relativePath: `.okf-wiki/blobs/${sha256}.md`, sha256, sizeBytes: Buffer.byteLength(input.content, "utf8"), mediaType: "text/markdown" };
     },
   };
 }
@@ -52,9 +52,9 @@ function runtime(agent, values = {}) {
   };
   const subject = new WikiTaskRuntime({
     runId: "run-1", sourceScopes: ["api"], contextArtifacts: {},
-    artifactStore: store(), agent: handoffAgent, sleep: async () => {}, random: () => 0,
+    artifactStore: store(), agent: handoffAgent,
     restoredState: durable,
-    transitions: memoryTransitions(durable, onStateChanged),
+    ...memoryCommit(durable, onStateChanged),
     ...options,
   });
   nextBatches.set(subject, durable.batches.reduce((maximum, batch) => Math.max(maximum, batch.batchId + 1), 1));
@@ -96,18 +96,18 @@ function normalizeState(state) {
   return { batches: state.batches.map((batch) => ({ ...batch, tasks: batch.tasks.map((saved) => ({ ...saved, task: "contractVersion" in saved.task ? saved.task : contract(batch.batchId, saved.task) })) })) };
 }
 
-function memoryTransitions(state, notify) {
+function memoryCommit(state, notify) {
   const publish = async () => await notify?.(structuredClone(state));
   const saved = (batchId, taskId) => state.batches.find((batch) => batch.batchId === batchId)?.tasks.find((task) => task.task.id === taskId);
   return {
-    async batchQueued(contracts) {
+    async onBatchQueued(contracts) {
       if (!state.batches.some((batch) => batch.batchId === contracts[0].batchId)) state.batches.push({ batchId: contracts[0].batchId, tasks: contracts.map((task) => ({ task, phase: "queued", attempt: 0, collected: false })) });
       await publish();
     },
-    async taskStarted(batchId, taskId, input) { Object.assign(saved(batchId, taskId), { phase: "running", attempt: input.attempt, collected: false, sessionFile: input.sessionFile, partial: input.partial, pause: undefined, receipt: undefined }); await publish(); },
-    async taskPaused(batchId, taskId, input) { Object.assign(saved(batchId, taskId), { phase: "paused", attempt: input.attempt, pause: input.pause, sessionFile: input.sessionFile, partial: input.partial }); await publish(); },
-    async taskSettled(batchId, taskId, input) { Object.assign(saved(batchId, taskId), { phase: "terminal", attempt: input.attempt, receipt: input.receipt, sessionFile: input.sessionFile, pause: undefined, partial: undefined }); await publish(); },
-    async tasksCollected(batchId, taskIds) { for (const taskId of taskIds) saved(batchId, taskId).collected = true; await publish(); },
+    async onTaskStarted(batchId, taskId, input) { Object.assign(saved(batchId, taskId), { phase: "running", attempt: input.attempt, collected: false, sessionFile: input.sessionFile, partial: input.partial, pause: undefined, receipt: undefined }); await publish(); },
+    async onTaskPaused(batchId, taskId, input) { Object.assign(saved(batchId, taskId), { phase: "paused", attempt: input.attempt, pause: input.pause, sessionFile: input.sessionFile, partial: input.partial }); await publish(); },
+    async onTaskSettled(batchId, taskId, input) { Object.assign(saved(batchId, taskId), { phase: "terminal", attempt: input.attempt, receipt: input.receipt, sessionFile: input.sessionFile, pause: undefined, partial: undefined }); await publish(); },
+    async onTasksCollected(batchId, taskIds) { for (const taskId of taskIds) saved(batchId, taskId).collected = true; await publish(); },
   };
 }
 
@@ -133,11 +133,12 @@ test("durable queued contract commit completes before an Agent can launch", asyn
   let releaseQueue;
   let launched = false;
   const queued = new Promise((resolve) => { releaseQueue = resolve; });
-  const transitions = memoryTransitions({ batches: [] });
+  const commit = memoryCommit({ batches: [] });
   const subject = new WikiTaskRuntime({
     runId: "run-1", sourceScopes: ["api"], artifactStore: store(),
     agent: { async run(value) { launched = true; return { summary: "ok", markdown: testHandoff(value, "ok"), research: { status: "complete", summary: "ok", needsFollowup: false, followups: [], domains: [{ id: "core", conceptIds: [] }] } }; } },
-    transitions: { ...transitions, async batchQueued(contracts) { await queued; await transitions.batchQueued(contracts); } },
+    ...commit,
+    async onBatchQueued(contracts) { await queued; await commit.onBatchQueued(contracts); },
   });
   const starting = subject.start([contract(1, task("ordered"))], new AbortController().signal);
   await new Promise((resolve) => setImmediate(resolve));
@@ -149,11 +150,12 @@ test("durable queued contract commit completes before an Agent can launch", asyn
 });
 
 test("durable transition failure is consumed and surfaced by collect", async () => {
-  const transitions = memoryTransitions({ batches: [] });
+  const commit = memoryCommit({ batches: [] });
   const subject = new WikiTaskRuntime({
     runId: "run-1", sourceScopes: ["api"], artifactStore: store(),
     agent: { async run(value) { return { summary: "ok", markdown: testHandoff(value, "ok"), research: { status: "complete", summary: "ok", needsFollowup: false, followups: [], domains: [{ id: "core", conceptIds: [] }] } }; } },
-    transitions: { ...transitions, async taskSettled() { throw new Error("durable settle failed"); } },
+    ...commit,
+    async onTaskSettled() { throw new Error("durable settle failed"); },
   });
   const { batchId } = await subject.start([contract(1, task("persist-failure"))], new AbortController().signal);
   await assert.rejects(subject.collect(batchId, { until: "all", timeoutSeconds: 1 }), /durable settle failed/);
@@ -280,57 +282,21 @@ test("receipts omit empty coverage and gaps while retaining non-empty values", a
   assert.deepEqual(detailed.gaps, [{ question: "Need one more source", sourceScopeIds: ["api"] }]);
 });
 
-test("429 honors Retry-After, reduces shared admission to one, and retries once", async () => {
-  let now = 0;
-  const sleeps = [];
-  const attempts = new Map();
-  let active = 0;
-  let maxActiveAfterPressure = 0;
-  let pressureSeen = false;
-  const r = runtime({
-    async run(value) {
-      active += 1;
-      try {
-        const count = (attempts.get(value.id) ?? 0) + 1;
-        attempts.set(value.id, count);
-        if (value.id === "limited" && count === 1) {
-          pressureSeen = true;
-          throw new WikiTaskExecutionError("429", "rate_limit", { retryAfterMs: 250 });
-        }
-        if (pressureSeen) maxActiveAfterPressure = Math.max(maxActiveAfterPressure, active);
-        return { summary: "ok", markdown: "ok" };
-      } finally { active -= 1; }
-    },
-  }, {
-    concurrency: 2,
-    now: () => now,
-    sleep: async (ms) => { sleeps.push(ms); },
-  });
-  const result = await runBatch(r, [task("limited"), task("next")]);
-  assert.equal(result.status, "complete");
-  assert.deepEqual(sleeps, [250]);
-  assert.equal(attempts.get("limited"), 2);
-  assert.ok(maxActiveAfterPressure <= 1);
-});
-
-test("provider HTTP 400 is a transient server error and gets one fresh session", async () => {
+test("provider errors fail the task without a wiki-level fresh session", async () => {
   for (const error of [
+    new WikiTaskExecutionError("429", "rate_limit", { retryAfterMs: 250 }),
     Object.assign(new Error("400 Invalid Request"), { status: 400 }),
-    Object.assign(new Error("400 Bad Request"), { statusCode: 400 }),
-    new Error("400 status code (no body)"),
-    new Error("HTTP 400: invalid_request"),
+    new WikiTaskExecutionError("server unavailable", "server_error"),
   ]) {
     let calls = 0;
     const r = runtime({ async run() {
       calls += 1;
       throw error;
     } });
-    const result = await runBatch(r, [task("http-400")]);
-const classified = classifyWikiAttemptFailure(error);
-    assert.equal(classified.retryable, true, error.message);
-    assert.equal(result.receipts[0].attempts, 2, error.message);
-    assert.equal(calls, 2, error.message);
-    assert.equal(result.receipts[0].error?.retryable, true, error.message);
+    const result = await runBatch(r, [task("provider")]);
+    assert.equal(calls, 1, String(error));
+    assert.equal(result.receipts[0].attempts, 1, String(error));
+    assert.equal(result.receipts[0].error?.retryable, false, String(error));
   }
 });
 
@@ -347,33 +313,24 @@ test("local schema and validation failures still do not retry", async () => {
 });
 
 test("shared attempt classification treats provider 400 before the invalid-request trap", () => {
-const invalid = classifyWikiAttemptFailure(Object.assign(new Error("400 Invalid Request"), { status: 400 }));
+  const invalid = classifyWikiAttemptFailure(Object.assign(new Error("400 Invalid Request"), { status: 400 }));
   assert.equal(invalid.code, "server_error");
-  assert.equal(invalid.retryable, true);
+  assert.equal(invalid.retryable, false);
 
-const overflow = classifyWikiAttemptFailure(new Error("400 status code (no body)"));
+  const overflow = classifyWikiAttemptFailure(new Error("400 status code (no body)"));
   assert.equal(overflow.code, "context_exhausted");
-  assert.equal(overflow.retryable, true);
+  assert.equal(overflow.retryable, false);
 
-const qwen = classifyWikiAttemptFailure(new Error("Range of input length should be [1, 131072]"));
+  const qwen = classifyWikiAttemptFailure(new Error("Range of input length should be [1, 131072]"));
   assert.equal(qwen.code, "context_exhausted");
-  assert.equal(qwen.retryable, true);
+  assert.equal(qwen.retryable, false);
 
-const local = classifyWikiAttemptFailure(new Error("invalid request: missing model"));
+  const local = classifyWikiAttemptFailure(new Error("invalid request: missing model"));
   assert.equal(local.code, "invalid_request");
   assert.equal(local.retryable, false);
 });
 
-test("5xx gets exactly one fresh attempt and quota exits through control flow without retry", async () => {
-  let serverAttempts = 0;
-  const server = runtime({ async run() {
-    serverAttempts += 1;
-    throw new WikiTaskExecutionError("server unavailable", "server_error");
-  } });
-  const failed = await runBatch(server, [task("server")]);
-  assert.equal(serverAttempts, 2);
-  assert.equal(failed.receipts[0].attempts, 2);
-
+test("quota exits through control flow without a second session", async () => {
   let quotaAttempts = 0;
   const quota = runtime({ async run() {
     quotaAttempts += 1;
@@ -386,19 +343,6 @@ test("5xx gets exactly one fresh attempt and quota exits through control flow wi
   assert.equal(quotaAttempts, 1);
 });
 
-test("transient retry count is configurable", async () => {
-  for (const transientRetries of [0, 1, 2]) {
-    let calls = 0;
-    const r = runtime({ async run() {
-      calls += 1;
-      throw new WikiTaskExecutionError("service unavailable", "server_error");
-    } }, { transientRetries });
-    const result = await runBatch(r, [task(`retry-${transientRetries}`)]);
-    assert.equal(result.receipts[0].attempts, transientRetries + 1);
-    assert.equal(calls, transientRetries + 1);
-  }
-});
-
 test("timeout and context exhaustion return incomplete receipts and retain sealed partial Markdown", async () => {
   for (const code of ["timeout", "context_exhausted"]) {
     const artifacts = store();
@@ -409,10 +353,10 @@ test("timeout and context exhaustion return incomplete receipts and retain seale
     } }, { artifactStore: artifacts });
     const result = await runBatch(r, [task(code)]);
     assert.equal(result.receipts[0].status, "incomplete");
-    assert.equal(result.receipts[0].outputs.length, 2);
-    assert.equal(result.receipts[0].attempts, 2);
-    assert.equal(calls, 2, `${code} must receive one fresh session after the initial failure`);
-    assert.equal(artifacts.writes.length, 2);
+    assert.equal(result.receipts[0].outputs.length, 1);
+    assert.equal(result.receipts[0].attempts, 1);
+    assert.equal(calls, 1);
+    assert.equal(artifacts.writes.length, 1);
   }
 });
 
@@ -592,17 +536,15 @@ test("start rejects a duplicate batch identity and mixed batch contracts", async
 });
 
 test("failed start that never registered does not poison a later start of the same batch", async () => {
-  const transitions = memoryTransitions({ batches: [] });
+  const commit = memoryCommit({ batches: [] });
   let failQueue = true;
   const subject = new WikiTaskRuntime({
     runId: "run-1", sourceScopes: ["api"], artifactStore: store(),
     agent: { async run(value) { return { summary: "ok", markdown: testHandoff(value, "ok"), research: { status: "complete", summary: "ok", needsFollowup: false, followups: [], domains: [{ id: "core", conceptIds: [] }] } }; } },
-    transitions: {
-      ...transitions,
-      async batchQueued(contracts) {
-        if (failQueue) throw new Error("queue commit failed");
-        await transitions.batchQueued(contracts);
-      },
+    ...commit,
+    async onBatchQueued(contracts) {
+      if (failQueue) throw new Error("queue commit failed");
+      await commit.onBatchQueued(contracts);
     },
   });
   await assert.rejects(subject.start([contract(1, task("retry"))], new AbortController().signal), /queue commit failed/);
@@ -819,7 +761,6 @@ test("restores queued and running tasks with exact attempt and session identity"
     contexts.set(value.id, { attempt: context.attempt, sessionFile: context.sessionFile });
     return { summary: "resumed", markdown: "resumed" };
   } }, {
-    transientRetries: 2,
     restoredState,
     onStateChanged(state) { latestState = structuredClone(state); },
   });
@@ -878,7 +819,7 @@ test("restored counters preserve budgets and next batch identity", async () => {
     maxDelegatedTasks: 2,
     maxDelegateBatches: 2,
   });
-  const started = await startBatch(continued, [task("same-id")], new AbortController().signal);
+  const started = await startBatch(continued, [task("next-id")], new AbortController().signal);
   assert.equal(started.batchId, 2);
   assert.equal((await continued.collect(2, { until: "all", timeoutSeconds: 1 })).status, "complete");
 });
@@ -948,7 +889,7 @@ test("manual pause preserves a running task for exact resume without a cancelled
   assert.deepEqual(resumedContext, { attempt: 1, sessionFile: "/sessions/manual.jsonl" });
 });
 
-test("duplicate task ids produce independent batch-qualified artifact handles", async (t) => {
+test("artifacts persist with the delegate contract id", async (t) => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-task-artifacts-"));
   t.after(async () => await rm(workspace, { recursive: true, force: true }));
   const artifactStore = createWikiArtifactStore({ workspace });
@@ -958,22 +899,28 @@ test("duplicate task ids produce independent batch-qualified artifact handles", 
     runId: "run-1",
     sourceScopes: ["api"],
     artifactStore,
-    transitions: memoryTransitions(durable),
+    ...memoryCommit(durable),
     agent: { async run(value, context) {
       if (value.id === "consumer") consumedHandles = Object.keys(context.contextArtifacts).sort();
       return { summary: value.id, markdown: testHandoff(value, `${value.id}:${context.batch}`) };
     } },
   });
-  const first = await runBatch(r, [task("reused")]);
-  const second = await runBatch(r, [task("reused")]);
-  const handles = [first.receipts[0].outputs[0].nodeId, second.receipts[0].outputs[0].nodeId];
-  assert.deepEqual(handles, ["b1-reused", "b2-reused"]);
+  const first = await runBatch(r, [task("research-a")]);
+  const second = await runBatch(r, [task("research-b")]);
+  const handles = [first.receipts[0].outputs[0].contractId, second.receipts[0].outputs[0].contractId];
+  assert.deepEqual(handles, ["b1-research-a", "b2-research-b"]);
   await runBatch(r, [task("consumer", { contextRefs: handles })]);
   assert.deepEqual(consumedHandles, handles);
 
   const manifest = JSON.parse(await readFile(path.join(workspace, ".okf-wiki", "runs", "run-1", "manifest.json"), "utf8"));
-  assert.ok(handles.every((handle) => manifest.artifacts.some((artifact) => artifact.nodeId === handle)));
-  assert.equal(manifest.artifacts.filter((artifact) => handles.includes(artifact.nodeId)).length, 2);
+  assert.ok(handles.every((handle) => manifest.artifacts.some((artifact) => artifact.contractId === handle)));
+  assert.equal(manifest.artifacts.filter((artifact) => handles.includes(artifact.contractId)).length, 2);
+});
+
+test("rejects duplicate task ids across batches", async () => {
+  const r = runtime({ run: async () => ({ summary: "ok", markdown: "ok" }) });
+  await startBatch(r, [task("reused")]);
+  await assert.rejects(startBatch(r, [task("reused")]), /Duplicate delegate task id across batches: reused/);
 });
 
 test("progress events carry immutable batch identity for duplicate ids across batches", async () => {
@@ -981,8 +928,8 @@ test("progress events carry immutable batch identity for duplicate ids across ba
   const r = runtime({ run: async () => ({ summary: "ok", markdown: "ok" }) }, {
     onTask(event) { events.push(event); },
   });
-  await runBatch(r, [task("reused")]);
-  await runBatch(r, [task("reused")]);
+  await runBatch(r, [task("first")]);
+  await runBatch(r, [task("second")]);
   assert.deepEqual([...new Set(events.slice(0, 3).map((event) => event.batchId))], [1]);
   assert.deepEqual([...new Set(events.slice(3).map((event) => event.batchId))], [2]);
   assert.ok(events.every((event) => Object.hasOwn(event, "batchId")));

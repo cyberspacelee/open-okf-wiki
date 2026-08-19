@@ -33,3 +33,19 @@ export function sameStringSet(left: readonly string[], right: readonly string[])
   const b = [...new Set(right)].sort();
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
+
+export interface YamlFenceSplit {
+  yaml?: string;
+  body: string;
+  hasFence: boolean;
+  terminated: boolean;
+}
+
+/** Split optional terminated YAML. Accepts CRLF. */
+export function splitYamlFence(text: string): YamlFenceSplit {
+  const hasFence = text.startsWith("---\n") || text.startsWith("---\r\n");
+  if (!hasFence) return { body: text, hasFence: false, terminated: true };
+  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text);
+  if (!match) return { body: text, hasFence: true, terminated: false };
+  return { yaml: match[1], body: text.slice(match[0].length), hasFence: true, terminated: true };
+}
