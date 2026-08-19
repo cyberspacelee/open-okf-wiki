@@ -2,12 +2,12 @@
 /**
  * Fail if pure modules import @earendil-works/* (Pi packages).
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const SRC = path.join(ROOT, "src");
+const SRC = path.join(ROOT, "extensions", "wiki", "lib");
 
 const PURE_MODULES = [
   "producer-types.ts",

@@ -3,7 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { git } from "../dist/git.js";
+import { git } from "../extensions/wiki/lib/git.js";
 
 test("git returns complete normal output, including UTF-8", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-git-"));

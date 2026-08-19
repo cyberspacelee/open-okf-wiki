@@ -6,7 +6,7 @@ import {
   renderWikiSnapshot,
   renderWikiRuns,
   wikiCliHelp,
-} from "../dist/cli.js";
+} from "../extensions/wiki/lib/cli.js";
 
 test("parses the compact Wiki command surface", () => {
   assert.deepEqual(parseWikiCliCommand(""), { action: "run" });

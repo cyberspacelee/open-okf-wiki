@@ -2,8 +2,14 @@ import assert from "node:assert/strict";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
-import { loadWikiAgents, packagedAgentsRoot } from "../dist/agents.js";
-import { createSubagentRuntime } from "../dist/subagent.js";
+import { loadWikiAgents, packagedAgentsRoot, parseAgentMarkdown } from "../extensions/wiki/lib/agents.js";
+import { createSubagentRuntime } from "../extensions/wiki/lib/subagent.js";
+
+test("unknown agent names are reported in parseable agent files", () => {
+  const parsed = parseAgentMarkdown("---\nname: survey\ndescription: Map a source\n---\nBody\n", "survey.md");
+  assert.equal(parsed.name, "survey");
+  assert.match(parsed.prompt, /Body/);
+});
 
 test("unknown subagent names return Unknown agent and list packaged agents", async () => {
   const packaged = packagedAgentsRoot();

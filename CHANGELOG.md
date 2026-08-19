@@ -4,6 +4,13 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 
 ## [Unreleased]
 
+### Packaging
+
+- The repo is a single Pi package at the root (`extensions/wiki/`, `skills/`,
+  `agents/`, `prompts/`). `packages/wiki-workflows` and the pnpm workspace are
+  gone. Install with `pi install .`. Pi loads the TypeScript extension
+  directly; there is no `dist/` emit.
+
 ### Source identity
 
 - `scopeId` is the original workspace Source directory name. Implicit single

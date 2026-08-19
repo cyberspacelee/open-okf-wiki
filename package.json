@@ -1,15 +1,48 @@
 {
-  "name": "open-okf-wiki-workflows",
+  "name": "@okf-wiki/wiki-workflows",
   "private": true,
   "version": "0.1.0-dev",
   "description": "Git-native repository Wiki workflow extension for Pi",
+  "type": "module",
   "packageManager": "pnpm@10.33.2",
   "engines": {
     "node": ">=22.19.0"
   },
+  "files": [
+    "extensions/",
+    "skills/",
+    "agents/",
+    "prompts/"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
   "scripts": {
-    "build": "pnpm --filter @okf-wiki/wiki-workflows build",
-    "test": "pnpm --filter @okf-wiki/wiki-workflows test",
-    "typecheck": "pnpm --filter @okf-wiki/wiki-workflows typecheck"
+    "typecheck": "tsc --noEmit",
+    "check:boundaries": "node scripts/check-import-boundaries.mjs",
+    "test": "pnpm check:boundaries && pnpm typecheck && tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "yaml": "^2.8.1"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-agent-core": "^0.82.1",
+    "@earendil-works/pi-ai": "^0.82.1",
+    "@earendil-works/pi-coding-agent": "^0.82.1",
+    "@types/node": "^22.10.2",
+    "tsx": "^4.20.5",
+    "typebox": "^1.0.56",
+    "typescript": "^5.7.3"
   }
 }

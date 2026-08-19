@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
-import { assertWritable, resolveToolPath, writeGuardFromPlan } from "../dist/path-policy.js";
+import { assertWritable, resolveToolPath, writeGuardFromPlan } from "../extensions/wiki/lib/path-policy.js";
 
 function plan(workspaceRoot) {
   return {

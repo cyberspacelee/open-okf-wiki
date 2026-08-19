@@ -9,7 +9,7 @@ import {
   loadWikiWorkspace,
   sourceIsIgnored,
   wikiWorkspaceManagement,
-} from "../dist/workspace.js";
+} from "../extensions/wiki/lib/workspace.js";
 
 const temporaryDirectories = [];
 

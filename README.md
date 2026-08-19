@@ -5,8 +5,7 @@ from one repository or an existing multi-source `workspace.yaml`.
 
 ```bash
 pnpm install
-pnpm build
-pi install ./packages/wiki-workflows
+pi install .
 ```
 
 The host skill is declared in the package `pi.skills` field and loaded by
@@ -151,17 +150,12 @@ paused, resumed, or cancelled without a TUI.
 
 ## Design
 
-The package exposes one production factory and a small run interface. The
-producer owns the complete Wiki lifecycle:
+`/wiki` is the Pi adapter. Tests call the same producer factory:
 
 ```ts
 const producer = createProductionWikiProducer();
 const handle = await producer.start({ cwd, focus });
-
-for await (const event of handle.events()) {
-  console.log(event.message);
-}
-
+const view = await handle.view();
 const result = await handle.result();
 ```
 
@@ -204,5 +198,4 @@ local schema/validation, and hard quota failures do not retry, and quota failure
 durably pause the run. Partial candidate work may remain available to resume,
 but it cannot be published without deterministic validation.
 
-See [package documentation](packages/wiki-workflows/README.md) and
-[architecture](packages/wiki-workflows/ARCHITECTURE.md).
+See [architecture](ARCHITECTURE.md).

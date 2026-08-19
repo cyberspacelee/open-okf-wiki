@@ -313,13 +313,7 @@ async function listRecords(cwd: string): Promise<RunRecord[]> {
 }
 
 async function leadPrompt(context: WikiLeadContext): Promise<string> {
-  const promptPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../prompts/lead.md");
-  let body = "";
-  try {
-    body = await readFile(promptPath, "utf8");
-  } catch {
-    body = "Generate a repository Wiki from the pinned sources. Call publish when done.";
-  }
+  const body = await readFile(fileURLToPath(new URL("../../../prompts/lead.md", import.meta.url)), "utf8");
   const sources = context.plan.sources.map((source) => `- ${source.scopeId}: ${source.logicalPath}`).join("\n");
   const focus = context.focus ? `\nFocus: ${context.focus}\n` : "";
   return `${body}\n\n# This run\n\nLanguage: ${context.language}.${focus}\nPinned sources:\n${sources}\n`;

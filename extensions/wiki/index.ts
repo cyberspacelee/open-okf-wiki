@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
   parseWikiCliCommand,
   renderWikiRun,
@@ -6,68 +6,45 @@ import {
   renderWikiSnapshot,
   wikiCliHelp,
   type WikiCliCommand,
-} from "./cli.js";
-import { createProductionWikiProducer } from "./producer.js";
-import type { WikiProducer, WikiRunHandle, WikiRunView } from "./producer-types.js";
-import { errorMessage } from "./failures.js";
-import { loadWikiWorkspace, wikiWorkspaceManagement, type ResolvedWikiWorkspace } from "./workspace.js";
+} from "./lib/cli.js";
+import { createProductionWikiProducer } from "./lib/producer.js";
+import type { WikiProducer, WikiRunHandle, WikiRunView } from "./lib/producer-types.js";
+import { errorMessage } from "./lib/failures.js";
+import { loadWikiWorkspace, wikiWorkspaceManagement, type ResolvedWikiWorkspace } from "./lib/workspace.js";
 
-export interface WikiExtensionOptions {
-  createProducer?: (context: ExtensionContext) => WikiProducer;
-}
+export default function (pi: ExtensionAPI): void {
+  let producer: WikiProducer | undefined;
 
-export function createWikiExtension(options: WikiExtensionOptions = {}) {
-  return (pi: ExtensionAPI): void => {
-    let context: ExtensionContext | undefined;
-    let producer: WikiProducer | undefined;
-
-    const currentProducer = (active: ExtensionContext): WikiProducer => {
-      context = active;
-      producer ??= options.createProducer?.(active) ?? createProductionWikiProducer({
-        session: {
-          model: active.model,
-          thinkingLevel: active.thinkingLevel,
-        },
-      });
-      return producer;
-    };
-
-    pi.on("session_start", async (_event, active) => {
-      context = active;
-    });
-
-    pi.on("session_shutdown", async () => {
-      context = undefined;
-    });
-
-    pi.registerCommand("wiki", {
-      description: "Build, inspect, and control the repository Wiki",
-      getArgumentCompletions: wikiArgumentCompletions,
-      async handler(rawArgs: string, active: ExtensionCommandContext): Promise<void> {
-        let command: WikiCliCommand;
-        try {
-          command = parseWikiCliCommand(rawArgs);
-        } catch (error) {
-          output(pi, active, `${errorMessage(error)}\n\n${wikiCliHelp()}`);
+  pi.registerCommand("wiki", {
+    description: "Build, inspect, and control the repository Wiki",
+    getArgumentCompletions: wikiArgumentCompletions,
+    async handler(rawArgs: string, active: ExtensionCommandContext): Promise<void> {
+      let command: WikiCliCommand;
+      try {
+        command = parseWikiCliCommand(rawArgs);
+      } catch (error) {
+        output(pi, active, `${errorMessage(error)}\n\n${wikiCliHelp()}`);
+        return;
+      }
+      try {
+        if (command.action === "init" || command.action === "source-add") {
+          await dispatchWorkspace(pi, active, command);
           return;
         }
-        try {
-          if (command.action === "init" || command.action === "source-add") {
-            await dispatchWorkspace(pi, active, command);
-            return;
-          }
-          const workspace = await loadWikiWorkspace(active.cwd);
-          const engine = currentProducer(active);
-          await dispatch(pi, active, engine, workspace.root, command);
-        } catch (error) {
-          active.ui.notify(errorMessage(error), "error");
-        }
-      },
-    });
-  };
+        const workspace = await loadWikiWorkspace(active.cwd);
+        producer ??= createProductionWikiProducer({
+          session: {
+            model: active.model,
+            thinkingLevel: active.thinkingLevel,
+          },
+        });
+        await dispatch(pi, active, producer, workspace.root, command);
+      } catch (error) {
+        active.ui.notify(errorMessage(error), "error");
+      }
+    },
+  });
 }
-
-export default createWikiExtension();
 
 async function dispatch(
   pi: ExtensionAPI,
@@ -178,7 +155,7 @@ const COMPLETIONS = [
   { value: "cancel ", label: "cancel", description: "Cancel a run" },
 ];
 
-export function wikiArgumentCompletions(argumentPrefix: string) {
+function wikiArgumentCompletions(argumentPrefix: string) {
   const value = argumentPrefix.trimStart();
   if (!value) return COMPLETIONS.slice();
   if (/^source\s*$/.test(value)) {

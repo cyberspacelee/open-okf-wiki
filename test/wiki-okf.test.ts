@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { derivedIndexPaths, validateWikiTree } from "../dist/wiki-okf.js";
+import { derivedIndexPaths, validateWikiTree } from "../extensions/wiki/lib/wiki-okf.js";
 
 test("derived indexes cover root, source, domain, and concept directories", () => {
   assert.deepEqual(derivedIndexPaths([

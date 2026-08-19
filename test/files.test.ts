@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:f
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { appendText, claimText, ensureDirectory, removePath, renamePath, withExclusiveLock, writeFileDurable, writeText } from "../dist/files.js";
+import { appendText, claimText, ensureDirectory, removePath, renamePath, withExclusiveLock, writeFileDurable, writeText } from "../extensions/wiki/lib/files.js";
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-files-"));

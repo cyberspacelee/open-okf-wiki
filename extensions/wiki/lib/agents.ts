@@ -13,7 +13,7 @@ export interface WikiAgentDefinition {
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
 
 export function packagedAgentsRoot(): string {
-  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../agents");
+  return fileURLToPath(new URL("../../../agents", import.meta.url));
 }
 
 export async function loadWikiAgents(directory = packagedAgentsRoot()): Promise<WikiAgentDefinition[]> {

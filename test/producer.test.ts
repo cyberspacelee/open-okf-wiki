@@ -3,10 +3,9 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { git } from "../dist/git.js";
-import { writeText } from "../dist/files.js";
-import { createProductionWikiProducer } from "../dist/producer.js";
-import { parseAgentMarkdown } from "../dist/agents.js";
+import { git } from "../extensions/wiki/lib/git.js";
+import { writeText } from "../extensions/wiki/lib/files.js";
+import { createProductionWikiProducer } from "../extensions/wiki/lib/producer.js";
 
 async function gitRepo(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-run-"));
@@ -19,12 +18,6 @@ async function gitRepo(t) {
   await git(root, ["-c", "commit.gpgsign=false", "commit", "-m", "init"]);
   return root;
 }
-
-test("unknown agent names are reported in parseable agent files", () => {
-  const parsed = parseAgentMarkdown("---\nname: survey\ndescription: Map a source\n---\nBody\n", "survey.md");
-  assert.equal(parsed.name, "survey");
-  assert.match(parsed.prompt, /Body/);
-});
 
 test("publish installs a valid Candidate as wiki/", async (t) => {
   const root = await gitRepo(t);
