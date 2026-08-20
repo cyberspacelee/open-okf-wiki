@@ -57,9 +57,9 @@ workspaces have no database block.
 
 ## Templates
 
-Packaged defaults are `templates/zh/` and `templates/en/`, chosen by
-`language`. To customize, copy one directory into the Workspace and set
-`wiki.templates` to that directory (whole-pack replacement, not a merge):
+`/wiki init` copies the pack for `language` into `wiki-templates/` and
+sets `wiki.templates`. Edit those files in the Workspace. Whole-pack
+replacement, not a merge:
 
 ```yaml
 wiki:

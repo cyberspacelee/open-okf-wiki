@@ -20,7 +20,8 @@ An optional Postgres Catalog is declared on the Workspace and retrieved
 on demand (`db_tables`, `db_describe`). Only Postgres. Read-only.
 
 SOP is `prompts/lead.md`. Named workers are `agents/*.md`. Page kinds come
-from `templates/zh` or `templates/en` (or `wiki.templates`). `type` is
+from `wiki-templates/` after init (or packaged `templates/zh` /
+`templates/en`). `type` is
 Title Case; filenames stay kebab-case. TypeScript does not encode
 research/write/review stages. The Lead session has `todo`, `subagent`,
 `publish`, optional Catalog tools, and read-only file tools. `write` / `edit`

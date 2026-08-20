@@ -71,6 +71,7 @@ wiki:
   transientRetries: 1
   baseRetryDelayMs: 1000
   sessionTimeoutSeconds: 1200
+  templates: wiki-templates
 database:
   url: ${DATABASE_URL}   # postgresql://USER:PASSWORD@HOST:PORT/DB
   schema: public
@@ -92,7 +93,7 @@ the defaults below; implicit single-source Workspaces use the same defaults.
 | `transientRetries` | `1` | `0..10` | Retries after a transient model failure, in addition to the initial attempt. |
 | `baseRetryDelayMs` | `1000` | `0..300000` | Base delay used by Pi's retry backoff. |
 | `sessionTimeoutSeconds` | `1200` | `1..2147483` | Wall-clock deadline for each Lead or delegated-agent session. |
-| `templates` | packaged `templates/zh` or `templates/en` | relative directory | Whole-pack replacement for Wiki page templates. Not merged with the default pack. Unset uses the packaged pack for `language`. |
+| `templates` | `wiki-templates` after `/wiki init` | relative directory | Whole-pack replacement. Init copies the packaged pack for `language` here. Unset uses packaged `templates/zh` or `templates/en`. |
 
 `defaultSourceIgnores: true` (the default) hides dependency, build, and Java
 test trees (`src/test/**`, `*Test.java`, and the usual `node_modules` /
@@ -146,9 +147,11 @@ workspaces have no database block.
 Packaged defaults are `templates/zh/` and `templates/en/`, chosen by
 `language`. They are the page contract: which files exist at wiki /
 source / domain / concept, and which of those need a mermaid diagram.
-Copy one directory into the Workspace and point `wiki.templates` at it
-to replace the pack. Adding `architecture.md` or dropping `states.md` is
-how a Workspace customizes the Wiki; do not invent a second overlay.
+`/wiki init` copies the pack for `language` into `wiki-templates/` and
+sets `wiki.templates: wiki-templates`. Edit those files in the Workspace
+repository. Adding `architecture.md` or dropping `states.md` customizes
+the Wiki; do not invent a second overlay. Unset `wiki.templates` to use
+the packaged pack instead.
 Headings and writer instructions follow the pack language; `type` stays
 English Title Case (`Architecture`); mermaid node IDs stay source
 identifiers. Consuming agents start at `wiki/index.md`.

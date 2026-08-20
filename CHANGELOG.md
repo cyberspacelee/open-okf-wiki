@@ -14,8 +14,9 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 - Publish requires a review handoff `verdict: pass` newer than Candidate
   pages. `verified` is stamped only then (`process:open-okf-wiki-review`).
   Host writes root `log.md`. `index.md` entries include descriptions.
-- `wiki.templates` replaces the whole pack. Publish rejects a single
-  `overview.md` and missing required companion pages.
+- `/wiki init` copies the language pack into `wiki-templates/` and sets
+  `wiki.templates`. The field replaces the whole pack. Publish rejects a
+  single `overview.md` and missing required companion pages.
 
 ### Handoff
 

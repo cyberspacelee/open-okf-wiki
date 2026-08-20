@@ -71,10 +71,12 @@ test("initializes explicit workspace defaults and normalized Wiki excludes", asy
   assert.equal(workspace.defaultSourceIgnores, true);
   assert.deepEqual(workspace.wiki, {
     exclude: ["generated/**", "private/**"], maxConcurrentAgents: 3, transientRetries: 1,
-    baseRetryDelayMs: 1_000, sessionTimeoutSeconds: 1_200,
+    baseRetryDelayMs: 1_000, sessionTimeoutSeconds: 1_200, templates: "wiki-templates",
   });
   assert.deepEqual(workspace.sources, []);
   assert.match(await readFile(workspace.configPath, "utf8"), /language: zh/);
+  assert.match(await readFile(workspace.configPath, "utf8"), /templates: wiki-templates/);
+  assert.match(await readFile(path.join(workspace.root, "wiki-templates", "architecture.md"), "utf8"), /组件/);
   await assert.rejects(wikiWorkspaceManagement.init({ cwd: parent, workspace: "docs" }), /already exists/);
 });
 
@@ -258,7 +260,9 @@ test("concurrent init never deletes the winning workspace", async () => {
   assert.equal(results.filter((result) => result.status === "rejected").length, 1);
   const loaded = await loadWikiWorkspace(path.join(parent, "workspace"));
   assert.ok(loaded.language === "zh" || loaded.language === "en");
+  assert.equal(loaded.wiki.templates, "wiki-templates");
   assert.equal((await lstat(loaded.configPath)).isFile(), true);
+  assert.equal((await lstat(path.join(loaded.root, "wiki-templates", "architecture.md"))).isFile(), true);
 });
 
 test("adds a POSIX directory link with canonical origin and rejects Git subdirectories", async () => {
@@ -411,7 +415,7 @@ test("Windows source names reserve Wiki directories case-insensitively", async (
   const source = await repository(parent, "source");
   const management = createWikiWorkspaceManagement({ platform: "win32" });
   await management.init({ cwd: parent, workspace: "workspace" });
-  for (const name of ["Wiki", "WIKI", ".OKF-WIKI", "CON", "prn.txt", "AUX", "NUL", "COM1", "com9.log", "LPT1", "lpt9.txt", "trailing.", "trailing "]) {
+  for (const name of ["Wiki", "WIKI", ".OKF-WIKI", "Wiki-Templates", "CON", "prn.txt", "AUX", "NUL", "COM1", "com9.log", "LPT1", "lpt9.txt", "trailing.", "trailing "]) {
     await assert.rejects(
       management.addLink({ cwd: parent, workspace: "workspace", localPath: source, name }),
       /reserved/,

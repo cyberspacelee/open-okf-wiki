@@ -1,4 +1,4 @@
-import { link, lstat, mkdir, open, readFile, realpath, rm, rmdir, symlink, writeFile } from "node:fs/promises";
+import { cp, link, lstat, mkdir, open, readFile, realpath, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parseEnv } from "node:util";
 import YAML from "yaml";
@@ -7,11 +7,13 @@ import { git, repositoryRoot, type GitResult } from "./git.js";
 import { errorMessage } from "./failures.js";
 import { isWikiSourceDirectoryName } from "./path.js";
 import { parseDatabaseConfig, type WikiDatabaseConfig } from "./catalog.js";
+import { packagedTemplatesRoot } from "./templates.js";
 
 const WORKSPACE_FILE = "workspace.yaml";
 const WORKSPACE_ENV_FILE = ".env";
 const WORKSPACE_LOCK_FILE = ".okf-wiki-workspace.lock";
-const RESERVED_WORKSPACE_DIRECTORIES = new Set(["wiki", ".okf-wiki"]);
+export const WORKSPACE_TEMPLATES_DIRECTORY = "wiki-templates";
+const RESERVED_WORKSPACE_DIRECTORIES = new Set(["wiki", ".okf-wiki", WORKSPACE_TEMPLATES_DIRECTORY]);
 const WINDOWS_RESERVED_SOURCE_NAMES = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
 
 /** Applied to source discovery and source tools by default. Users add more with `wiki.exclude`. */
@@ -134,17 +136,23 @@ export function createWikiWorkspaceManagement(
       const existed = Boolean(await pathEntry(root));
       if (existed && !(await lstat(root)).isDirectory()) throw new Error(`Workspace path is not a directory: ${root}`);
       await mkdir(root, { recursive: true });
+      const language = request.language ?? "zh";
+      const templatesDir = path.join(root, WORKSPACE_TEMPLATES_DIRECTORY);
+      let copiedTemplates = false;
       try {
+        await seedWorkspaceTemplates(templatesDir, language);
+        copiedTemplates = true;
         await writeConfig(configPath, {
           version: 1,
           root,
           configPath,
-          language: request.language ?? "zh",
+          language,
           defaultSourceIgnores: request.defaultSourceIgnores ?? true,
-          wiki: { ...structuredClone(DEFAULT_WORKSPACE_WIKI_CONFIG), exclude },
+          wiki: { ...structuredClone(DEFAULT_WORKSPACE_WIKI_CONFIG), exclude, templates: WORKSPACE_TEMPLATES_DIRECTORY },
           sources: [],
         }, true);
       } catch (error) {
+        if (copiedTemplates) await rm(templatesDir, { recursive: true, force: true });
         if (!existed) await removeEmptyDirectory(root);
         throw error;
       }
@@ -455,6 +463,18 @@ function repositoryName(remoteUrl: string): string {
 
 function workspaceArgument(cwd: string, workspace: string | undefined): string {
   return path.resolve(cwd, workspace ?? ".");
+}
+
+async function seedWorkspaceTemplates(templatesDir: string, language: "zh" | "en"): Promise<void> {
+  if (await pathEntry(templatesDir)) throw new Error(`Wiki templates already exist: ${templatesDir}`);
+  const staged = `${templatesDir}.tmp-${process.pid}-${Math.random().toString(16).slice(2)}`;
+  await cp(packagedTemplatesRoot(language), staged, { recursive: true });
+  try {
+    await renamePath(staged, templatesDir);
+  } catch (error) {
+    await rm(staged, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 async function explicitWorkspace(cwd: string, workspace: string | undefined): Promise<ResolvedWikiWorkspace> {
