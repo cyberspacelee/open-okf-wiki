@@ -20,10 +20,13 @@ An optional Postgres Catalog is declared on the Workspace and retrieved
 on demand (`db_tables`, `db_describe`). Only Postgres. Read-only.
 
 SOP is `prompts/lead.md`. Named workers are `agents/*.md`. TypeScript does not
-encode research/write/review stages.
+encode research/write/review stages. The Lead session has `todo`, `subagent`,
+`publish`, optional Catalog tools, and read-only file tools. `write` / `edit`
+belong to the write agent.
 
 Workspace init and `/wiki source add` stay host commands. Pi TUI is the user's
-shell; Wiki does not ship a status overlay.
+shell; Wiki does not ship a status overlay. Print/json `/wiki` waits for the
+Run; TUI updates `setStatus("wiki")` while it runs.
 
 Decisions: [0001](docs/adr/0001-isolated-full-generation-runs.md),
 [0004](docs/adr/0004-durable-run-board.md),

@@ -51,16 +51,17 @@ export function createSubagentTool(runtime: SubagentRuntime): ToolDefinition<any
   return {
     name: "subagent",
     label: "Subagent",
-    description: "Run a named Wiki agent in an isolated session. Use tasks[] for parallel work.",
+    description:
+      "Run a named Wiki agent in an isolated session. Agents: survey (map a source), write (author wiki/ pages), review (read-only critique). Use tasks[] for parallel work.",
     parameters: Type.Object({
-      agent: Type.Optional(Type.String({ description: "Agent name from agents/*.md" })),
+      agent: Type.Optional(Type.String({ description: "survey, write, or review" })),
       task: Type.Optional(Type.String({ description: "Assignment for a single agent" })),
       tasks: Type.Optional(Type.Array(Type.Object({
-        agent: Type.String(),
+        agent: Type.String({ description: "survey, write, or review" }),
         task: Type.String(),
       }))),
     }),
-    async execute(_id, params, signal) {
+    async execute(_id, params, signal, onUpdate) {
       const input = params as { agent?: string; task?: string; tasks?: SubagentTask[] };
       const tasks = input.tasks?.length
         ? input.tasks
@@ -70,6 +71,10 @@ export function createSubagentTool(runtime: SubagentRuntime): ToolDefinition<any
       if (!tasks.length) {
         return { content: [{ type: "text", text: "Provide agent+task or tasks[]" }], isError: true };
       }
+      await onUpdate?.({
+        content: [{ type: "text", text: tasks.map((task) => `running ${task.agent}`).join("\n") }],
+        details: { tasks: tasks.map((task) => ({ ...task, status: "running" })) },
+      });
       const results = await runtime.run(tasks, signal ?? new AbortController().signal);
       return {
         content: [{ type: "text", text: results.map(formatResult).join("\n\n") }],

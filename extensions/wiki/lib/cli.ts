@@ -1,4 +1,4 @@
-import type { WikiRunView } from "./producer-types.js";
+import type { WikiRunStatus, WikiRunView } from "./producer-types.js";
 
 const LOCAL_DATE_TIME = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -20,6 +20,14 @@ export type WikiCliCommand =
   | { action: "pause" }
   | { action: "resume"; runId?: string }
   | { action: "cancel"; runId?: string };
+
+export function selectWikiRun<T extends { id: string; status: WikiRunStatus }>(
+  runs: readonly T[],
+  runId?: string,
+): T | undefined {
+  if (runId) return runs.find((run) => run.id === runId);
+  return runs.find((run) => run.status === "running" || run.status === "paused") ?? runs[0];
+}
 
 export function parseWikiCliCommand(raw: string): WikiCliCommand {
   const values = tokenize(raw);

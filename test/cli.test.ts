@@ -5,6 +5,7 @@ import {
   renderWikiRun,
   renderWikiSnapshot,
   renderWikiRuns,
+  selectWikiRun,
   wikiCliHelp,
 } from "../extensions/wiki/lib/cli.js";
 
@@ -80,6 +81,18 @@ test("status snapshots state their freshness", () => {
     dateStyle: "medium", timeStyle: "medium",
   }).format(Date.parse("2026-08-12T00:01:02.000Z"));
   assert.ok(rendered.endsWith(`snapshot as of ${expected}`));
+});
+
+test("selects live run then latest when no id is given", () => {
+  const succeeded = { id: "old", status: "succeeded" };
+  const running = { id: "live", status: "running" };
+  const paused = { id: "hold", status: "paused" };
+  assert.equal(selectWikiRun([]), undefined);
+  assert.equal(selectWikiRun([succeeded])?.id, "old");
+  assert.equal(selectWikiRun([succeeded, running])?.id, "live");
+  assert.equal(selectWikiRun([succeeded, paused])?.id, "hold");
+  assert.equal(selectWikiRun([succeeded, running], "old")?.id, "old");
+  assert.equal(selectWikiRun([succeeded], "missing"), undefined);
 });
 
 test("help lists management and run commands", () => {

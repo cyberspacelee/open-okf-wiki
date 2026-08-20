@@ -36,7 +36,7 @@ export async function runWikiSession(
 ): Promise<string> {
   const settings = SettingsManager.inMemory({
     compaction: { enabled: true },
-    retry: { enabled: true, maxRetries: 1, provider: { maxRetries: 1 } },
+    retry: { enabled: true, maxRetries: 3, provider: { maxRetries: 3 } },
   });
   const loader = new DefaultResourceLoader({
     cwd,

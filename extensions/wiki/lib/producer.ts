@@ -32,6 +32,8 @@ import type {
 } from "./producer-types.js";
 import { WikiRunResultError } from "./producer-types.js";
 
+const LEAD_CANDIDATE_TOOLS = ["read", "grep", "find", "ls"] as const;
+
 export interface WikiProducerOptions {
   runLead?: (context: WikiLeadContext) => Promise<void>;
   session?: RunWikiSessionOptions;
@@ -213,7 +215,7 @@ function defaultRunLead(
       context.catalog,
     );
     const tools: ToolDefinition<any, any, any>[] = [
-      ...candidateTools(writeGuardFromPlan(context.plan, context.candidateRoot)),
+      ...candidateTools(writeGuardFromPlan(context.plan, context.candidateRoot), LEAD_CANDIDATE_TOOLS),
       createTodoTool(context.board),
       ...(context.catalog ? createCatalogTools(context.catalog) : []),
       createSubagentTool(runtime),
@@ -391,6 +393,7 @@ async function leadPrompt(context: WikiLeadContext): Promise<string> {
   const body = await readFile(fileURLToPath(new URL("../../../prompts/lead.md", import.meta.url)), "utf8");
   const sources = context.plan.sources.map((source) => `- ${source.scopeId}: ${source.logicalPath}`).join("\n");
   const focus = context.focus ? `\nFocus: ${context.focus}\n` : "";
+  const agents = "Available agents: survey (map a source), write (author wiki/ pages), review (read-only critique).\nYou have no write/edit. Pages are written only by subagent agent=write.\nCall find/ls/read/grep on the source directory names below (they may be symlinks). Do not search `.` or paths outside the workspace.\n";
   const board = formatBoard(await context.board.read());
   const catalog = context.catalog
     ? `\nCatalog: Postgres schema \`${context.catalog.config.schema}\`${
@@ -402,5 +405,5 @@ async function leadPrompt(context: WikiLeadContext): Promise<string> {
   const resume = context.resume
     ? "\nThis is a resumed Run. The Board is the source of truth. Do not restart completed Tasks. Read existing Candidate pages before writing.\n"
     : "";
-  return `${body}\n\n# This run\n\nLanguage: ${context.language}.${focus}${resume}\nPinned sources:\n${sources}\n${catalog}\n# Board\n\n${board}\n`;
+  return `${body}\n\n# This run\n\nLanguage: ${context.language}.${focus}${resume}${agents}\nPinned sources:\n${sources}\n${catalog}\n# Board\n\n${board}\n`;
 }

@@ -4,12 +4,13 @@ import {
   renderWikiRun,
   renderWikiRuns,
   renderWikiSnapshot,
+  selectWikiRun,
   wikiCliHelp,
   type WikiCliCommand,
 } from "./lib/cli.js";
 import { createProductionWikiProducer } from "./lib/producer.js";
-import type { WikiProducer, WikiRunHandle, WikiRunView } from "./lib/producer-types.js";
 import { errorMessage } from "./lib/failures.js";
+import { WikiRunResultError, type WikiProducer, type WikiRunHandle, type WikiRunView } from "./lib/producer-types.js";
 import { loadWikiWorkspace, wikiWorkspaceManagement, type ResolvedWikiWorkspace } from "./lib/workspace.js";
 
 export default function (pi: ExtensionAPI): void {
@@ -58,6 +59,16 @@ async function dispatch(
     const view = await handle.view();
     output(pi, context, renderWikiRun(view));
     setRunStatus(context, view);
+    if (!context.hasUI) {
+      try {
+        await handle.result();
+      } catch (error) {
+        if (!(error instanceof WikiRunResultError)) throw error;
+      }
+      output(pi, context, renderWikiRun(await handle.view()));
+      return;
+    }
+    watchRun(context, handle);
     return;
   }
   if (command.action === "runs") {
@@ -92,12 +103,30 @@ function setRunStatus(context: ExtensionCommandContext, view: WikiRunView): void
   context.ui.setStatus("wiki", label);
 }
 
+const STATUS_POLL_MS = 250;
+let statusTimer: ReturnType<typeof setInterval> | undefined;
+
+function watchRun(context: ExtensionCommandContext, handle: WikiRunHandle): void {
+  if (statusTimer) clearInterval(statusTimer);
+  statusTimer = setInterval(() => {
+    void handle.view().then((view) => {
+      setRunStatus(context, view);
+      if (view.status === "running") return;
+      if (statusTimer) clearInterval(statusTimer);
+      statusTimer = undefined;
+      context.ui.notify(renderWikiRun(view).split("\n")[0] ?? `wiki ${view.status}`, view.status === "succeeded" ? "info" : "error");
+    }, () => {
+      if (statusTimer) clearInterval(statusTimer);
+      statusTimer = undefined;
+    });
+  }, STATUS_POLL_MS);
+}
+
 async function selectedRun(producer: WikiProducer, cwd: string, runId?: string): Promise<WikiRunHandle | undefined> {
   if (runId) return await producer.open(runId, cwd);
-  const runs = await producer.list(cwd);
-  const live = runs.find((run) => run.status === "running" || run.status === "paused");
-  if (!live) return undefined;
-  return await producer.open(live.id, cwd);
+  const selected = selectWikiRun(await producer.list(cwd));
+  if (!selected) return undefined;
+  return await producer.open(selected.id, cwd);
 }
 
 async function dispatchWorkspace(

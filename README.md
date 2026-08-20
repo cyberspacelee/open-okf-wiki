@@ -8,6 +8,21 @@ pnpm install
 pi install .
 ```
 
+`/wiki` is a Pi slash command, not a `pi` subcommand. Flags like `--lang` belong
+inside the quoted command:
+
+```bash
+pi -e ./extensions/wiki/index.ts -p --mode json -a "/wiki init --lang zh"
+pi -e ./extensions/wiki/index.ts -p --mode json -a "/wiki source add link /path/to/repo --name repo"
+pi -e ./extensions/wiki/index.ts -p --mode json -a "/wiki"
+```
+
+Print/json mode waits until the Run finishes and prints the final status.
+Interactive TUI returns after start and updates the footer status.
+
+CLI contract (no LLM): `./scripts/e2e-wiki-cli.sh`  
+Live generation: `WIKI_E2E=1 ./scripts/e2e-wiki-live.sh`
+
 The host skill is declared in `package.json` (`pi.skills`) and loaded by
 `pi install`. It is not read from `.agents/`.
 

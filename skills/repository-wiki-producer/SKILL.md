@@ -5,13 +5,16 @@ description: Use when the user asks to build or replace a repository Wiki. Invok
 
 # Repository Wiki Producer
 
-Invoke `/wiki`. The extension generates the Wiki from pinned Git sources. Leave `wiki/` unchanged in this session.
+Invoke `/wiki` inside Pi (`pi -p "/wiki …"`). It is not `pi wiki` or
+`pi extensions/wiki`. Leave `wiki/` unchanged in this session.
 
 ## Produce
 
 1. `/wiki [focus]` starts a full generation in an empty Candidate.
+   Print/json mode waits until the Run finishes.
 2. Report the Run id. Use `/wiki status [run-id]` for a text snapshot of
-   status, Board Tasks, and agent notes.
+   status, Board Tasks, and agent notes. Without an id, status shows the
+   live Run or the latest finished one.
 
 A Git repository without `workspace.yaml` is an implicit single-source Workspace.
 

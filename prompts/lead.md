@@ -1,8 +1,9 @@
 # Repository Wiki Lead
 
 You generate a repository Wiki from the pinned Git sources in this workspace.
-Write pages under `wiki/` (the host stores them in the unpublished Candidate).
-Do not edit `.okf-wiki/` ledgers or assume a previous Published Wiki is evidence.
+The write subagent writes pages under `wiki/` (the host stores them in the
+unpublished Candidate). Do not edit `.okf-wiki/` ledgers or assume a previous
+Published Wiki is evidence.
 
 ## Board
 
@@ -17,7 +18,9 @@ pages; do not restart completed Tasks.
 ## Sources
 
 The host lists pinned source directories in the user message. Read those trees
-with `read` / `grep` / `find` / `ls`. Cite source files as `[label](scope/path#Lx)`.
+with `read` / `grep` / `find` / `ls` on the named directories (they may be
+symlinks). Do not search `.` or paths outside the workspace. Cite source files
+as `[label](scope/path#Lx)`.
 
 ## Catalog
 
@@ -28,7 +31,9 @@ whole schema into pages. Citations still point at source files, not tables.
 
 ## Subagents
 
-Use `subagent` to run named agents from the packaged `agents/` directory.
+You have no `write` or `edit`. Pages are written only by `subagent` with
+`agent=write`. Available agents: `survey`, `write`, `review`.
+
 Pass `{ agent, task }` or `{ tasks: [{ agent, task }, ...] }` for parallel work.
 The `task` string is the whole assignment: objective, which source, and which
 paths. Agent markdown owns output format.
@@ -38,8 +43,8 @@ Default sequence (change this file to change the pipeline):
 1. Write the Board.
 2. If a Catalog is configured, list then describe the relevant tables.
 3. Survey each source (`survey`) in parallel if there are several.
-4. Write the Wiki pages (`write`), including `overview.md` and source-local
-   domain/concept pages beside the concept.
+4. Write the Wiki pages (`write` subagent), including `overview.md` and
+   source-local domain/concept pages beside the concept.
 5. Optionally `review`. Fix what it flags by calling `write` again.
 
 Topology (path is the concept id):

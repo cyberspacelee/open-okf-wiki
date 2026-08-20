@@ -3,7 +3,7 @@ import { readdir } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { loadWikiAgents, packagedAgentsRoot, parseAgentMarkdown } from "../extensions/wiki/lib/agents.js";
-import { createSubagentRuntime } from "../extensions/wiki/lib/subagent.js";
+import { createSubagentRuntime, createSubagentTool } from "../extensions/wiki/lib/subagent.js";
 
 test("unknown agent names are reported in parseable agent files", () => {
   const parsed = parseAgentMarkdown("---\nname: survey\ndescription: Map a source\n---\nBody\n", "survey.md");
@@ -41,4 +41,20 @@ test("unknown subagent names return Unknown agent and list packaged agents", asy
   );
   assert.match(result.error, /Unknown agent "not-a-packaged-agent"/);
   assert.match(result.error, new RegExp(`Available: ${names.join(", ")}`));
+});
+
+test("subagent tool reports running tasks through onUpdate", async () => {
+  const updates = [];
+  const tool = createSubagentTool({
+    async run(tasks) {
+      return tasks.map((task) => ({ ...task, text: "ok" }));
+    },
+  });
+  const result = await tool.execute("call-1", { agent: "survey", task: "map tradingflow" }, new AbortController().signal, async (partial) => {
+    updates.push(partial);
+  });
+  assert.equal(updates.length, 1);
+  assert.match(String(updates[0].content[0].text), /running survey/);
+  assert.match(result.content[0].text, /## survey/);
+  assert.match(tool.description, /survey.*write.*review/s);
 });
