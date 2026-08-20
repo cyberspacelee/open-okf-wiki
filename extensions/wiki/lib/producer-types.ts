@@ -6,7 +6,7 @@ export type WikiRunControl = "pause" | "resume" | "cancel";
 
 export type WikiAgentStatus = "running" | "complete" | "failed";
 
-export type WikiToolStatus = "running" | "complete" | "failed";
+export type WikiToolStatus = WikiAgentStatus;
 
 export interface WikiProducerRequest {
   cwd: string;

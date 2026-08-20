@@ -39,8 +39,41 @@ export function wikiWidgetFactory(box: { view: WikiRunView; tui?: OverlayTui }) 
   };
 }
 
-export function wikiStatusLabel(view: WikiRunView): string {
-  return wikiFooterStatus(view);
+export function createLiveChrome(context: {
+  hasUI: boolean;
+  mode: string;
+  ui: Pick<ExtensionUIContext, "setStatus" | "setWidget">;
+}) {
+  const box = {} as { view: WikiRunView; tui?: OverlayTui };
+  let hung = false;
+  return {
+    set(view: WikiRunView) {
+      if (!context.hasUI) return;
+      context.ui.setStatus("wiki", wikiFooterStatus(view));
+      if (view.status !== "running") {
+        context.ui.setWidget("wiki", undefined);
+        hung = false;
+        return;
+      }
+      if (context.mode === "tui") {
+        box.view = view;
+        if (!hung) {
+          hung = true;
+          context.ui.setWidget("wiki", wikiWidgetFactory(box), { placement: "belowEditor" });
+          return;
+        }
+        box.tui?.requestRender();
+        return;
+      }
+      context.ui.setWidget("wiki", renderWikiLive(view), { placement: "belowEditor" });
+    },
+    clear() {
+      if (!context.hasUI) return;
+      context.ui.setStatus("wiki", undefined);
+      context.ui.setWidget("wiki", undefined);
+      hung = false;
+    },
+  };
 }
 
 export async function openWikiStatusOverlay(args: {
@@ -92,12 +125,12 @@ export function createWikiOverlay(args: {
   const clock = args.now ?? Date.now;
   let now = clock();
   const invalidate = () => { cached = undefined; };
-  const selected = () => agentsOf(view)[state.cursor];
+  const selected = () => (view.agents ?? [])[state.cursor];
 
   const unsubscribe = args.handle.subscribe((next) => {
     if (closed) return;
     view = next;
-    state = { ...state, cursor: clamp(state.cursor, 0, Math.max(0, agentsOf(view).length - 1)) };
+    state = { ...state, cursor: clamp(state.cursor, 0, Math.max(0, (view.agents ?? []).length - 1)) };
     now = clock();
     invalidate();
     args.tui.requestRender();
@@ -119,7 +152,7 @@ export function createWikiOverlay(args: {
   const finish = () => { cleanup(); args.done(); };
 
   const apply = (action: "up" | "down" | "pageUp" | "pageDown" | "forward" | "back" | "tail") => {
-    const max = Math.max(0, agentsOf(view).length - 1);
+    const max = Math.max(0, (view.agents ?? []).length - 1);
     if (action === "tail") {
       state = { ...state, fromBottom: TAIL };
     } else if (state.kind === "run") {
@@ -210,7 +243,6 @@ function renderBody(
   const notice = busy ? paint(theme, "accent", busy) : warning ? paint(theme, "warning", warning) : "";
   const nav = navigationLines(view, state.cursor, theme);
   if (state.kind === "run" && width >= WORKBENCH) {
-    const rightWidth = Math.max(1, width - NAV_WIDTH - visibleWidth(COLUMN_SEPARATOR));
     const right = selected ? processLines(selected, view, theme) : boardLines(view, theme);
     return { lines: [notice, ...columns(nav, right, width, rows - (notice ? 1 : 0), theme)].filter(Boolean) };
   }
@@ -221,7 +253,7 @@ function renderBody(
 }
 
 function navigationLines(view: WikiRunView, cursor: number, theme: ThemeLike): Array<{ text: string; selected: boolean }> {
-  return agentsOf(view).map((agent, index) => {
+  return (view.agents ?? []).map((agent, index) => {
     const selected = index === cursor;
     const current = agent.tools.find((tool) => tool.status === "running");
     const detail = current ? `  ${formatToolCall(current.tool, current.args)}` : agent.task ? `  ${agent.task}` : "";
@@ -298,15 +330,11 @@ function columns(
   const lines: string[] = [];
   for (let index = 0; index < rows; index += 1) {
     const nav = left[index];
-    const leftText = truncateToWidth(nav ? (nav.selected ? strong(theme, nav.text, "accent") : nav.text) : "", NAV_WIDTH, "…", true);
+    const leftText = truncateToWidth(nav?.text ?? "", NAV_WIDTH, "…", true);
     const rightText = truncateToWidth(right[index] ?? "", rightWidth);
     lines.push(`${leftText}${paint(theme, "border", COLUMN_SEPARATOR)}${rightText}`);
   }
   return lines;
-}
-
-function agentsOf(view: WikiRunView): WikiAgentView[] {
-  return view.agents ?? [];
 }
 
 function marker(status: WikiAgentView["status"] | WikiToolView["status"], theme: ThemeLike): string {

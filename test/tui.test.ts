@@ -141,6 +141,23 @@ test("p and x call control on the run page", async () => {
   assert.equal(closed(), true);
 });
 
+test("cancel confirmation can abort", async () => {
+  let asked = false;
+  const { component, handle: run, closed, dispose } = overlay(view(), {
+    confirmCancel: async () => {
+      asked = true;
+      return false;
+    },
+  });
+  try {
+    component.handleInput("x");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(asked, true);
+    assert.deepEqual(run.controls, []);
+    assert.equal(closed(), false);
+  } finally { dispose(); }
+});
+
 test("incoming subscribe updates re-render the overlay", () => {
   const { component, handle: run, renders, dispose } = overlay();
   try {

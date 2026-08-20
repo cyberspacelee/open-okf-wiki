@@ -1,7 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
   parseWikiCliCommand,
-  renderWikiLive,
   renderWikiRun,
   renderWikiRuns,
   renderWikiSnapshot,
@@ -12,28 +11,19 @@ import {
 import { createProductionWikiProducer } from "./lib/producer.js";
 import { errorMessage } from "./lib/failures.js";
 import { WikiRunResultError, type WikiProducer, type WikiRunHandle, type WikiRunView } from "./lib/producer-types.js";
-import { openWikiStatusOverlay, wikiStatusLabel, wikiWidgetFactory } from "./lib/tui.js";
+import { createLiveChrome, openWikiStatusOverlay } from "./lib/tui.js";
 import { loadWikiWorkspace, wikiWorkspaceManagement, type ResolvedWikiWorkspace } from "./lib/workspace.js";
 
-interface LiveSurface {
-  context: ExtensionCommandContext;
-  unsubscribe?: () => void;
-  box: { view: WikiRunView; tui?: { requestRender(force?: boolean): void } };
-  hung: boolean;
-}
-
-let liveSurface: LiveSurface | undefined;
+let chrome: ReturnType<typeof createLiveChrome> | undefined;
+let unsubscribe: (() => void) | undefined;
 
 export default function (pi: ExtensionAPI): void {
   let producer: WikiProducer | undefined;
 
   pi.on("session_shutdown", () => {
     stopWatch();
-    if (liveSurface) {
-      liveSurface.context.ui.setStatus("wiki", undefined);
-      liveSurface.context.ui.setWidget("wiki", undefined);
-      liveSurface = undefined;
-    }
+    chrome?.clear();
+    chrome = undefined;
   });
 
   pi.registerCommand("wiki", {
@@ -117,42 +107,24 @@ async function dispatch(
 
 function showSurface(context: ExtensionCommandContext, view: WikiRunView): void {
   if (!context.hasUI) return;
-  context.ui.setStatus("wiki", wikiStatusLabel(view));
-  if (view.status !== "running") {
-    context.ui.setWidget("wiki", undefined);
-    if (liveSurface?.context === context) liveSurface.hung = false;
-    return;
-  }
-  if (context.mode === "tui") {
-    const surface = liveSurface?.context === context ? liveSurface : { context, box: { view }, hung: false };
-    surface.box.view = view;
-    liveSurface = surface;
-    if (!surface.hung) {
-      surface.hung = true;
-      context.ui.setWidget("wiki", wikiWidgetFactory(surface.box), { placement: "belowEditor" });
-      return;
-    }
-    surface.box.tui?.requestRender();
-    return;
-  }
-  context.ui.setWidget("wiki", renderWikiLive(view), { placement: "belowEditor" });
+  chrome ??= createLiveChrome(context);
+  chrome.set(view);
 }
 
 function watchRun(context: ExtensionCommandContext, handle: WikiRunHandle): void {
   stopWatch();
-  const unsubscribe = handle.subscribe((view) => {
-    showSurface(context, view);
+  chrome ??= createLiveChrome(context);
+  unsubscribe = handle.subscribe((view) => {
+    chrome?.set(view);
     if (view.status === "running") return;
     stopWatch();
     context.ui.notify(renderWikiRun(view).split("\n")[0] ?? `wiki ${view.status}`, view.status === "succeeded" ? "info" : "error");
   });
-  if (liveSurface) liveSurface.unsubscribe = unsubscribe;
-  else liveSurface = { context, box: { view: { id: handle.id, cwd: context.cwd, status: "running", createdAt: "", updatedAt: "" } }, hung: false, unsubscribe };
 }
 
 function stopWatch(): void {
-  liveSurface?.unsubscribe?.();
-  if (liveSurface) liveSurface.unsubscribe = undefined;
+  unsubscribe?.();
+  unsubscribe = undefined;
 }
 
 async function selectedRun(producer: WikiProducer, cwd: string, runId?: string): Promise<WikiRunHandle | undefined> {
