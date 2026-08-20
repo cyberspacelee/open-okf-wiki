@@ -83,6 +83,10 @@ function overlay(current = view(), options = {}) {
   };
 }
 
+function plain(text) {
+  return text.replaceAll(/\u001b\[[0-9;]*m/g, "");
+}
+
 test("missing custom UI returns without reading the handle", async () => {
   let viewed = false;
   await openWikiStatusOverlay({
@@ -140,6 +144,29 @@ test("p and x call control on the run page", async () => {
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.deepEqual(run.controls, ["pause", "cancel"]);
   assert.equal(closed(), true);
+});
+
+test("pause and resume use distinct controls and are disabled in agent details", async () => {
+  const { component, handle: run, dispose } = overlay();
+  try {
+    component.handleInput("r");
+    component.handleInput("p");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(run.controls, ["pause"]);
+    component.handleInput("p");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(run.controls, ["pause"]);
+    component.handleInput("r");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(run.controls, ["pause", "resume"]);
+
+    component.handleInput("tui.select.confirm");
+    component.handleInput("p");
+    component.handleInput("r");
+    component.handleInput("x");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(run.controls, ["pause", "resume"]);
+  } finally { dispose(); }
 });
 
 test("cancel confirmation can abort", async () => {
@@ -203,6 +230,82 @@ test("ANSI and Chinese content keep every overlay border aligned", () => {
       assert.ok(rendered.some((line) => line.includes("\u001b[")));
       assert.ok(rendered.every((line) => visibleWidth(line) === width), `misaligned frame at width ${width}`);
     }
+  } finally { dispose(); }
+});
+
+test("overlay uses semantic chrome and a visible selected row", () => {
+  const calls = [];
+  const ansi = (text) => `\u001b[36m${text}\u001b[0m`;
+  const theme = {
+    fg(color, text) { calls.push({ method: "fg", color, text }); return ansi(text); },
+    bg(color, text) { calls.push({ method: "bg", color, text }); return ansi(text); },
+    bold(text) { calls.push({ method: "bold", text }); return ansi(text); },
+  };
+  const { component, dispose } = overlay(view(), { theme });
+  try {
+    const rendered = component.render(120);
+    const text = plain(rendered.join("\n"));
+    assert.match(plain(rendered[0]), /^╭.*Wiki run-1.*running.*╮$/);
+    assert.match(plain(rendered.at(-1)), /^╰.*select.*open.*╯$/i);
+    assert.match(text, /Agents\s+2.*Board\s+0\/1/s);
+    assert.match(text, /> .*lead/);
+    assert.ok(calls.some((call) => call.method === "bg" && call.color === "selectedBg"));
+    assert.ok(calls.some((call) => call.method === "fg" && call.color === "borderMuted"));
+    assert.doesNotMatch(plain(component.render(99).join("\n")), / │ /);
+    assert.match(plain(component.render(100).join("\n")), / │ /);
+  } finally { dispose(); }
+});
+
+test("small viewports keep the selected agent visible and open that agent", () => {
+  const agents = Array.from({ length: 18 }, (_, index) => ({
+    agent: `agent-${index}`,
+    task: `task ${index}`,
+    status: "running",
+    tools: [],
+  }));
+  const { component, tui, dispose } = overlay(view({ agents }));
+  tui.terminal.rows = 12;
+  try {
+    for (let index = 0; index < 14; index += 1) component.handleInput("j");
+    const runPage = plain(component.render(60).join("\n"));
+    assert.match(runPage, /> .*agent-14/);
+    component.handleInput("tui.select.confirm");
+    assert.match(plain(component.render(60).join("\n")), /Process.*agent-14/s);
+  } finally { dispose(); }
+});
+
+test("terminal height changes keep a complete fixed-height frame", () => {
+  const { component, tui, dispose } = overlay();
+  try {
+    for (const [rows, expected] of [[12, 10], [24, 21], [30, 26]]) {
+      tui.terminal.rows = rows;
+      const rendered = component.render(80);
+      assert.equal(rendered.length, expected);
+      assert.match(plain(rendered[0]), /^╭.*╮$/);
+      assert.match(plain(rendered.at(-1)), /^╰.*╯$/);
+    }
+  } finally { dispose(); }
+});
+
+test("agent details keep the top on updates, follow the tail, and return to top with g", () => {
+  const tools = Array.from({ length: 30 }, (_, index) => ({
+    id: `t${index}`, tool: "read", args: { path: `src/${index}.ts` }, status: "complete",
+  }));
+  const current = view({ agents: [{ agent: "write", status: "running", tools }] });
+  const { component, handle: run, dispose } = overlay(current);
+  try {
+    component.handleInput("tui.select.confirm");
+    assert.match(plain(component.render(60).join("\n")), /src\/0\.ts/);
+    run.emit(view({ agents: [{ agent: "write", status: "running", tools: [...tools, { id: "new", tool: "grep", args: { pattern: "Newest" }, status: "running" }] }] }));
+    assert.match(plain(component.render(60).join("\n")), /src\/0\.ts/);
+    component.handleInput("t");
+    assert.match(plain(component.render(60).join("\n")), /grep \/Newest\//);
+    component.handleInput("tui.select.down");
+    assert.match(plain(component.render(60).join("\n")), /grep \/Newest\//);
+    component.handleInput("g");
+    const top = plain(component.render(60).join("\n"));
+    assert.match(top, /src\/0\.ts/);
+    assert.doesNotMatch(top, /grep \/Newest\//);
   } finally { dispose(); }
 });
 
