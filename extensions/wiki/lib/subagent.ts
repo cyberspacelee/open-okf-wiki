@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { Type } from "typebox";
@@ -11,19 +11,26 @@ import { candidateTools, createCatalogTools } from "./pi/tools.js";
 import { runWikiSession, type RunWikiSessionOptions } from "./pi/session.js";
 import type { WikiCatalog } from "./catalog.js";
 import type { WikiToolView } from "./producer-types.js";
-import { formatWikiTemplatesForPrompt, type WikiTemplatePack } from "./templates.js";
+import { formatWikiTemplateCatalog, formatWikiTemplatesForPrompt, type WikiTemplatePack } from "./templates.js";
+import { candidateRevision, fileRevision } from "./revisions.js";
+import type { WikiAgentUsage } from "./producer-types.js";
 
 export interface SubagentTask {
   agent: string;
   task: string;
+  boardTaskId: string;
+  partition: string;
 }
 
-export interface SubagentResult {
+export interface SubagentResult extends SubagentTask {
   id: string;
   agent: string;
   task: string;
   text: string;
   handoff?: string;
+  handoffRevision?: string;
+  candidateRevision?: string;
+  usage?: WikiAgentUsage;
   error?: string;
 }
 
@@ -32,7 +39,17 @@ export interface SubagentRuntime {
 }
 
 export type SubagentTaskStatus = "running" | "complete" | "failed";
-export type SubagentTaskListener = (id: string, agent: string, task: string, status: SubagentTaskStatus) => void;
+export interface SubagentTaskUpdate extends SubagentTask {
+  id: string;
+  status: SubagentTaskStatus;
+  handoff?: string;
+  handoffRevision?: string;
+  candidateRevision?: string;
+  usage?: WikiAgentUsage;
+  text?: string;
+  error?: string;
+}
+export type SubagentTaskListener = (update: SubagentTaskUpdate) => void | Promise<void>;
 
 export async function createSubagentRuntime(
   plan: WikiPinnedSourcePlan,
@@ -46,42 +63,66 @@ export async function createSubagentRuntime(
   const agents = await loadWikiAgents(agentsDirectory);
   const byName = new Map(agents.map((agent) => [agent.name, agent]));
   const guard = writeGuardFromPlan(plan, candidateRoot);
+  await mkdir(guard.candidateRoot, { recursive: true });
+  let activeSharedBatches = 0;
+  let exclusiveBatch = false;
   return {
     async run(tasks, signal, onUpdate) {
       if (!tasks.length) throw new Error("subagent requires at least one task");
-      const jobs = tasks.map((task) => ({ ...task, id: executionId(task.agent) }));
-      const live = new Map(jobs.map((task) => [task.id, { ...task, status: "running" as SubagentTaskStatus, tools: [] as WikiToolView[] }]));
-      const report = async () => {
-        const snapshot = [...live.values()];
-        await onUpdate?.({
-          content: [{ type: "text", text: snapshot.map((task) => `${task.status} ${task.agent}`).join("\n") }],
-          details: { tasks: snapshot },
+      assertSafeBatch(tasks);
+      const release = acquireBatch(tasks);
+      try {
+        const maxConcurrency = options.maxConcurrency ?? tasks.length;
+        if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
+          throw new Error("subagent maxConcurrency must be a positive integer");
+        }
+        const jobs = tasks.map((task) => ({ ...task, id: executionId(task.agent) }));
+        const live = new Map(jobs.map((task) => [task.id, { ...task, status: "running" as SubagentTaskStatus, tools: [] as WikiToolView[] }]));
+        const report = async () => {
+          const snapshot = [...live.values()];
+          await onUpdate?.({
+            content: [{ type: "text", text: snapshot.map((task) => `${task.status} ${task.agent}`).join("\n") }],
+            details: { tasks: snapshot },
+          });
+        };
+        for (const task of jobs) await onTask?.({ ...task, status: "running" });
+        await report();
+        return await mapWithConcurrency(jobs, maxConcurrency, async (task) => {
+          const result = await runOne(task, byName, guard, plan.fingerprint, {
+            ...session,
+            onActivity(event) {
+              const scoped = { ...event, scope: task.id };
+              session.onActivity?.(scoped);
+              applyChildTool(live.get(task.id)!.tools, scoped);
+              void report();
+            },
+          }, signal, catalog, options.templates);
+          const status = result.error ? "failed" : "complete";
+          const entry = live.get(result.id)!;
+          entry.status = status;
+          await onTask?.({ ...result, status });
+          await report();
+          return result;
         });
-      };
-      for (const task of jobs) onTask?.(task.id, task.agent, task.task, "running");
-      await report();
-      const maxConcurrency = options.maxConcurrency ?? tasks.length;
-      if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
-        throw new Error("subagent maxConcurrency must be a positive integer");
+      } finally {
+        release();
       }
-      const results = await mapWithConcurrency(jobs, maxConcurrency, async (task) => await runOne(task, byName, guard, {
-        ...session,
-        onActivity(event) {
-          const scoped = { ...event, scope: task.id };
-          session.onActivity?.(scoped);
-          applyChildTool(live.get(task.id)!.tools, scoped);
-          void report();
-        },
-      }, signal, catalog, options.templates));
-      for (const result of results) {
-        const entry = live.get(result.id)!;
-        entry.status = result.error ? "failed" : "complete";
-        onTask?.(result.id, result.agent, result.task, entry.status);
-      }
-      await report();
-      return results;
     },
   };
+
+  function acquireBatch(tasks: readonly SubagentTask[]): () => void {
+    const shared = tasks.every((task) => task.agent === "survey");
+    if (shared) {
+      if (exclusiveBatch) throw new Error("survey cannot start while write or review is running");
+      activeSharedBatches += 1;
+      return () => { activeSharedBatches -= 1; };
+    }
+    if (exclusiveBatch || activeSharedBatches > 0) {
+      throw new Error("write and review require exclusive subagent execution");
+    }
+    exclusiveBatch = true;
+    return () => { exclusiveBatch = false; };
+  }
 }
 
 async function mapWithConcurrency<T, R>(
@@ -98,7 +139,9 @@ async function mapWithConcurrency<T, R>(
       results[index] = await run(values[index]!);
     }
   };
-  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, worker));
+  const settled = await Promise.allSettled(Array.from({ length: Math.min(concurrency, values.length) }, worker));
+  const failed = settled.find((result) => result.status === "rejected");
+  if (failed?.status === "rejected") throw failed.reason;
   return results;
 }
 
@@ -111,17 +154,21 @@ export function createSubagentTool(runtime: SubagentRuntime): ToolDefinition<any
     parameters: Type.Object({
       agent: Type.Optional(Type.String({ description: "survey, write, or review" })),
       task: Type.Optional(Type.String({ description: "Assignment for a single agent" })),
+      boardTaskId: Type.Optional(Type.String({ description: "Existing in-progress Board Task id" })),
+      partition: Type.Optional(Type.String({ description: "Stable Source id or candidate partition" })),
       tasks: Type.Optional(Type.Array(Type.Object({
         agent: Type.String({ description: "survey, write, or review" }),
         task: Type.String(),
+        boardTaskId: Type.String(),
+        partition: Type.String(),
       }))),
     }),
     async execute(_id, params, signal, onUpdate) {
-      const input = params as { agent?: string; task?: string; tasks?: SubagentTask[] };
+      const input = params as { agent?: string; task?: string; boardTaskId?: string; partition?: string; tasks?: SubagentTask[] };
       const tasks = input.tasks?.length
         ? input.tasks
-        : input.agent && input.task
-          ? [{ agent: input.agent, task: input.task }]
+        : input.agent && input.task && input.boardTaskId && input.partition
+          ? [{ agent: input.agent, task: input.task, boardTaskId: input.boardTaskId, partition: input.partition }]
           : [];
       if (!tasks.length) {
         return { content: [{ type: "text", text: "Provide agent+task or tasks[]" }], isError: true };
@@ -139,6 +186,7 @@ async function runOne(
   task: SubagentTask & { id: string },
   byName: Map<string, WikiAgentDefinition>,
   guard: WikiWriteGuard,
+  sourceFingerprint: string,
   session: RunWikiSessionOptions,
   signal: AbortSignal,
   catalog?: WikiCatalog,
@@ -150,22 +198,46 @@ async function runOne(
     return { ...task, text: "", error: `Unknown agent "${task.agent}". Available: ${available}` };
   }
   try {
+    const base = task.agent === "survey"
+      ? { digest: "not-applicable" }
+      : await candidateRevision(guard.candidateRoot);
+    const touched = new Set<string>();
     const extra = catalog ? createCatalogTools(catalog) : [];
     const allowed = definition.tools ? new Set(definition.tools) : undefined;
     const tools = [
       ...candidateTools(guard, definition.tools),
       ...extra.filter((tool) => !allowed || allowed.has(tool.name)),
     ];
-    const pack = templates ? `\n\n${formatWikiTemplatesForPrompt(templates)}` : "";
-    const text = await runWikiSession(
+    const pack = templates
+      ? `\n\n${task.agent === "write" ? formatWikiTemplatesForPrompt(templates) : formatWikiTemplateCatalog(templates)}`
+      : "";
+    const result = await runWikiSession(
       guard.workspaceRoot,
       tools,
       `${definition.prompt}${pack}\n\n# Task\n\n${task.task}`,
       signal,
-      session,
+      {
+        ...session,
+        onActivity(event) {
+          session.onActivity?.(event);
+          if ((event.tool === "write" || event.tool === "edit") && event.args && typeof event.args === "object") {
+            const location = (event.args as Record<string, unknown>).path;
+            if (typeof location === "string") touched.add(location);
+          }
+        },
+        onCompaction: () => formatWorkerCheckpoint(task, sourceFingerprint, base.digest, touched),
+      },
     );
-    const handoff = await writeHandoff(guard, task, text);
-    return { ...task, text, handoff };
+    const completed = task.agent === "survey" ? undefined : await candidateRevision(guard.candidateRoot);
+    const handoff = await writeHandoff(guard, task, result.text, base.digest, completed?.digest);
+    return {
+      ...task,
+      text: result.text,
+      handoff,
+      handoffRevision: await fileRevision(path.join(guard.workspaceRoot, ...handoff.split("/"))),
+      ...(completed ? { candidateRevision: completed.digest } : {}),
+      ...(result.usage ? { usage: result.usage } : {}),
+    };
   } catch (error) {
     return { ...task, text: "", error: error instanceof Error ? error.message : String(error) };
   }
@@ -173,12 +245,23 @@ async function runOne(
 
 async function writeHandoff(
   guard: WikiWriteGuard,
-  task: { id: string; agent: string; task: string },
+  task: SubagentTask & { id: string },
   text: string,
+  baseCandidateRevision: string,
+  completedCandidateRevision?: string,
 ): Promise<string> {
   await mkdir(guard.handoffsRoot, { recursive: true });
   const location = path.join(guard.handoffsRoot, `${task.id}.md`);
-  const body = `# ${task.agent} handoff\n\nTask: ${task.task}\n\n${text.trim()}\n`;
+  const metadata = {
+    executionId: task.id,
+    boardTaskId: task.boardTaskId,
+    partition: task.partition,
+    agent: task.agent,
+    taskDigest: createHash("sha256").update(task.task).digest("hex"),
+    baseCandidateRevision,
+    ...(completedCandidateRevision ? { completedCandidateRevision } : {}),
+  };
+  const body = `<!-- wiki-handoff ${JSON.stringify(metadata)} -->\n# ${task.agent} handoff\n\nTask: ${task.task}\n\n<!-- wiki-handoff-body -->\n${text.trim()}\n`;
   await writeText(location, body);
   return path.relative(guard.workspaceRoot, location).replaceAll("\\", "/");
 }
@@ -198,6 +281,77 @@ function formatResult(result: SubagentResult): string {
 
 function executionId(agent: string): string {
   return `${agent}-${randomUUID().slice(0, 8)}`;
+}
+
+function assertSafeBatch(tasks: readonly SubagentTask[]): void {
+  if (tasks.length > 16) throw new Error("subagent batch exceeds the 16-partition recovery limit");
+  if (tasks.some((task) => typeof task.boardTaskId !== "string" || !task.boardTaskId.trim()
+    || typeof task.partition !== "string" || !task.partition.trim())) {
+    throw new Error("subagent tasks require boardTaskId and partition");
+  }
+  if (tasks.some((task) => estimateTokens(task.task) > 3_000)) {
+    throw new Error("subagent assignment exceeds the 3000-token recovery budget; pass artifact paths instead of pasted content");
+  }
+  const roles = new Set(tasks.map((task) => task.agent));
+  const partitions = new Set<string>();
+  for (const task of tasks) {
+    const key = `${task.boardTaskId}\0${task.partition}`;
+    if (partitions.has(key)) throw new Error(`duplicate subagent partition: ${task.boardTaskId}/${task.partition}`);
+    partitions.add(key);
+  }
+  if (roles.has("write") && tasks.length > 1) throw new Error("write must run alone");
+  if (roles.has("review") && tasks.length > 1) throw new Error("review must run alone");
+  if (roles.size > 1) throw new Error("subagent batches must contain one agent role");
+}
+
+function formatWorkerCheckpoint(
+  task: SubagentTask & { id: string },
+  sourceFingerprint: string,
+  baseCandidateRevision: string,
+  touched: ReadonlySet<string>,
+): string {
+  const instruction = task.agent === "survey"
+    ? "Continue this exact Source survey. Reopen load-bearing Source locators before finalizing the handoff."
+    : task.agent === "review"
+      ? "Continue read-only review of the frozen Candidate revision. Reopen load-bearing Source locators before the verdict."
+      : "Continue this exact write assignment. Inspect current Candidate files and referenced handoffs before changing them.";
+  const lines = [
+    "<wiki_checkpoint>",
+    `Execution: ${task.id}`,
+    `Role: ${task.agent}`,
+    `Board Task: ${task.boardTaskId}`,
+    `Partition: ${task.partition}`,
+    `Source fingerprint: ${sourceFingerprint}`,
+    `Base Candidate: ${baseCandidateRevision}`,
+    `Assignment: ${task.task}`,
+  ];
+  if (estimateTokens([...lines, instruction, "</wiki_checkpoint>"].join("\n")) > 4_096) {
+    throw new Error("context_checkpoint_too_large: worker assignment exceeds 4096 estimated tokens");
+  }
+  const changed = [...touched].sort();
+  if (changed.length) {
+    lines.push("Touched Candidate paths:");
+    let included = 0;
+    for (const location of changed) {
+      const next = `- ${location}`;
+      if (estimateTokens([...lines, next, instruction, "</wiki_checkpoint>"].join("\n")) > 4_096) break;
+      lines.push(next);
+      included += 1;
+    }
+    if (included < changed.length) lines.push(`- ${changed.length - included} older paths omitted from this bounded frame`);
+  }
+  lines.push(instruction, "</wiki_checkpoint>");
+  return lines.join("\n");
+}
+
+function estimateTokens(text: string): number {
+  let ascii = 0;
+  let nonAscii = 0;
+  for (const character of text) {
+    if (character.charCodeAt(0) < 128) ascii += 1;
+    else nonAscii += 1;
+  }
+  return Math.ceil(ascii / 4) + nonAscii;
 }
 
 function applyChildTool(tools: WikiToolView[], event: { id: string; tool: string; args: unknown; status: WikiToolView["status"] }): void {

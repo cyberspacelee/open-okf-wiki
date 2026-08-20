@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -6,6 +7,9 @@ import test from "node:test";
 import { git } from "../extensions/wiki/lib/git.js";
 import { writeText } from "../extensions/wiki/lib/files.js";
 import { createProductionWikiProducer } from "../extensions/wiki/lib/producer.js";
+import type { WikiLeadContext } from "../extensions/wiki/lib/producer.js";
+import { candidateRevision, fileRevision } from "../extensions/wiki/lib/revisions.js";
+import { inspectWiki } from "../extensions/wiki/lib/inspect.js";
 import { loadWikiTemplatePack, packagedTemplatesRoot } from "../extensions/wiki/lib/templates.js";
 
 function mermaidStub(kind: string): string {
@@ -56,10 +60,37 @@ async function writeValidCandidate(candidateRoot: string, sourceId = "source") {
   }
 }
 
-async function writeReviewPass(candidateRoot: string) {
-  const handoffs = path.join(path.dirname(candidateRoot), "handoffs");
+async function writeReviewPass(context: WikiLeadContext) {
+  const current = await context.board.read();
+  await context.board.write({
+    goal: current.goal,
+    tasks: [
+      ...current.tasks
+        .filter((task) => task.id !== "review-test")
+        .map((task) => ({ ...task, status: task.status === "in_progress" ? "completed" as const : task.status })),
+      { id: "review-test", content: "Review current Candidate", status: "in_progress" },
+    ],
+  });
+  const assignment = {
+    id: "review-test",
+    agent: "review",
+    task: "Review current Candidate",
+    boardTaskId: "review-test",
+    partition: "candidate",
+  };
+  await context.record({ ...assignment, status: "running" });
+  const handoffs = path.join(path.dirname(context.candidateRoot), "handoffs");
   await mkdir(handoffs, { recursive: true });
-  await writeText(path.join(handoffs, "review-test.md"), "verdict: pass\n");
+  const handoff = path.join(handoffs, "review-test.md");
+  await writeText(handoff, "verdict: pass\n");
+  await context.record({
+    ...assignment,
+    status: "complete",
+    text: "verdict: pass\n",
+    handoff: path.relative(context.plan.workspaceRoot, handoff).replaceAll("\\", "/"),
+    handoffRevision: await fileRevision(handoff),
+    candidateRevision: (await candidateRevision(context.candidateRoot)).digest,
+  });
 }
 
 async function gitRepo(t) {
@@ -79,7 +110,7 @@ test("publish installs a valid Candidate as wiki/", async (t) => {
   const producer = createProductionWikiProducer({
     async runLead(context) {
       await writeValidCandidate(context.candidateRoot);
-      await writeReviewPass(context.candidateRoot);
+      await writeReviewPass(context);
       const published = await context.publish();
       assert.equal(published.ok, true, published.message);
     },
@@ -121,7 +152,7 @@ test("resume continues the same Candidate and Board", async (t) => {
       assert.equal(board.tasks[1]?.status, "in_progress");
       assert.match(await readFile(path.join(context.candidateRoot, "overview.md"), "utf8"), /# Overview/);
       await writeValidCandidate(context.candidateRoot);
-      await writeReviewPass(context.candidateRoot);
+      await writeReviewPass(context);
       const published = await context.publish();
       assert.equal(published.ok, true, published.message);
     },
@@ -135,6 +166,145 @@ test("resume continues the same Candidate and Board", async (t) => {
   assert.ok(result.pages.includes("overview.md"));
   assert.equal((await handle.view()).status, "succeeded");
   assert.equal((await handle.view()).goal, "Auth wiki");
+});
+
+test("resume turns an unacknowledged execution into retryable durable state", async (t) => {
+  const root = await gitRepo(t);
+  let leads = 0;
+  const producer = createProductionWikiProducer({
+    async runLead(context) {
+      leads += 1;
+      if (leads === 1) {
+        await context.board.write({
+          goal: "Recover survey",
+          tasks: [{ id: "survey", content: "Survey source", status: "in_progress" }],
+        });
+        await context.record({
+          id: "survey-lost",
+          agent: "survey",
+          task: "Survey source",
+          boardTaskId: "survey",
+          partition: "source",
+          status: "running",
+        });
+        return;
+      }
+      const board = await context.board.read();
+      assert.equal(board.tasks.find((task) => task.id === "survey")?.status, "pending");
+      const record = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", handle.id, "run.json"), "utf8"));
+      assert.equal(record.executions[0].status, "interrupted");
+      await writeValidCandidate(context.candidateRoot);
+      await writeReviewPass(context);
+      assert.equal((await context.publish()).ok, true);
+    },
+  });
+  const handle = await producer.start({ cwd: root });
+  await assert.rejects(() => handle.result(), /running|failed/);
+  await handle.control("resume");
+  await handle.result();
+  assert.equal(leads, 2);
+});
+
+test("resume adopts an exact handoff written before the terminal receipt", async (t) => {
+  const root = await gitRepo(t);
+  let leads = 0;
+  let handle;
+  const producer = createProductionWikiProducer({
+    async runLead(context) {
+      leads += 1;
+      if (leads === 1) {
+        await context.board.write({
+          goal: "Adopt survey",
+          tasks: [{ id: "survey", content: "Survey source", status: "in_progress" }],
+        });
+        const task = "Survey source";
+        await context.record({
+          id: "survey-adopt",
+          agent: "survey",
+          task,
+          boardTaskId: "survey",
+          partition: "source",
+          status: "running",
+        });
+        const metadata = {
+          executionId: "survey-adopt",
+          boardTaskId: "survey",
+          partition: "source",
+          agent: "survey",
+          taskDigest: createHash("sha256").update(task).digest("hex"),
+          baseCandidateRevision: (await candidateRevision(context.candidateRoot)).digest,
+        };
+        const location = path.join(path.dirname(context.candidateRoot), "handoffs", "survey-adopt.md");
+        await mkdir(path.dirname(location), { recursive: true });
+        await writeText(location, `<!-- wiki-handoff ${JSON.stringify(metadata)} -->\n# survey handoff\n\ncomplete\n`);
+        return;
+      }
+      assert.equal((await context.board.read()).tasks[0]?.status, "completed");
+      const record = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", handle.id, "run.json"), "utf8"));
+      assert.equal(record.executions[0].status, "complete");
+      assert.match(record.executions[0].handoff.path, /survey-adopt\.md$/);
+      await writeValidCandidate(context.candidateRoot);
+      await writeReviewPass(context);
+      assert.equal((await context.publish()).ok, true);
+    },
+  });
+  handle = await producer.start({ cwd: root });
+  await assert.rejects(() => handle.result(), /running|failed/);
+  await handle.control("resume");
+  await handle.result();
+  assert.equal(leads, 2);
+});
+
+test("a reopened process-crash Run reconciles persisted running receipts", async (t) => {
+  const root = await gitRepo(t);
+  const plan = await inspectWiki(root);
+  const id = "crash001";
+  const directory = path.join(root, ".okf-wiki", "runs", id);
+  const candidateRoot = path.join(directory, "candidate");
+  await mkdir(candidateRoot, { recursive: true });
+  await writeText(path.join(directory, "board.json"), `${JSON.stringify({
+    goal: "Recover crash",
+    tasks: [{ id: "survey", content: "Survey source", status: "in_progress" }],
+  }, null, 2)}\n`);
+  const now = new Date().toISOString();
+  await writeText(path.join(directory, "run.json"), `${JSON.stringify({
+    schemaVersion: 2,
+    id,
+    cwd: root,
+    status: "running",
+    language: "zh",
+    objective: "Recover crash",
+    createdAt: now,
+    updatedAt: now,
+    candidateRoot,
+    fingerprint: plan.fingerprint,
+    executions: [{
+      id: "survey-crash",
+      boardTaskId: "survey",
+      partition: "source",
+      agent: "survey",
+      task: "Survey source",
+      taskDigest: createHash("sha256").update("Survey source").digest("hex"),
+      status: "running",
+      sourceFingerprint: plan.fingerprint,
+      startedAt: now,
+    }],
+  }, null, 2)}\n`);
+  const producer = createProductionWikiProducer({
+    async runLead(context) {
+      assert.equal((await context.board.read()).tasks[0]?.status, "pending");
+      const record = JSON.parse(await readFile(path.join(directory, "run.json"), "utf8"));
+      assert.equal(record.executions[0].status, "interrupted");
+      await writeValidCandidate(context.candidateRoot);
+      await writeReviewPass(context);
+      assert.equal((await context.publish()).ok, true);
+    },
+  });
+  const handle = await producer.open(id, root);
+  assert.ok(handle);
+  await handle.control("resume");
+  await handle.result();
+  assert.equal((await handle.view()).status, "succeeded");
 });
 
 test("start refuses a paused Run", async (t) => {
@@ -160,6 +330,36 @@ test("start refuses a paused Run", async (t) => {
   await assert.rejects(() => producer.start({ cwd: root }), /paused; use \/wiki resume/);
 });
 
+test("resume waits for the paused Lead generation to finish", async (t) => {
+  const root = await gitRepo(t);
+  let calls = 0;
+  let oldFinished = false;
+  let announce;
+  const ready = new Promise((resolve) => { announce = resolve; });
+  const producer = createProductionWikiProducer({
+    async runLead(context) {
+      calls += 1;
+      if (calls === 1) {
+        announce();
+        await new Promise((resolve) => context.signal.addEventListener("abort", resolve, { once: true }));
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        oldFinished = true;
+        return;
+      }
+      assert.equal(oldFinished, true);
+      await writeValidCandidate(context.candidateRoot);
+      await writeReviewPass(context);
+      assert.equal((await context.publish()).ok, true);
+    },
+  });
+  const handle = await producer.start({ cwd: root });
+  await ready;
+  await handle.control("pause");
+  await handle.control("resume");
+  await handle.result();
+  assert.equal(calls, 2);
+});
+
 test("publish refuses a valid Candidate without a review pass", async (t) => {
   const root = await gitRepo(t);
   const producer = createProductionWikiProducer({
@@ -172,6 +372,110 @@ test("publish refuses a valid Candidate without a review pass", async (t) => {
   });
   const handle = await producer.start({ cwd: root });
   await assert.rejects(() => handle.result(), /Review is required|failed/);
+});
+
+test("publish rejects a review whose Candidate digest is stale", async (t) => {
+  const root = await gitRepo(t);
+  const producer = createProductionWikiProducer({
+    async runLead(context) {
+      await writeValidCandidate(context.candidateRoot);
+      await writeReviewPass(context);
+      await writeFile(path.join(context.candidateRoot, "overview.md"), `${await readFile(path.join(context.candidateRoot, "overview.md"), "utf8")}\nCurrent note.\n`);
+      const published = await context.publish();
+      assert.equal(published.ok, false);
+      assert.match(published.message, /stale/);
+    },
+  });
+  const handle = await producer.start({ cwd: root });
+  await assert.rejects(() => handle.result(), /stale|failed/);
+});
+
+test("candidate_check and publish share deterministic diagnostics", async (t) => {
+  const root = await gitRepo(t);
+  const producer = createProductionWikiProducer({
+    async runLead(context) {
+      await writeText(path.join(context.candidateRoot, "overview.md"), "# Overview\n");
+      const checked = await context.check();
+      const published = await context.publish();
+      assert.equal(checked.ok, false);
+      assert.equal(published.ok, false);
+      assert.match(checked.message, /frontmatter|type/);
+      assert.match(published.message, /frontmatter|type/);
+    },
+  });
+  const handle = await producer.start({ cwd: root });
+  await assert.rejects(() => handle.result(), /frontmatter|type|failed/);
+});
+
+test("Lead prompt receives a bounded recovery frame without template skeletons", async (t) => {
+  const root = await gitRepo(t);
+  let prompt = "";
+  let tools = [];
+  const producer = createProductionWikiProducer({
+    session: {
+      async createSession(options) {
+        tools = options.customTools.map((tool) => tool.name);
+        return {
+          session: {
+            sessionFile: undefined,
+            subscribe() { return () => {}; },
+            async prompt(value) { prompt = value; },
+            async waitForIdle() {},
+            getLastAssistantText() { return ""; },
+            dispose() {},
+            abort() {},
+          },
+          modelFallbackMessage: undefined,
+        };
+      },
+    },
+  });
+  const handle = await producer.start({ cwd: root, focus: "runtime" });
+  await assert.rejects(() => handle.result());
+  assert.match(prompt, /<wiki_checkpoint>/);
+  assert.match(prompt, /Goal: runtime/);
+  assert.doesNotMatch(prompt, /Skeleton:|Page template catalog/);
+  assert.ok(tools.includes("candidate_check"));
+  assert.equal(tools.includes("db_tables"), false);
+});
+
+test("parallel terminal receipts persist only after both handoffs are attested", async (t) => {
+  const root = await gitRepo(t);
+  const producer = createProductionWikiProducer({
+    async runLead(context) {
+      await context.board.write({
+        goal: "Survey both partitions",
+        tasks: [{ id: "survey", content: "Survey partitions", status: "in_progress" }],
+      });
+      const assignments = ["a", "b"].map((partition) => ({
+        id: `survey-${partition}`,
+        agent: "survey",
+        task: `Survey ${partition}`,
+        boardTaskId: "survey",
+        partition,
+      }));
+      for (const assignment of assignments) await context.record({ ...assignment, status: "running" });
+      const handoffs = path.join(path.dirname(context.candidateRoot), "handoffs");
+      await mkdir(handoffs, { recursive: true });
+      await Promise.all(assignments.map(async (assignment) => {
+        const location = path.join(handoffs, `${assignment.id}.md`);
+        await writeText(location, `${assignment.partition}\n`);
+        await context.record({
+          ...assignment,
+          status: "complete",
+          text: assignment.partition,
+          handoff: path.relative(root, location).replaceAll("\\", "/"),
+          handoffRevision: await fileRevision(location),
+        });
+      }));
+      const record = JSON.parse(await readFile(path.join(path.dirname(context.candidateRoot), "run.json"), "utf8"));
+      assert.equal(record.executions.every((entry) => entry.status === "complete" && entry.handoff?.sha256), true);
+      await writeValidCandidate(context.candidateRoot);
+      await writeReviewPass(context);
+      assert.equal((await context.publish()).ok, true);
+    },
+  });
+  await (await producer.start({ cwd: root })).result();
 });
 
 test("publish refuses a single overview page", async (t) => {
@@ -216,7 +520,7 @@ test("live view puts nested tools on the named agent and notifies subscribers", 
       context.observe({ scope: "survey-a", id: "s1", tool: "grep", args: { pattern: "Order" }, status: "complete" });
       context.observe({ scope: "survey-b", id: "s2", tool: "ls", args: { path: "frontend" }, status: "running" });
       await writeValidCandidate(context.candidateRoot);
-      await writeReviewPass(context.candidateRoot);
+      await writeReviewPass(context);
       const published = await context.publish();
       assert.equal(published.ok, true);
     },
@@ -237,10 +541,8 @@ test("live view puts nested tools on the named agent and notifies subscribers", 
   assert.equal(surveys[0].tools[0].status, "complete");
   assert.equal(surveys[1].tools[0].tool, "ls");
   const record = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", handle.id, "run.json"), "utf8"));
-  assert.equal(record.agents.length, 2);
-  assert.equal(record.agents[0].agent, "survey");
-  assert.notEqual(record.agents[0].id, record.agents[1].id);
-  assert.equal(record.agents[0].tools, undefined);
+  assert.ok(Array.isArray(record.executions));
+  assert.equal(record.executions.some((entry) => entry.tools), false);
 });
 
 test("board writes notify subscribers and tool tails stay capped", async (t) => {
@@ -259,7 +561,7 @@ test("board writes notify subscribers and tool tails stay capped", async (t) => 
       }
       context.observe({ id: "live", tool: "grep", args: { pattern: "x" }, status: "running" });
       await writeValidCandidate(context.candidateRoot);
-      await writeReviewPass(context.candidateRoot);
+      await writeReviewPass(context);
       assert.equal((await context.publish()).ok, true);
     },
   });
@@ -288,7 +590,7 @@ test("unsubscribe stops live view delivery", async (t) => {
       contextReady(context);
       await hold;
       await writeValidCandidate(context.candidateRoot);
-      await writeReviewPass(context.candidateRoot);
+      await writeReviewPass(context);
       assert.equal((await context.publish()).ok, true);
     },
   });

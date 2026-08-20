@@ -35,3 +35,8 @@ The host checks templates, topology, headings, placeholders, metadata, source
 locators, links, and diagram kinds. Do not repeat that lint unless it reveals a
 semantic defect. Prefer `pass` when every page adds grounded, task-relevant
 knowledge. Candidate writes after a pass make the review stale.
+
+For every requested change, give a compact repair record with: Candidate page,
+section or claim, defect, supporting or contradicting source locator, and an
+acceptance criterion. Reopen the load-bearing source locator; do not accept a
+claim merely because its citation path exists.

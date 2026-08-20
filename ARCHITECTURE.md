@@ -4,16 +4,18 @@ Canonical language lives in [CONTEXT.md](CONTEXT.md).
 
 The Pi factory is `extensions/wiki/index.ts`. `createProductionWikiProducer()`
 in `extensions/wiki/lib/` starts one Run: pin Sources, empty Candidate, Lead
-session with `todo` / `subagent` / optional Catalog tools, then OKF validation
-and rename to `wiki/`.
+session with `todo` / `subagent` / `candidate_check`, then OKF validation,
+digest-bound review, and rename to `wiki/`. Catalog tools belong to workers,
+not the Lead.
 
 ```text
 Inspect → empty Candidate + Board → Lead (survey / write / review) → publish (OKF + review)
 ```
 
-`/wiki resume` re-enters that Lead on the same Candidate. Compaction and
-process restart re-read `.okf-wiki/runs/<id>/board.json`; the transcript is
-not the source of truth. The Lead session file lives under
+`/wiki resume` re-enters that Lead on the same Candidate. The durable recovery
+frame is derived from `board.json`, versioned execution receipts in `run.json`,
+Candidate content, and hashed handoffs. Compaction injects that bounded frame
+as an immediate follow-up; the transcript is not the source of truth. The Lead session file lives under
 `.okf-wiki/runs/<id>/sessions/` when present.
 
 An optional Postgres Catalog is declared on the Workspace and retrieved
@@ -22,11 +24,14 @@ on demand (`db_tables`, `db_describe`). Only Postgres. Read-only.
 SOP is `prompts/lead.md`. Named workers are `agents/*.md`. Page kinds come
 from `wiki-templates/` after init (or packaged `templates/zh` /
 `templates/en`). Every scope has one anchor; optional templates are selected
-from survey evidence. `instructions` is writer-only and the body H1/H2 skeleton
-is mechanically validated. `type` is Title Case; filenames stay kebab-case. TypeScript does not encode
-research/write/review stages. The Lead session has `todo`, `subagent`,
-`publish`, optional Catalog tools, and read-only file tools. `write` / `edit`
-belong to the write agent.
+from survey evidence. Survey and review receive a compact template catalog;
+only the writer receives full H1/H2 skeletons. Structure is mechanically
+validated. `type` is Title Case; filenames stay kebab-case. TypeScript does not
+encode research/write/review stages. It does enforce execution receipts,
+single-writer/reviewer exclusivity, Candidate validation, review freshness,
+and publication. The Lead session has `todo`, `subagent`, `candidate_check`,
+`publish`, and read-only Candidate tools. `write` / `edit` belong to the write
+agent.
 
 Workspace init and `/wiki source add` stay host commands. Pi TUI is the user's
 shell. Print/json `/wiki` waits for the Run. TUI updates `setStatus("wiki")`

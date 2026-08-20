@@ -26,9 +26,15 @@ export interface RunWikiSessionOptions {
   maxToolCalls?: number;
   transientRetries?: number;
   baseRetryDelayMs?: number;
-  onSessionReady?: (sessionFile: string | undefined) => void;
-  onCompaction?: () => string | Promise<string>;
+  onSessionReady?: (sessionFile: string | undefined) => void | Promise<void>;
+  /** Must be synchronous so the recovery frame is queued before Pi checks for follow-up work. */
+  onCompaction?: () => string;
   onActivity?: (event: WikiSessionActivity) => void;
+}
+
+export interface RunWikiSessionResult {
+  text: string;
+  usage?: WikiAgentUsage;
 }
 
 export async function runWikiSession(
@@ -37,7 +43,7 @@ export async function runWikiSession(
   prompt: string,
   signal: AbortSignal,
   options: RunWikiSessionOptions = {},
-): Promise<string> {
+): Promise<RunWikiSessionResult> {
   const settings = SettingsManager.inMemory({
     compaction: { enabled: true },
     retry: {
@@ -64,6 +70,9 @@ export async function runWikiSession(
     : SessionManager.create(cwd, options.sessionDir);
   let session: AgentSession | undefined;
   let toolCalls = 0;
+  let compactions = 0;
+  let compactionDelivery = Promise.resolve();
+  let compactionDeliveryError: unknown;
   const guarded = tools.map((tool) => {
     const execute = tool.execute;
     return {
@@ -85,14 +94,14 @@ export async function runWikiSession(
     noTools: "builtin",
     tools: guarded.map((tool) => tool.name),
     customTools: guarded,
-    ...(!options.sessionFile ? { model: options.model, thinkingLevel: options.thinkingLevel } : {}),
+    ...(!resumeFile ? { model: options.model, thinkingLevel: options.thinkingLevel } : {}),
   });
   session = created.session;
   if (created.modelFallbackMessage) {
     session.dispose();
     throw new Error(`Could not restore the persisted Wiki model: ${created.modelFallbackMessage}`);
   }
-  options.onSessionReady?.(session.sessionFile);
+  await options.onSessionReady?.(session.sessionFile);
   if (options.onActivity || options.onCompaction) {
     const onActivity = options.onActivity;
     const onCompaction = options.onCompaction;
@@ -121,14 +130,23 @@ export async function runWikiSession(
           ...(stats ? { usage: stats } : {}),
         });
       }
-      if (!onCompaction || event.type !== "compaction_end" || event.aborted) return;
-      void Promise.resolve(onCompaction()).then((text) => {
+      if (!onCompaction || event.type !== "compaction_end" || event.aborted || !event.result) return;
+      compactions += 1;
+      try {
+        const text = onCompaction();
         if (!text || !session) return;
-        return session.sendCustomMessage(
-          { customType: "wiki-board", content: text, display: false },
-          { deliverAs: "nextTurn" },
-        );
-      });
+        const delivery = session.sendCustomMessage(
+          { customType: "wiki-checkpoint", content: text, display: false },
+          { deliverAs: "followUp" },
+        ).catch((error) => {
+          compactionDeliveryError = error;
+          void session?.abort();
+        });
+        compactionDelivery = Promise.all([compactionDelivery, delivery]).then(() => undefined);
+      } catch (error) {
+        compactionDeliveryError = error;
+        void session?.abort();
+      }
     });
   }
   const abort = () => {
@@ -147,7 +165,13 @@ export async function runWikiSession(
     });
     await Promise.race([session.prompt(prompt), deadline]);
     await Promise.race([session.waitForIdle(), deadline]);
-    return session.getLastAssistantText() ?? "";
+    await compactionDelivery;
+    if (compactionDeliveryError) throw compactionDeliveryError;
+    const usage = readSessionUsage(session, compactions);
+    return {
+      text: session.getLastAssistantText() ?? "",
+      ...(usage ? { usage } : {}),
+    };
   } finally {
     if (timer) clearTimeout(timer);
     signal.removeEventListener("abort", abort);
@@ -155,7 +179,7 @@ export async function runWikiSession(
   }
 }
 
-function readSessionUsage(session: AgentSession | undefined): WikiAgentUsage | undefined {
+function readSessionUsage(session: AgentSession | undefined, compactions = 0): WikiAgentUsage | undefined {
   if (typeof session?.getSessionStats !== "function") return undefined;
   const stats = session.getSessionStats();
   const context = stats.contextUsage ?? (typeof session.getContextUsage === "function" ? session.getContextUsage() : undefined);
@@ -163,6 +187,10 @@ function readSessionUsage(session: AgentSession | undefined): WikiAgentUsage | u
     input: stats.tokens.input,
     output: stats.tokens.output,
     total: stats.tokens.total,
+    cacheRead: stats.tokens.cacheRead,
+    cacheWrite: stats.tokens.cacheWrite,
+    cost: stats.cost,
+    compactions,
     turns: stats.assistantMessages,
     toolCalls: stats.toolCalls,
   };

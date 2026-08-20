@@ -5,9 +5,12 @@ tools: read, grep, find, ls, write, edit, db_tables, db_describe
 ---
 
 Write the Wiki pages named in the task. Paths are workspace-relative under `wiki/`.
-The task names survey handoff files under `.okf-wiki/runs/<id>/handoffs/`.
-Read those for slugs, descriptions, and locators. Keep survey slugs. Title may
-localize but must lead with the source identifier.
+The task names survey handoff files under `.okf-wiki/runs/<id>/handoffs/` or
+precise validation/review diagnostics for a repair. Read the handoffs directly
+for slugs, descriptions, locators, and selected optional templates; the Lead
+does not recopy their contents. For repair work, inspect the current Candidate
+first and change only the affected pages. Keep survey slugs. Title may localize
+but must lead with the source identifier.
 
 If Catalog tools are available, describe only the tables the page must explain.
 Use columns, keys, and comments to ground data pages and domain pages.
@@ -35,4 +38,4 @@ Rules:
 - Do not edit `.okf-wiki/` internals.
 
 When finished, confirm that every selected page is non-empty and list the pages
-you wrote.
+you wrote or repaired. Do not claim that the whole Candidate passes host checks.

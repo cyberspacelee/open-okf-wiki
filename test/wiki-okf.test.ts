@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile, rm, stat, utimes } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { derivedIndexPaths, materializeWikiIndexes, stampPublication, validateWikiTree } from "../extensions/wiki/lib/wiki-okf.js";
+import { assertReviewPass, derivedIndexPaths, materializeWikiIndexes, stampPublication, validateWikiTree } from "../extensions/wiki/lib/wiki-okf.js";
 import { loadWikiTemplatePack, packagedTemplatesRoot, type WikiTemplatePack } from "../extensions/wiki/lib/templates.js";
+import { candidateRevision, fileRevision } from "../extensions/wiki/lib/revisions.js";
 
 function packOf(...templates: Array<{
   file: string;
@@ -261,4 +262,45 @@ test("indexes include descriptions and stamp writes log.md without unverified ve
   assert.doesNotMatch(overview, /verified:/);
   const log = await readFile(path.join(root, "log.md"), "utf8");
   assert.match(log, /Published 1 pages/);
+});
+
+test("review freshness follows bytes rather than mtimes", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-review-digest-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  const candidate = path.join(root, "candidate");
+  const handoff = path.join(root, "review.md");
+  await mkdir(candidate, { recursive: true });
+  const page = path.join(candidate, "overview.md");
+  await writeFile(page, "one\n");
+  await writeFile(handoff, "verdict: pass\n");
+  const originalTime = await stat(page);
+  const attestation = {
+    verdict: "pass" as const,
+    candidateRevision: (await candidateRevision(candidate)).digest,
+    handoffPath: handoff,
+    handoffRevision: await fileRevision(handoff),
+  };
+  await utimes(page, new Date(), new Date());
+  assert.equal((await assertReviewPass(candidate, attestation)).ok, true);
+  await writeFile(page, "two\n");
+  await utimes(page, originalTime.atime, originalTime.mtime);
+  assert.match((await assertReviewPass(candidate, attestation)).message, /stale/);
+});
+
+test("review freshness fails closed when the attested handoff changes", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-review-handoff-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  const candidate = path.join(root, "candidate");
+  const handoff = path.join(root, "review.md");
+  await mkdir(candidate, { recursive: true });
+  await writeFile(path.join(candidate, "overview.md"), "one\n");
+  await writeFile(handoff, "verdict: pass\n");
+  const attestation = {
+    verdict: "pass" as const,
+    candidateRevision: (await candidateRevision(candidate)).digest,
+    handoffPath: handoff,
+    handoffRevision: await fileRevision(handoff),
+  };
+  await writeFile(handoff, "verdict: changes_requested\n");
+  assert.match((await assertReviewPass(candidate, attestation)).message, /handoff changed/);
 });

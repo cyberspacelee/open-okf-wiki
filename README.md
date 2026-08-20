@@ -101,18 +101,22 @@ test trees (`src/test/**`, `*Test.java`, and the usual `node_modules` /
 Add more with `wiki.exclude`. `/wiki init --no-default-ignores` turns the
 built-in list off.
 
-The concurrency limit applies to each `subagent` task batch while the Lead
-occupies one session slot. Retry and timeout values apply to both the Lead and
-delegated agents. Wiki sessions use these settings instead of project or user
-Pi retry settings. Unknown `wiki` fields are rejected so misspelled or removed
-configuration cannot be silently ignored.
+The concurrency limit applies to a parallel survey batch while the Lead
+occupies one session slot. Writers run serially and review is exclusive across
+concurrent `subagent` calls. Retry and timeout values apply to both the Lead
+and delegated agents. Wiki sessions use these settings instead of project or
+user Pi retry settings. Unknown `wiki` fields are rejected so misspelled or
+removed configuration cannot be silently ignored.
 
 ### Board
 
 Each Run keeps a host-owned Board in `.okf-wiki/runs/<id>/board.json`:
-the goal and Tasks. The Lead updates it with `todo`. Compaction re-injects
-the Board so remaining work survives a long context. `/wiki resume`
-continues the same Candidate, Board, and Lead session. `/wiki status` prints Task status and, in the TUI, opens an inspect overlay.
+the goal and Tasks. The Lead updates it with `todo`; `run.json` stores
+versioned execution receipts and digest-bound review evidence. Compaction
+injects a bounded recovery frame derived from those files, the Candidate, and
+hashed handoffs. `/wiki resume` reconciles interrupted receipts and continues
+the same Candidate, Board, and Lead session. `/wiki status` prints Task status
+and, in the TUI, opens an inspect overlay.
 
 ### Catalog
 

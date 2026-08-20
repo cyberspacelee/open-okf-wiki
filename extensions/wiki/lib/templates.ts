@@ -172,6 +172,25 @@ export function formatWikiTemplatesForPrompt(pack: WikiTemplatePack): string {
   return `${sections.join("\n")}\n`;
 }
 
+export function formatWikiTemplateCatalog(pack: WikiTemplatePack): string {
+  if (!pack.templates.length) return "";
+  const sections = [
+    "## Page template catalog",
+    "",
+    "Use this catalog for evidence-backed template selection and semantic review. The host validates paths and skeleton structure.",
+  ];
+  for (const template of pack.templates) {
+    const role = template.optional ? "optional" : "anchor";
+    const diagram = template.diagram?.length ? `; diagram ${template.diagram.join(" | ")}` : "";
+    sections.push(
+      "",
+      `- \`${template.file}\`: scope ${template.scope}; ${role}; type \`${template.type}\`${diagram}`,
+      `  ${template.instructions}`,
+    );
+  }
+  return `${sections.join("\n")}\n`;
+}
+
 function parseDiagram(filename: string, value: unknown): string[] | undefined {
   if (value === undefined) return undefined;
   const values = Array.isArray(value) ? value : [value];

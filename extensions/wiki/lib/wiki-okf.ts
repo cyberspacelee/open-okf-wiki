@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { mkdir, readdir, readFile, stat } from "node:fs/promises";
+import { mkdir, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { extractOkfSources, wikiLinkTargets, type SourceCitation } from "./citations.js";
 import { HOST_PAGE_KEYS } from "./templates.js";
@@ -9,6 +9,7 @@ import { parsePage, stringifyPage } from "./frontmatter.js";
 import { markdownStructure, sectionHasContent } from "./markdown-structure.js";
 import { isReservedWikiPagePath, isSafeWikiPagePath } from "./path.js";
 import { anchorTemplate, type WikiTemplate, type WikiTemplatePack, type WikiTemplateScope } from "./templates.js";
+import { candidateRevision, fileRevision } from "./revisions.js";
 
 export const GENERATED_BY = "open-okf-wiki/1.0.0";
 export const VERIFIED_BY = "process:open-okf-wiki-review";
@@ -232,33 +233,30 @@ function sourceFileLines(
   }
 }
 
-export async function assertReviewPass(candidateRoot: string, handoffsRoot: string): Promise<{ ok: boolean; message: string }> {
-  let names: string[] = [];
+export interface WikiReviewAttestation {
+  verdict: "pass" | "changes_requested";
+  candidateRevision: string;
+  handoffPath: string;
+  handoffRevision: string;
+}
+
+export async function assertReviewPass(
+  candidateRoot: string,
+  review?: WikiReviewAttestation,
+): Promise<{ ok: boolean; message: string }> {
+  if (!review || review.verdict !== "pass") return { ok: false, message: "Review is required before publish" };
+  const current = await candidateRevision(candidateRoot);
+  if (current.digest !== review.candidateRevision) {
+    return { ok: false, message: "Review is stale; Candidate content changed after the last pass" };
+  }
   try {
-    names = await readdir(handoffsRoot);
-  } catch {
-    return { ok: false, message: "Review is required before publish" };
-  }
-  let latest: { file: string; mtime: number } | undefined;
-  for (const name of names) {
-    if (!name.startsWith("review-") || !name.endsWith(".md")) continue;
-    const location = path.join(handoffsRoot, name);
-    const text = await readFile(location, "utf8");
-    if (!/^verdict:\s*pass\s*$/m.test(text)) continue;
-    const mtime = (await stat(location)).mtimeMs;
-    if (!latest || mtime > latest.mtime) latest = { file: name, mtime };
-  }
-  if (!latest) return { ok: false, message: "Review is required before publish" };
-  const tree = await scanWikiTree(candidateRoot);
-  for (const page of tree.markdown) {
-    const filename = page.split("/").at(-1) ?? "";
-    if (filename === "index.md" || filename === "log.md") continue;
-    const mtime = (await stat(path.join(candidateRoot, ...page.split("/")))).mtimeMs;
-    if (mtime > latest.mtime) {
-      return { ok: false, message: "Review is stale; Candidate pages changed after the last pass" };
+    if (await fileRevision(review.handoffPath) !== review.handoffRevision) {
+      return { ok: false, message: "Review handoff changed after attestation" };
     }
+  } catch {
+    return { ok: false, message: "Review handoff is missing" };
   }
-  return { ok: true, message: latest.file };
+  return { ok: true, message: path.basename(review.handoffPath) };
 }
 
 function wikiTargetExists(target: string, pages: readonly string[]): boolean {

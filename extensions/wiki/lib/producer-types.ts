@@ -17,6 +17,10 @@ export interface WikiAgentUsage {
   input: number;
   output: number;
   total: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  cost?: number;
+  compactions?: number;
   turns?: number;
   toolCalls?: number;
   contextTokens?: number;

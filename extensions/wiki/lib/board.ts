@@ -25,6 +25,7 @@ export interface WikiBoardStore {
 }
 
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const MAX_BOARD_RECOVERY_TOKENS = 1_500;
 
 export function emptyBoard(goal = "Generate a complete repository Wiki"): WikiBoard {
   return { goal, tasks: [] };
@@ -64,7 +65,11 @@ export function parseBoard(value: unknown): WikiBoard {
     return parsed;
   });
   if (inProgress > 1) throw new Error("Board may have at most one in_progress task");
-  return { goal: value.goal.trim(), tasks };
+  const board = { goal: value.goal.trim(), tasks };
+  if (estimateTokens(formatBoard(board)) > MAX_BOARD_RECOVERY_TOKENS) {
+    throw new Error("Board exceeds the 1500-token recovery budget; split detail into handoffs and keep Tasks concise");
+  }
+  return board;
 }
 
 export function replaceBoard(current: WikiBoard, patch: { goal?: string; tasks?: readonly Partial<WikiTask>[] }): WikiBoard {
@@ -138,4 +143,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isMissing(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT");
+}
+
+function estimateTokens(text: string): number {
+  let ascii = 0;
+  let nonAscii = 0;
+  for (const character of text) {
+    if (character.charCodeAt(0) < 128) ascii += 1;
+    else nonAscii += 1;
+  }
+  return Math.ceil(ascii / 4) + nonAscii;
 }

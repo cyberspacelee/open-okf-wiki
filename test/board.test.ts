@@ -47,3 +47,15 @@ test("board store survives a new reader on the same run directory", async (t) =>
   assert.equal(board.tasks[0]?.status, "in_progress");
   assert.match(await readFile(path.join(root, "board.json"), "utf8"), /Keep the goal/);
 });
+
+test("board rejects an oversized recovery frame before persistence", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-board-budget-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  const store = createBoardStore(root, emptyBoard("initial"));
+  await store.write(emptyBoard("initial"));
+  await assert.rejects(() => store.write({
+    goal: "large",
+    tasks: [{ id: "large", content: "界".repeat(1_600), status: "in_progress" }],
+  }), /1500-token recovery budget/);
+  assert.equal((await store.read()).goal, "initial");
+});

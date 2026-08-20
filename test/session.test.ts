@@ -24,7 +24,7 @@ test("session forwards tool start, update, and end to onActivity", async (t) => 
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-session-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));
   const events = [];
-  const text = await runWikiSession(root, [], "unused", new AbortController().signal, {
+  const result = await runWikiSession(root, [], "unused", new AbortController().signal, {
     sessionDir: path.join(root, "sessions"),
     async createSession() {
       return {
@@ -43,7 +43,7 @@ test("session forwards tool start, update, and end to onActivity", async (t) => 
       events.push(event);
     },
   });
-  assert.equal(text, "ok");
+  assert.equal(result.text, "ok");
   assert.deepEqual(events.map((event) => ({ id: event.id, tool: event.tool, status: event.status, args: event.args })), [
     { id: "call-1", tool: "read", status: "running", args: { path: "src/a.ts" } },
     { id: "call-1", tool: "read", status: "running", args: { path: "src/a.ts", offset: 1 } },
@@ -104,4 +104,67 @@ test("session applies workspace retry controls to Pi settings", async (t) => {
   });
   assert.deepEqual(retry, { enabled: true, maxRetries: 5, baseDelayMs: 750 });
   assert.equal(provider.maxRetries, 5);
+});
+
+test("compaction queues the cached checkpoint as an immediate follow-up", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-session-compaction-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  const deliveries = [];
+  const session = fakeSession([{ type: "compaction_end", aborted: false, result: {} }]);
+  session.sendCustomMessage = async (message, options) => {
+    deliveries.push({ message, options });
+  };
+  const result = await runWikiSession(root, [], "unused", new AbortController().signal, {
+    async createSession() {
+      return { session, modelFallbackMessage: undefined };
+    },
+    onCompaction() {
+      return "<wiki_checkpoint>durable</wiki_checkpoint>";
+    },
+  });
+  assert.equal(result.text, "ok");
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].options.deliverAs, "followUp");
+  assert.equal(deliveries[0].message.customType, "wiki-checkpoint");
+  assert.match(deliveries[0].message.content, /durable/);
+});
+
+test("failed compaction does not queue a recovery follow-up", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-session-compaction-failed-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  let deliveries = 0;
+  const session = fakeSession([{
+    type: "compaction_end",
+    aborted: false,
+    result: undefined,
+    willRetry: false,
+    errorMessage: "Auto-compaction failed",
+  }]);
+  session.sendCustomMessage = async () => { deliveries += 1; };
+  await runWikiSession(root, [], "unused", new AbortController().signal, {
+    async createSession() {
+      return { session, modelFallbackMessage: undefined };
+    },
+    onCompaction() {
+      return "<wiki_checkpoint>durable</wiki_checkpoint>";
+    },
+  });
+  assert.equal(deliveries, 0);
+});
+
+test("a missing resume file creates a fresh session with requested model settings", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-session-missing-resume-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  let created;
+  await runWikiSession(root, [], "unused", new AbortController().signal, {
+    sessionFile: path.join(root, "missing.jsonl"),
+    model: { provider: "test", id: "model" },
+    thinkingLevel: "high",
+    async createSession(options) {
+      created = options;
+      return { session: fakeSession([]), modelFallbackMessage: undefined };
+    },
+  });
+  assert.deepEqual(created.model, { provider: "test", id: "model" });
+  assert.equal(created.thinkingLevel, "high");
 });

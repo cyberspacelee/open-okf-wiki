@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { loadWikiAgents, packagedAgentsRoot, parseAgentMarkdown } from "../extensions/wiki/lib/agents.js";
 import { createSubagentRuntime, createSubagentTool } from "../extensions/wiki/lib/subagent.js";
+import { loadWikiTemplatePack, packagedTemplatesRoot } from "../extensions/wiki/lib/templates.js";
 
 test("unknown agent names are reported in parseable agent files", () => {
   const parsed = parseAgentMarkdown("---\nname: survey\ndescription: Map a source\n---\nBody\n", "survey.md");
@@ -37,7 +38,7 @@ test("unknown subagent names return Unknown agent and list packaged agents", asy
   );
 
   const [result] = await runtime.run(
-    [{ agent: "not-a-packaged-agent", task: "invent a page" }],
+    [{ agent: "not-a-packaged-agent", task: "invent a page", boardTaskId: "survey", partition: "unknown" }],
     new AbortController().signal,
   );
   assert.match(result.error, /Unknown agent "not-a-packaged-agent"/);
@@ -88,7 +89,7 @@ test("subagent child sessions tag activity with the execution id", async (t) => 
       },
     },
   );
-  await runtime.run([{ agent: "survey", task: "map source" }], new AbortController().signal);
+  await runtime.run([{ agent: "survey", task: "map source", boardTaskId: "survey", partition: "source" }], new AbortController().signal);
   assert.equal(events.length, 1);
   assert.match(events[0].scope, /^survey-/);
   assert.equal(events[0].tool, "grep");
@@ -145,7 +146,12 @@ test("subagent tool reports child tools through onUpdate", async (t) => {
     },
   );
   const tool = createSubagentTool(runtime);
-  const result = await tool.execute("call-1", { agent: "survey", task: "map tradingflow" }, new AbortController().signal, async (partial) => {
+  const result = await tool.execute("call-1", {
+    agent: "survey",
+    task: "map tradingflow",
+    boardTaskId: "survey",
+    partition: "tradingflow",
+  }, new AbortController().signal, async (partial) => {
     updates.push(partial);
   });
   assert.ok(updates.length >= 2);
@@ -204,7 +210,12 @@ test("subagent runtime bounds parallel sessions", async (t) => {
     { maxConcurrency: 2 },
   );
   await runtime.run(
-    Array.from({ length: 5 }, (_, index) => ({ agent: "survey", task: `map source ${index}` })),
+    Array.from({ length: 5 }, (_, index) => ({
+      agent: "survey",
+      task: `map source ${index}`,
+      boardTaskId: "survey",
+      partition: `source-${index}`,
+    })),
     new AbortController().signal,
   );
   assert.equal(peak, 2);
@@ -245,8 +256,8 @@ test("parallel survey tasks stay distinct in live updates", async (t) => {
   const tool = createSubagentTool(runtime);
   await tool.execute("call-1", {
     tasks: [
-      { agent: "survey", task: "map backend" },
-      { agent: "survey", task: "map frontend" },
+      { agent: "survey", task: "map backend", boardTaskId: "survey", partition: "backend" },
+      { agent: "survey", task: "map frontend", boardTaskId: "survey", partition: "frontend" },
     ],
   }, new AbortController().signal, async (partial) => {
     updates.push(partial);
@@ -257,4 +268,119 @@ test("parallel survey tasks stay distinct in live updates", async (t) => {
   assert.equal(live.details.tasks[1].agent, "survey");
   assert.notEqual(live.details.tasks[0].id, live.details.tasks[1].id);
   assert.deepEqual(live.details.tasks.map((task) => task.task).sort(), ["map backend", "map frontend"]);
+});
+
+test("subagent prompts project templates by role", async (t) => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-subagent-templates-"));
+  t.after(async () => await rm(workspaceRoot, { recursive: true, force: true }));
+  const prompts = [];
+  const runtime = await createSubagentRuntime(
+    {
+      workspaceRoot,
+      workspaceRealPath: workspaceRoot,
+      configPath: path.join(workspaceRoot, "workspace.yaml"),
+      defaultSourceIgnores: true,
+      excludes: [],
+      sources: [],
+      fingerprint: "test",
+    },
+    path.join(workspaceRoot, ".okf-wiki", "runs", "abcd", "candidate"),
+    {
+      async createSession() {
+        return {
+          session: {
+            sessionFile: undefined,
+            subscribe() { return () => {}; },
+            async prompt(value) { prompts.push(value); },
+            async waitForIdle() {},
+            getLastAssistantText() { return "verdict: pass"; },
+            dispose() {},
+            abort() {},
+          },
+          modelFallbackMessage: undefined,
+        };
+      },
+    },
+    undefined,
+    undefined,
+    undefined,
+    { templates: await loadWikiTemplatePack(packagedTemplatesRoot("en")) },
+  );
+  for (const agent of ["survey", "write", "review"]) {
+    await runtime.run([{
+      agent,
+      task: `${agent} candidate`,
+      boardTaskId: agent,
+      partition: "candidate",
+    }], new AbortController().signal);
+  }
+  assert.match(prompts[0], /Page template catalog/);
+  assert.doesNotMatch(prompts[0], /Skeleton/);
+  assert.match(prompts[1], /Skeleton/);
+  assert.match(prompts[2], /Page template catalog/);
+  assert.doesNotMatch(prompts[2], /Skeleton/);
+});
+
+test("subagent batches allow parallel survey only", async (t) => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-subagent-guards-"));
+  t.after(async () => await rm(workspaceRoot, { recursive: true, force: true }));
+  const runtime = await createSubagentRuntime({
+    workspaceRoot,
+    workspaceRealPath: workspaceRoot,
+    configPath: path.join(workspaceRoot, "workspace.yaml"),
+    defaultSourceIgnores: true,
+    excludes: [],
+    sources: [],
+    fingerprint: "test",
+  }, path.join(workspaceRoot, "candidate"), {});
+  await assert.rejects(() => runtime.run([
+    { agent: "write", task: "a", boardTaskId: "write", partition: "a" },
+    { agent: "write", task: "b", boardTaskId: "write", partition: "b" },
+  ], new AbortController().signal), /write must run alone/);
+  await assert.rejects(() => runtime.run([
+    { agent: "survey", task: "a", boardTaskId: "survey", partition: "a" },
+    { agent: "review", task: "b", boardTaskId: "survey", partition: "b" },
+  ], new AbortController().signal), /review must run alone|one agent role/);
+  await assert.rejects(() => runtime.run([
+    { agent: "survey", task: "a", boardTaskId: "survey", partition: "same" },
+    { agent: "survey", task: "b", boardTaskId: "survey", partition: "same" },
+  ], new AbortController().signal), /duplicate subagent partition/);
+
+  let release;
+  let announce;
+  const started = new Promise((resolve) => { announce = resolve; });
+  const held = new Promise((resolve) => { release = resolve; });
+  const exclusive = await createSubagentRuntime({
+    workspaceRoot,
+    workspaceRealPath: workspaceRoot,
+    configPath: path.join(workspaceRoot, "workspace.yaml"),
+    defaultSourceIgnores: true,
+    excludes: [],
+    sources: [],
+    fingerprint: "test",
+  }, path.join(workspaceRoot, "exclusive-candidate"), {
+    async createSession() {
+      return {
+        session: {
+          sessionFile: undefined,
+          subscribe() { return () => {}; },
+          async prompt() { announce(); await held; },
+          async waitForIdle() {},
+          getLastAssistantText() { return "done"; },
+          dispose() {},
+          abort() {},
+        },
+        modelFallbackMessage: undefined,
+      };
+    },
+  });
+  const writer = exclusive.run([
+    { agent: "write", task: "write", boardTaskId: "write", partition: "candidate" },
+  ], new AbortController().signal);
+  await started;
+  await assert.rejects(() => exclusive.run([
+    { agent: "review", task: "review", boardTaskId: "review", partition: "candidate" },
+  ], new AbortController().signal), /exclusive/);
+  release();
+  await writer;
 });
