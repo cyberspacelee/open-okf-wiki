@@ -67,6 +67,10 @@ language: zh
 defaultSourceIgnores: true
 wiki:
   exclude: []
+  maxConcurrentAgents: 3
+  transientRetries: 1
+  baseRetryDelayMs: 1000
+  sessionTimeoutSeconds: 1200
 database:
   url: ${DATABASE_URL}   # postgresql://USER:PASSWORD@HOST:PORT/DB
   schema: public
@@ -78,7 +82,10 @@ sources:
       localPath: /abs/path/to/backend
 ```
 
-`wiki` accepts only `exclude` (source globs). Unknown fields are rejected.
+`wiki.exclude` contains source globs. `maxConcurrentAgents` includes the Lead,
+so at most one fewer delegated agents run together. `transientRetries` and
+`baseRetryDelayMs` configure Pi's retry loop; `sessionTimeoutSeconds` applies
+to every Lead and delegated-agent session. Unknown fields are rejected.
 
 ### Board
 
@@ -92,8 +99,9 @@ continues the same Candidate, Board, and Lead session. `/wiki status` prints Tas
 Optional Postgres evidence. Username and password belong in the connection
 URL (`postgresql://USER:PASSWORD@HOST:PORT/DB`), not as separate yaml fields:
 
-```bash
-export DATABASE_URL='postgresql://wiki:secret@127.0.0.1:5432/app'
+```dotenv
+# .env in the Workspace root (keep this file out of Git)
+DATABASE_URL=postgresql://wiki:secret@127.0.0.1:5432/app
 ```
 
 `url` must be `postgresql://` (or `${ENV}` / `$ENV`). URL-encode special
@@ -101,8 +109,8 @@ characters in the password. `schema` defaults to `public`. Omit `tables` to
 allow every table in that schema; otherwise names are fuzzy-matched (`user`
 → `users`, `user_account`; `order%` → `orders`). Agents call `db_tables`
 then `db_describe`. The host never dumps the schema into the Lead prompt.
-Connections are read-only. Expand the URL in the environment; do not commit
-the expanded string.
+Connections are read-only. Variables already exported in the process take
+precedence over `.env`. Do not commit the expanded string or `.env`.
 
 A Catalog needs an explicit `workspace.yaml`. Implicit single-source
 workspaces have no database block.

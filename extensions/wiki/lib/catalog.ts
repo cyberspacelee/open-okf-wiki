@@ -53,14 +53,18 @@ const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const MAX_DESCRIBE_TABLES = 20;
 const MAX_LIST_TABLES = 200;
 
-export function parseDatabaseConfig(value: unknown, field = "database"): WikiDatabaseConfig {
+export function parseDatabaseConfig(
+  value: unknown,
+  field = "database",
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): WikiDatabaseConfig {
   if (!isRecord(value)) throw new Error(`workspace.yaml ${field} must be an object`);
   const unknown = Object.keys(value).filter((key) => !["url", "schema", "tables"].includes(key));
   if (unknown.length > 0) throw new Error(`workspace.yaml ${field} has unknown field: ${unknown[0]}`);
   if (typeof value.url !== "string" || !value.url.trim()) {
     throw new Error(`workspace.yaml ${field}.url must be a non-empty Postgres URL`);
   }
-  const url = expandEnv(value.url.trim(), `${field}.url`);
+  const url = expandEnv(value.url.trim(), `${field}.url`, env);
   if (!/^postgres(ql)?:\/\//i.test(url)) {
     throw new Error(`workspace.yaml ${field}.url must be a postgresql:// connection string`);
   }
@@ -281,10 +285,10 @@ function parsePatterns(value: unknown, field: string): string[] {
   return [...new Set(value.map((entry) => String(entry).trim()))];
 }
 
-function expandEnv(value: string, field: string): string {
+function expandEnv(value: string, field: string, env: Readonly<Record<string, string | undefined>>): string {
   return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (_match, braced, bare) => {
     const key = String(braced ?? bare);
-    const found = process.env[key];
+    const found = env[key];
     if (!found) throw new Error(`workspace.yaml ${field} references unset environment variable ${key}`);
     return found;
   });

@@ -74,3 +74,21 @@ test("session samples token usage on tool start and end", async (t) => {
   assert.deepEqual(events[0].usage, { input: 10, output: 4, total: 14 });
   assert.deepEqual(events[1].usage, { input: 10, output: 4, total: 14 });
 });
+
+test("session applies workspace retry controls to Pi settings", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-session-retry-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  let retry;
+  let provider;
+  await runWikiSession(root, [], "unused", new AbortController().signal, {
+    transientRetries: 5,
+    baseRetryDelayMs: 750,
+    async createSession(options) {
+      retry = options.settingsManager.getRetrySettings();
+      provider = options.settingsManager.getProviderRetrySettings();
+      return { session: fakeSession([]), modelFallbackMessage: undefined };
+    },
+  });
+  assert.deepEqual(retry, { enabled: true, maxRetries: 5, baseDelayMs: 750 });
+  assert.equal(provider.maxRetries, 5);
+});

@@ -155,3 +155,52 @@ test("subagent tool reports child tools through onUpdate", async (t) => {
   assert.match(result.content[0].text, /## survey/);
   assert.match(tool.description, /survey.*write.*review/s);
 });
+
+test("subagent runtime bounds parallel sessions", async (t) => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-subagent-concurrency-"));
+  t.after(async () => await rm(workspaceRoot, { recursive: true, force: true }));
+  let active = 0;
+  let peak = 0;
+  const runtime = await createSubagentRuntime(
+    {
+      workspaceRoot,
+      workspaceRealPath: workspaceRoot,
+      configPath: path.join(workspaceRoot, "workspace.yaml"),
+      defaultSourceIgnores: true,
+      excludes: [],
+      sources: [],
+      fingerprint: "test",
+    },
+    path.join(workspaceRoot, ".okf-wiki", "runs", "abcd", "candidate"),
+    {
+      async createSession() {
+        return {
+          session: {
+            sessionFile: undefined,
+            subscribe() { return () => {}; },
+            async prompt() {
+              active += 1;
+              peak = Math.max(peak, active);
+              await new Promise((resolve) => setTimeout(resolve, 10));
+              active -= 1;
+            },
+            async waitForIdle() {},
+            getLastAssistantText() { return "done"; },
+            dispose() {},
+            abort() {},
+          },
+          modelFallbackMessage: undefined,
+        };
+      },
+    },
+    undefined,
+    undefined,
+    undefined,
+    { maxConcurrency: 2 },
+  );
+  await runtime.run(
+    Array.from({ length: 5 }, (_, index) => ({ agent: "survey", task: `map source ${index}` })),
+    new AbortController().signal,
+  );
+  assert.equal(peak, 2);
+});

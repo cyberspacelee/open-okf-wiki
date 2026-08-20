@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   createWikiWorkspaceManagement,
   loadWikiWorkspace,
+  resolveWorkspaceDatabase,
   sourceIsIgnored,
   wikiWorkspaceManagement,
 } from "../extensions/wiki/lib/workspace.js";
@@ -43,7 +44,10 @@ test("loads a Git repository without workspace.yaml as an implicit self source",
   assert.equal(loaded.sources.length, 1);
   assert.equal(loaded.sources[0].path, ".");
   assert.equal(loaded.sources[0].realPath, root);
-  assert.deepEqual(loaded.wiki, { exclude: [] });
+  assert.deepEqual(loaded.wiki, {
+    exclude: [], maxConcurrentAgents: 3, transientRetries: 1,
+    baseRetryDelayMs: 1_000, sessionTimeoutSeconds: 1_200,
+  });
   assert.equal(sourceIsIgnored(loaded.sources[0], ".okf-wiki/runs/a/run.json", true), true);
   assert.equal(sourceIsIgnored(loaded.sources[0], "wiki/overview.md", true), true);
   assert.equal(sourceIsIgnored(loaded.sources[0], "src/index.ts", true), false);
@@ -61,7 +65,10 @@ test("initializes explicit workspace defaults and normalized Wiki excludes", asy
   assert.equal(workspace.root, path.join(parent, "docs"));
   assert.equal(workspace.language, "zh");
   assert.equal(workspace.defaultSourceIgnores, true);
-  assert.deepEqual(workspace.wiki, { exclude: ["generated/**", "private/**"] });
+  assert.deepEqual(workspace.wiki, {
+    exclude: ["generated/**", "private/**"], maxConcurrentAgents: 3, transientRetries: 1,
+    baseRetryDelayMs: 1_000, sessionTimeoutSeconds: 1_200,
+  });
   assert.deepEqual(workspace.sources, []);
   assert.match(await readFile(workspace.configPath, "utf8"), /language: zh/);
   await assert.rejects(wikiWorkspaceManagement.init({ cwd: parent, workspace: "docs" }), /already exists/);
@@ -105,7 +112,44 @@ test("loads an optional Postgres Catalog and keeps the raw URL", async () => {
   await assert.rejects(loadWikiWorkspace(root), /postgresql:\/\//);
 });
 
-test("wiki config only accepts exclude", async () => {
+test("loads a Postgres URL from the Workspace .env without overriding the process environment", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-workspace-env-"));
+  temporaryDirectories.push(parent);
+  const root = await repository(parent, "configured");
+  const variable = `WIKI_TEST_PG_FILE_${process.pid}`;
+  delete process.env[variable];
+  await writeFile(path.join(root, ".env"), `${variable}=postgresql://file:secret@localhost:5432/app\n`);
+  await writeFile(path.join(root, "workspace.yaml"), [
+    "version: 1", "language: zh", "defaultSourceIgnores: true", "wiki:",
+    "  exclude: []", "database:", `  url: \${${variable}}`, "sources: []", "",
+  ].join("\n"));
+  try {
+    const loaded = await loadWikiWorkspace(root);
+    assert.equal(loaded.database?.url, `\${${variable}}`);
+    assert.equal(process.env[variable], undefined);
+    assert.equal((await resolveWorkspaceDatabase(loaded.database, loaded.root)).url, "postgresql://file:secret@localhost:5432/app");
+
+    process.env[variable] = "postgresql://process:secret@localhost:5432/app";
+    assert.equal((await resolveWorkspaceDatabase(loaded.database, loaded.root)).url, "postgresql://process:secret@localhost:5432/app");
+  } finally {
+    delete process.env[variable];
+  }
+});
+
+test("ignores an invalid Workspace .env when no database is configured", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-unused-env-"));
+  temporaryDirectories.push(parent);
+  const root = await repository(parent, "configured");
+  await writeFile(path.join(root, ".env"), "INVALID ENV FILE\n");
+  await writeFile(path.join(root, "workspace.yaml"), [
+    "version: 1", "language: zh", "defaultSourceIgnores: true", "wiki:",
+    "  exclude: []", "sources: []", "",
+  ].join("\n"));
+  const loaded = await loadWikiWorkspace(root);
+  assert.equal(loaded.database, undefined);
+});
+
+test("wiki config accepts runtime controls and rejects removed controls", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-runtime-config-"));
   temporaryDirectories.push(parent);
   const root = await repository(parent, "configured");
@@ -116,13 +160,22 @@ test("wiki config only accepts exclude", async () => {
     "defaultSourceIgnores: true",
     "wiki:",
     "  exclude: [generated/**]",
+    "  maxConcurrentAgents: 6",
+    "  transientRetries: 4",
+    "  baseRetryDelayMs: 2500",
+    "  sessionTimeoutSeconds: 900",
     "sources: []",
     "",
   ].join("\n");
   await writeFile(configPath, validConfig);
   const loaded = await loadWikiWorkspace(root);
-  assert.deepEqual(loaded.wiki, { exclude: ["generated/**"] });
+  assert.deepEqual(loaded.wiki, {
+    exclude: ["generated/**"], maxConcurrentAgents: 6, transientRetries: 4,
+    baseRetryDelayMs: 2_500, sessionTimeoutSeconds: 900,
+  });
 
+  await writeFile(configPath, validConfig.replace("  maxConcurrentAgents: 6", "  maxConcurrentAgents: 1"));
+  await assert.rejects(loadWikiWorkspace(root), /maxConcurrentAgents.*2.*64/);
   await writeFile(configPath, validConfig.replace("  exclude: [generated/**]", "  exclude: []\n  maxDelegateBatches: 12"));
   await assert.rejects(loadWikiWorkspace(root), /unknown field/);
   await writeFile(configPath, validConfig.replace("  exclude: [generated/**]", "  unexpected: true"));

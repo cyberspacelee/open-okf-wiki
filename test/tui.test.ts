@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { createWikiOverlay, openWikiStatusOverlay, wikiWidgetFactory } from "../extensions/wiki/lib/tui.js";
 
 function view(overrides = {}) {
@@ -178,6 +179,29 @@ test("overlay lines fit the requested width", () => {
       for (const line of component.render(width)) {
         assert.ok([...line].length <= width + 20, `${width}: ${line.length} ${line}`);
       }
+    }
+  } finally { dispose(); }
+});
+
+test("ANSI and Chinese content keep every overlay border aligned", () => {
+  const ansi = (text) => `\u001b[36m${text}\u001b[0m`;
+  const current = view({
+    goal: "生成认证与订单领域文档",
+    agents: [{
+      agent: "write",
+      task: "编写".repeat(80),
+      status: "running",
+      tools: [{ id: "1", tool: "read", args: { path: `src/${"目录".repeat(80)}.ts` }, status: "running" }],
+    }],
+  });
+  const { component, dispose } = overlay(current, {
+    theme: { fg(_color, text) { return ansi(text); }, bold(text) { return ansi(text); } },
+  });
+  try {
+    for (const width of [36, 60, 100, 120]) {
+      const rendered = component.render(width);
+      assert.ok(rendered.some((line) => line.includes("\u001b[")));
+      assert.ok(rendered.every((line) => visibleWidth(line) === width), `misaligned frame at width ${width}`);
     }
   } finally { dispose(); }
 });

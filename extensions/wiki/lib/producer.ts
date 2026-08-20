@@ -7,7 +7,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { inspectWiki, verifyPinnedSourcePlan, type WikiPinnedSourcePlan } from "./inspect.js";
 import { exists, renamePath, writeText } from "./files.js";
 import { errorMessage } from "./failures.js";
-import { loadWikiWorkspace, resolveWorkspaceDatabase, type ResolvedWikiWorkspace } from "./workspace.js";
+import { loadWikiWorkspace, resolveWorkspaceDatabase, type ResolvedWikiWorkspace, type WikiWorkspaceWikiConfig } from "./workspace.js";
 import {
   formatIssue,
   materializeWikiIndexes,
@@ -164,7 +164,7 @@ function startLive(
       if (!flags.resume) await board.write(initial);
       else live.board = await board.read();
       const catalog = workspace.database
-        ? createPostgresCatalog(resolveWorkspaceDatabase(workspace.database))
+        ? createPostgresCatalog(await resolveWorkspaceDatabase(workspace.database, workspace.root))
         : undefined;
       const context: WikiLeadContext = {
         plan,
@@ -185,7 +185,7 @@ function startLive(
           observeTool(live, event);
         },
       };
-      const runLead = options.runLead ?? defaultRunLead(options, record);
+      const runLead = options.runLead ?? defaultRunLead(options, record, workspace.wiki);
       await runLead(context);
       if (live.record.status === "running") {
         const published = await publishCandidate(live, context.language);
@@ -206,10 +206,14 @@ function startLive(
 function defaultRunLead(
   options: WikiProducerOptions,
   record: RunRecord,
+  config: WikiWorkspaceWikiConfig,
 ): (context: WikiLeadContext) => Promise<void> {
   return async (context) => {
     const session: RunWikiSessionOptions = {
       ...options.session,
+      transientRetries: config.transientRetries,
+      baseRetryDelayMs: config.baseRetryDelayMs,
+      sessionTimeoutMs: config.sessionTimeoutSeconds * 1_000,
       onActivity(event) {
         context.observe(event);
       },
@@ -221,6 +225,7 @@ function defaultRunLead(
       options.agentsDirectory,
       (agent, task, status) => context.note(agent, task, status),
       context.catalog,
+      { maxConcurrency: config.maxConcurrentAgents - 1 },
     );
     const tools: ToolDefinition<any, any, any>[] = [
       ...candidateTools(writeGuardFromPlan(context.plan, context.candidateRoot), LEAD_CANDIDATE_TOOLS),

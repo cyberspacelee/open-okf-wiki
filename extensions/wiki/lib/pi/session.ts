@@ -24,6 +24,8 @@ export interface RunWikiSessionOptions {
   sessionDir?: string;
   sessionFile?: string;
   maxToolCalls?: number;
+  transientRetries?: number;
+  baseRetryDelayMs?: number;
   onSessionReady?: (sessionFile: string | undefined) => void;
   onCompaction?: () => string | Promise<string>;
   onActivity?: (event: WikiSessionActivity) => void;
@@ -38,7 +40,12 @@ export async function runWikiSession(
 ): Promise<string> {
   const settings = SettingsManager.inMemory({
     compaction: { enabled: true },
-    retry: { enabled: true, maxRetries: 3, provider: { maxRetries: 3 } },
+    retry: {
+      enabled: true,
+      maxRetries: options.transientRetries ?? 1,
+      baseDelayMs: options.baseRetryDelayMs ?? 1_000,
+      provider: { maxRetries: options.transientRetries ?? 1 },
+    },
   });
   const loader = new DefaultResourceLoader({
     cwd,

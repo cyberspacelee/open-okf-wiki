@@ -308,10 +308,10 @@ function frame(
   while (window.length < bodyRows) window.push("");
   const top = `┌${padTitle(title, inner)}┐`;
   const bottom = `└${"─".repeat(inner)}┘`;
-  const foot = `${paint(theme, "border", "│")}${truncateToWidth(` ${footer}`, inner)}${paint(theme, "border", "│")}`;
+  const foot = `${paint(theme, "border", "│")}${padLine(` ${footer}`, inner)}${paint(theme, "border", "│")}`;
   const lines = [
     paint(theme, "border", top),
-    ...window.map((line) => `${paint(theme, "border", "│")}${truncateToWidth(line.padEnd(inner), inner)}${paint(theme, "border", "│")}`),
+    ...window.map((line) => `${paint(theme, "border", "│")}${padLine(line, inner)}${paint(theme, "border", "│")}`),
     paint(theme, "border", `├${"─".repeat(inner)}┤`),
     foot,
     paint(theme, "border", bottom),
@@ -330,7 +330,7 @@ function columns(
   const lines: string[] = [];
   for (let index = 0; index < rows; index += 1) {
     const nav = left[index];
-    const leftText = truncateToWidth(nav?.text ?? "", NAV_WIDTH, "…", true);
+    const leftText = padLine(nav?.text ?? "", NAV_WIDTH);
     const rightText = truncateToWidth(right[index] ?? "", rightWidth);
     lines.push(`${leftText}${paint(theme, "border", COLUMN_SEPARATOR)}${rightText}`);
   }
@@ -368,6 +368,11 @@ function elapsed(view: WikiRunView, now: number): string {
 function padTitle(title: string, inner: number): string {
   const text = ` ${truncateToWidth(title, inner - 2)} `;
   return `${text}${"─".repeat(Math.max(0, inner - visibleWidth(text)))}`;
+}
+
+function padLine(value: string, width: number): string {
+  const clipped = truncateToWidth(value, width, "…", true);
+  return `${clipped}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}`;
 }
 
 function paint(theme: ThemeLike, color: ThemeColor, text: string): string {

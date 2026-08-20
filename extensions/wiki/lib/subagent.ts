@@ -33,6 +33,7 @@ export async function createSubagentRuntime(
   agentsDirectory?: string,
   onTask?: (agent: string, task: string, status: SubagentTaskStatus) => void,
   catalog?: WikiCatalog,
+  options: { maxConcurrency?: number } = {},
 ): Promise<SubagentRuntime> {
   const agents = await loadWikiAgents(agentsDirectory);
   const byName = new Map(agents.map((agent) => [agent.name, agent]));
@@ -50,7 +51,11 @@ export async function createSubagentRuntime(
       };
       for (const task of tasks) onTask?.(task.agent, task.task, "running");
       await report();
-      const results = await Promise.all(tasks.map((task) => runOne(task, byName, guard, {
+      const maxConcurrency = options.maxConcurrency ?? tasks.length;
+      if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
+        throw new Error("subagent maxConcurrency must be a positive integer");
+      }
+      const results = await mapWithConcurrency(tasks, maxConcurrency, async (task) => await runOne(task, byName, guard, {
         ...session,
         onActivity(event) {
           const scoped = { ...event, scope: task.agent };
@@ -58,7 +63,7 @@ export async function createSubagentRuntime(
           applyChildTool(live.get(taskKey(task))!.tools, scoped);
           void report();
         },
-      }, signal, catalog)));
+      }, signal, catalog));
       for (const result of results) {
         const entry = live.get(taskKey(result))!;
         entry.status = result.error ? "failed" : "complete";
@@ -68,6 +73,24 @@ export async function createSubagentRuntime(
       return results;
     },
   };
+}
+
+async function mapWithConcurrency<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  run: (value: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < values.length) {
+      const index = next;
+      next += 1;
+      results[index] = await run(values[index]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, worker));
+  return results;
 }
 
 export function createSubagentTool(runtime: SubagentRuntime): ToolDefinition<any, any, any> {
