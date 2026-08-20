@@ -92,20 +92,66 @@ test("subagent child sessions tag activity with the agent name", async (t) => {
   assert.equal(events.length, 1);
   assert.equal(events[0].scope, "survey");
   assert.equal(events[0].tool, "grep");
+  assert.equal(events[0].id, "call-1");
+  assert.equal(events[0].status, "running");
 });
 
-test("subagent tool reports running tasks through onUpdate", async () => {
+test("subagent tool reports child tools through onUpdate", async (t) => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-subagent-update-"));
+  t.after(async () => await rm(workspaceRoot, { recursive: true, force: true }));
   const updates = [];
-  const tool = createSubagentTool({
-    async run(tasks) {
-      return tasks.map((task) => ({ ...task, text: "ok" }));
+  const runtime = await createSubagentRuntime(
+    {
+      workspaceRoot,
+      workspaceRealPath: workspaceRoot,
+      configPath: path.join(workspaceRoot, "workspace.yaml"),
+      defaultSourceIgnores: true,
+      excludes: [],
+      sources: [],
+      fingerprint: "test",
     },
-  });
+    path.join(workspaceRoot, ".okf-wiki", "runs", "abcd", "candidate"),
+    {
+      sessionDir: path.join(workspaceRoot, "sessions"),
+      async createSession() {
+        return {
+          session: {
+            sessionFile: undefined,
+            subscribe(listener) {
+              listener({
+                type: "tool_execution_start",
+                toolCallId: "call-1",
+                toolName: "grep",
+                args: { pattern: "Order", path: "src" },
+              });
+              listener({
+                type: "tool_execution_end",
+                toolCallId: "call-1",
+                toolName: "grep",
+                result: {},
+                isError: false,
+              });
+              return () => {};
+            },
+            async prompt() {},
+            async waitForIdle() {},
+            getLastAssistantText() { return "mapped"; },
+            dispose() {},
+            abort() {},
+          },
+          modelFallbackMessage: undefined,
+        };
+      },
+    },
+  );
+  const tool = createSubagentTool(runtime);
   const result = await tool.execute("call-1", { agent: "survey", task: "map tradingflow" }, new AbortController().signal, async (partial) => {
     updates.push(partial);
   });
-  assert.equal(updates.length, 1);
+  assert.ok(updates.length >= 2);
   assert.match(String(updates[0].content[0].text), /running survey/);
+  const withTool = updates.find((update) => update.details?.tasks?.[0]?.tools?.length);
+  assert.equal(withTool.details.tasks[0].tools[0].tool, "grep");
   assert.match(result.content[0].text, /## survey/);
   assert.match(tool.description, /survey.*write.*review/s);
 });

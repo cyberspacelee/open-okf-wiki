@@ -12,9 +12,9 @@ Invoke `/wiki` inside Pi (`pi -p "/wiki …"`). It is not `pi wiki` or
 
 1. `/wiki [focus]` starts a full generation in an empty Candidate.
    Print/json mode waits until the Run finishes.
-2. Report the Run id. Use `/wiki status [run-id]` for a text snapshot of
-   status, Board Tasks, and agent notes. Without an id, status shows the
-   live Run or the latest finished one.
+2. Report the Run id. Use `/wiki status [run-id]` for a snapshot of status,
+   Board Tasks, and agent tools. In the TUI this also opens an inspect overlay.
+   Without an id, status shows the live Run or the latest finished one.
 
 A Git repository without `workspace.yaml` is an implicit single-source Workspace.
 

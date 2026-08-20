@@ -110,3 +110,103 @@ test("publish refuses a Candidate that is not OKF", async (t) => {
   const handle = await producer.start({ cwd: root });
   await assert.rejects(() => handle.result(), /frontmatter|type|failed/);
 });
+
+test("live view puts nested tools on the named agent and notifies subscribers", async (t) => {
+  const root = await gitRepo(t);
+  let gate;
+  const wait = new Promise((resolve) => { gate = resolve; });
+  const producer = createProductionWikiProducer({
+    async runLead(context) {
+      await wait;
+      context.observe({ id: "lead-1", tool: "read", args: { path: "src/a.ts" }, status: "running" });
+      context.note("survey", "map source", "running");
+      context.observe({ scope: "survey", id: "s1", tool: "grep", args: { pattern: "Order" }, status: "running" });
+      context.observe({ scope: "survey", id: "s1", tool: "grep", args: { pattern: "Order" }, status: "complete" });
+      await writeText(path.join(context.candidateRoot, "overview.md"), "---\ntype: overview\ntitle: Overview\n---\n# Overview\n");
+      const published = await context.publish();
+      assert.equal(published.ok, true);
+    },
+  });
+  const handle = await producer.start({ cwd: root });
+  const views = [];
+  const stop = handle.subscribe((view) => views.push(view));
+  gate();
+  await handle.result();
+  stop();
+  const live = views.findLast((view) => view.agents?.some((agent) => agent.agent === "survey" && agent.tools.some((tool) => tool.tool === "grep" && tool.status === "complete")));
+  assert.ok(live);
+  const lead = live.agents.find((agent) => agent.agent === "lead");
+  const survey = live.agents.find((agent) => agent.agent === "survey");
+  assert.equal(lead.tools[0].tool, "read");
+  assert.equal(survey.tools[0].tool, "grep");
+  assert.equal(survey.tools[0].status, "complete");
+  const record = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", handle.id, "run.json"), "utf8"));
+  assert.equal(record.agents[0].agent, "survey");
+  assert.equal(record.agents[0].tools, undefined);
+});
+
+test("board writes notify subscribers and tool tails stay capped", async (t) => {
+  const root = await gitRepo(t);
+  let gate;
+  const wait = new Promise((resolve) => { gate = resolve; });
+  const producer = createProductionWikiProducer({
+    async runLead(context) {
+      await wait;
+      await context.board.write({
+        goal: "Auth wiki",
+        tasks: [{ id: "write", content: "Write overview", status: "in_progress" }],
+      });
+      for (let index = 0; index < 20; index += 1) {
+        context.observe({ id: `t${index}`, tool: "read", args: { path: `src/${index}.ts` }, status: "complete" });
+      }
+      context.observe({ id: "live", tool: "grep", args: { pattern: "x" }, status: "running" });
+      await writeText(path.join(context.candidateRoot, "overview.md"), "---\ntype: overview\ntitle: Overview\n---\n# Overview\n");
+      assert.equal((await context.publish()).ok, true);
+    },
+  });
+  const handle = await producer.start({ cwd: root });
+  const views = [];
+  handle.subscribe((view) => views.push(view));
+  gate();
+  await handle.result();
+  assert.ok(views.some((view) => view.tasks?.[0]?.id === "write"));
+  const capped = views.find((view) => view.agents?.[0]?.tools.some((tool) => tool.id === "live"));
+  assert.ok(capped);
+  const lead = capped.agents.find((agent) => agent.agent === "lead");
+  assert.equal(lead.tools.length, 12);
+  assert.ok(lead.tools.some((tool) => tool.id === "live" && tool.status === "running"));
+  assert.equal(lead.tools.filter((tool) => tool.status === "running").length, 1);
+});
+
+test("unsubscribe stops live view delivery", async (t) => {
+  const root = await gitRepo(t);
+  let contextReady;
+  let release;
+  const started = new Promise((resolve) => { contextReady = resolve; });
+  const hold = new Promise((resolve) => { release = resolve; });
+  const producer = createProductionWikiProducer({
+    async runLead(context) {
+      contextReady(context);
+      await hold;
+      await writeText(path.join(context.candidateRoot, "overview.md"), "---\ntype: overview\ntitle: Overview\n---\n# Overview\n");
+      assert.equal((await context.publish()).ok, true);
+    },
+  });
+  const handle = await producer.start({ cwd: root });
+  const context = await started;
+  const views = [];
+  let stop;
+  await new Promise((resolve) => {
+    stop = handle.subscribe((view) => {
+      views.push(view);
+      resolve(undefined);
+    });
+  });
+  stop();
+  const before = views.length;
+  context.observe({ id: "1", tool: "ls", args: { path: "." }, status: "running" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(views.length, before);
+  release();
+  await handle.result();
+});

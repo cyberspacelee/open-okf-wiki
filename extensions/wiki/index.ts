@@ -12,10 +12,29 @@ import {
 import { createProductionWikiProducer } from "./lib/producer.js";
 import { errorMessage } from "./lib/failures.js";
 import { WikiRunResultError, type WikiProducer, type WikiRunHandle, type WikiRunView } from "./lib/producer-types.js";
+import { openWikiStatusOverlay, wikiStatusLabel, wikiWidgetFactory } from "./lib/tui.js";
 import { loadWikiWorkspace, wikiWorkspaceManagement, type ResolvedWikiWorkspace } from "./lib/workspace.js";
+
+interface LiveSurface {
+  context: ExtensionCommandContext;
+  unsubscribe?: () => void;
+  box: { view: WikiRunView; tui?: { requestRender(force?: boolean): void } };
+  hung: boolean;
+}
+
+let liveSurface: LiveSurface | undefined;
 
 export default function (pi: ExtensionAPI): void {
   let producer: WikiProducer | undefined;
+
+  pi.on("session_shutdown", () => {
+    stopWatch();
+    if (liveSurface) {
+      liveSurface.context.ui.setStatus("wiki", undefined);
+      liveSurface.context.ui.setWidget("wiki", undefined);
+      liveSurface = undefined;
+    }
+  });
 
   pi.registerCommand("wiki", {
     description: "Build, inspect, and control the repository Wiki",
@@ -59,7 +78,7 @@ async function dispatch(
     const handle = await producer.start({ cwd, focus: command.focus });
     const view = await handle.view();
     output(pi, context, renderWikiRun(view));
-    setRunStatus(context, view);
+    showSurface(context, view);
     if (!context.hasUI) {
       try {
         await handle.result();
@@ -84,51 +103,56 @@ async function dispatch(
     }
     const view = await handle.view();
     output(pi, context, renderWikiSnapshot(view));
-    setRunStatus(context, view);
+    showSurface(context, view);
+    if (view.status === "running") watchRun(context, handle);
+    if (context.mode === "tui") await openWikiStatusOverlay({ ui: context.ui, handle });
     return;
   }
   if (!handle) throw new Error("No Wiki run is available");
   const view = await handle.control(command.action);
   output(pi, context, renderWikiRun(view));
-  setRunStatus(context, view);
+  showSurface(context, view);
+  if (command.action === "resume") watchRun(context, handle);
 }
 
-function setRunStatus(context: ExtensionCommandContext, view: WikiRunView): void {
+function showSurface(context: ExtensionCommandContext, view: WikiRunView): void {
   if (!context.hasUI) return;
-  const last = view.activity?.at(-1);
-  const flying = view.agents?.filter((agent) => agent.status === "running") ?? [];
-  const label = view.status === "running"
-    ? last
-      ? `wiki running · ${last.scope} · ${last.tool}`
-      : flying.length
-        ? `wiki running · ${flying.map((agent) => agent.agent).join(",")}`
-        : "wiki running"
-    : `wiki ${view.status}`;
-  context.ui.setStatus("wiki", label);
-  if (view.status === "running") {
-    context.ui.setWidget("wiki", renderWikiLive(view), { placement: "belowEditor" });
+  context.ui.setStatus("wiki", wikiStatusLabel(view));
+  if (view.status !== "running") {
+    context.ui.setWidget("wiki", undefined);
+    if (liveSurface?.context === context) liveSurface.hung = false;
     return;
   }
-  context.ui.setWidget("wiki", undefined);
+  if (context.mode === "tui") {
+    const surface = liveSurface?.context === context ? liveSurface : { context, box: { view }, hung: false };
+    surface.box.view = view;
+    liveSurface = surface;
+    if (!surface.hung) {
+      surface.hung = true;
+      context.ui.setWidget("wiki", wikiWidgetFactory(surface.box), { placement: "belowEditor" });
+      return;
+    }
+    surface.box.tui?.requestRender();
+    return;
+  }
+  context.ui.setWidget("wiki", renderWikiLive(view), { placement: "belowEditor" });
 }
 
-const STATUS_POLL_MS = 250;
-let statusTimer: ReturnType<typeof setInterval> | undefined;
-
 function watchRun(context: ExtensionCommandContext, handle: WikiRunHandle): void {
-  if (statusTimer) clearInterval(statusTimer);
-  statusTimer = setInterval(() => {
-    void handle.view().then((view) => {
-      setRunStatus(context, view);
-      if (view.status === "running") return;
-      if (statusTimer) clearInterval(statusTimer);
-      statusTimer = undefined;
-      context.ui.notify(renderWikiRun(view).split("\n")[0] ?? `wiki ${view.status}`, view.status === "succeeded" ? "info" : "error");
-    }, () => {
-      if (statusTimer) clearInterval(statusTimer);
-      statusTimer = undefined;
-    });
-  }, STATUS_POLL_MS);
+  stopWatch();
+  const unsubscribe = handle.subscribe((view) => {
+    showSurface(context, view);
+    if (view.status === "running") return;
+    stopWatch();
+    context.ui.notify(renderWikiRun(view).split("\n")[0] ?? `wiki ${view.status}`, view.status === "succeeded" ? "info" : "error");
+  });
+  if (liveSurface) liveSurface.unsubscribe = unsubscribe;
+  else liveSurface = { context, box: { view: { id: handle.id, cwd: context.cwd, status: "running", createdAt: "", updatedAt: "" } }, hung: false, unsubscribe };
+}
+
+function stopWatch(): void {
+  liveSurface?.unsubscribe?.();
+  if (liveSurface) liveSurface.unsubscribe = undefined;
 }
 
 async function selectedRun(producer: WikiProducer, cwd: string, runId?: string): Promise<WikiRunHandle | undefined> {

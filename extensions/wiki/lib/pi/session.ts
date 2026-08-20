@@ -12,14 +12,9 @@ import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { WikiBudgetExhaustedError } from "../failures.js";
 import { exists } from "../files.js";
+import type { WikiAgentUsage, WikiSessionActivity } from "../producer-types.js";
 
 export const DEFAULT_SESSION_TIMEOUT_MS = 20 * 60_000;
-
-export interface WikiSessionActivity {
-  tool: string;
-  args: unknown;
-  scope?: string;
-}
 
 export interface RunWikiSessionOptions {
   model?: Model<Api>;
@@ -94,9 +89,33 @@ export async function runWikiSession(
   if (options.onActivity || options.onCompaction) {
     const onActivity = options.onActivity;
     const onCompaction = options.onCompaction;
+    const argsById = new Map<string, unknown>();
+    const usage = (): WikiAgentUsage | undefined => {
+      if (typeof session?.getSessionStats !== "function") return undefined;
+      const tokens = session.getSessionStats().tokens;
+      return { input: tokens.input, output: tokens.output, total: tokens.total };
+    };
     session.subscribe((event) => {
       if (onActivity && event.type === "tool_execution_start") {
-        onActivity({ tool: event.toolName, args: event.args });
+        argsById.set(event.toolCallId, event.args);
+        const stats = usage();
+        onActivity({ id: event.toolCallId, tool: event.toolName, args: event.args, status: "running", ...(stats ? { usage: stats } : {}) });
+      }
+      if (onActivity && event.type === "tool_execution_update") {
+        argsById.set(event.toolCallId, event.args);
+        onActivity({ id: event.toolCallId, tool: event.toolName, args: event.args, status: "running" });
+      }
+      if (onActivity && event.type === "tool_execution_end") {
+        const args = argsById.get(event.toolCallId) ?? {};
+        argsById.delete(event.toolCallId);
+        const stats = usage();
+        onActivity({
+          id: event.toolCallId,
+          tool: event.toolName,
+          args,
+          status: event.isError ? "failed" : "complete",
+          ...(stats ? { usage: stats } : {}),
+        });
       }
       if (!onCompaction || event.type !== "compaction_end" || event.aborted) return;
       void Promise.resolve(onCompaction()).then((text) => {

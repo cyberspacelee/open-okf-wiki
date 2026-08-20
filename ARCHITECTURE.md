@@ -26,7 +26,9 @@ belong to the write agent.
 
 Workspace init and `/wiki source add` stay host commands. Pi TUI is the user's
 shell. Print/json `/wiki` waits for the Run. TUI updates `setStatus("wiki")`
-and a below-editor widget of Lead / subagent tool calls while it runs.
+and a below-editor widget of Lead / subagent tool calls. `/wiki status` opens
+an inspect overlay. Tool start/update/end are pushed through `handle.subscribe`;
+the process tail is memory-only.
 
 Decisions: [0001](docs/adr/0001-isolated-full-generation-runs.md),
 [0004](docs/adr/0004-durable-run-board.md),

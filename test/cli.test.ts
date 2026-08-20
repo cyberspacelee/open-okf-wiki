@@ -67,10 +67,10 @@ test("renders plain run, list, and snapshot output", () => {
     status: "paused",
     goal: "Auth wiki",
     tasks: [{ id: "write", content: "Write overview", status: "in_progress" }],
-    activity: [{ scope: "write", tool: "read", args: { path: "src/a.ts" } }],
+    agents: [{ agent: "write", task: "author pages", status: "running", tools: [{ id: "1", tool: "read", args: { path: "src/a.ts" }, status: "running" }] }],
     createdAt: "2026-08-12T00:00:00.000Z",
     updatedAt: "2026-08-12T00:00:00.000Z",
-  }), /in_progress  write  Write overview[\s\S]*→ write · read src\/a\.ts/);
+  }), /in_progress  write  Write overview[\s\S]*◆ read src\/a\.ts/);
   assert.equal(renderWikiRuns([]), "Wiki runs: none.");
   assert.match(renderWikiRuns([{ id: "run-1", status: "paused", updatedAt: "2026-08-12" }]), /run-1 \| paused/);
 });
@@ -106,7 +106,7 @@ test("formats tool calls for the live widget", () => {
   assert.equal(formatToolCall("db_describe", { tables: ["orders", "payments"] }), "db_describe orders,payments");
 });
 
-test("renders a compact live widget from run activity", () => {
+test("renders a compact live widget from running agent tools", () => {
   assert.deepEqual(renderWikiLive({
     id: "run-1",
     cwd: "/repo",
@@ -115,13 +115,16 @@ test("renders a compact live widget from run activity", () => {
     createdAt: "2026-08-12T00:00:00.000Z",
     updatedAt: "2026-08-12T00:00:00.000Z",
     tasks: [{ id: "write", content: "Write CheckoutSession pages", status: "in_progress" }],
-    agents: [{ agent: "write", task: "author pages", status: "running" }],
-    activity: [{ scope: "write", tool: "read", args: { path: "src/checkout.ts", offset: 1, limit: 80 } }],
+    agents: [{
+      agent: "write",
+      task: "author pages",
+      status: "running",
+      tools: [{ id: "1", tool: "read", args: { path: "src/checkout.ts", offset: 1, limit: 80 }, status: "running" }],
+    }],
   }), [
     "Wiki run-1 | running | auth",
     "in_progress  write  Write CheckoutSession pages",
-    "running  write",
-    "→ write · read src/checkout.ts:1-80",
+    "◆ write · read src/checkout.ts:1-80",
   ]);
 });
 

@@ -134,15 +134,13 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 
 ### Observability
 
-- Added a `/wiki status` progress card, `inspect()` for task receipts and
-  handoffs, `--process` compact history, TUI footer/widget, and a bordered
-  status overlay that shows context stats for the selected task.
-- Centralized shared status, stage, health, liveness, activity, context, and
-  batch presentation semantics while keeping the Run projection limited to
-  fields consumed by live surfaces.
-- Replaced extensible event data bags with strict event variants and moved event
-  visibility/text/tone projection into the observability module. UI adapters no
-  longer depend on CLI compatibility presentation wrappers.
+- TUI live chrome is a hung widget plus footer status. `/wiki status` opens a
+  centered overlay: Lead and named agents, Board tasks, and the selected
+  agent's tool process (running `◆`, complete `✓`, failed `✗`).
+- `WikiRunHandle.subscribe` pushes the current `WikiRunView`. Each agent row
+  holds a bounded in-memory tool tail (start/update/end). Nested subagent
+  tools stay on that agent. `run.json` does not persist process.
+- Transcript `notify` is lifecycle only (start snapshot, pause/fail/success).
 
 ### Commands
 

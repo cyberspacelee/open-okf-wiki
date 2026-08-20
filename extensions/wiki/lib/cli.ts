@@ -230,12 +230,13 @@ export function renderWikiLive(run: WikiRunView): string[] {
     if (task.status === "in_progress") lines.push(`in_progress  ${task.id}  ${truncate(task.content, 60)}`);
   }
   for (const agent of run.agents ?? []) {
-    if (agent.status === "running") lines.push(`running  ${agent.agent}`);
+    if (agent.status !== "running") continue;
+    const current = agent.tools.find((tool) => tool.status === "running") ?? agent.tools.at(-1);
+    lines.push(current
+      ? `◆ ${agent.agent} · ${formatToolCall(current.tool, current.args)}`
+      : `running  ${agent.agent}`);
   }
-  for (const item of run.activity ?? []) {
-    lines.push(`→ ${item.scope} · ${formatToolCall(item.tool, item.args)}`);
-  }
-  return lines;
+  return lines.slice(0, 6);
 }
 
 export function renderWikiRun(run: WikiRunView | undefined): string {
@@ -247,13 +248,34 @@ export function renderWikiRun(run: WikiRunView | undefined): string {
     ? `\n${run.tasks.map((task) => `  ${task.status}  ${task.id}  ${truncate(task.content, 80)}`).join("\n")}`
     : "";
   const agents = run.agents?.length
-    ? `\n${run.agents.map((agent) => `  ${agent.status}  ${agent.agent}  ${truncate(agent.task, 80)}`).join("\n")}`
-    : "";
-  const activity = run.activity?.length
-    ? `\n${run.activity.map((item) => `  → ${item.scope} · ${formatToolCall(item.tool, item.args)}`).join("\n")}`
+    ? `\n${run.agents.map((agent) => agentLines(agent)).join("\n")}`
     : "";
   const pages = run.pageCount !== undefined ? ` | ${run.pageCount} pages` : "";
-  return `Wiki ${run.id} | ${run.status}${focus}${pages}${goal}${tasks}${agents}${activity}${error}`;
+  return `Wiki ${run.id} | ${run.status}${focus}${pages}${goal}${tasks}${agents}${error}`;
+}
+
+function agentLines(agent: NonNullable<WikiRunView["agents"]>[number]): string {
+  const task = agent.task ? `  ${truncate(agent.task, 80)}` : "";
+  const current = agent.tools.find((tool) => tool.status === "running") ?? agent.tools.at(-1);
+  const tool = current ? `  ${toolMarker(current.status)} ${formatToolCall(current.tool, current.args)}` : "";
+  return `  ${agent.status}  ${agent.agent}${task}${tool}`;
+}
+
+function toolMarker(status: "running" | "complete" | "failed"): string {
+  if (status === "complete") return "✓";
+  if (status === "failed") return "✗";
+  return "◆";
+}
+
+export function wikiFooterStatus(run: WikiRunView): string {
+  if (run.status !== "running") return `wiki ${run.status}`;
+  const flying = (run.agents ?? []).filter((agent) => agent.status === "running");
+  for (const agent of flying) {
+    const current = agent.tools.find((tool) => tool.status === "running");
+    if (current) return `wiki running · ${agent.agent} · ${formatToolCall(current.tool, current.args)}`;
+  }
+  if (flying.length) return `wiki running · ${flying.map((agent) => agent.agent).join(",")}`;
+  return "wiki running";
 }
 
 export function renderWikiSnapshot(run: WikiRunView): string {

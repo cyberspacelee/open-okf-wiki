@@ -19,7 +19,8 @@ pi -e ./extensions/wiki/index.ts -p --mode json -a "/wiki"
 
 Print/json mode waits until the Run finishes and prints the final status.
 Interactive TUI returns after start, updates the footer status, and shows a
-live widget of Lead / subagent tool calls.
+live widget of Lead / subagent tool calls. `/wiki status` opens an inspect
+overlay (agents, Board, and the selected agent's process).
 
 CLI contract (no LLM): `./scripts/e2e-wiki-cli.sh`  
 Live generation: `WIKI_E2E=1 ./scripts/e2e-wiki-live.sh`
@@ -84,8 +85,7 @@ sources:
 Each Run keeps a host-owned Board in `.okf-wiki/runs/<id>/board.json`:
 the goal and Tasks. The Lead updates it with `todo`. Compaction re-injects
 the Board so remaining work survives a long context. `/wiki resume`
-continues the same Candidate, Board, and Lead session. `/wiki status`
-prints Task status.
+continues the same Candidate, Board, and Lead session. `/wiki status` prints Task status and, in the TUI, opens an inspect overlay.
 
 ### Catalog
 
