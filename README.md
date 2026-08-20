@@ -82,10 +82,22 @@ sources:
       localPath: /abs/path/to/backend
 ```
 
-`wiki.exclude` contains source globs. `maxConcurrentAgents` includes the Lead,
-so at most one fewer delegated agents run together. `transientRetries` and
-`baseRetryDelayMs` configure Pi's retry loop; `sessionTimeoutSeconds` applies
-to every Lead and delegated-agent session. Unknown fields are rejected.
+All `wiki` fields are optional. Explicit Workspaces fill omitted fields with
+the defaults below; implicit single-source Workspaces use the same defaults.
+
+| Field | Default | Valid values | Meaning |
+| --- | ---: | ---: | --- |
+| `exclude` | `[]` | source globs | Paths excluded from evidence discovery. |
+| `maxConcurrentAgents` | `3` | `2..64` | Total concurrent model sessions, including the Lead. At most `value - 1` delegated agents run together. |
+| `transientRetries` | `1` | `0..10` | Retries after a transient model failure, in addition to the initial attempt. |
+| `baseRetryDelayMs` | `1000` | `0..300000` | Base delay used by Pi's retry backoff. |
+| `sessionTimeoutSeconds` | `1200` | `1..2147483` | Wall-clock deadline for each Lead or delegated-agent session. |
+
+The concurrency limit applies to each `subagent` task batch while the Lead
+occupies one session slot. Retry and timeout values apply to both the Lead and
+delegated agents. Wiki sessions use these settings instead of project or user
+Pi retry settings. Unknown `wiki` fields are rejected so misspelled or removed
+configuration cannot be silently ignored.
 
 ### Board
 
@@ -100,17 +112,24 @@ Optional Postgres evidence. Username and password belong in the connection
 URL (`postgresql://USER:PASSWORD@HOST:PORT/DB`), not as separate yaml fields:
 
 ```dotenv
-# .env in the Workspace root (keep this file out of Git)
+# <workspace>/.env (keep this file out of Git)
 DATABASE_URL=postgresql://wiki:secret@127.0.0.1:5432/app
 ```
 
-`url` must be `postgresql://` (or `${ENV}` / `$ENV`). URL-encode special
-characters in the password. `schema` defaults to `public`. Omit `tables` to
-allow every table in that schema; otherwise names are fuzzy-matched (`user`
-→ `users`, `user_account`; `order%` → `orders`). Agents call `db_tables`
-then `db_describe`. The host never dumps the schema into the Lead prompt.
-Connections are read-only. Variables already exported in the process take
-precedence over `.env`. Do not commit the expanded string or `.env`.
+The `.env` file must sit beside `workspace.yaml`. It is read only when the
+Workspace declares `database`; loading one Workspace does not mutate
+`process.env` or leak values into another Workspace. Resolution order is:
+an already exported process variable, then the Workspace `.env`. An unresolved
+variable fails Workspace loading with its variable name.
+
+`database.url` must resolve to `postgresql://` and may use `${ENV}` or `$ENV`.
+URL-encode special characters in the password. `schema` defaults to `public`.
+Omit `tables` to allow every table in that schema; otherwise names are
+fuzzy-matched (`user` → `users`, `user_account`; `order%` → `orders`). Agents
+call `db_tables` then `db_describe`; the host never dumps the schema into the
+Lead prompt. Connections and transactions are read-only. Connection and SQL
+statement deadlines remain fixed host safety limits, not Workspace tuning
+parameters. Do not commit the expanded URL or `.env`.
 
 A Catalog needs an explicit `workspace.yaml`. Implicit single-source
 workspaces have no database block.
@@ -129,8 +148,8 @@ The host generates every `index.md`. Citations are
 `[label](<scopeId>/<path>#Lx)`. Publication validates OKF, paths, and
 citations, then installs the Candidate as `wiki/`.
 
-Lead sessions use Pi auto-compaction. Wiki sessions do not inherit project
-or user Pi settings.
+Lead sessions use Pi auto-compaction. Wiki sessions do not inherit other
+project or user Pi settings.
 
 ## Design
 
