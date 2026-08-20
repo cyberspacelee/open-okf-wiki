@@ -94,6 +94,8 @@ if not record.get("sessionFile") or not os.path.isfile(record["sessionFile"]):
 agents = record.get("agents") or []
 if not any(a.get("agent") == "write" and a.get("status") == "complete" for a in agents):
     raise SystemExit(f"agents missing write complete: {agents!r}")
+if not any(a.get("agent") == "review" and a.get("status") == "complete" for a in agents):
+    raise SystemExit(f"agents missing review complete: {agents!r}")
 
 board = json.load(open(os.path.join(os.path.dirname(runs[0]), "board.json"), encoding="utf-8"))
 by_id = {t["id"]: t for t in board.get("tasks") or []}
@@ -102,15 +104,38 @@ for task_id in ("survey", "write", "publish"):
         raise SystemExit(f"board {task_id} {by_id.get(task_id)}")
 
 wiki = os.path.join(ws, "wiki")
-for rel in ("overview.md", f"{name}/source.md", "index.md"):
+for rel in ("overview.md", f"{name}/source.md", "index.md", "log.md"):
     path = os.path.join(wiki, rel)
     if not os.path.isfile(path):
         raise SystemExit(f"missing {rel}")
 overview = open(os.path.join(wiki, "overview.md"), encoding="utf-8").read()
-if not re.search(r"^type:\s*overview\s*$", overview, re.M):
-    raise SystemExit("overview missing type: overview")
-if "#L" not in overview:
-    raise SystemExit("overview missing #L citation")
+if not re.search(r"^type:\s*Overview\s*$", overview, re.M):
+    raise SystemExit("overview missing type: Overview")
+if "description:" not in overview:
+    raise SystemExit("overview missing description")
+if "sources:" not in overview:
+    raise SystemExit("overview missing sources")
+concept_pages = []
+architecture_pages = []
+mermaid_pages = []
+for dirpath, _dirs, files in os.walk(wiki):
+    for filename in files:
+        if not filename.endswith(".md"):
+            continue
+        rel = os.path.relpath(os.path.join(dirpath, filename), wiki)
+        if filename == "concept.md":
+            concept_pages.append(rel)
+        if filename == "architecture.md":
+            architecture_pages.append(rel)
+        body = open(os.path.join(dirpath, filename), encoding="utf-8").read()
+        if "```mermaid" in body:
+            mermaid_pages.append(rel)
+if not concept_pages:
+    raise SystemExit("missing concept.md")
+if not architecture_pages:
+    raise SystemExit("missing architecture.md")
+if not mermaid_pages:
+    raise SystemExit("missing mermaid diagram")
 candidate = os.path.join(os.path.dirname(runs[0]), "candidate")
 if os.path.isdir(candidate) and os.listdir(candidate):
     raise SystemExit(f"candidate leftover {os.listdir(candidate)}")

@@ -92,6 +92,7 @@ the defaults below; implicit single-source Workspaces use the same defaults.
 | `transientRetries` | `1` | `0..10` | Retries after a transient model failure, in addition to the initial attempt. |
 | `baseRetryDelayMs` | `1000` | `0..300000` | Base delay used by Pi's retry backoff. |
 | `sessionTimeoutSeconds` | `1200` | `1..2147483` | Wall-clock deadline for each Lead or delegated-agent session. |
+| `templates` | packaged `templates/zh` or `templates/en` | relative directory | Whole-pack replacement for Wiki page templates. Not merged with the default pack. Unset uses the packaged pack for `language`. |
 
 `defaultSourceIgnores: true` (the default) hides dependency, build, and Java
 test trees (`src/test/**`, `*Test.java`, and the usual `node_modules` /
@@ -140,19 +141,62 @@ parameters. Do not commit the expanded URL or `.env`.
 A Catalog needs an explicit `workspace.yaml`. Implicit single-source
 workspaces have no database block.
 
+### Templates
+
+Packaged defaults are `templates/zh/` and `templates/en/`, chosen by
+`language`. They are the page contract: which files exist at wiki /
+source / domain / concept, and which of those need a mermaid diagram.
+Copy one directory into the Workspace and point `wiki.templates` at it
+to replace the pack. Adding `architecture.md` or dropping `states.md` is
+how a Workspace customizes the Wiki; do not invent a second overlay.
+Headings and writer instructions follow the pack language; `type` stays
+English Title Case (`Architecture`); mermaid node IDs stay source
+identifiers. Consuming agents start at `wiki/index.md`.
+
+```yaml
+wiki:
+  templates: wiki-templates
+```
+
+Each template is a markdown file. Filename is the page name. Frontmatter:
+
+| Field | Meaning | Default |
+| --- | --- | --- |
+| `type` | OKF `type` on the generated page (Title Case, e.g. `Architecture`) | filename without `.md` |
+| `scope` | `wiki` / `source` / `domain` / `concept` | `concept` |
+| `diagram` | mermaid kind, or a list of kinds | no mermaid check |
+| `optional` | survey may skip this file | `false` (required) |
+
+`scope` / `diagram` / `optional` stay on the template file. Generated pages
+carry `type`, `title`, `description`, and `sources`. Claims use `[^id]`
+footnotes keyed to `sources[].id`. `sources[].resource` is
+`<scopeId>/path#Lx`.
+
+The body is both the writer brief and the skeleton. Keep mermaid fences
+under the diagram heading. Placeholders: `{{title}}`, `{{slug}}`,
+`{{description}}`. Path shape stays `<source>/<domain>/<concept>/`.
+
+Publication fails when a required template is missing, when there is no
+concept cluster, when a diagram page has no matching mermaid fence, when
+`description` / `sources` are missing, or when review has not passed on
+the current Candidate.
+
 ## Published layout
 
 ```text
+wiki/index.md
+wiki/log.md
 wiki/overview.md
 wiki/<source>/source.md
 wiki/<source>/<domain>/domain.md
 wiki/<source>/<domain>/<concept>/concept.md
-wiki/<source>/<domain>/<concept>/models.md | flows.md | states.md | data.md | modules.md
+wiki/<source>/<domain>/<concept>/architecture.md | flows.md | models.md | …
 ```
 
-The host generates every `index.md`. Citations are
-`[label](<scopeId>/<path>#Lx)`. Publication validates OKF, paths, and
-citations, then installs the Candidate as `wiki/`.
+Filenames at each layer come from the template pack. The host generates
+every `index.md` and root `log.md`. Wiki-to-wiki links are standard
+markdown. Publication validates OKF, paths, templates, sources, and
+review, then installs the Candidate as `wiki/`.
 
 Lead sessions use Pi auto-compaction. Wiki sessions do not inherit other
 project or user Pi settings.

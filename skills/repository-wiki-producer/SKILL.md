@@ -54,3 +54,24 @@ not commit the expanded string.
 
 A Catalog requires an explicit `workspace.yaml`. Implicit single-source
 workspaces have no database block.
+
+## Templates
+
+Packaged defaults are `templates/zh/` and `templates/en/`, chosen by
+`language`. To customize, copy one directory into the Workspace and set
+`wiki.templates` to that directory (whole-pack replacement, not a merge):
+
+```yaml
+wiki:
+  templates: wiki-templates
+```
+
+Add files such as `architecture.md` or drop `states.md`. Filename is the
+page name; `type` is Title Case (`Architecture`); `scope` is
+`wiki` / `source` / `domain` / `concept`. A `diagram` field requires a
+mermaid fence of that kind. `optional: true` lets survey skip the file.
+Generated pages use `sources` + `[^id]` footnotes. Publish fails if a
+required template is missing or review has not passed.
+
+Consuming agents start at `wiki/index.md`. Do not put `AGENTS.md` or
+`ARCHITECTURE.md` inside `wiki/`.

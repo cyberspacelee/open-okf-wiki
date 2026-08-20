@@ -12,7 +12,8 @@
     "extensions/",
     "skills/",
     "agents/",
-    "prompts/"
+    "prompts/",
+    "templates/"
   ],
   "pi": {
     "extensions": [

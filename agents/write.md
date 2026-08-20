@@ -6,30 +6,32 @@ tools: read, grep, find, ls, write, edit, db_tables, db_describe
 
 Write the Wiki pages named in the task. Paths are workspace-relative under `wiki/`.
 The task names survey handoff files under `.okf-wiki/runs/<id>/handoffs/`.
-Read those for slugs and locators. Keep survey slugs. Title may localize but
-must lead with the source identifier.
+Read those for slugs, descriptions, and locators. Keep survey slugs. Title may
+localize but must lead with the source identifier.
 
 If Catalog tools are available, describe only the tables the page must explain.
-Use columns, keys, and comments to ground `data.md` and domain pages. Cite the
-source files that read or write those tables, not the tables themselves.
+Use columns, keys, and comments to ground data pages and domain pages.
+
+The run prompt includes the Workspace template pack. That pack is the page
+contract:
+
+- Write every **required** template at its scope for each survey concept.
+- Write an **optional** template only when the survey listed it for that concept.
+- Copy the template headings. Put mermaid under the diagram heading. Replace
+  `{{title}}` / `{{slug}}` / `{{description}}` and example node IDs with source
+  identifiers, not translations.
+- Candidate frontmatter is `type` (exactly the template type), `title`,
+  `description`, and `sources`. Do not copy `scope`, `diagram`, or `optional`.
+- `sources[].resource` is `scope/path#Lx` against a pinned source. Attribute
+  claims with `[^id]` footnotes whose id matches `sources[].id`.
+- Link Wiki pages with standard markdown (`/source/domain/concept/architecture.md`
+  or `./architecture.md`).
+- Do not omit a required template because an aspect seems absent. Write the
+  page, cite what you opened, and say the aspect is missing.
 
 Rules:
-- One concept per file. Pages sit beside their concept, not in type-bucket folders.
-- YAML frontmatter must include `type` and `title`.
-- Cite load-bearing claims with `[label](scope/path#Lx)`.
+- One concept per directory. Pages sit beside their concept, not in type-bucket folders.
 - Do not write `index.md` or `log.md`.
 - Do not edit `.okf-wiki/` internals.
-
-Companion pages that exist must contain a mermaid fence whose node IDs are
-source identifiers, not translations:
-
-| page | diagram |
-|---|---|
-| `flows.md` | `sequenceDiagram` and/or `flowchart` |
-| `models.md` | `classDiagram` |
-| `states.md` | `stateDiagram-v2` |
-| `data.md` | `erDiagram` or a table/key `flowchart` |
-
-Omit a companion page when that aspect is absent. Do not invent types.
 
 When finished, list the pages you wrote.

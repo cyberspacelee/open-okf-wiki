@@ -1,28 +1,30 @@
-/** CommonMark/GitHub source citations: `[label](scope/path#Lx)` or `#Lx-Ly`. */
+import path from "node:path";
+
+/** OKF provenance: `sources[].resource` is `scope/path#Lx` or `#Lx-Ly`; body footnotes are `[^id]`. */
 
 const SOURCE_SCOPE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const SOURCE_CITATION = /^(?:\.[/\\])?([^#]+?)#L([1-9]\d*)(?:-L([1-9]\d*))?$/;
+const SOURCE_RESOURCE = /^(?:\.[/\\])?([^#]+?)#L([1-9]\d*)(?:-L([1-9]\d*))?$/;
 const MARKDOWN_LINK = /(?<!!)\[[^\]\n]*\]\([ \t]*(?:<([^>\n]+)>|([^\s)]+))(?:[ \t]+(?:"[^"]*"|'[^']*'|\([^)]*\)))?[ \t]*\)/g;
-const LINK_DEFINITION = /^[ \t]{0,3}\[([^\]\n]+)\]:[ \t]*(?:<([^>\n]+)>|([^ \t\n]+))/gm;
-const BARE_CITATION = /(?:^|[\s(])((?:repo:|\.\/)?(?:[A-Za-z0-9._-]+\/)+[^#\s)]+#L[^\s)]+)/g;
-const REPO_SCHEME = /\brepo:[^\s)]+/g;
+const FOOTNOTE = /\[\^([^\]]+)\]/g;
+const LEGACY_BODY_CITATION = /#L[1-9]\d*/;
 
-export const SOURCE_CITATION_GRAMMAR = "[label](scope/path#Lx)";
+export const SOURCE_RESOURCE_GRAMMAR = "scope/path#Lx";
 
 export interface SourceCitation {
+  id: string;
   scope: string;
   path: string;
   startLine: number;
   endLine: number;
 }
 
-export function parseSourceCitation(value: string): SourceCitation | undefined {
-  const href = stripHref(value);
+export function parseSourceResource(value: string): Omit<SourceCitation, "id"> | undefined {
+  const href = value.trim().replace(/^<|>$/g, "");
   if (!href || /^[a-z][a-z0-9+.-]*:/i.test(href)) return undefined;
-  const match = SOURCE_CITATION.exec(href);
+  const match = SOURCE_RESOURCE.exec(href.replaceAll("\\", "/"));
   if (!match) return undefined;
-  const resourcePath = match[1].replaceAll("\\", "/");
-  if (resourcePath.startsWith("/") || resourcePath.includes("//")) return undefined;
+  const resourcePath = match[1];
+  if (!resourcePath || resourcePath.startsWith("/") || resourcePath.includes("//")) return undefined;
   const slash = resourcePath.indexOf("/");
   if (slash < 1) return undefined;
   const scope = resourcePath.slice(0, slash);
@@ -38,77 +40,107 @@ export function parseSourceCitation(value: string): SourceCitation | undefined {
   };
 }
 
-export function sourceCitationsEqual(left: SourceCitation, right: SourceCitation): boolean {
-  return left.scope === right.scope
-    && left.path === right.path
-    && left.startLine === right.startLine
-    && left.endLine === right.endLine;
-}
-
-export function extractSourceCitations(
-  text: string,
-  fileLines?: (citation: SourceCitation) => number | "missing" | undefined,
+export function extractOkfSources(
+  frontmatter: Record<string, unknown>,
+  body: string,
+  fileLines?: (citation: Omit<SourceCitation, "id">) => number | "missing" | undefined,
 ): { citations: SourceCitation[]; invalid: string[] } {
   const citations: SourceCitation[] = [];
   const invalid: string[] = [];
+  const sources = frontmatter.sources;
+  const byId = new Map<string, SourceCitation>();
+  if (sources !== undefined) {
+    if (!Array.isArray(sources) || sources.length === 0) {
+      invalid.push("sources must be a non-empty list");
+    } else {
+      for (const entry of sources) {
+        const parsed = parseSourceEntry(entry, fileLines);
+        if ("error" in parsed) {
+          invalid.push(parsed.error);
+          continue;
+        }
+        if (byId.has(parsed.citation.id)) {
+          invalid.push(`duplicate sources id ${parsed.citation.id}`);
+          continue;
+        }
+        byId.set(parsed.citation.id, parsed.citation);
+        citations.push(parsed.citation);
+      }
+    }
+  }
+  for (const id of footnoteIds(body)) {
+    if (!byId.has(id)) invalid.push(`footnote [^${id}] has no sources[].id`);
+  }
   MARKDOWN_LINK.lastIndex = 0;
-  LINK_DEFINITION.lastIndex = 0;
-  REPO_SCHEME.lastIndex = 0;
-  BARE_CITATION.lastIndex = 0;
-  const remainder = text.replace(MARKDOWN_LINK, (full, bracketed: string | undefined, bare: string | undefined) => {
-    collectHref(bracketed ?? bare ?? "", citations, invalid, fileLines);
-    return " ".repeat(full.length);
-  }).replace(LINK_DEFINITION, (full, label: string, bracketed: string | undefined, bare: string | undefined) => {
-    if (label.startsWith("^")) return full;
-    collectHref(bracketed ?? bare ?? "", citations, invalid, fileLines);
-    return " ".repeat(full.length);
-  }).replace(REPO_SCHEME, (token) => {
-    invalid.push(`${token} need ${SOURCE_CITATION_GRAMMAR}`);
-    return " ".repeat(token.length);
-  });
-  for (const match of remainder.matchAll(BARE_CITATION)) {
-    collectHref(match[1], citations, invalid, fileLines);
+  for (const match of body.matchAll(MARKDOWN_LINK)) {
+    const href = (match[1] ?? match[2] ?? "").trim();
+    if (parseSourceResource(href) || (LEGACY_BODY_CITATION.test(href) && !href.startsWith("#"))) {
+      invalid.push(`${href} belongs in sources[].resource, not a body link`);
+    }
   }
   return { citations, invalid };
 }
 
-function collectHref(
-  href: string,
-  citations: SourceCitation[],
-  invalid: string[],
-  fileLines?: (citation: SourceCitation) => number | "missing" | undefined,
-): void {
-  const target = href.trim().replace(/[.,;:]+$/, "");
-  if (!target || skipHref(target)) return;
-  const parsed = parseSourceCitation(target);
-  if (!parsed) {
-    if (looksLikeCitationAttempt(target)) invalid.push(`${target} need ${SOURCE_CITATION_GRAMMAR}`);
-    return;
+export function wikiLinkTargets(page: string, body: string): string[] {
+  const directory = path.posix.dirname(page);
+  const targets: string[] = [];
+  MARKDOWN_LINK.lastIndex = 0;
+  for (const match of body.matchAll(MARKDOWN_LINK)) {
+    const href = stripTrailingPunctuation((match[1] ?? match[2] ?? "").trim());
+    if (!href || skipWikiHref(href)) continue;
+    const resolved = resolveWikiHref(directory === "." ? "" : directory, href);
+    if (resolved) targets.push(resolved);
   }
-  if (parsed.endLine < parsed.startLine) {
-    invalid.push(`${target} end<start`);
-    return;
-  }
-  const file = fileLines?.(parsed);
-  if (file === "missing") {
-    invalid.push(`${target} missing`);
-    return;
-  }
-  if (typeof file === "number" && parsed.endLine > file) {
-    invalid.push(`${target} ${parsed.path.split("/").pop()}:${file} lines`);
-    return;
-  }
-  citations.push(parsed);
+  return targets;
 }
 
-function stripHref(value: string): string {
-  return value.trim().replace(/^<|>$/g, "");
+function parseSourceEntry(
+  entry: unknown,
+  fileLines?: (citation: Omit<SourceCitation, "id">) => number | "missing" | undefined,
+): { citation: SourceCitation } | { error: string } {
+  if (!isRecord(entry)) return { error: "sources entries must be mappings" };
+  const id = typeof entry.id === "string" ? entry.id.trim() : "";
+  const resource = typeof entry.resource === "string" ? entry.resource.trim() : "";
+  if (!id) return { error: "sources[].id is required" };
+  if (!resource) return { error: `sources ${id} missing resource` };
+  const locator = parseSourceResource(resource);
+  if (!locator) return { error: `${resource} need ${SOURCE_RESOURCE_GRAMMAR}` };
+  if (locator.endLine < locator.startLine) return { error: `${resource} end<start` };
+  const file = fileLines?.(locator);
+  if (file === "missing") return { error: `${resource} missing` };
+  if (typeof file === "number" && locator.endLine > file) {
+    return { error: `${resource} ${locator.path.split("/").pop()}:${file} lines` };
+  }
+  return { citation: { id, ...locator } };
 }
 
-function skipHref(href: string): boolean {
-  return /^https?:\/\//i.test(href) || href.startsWith("#") || href.startsWith("mailto:");
+function footnoteIds(body: string): Set<string> {
+  const ids = new Set<string>();
+  FOOTNOTE.lastIndex = 0;
+  for (const match of body.matchAll(FOOTNOTE)) {
+    if (match[1]) ids.add(match[1]);
+  }
+  return ids;
 }
 
-function looksLikeCitationAttempt(href: string): boolean {
-  return /#L\d/.test(href);
+function resolveWikiHref(directory: string, href: string): string | undefined {
+  const pathPart = href.split("#")[0];
+  if (!pathPart || !pathPart.endsWith(".md")) return undefined;
+  const relative = pathPart.startsWith("/")
+    ? path.posix.normalize(pathPart.slice(1))
+    : path.posix.normalize(directory ? `${directory}/${pathPart}` : pathPart);
+  if (!relative || relative === "." || relative.startsWith("../") || path.posix.isAbsolute(relative)) return undefined;
+  return relative;
+}
+
+function stripTrailingPunctuation(href: string): string {
+  return href.replace(/[.,;:]+$/, "");
+}
+
+function skipWikiHref(href: string): boolean {
+  return /^https?:\/\//i.test(href) || href.startsWith("#") || href.startsWith("mailto:") || parseSourceResource(href) !== undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }

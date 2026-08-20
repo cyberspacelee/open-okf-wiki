@@ -8,7 +8,7 @@ session with `todo` / `subagent` / optional Catalog tools, then OKF validation
 and rename to `wiki/`.
 
 ```text
-Inspect → empty Candidate + Board → Lead (survey / write / review) → publish
+Inspect → empty Candidate + Board → Lead (survey / write / review) → publish (OKF + review)
 ```
 
 `/wiki resume` re-enters that Lead on the same Candidate. Compaction and
@@ -19,8 +19,10 @@ not the source of truth. The Lead session file lives under
 An optional Postgres Catalog is declared on the Workspace and retrieved
 on demand (`db_tables`, `db_describe`). Only Postgres. Read-only.
 
-SOP is `prompts/lead.md`. Named workers are `agents/*.md`. TypeScript does not
-encode research/write/review stages. The Lead session has `todo`, `subagent`,
+SOP is `prompts/lead.md`. Named workers are `agents/*.md`. Page kinds come
+from `templates/zh` or `templates/en` (or `wiki.templates`). `type` is
+Title Case; filenames stay kebab-case. TypeScript does not encode
+research/write/review stages. The Lead session has `todo`, `subagent`,
 `publish`, optional Catalog tools, and read-only file tools. `write` / `edit`
 belong to the write agent.
 

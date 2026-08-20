@@ -11,6 +11,7 @@ import { candidateTools, createCatalogTools } from "./pi/tools.js";
 import { runWikiSession, type RunWikiSessionOptions } from "./pi/session.js";
 import type { WikiCatalog } from "./catalog.js";
 import type { WikiToolView } from "./producer-types.js";
+import { formatWikiTemplatesForPrompt, type WikiTemplatePack } from "./templates.js";
 
 export interface SubagentTask {
   agent: string;
@@ -40,7 +41,7 @@ export async function createSubagentRuntime(
   agentsDirectory?: string,
   onTask?: SubagentTaskListener,
   catalog?: WikiCatalog,
-  options: { maxConcurrency?: number } = {},
+  options: { maxConcurrency?: number; templates?: WikiTemplatePack } = {},
 ): Promise<SubagentRuntime> {
   const agents = await loadWikiAgents(agentsDirectory);
   const byName = new Map(agents.map((agent) => [agent.name, agent]));
@@ -71,7 +72,7 @@ export async function createSubagentRuntime(
           applyChildTool(live.get(task.id)!.tools, scoped);
           void report();
         },
-      }, signal, catalog));
+      }, signal, catalog, options.templates));
       for (const result of results) {
         const entry = live.get(result.id)!;
         entry.status = result.error ? "failed" : "complete";
@@ -141,6 +142,7 @@ async function runOne(
   session: RunWikiSessionOptions,
   signal: AbortSignal,
   catalog?: WikiCatalog,
+  templates?: WikiTemplatePack,
 ): Promise<SubagentResult> {
   const definition = byName.get(task.agent);
   if (!definition) {
@@ -154,10 +156,11 @@ async function runOne(
       ...candidateTools(guard, definition.tools),
       ...extra.filter((tool) => !allowed || allowed.has(tool.name)),
     ];
+    const pack = templates ? `\n\n${formatWikiTemplatesForPrompt(templates)}` : "";
     const text = await runWikiSession(
       guard.workspaceRoot,
       tools,
-      `${definition.prompt}\n\n# Task\n\n${task.task}`,
+      `${definition.prompt}${pack}\n\n# Task\n\n${task.task}`,
       signal,
       session,
     );

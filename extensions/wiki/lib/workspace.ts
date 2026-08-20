@@ -39,6 +39,8 @@ export interface WikiWorkspaceWikiConfig {
   baseRetryDelayMs: number;
   /** Wall-clock deadline for each Lead or delegated Agent session. */
   sessionTimeoutSeconds: number;
+  /** Workspace-relative directory that replaces the packaged template pack. */
+  templates?: string;
 }
 
 export const DEFAULT_WORKSPACE_WIKI_CONFIG: WikiWorkspaceWikiConfig = {
@@ -349,15 +351,29 @@ function parseWorkspaceDatabase(value: unknown, env: Readonly<Record<string, str
 
 function parseWikiConfig(value: unknown): WikiWorkspaceWikiConfig {
   const wiki = strictObject(value, "wiki", [
-    "exclude", "maxConcurrentAgents", "transientRetries", "baseRetryDelayMs", "sessionTimeoutSeconds",
+    "exclude", "maxConcurrentAgents", "transientRetries", "baseRetryDelayMs", "sessionTimeoutSeconds", "templates",
   ]);
+  const templates = parseTemplatesPath(wiki.templates);
   return {
     exclude: parseStringArray(wiki.exclude, "wiki.exclude"),
     maxConcurrentAgents: parseInteger(wiki.maxConcurrentAgents, "wiki.maxConcurrentAgents", DEFAULT_WORKSPACE_WIKI_CONFIG.maxConcurrentAgents, 2, 64),
     transientRetries: parseInteger(wiki.transientRetries, "wiki.transientRetries", DEFAULT_WORKSPACE_WIKI_CONFIG.transientRetries, 0, 10),
     baseRetryDelayMs: parseInteger(wiki.baseRetryDelayMs, "wiki.baseRetryDelayMs", DEFAULT_WORKSPACE_WIKI_CONFIG.baseRetryDelayMs, 0, 300_000),
     sessionTimeoutSeconds: parseInteger(wiki.sessionTimeoutSeconds, "wiki.sessionTimeoutSeconds", DEFAULT_WORKSPACE_WIKI_CONFIG.sessionTimeoutSeconds, 1, 2_147_483),
+    ...(templates ? { templates } : {}),
   };
+}
+
+function parseTemplatesPath(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error("workspace.yaml wiki.templates must be a non-empty relative path");
+  }
+  const relative = value.trim().replaceAll("\\", "/");
+  if (path.isAbsolute(value.trim()) || relative.startsWith("/") || relative === "." || relative.split("/").includes("..")) {
+    throw new Error("workspace.yaml wiki.templates must be a relative path inside the Workspace");
+  }
+  return relative;
 }
 
 async function workspaceEnvironment(root: string): Promise<Record<string, string | undefined>> {

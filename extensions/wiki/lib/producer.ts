@@ -9,11 +9,13 @@ import { exists, renamePath, writeText } from "./files.js";
 import { errorMessage } from "./failures.js";
 import { loadWikiWorkspace, resolveWorkspaceDatabase, type ResolvedWikiWorkspace, type WikiWorkspaceWikiConfig } from "./workspace.js";
 import {
+  assertReviewPass,
   formatIssue,
   materializeWikiIndexes,
   stampPublication,
   validateWikiTree,
 } from "./wiki-okf.js";
+import { formatWikiTemplatesForPrompt, resolveWikiTemplatePack, type WikiTemplatePack } from "./templates.js";
 import { writeGuardFromPlan } from "./path-policy.js";
 import { candidateTools, createCatalogTools, createTodoTool } from "./pi/tools.js";
 import { runWikiSession, type RunWikiSessionOptions } from "./pi/session.js";
@@ -51,6 +53,7 @@ export interface WikiLeadContext {
   resume: boolean;
   board: WikiBoardStore;
   catalog?: WikiCatalog;
+  templates: WikiTemplatePack;
   signal: AbortSignal;
   publish(): Promise<{ ok: boolean; message: string }>;
   note(id: string, agent: string, task: string, status: "running" | "complete" | "failed"): void;
@@ -84,6 +87,7 @@ interface LiveRun {
   done: Promise<void>;
   result?: WikiProducerResult;
   board?: WikiBoard;
+  templates?: WikiTemplatePack;
   agents: Map<string, WikiAgentView>;
   listeners: Set<(view: WikiRunView) => void>;
 }
@@ -166,6 +170,12 @@ function startLive(
       const catalog = workspace.database
         ? createPostgresCatalog(await resolveWorkspaceDatabase(workspace.database, workspace.root))
         : undefined;
+      const templates = await resolveWikiTemplatePack(
+        workspace.root,
+        workspace.wiki.templates,
+        record.language ?? workspace.language,
+      );
+      live.templates = templates;
       const context: WikiLeadContext = {
         plan,
         candidateRoot: record.candidateRoot,
@@ -173,6 +183,7 @@ function startLive(
         language: record.language ?? workspace.language,
         resume: flags.resume,
         board,
+        templates,
         ...(catalog ? { catalog } : {}),
         signal: controller.signal,
         async publish() {
@@ -225,7 +236,7 @@ function defaultRunLead(
       options.agentsDirectory,
       (id, agent, task, status) => context.note(id, agent, task, status),
       context.catalog,
-      { maxConcurrency: config.maxConcurrentAgents - 1 },
+      { maxConcurrency: config.maxConcurrentAgents - 1, templates: context.templates },
     );
     const tools: ToolDefinition<any, any, any>[] = [
       ...candidateTools(writeGuardFromPlan(context.plan, context.candidateRoot), LEAD_CANDIDATE_TOOLS),
@@ -273,13 +284,15 @@ function createPublishTool(publish: () => Promise<{ ok: boolean; message: string
 async function publishCandidate(live: LiveRun, language: "zh" | "en"): Promise<{ ok: boolean; message: string }> {
   await verifyPinnedSourcePlan(live.plan);
   const sources = new Map(live.plan.sources.map((source) => [source.scopeId, source.realPath]));
-  const validation = await validateWikiTree(live.record.candidateRoot, sources);
+  const validation = await validateWikiTree(live.record.candidateRoot, sources, live.templates);
   if (!validation.ok) {
     return { ok: false, message: validation.issues.map(formatIssue).join("\n") };
   }
+  const review = await assertReviewPass(live.record.candidateRoot, path.join(path.dirname(live.record.candidateRoot), "handoffs"));
+  if (!review.ok) return review;
   await materializeWikiIndexes(live.record.candidateRoot, language);
   const at = new Date().toISOString();
-  await stampPublication(live.record.candidateRoot, at);
+  await stampPublication(live.record.candidateRoot, at, { reviewed: true, language });
   const wikiRoot = path.join(live.plan.workspaceRoot, "wiki");
   if (await exists(wikiRoot)) await rm(wikiRoot, { recursive: true, force: true });
   await renamePath(live.record.candidateRoot, wikiRoot);
@@ -540,5 +553,5 @@ async function leadPrompt(context: WikiLeadContext): Promise<string> {
   const resume = context.resume
     ? "\nThis is a resumed Run. The Board is the source of truth. Do not restart completed Tasks. Read existing Candidate pages before writing.\n"
     : "";
-  return `${body}\n\n# This run\n\nLanguage: ${context.language}.${focus}${resume}${agents}\nPinned sources:\n${sources}\n${catalog}\n# Board\n\n${board}\n`;
+  return `${body}\n\n# This run\n\nLanguage: ${context.language}.${focus}${resume}${agents}\nPinned sources:\n${sources}\n${catalog}\n${formatWikiTemplatesForPrompt(context.templates)}\n# Board\n\n${board}\n`;
 }

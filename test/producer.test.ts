@@ -6,6 +6,48 @@ import test from "node:test";
 import { git } from "../extensions/wiki/lib/git.js";
 import { writeText } from "../extensions/wiki/lib/files.js";
 import { createProductionWikiProducer } from "../extensions/wiki/lib/producer.js";
+import { loadWikiTemplatePack, packagedTemplatesRoot } from "../extensions/wiki/lib/templates.js";
+
+function mermaidStub(kind: string): string {
+  if (kind === "sequenceDiagram") return "```mermaid\nsequenceDiagram\n  A->>B: call\n```\n";
+  if (kind === "classDiagram") return "```mermaid\nclassDiagram\n  class A\n```\n";
+  if (kind === "stateDiagram-v2") return "```mermaid\nstateDiagram-v2\n  [*] --> A\n```\n";
+  if (kind === "erDiagram") return "```mermaid\nerDiagram\n  A ||--|| B : rel\n```\n";
+  return "```mermaid\nflowchart TD\n  A --> B\n```\n";
+}
+
+async function writeValidCandidate(candidateRoot: string, sourceId = "source") {
+  const pack = await loadWikiTemplatePack(packagedTemplatesRoot("en"));
+  const writePage = async (relative: string, type: string, title: string, extra = "") => {
+    const absolute = path.join(candidateRoot, ...relative.split("/"));
+    await mkdir(path.dirname(absolute), { recursive: true });
+    const sources = type === "Domain"
+      ? ""
+      : [
+        "sources:",
+        "  - id: main",
+        `    resource: ${sourceId}/main.ts#L1`,
+        "    title: main",
+        "",
+      ].join("\n");
+    const footnote = type === "Domain" ? "" : "Claim. [^main]\n\n[^main]: main\n";
+    await writeText(absolute, `---\ntype: ${type}\ntitle: ${title}\ndescription: ${title} description.\n${sources}---\n# ${title}\n\n${footnote}${extra}`);
+  };
+  for (const template of pack.templates) {
+    if (template.optional) continue;
+    const extra = template.diagram?.length ? mermaidStub(template.diagram[0]!) : "";
+    if (template.scope === "wiki") await writePage(template.file, template.type, "Overview", extra);
+    else if (template.scope === "source") await writePage(`${sourceId}/${template.file}`, template.type, sourceId, extra);
+    else if (template.scope === "domain") await writePage(`${sourceId}/runtime/${template.file}`, template.type, "runtime", extra);
+    else await writePage(`${sourceId}/runtime/ready/${template.file}`, template.type, "ready", extra);
+  }
+}
+
+async function writeReviewPass(candidateRoot: string) {
+  const handoffs = path.join(path.dirname(candidateRoot), "handoffs");
+  await mkdir(handoffs, { recursive: true });
+  await writeText(path.join(handoffs, "review-test.md"), "verdict: pass\n");
+}
 
 async function gitRepo(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-run-"));
@@ -23,7 +65,8 @@ test("publish installs a valid Candidate as wiki/", async (t) => {
   const root = await gitRepo(t);
   const producer = createProductionWikiProducer({
     async runLead(context) {
-      await writeText(path.join(context.candidateRoot, "overview.md"), "---\ntype: overview\ntitle: Overview\n---\n# Overview\n");
+      await writeValidCandidate(context.candidateRoot);
+      await writeReviewPass(context.candidateRoot);
       const published = await context.publish();
       assert.equal(published.ok, true);
     },
@@ -32,7 +75,8 @@ test("publish installs a valid Candidate as wiki/", async (t) => {
   const result = await handle.result();
   assert.ok(result.pages.includes("overview.md"));
   const installed = await readFile(path.join(root, "wiki", "overview.md"), "utf8");
-  assert.match(installed, /type: overview/);
+  assert.match(installed, /type: Overview/);
+  assert.match(installed, /verified:/);
   assert.equal((await handle.view()).status, "succeeded");
 });
 
@@ -58,7 +102,8 @@ test("resume continues the same Candidate and Board", async (t) => {
       assert.equal(board.goal, "Auth wiki");
       assert.equal(board.tasks[1]?.status, "in_progress");
       assert.match(await readFile(path.join(context.candidateRoot, "overview.md"), "utf8"), /# Overview/);
-      await writeText(path.join(context.candidateRoot, "overview.md"), "---\ntype: overview\ntitle: Overview\n---\n# Overview\n");
+      await writeValidCandidate(context.candidateRoot);
+      await writeReviewPass(context.candidateRoot);
       const published = await context.publish();
       assert.equal(published.ok, true);
     },
@@ -97,6 +142,34 @@ test("start refuses a paused Run", async (t) => {
   await assert.rejects(() => producer.start({ cwd: root }), /paused; use \/wiki resume/);
 });
 
+test("publish refuses a valid Candidate without a review pass", async (t) => {
+  const root = await gitRepo(t);
+  const producer = createProductionWikiProducer({
+    async runLead(context) {
+      await writeValidCandidate(context.candidateRoot);
+      const published = await context.publish();
+      assert.equal(published.ok, false);
+      assert.match(published.message, /Review is required/);
+    },
+  });
+  const handle = await producer.start({ cwd: root });
+  await assert.rejects(() => handle.result(), /Review is required|failed/);
+});
+
+test("publish refuses a single overview page", async (t) => {
+  const root = await gitRepo(t);
+  const producer = createProductionWikiProducer({
+    async runLead(context) {
+      await writeText(path.join(context.candidateRoot, "overview.md"), "---\ntype: overview\ntitle: Overview\n---\n# Overview\n");
+      const published = await context.publish();
+      assert.equal(published.ok, false);
+      assert.match(published.message, /template|concept cluster/i);
+    },
+  });
+  const handle = await producer.start({ cwd: root });
+  await assert.rejects(() => handle.result(), /template|concept cluster|failed/i);
+});
+
 test("publish refuses a Candidate that is not OKF", async (t) => {
   const root = await gitRepo(t);
   const producer = createProductionWikiProducer({
@@ -124,7 +197,8 @@ test("live view puts nested tools on the named agent and notifies subscribers", 
       context.observe({ scope: "survey-a", id: "s1", tool: "grep", args: { pattern: "Order" }, status: "running" });
       context.observe({ scope: "survey-a", id: "s1", tool: "grep", args: { pattern: "Order" }, status: "complete" });
       context.observe({ scope: "survey-b", id: "s2", tool: "ls", args: { path: "frontend" }, status: "running" });
-      await writeText(path.join(context.candidateRoot, "overview.md"), "---\ntype: overview\ntitle: Overview\n---\n# Overview\n");
+      await writeValidCandidate(context.candidateRoot);
+      await writeReviewPass(context.candidateRoot);
       const published = await context.publish();
       assert.equal(published.ok, true);
     },
@@ -166,7 +240,8 @@ test("board writes notify subscribers and tool tails stay capped", async (t) => 
         context.observe({ id: `t${index}`, tool: "read", args: { path: `src/${index}.ts` }, status: "complete" });
       }
       context.observe({ id: "live", tool: "grep", args: { pattern: "x" }, status: "running" });
-      await writeText(path.join(context.candidateRoot, "overview.md"), "---\ntype: overview\ntitle: Overview\n---\n# Overview\n");
+      await writeValidCandidate(context.candidateRoot);
+      await writeReviewPass(context.candidateRoot);
       assert.equal((await context.publish()).ok, true);
     },
   });
@@ -194,7 +269,8 @@ test("unsubscribe stops live view delivery", async (t) => {
     async runLead(context) {
       contextReady(context);
       await hold;
-      await writeText(path.join(context.candidateRoot, "overview.md"), "---\ntype: overview\ntitle: Overview\n---\n# Overview\n");
+      await writeValidCandidate(context.candidateRoot);
+      await writeReviewPass(context.candidateRoot);
       assert.equal((await context.publish()).ok, true);
     },
   });

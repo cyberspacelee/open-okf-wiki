@@ -186,6 +186,30 @@ test("wiki config accepts runtime controls and rejects removed controls", async 
   await assert.rejects(loadWikiWorkspace(root), /unknown field/);
 });
 
+test("wiki.templates is a relative Workspace path", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-templates-config-"));
+  temporaryDirectories.push(parent);
+  const root = await repository(parent, "configured");
+  const configPath = path.join(root, "workspace.yaml");
+  const config = (templates) => [
+    "version: 1",
+    "language: zh",
+    "defaultSourceIgnores: true",
+    "wiki:",
+    "  exclude: []",
+    `  templates: ${templates}`,
+    "sources: []",
+    "",
+  ].join("\n");
+  await writeFile(configPath, config("wiki-templates"));
+  const loaded = await loadWikiWorkspace(root);
+  assert.equal(loaded.wiki.templates, "wiki-templates");
+  await writeFile(configPath, config("../outside"));
+  await assert.rejects(loadWikiWorkspace(root), /relative path/);
+  await writeFile(configPath, config("/abs/path"));
+  await assert.rejects(loadWikiWorkspace(root), /relative path/);
+});
+
 test("version errors identify the exact workspace config and require numeric version 1", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-version-"));
   temporaryDirectories.push(parent);

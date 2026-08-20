@@ -4,6 +4,19 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 
 ## [Unreleased]
 
+### Breaking: OKF v0.2 bundle
+
+- Packaged `templates/zh` and `templates/en` are the page contract,
+  selected by Workspace `language`. Companion file is `architecture.md`
+  with `type: Architecture` (Title Case). Generated pages need
+  `description` and `sources`; claims use `[^id]` footnotes, not
+  `[label](scope/path#Lx)`.
+- Publish requires a review handoff `verdict: pass` newer than Candidate
+  pages. `verified` is stamped only then (`process:open-okf-wiki-review`).
+  Host writes root `log.md`. `index.md` entries include descriptions.
+- `wiki.templates` replaces the whole pack. Publish rejects a single
+  `overview.md` and missing required companion pages.
+
 ### Handoff
 
 - Survey and other subagent results are written under

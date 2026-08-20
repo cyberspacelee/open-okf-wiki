@@ -19,10 +19,18 @@ or
 verdict: changes_requested
 ```
 
-Then list evidence. Request changes when a slug or title is translation-only
-(missing the source identifier), when `flows.md` / `models.md` / `states.md` /
-`data.md` has no mermaid fence, or when mermaid node IDs are translated names
-instead of types, classes, modules, or tables. Also flag missing citations,
-invented paths, thin stubs, and topology mistakes.
+Then list evidence. Request changes when:
 
-Prefer `pass` when pages are grounded enough to install.
+- a required template page is missing
+- `type` is not the template Title Case value
+- `title` or `description` is missing
+- `sources` is missing where required, a footnote `[^id]` has no `sources[].id`,
+  or a body still uses `[label](scope/path#Lx)` instead of footnotes
+- `scope`, `diagram`, or `optional` leaked onto a page
+- a diagram page has no mermaid fence or the wrong diagram kind
+- mermaid node IDs are translated names instead of types, classes, modules, or tables
+- Wiki links point at missing pages
+- citations, invented paths, thin stubs, or topology mistakes
+
+Prefer `pass` when pages are grounded enough to install. Publish needs this
+handoff, and Candidate writes after a pass make the review stale.
