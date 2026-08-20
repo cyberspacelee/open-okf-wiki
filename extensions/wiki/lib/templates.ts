@@ -2,12 +2,13 @@ import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parsePage } from "./frontmatter.js";
+import { markdownStructure } from "./markdown-structure.js";
 import { isSafeWikiPagePath } from "./path.js";
 
 const WIKI_TEMPLATE_SCOPES = ["wiki", "source", "domain", "concept"] as const;
 export type WikiTemplateScope = (typeof WIKI_TEMPLATE_SCOPES)[number];
 
-export const HOST_PAGE_KEYS = ["scope", "diagram", "optional"] as const;
+export const HOST_PAGE_KEYS = ["scope", "diagram", "optional", "instructions"] as const;
 const TEMPLATE_FIELDS = new Set(["type", ...HOST_PAGE_KEYS]);
 const SCOPE_SET = new Set<string>(WIKI_TEMPLATE_SCOPES);
 const DIAGRAM_KIND = /^[A-Za-z][A-Za-z0-9-]*$/;
@@ -18,12 +19,20 @@ export interface WikiTemplate {
   scope: WikiTemplateScope;
   diagram?: string[];
   optional: boolean;
+  instructions: string;
+  sections: string[];
   body: string;
 }
 
 export interface WikiTemplatePack {
   directory: string;
   templates: WikiTemplate[];
+}
+
+export function anchorTemplate(pack: WikiTemplatePack, scope: WikiTemplateScope): WikiTemplate {
+  const template = pack.templates.find((candidate) => candidate.scope === scope && !candidate.optional);
+  if (!template) throw new Error(`Wiki templates have no ${scope} anchor`);
+  return template;
 }
 
 export function packagedTemplatesRoot(language: "zh" | "en"): string {
@@ -67,6 +76,12 @@ export async function loadWikiTemplatePack(directory: string): Promise<WikiTempl
     const text = await readFile(path.join(root, entry.name), "utf8");
     templates.push(parseWikiTemplate(entry.name, text));
   }
+  for (const scope of WIKI_TEMPLATE_SCOPES) {
+    const anchors = templates.filter((template) => template.scope === scope && !template.optional);
+    if (anchors.length !== 1) {
+      throw new Error(`Wiki templates require exactly one non-optional ${scope} template, found ${anchors.length}`);
+    }
+  }
   return { directory: root, templates };
 }
 
@@ -88,13 +103,30 @@ export function parseWikiTemplate(filename: string, text: string): WikiTemplate 
   if (typeof type !== "string" || !type.trim()) throw new Error(`${filename} type must be a non-empty string`);
   const optional = parsed.frontmatter.optional === undefined ? false : parsed.frontmatter.optional;
   if (typeof optional !== "boolean") throw new Error(`${filename} optional must be true or false`);
+  const instructions = parsed.frontmatter.instructions;
+  if (typeof instructions !== "string" || !instructions.trim()) {
+    throw new Error(`${filename} instructions must be a non-empty string`);
+  }
   const diagram = parseDiagram(filename, parsed.frontmatter.diagram);
+  const structure = markdownStructure(parsed.body);
+  const h1 = structure.headings.filter((heading) => heading.level === 1);
+  if (h1.length !== 1 || h1[0]?.title !== "{{title}}") {
+    throw new Error(`${filename} body must have exactly one # {{title}} heading`);
+  }
+  if (structure.summary !== "{{description}}") {
+    throw new Error(`${filename} body must put {{description}} between the title and first H2`);
+  }
+  const sections = structure.sections.map((section) => section.title);
+  if (!sections.length) throw new Error(`${filename} body must declare at least one H2 section`);
+  if (new Set(sections).size !== sections.length) throw new Error(`${filename} body has duplicate H2 sections`);
   return {
     file: filename,
     type: type.trim(),
     scope: scope as WikiTemplateScope,
     ...(diagram ? { diagram } : {}),
     optional,
+    instructions: instructions.trim(),
+    sections,
     body: parsed.body,
   };
 }
@@ -103,19 +135,20 @@ export function formatWikiTemplatesForPrompt(pack: WikiTemplatePack): string {
   if (!pack.templates.length) return "";
   const line = (template: WikiTemplate) => {
     const diagram = template.diagram?.length ? ` — mermaid ${template.diagram.join(" | ")}` : "";
-    return `- \`${template.file}\` — ${template.scope} — type \`${template.type}\`${diagram}`;
+    const role = template.optional ? "optional" : "anchor";
+    return `- \`${template.file}\` — ${template.scope} ${role} — type \`${template.type}\`${diagram}`;
   };
   const required = pack.templates.filter((template) => !template.optional);
   const optional = pack.templates.filter((template) => template.optional);
   const sections = [
     "## Page templates",
     "",
-    "The Workspace template pack is the page contract. Write every required file at its scope.",
-    "Optional files only when the survey lists them for that concept.",
-    "Do not omit a required template because an aspect seems absent — write the page and say so.",
-    "Candidate frontmatter is type, title, description, and sources only. Do not copy scope, diagram, or optional onto pages.",
+    "The Workspace template pack is the page contract. Write its four anchor files at their scopes.",
+    "Write an optional file only when the survey lists it at that source, domain, or concept with evidence.",
+    "Candidate frontmatter is type, title, description, and sources only. Template fields never appear on pages.",
     "Attribute claims with [^id] footnotes whose id matches sources[].id. Resource locators are scope/path#Lx against pinned sources.",
-    "Keep mermaid fences under the diagram heading. Replace example node IDs with source identifiers, not translations.",
+    "Copy the skeleton H1 and H2 order exactly. Fill every H2 section. H3 subsections are allowed.",
+    "Replace every {{placeholder}}. Mermaid nodes use source identifiers, not translations.",
     "This is an OKF bundle for later agents. They start at wiki/index.md.",
     "",
     "Required:",
@@ -125,7 +158,16 @@ export function formatWikiTemplatesForPrompt(pack: WikiTemplatePack): string {
     sections.push("", "Optional (survey lists which apply):", ...optional.map(line));
   }
   for (const template of pack.templates) {
-    sections.push("", `### ${template.file}`, "", template.body.trimEnd());
+    sections.push(
+      "",
+      `### ${template.file}`,
+      "",
+      "Instructions:",
+      template.instructions,
+      "",
+      "Skeleton:",
+      template.body.trimEnd(),
+    );
   }
   return `${sections.join("\n")}\n`;
 }

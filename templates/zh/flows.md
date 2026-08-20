@@ -1,24 +1,31 @@
 ---
 type: Flow
-scope: concept
+scope: domain
 diagram:
   - sequenceDiagram
   - flowchart
+optional: true
+instructions: >-
+  为有源码证据的跨 Concept 运行场景生成这个 Domain 页面，覆盖主路径、分支、失败、副作用和可观察的验证结果。
 ---
 
 # {{title}}
 
 {{description}}
 
-# 参与者
+## 场景与触发
 
-节点 ID 用源码标识符，不要翻译名。
+## 参与者
 
-# 图
+## 主路径
+
+## 分支与失败
+
+## 副作用与验证
+
+## 图
 
 ```mermaid
 sequenceDiagram
-  CheckoutSession->>PaymentGateway: charge
+  {{diagram}}
 ```
-
-# 消费注意

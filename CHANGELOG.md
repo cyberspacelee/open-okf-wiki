@@ -4,6 +4,17 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 
 ## [Unreleased]
 
+### Breaking: agent-oriented template contract
+
+- Every template requires writer-only `instructions`; its body defines the
+  exact H1, summary, and ordered non-empty H2 contract for generated pages.
+- Each scope has one required anchor. Architecture and flows moved to optional
+  Domain pages; models, states, data, and interfaces are optional Concept pages;
+  development and runbook are optional Source pages.
+- Publish rejects undeclared pages, wrong scope depth, heading drift, empty
+  sections, unresolved placeholders, and missing sources on any page. Generated
+  indexes use anchor titles and descriptions for every directory branch.
+
 ### Breaking: OKF v0.2 bundle
 
 - Packaged `templates/zh` and `templates/en` are the page contract,
@@ -16,7 +27,7 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
   Host writes root `log.md`. `index.md` entries include descriptions.
 - `/wiki init` copies the language pack into `wiki-templates/` and sets
   `wiki.templates`. The field replaces the whole pack. Publish rejects a
-  single `overview.md` and missing required companion pages.
+  single `overview.md` and missing scope anchors.
 
 ### Handoff
 

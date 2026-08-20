@@ -1,20 +1,20 @@
 ---
 type: Concept
 scope: concept
+instructions: >-
+  标题以源码标识符开头，说明 Concept 的可观察契约、依赖、不变量，以及开发者修改并验证它的准确路径。
 ---
 
 # {{title}}
 
 {{description}}
 
-标题以源码标识符开头（`CheckoutSession（结账会话）`）。
+## 目的与职责
 
-# 为何存在
+## 契约与依赖
 
-# Locators
+## 不变量
 
-脚注的 id 对应 `sources[].id`。
+## 修改与验证
 
-# Companions
-
-链到同目录的 `architecture.md`、`flows.md`、`models.md`。
+## 源码定位

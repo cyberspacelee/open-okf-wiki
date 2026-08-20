@@ -18,23 +18,24 @@ writes or reads. Table names are identifiers too. Do not invent tables.
 The host saves this markdown as a handoff file for the writer. Return the
 complete inventory; do not write Wiki pages.
 
-The run prompt includes the Workspace template pack. Required templates are
-always written. For each concept, list which **optional** templates apply,
-with a locator. Omit an optional template from that list only when you opened
-the entry files and the aspect is absent.
+The run prompt lists one anchor template per scope plus optional templates.
+For the Source, each Domain, and each Concept, list the optional templates
+supported by source evidence. Every selection needs a locator. A template is
+absent from the list when the aspect is absent or ungrounded.
 
 Return markdown only:
 
 ## Source
-Directory name, one-sentence description, and what the tree is.
+Directory name, one-sentence description, what the tree is, entry locators,
+and optional Source templates that apply.
 
 ## Domains
 Slug, identifier-leading title, one-sentence description, entry locators
-`scope/path#Lx`.
+`scope/path#Lx`, and optional Domain templates that apply.
 
 ## Concepts
 Per domain: slug, identifier-leading title, one-sentence description,
-locators as `scope/path#Lx`, optional templates that apply.
+locators as `scope/path#Lx`, and optional Concept templates that apply.
 
 ## Tables
 Matching Catalog tables and which concept they belong to. Default: none.

@@ -146,15 +146,15 @@ workspaces have no database block.
 
 Packaged defaults are `templates/zh/` and `templates/en/`, chosen by
 `language`. They are the page contract: which files exist at wiki /
-source / domain / concept, and which of those need a mermaid diagram.
+source / domain / concept, their fixed sections, and which need a mermaid diagram.
 `/wiki init` copies the pack for `language` into `wiki-templates/` and
 sets `wiki.templates: wiki-templates`. Edit those files in the Workspace
-repository. Adding `architecture.md` or dropping `states.md` customizes
-the Wiki; do not invent a second overlay. Unset `wiki.templates` to use
+repository. The pack replaces the defaults as a whole. Unset `wiki.templates` to use
 the packaged pack instead.
-Headings and writer instructions follow the pack language; `type` stays
-English Title Case (`Architecture`); mermaid node IDs stay source
-identifiers. Consuming agents start at `wiki/index.md`.
+Each scope has exactly one non-optional anchor; every other template is
+evidence-selected. Headings and writer instructions follow the pack language;
+`type` stays English Title Case and mermaid node IDs stay source identifiers.
+Consuming agents start at `wiki/index.md`.
 
 ```yaml
 wiki:
@@ -168,21 +168,22 @@ Each template is a markdown file. Filename is the page name. Frontmatter:
 | `type` | OKF `type` on the generated page (Title Case, e.g. `Architecture`) | filename without `.md` |
 | `scope` | `wiki` / `source` / `domain` / `concept` | `concept` |
 | `diagram` | mermaid kind, or a list of kinds | no mermaid check |
-| `optional` | survey may skip this file | `false` (required) |
+| `optional` | survey may select this file at its scope | `false` (scope anchor) |
+| `instructions` | writer-only completion criteria | required |
 
-`scope` / `diagram` / `optional` stay on the template file. Generated pages
+`scope` / `diagram` / `optional` / `instructions` stay on the template file. Generated pages
 carry `type`, `title`, `description`, and `sources`. Claims use `[^id]`
 footnotes keyed to `sources[].id`. `sources[].resource` is
 `<scopeId>/path#Lx`.
 
-The body is both the writer brief and the skeleton. Keep mermaid fences
-under the diagram heading. Placeholders: `{{title}}`, `{{slug}}`,
-`{{description}}`. Path shape stays `<source>/<domain>/<concept>/`.
+`instructions` tells the writer what evidence completes the page. The body is
+the output skeleton: exactly `# {{title}}`, then `{{description}}`, then fixed,
+unique `##` sections. Generated pages preserve that H2 order, fill every
+section, and contain no `{{placeholder}}`. H3 subsections remain available.
 
-Publication fails when a required template is missing, when there is no
-concept cluster, when a diagram page has no matching mermaid fence, when
-`description` / `sources` are missing, or when review has not passed on
-the current Candidate.
+Publication fails on an undeclared page, wrong scope depth, missing anchor or
+concept cluster, heading drift, an empty section, an unresolved placeholder,
+invalid diagram, missing source evidence, broken Wiki link, or stale review.
 
 ## Published layout
 
@@ -191,15 +192,17 @@ wiki/index.md
 wiki/log.md
 wiki/overview.md
 wiki/<source>/source.md
-wiki/<source>/<domain>/domain.md
+wiki/<source>/development.md | runbook.md
+wiki/<source>/<domain>/domain.md | architecture.md | flows.md
 wiki/<source>/<domain>/<concept>/concept.md
-wiki/<source>/<domain>/<concept>/architecture.md | flows.md | models.md | …
+wiki/<source>/<domain>/<concept>/interfaces.md | models.md | states.md | data.md
 ```
 
-Filenames at each layer come from the template pack. The host generates
-every `index.md` and root `log.md`. Wiki-to-wiki links are standard
-markdown. Publication validates OKF, paths, templates, sources, and
-review, then installs the Candidate as `wiki/`.
+Filenames at each layer come from the template pack. The host generates every
+`index.md` and root `log.md`. Each index uses the next scope's anchor title and
+description, so agents can choose a branch without opening it. Wiki-to-wiki
+links are standard markdown. Publication validates OKF, paths, templates,
+sources, and review, then installs the Candidate as `wiki/`.
 
 Lead sessions use Pi auto-compaction. Wiki sessions do not inherit other
 project or user Pi settings.

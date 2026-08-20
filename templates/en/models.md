@@ -2,23 +2,26 @@
 type: Model
 scope: concept
 diagram: classDiagram
+optional: true
+instructions: >-
+  Generate this page when several source types form a meaningful model. Record relationships, validation rules, and compatibility constraints, not a raw symbol dump.
 ---
 
 # {{title}}
 
 {{description}}
 
-# Types
+## Types
 
-Node IDs are source identifiers, not translations.
+## Relationships
 
-# Diagram
+## Invariants and validation
+
+## Serialization and compatibility
+
+## Diagram
 
 ```mermaid
 classDiagram
-  class CheckoutSession {
-    +id string
-  }
+  {{diagram}}
 ```
-
-# Notes for consumers

@@ -49,15 +49,16 @@ Default sequence:
 2. If a Catalog is configured, list then describe the relevant tables.
 3. Survey each source (`survey`) in one `tasks[]` call if there are several.
 4. Write the Wiki pages (`write` subagent) from the template pack in this
-   run prompt. Required templates are not optional.
+   run prompt. Write every scope anchor and only the evidence-backed optional
+   pages selected by survey.
 5. Review the Candidate (`review`). If it requests changes, call `write`
    again, then review again.
 6. `publish` only after review returns `verdict: pass`.
 
 When briefing `write`, name the survey handoff files and copy slugs,
 descriptions, and locators from them verbatim. Slugs are source identifiers
-(`checkout-session`), not translations. Tell write which **optional**
-templates the survey listed.
+(`checkout-session`), not translations. List the optional templates selected
+for each Source, Domain, and Concept; selection never flows to another scope.
 
 Topology (path is the concept id). Filenames at each layer come from the
 template pack:
@@ -70,9 +71,9 @@ wiki/<source>/<domain>/<concept>/<concept-template>
 ```
 
 Host generates every `index.md` and `log.md`. Every page needs YAML `type`
-(Title Case from the template), `title`, and `description`. Concept, overview,
-and source pages need `sources`. Use standard Markdown links between Wiki
-pages (`/source/domain/concept/architecture.md` or `./architecture.md`).
+(Title Case from the template), `title`, `description`, and `sources`. Use
+standard Markdown links between Wiki pages. Domain architecture and flow pages
+link Concepts; Concept facet pages sit beside `concept.md`.
 
 ## Finish
 

@@ -1,16 +1,18 @@
 ---
 type: Domain
 scope: domain
+instructions: >-
+  State what this Domain owns and excludes, map its Concepts by source identifier, and record invariants and change impact that are expensive to rediscover.
 ---
 
 # {{title}}
 
 {{description}}
 
-# Responsibility
+## Responsibilities and boundaries
 
-Name this domain from a source identifier. Cite the entry files.
+## Concept map
 
-# Concepts
+## Invariants
 
-Link each concept directory.
+## Change impact

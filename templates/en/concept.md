@@ -1,20 +1,20 @@
 ---
 type: Concept
 scope: concept
+instructions: >-
+  Lead the title with the source identifier. Explain the Concept's observable contract, dependencies, invariants, and the exact edit-and-verify path for a developer.
 ---
 
 # {{title}}
 
 {{description}}
 
-Title leads with the source identifier (`CheckoutSession（结账会话）`).
+## Purpose and responsibilities
 
-# Why it exists
+## Contract and dependencies
 
-# Locators
+## Invariants
 
-Footnotes keyed to `sources[].id`.
+## Changes and verification
 
-# Companions
-
-Link `architecture.md`, `flows.md`, and `models.md` beside this file.
+## Source locators

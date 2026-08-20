@@ -17,29 +17,42 @@ function mermaidStub(kind: string): string {
 }
 
 async function writeValidCandidate(candidateRoot: string, sourceId = "source") {
-  const pack = await loadWikiTemplatePack(packagedTemplatesRoot("en"));
-  const writePage = async (relative: string, type: string, title: string, extra = "") => {
+  const pack = await loadWikiTemplatePack(packagedTemplatesRoot("zh"));
+  const writePage = async (relative: string, template: (typeof pack.templates)[number], title: string) => {
     const absolute = path.join(candidateRoot, ...relative.split("/"));
     await mkdir(path.dirname(absolute), { recursive: true });
-    const sources = type === "Domain"
-      ? ""
-      : [
-        "sources:",
-        "  - id: main",
-        `    resource: ${sourceId}/main.ts#L1`,
-        "    title: main",
-        "",
-      ].join("\n");
-    const footnote = type === "Domain" ? "" : "Claim. [^main]\n\n[^main]: main\n";
-    await writeText(absolute, `---\ntype: ${type}\ntitle: ${title}\ndescription: ${title} description.\n${sources}---\n# ${title}\n\n${footnote}${extra}`);
+    const description = `${title} description.`;
+    const sections = template.sections.map((section, index) => {
+      const diagram = template.diagram?.length && index === template.sections.length - 1
+        ? mermaidStub(template.diagram[0]!)
+        : `${section} is grounded here. [^main]\n`;
+      return `## ${section}\n\n${diagram}`;
+    }).join("\n");
+    await writeText(absolute, [
+      "---",
+      `type: ${template.type}`,
+      `title: ${title}`,
+      `description: ${description}`,
+      "sources:",
+      "  - id: main",
+      `    resource: ${sourceId}/main.ts#L1`,
+      "    title: main",
+      "---",
+      `# ${title}`,
+      "",
+      description,
+      "",
+      sections,
+      "[^main]: main",
+      "",
+    ].join("\n"));
   };
   for (const template of pack.templates) {
     if (template.optional) continue;
-    const extra = template.diagram?.length ? mermaidStub(template.diagram[0]!) : "";
-    if (template.scope === "wiki") await writePage(template.file, template.type, "Overview", extra);
-    else if (template.scope === "source") await writePage(`${sourceId}/${template.file}`, template.type, sourceId, extra);
-    else if (template.scope === "domain") await writePage(`${sourceId}/runtime/${template.file}`, template.type, "runtime", extra);
-    else await writePage(`${sourceId}/runtime/ready/${template.file}`, template.type, "ready", extra);
+    if (template.scope === "wiki") await writePage(template.file, template, "Overview");
+    else if (template.scope === "source") await writePage(`${sourceId}/${template.file}`, template, sourceId);
+    else if (template.scope === "domain") await writePage(`${sourceId}/runtime/${template.file}`, template, "runtime");
+    else await writePage(`${sourceId}/runtime/ready/${template.file}`, template, "ready");
   }
 }
 
@@ -68,7 +81,7 @@ test("publish installs a valid Candidate as wiki/", async (t) => {
       await writeValidCandidate(context.candidateRoot);
       await writeReviewPass(context.candidateRoot);
       const published = await context.publish();
-      assert.equal(published.ok, true);
+      assert.equal(published.ok, true, published.message);
     },
   });
   const handle = await producer.start({ cwd: root, focus: "runtime" });
@@ -77,6 +90,11 @@ test("publish installs a valid Candidate as wiki/", async (t) => {
   const installed = await readFile(path.join(root, "wiki", "overview.md"), "utf8");
   assert.match(installed, /type: Overview/);
   assert.match(installed, /verified:/);
+  const rootIndex = await readFile(path.join(root, "wiki", "index.md"), "utf8");
+  assert.match(rootIndex, /## 目录/);
+  assert.match(rootIndex, /\[source\]\(\.\/source\/index\.md\) - source description\./);
+  const sourceIndex = await readFile(path.join(root, "wiki", "source", "index.md"), "utf8");
+  assert.match(sourceIndex, /\[runtime\]\(\.\/runtime\/index\.md\) - runtime description\./);
   assert.equal((await handle.view()).status, "succeeded");
 });
 
@@ -105,7 +123,7 @@ test("resume continues the same Candidate and Board", async (t) => {
       await writeValidCandidate(context.candidateRoot);
       await writeReviewPass(context.candidateRoot);
       const published = await context.publish();
-      assert.equal(published.ok, true);
+      assert.equal(published.ok, true, published.message);
     },
   });
   const handle = await producer.start({ cwd: root, focus: "auth" });

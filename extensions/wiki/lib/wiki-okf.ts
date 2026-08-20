@@ -6,13 +6,15 @@ import { HOST_PAGE_KEYS } from "./templates.js";
 import { WikiValidationInfrastructureError, errorMessage } from "./failures.js";
 import { inside, readText, writeText } from "./files.js";
 import { parsePage, stringifyPage } from "./frontmatter.js";
+import { markdownStructure, sectionHasContent } from "./markdown-structure.js";
 import { isReservedWikiPagePath, isSafeWikiPagePath } from "./path.js";
-import type { WikiTemplate, WikiTemplatePack } from "./templates.js";
+import { anchorTemplate, type WikiTemplate, type WikiTemplatePack, type WikiTemplateScope } from "./templates.js";
 
 export const GENERATED_BY = "open-okf-wiki/1.0.0";
 export const VERIFIED_BY = "process:open-okf-wiki-review";
 
 const MERMAID_KIND = /```mermaid[^\n]*\r?\n\s*([A-Za-z][A-Za-z0-9-]*)/;
+const SCOPE_DEPTH: Record<WikiTemplateScope, number> = { wiki: 1, source: 2, domain: 3, concept: 4 };
 
 export interface WikiValidationIssue {
   code: string;
@@ -102,7 +104,9 @@ export async function validateWikiTree(
     }
   }
   for (const page of loaded) {
-    issues.push(...pageContractIssues(page.relative, page.filename, page.parsed, byFile.get(page.filename), pack, sourceRoots));
+    const template = byFile.get(page.filename);
+    if (pack) issues.push(...templatePlacementIssues(page.relative, template, sourceRoots));
+    issues.push(...pageContractIssues(page.relative, page.filename, page.parsed, template, pack, sourceRoots));
     for (const target of wikiLinkTargets(page.relative, page.parsed.body)) {
       if (!wikiTargetExists(target, pages)) {
         issues.push({ code: "link", page: page.relative, message: `Wiki link missing ${target}` });
@@ -137,15 +141,80 @@ function pageContractIssues(
         issues.push({ code: "okf", page: relative, message: `${key} is a template-pack field and must not appear on pages` });
       }
     }
-    const needsSources = !template || template.scope !== "domain";
-    if (needsSources && parsed.frontmatter.sources === undefined) {
+    if (parsed.frontmatter.sources === undefined) {
       issues.push({ code: "citation", page: relative, message: "sources is required" });
     }
+    if (template) issues.push(...markdownContractIssues(relative, parsed, template, title, description));
   }
   if (template?.diagram?.length) issues.push(...mermaidIssues(relative, parsed.body, template));
   const citations = extractOkfSources(parsed.frontmatter, parsed.body, (citation) => sourceFileLines(sourceRoots, citation));
   for (const invalid of citations.invalid) {
     issues.push({ code: "citation", page: relative, message: invalid });
+  }
+  return issues;
+}
+
+function templatePlacementIssues(
+  relative: string,
+  template: WikiTemplate | undefined,
+  sourceRoots: ReadonlyMap<string, string>,
+): WikiValidationIssue[] {
+  if (!template) {
+    return [{ code: "template", page: relative, message: "Page filename is not declared by the Wiki template pack" }];
+  }
+  const segments = relative.split("/");
+  const issues: WikiValidationIssue[] = [];
+  if (segments.length !== SCOPE_DEPTH[template.scope]) {
+    issues.push({
+      code: "template",
+      page: relative,
+      message: `${template.file} has ${template.scope} scope and must be at depth ${SCOPE_DEPTH[template.scope]}`,
+    });
+  }
+  if (template.scope !== "wiki" && segments[0] && !sourceRoots.has(segments[0])) {
+    issues.push({ code: "template", page: relative, message: `Unknown Source directory ${segments[0]}` });
+  }
+  return issues;
+}
+
+function markdownContractIssues(
+  relative: string,
+  parsed: { frontmatter: Record<string, unknown>; body: string },
+  template: WikiTemplate,
+  title: string,
+  description: string,
+): WikiValidationIssue[] {
+  const structure = markdownStructure(parsed.body);
+  const issues: WikiValidationIssue[] = [];
+  const h1 = structure.headings.filter((heading) => heading.level === 1);
+  if (h1.length !== 1) {
+    issues.push({ code: "markdown", page: relative, message: "Page must have exactly one H1" });
+  } else if (title && h1[0]?.title !== title) {
+    issues.push({ code: "markdown", page: relative, message: "H1 must equal frontmatter title" });
+  }
+  if (description && structure.summary !== description) {
+    issues.push({ code: "markdown", page: relative, message: "Summary below H1 must equal frontmatter description" });
+  }
+  const actualSections = structure.sections.map((section) => section.title);
+  if (actualSections.length !== template.sections.length
+    || actualSections.some((section, index) => section !== template.sections[index])) {
+    issues.push({
+      code: "markdown",
+      page: relative,
+      message: `H2 sections must be exactly: ${template.sections.join(" | ")}`,
+    });
+  }
+  for (const section of structure.sections) {
+    if (template.sections.includes(section.title) && !sectionHasContent(section)) {
+      issues.push({ code: "markdown", page: relative, message: `H2 section is empty: ${section.title}` });
+    }
+  }
+  if (structure.placeholders.length) {
+    issues.push({
+      code: "markdown",
+      page: relative,
+      message: `Unresolved template placeholder: ${structure.placeholders[0]}`,
+    });
   }
   return issues;
 }
@@ -226,7 +295,8 @@ function topologyIssues(
 ): WikiValidationIssue[] {
   const issues: WikiValidationIssue[] = [];
   const present = new Set(pages);
-  const required = (scope: WikiTemplate["scope"]) => pack.templates.filter((template) => template.scope === scope && !template.optional);
+  const required = (scope: WikiTemplate["scope"]) => [anchorTemplate(pack, scope)];
+  const domainFiles = new Set(pack.templates.filter((template) => template.scope === "domain").map((template) => template.file));
   const conceptFiles = new Set(pack.templates.filter((template) => template.scope === "concept").map((template) => template.file));
   const conceptDirs = [...new Set(
     pages
@@ -250,7 +320,13 @@ function topologyIssues(
   if (required("concept").length && !conceptDirs.length) {
     issues.push({ code: "topology", message: "Wiki requires at least one concept cluster" });
   }
-  const domainDirs = [...new Set(conceptDirs.map((directory) => path.posix.dirname(directory)))].sort();
+  const domainDirs = [...new Set([
+    ...conceptDirs.map((directory) => path.posix.dirname(directory)),
+    ...pages
+      .filter((page) => domainFiles.has(page.split("/").at(-1) ?? ""))
+      .map((page) => path.posix.dirname(page))
+      .filter((directory) => directory.split("/").length === 2),
+  ])].sort();
   for (const directory of domainDirs) {
     for (const template of required("domain")) {
       const page = `${directory}/${template.file}`;
@@ -270,13 +346,17 @@ function topologyIssues(
   return issues;
 }
 
-export async function materializeWikiIndexes(wikiRoot: string, language: "zh" | "en"): Promise<string[]> {
+export async function materializeWikiIndexes(
+  wikiRoot: string,
+  language: "zh" | "en",
+  pack: WikiTemplatePack,
+): Promise<string[]> {
   const tree = await scanWikiTree(wikiRoot);
   const pages = tree.markdown.filter((page) => !isReservedWikiPagePath(page) && isSafeWikiPagePath(page));
   const indexes = derivedIndexPaths(pages);
   const written: string[] = [];
   for (const indexPath of indexes) {
-    const content = await renderIndex(wikiRoot, indexPath, pages, language);
+    const content = await renderIndex(wikiRoot, indexPath, pages, language, pack);
     const absolute = indexPath === "index.md" ? path.join(wikiRoot, "index.md") : safeWikiPath(wikiRoot, indexPath);
     await mkdir(path.dirname(absolute), { recursive: true });
     await writeText(absolute, content);
@@ -331,6 +411,7 @@ async function renderIndex(
   indexPath: string,
   pages: readonly string[],
   language: "zh" | "en",
+  pack: WikiTemplatePack,
 ): Promise<string> {
   const relativeDirectory = path.posix.dirname(indexPath) === "." ? "" : path.posix.dirname(indexPath);
   const directPages = pages
@@ -342,43 +423,53 @@ async function renderIndex(
       .map((candidate) => path.posix.dirname(candidate) === "." ? "" : path.posix.dirname(candidate))
       .filter((directory) => directory && (path.posix.dirname(directory) === "." ? "" : path.posix.dirname(directory)) === relativeDirectory),
   )].sort();
-  const title = relativeDirectory ? path.posix.basename(relativeDirectory) : (language === "zh" ? "仓库 Wiki" : "Repository Wiki");
+  const anchor = anchorTemplate(pack, directoryScope(relativeDirectory));
+  const anchorPath = relativeDirectory ? `${relativeDirectory}/${anchor.file}` : anchor.file;
+  const identity = await pageIdentity(wikiRoot, anchorPath);
+  const title = identity.title;
   const intro = language === "zh"
     ? "从本页开始，按描述打开子目录或页面，不要一次读完整包。"
     : "Start here. Open a child index or page from the descriptions; do not ingest the whole bundle.";
   const lines = indexPath === "index.md"
-    ? ["---", 'okf_version: "0.2"', "---", "", `# ${title}`, "", intro, ""]
-    : [`# ${title}`, ""];
+    ? ["---", 'okf_version: "0.2"', "---", "", `# ${title}`, "", identity.description, "", intro, ""]
+    : [`# ${title}`, "", identity.description, ""];
   if (childDirs.length) {
-    lines.push("## Directories", "");
+    lines.push(language === "zh" ? "## 目录" : "## Directories", "");
     for (const child of childDirs) {
       const name = path.posix.basename(child);
-      lines.push(`* [${name}](./${name}/index.md)`);
+      const childAnchor = anchorTemplate(pack, directoryScope(child));
+      const childIdentity = await pageIdentity(wikiRoot, `${child}/${childAnchor.file}`);
+      lines.push(`* [${childIdentity.title}](./${name}/index.md) - ${childIdentity.description}`);
     }
     lines.push("");
   }
   if (directPages.length) {
-    lines.push("## Pages", "");
+    lines.push(language === "zh" ? "## 页面" : "## Pages", "");
     for (const page of directPages) {
       const name = path.posix.basename(page);
-      let label = name.slice(0, -3);
-      let description = "";
-      try {
-        const parsed = parsePage(await readText(safeWikiPath(wikiRoot, page)));
-        if (typeof parsed.frontmatter.title === "string" && parsed.frontmatter.title.trim()) {
-          label = parsed.frontmatter.title.trim();
-        }
-        if (typeof parsed.frontmatter.description === "string" && parsed.frontmatter.description.trim()) {
-          description = parsed.frontmatter.description.trim();
-        }
-      } catch {
-        // keep filename
-      }
-      lines.push(description ? `* [${label}](./${name}) - ${description}` : `* [${label}](./${name})`);
+      const pageInfo = await pageIdentity(wikiRoot, page);
+      lines.push(`* [${pageInfo.title}](./${name}) - ${pageInfo.description}`);
     }
     lines.push("");
   }
   return `${lines.join("\n").trimEnd()}\n`;
+}
+
+function directoryScope(directory: string): WikiTemplateScope {
+  const depth = directory ? directory.split("/").length : 0;
+  if (depth === 0) return "wiki";
+  if (depth === 1) return "source";
+  if (depth === 2) return "domain";
+  if (depth === 3) return "concept";
+  throw new Error(`Wiki index directory is deeper than the template topology: ${directory}`);
+}
+
+async function pageIdentity(wikiRoot: string, relative: string): Promise<{ title: string; description: string }> {
+  const parsed = parsePage(await readText(safeWikiPath(wikiRoot, relative)));
+  const title = typeof parsed.frontmatter.title === "string" ? parsed.frontmatter.title.trim() : "";
+  const description = typeof parsed.frontmatter.description === "string" ? parsed.frontmatter.description.trim() : "";
+  if (!title || !description) throw new Error(`${relative} cannot identify its index entry`);
+  return { title, description };
 }
 
 export function formatIssue(issue: WikiValidationIssue): string {

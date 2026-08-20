@@ -283,6 +283,7 @@ function createPublishTool(publish: () => Promise<{ ok: boolean; message: string
 
 async function publishCandidate(live: LiveRun, language: "zh" | "en"): Promise<{ ok: boolean; message: string }> {
   await verifyPinnedSourcePlan(live.plan);
+  if (!live.templates) return { ok: false, message: "Wiki template pack is unavailable" };
   const sources = new Map(live.plan.sources.map((source) => [source.scopeId, source.realPath]));
   const validation = await validateWikiTree(live.record.candidateRoot, sources, live.templates);
   if (!validation.ok) {
@@ -290,7 +291,7 @@ async function publishCandidate(live: LiveRun, language: "zh" | "en"): Promise<{
   }
   const review = await assertReviewPass(live.record.candidateRoot, path.join(path.dirname(live.record.candidateRoot), "handoffs"));
   if (!review.ok) return review;
-  await materializeWikiIndexes(live.record.candidateRoot, language);
+  await materializeWikiIndexes(live.record.candidateRoot, language, live.templates);
   const at = new Date().toISOString();
   await stampPublication(live.record.candidateRoot, at, { reviewed: true, language });
   const wikiRoot = path.join(live.plan.workspaceRoot, "wiki");

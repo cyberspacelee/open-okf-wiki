@@ -21,8 +21,9 @@ on demand (`db_tables`, `db_describe`). Only Postgres. Read-only.
 
 SOP is `prompts/lead.md`. Named workers are `agents/*.md`. Page kinds come
 from `wiki-templates/` after init (or packaged `templates/zh` /
-`templates/en`). `type` is
-Title Case; filenames stay kebab-case. TypeScript does not encode
+`templates/en`). Every scope has one anchor; optional templates are selected
+from survey evidence. `instructions` is writer-only and the body H1/H2 skeleton
+is mechanically validated. `type` is Title Case; filenames stay kebab-case. TypeScript does not encode
 research/write/review stages. The Lead session has `todo`, `subagent`,
 `publish`, optional Catalog tools, and read-only file tools. `write` / `edit`
 belong to the write agent.

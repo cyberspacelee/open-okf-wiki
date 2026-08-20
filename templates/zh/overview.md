@@ -1,16 +1,16 @@
 ---
 type: Overview
 scope: wiki
+instructions: >-
+  说明 Wiki 覆盖的系统边界，按职责映射每个 Source，并把常见开发问题指向最小的相关页面。
 ---
 
 # {{title}}
 
 {{description}}
 
-# 怎么读
+## 范围与边界
 
-从 `index.md` 开始，再打开一个 source。不要一次读完整包。
+## 系统地图
 
-# Sources
-
-链到每个 `source.md`。承重结论用 `sources` 脚注（`[^id]`）。
+## 任务入口

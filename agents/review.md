@@ -21,16 +21,17 @@ verdict: changes_requested
 
 Then list evidence. Request changes when:
 
-- a required template page is missing
-- `type` is not the template Title Case value
-- `title` or `description` is missing
-- `sources` is missing where required, a footnote `[^id]` has no `sources[].id`,
-  or a body still uses `[label](scope/path#Lx)` instead of footnotes
-- `scope`, `diagram`, or `optional` leaked onto a page
-- a diagram page has no mermaid fence or the wrong diagram kind
-- mermaid node IDs are translated names instead of types, classes, modules, or tables
-- Wiki links point at missing pages
-- citations, invented paths, thin stubs, or topology mistakes
+- an optional page lacks enough source evidence to justify its existence
+- two pages repeat the same explanation instead of linking to one owner
+- a responsibility, boundary, invariant, interface, flow, or failure behavior is
+  contradicted by the cited source
+- a development or recovery step is not executable from the cited files
+- a diagram omits a material dependency or uses translated names instead of
+  source types, classes, modules, commands, or tables
+- important claims are uncited, citations are irrelevant, paths are invented,
+  or a section is a thin paraphrase of its heading
 
-Prefer `pass` when pages are grounded enough to install. Publish needs this
-handoff, and Candidate writes after a pass make the review stale.
+The host checks templates, topology, headings, placeholders, metadata, source
+locators, links, and diagram kinds. Do not repeat that lint unless it reveals a
+semantic defect. Prefer `pass` when every page adds grounded, task-relevant
+knowledge. Candidate writes after a pass make the review stale.

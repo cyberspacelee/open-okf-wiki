@@ -12,13 +12,22 @@ function packOf(...templates: Array<{
   type?: string;
   diagram?: string[];
   optional?: boolean;
+  sections?: string[];
 }>): WikiTemplatePack {
+  const anchors = [
+    { file: "overview.md", scope: "wiki" as const, type: "Overview" },
+    { file: "source.md", scope: "source" as const, type: "Source" },
+    { file: "domain.md", scope: "domain" as const, type: "Domain" },
+    { file: "concept.md", scope: "concept" as const, type: "Concept" },
+  ];
   return {
     directory: "/templates",
-    templates: templates.map((template) => ({
+    templates: [...anchors, ...templates].map((template) => ({
       type: template.type ?? "Concept",
       optional: false,
-      body: "",
+      instructions: "Fill from evidence.",
+      sections: ["Details"],
+      body: "# {{title}}\n\n{{description}}\n\n## Details\n",
       ...template,
     })),
   };
@@ -29,11 +38,12 @@ function mermaid(kind: string, body: string): string {
 }
 
 function okfPage(type: string, title: string, extra = "", resource = "api/main.ts#L1"): string {
+  const description = `${title} description.`;
   return [
     "---",
     `type: ${type}`,
     `title: ${title}`,
-    `description: ${title} description.`,
+    `description: ${description}`,
     "sources:",
     "  - id: main",
     `    resource: ${resource}`,
@@ -41,12 +51,25 @@ function okfPage(type: string, title: string, extra = "", resource = "api/main.t
     "---",
     `# ${title}`,
     "",
+    description,
+    "",
+    "## Details",
+    "",
     "Claim. [^main]",
     "",
     extra,
     "[^main]: main",
     "",
   ].join("\n");
+}
+
+async function writeCore(root: string, resource: string): Promise<void> {
+  const concept = path.join(root, "api", "billing", "invoice");
+  await mkdir(concept, { recursive: true });
+  await writeFile(path.join(root, "overview.md"), okfPage("Overview", "Overview", "", resource));
+  await writeFile(path.join(root, "api", "source.md"), okfPage("Source", "API", "", resource));
+  await writeFile(path.join(root, "api", "billing", "domain.md"), okfPage("Domain", "Billing", "", resource));
+  await writeFile(path.join(concept, "concept.md"), okfPage("Concept", "Invoice", "", resource));
 }
 
 async function sourceTree(t: { after: (fn: () => Promise<void>) => void }, scope = "api") {
@@ -99,16 +122,15 @@ test("validate requires mermaid kind from the template pack", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-mermaid-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));
   const src = await sourceTree(t);
-  const concept = path.join(root, "api", "billing", "invoice");
-  await mkdir(concept, { recursive: true });
-  const templates = packOf({ file: "flows.md", scope: "concept", type: "Flow", diagram: ["sequenceDiagram", "flowchart"] });
-  await writeFile(path.join(root, "overview.md"), okfPage("Overview", "Overview", "", src.resource));
-  await writeFile(path.join(concept, "flows.md"), okfPage("Flow", "Invoice flows", "", src.resource));
+  await writeCore(root, src.resource);
+  const domain = path.join(root, "api", "billing");
+  const templates = packOf({ file: "flows.md", scope: "domain", type: "Flow", diagram: ["sequenceDiagram", "flowchart"], optional: true });
+  await writeFile(path.join(domain, "flows.md"), okfPage("Flow", "Billing flows", "", src.resource));
   const missing = await validateWikiTree(root, src.map, templates);
   assert.equal(missing.ok, false);
-  assert.ok(missing.issues.some((issue) => issue.code === "mermaid" && issue.page === "api/billing/invoice/flows.md"));
+  assert.ok(missing.issues.some((issue) => issue.code === "mermaid" && issue.page === "api/billing/flows.md"));
 
-  await writeFile(path.join(concept, "flows.md"), okfPage("Flow", "Invoice flows", mermaid("sequenceDiagram", "  Invoice->>Ledger: post"), src.resource));
+  await writeFile(path.join(domain, "flows.md"), okfPage("Flow", "Billing flows", mermaid("sequenceDiagram", "  Invoice->>Ledger: post"), src.resource));
   const present = await validateWikiTree(root, src.map, templates);
   assert.equal(present.ok, true);
 });
@@ -118,11 +140,7 @@ test("validate uses the template pack as the page contract", async (t) => {
   t.after(async () => await rm(root, { recursive: true, force: true }));
   const src = await sourceTree(t);
   const templates = packOf(
-    { file: "overview.md", scope: "wiki", type: "Overview" },
-    { file: "source.md", scope: "source", type: "Source" },
-    { file: "domain.md", scope: "domain", type: "Domain" },
-    { file: "concept.md", scope: "concept", type: "Concept" },
-    { file: "architecture.md", scope: "concept", type: "Architecture", diagram: ["flowchart"] },
+    { file: "architecture.md", scope: "domain", type: "Architecture", diagram: ["flowchart"], optional: true },
     { file: "states.md", scope: "concept", type: "State Machine", diagram: ["stateDiagram-v2"], optional: true },
   );
   await writeFile(path.join(root, "overview.md"), okfPage("Overview", "Overview", "", src.resource));
@@ -131,39 +149,45 @@ test("validate uses the template pack as the page contract", async (t) => {
   assert.ok(overviewOnly.issues.some((issue) => issue.code === "topology" && issue.page === "api/source.md"));
   assert.ok(overviewOnly.issues.some((issue) => issue.code === "topology" && issue.message.includes("concept cluster")));
 
-  const concept = path.join(root, "api", "billing", "invoice");
-  await mkdir(concept, { recursive: true });
-  await writeFile(path.join(root, "api", "source.md"), okfPage("Source", "api", "", src.resource));
-  await writeFile(path.join(root, "api", "billing", "domain.md"), [
-    "---",
-    "type: Domain",
-    "title: billing",
-    "description: Billing domain.",
-    "---",
-    "# billing",
-    "",
-  ].join("\n"));
-  await writeFile(path.join(concept, "concept.md"), okfPage("Concept", "Invoice", "", src.resource));
-  const missingArch = await validateWikiTree(root, src.map, templates);
-  assert.equal(missingArch.ok, false);
-  assert.ok(missingArch.issues.some((issue) => issue.page === "api/billing/invoice/architecture.md"));
-  assert.ok(!missingArch.issues.some((issue) => issue.page === "api/billing/invoice/states.md"));
+  await writeCore(root, src.resource);
+  const withoutOptional = await validateWikiTree(root, src.map, templates);
+  assert.equal(withoutOptional.ok, true);
 
-  await writeFile(path.join(concept, "architecture.md"), okfPage("Architecture", "Invoice architecture", mermaid("flowchart", "  Invoice --> Ledger"), src.resource));
+  const architecture = path.join(root, "api", "billing", "architecture.md");
+  await writeFile(architecture, okfPage("Architecture", "Billing architecture", mermaid("flowchart", "  Invoice --> Ledger"), src.resource));
   const complete = await validateWikiTree(root, src.map, templates);
   assert.equal(complete.ok, true);
 
-  await writeFile(path.join(concept, "architecture.md"), okfPage("Architecture", "Invoice architecture", mermaid("sequenceDiagram", "  Invoice->>Ledger: post"), src.resource));
+  await writeFile(architecture, okfPage("Architecture", "Billing architecture", mermaid("sequenceDiagram", "  Invoice->>Ledger: post"), src.resource));
   const wrongKind = await validateWikiTree(root, src.map, templates);
   assert.equal(wrongKind.ok, false);
   assert.ok(wrongKind.issues.some((issue) => issue.code === "mermaid" && /flowchart/.test(issue.message)));
+});
+
+test("validate requires a Domain anchor beside optional Domain pages", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-domain-anchor-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  const src = await sourceTree(t);
+  const templates = packOf(
+    { file: "architecture.md", scope: "domain", type: "Architecture", diagram: ["flowchart"], optional: true },
+  );
+  await writeCore(root, src.resource);
+  const orphan = path.join(root, "api", "orphan");
+  await mkdir(orphan, { recursive: true });
+  await writeFile(
+    path.join(orphan, "architecture.md"),
+    okfPage("Architecture", "Orphan architecture", mermaid("flowchart", "  A --> B"), src.resource),
+  );
+  const result = await validateWikiTree(root, src.map, templates);
+  assert.equal(result.ok, false);
+  assert.ok(result.issues.some((issue) => issue.code === "topology" && issue.page === "api/orphan/domain.md"));
 });
 
 test("validate rejects leaked template keys, missing description, and dangling wiki links", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-okf-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));
   const src = await sourceTree(t);
-  const templates = packOf({ file: "overview.md", scope: "wiki", type: "Overview" });
+  const templates = packOf();
   await writeFile(path.join(root, "overview.md"), [
     "---",
     "type: Overview",
@@ -176,6 +200,10 @@ test("validate rejects leaked template keys, missing description, and dangling w
     "---",
     "# Overview",
     "",
+    "Map.",
+    "",
+    "## Details",
+    "",
     "See [missing](/nope.md).",
     "",
     "[^main]: main",
@@ -185,6 +213,27 @@ test("validate rejects leaked template keys, missing description, and dangling w
   assert.equal(result.ok, false);
   assert.ok(result.issues.some((issue) => issue.message.includes("scope")));
   assert.ok(result.issues.some((issue) => issue.code === "link"));
+});
+
+test("validate rejects unknown pages, wrong scope, empty sections, and placeholders", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-markdown-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  const src = await sourceTree(t);
+  const templates = packOf();
+  await writeCore(root, src.resource);
+  await writeFile(path.join(root, "api", "billing", "invoice", "source.md"), okfPage("Source", "Wrong", "", src.resource));
+  await writeFile(path.join(root, "api", "billing", "invoice", "extra.md"), okfPage("Extra", "Extra", "", src.resource));
+  await writeFile(path.join(root, "overview.md"), okfPage("Overview", "Overview", "{{todo}}", src.resource));
+  await writeFile(
+    path.join(root, "api", "billing", "invoice", "concept.md"),
+    okfPage("Concept", "Invoice", "", src.resource).replace("Claim. [^main]", ""),
+  );
+  const result = await validateWikiTree(root, src.map, templates);
+  assert.equal(result.ok, false);
+  assert.ok(result.issues.some((issue) => issue.code === "template" && issue.page?.endsWith("source.md")));
+  assert.ok(result.issues.some((issue) => issue.code === "template" && issue.page?.endsWith("extra.md")));
+  assert.ok(result.issues.some((issue) => issue.code === "markdown" && issue.message.includes("empty")));
+  assert.ok(result.issues.some((issue) => issue.code === "markdown" && issue.message.includes("placeholder")));
 });
 
 test("packaged default templates reject a single overview page", async (t) => {
@@ -201,7 +250,8 @@ test("indexes include descriptions and stamp writes log.md without unverified ve
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-index-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));
   await writeFile(path.join(root, "overview.md"), okfPage("Overview", "Overview"));
-  await materializeWikiIndexes(root, "en");
+  const pack = packOf();
+  await materializeWikiIndexes(root, "en", pack);
   const index = await readFile(path.join(root, "index.md"), "utf8");
   assert.match(index, /Start here/);
   assert.match(index, /Overview description/);

@@ -66,12 +66,13 @@ wiki:
   templates: wiki-templates
 ```
 
-Add files such as `architecture.md` or drop `states.md`. Filename is the
-page name; `type` is Title Case (`Architecture`); `scope` is
-`wiki` / `source` / `domain` / `concept`. A `diagram` field requires a
-mermaid fence of that kind. `optional: true` lets survey skip the file.
-Generated pages use `sources` + `[^id]` footnotes. Publish fails if a
-required template is missing or review has not passed.
+Each scope (`wiki` / `source` / `domain` / `concept`) has exactly one
+non-optional anchor template. Other templates use `optional: true` and survey
+selects them with evidence at that scope. `instructions` is the writer brief;
+the body is the final H1/H2 skeleton. A `diagram` field requires a mermaid
+fence of that kind. Generated pages use `sources` + `[^id]` footnotes. Publish
+checks scope, exact sections, non-empty content, placeholders, links, diagrams,
+sources, and a current review pass.
 
 Consuming agents start at `wiki/index.md`. Do not put `AGENTS.md` or
 `ARCHITECTURE.md` inside `wiki/`.

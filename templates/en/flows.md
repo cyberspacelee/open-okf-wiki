@@ -1,24 +1,31 @@
 ---
 type: Flow
-scope: concept
+scope: domain
 diagram:
   - sequenceDiagram
   - flowchart
+optional: true
+instructions: >-
+  Generate this Domain page for source-backed cross-Concept runtime scenarios. Cover the main path, branches, failures, side effects, and observable verification.
 ---
 
 # {{title}}
 
 {{description}}
 
-# Participants
+## Scenarios and triggers
 
-Node IDs are source identifiers, not translations.
+## Participants
 
-# Diagram
+## Main path
+
+## Branches and failures
+
+## Side effects and verification
+
+## Diagram
 
 ```mermaid
 sequenceDiagram
-  CheckoutSession->>PaymentGateway: charge
+  {{diagram}}
 ```
-
-# Notes for consumers

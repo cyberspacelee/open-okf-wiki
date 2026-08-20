@@ -1,16 +1,16 @@
 ---
 type: Overview
 scope: wiki
+instructions: >-
+  Define the Wiki's system boundary, map each Source by responsibility, and route common development questions to the smallest relevant page.
 ---
 
 # {{title}}
 
 {{description}}
 
-# How to read this wiki
+## Scope and boundaries
 
-Start at `index.md`, then open one source. Do not ingest the whole bundle.
+## System map
 
-# Sources
-
-Link each `source.md`. Attribute claims with `sources` footnotes (`[^id]`).
+## Task entry points

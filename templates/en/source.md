@@ -1,16 +1,16 @@
 ---
 type: Source
 scope: source
+instructions: >-
+  Explain this Source's role in the Workspace, its executable or library entry points, and the semantic responsibility of each Domain.
 ---
 
 # {{title}}
 
 {{description}}
 
-# Entry
+## Responsibilities and boundaries
 
-Cite the source entry files in `sources`.
+## Entry points
 
-# Domains
-
-Link each `domain.md`.
+## Domain map

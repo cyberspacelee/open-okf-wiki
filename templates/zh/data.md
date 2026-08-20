@@ -5,21 +5,25 @@ diagram:
   - erDiagram
   - flowchart
 optional: true
+instructions: >-
+  仅当 Concept 持有持久化数据时生成，并用源码文件支撑所有权、Schema、读写路径、一致性、迁移和敏感数据处理。
 ---
 
 # {{title}}
 
 {{description}}
 
-仅在 survey 列出时写本文件。引用源文件，不要引用表本身。
+## 所有权与 Schema
 
-# Schema
+## 读写路径
 
-# 图
+## 约束与一致性
+
+## 迁移与敏感数据
+
+## 图
 
 ```mermaid
 erDiagram
-  CHECKOUT_SESSION ||--o{ PAYMENT : posts
+  {{diagram}}
 ```
-
-# 消费注意

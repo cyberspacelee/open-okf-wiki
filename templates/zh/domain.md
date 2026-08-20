@@ -1,16 +1,18 @@
 ---
 type: Domain
 scope: domain
+instructions: >-
+  明确这个 Domain 负责和不负责什么，用源码标识符映射 Concepts，并记录难以重新发现的不变量和变更影响。
 ---
 
 # {{title}}
 
 {{description}}
 
-# 职责
+## 职责与边界
 
-用源码标识符命名这个 domain。引用入口文件。
+## Concept 地图
 
-# Concepts
+## 不变量
 
-链到每个 concept 目录。
+## 变更影响

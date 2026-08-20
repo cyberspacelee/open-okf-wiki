@@ -1,22 +1,25 @@
 ---
 type: Architecture
-scope: concept
+scope: domain
 diagram: flowchart
+optional: true
+instructions: >-
+  仅当源码体现有意义的跨 Concept 结构时生成这个 Domain 页面；组件名和 Mermaid 节点使用源码标识符。
 ---
 
 # {{title}}
 
 {{description}}
 
-# 组件
+## 组件
 
-节点 ID 用源码标识符，不要翻译名。
+## 边界与依赖
 
-# 图
+## 扩展点与失败模式
+
+## 图
 
 ```mermaid
 flowchart TD
-  CheckoutSession --> PaymentGateway
+  {{diagram}}
 ```
-
-# 消费注意
