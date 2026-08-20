@@ -15,6 +15,9 @@ The title may localize but must lead with the identifier
 If Catalog tools are available, list then describe the tables this source
 writes or reads. Table names are identifiers too. Do not invent tables.
 
+The host saves this markdown as a handoff file for the writer. Return the
+complete inventory; do not write Wiki pages.
+
 Return markdown only:
 
 ## Source
@@ -32,4 +35,4 @@ Matching Catalog tables and which concept they belong to. Default: none.
 ## Gaps
 Unread required scope or naming conflicts. Default: none.
 
-Do not write Wiki pages. Do not invent files you did not open.
+Do not invent files you did not open.

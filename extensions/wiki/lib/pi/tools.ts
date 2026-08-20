@@ -1,3 +1,6 @@
+import { readdir, stat } from "node:fs/promises";
+import path from "node:path";
+import { exists } from "../files.js";
 import { Type } from "typebox";
 import {
   createEditToolDefinition,
@@ -8,7 +11,7 @@ import {
   createWriteToolDefinition,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { assertReadable, assertWritable, type WikiWriteGuard } from "../path-policy.js";
+import { assertReadable, assertWritable, pathIsIgnored, type WikiWriteGuard } from "../path-policy.js";
 import {
   formatBoard,
   replaceBoard,
@@ -25,7 +28,7 @@ export function candidateTools(guard: WikiWriteGuard, allowed?: readonly string[
     wrap("read", createReadToolDefinition(guard.workspaceRoot), guard, "read"),
     wrap("grep", createGrepToolDefinition(guard.workspaceRoot), guard, "read"),
     wrap("find", createFindToolDefinition(guard.workspaceRoot), guard, "read"),
-    wrap("ls", createLsToolDefinition(guard.workspaceRoot), guard, "read"),
+    wrap("ls", createLsToolDefinition(guard.workspaceRoot, { operations: lsOperations(guard) }), guard, "read"),
     wrap("write", createWriteToolDefinition(guard.workspaceRoot), guard, "write"),
     wrap("edit", createEditToolDefinition(guard.workspaceRoot), guard, "write"),
   ];
@@ -133,10 +136,76 @@ function wrap(
     ...tool,
     name,
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      remapParams(params, guard, mode);
-      return await execute(toolCallId, params, signal, onUpdate, ctx);
+      try {
+        remapParams(params, guard, mode);
+      } catch (error) {
+        return {
+          content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
+          details: {},
+          isError: true,
+        };
+      }
+      const result = await execute(toolCallId, params, signal, onUpdate, ctx);
+      if (mode === "read" && (name === "grep" || name === "find")) {
+        return filterSearchResult(name, params, result, guard);
+      }
+      return result;
     },
   } as ToolDefinition<any, any, any>;
+}
+
+function lsOperations(guard: WikiWriteGuard) {
+  return {
+    exists,
+    stat,
+    async readdir(absolutePath: string) {
+      const entries = await readdir(absolutePath);
+      return entries.filter((entry) => !pathIsIgnored(guard, path.join(absolutePath, entry)));
+    },
+  };
+}
+
+function filterSearchResult(
+  name: "grep" | "find",
+  params: unknown,
+  result: { content?: Array<{ type: string; text?: string }>; details?: unknown; isError?: boolean },
+  guard: WikiWriteGuard,
+) {
+  const searchRoot = searchRootOf(params) ?? guard.workspaceRoot;
+  const content = result.content;
+  if (!Array.isArray(content) || result.isError) return result;
+  const next = content.map((part) => {
+    if (part.type !== "text" || typeof part.text !== "string") return part;
+    const text = filterSearchText(name, part.text, searchRoot, guard);
+    return { ...part, text };
+  });
+  return { ...result, content: next };
+}
+
+function searchRootOf(params: unknown): string | undefined {
+  if (!params || typeof params !== "object") return undefined;
+  const record = params as Record<string, unknown>;
+  return typeof record.path === "string" ? record.path : undefined;
+}
+
+function filterSearchText(kind: "grep" | "find", text: string, searchRoot: string, guard: WikiWriteGuard): string {
+  const kept = text.split("\n").filter((line) => {
+    const relative = kind === "find" ? findPath(line) : grepPath(line);
+    if (!relative) return true;
+    return !pathIsIgnored(guard, path.resolve(searchRoot, relative));
+  });
+  return kept.join("\n");
+}
+
+function findPath(line: string): string | undefined {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith("[") || trimmed.startsWith("No files")) return undefined;
+  return trimmed;
+}
+
+function grepPath(line: string): string | undefined {
+  const match = /^(.*?)(?::\d+:|-\d+-)/.exec(line);
+  return match?.[1] || undefined;
 }
 
 function remapParams(params: unknown, guard: WikiWriteGuard, mode: "read" | "write"): void {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
-import { assertWritable, resolveToolPath, writeGuardFromPlan } from "../extensions/wiki/lib/path-policy.js";
+import { assertReadable, assertWritable, resolveToolPath, writeGuardFromPlan } from "../extensions/wiki/lib/path-policy.js";
 
 function plan(workspaceRoot) {
   return {
@@ -19,6 +19,40 @@ function outside(root, candidate) {
   const relative = path.relative(root, candidate);
   return !relative || relative.startsWith("..") || path.isAbsolute(relative);
 }
+
+test("default ignores reject Java tests and keep production sources readable", () => {
+  const workspaceRoot = path.resolve("/tmp/okf-wiki-path-policy");
+  const candidateRoot = path.join(workspaceRoot, ".okf-wiki", "runs", "abcd", "candidate");
+  const sourceRoot = path.join(workspaceRoot, "backend");
+  const guard = writeGuardFromPlan({
+    ...plan(workspaceRoot),
+    sources: [{
+      scopeId: "backend",
+      logicalPath: "backend",
+      absolutePath: sourceRoot,
+      realPath: sourceRoot,
+      repositoryRoot: sourceRoot,
+      repositoryIdentity: "id",
+      origin: { type: "link", localPath: sourceRoot },
+      head: "abc",
+      dirtyFingerprint: "dirty",
+    }],
+  }, candidateRoot);
+
+  assert.throws(
+    () => assertReadable(guard, "backend/src/test/java/com/acme/OrderServiceTest.java"),
+    /ignore rules/,
+  );
+  assert.throws(
+    () => assertReadable(guard, "backend/module-a/src/test/java/FooTest.java"),
+    /ignore rules/,
+  );
+  assert.equal(
+    assertReadable(guard, "backend/src/main/java/com/acme/OrderService.java"),
+    path.join(sourceRoot, "src/main/java/com/acme/OrderService.java"),
+  );
+  assert.equal(assertWritable(guard, "wiki/overview.md"), path.join(candidateRoot, "overview.md"));
+});
 
 test("wiki/overview.md remaps into the Candidate; .okf-wiki and published wiki writes are rejected", () => {
   const workspaceRoot = path.resolve("/tmp/okf-wiki-path-policy");

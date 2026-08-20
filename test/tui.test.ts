@@ -309,6 +309,42 @@ test("agent details keep the top on updates, follow the tail, and return to top 
   } finally { dispose(); }
 });
 
+test("overlay lists parallel surveys and selected context stats", () => {
+  const current = view({
+    agents: [
+      { id: "lead", agent: "lead", status: "running", tools: [] },
+      {
+        id: "survey-a",
+        agent: "survey",
+        task: "map backend",
+        status: "running",
+        usage: { input: 2100, output: 400, total: 2500, turns: 3, toolCalls: 8, contextTokens: 12000, contextWindow: 200000, contextPercent: 6 },
+        tools: [{ id: "1", tool: "grep", args: { pattern: "Order" }, status: "running" }],
+      },
+      {
+        id: "survey-b",
+        agent: "survey",
+        task: "map frontend",
+        status: "running",
+        usage: { input: 800, output: 120, total: 920, turns: 1, toolCalls: 2, contextTokens: 4000, contextWindow: 200000, contextPercent: 2 },
+        tools: [{ id: "2", tool: "ls", args: { path: "frontend" }, status: "running" }],
+      },
+    ],
+  });
+  const { component, dispose } = overlay(current);
+  try {
+    const listing = plain(component.render(120).join("\n"));
+    assert.equal([...listing.matchAll(/◆ survey/g)].length, 2);
+    assert.match(listing, /grep \/Order\//);
+    assert.match(listing, /ls frontend/);
+    component.handleInput("j");
+    const selected = plain(component.render(120).join("\n"));
+    assert.match(selected, /context/);
+    assert.match(selected, /ctx 12k\/200k 6%/);
+    assert.match(selected, /3 turns/);
+  } finally { dispose(); }
+});
+
 test("widget factory renders live lines and follows box updates", () => {
   const box = { view: view() };
   const tui = { requestRender() {} };

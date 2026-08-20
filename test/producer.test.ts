@@ -119,9 +119,11 @@ test("live view puts nested tools on the named agent and notifies subscribers", 
     async runLead(context) {
       await wait;
       context.observe({ id: "lead-1", tool: "read", args: { path: "src/a.ts" }, status: "running" });
-      context.note("survey", "map source", "running");
-      context.observe({ scope: "survey", id: "s1", tool: "grep", args: { pattern: "Order" }, status: "running" });
-      context.observe({ scope: "survey", id: "s1", tool: "grep", args: { pattern: "Order" }, status: "complete" });
+      context.note("survey-a", "survey", "map source a", "running");
+      context.note("survey-b", "survey", "map source b", "running");
+      context.observe({ scope: "survey-a", id: "s1", tool: "grep", args: { pattern: "Order" }, status: "running" });
+      context.observe({ scope: "survey-a", id: "s1", tool: "grep", args: { pattern: "Order" }, status: "complete" });
+      context.observe({ scope: "survey-b", id: "s2", tool: "ls", args: { path: "frontend" }, status: "running" });
       await writeText(path.join(context.candidateRoot, "overview.md"), "---\ntype: overview\ntitle: Overview\n---\n# Overview\n");
       const published = await context.publish();
       assert.equal(published.ok, true);
@@ -133,15 +135,19 @@ test("live view puts nested tools on the named agent and notifies subscribers", 
   gate();
   await handle.result();
   stop();
-  const live = views.findLast((view) => view.agents?.some((agent) => agent.agent === "survey" && agent.tools.some((tool) => tool.tool === "grep" && tool.status === "complete")));
+  const live = views.findLast((view) => view.agents?.filter((agent) => agent.agent === "survey").length === 2);
   assert.ok(live);
   const lead = live.agents.find((agent) => agent.agent === "lead");
-  const survey = live.agents.find((agent) => agent.agent === "survey");
+  const surveys = live.agents.filter((agent) => agent.agent === "survey");
   assert.equal(lead.tools[0].tool, "read");
-  assert.equal(survey.tools[0].tool, "grep");
-  assert.equal(survey.tools[0].status, "complete");
+  assert.equal(surveys.length, 2);
+  assert.equal(surveys[0].tools[0].tool, "grep");
+  assert.equal(surveys[0].tools[0].status, "complete");
+  assert.equal(surveys[1].tools[0].tool, "ls");
   const record = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", handle.id, "run.json"), "utf8"));
+  assert.equal(record.agents.length, 2);
   assert.equal(record.agents[0].agent, "survey");
+  assert.notEqual(record.agents[0].id, record.agents[1].id);
   assert.equal(record.agents[0].tools, undefined);
 });
 

@@ -233,7 +233,10 @@ export function createWikiOverlay(args: {
       const viewport = viewportRows(args.tui);
       if (cached?.width === width && cached.viewport === viewport) return cached.lines;
       const inner = Math.max(8, width);
-      const bodyRows = Math.max(1, viewport - 2);
+      const rawStats = renderContextStats(selected());
+      const stats = rawStats ? paint(args.theme, "muted", rawStats) : "";
+      const chrome = stats ? 4 : 2;
+      const bodyRows = Math.max(1, viewport - chrome);
       const title = styledTitle(view, now, args.theme);
       const body = renderBody(state, view, selected(), inner - 3, bodyRows, args.theme, warning, busy);
       const footer = overlayFooter(state, view);
@@ -241,7 +244,7 @@ export function createWikiOverlay(args: {
       if (state.kind === "agent" && !state.followTail && state.scrollTop > detailMaxScroll) {
         state = { ...state, scrollTop: detailMaxScroll };
       }
-      const lines = frame(inner, title, body.lines, footer, args.theme, bodyRows);
+      const lines = frame(inner, title, body.lines, footer, args.theme, bodyRows, stats);
       cached = { width, viewport, lines };
       return lines;
     },
@@ -295,7 +298,7 @@ function navigationLines(view: WikiRunView, cursor: number, theme: ThemeLike): A
 
 function processLines(agent: WikiAgentView | undefined, view: WikiRunView, theme: ThemeLike): string[] {
   if (!agent) return [paint(theme, "dim", "No agent selected.")];
-  const heading = `${strong(theme, "Process", "text")}  ${marker(agent.status, theme)} ${strong(theme, agent.agent, "accent")}${agent.task ? paint(theme, "muted", `  ${agent.task}`) : ""}${usageLabel(agent, theme)}`;
+  const heading = `${strong(theme, "Process", "text")}  ${marker(agent.status, theme)} ${strong(theme, agent.agent, "accent")}${agent.task ? paint(theme, "muted", `  ${agent.task}`) : ""}`;
   if (agent.tools.length === 0) {
     return [heading, paint(theme, "dim", view.status === "running" ? "waiting for tools" : "no process tail")];
   }
@@ -342,16 +345,22 @@ function frame(
   footer: string,
   theme: ThemeLike,
   bodyRows: number,
+  stats?: string,
 ): string[] {
   const inner = Math.max(1, width - 2);
   const window = body.slice(0, bodyRows);
   while (window.length < bodyRows) window.push("");
   const border = (text: string) => paint(theme, "border", text);
-  return [
+  const lines = [
     titleBorderLine(title, inner, border),
     ...window.map((line) => `${border("│")}${padLine(` ${line}`, inner)}${border("│")}`),
-    `${border("╰")}${paint(theme, "borderMuted", padRule(footer, inner))}${border("╯")}`,
   ];
+  if (stats) {
+    lines.push(`${border("├")}${paint(theme, "borderMuted", padRule("context", inner))}${border("┤")}`);
+    lines.push(`${border("│")}${padLine(` ${stats}`, inner)}${border("│")}`);
+  }
+  lines.push(`${border("╰")}${paint(theme, "borderMuted", padRule(footer, inner))}${border("╯")}`);
+  return lines;
 }
 
 function columns(
@@ -402,10 +411,21 @@ function taskMarker(status: string, theme: ThemeLike): string {
   return paint(theme, "dim", "·");
 }
 
-function usageLabel(agent: WikiAgentView, theme: ThemeLike): string {
-  if (!agent.usage) return "";
+function renderContextStats(agent: WikiAgentView | undefined): string {
+  if (!agent?.usage) return "";
+  const usage = agent.usage;
   const k = (value: number) => value >= 1000 ? `${Math.round(value / 100) / 10}k` : String(value);
-  return paint(theme, "muted", `  ${k(agent.usage.input)} in  ${k(agent.usage.output)} out`);
+  const parts: string[] = [];
+  if (usage.turns !== undefined) parts.push(`${usage.turns} turn${usage.turns === 1 ? "" : "s"}`);
+  if (usage.toolCalls !== undefined) parts.push(`${usage.toolCalls} tools`);
+  if (usage.input !== undefined || usage.output !== undefined) parts.push(`↑${k(usage.input)} ↓${k(usage.output)}`);
+  if (usage.contextPercent !== undefined && usage.contextWindow !== undefined) {
+    const used = usage.contextTokens !== undefined ? k(usage.contextTokens) : "?";
+    parts.push(`ctx ${used}/${k(usage.contextWindow)} ${Math.round(usage.contextPercent)}%`);
+  } else if (usage.contextTokens !== undefined) {
+    parts.push(`ctx ${k(usage.contextTokens)}`);
+  }
+  return parts.join("  ");
 }
 
 function elapsed(view: WikiRunView, now: number): string {

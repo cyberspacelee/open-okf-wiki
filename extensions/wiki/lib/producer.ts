@@ -53,7 +53,7 @@ export interface WikiLeadContext {
   catalog?: WikiCatalog;
   signal: AbortSignal;
   publish(): Promise<{ ok: boolean; message: string }>;
-  note(agent: string, task: string, status: "running" | "complete" | "failed"): void;
+  note(id: string, agent: string, task: string, status: "running" | "complete" | "failed"): void;
   observe(event: WikiSessionActivity): void;
 }
 
@@ -66,7 +66,7 @@ interface RunRecord {
   createdAt: string;
   updatedAt: string;
   error?: string;
-  agents: Array<{ agent: string; task: string; status: "running" | "complete" | "failed" }>;
+  agents: Array<{ id?: string; agent: string; task: string; status: "running" | "complete" | "failed" }>;
   pageCount?: number;
   candidateRoot: string;
   fingerprint: string;
@@ -155,7 +155,7 @@ function startLive(
   const controller = new AbortController();
   live.controller = controller;
   live.result = undefined;
-  live.agents.set("lead", { agent: "lead", status: "running", tools: [] });
+  live.agents.set("lead", { id: "lead", agent: "lead", status: "running", tools: [] });
   live.done = (async () => {
     try {
       const initial = emptyBoard(flags.focus ?? "Generate a complete repository Wiki");
@@ -178,8 +178,8 @@ function startLive(
         async publish() {
           return await publishCandidate(live, context.language);
         },
-        note(agent, task, status) {
-          noteAgent(live, agent, task, status);
+        note(id, agent, task, status) {
+          noteAgent(live, id, agent, task, status);
         },
         observe(event) {
           observeTool(live, event);
@@ -223,7 +223,7 @@ function defaultRunLead(
       context.candidateRoot,
       session,
       options.agentsDirectory,
-      (agent, task, status) => context.note(agent, task, status),
+      (id, agent, task, status) => context.note(id, agent, task, status),
       context.catalog,
       { maxConcurrency: config.maxConcurrentAgents - 1 },
     );
@@ -386,7 +386,7 @@ function toViewFrom(record: RunRecord, board: WikiBoard, agents: Map<string, Wik
 function presentAgents(record: RunRecord, live: Map<string, WikiAgentView>): WikiAgentView[] {
   if (live.size > 0) {
     const lead = live.get("lead");
-    const rest = [...live.values()].filter((agent) => agent.agent !== "lead");
+    const rest = [...live.values()].filter((agent) => agent.id !== "lead" && agent.agent !== "lead");
     return lead ? [lead, ...rest] : rest;
   }
   const leadStatus = record.status === "succeeded"
@@ -395,8 +395,14 @@ function presentAgents(record: RunRecord, live: Map<string, WikiAgentView>): Wik
       ? "running"
       : "failed";
   return [
-    { agent: "lead", status: leadStatus, tools: [] },
-    ...record.agents.map((agent) => ({ agent: agent.agent, task: agent.task, status: agent.status, tools: [] })),
+    { id: "lead", agent: "lead", status: leadStatus, tools: [] },
+    ...record.agents.map((agent) => ({
+      id: agent.id ?? agent.agent,
+      agent: agent.agent,
+      task: agent.task,
+      status: agent.status,
+      tools: [],
+    })),
   ];
 }
 
@@ -428,28 +434,28 @@ function watchBoard(store: WikiBoardStore, live: LiveRun): WikiBoardStore {
   };
 }
 
-function noteAgent(live: LiveRun, agent: string, task: string, status: WikiAgentView["status"]): void {
-  const current = live.agents.get(agent) ?? { agent, tools: [] as WikiToolView[] };
-  live.agents.set(agent, { ...current, agent, task, status, tools: current.tools });
+function noteAgent(live: LiveRun, id: string, agent: string, task: string, status: WikiAgentView["status"]): void {
+  const current = live.agents.get(id) ?? { id, agent, tools: [] as WikiToolView[] };
+  live.agents.set(id, { ...current, id, agent, task, status, tools: current.tools });
   live.record.agents = [...live.agents.values()]
-    .filter((entry) => entry.agent !== "lead")
-    .map((entry) => ({ agent: entry.agent, task: entry.task ?? "", status: entry.status }));
+    .filter((entry) => entry.id !== "lead" && entry.agent !== "lead")
+    .map((entry) => ({ id: entry.id ?? entry.agent, agent: entry.agent, task: entry.task ?? "", status: entry.status }));
   live.record.updatedAt = new Date().toISOString();
   void writeRecord(live.record);
   emit(live);
 }
 
 function observeTool(live: LiveRun, event: WikiSessionActivity): void {
-  const name = event.scope ?? "lead";
-  const current = live.agents.get(name) ?? { agent: name, status: "running" as const, tools: [] as WikiToolView[] };
+  const id = event.scope ?? "lead";
+  const current = live.agents.get(id) ?? { id, agent: id === "lead" ? "lead" : id, status: "running" as const, tools: [] as WikiToolView[] };
   const tools = current.tools.slice();
   const index = tools.findIndex((tool) => tool.id === event.id);
   const row: WikiToolView = { id: event.id, tool: event.tool, args: event.args, status: event.status };
   if (index >= 0) tools[index] = row;
   else tools.push(row);
-  live.agents.set(name, {
+  live.agents.set(id, {
     ...current,
-    agent: name,
+    id,
     status: current.status === "complete" || current.status === "failed" ? current.status : "running",
     tools: capTools(tools),
     ...(event.usage ? { usage: event.usage } : {}),
@@ -470,8 +476,8 @@ function capTools(tools: WikiToolView[]): WikiToolView[] {
 }
 
 function settleLead(live: LiveRun, status: WikiAgentView["status"]): void {
-  const lead = live.agents.get("lead") ?? { agent: "lead", tools: [] as WikiToolView[] };
-  live.agents.set("lead", { ...lead, agent: "lead", status, tools: lead.tools });
+  const lead = live.agents.get("lead") ?? { id: "lead", agent: "lead", tools: [] as WikiToolView[] };
+  live.agents.set("lead", { ...lead, id: "lead", agent: "lead", status, tools: lead.tools });
 }
 
 function emit(live: LiveRun): void {
@@ -522,7 +528,7 @@ async function leadPrompt(context: WikiLeadContext): Promise<string> {
   const body = await readFile(fileURLToPath(new URL("../../../prompts/lead.md", import.meta.url)), "utf8");
   const sources = context.plan.sources.map((source) => `- ${source.scopeId}: ${source.logicalPath}`).join("\n");
   const focus = context.focus ? `\nFocus: ${context.focus}\n` : "";
-  const agents = "Available agents: survey (map a source), write (author wiki/ pages), review (read-only critique).\nYou have no write/edit. Pages are written only by subagent agent=write.\nCall find/ls/read/grep on the source directory names below (they may be symlinks). Do not search `.` or paths outside the workspace.\n";
+  const agents = "Available agents: survey (map a source), write (author wiki/ pages), review (read-only critique).\nYou have no write/edit. Pages are written only by subagent agent=write.\nSurvey several sources with one tasks[] call so they run in parallel. Each subagent returns a Handoff: path; read that file instead of pasting the body.\nCall find/ls/read/grep on the source directory names below (they may be symlinks). Do not search `.` or paths outside the workspace.\n";
   const board = formatBoard(await context.board.read());
   const catalog = context.catalog
     ? `\nCatalog: Postgres schema \`${context.catalog.config.schema}\`${

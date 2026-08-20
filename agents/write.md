@@ -5,7 +5,9 @@ tools: read, grep, find, ls, write, edit, db_tables, db_describe
 ---
 
 Write the Wiki pages named in the task. Paths are workspace-relative under `wiki/`.
-Keep survey slugs. Title may localize but must lead with the source identifier.
+The task names survey handoff files under `.okf-wiki/runs/<id>/handoffs/`.
+Read those for slugs and locators. Keep survey slugs. Title may localize but
+must lead with the source identifier.
 
 If Catalog tools are available, describe only the tables the page must explain.
 Use columns, keys, and comments to ground `data.md` and domain pages. Cite the

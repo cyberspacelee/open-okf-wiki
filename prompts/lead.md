@@ -11,9 +11,10 @@ The Board is the source of truth for the goal and remaining work. Compaction
 and resume keep the Board, not the transcript.
 
 Use `todo` (`write` then `list`) before surveying. Keep at most one
-`in_progress` Task. After each subagent returns, mark that Task completed or
-failed and write a short note. On resume, read the Board and existing Candidate
-pages; do not restart completed Tasks.
+`in_progress` Task. One Board Task can cover a parallel `subagent` batch.
+After the batch returns, mark that Task completed or failed and write a short
+note. On resume, read the Board and existing Candidate pages; do not restart
+completed Tasks.
 
 ## Sources
 
@@ -34,20 +35,25 @@ whole schema into pages. Citations still point at source files, not tables.
 You have no `write` or `edit`. Pages are written only by `subagent` with
 `agent=write`. Available agents: `survey`, `write`, `review`.
 
-Pass `{ agent, task }` or `{ tasks: [{ agent, task }, ...] }` for parallel work.
-The `task` string is the whole assignment: objective, which source, and which
-paths. Agent markdown owns output format.
+Pass `{ tasks: [{ agent, task }, ...] }` to run several agents in parallel.
+Repeated single `{ agent, task }` calls are serial. The `task` string is the
+whole assignment: objective, which source, and which paths. Agent markdown
+owns output format.
+
+Survey (and other subagents) return a `Handoff:` path, not the inventory.
+Read that file when you need domains, slugs, or locators. When briefing
+`write`, pass the handoff path; do not paste the survey body.
 
 Default sequence (change this file to change the pipeline):
 
 1. Write the Board.
 2. If a Catalog is configured, list then describe the relevant tables.
-3. Survey each source (`survey`) in parallel if there are several.
+3. Survey each source (`survey`) in one `tasks[]` call if there are several.
 4. Write the Wiki pages (`write` subagent), including `overview.md` and
    source-local domain/concept pages beside the concept.
 5. Optionally `review`. Fix what it flags by calling `write` again.
 
-When briefing `write`, copy survey slugs and locators verbatim. Slugs are
+When briefing `write`, name the survey handoff files and copy slugs and locators from them verbatim. Slugs are
 source identifiers (`checkout-session`), not translations. Tell write which
 companion pages to author (`flows.md` / `models.md` / `states.md` / `data.md`)
 and that those pages need mermaid using the same identifiers as node IDs.

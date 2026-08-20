@@ -4,6 +4,17 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 
 ## [Unreleased]
 
+### Handoff
+
+- Survey and other subagent results are written under
+  `.okf-wiki/runs/<id>/handoffs/` and the Lead receives the path, not the
+  full body.
+
+### Source ignores
+
+- Default source ignores are enforced on `read` / `grep` / `find` / `ls`,
+  including Java test trees (`src/test/**`, `*Test.java`).
+
 ### Board and resume
 
 - Each Run keeps a host-owned Board (`board.json`) for the goal and Tasks.
@@ -137,6 +148,9 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 - TUI live chrome is a hung widget plus footer status. `/wiki status` opens a
   centered overlay: Lead and named agents, Board tasks, and the selected
   agent's tool process (running `◆`, complete `✓`, failed `✗`).
+- Parallel `subagent` tasks keep distinct rows (execution id, not agent name).
+  Overlay shows turns, tools, tokens, and context-window usage for the
+  selected agent.
 - `WikiRunHandle.subscribe` pushes the current `WikiRunView`. Each agent row
   holds a bounded in-memory tool tail (start/update/end). Nested subagent
   tools stay on that agent. `run.json` does not persist process.

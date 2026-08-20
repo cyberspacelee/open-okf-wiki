@@ -64,15 +64,28 @@ test("session samples token usage on tool start and end", async (t) => {
         { type: "tool_execution_start", toolCallId: "call-1", toolName: "ls", args: { path: "." } },
         { type: "tool_execution_end", toolCallId: "call-1", toolName: "ls", result: {}, isError: false },
       ]);
-      session.getSessionStats = () => ({ tokens: { input: 10, output: 4, total: 14 } });
+      session.getSessionStats = () => ({
+        tokens: { input: 10, output: 4, cacheRead: 0, cacheWrite: 0, total: 14 },
+        assistantMessages: 2,
+        toolCalls: 3,
+        cost: 0,
+      });
+      session.getContextUsage = () => ({ tokens: 1200, contextWindow: 200000, percent: 6 });
       return { session, modelFallbackMessage: undefined };
     },
     onActivity(event) {
       events.push(event);
     },
   });
-  assert.deepEqual(events[0].usage, { input: 10, output: 4, total: 14 });
-  assert.deepEqual(events[1].usage, { input: 10, output: 4, total: 14 });
+  assert.equal(events[0].usage.input, 10);
+  assert.equal(events[0].usage.output, 4);
+  assert.equal(events[0].usage.total, 14);
+  assert.equal(events[0].usage.turns, 2);
+  assert.equal(events[0].usage.toolCalls, 3);
+  assert.equal(events[0].usage.contextTokens, 1200);
+  assert.equal(events[0].usage.contextWindow, 200000);
+  assert.equal(events[0].usage.contextPercent, 6);
+  assert.equal(events[1].usage.contextPercent, 6);
 });
 
 test("session applies workspace retry controls to Pi settings", async (t) => {

@@ -17,6 +17,11 @@ export interface WikiAgentUsage {
   input: number;
   output: number;
   total: number;
+  turns?: number;
+  toolCalls?: number;
+  contextTokens?: number;
+  contextWindow?: number;
+  contextPercent?: number;
 }
 
 export interface WikiToolView {
@@ -27,6 +32,7 @@ export interface WikiToolView {
 }
 
 export interface WikiAgentView {
+  id?: string;
   agent: string;
   task?: string;
   status: WikiAgentStatus;

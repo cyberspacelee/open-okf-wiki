@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -44,7 +44,7 @@ test("unknown subagent names return Unknown agent and list packaged agents", asy
   assert.match(result.error, new RegExp(`Available: ${names.join(", ")}`));
 });
 
-test("subagent child sessions tag activity with the agent name", async (t) => {
+test("subagent child sessions tag activity with the execution id", async (t) => {
   const events = [];
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-subagent-activity-"));
   t.after(async () => await rm(workspaceRoot, { recursive: true, force: true }));
@@ -90,7 +90,7 @@ test("subagent child sessions tag activity with the agent name", async (t) => {
   );
   await runtime.run([{ agent: "survey", task: "map source" }], new AbortController().signal);
   assert.equal(events.length, 1);
-  assert.equal(events[0].scope, "survey");
+  assert.match(events[0].scope, /^survey-/);
   assert.equal(events[0].tool, "grep");
   assert.equal(events[0].id, "call-1");
   assert.equal(events[0].status, "running");
@@ -153,7 +153,12 @@ test("subagent tool reports child tools through onUpdate", async (t) => {
   const withTool = updates.find((update) => update.details?.tasks?.[0]?.tools?.length);
   assert.equal(withTool.details.tasks[0].tools[0].tool, "grep");
   assert.match(result.content[0].text, /## survey/);
+  assert.match(result.content[0].text, /Handoff:/);
+  assert.doesNotMatch(result.content[0].text, /mapped/);
   assert.match(tool.description, /survey.*write.*review/s);
+  const handoff = result.details.results[0].handoff;
+  assert.match(handoff, /handoffs\/survey-/);
+  assert.match(await readFile(path.join(workspaceRoot, handoff), "utf8"), /mapped/);
 });
 
 test("subagent runtime bounds parallel sessions", async (t) => {
@@ -203,4 +208,53 @@ test("subagent runtime bounds parallel sessions", async (t) => {
     new AbortController().signal,
   );
   assert.equal(peak, 2);
+});
+
+test("parallel survey tasks stay distinct in live updates", async (t) => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-subagent-parallel-"));
+  t.after(async () => await rm(workspaceRoot, { recursive: true, force: true }));
+  const updates = [];
+  const runtime = await createSubagentRuntime(
+    {
+      workspaceRoot,
+      workspaceRealPath: workspaceRoot,
+      configPath: path.join(workspaceRoot, "workspace.yaml"),
+      defaultSourceIgnores: true,
+      excludes: [],
+      sources: [],
+      fingerprint: "test",
+    },
+    path.join(workspaceRoot, ".okf-wiki", "runs", "abcd", "candidate"),
+    {
+      async createSession() {
+        return {
+          session: {
+            sessionFile: undefined,
+            subscribe() { return () => {}; },
+            async prompt() {},
+            async waitForIdle() {},
+            getLastAssistantText() { return "mapped"; },
+            dispose() {},
+            abort() {},
+          },
+          modelFallbackMessage: undefined,
+        };
+      },
+    },
+  );
+  const tool = createSubagentTool(runtime);
+  await tool.execute("call-1", {
+    tasks: [
+      { agent: "survey", task: "map backend" },
+      { agent: "survey", task: "map frontend" },
+    ],
+  }, new AbortController().signal, async (partial) => {
+    updates.push(partial);
+  });
+  const live = updates.find((update) => update.details?.tasks?.length === 2);
+  assert.ok(live);
+  assert.equal(live.details.tasks[0].agent, "survey");
+  assert.equal(live.details.tasks[1].agent, "survey");
+  assert.notEqual(live.details.tasks[0].id, live.details.tasks[1].id);
+  assert.deepEqual(live.details.tasks.map((task) => task.task).sort(), ["map backend", "map frontend"]);
 });

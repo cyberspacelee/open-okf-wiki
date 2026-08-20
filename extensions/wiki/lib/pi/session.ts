@@ -97,11 +97,7 @@ export async function runWikiSession(
     const onActivity = options.onActivity;
     const onCompaction = options.onCompaction;
     const argsById = new Map<string, unknown>();
-    const usage = (): WikiAgentUsage | undefined => {
-      if (typeof session?.getSessionStats !== "function") return undefined;
-      const tokens = session.getSessionStats().tokens;
-      return { input: tokens.input, output: tokens.output, total: tokens.total };
-    };
+    const usage = (): WikiAgentUsage | undefined => readSessionUsage(session);
     session.subscribe((event) => {
       if (onActivity && event.type === "tool_execution_start") {
         argsById.set(event.toolCallId, event.args);
@@ -110,7 +106,8 @@ export async function runWikiSession(
       }
       if (onActivity && event.type === "tool_execution_update") {
         argsById.set(event.toolCallId, event.args);
-        onActivity({ id: event.toolCallId, tool: event.toolName, args: event.args, status: "running" });
+        const stats = usage();
+        onActivity({ id: event.toolCallId, tool: event.toolName, args: event.args, status: "running", ...(stats ? { usage: stats } : {}) });
       }
       if (onActivity && event.type === "tool_execution_end") {
         const args = argsById.get(event.toolCallId) ?? {};
@@ -156,4 +153,21 @@ export async function runWikiSession(
     signal.removeEventListener("abort", abort);
     session.dispose();
   }
+}
+
+function readSessionUsage(session: AgentSession | undefined): WikiAgentUsage | undefined {
+  if (typeof session?.getSessionStats !== "function") return undefined;
+  const stats = session.getSessionStats();
+  const context = stats.contextUsage ?? (typeof session.getContextUsage === "function" ? session.getContextUsage() : undefined);
+  const usage: WikiAgentUsage = {
+    input: stats.tokens.input,
+    output: stats.tokens.output,
+    total: stats.tokens.total,
+    turns: stats.assistantMessages,
+    toolCalls: stats.toolCalls,
+  };
+  if (typeof context?.tokens === "number") usage.contextTokens = context.tokens;
+  if (typeof context?.contextWindow === "number") usage.contextWindow = context.contextWindow;
+  if (typeof context?.percent === "number") usage.contextPercent = context.percent;
+  return usage;
 }

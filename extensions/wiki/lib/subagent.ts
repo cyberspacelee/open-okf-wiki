@@ -1,6 +1,10 @@
+import { randomUUID } from "node:crypto";
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
 import { Type } from "typebox";
 import type { AgentToolUpdateCallback, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { loadWikiAgents, type WikiAgentDefinition } from "./agents.js";
+import { writeText } from "./files.js";
 import { writeGuardFromPlan, type WikiWriteGuard } from "./path-policy.js";
 import type { WikiPinnedSourcePlan } from "./inspect.js";
 import { candidateTools, createCatalogTools } from "./pi/tools.js";
@@ -14,9 +18,11 @@ export interface SubagentTask {
 }
 
 export interface SubagentResult {
+  id: string;
   agent: string;
   task: string;
   text: string;
+  handoff?: string;
   error?: string;
 }
 
@@ -25,13 +31,14 @@ export interface SubagentRuntime {
 }
 
 export type SubagentTaskStatus = "running" | "complete" | "failed";
+export type SubagentTaskListener = (id: string, agent: string, task: string, status: SubagentTaskStatus) => void;
 
 export async function createSubagentRuntime(
   plan: WikiPinnedSourcePlan,
   candidateRoot: string,
   session: RunWikiSessionOptions,
   agentsDirectory?: string,
-  onTask?: (agent: string, task: string, status: SubagentTaskStatus) => void,
+  onTask?: SubagentTaskListener,
   catalog?: WikiCatalog,
   options: { maxConcurrency?: number } = {},
 ): Promise<SubagentRuntime> {
@@ -41,7 +48,8 @@ export async function createSubagentRuntime(
   return {
     async run(tasks, signal, onUpdate) {
       if (!tasks.length) throw new Error("subagent requires at least one task");
-      const live = new Map(tasks.map((task) => [taskKey(task), { ...task, status: "running" as SubagentTaskStatus, tools: [] as WikiToolView[] }]));
+      const jobs = tasks.map((task) => ({ ...task, id: executionId(task.agent) }));
+      const live = new Map(jobs.map((task) => [task.id, { ...task, status: "running" as SubagentTaskStatus, tools: [] as WikiToolView[] }]));
       const report = async () => {
         const snapshot = [...live.values()];
         await onUpdate?.({
@@ -49,25 +57,25 @@ export async function createSubagentRuntime(
           details: { tasks: snapshot },
         });
       };
-      for (const task of tasks) onTask?.(task.agent, task.task, "running");
+      for (const task of jobs) onTask?.(task.id, task.agent, task.task, "running");
       await report();
       const maxConcurrency = options.maxConcurrency ?? tasks.length;
       if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
         throw new Error("subagent maxConcurrency must be a positive integer");
       }
-      const results = await mapWithConcurrency(tasks, maxConcurrency, async (task) => await runOne(task, byName, guard, {
+      const results = await mapWithConcurrency(jobs, maxConcurrency, async (task) => await runOne(task, byName, guard, {
         ...session,
         onActivity(event) {
-          const scoped = { ...event, scope: task.agent };
+          const scoped = { ...event, scope: task.id };
           session.onActivity?.(scoped);
-          applyChildTool(live.get(taskKey(task))!.tools, scoped);
+          applyChildTool(live.get(task.id)!.tools, scoped);
           void report();
         },
       }, signal, catalog));
       for (const result of results) {
-        const entry = live.get(taskKey(result))!;
+        const entry = live.get(result.id)!;
         entry.status = result.error ? "failed" : "complete";
-        onTask?.(result.agent, result.task, entry.status);
+        onTask?.(result.id, result.agent, result.task, entry.status);
       }
       await report();
       return results;
@@ -98,7 +106,7 @@ export function createSubagentTool(runtime: SubagentRuntime): ToolDefinition<any
     name: "subagent",
     label: "Subagent",
     description:
-      "Run a named Wiki agent in an isolated session. Agents: survey (map a source), write (author wiki/ pages), review (read-only critique). Use tasks[] for parallel work.",
+      "Run a named Wiki agent in an isolated session. Agents: survey (map a source), write (author wiki/ pages), review (read-only critique). Use tasks[] to run several in parallel; repeated single {agent,task} calls are serial. Each result is a handoff path, not the full body.",
     parameters: Type.Object({
       agent: Type.Optional(Type.String({ description: "survey, write, or review" })),
       task: Type.Optional(Type.String({ description: "Assignment for a single agent" })),
@@ -127,7 +135,7 @@ export function createSubagentTool(runtime: SubagentRuntime): ToolDefinition<any
 }
 
 async function runOne(
-  task: SubagentTask,
+  task: SubagentTask & { id: string },
   byName: Map<string, WikiAgentDefinition>,
   guard: WikiWriteGuard,
   session: RunWikiSessionOptions,
@@ -153,19 +161,40 @@ async function runOne(
       signal,
       session,
     );
-    return { ...task, text };
+    const handoff = await writeHandoff(guard, task, text);
+    return { ...task, text, handoff };
   } catch (error) {
     return { ...task, text: "", error: error instanceof Error ? error.message : String(error) };
   }
 }
 
+async function writeHandoff(
+  guard: WikiWriteGuard,
+  task: { id: string; agent: string; task: string },
+  text: string,
+): Promise<string> {
+  await mkdir(guard.handoffsRoot, { recursive: true });
+  const location = path.join(guard.handoffsRoot, `${task.id}.md`);
+  const body = `# ${task.agent} handoff\n\nTask: ${task.task}\n\n${text.trim()}\n`;
+  await writeText(location, body);
+  return path.relative(guard.workspaceRoot, location).replaceAll("\\", "/");
+}
+
 function formatResult(result: SubagentResult): string {
   if (result.error) return `## ${result.agent} failed\n${result.error}`;
+  if (result.handoff) {
+    return [
+      `## ${result.agent}`,
+      `Handoff: ${result.handoff}`,
+      `Task: ${result.task}`,
+      "Read that file for the full result. Do not treat this message as the evidence.",
+    ].join("\n");
+  }
   return `## ${result.agent}\n${result.text}`.trim();
 }
 
-function taskKey(task: { agent: string; task: string }): string {
-  return `${task.agent}\0${task.task}`;
+function executionId(agent: string): string {
+  return `${agent}-${randomUUID().slice(0, 8)}`;
 }
 
 function applyChildTool(tools: WikiToolView[], event: { id: string; tool: string; args: unknown; status: WikiToolView["status"] }): void {

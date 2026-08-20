@@ -14,14 +14,14 @@ const WORKSPACE_LOCK_FILE = ".okf-wiki-workspace.lock";
 const RESERVED_WORKSPACE_DIRECTORIES = new Set(["wiki", ".okf-wiki"]);
 const WINDOWS_RESERVED_SOURCE_NAMES = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
 
-/** Applied to source discovery by default. Users can use each source's .gitignore for additions. */
+/** Applied to source discovery and source tools by default. Users add more with `wiki.exclude`. */
 export const DEFAULT_SOURCE_IGNORES = [
   ".git", "node_modules", ".pnpm-store", "dist", "build", "out", "target", ".venv", "venv",
   "__pycache__", ".mypy_cache", ".pytest_cache", ".tox", ".coverage", "coverage", ".nyc_output",
   ".idea", ".vscode", ".gradle", ".mvn", ".DS_Store", "Thumbs.db",
+  "*.pyc", "*.pyo", "*.pyd", "*.class", "*.log", "*.o", "*.so", "*.dylib", "*.dll",
+  "src/test/**", "**/src/test/**", "**/*Test.java", "**/*Tests.java", "**/*IT.java", "**/*ITCase.java",
 ];
-
-const DEFAULT_SOURCE_IGNORE_FILES = ["*.pyc", "*.pyo", "*.pyd", "*.class", "*.log"];
 
 export interface WikiWorkspaceSource {
   /** The actual top-level directory name, never a separate alias. */
@@ -233,16 +233,14 @@ export async function loadWikiWorkspace(cwd: string): Promise<ResolvedWikiWorksp
   return { ...workspace, root, configPath, sources };
 }
 
-export function sourceIsIgnored(source: ResolvedWikiSource, relativePath: string, defaultsEnabled: boolean, workspaceExcludes: readonly string[] = []): boolean {
-  const normalized = relativePath.replaceAll("\\", "/").replace(/^\.\//, "");
+export function sourceIsIgnored(source: { path: string }, relativePath: string, defaultsEnabled: boolean, workspaceExcludes: readonly string[] = []): boolean {
+  const normalized = normalizeRepoRelative(relativePath);
   const parts = normalized.split("/");
-  const basename = parts.at(-1) ?? "";
-  const declaredPath = `${source.path}/${normalized}`;
-  if (workspaceExcludes.some((pattern) => matchesPathGlob(normalized, pattern) || matchesPathGlob(declaredPath, pattern))) return true;
+  const declaredPath = source.path === "." ? normalized : `${source.path.replaceAll("\\", "/")}/${normalized}`;
+  if (workspaceExcludes.some((pattern) => matchesIgnorePattern(normalized, pattern) || matchesIgnorePattern(declaredPath, pattern))) return true;
   if (source.path === "." && (parts[0] === ".okf-wiki" || parts[0] === "wiki" || normalized === WORKSPACE_FILE)) return true;
   if (!defaultsEnabled) return false;
-  return DEFAULT_SOURCE_IGNORES.some((ignored) => parts.includes(ignored))
-    || DEFAULT_SOURCE_IGNORE_FILES.some((pattern) => matchesSimpleGlob(basename, pattern));
+  return DEFAULT_SOURCE_IGNORES.some((pattern) => matchesIgnorePattern(normalized, pattern));
 }
 
 async function implicitSelfWorkspace(cwd: string): Promise<ResolvedWikiWorkspace> {
@@ -266,9 +264,27 @@ async function implicitSelfWorkspace(cwd: string): Promise<ResolvedWikiWorkspace
   };
 }
 
-function matchesPathGlob(value: string, pattern: string): boolean {
-  const normalized = pattern.replaceAll("\\", "/").replace(/^\.\//, "");
-  return path.matchesGlob(value, normalized);
+function normalizeRepoRelative(value: string): string {
+  return value.replaceAll("\\", "/").replace(/^\.\//, "").replace(/^\/+/, "").replace(/\/+$/, "");
+}
+
+function matchesIgnorePattern(relativePath: string, pattern: string): boolean {
+  const candidate = normalizeRepoRelative(relativePath);
+  const glob = normalizeRepoRelative(pattern);
+  if (!candidate || !glob) return false;
+  if (!glob.includes("/") && !/[?*]/.test(glob)) {
+    return candidate === glob || candidate.split("/").includes(glob);
+  }
+  if (!glob.includes("/")) return path.matchesGlob(path.posix.basename(candidate), glob);
+  const prefixed = glob.startsWith("**/") ? glob : `**/${glob}`;
+  for (const value of [candidate, `${candidate}/`]) {
+    if (path.matchesGlob(value, glob) || path.matchesGlob(value, prefixed)) return true;
+  }
+  if (glob.endsWith("/**")) {
+    const prefix = glob.slice(0, -3);
+    if (path.matchesGlob(candidate, prefix) || path.matchesGlob(candidate, prefix.startsWith("**/") ? prefix : `**/${prefix}`)) return true;
+  }
+  return false;
 }
 
 async function findWorkspaceConfig(cwd: string): Promise<string | undefined> {
@@ -547,10 +563,6 @@ async function removeEmptyDirectory(directory: string): Promise<void> {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function matchesSimpleGlob(value: string, pattern: string): boolean {
-  return path.matchesGlob(value.toLowerCase(), pattern.toLowerCase());
 }
 
 function isMissing(error: unknown): error is NodeJS.ErrnoException {

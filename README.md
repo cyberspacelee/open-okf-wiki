@@ -87,11 +87,17 @@ the defaults below; implicit single-source Workspaces use the same defaults.
 
 | Field | Default | Valid values | Meaning |
 | --- | ---: | ---: | --- |
-| `exclude` | `[]` | source globs | Paths excluded from evidence discovery. |
+| `exclude` | `[]` | source globs | Extra source globs excluded from evidence discovery and from `read` / `grep` / `find` / `ls`. |
 | `maxConcurrentAgents` | `3` | `2..64` | Total concurrent model sessions, including the Lead. At most `value - 1` delegated agents run together. |
 | `transientRetries` | `1` | `0..10` | Retries after a transient model failure, in addition to the initial attempt. |
 | `baseRetryDelayMs` | `1000` | `0..300000` | Base delay used by Pi's retry backoff. |
 | `sessionTimeoutSeconds` | `1200` | `1..2147483` | Wall-clock deadline for each Lead or delegated-agent session. |
+
+`defaultSourceIgnores: true` (the default) hides dependency, build, and Java
+test trees (`src/test/**`, `*Test.java`, and the usual `node_modules` /
+`target` noise) from inspect and from agent `read` / `grep` / `find` / `ls`.
+Add more with `wiki.exclude`. `/wiki init --no-default-ignores` turns the
+built-in list off.
 
 The concurrency limit applies to each `subagent` task batch while the Lead
 occupies one session slot. Retry and timeout values apply to both the Lead and
