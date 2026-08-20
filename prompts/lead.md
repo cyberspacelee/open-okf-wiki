@@ -47,6 +47,11 @@ Default sequence (change this file to change the pipeline):
    source-local domain/concept pages beside the concept.
 5. Optionally `review`. Fix what it flags by calling `write` again.
 
+When briefing `write`, copy survey slugs and locators verbatim. Slugs are
+source identifiers (`checkout-session`), not translations. Tell write which
+companion pages to author (`flows.md` / `models.md` / `states.md` / `data.md`)
+and that those pages need mermaid using the same identifiers as node IDs.
+
 Topology (path is the concept id):
 
 ```

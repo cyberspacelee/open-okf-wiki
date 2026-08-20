@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  formatToolCall,
   parseWikiCliCommand,
+  renderWikiLive,
   renderWikiRun,
   renderWikiSnapshot,
   renderWikiRuns,
@@ -65,9 +67,10 @@ test("renders plain run, list, and snapshot output", () => {
     status: "paused",
     goal: "Auth wiki",
     tasks: [{ id: "write", content: "Write overview", status: "in_progress" }],
+    activity: [{ scope: "write", tool: "read", args: { path: "src/a.ts" } }],
     createdAt: "2026-08-12T00:00:00.000Z",
     updatedAt: "2026-08-12T00:00:00.000Z",
-  }), /in_progress  write  Write overview/);
+  }), /in_progress  write  Write overview[\s\S]*→ write · read src\/a\.ts/);
   assert.equal(renderWikiRuns([]), "Wiki runs: none.");
   assert.match(renderWikiRuns([{ id: "run-1", status: "paused", updatedAt: "2026-08-12" }]), /run-1 \| paused/);
 });
@@ -93,6 +96,33 @@ test("selects live run then latest when no id is given", () => {
   assert.equal(selectWikiRun([succeeded, paused])?.id, "hold");
   assert.equal(selectWikiRun([succeeded, running], "old")?.id, "old");
   assert.equal(selectWikiRun([succeeded], "missing"), undefined);
+});
+
+test("formats tool calls for the live widget", () => {
+  assert.equal(formatToolCall("read", { path: "src/checkout.ts", offset: 1, limit: 80 }), "read src/checkout.ts:1-80");
+  assert.equal(formatToolCall("grep", { pattern: "CheckoutSession", path: "backend" }), "grep /CheckoutSession/ in backend");
+  assert.equal(formatToolCall("subagent", { agent: "write", task: "author pages" }), "subagent write");
+  assert.equal(formatToolCall("subagent", { tasks: [{ agent: "survey" }, { agent: "write" }] }), "subagent survey,write");
+  assert.equal(formatToolCall("db_describe", { tables: ["orders", "payments"] }), "db_describe orders,payments");
+});
+
+test("renders a compact live widget from run activity", () => {
+  assert.deepEqual(renderWikiLive({
+    id: "run-1",
+    cwd: "/repo",
+    status: "running",
+    focus: "auth",
+    createdAt: "2026-08-12T00:00:00.000Z",
+    updatedAt: "2026-08-12T00:00:00.000Z",
+    tasks: [{ id: "write", content: "Write CheckoutSession pages", status: "in_progress" }],
+    agents: [{ agent: "write", task: "author pages", status: "running" }],
+    activity: [{ scope: "write", tool: "read", args: { path: "src/checkout.ts", offset: 1, limit: 80 } }],
+  }), [
+    "Wiki run-1 | running | auth",
+    "in_progress  write  Write CheckoutSession pages",
+    "running  write",
+    "→ write · read src/checkout.ts:1-80",
+  ]);
 });
 
 test("help lists management and run commands", () => {

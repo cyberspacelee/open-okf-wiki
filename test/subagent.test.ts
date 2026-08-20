@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readdir } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { loadWikiAgents, packagedAgentsRoot, parseAgentMarkdown } from "../extensions/wiki/lib/agents.js";
@@ -41,6 +42,56 @@ test("unknown subagent names return Unknown agent and list packaged agents", asy
   );
   assert.match(result.error, /Unknown agent "not-a-packaged-agent"/);
   assert.match(result.error, new RegExp(`Available: ${names.join(", ")}`));
+});
+
+test("subagent child sessions tag activity with the agent name", async (t) => {
+  const events = [];
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-subagent-activity-"));
+  t.after(async () => await rm(workspaceRoot, { recursive: true, force: true }));
+  const runtime = await createSubagentRuntime(
+    {
+      workspaceRoot,
+      workspaceRealPath: workspaceRoot,
+      configPath: path.join(workspaceRoot, "workspace.yaml"),
+      defaultSourceIgnores: true,
+      excludes: [],
+      sources: [],
+      fingerprint: "test",
+    },
+    path.join(workspaceRoot, ".okf-wiki", "runs", "abcd", "candidate"),
+    {
+      sessionDir: path.join(workspaceRoot, "sessions"),
+      async createSession() {
+        return {
+          session: {
+            sessionFile: undefined,
+            subscribe(listener) {
+              listener({
+                type: "tool_execution_start",
+                toolCallId: "call-1",
+                toolName: "grep",
+                args: { pattern: "Order", path: "src" },
+              });
+              return () => {};
+            },
+            async prompt() {},
+            async waitForIdle() {},
+            getLastAssistantText() { return "mapped"; },
+            dispose() {},
+            abort() {},
+          },
+          modelFallbackMessage: undefined,
+        };
+      },
+      onActivity(event) {
+        events.push(event);
+      },
+    },
+  );
+  await runtime.run([{ agent: "survey", task: "map source" }], new AbortController().signal);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].scope, "survey");
+  assert.equal(events[0].tool, "grep");
 });
 
 test("subagent tool reports running tasks through onUpdate", async () => {

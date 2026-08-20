@@ -19,5 +19,10 @@ or
 verdict: changes_requested
 ```
 
-Then list evidence: missing citations, invented paths, thin stubs, topology
-mistakes. Prefer `pass` when pages are grounded enough to install.
+Then list evidence. Request changes when a slug or title is translation-only
+(missing the source identifier), when `flows.md` / `models.md` / `states.md` /
+`data.md` has no mermaid fence, or when mermaid node IDs are translated names
+instead of types, classes, modules, or tables. Also flag missing citations,
+invented paths, thin stubs, and topology mistakes.
+
+Prefer `pass` when pages are grounded enough to install.

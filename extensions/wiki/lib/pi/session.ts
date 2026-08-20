@@ -15,6 +15,12 @@ import { exists } from "../files.js";
 
 export const DEFAULT_SESSION_TIMEOUT_MS = 20 * 60_000;
 
+export interface WikiSessionActivity {
+  tool: string;
+  args: unknown;
+  scope?: string;
+}
+
 export interface RunWikiSessionOptions {
   model?: Model<Api>;
   thinkingLevel?: ThinkingLevel;
@@ -25,6 +31,7 @@ export interface RunWikiSessionOptions {
   maxToolCalls?: number;
   onSessionReady?: (sessionFile: string | undefined) => void;
   onCompaction?: () => string | Promise<string>;
+  onActivity?: (event: WikiSessionActivity) => void;
 }
 
 export async function runWikiSession(
@@ -84,10 +91,14 @@ export async function runWikiSession(
     throw new Error(`Could not restore the persisted Wiki model: ${created.modelFallbackMessage}`);
   }
   options.onSessionReady?.(session.sessionFile);
-  if (options.onCompaction) {
+  if (options.onActivity || options.onCompaction) {
+    const onActivity = options.onActivity;
     const onCompaction = options.onCompaction;
     session.subscribe((event) => {
-      if (event.type !== "compaction_end" || event.aborted) return;
+      if (onActivity && event.type === "tool_execution_start") {
+        onActivity({ tool: event.toolName, args: event.args });
+      }
+      if (!onCompaction || event.type !== "compaction_end" || event.aborted) return;
       void Promise.resolve(onCompaction()).then((text) => {
         if (!text || !session) return;
         return session.sendCustomMessage(

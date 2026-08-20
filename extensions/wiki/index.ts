@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
   parseWikiCliCommand,
+  renderWikiLive,
   renderWikiRun,
   renderWikiRuns,
   renderWikiSnapshot,
@@ -94,13 +95,21 @@ async function dispatch(
 
 function setRunStatus(context: ExtensionCommandContext, view: WikiRunView): void {
   if (!context.hasUI) return;
+  const last = view.activity?.at(-1);
   const flying = view.agents?.filter((agent) => agent.status === "running") ?? [];
   const label = view.status === "running"
-    ? flying.length
-      ? `wiki running · ${flying.map((agent) => agent.agent).join(",")}`
-      : "wiki running"
+    ? last
+      ? `wiki running · ${last.scope} · ${last.tool}`
+      : flying.length
+        ? `wiki running · ${flying.map((agent) => agent.agent).join(",")}`
+        : "wiki running"
     : `wiki ${view.status}`;
   context.ui.setStatus("wiki", label);
+  if (view.status === "running") {
+    context.ui.setWidget("wiki", renderWikiLive(view), { placement: "belowEditor" });
+    return;
+  }
+  context.ui.setWidget("wiki", undefined);
 }
 
 const STATUS_POLL_MS = 250;

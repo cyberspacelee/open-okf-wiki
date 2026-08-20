@@ -30,20 +30,27 @@ Tasks), and the persisted Lead session. Compaction re-injects the Board.
 
 ## Catalog
 
-Optional Postgres evidence in `workspace.yaml`:
+Optional Postgres evidence in `workspace.yaml`. Username and password go in
+the URL:
 
 ```yaml
 database:
-  url: ${DATABASE_URL}
+  url: ${DATABASE_URL}   # postgresql://USER:PASSWORD@HOST:PORT/DB
   schema: public
   tables: [user*, order%]
 ```
 
-`url` is a `postgresql://` connection string (or `${ENV}` / `$ENV`). `schema`
-defaults to `public`. Omit `tables` to allow every table in that schema;
-otherwise names are fuzzy-matched (`user` → `users`, `user_account`;
-`order%` → `orders`). Agents list then describe matching tables. They do
-not dump the whole schema. Connections are read-only.
+```bash
+export DATABASE_URL='postgresql://wiki:secret@127.0.0.1:5432/app'
+```
+
+`url` is a `postgresql://` connection string (or `${ENV}` / `$ENV`).
+URL-encode special characters in the password. `schema` defaults to
+`public`. Omit `tables` to allow every table in that schema; otherwise names
+are fuzzy-matched (`user` → `users`, `user_account`; `order%` → `orders`).
+Agents list then describe matching tables. They do not dump the whole
+schema. Connections are read-only. Expand the URL in the environment; do
+not commit the expanded string.
 
 A Catalog requires an explicit `workspace.yaml`. Implicit single-source
-workspaces have no database block. Put the password in the environment.
+workspaces have no database block.

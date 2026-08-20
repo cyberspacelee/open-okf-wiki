@@ -9,6 +9,9 @@ import { isReservedWikiPagePath, isSafeWikiPagePath } from "./path.js";
 export const GENERATED_BY = "open-okf-wiki/1.0.0";
 export const VERIFIED_BY = "process:open-okf-wiki";
 
+const MERMAID_PAGES = new Set(["flows.md", "models.md", "states.md", "data.md"]);
+const MERMAID_FENCE = /```mermaid\b/;
+
 export interface WikiValidationIssue {
   code: string;
   page?: string;
@@ -80,6 +83,7 @@ export async function validateWikiTree(
   issues.push(...tree.issues);
   const pages: string[] = [];
   for (const relative of tree.markdown) {
+    const filename = relative.split("/").at(-1) ?? "";
     if (isReservedWikiPagePath(relative)) continue;
     if (!isSafeWikiPagePath(relative)) {
       issues.push({ code: "path", page: relative, message: `Illegal Wiki page path: ${relative}` });
@@ -95,6 +99,9 @@ export async function validateWikiTree(
     }
     if (typeof parsed.frontmatter.type !== "string" || !parsed.frontmatter.type.trim()) {
       issues.push({ code: "okf", page: relative, message: "OKF documents require a non-empty type" });
+    }
+    if (MERMAID_PAGES.has(filename) && !MERMAID_FENCE.test(parsed.body)) {
+      issues.push({ code: "mermaid", page: relative, message: `${filename} requires a mermaid diagram` });
     }
     const citations = extractSourceCitations(parsed.body, (citation) => {
       const root = sourceRoots.get(citation.scope);

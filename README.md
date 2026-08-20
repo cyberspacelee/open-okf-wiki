@@ -18,7 +18,8 @@ pi -e ./extensions/wiki/index.ts -p --mode json -a "/wiki"
 ```
 
 Print/json mode waits until the Run finishes and prints the final status.
-Interactive TUI returns after start and updates the footer status.
+Interactive TUI returns after start, updates the footer status, and shows a
+live widget of Lead / subagent tool calls.
 
 CLI contract (no LLM): `./scripts/e2e-wiki-cli.sh`  
 Live generation: `WIKI_E2E=1 ./scripts/e2e-wiki-live.sh`
@@ -66,7 +67,7 @@ defaultSourceIgnores: true
 wiki:
   exclude: []
 database:
-  url: ${DATABASE_URL}
+  url: ${DATABASE_URL}   # postgresql://USER:PASSWORD@HOST:PORT/DB
   schema: public
   tables: [user*, order%]
 sources:
@@ -88,12 +89,20 @@ prints Task status.
 
 ### Catalog
 
-Optional Postgres evidence. `url` must be `postgresql://` (or `${ENV}` /
-`$ENV`). `schema` defaults to `public`. Omit `tables` to allow every table
-in that schema; otherwise names are fuzzy-matched (`user` → `users`,
-`user_account`; `order%` → `orders`). Agents call `db_tables` then
-`db_describe`. The host never dumps the schema into the Lead prompt.
-Connections are read-only. Put secrets in the environment, not in git.
+Optional Postgres evidence. Username and password belong in the connection
+URL (`postgresql://USER:PASSWORD@HOST:PORT/DB`), not as separate yaml fields:
+
+```bash
+export DATABASE_URL='postgresql://wiki:secret@127.0.0.1:5432/app'
+```
+
+`url` must be `postgresql://` (or `${ENV}` / `$ENV`). URL-encode special
+characters in the password. `schema` defaults to `public`. Omit `tables` to
+allow every table in that schema; otherwise names are fuzzy-matched (`user`
+→ `users`, `user_account`; `order%` → `orders`). Agents call `db_tables`
+then `db_describe`. The host never dumps the schema into the Lead prompt.
+Connections are read-only. Expand the URL in the environment; do not commit
+the expanded string.
 
 A Catalog needs an explicit `workspace.yaml`. Implicit single-source
 workspaces have no database block.

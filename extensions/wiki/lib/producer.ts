@@ -21,16 +21,17 @@ import { createSubagentRuntime, createSubagentTool } from "./subagent.js";
 import { createBoardStore, emptyBoard, formatBoard, type WikiBoardStore } from "./board.js";
 import { createPostgresCatalog } from "./postgres.js";
 import type { WikiCatalog } from "./catalog.js";
-import type {
-  WikiProducer,
-  WikiProducerRequest,
-  WikiProducerResult,
-  WikiRunControl,
-  WikiRunHandle,
-  WikiRunStatus,
-  WikiRunView,
+import {
+  WikiRunResultError,
+  type WikiActivity,
+  type WikiProducer,
+  type WikiProducerRequest,
+  type WikiProducerResult,
+  type WikiRunControl,
+  type WikiRunHandle,
+  type WikiRunStatus,
+  type WikiRunView,
 } from "./producer-types.js";
-import { WikiRunResultError } from "./producer-types.js";
 
 const LEAD_CANDIDATE_TOOLS = ["read", "grep", "find", "ls"] as const;
 
@@ -71,12 +72,15 @@ interface RunRecord {
 
 const active = new Map<string, LiveRun>();
 
+const ACTIVITY_LIMIT = 12;
+
 interface LiveRun {
   record: RunRecord;
   plan: WikiPinnedSourcePlan;
   controller: AbortController;
   done: Promise<void>;
   result?: WikiProducerResult;
+  activity: WikiActivity[];
 }
 
 export function createProductionWikiProducer(options: WikiProducerOptions = {}): WikiProducer {
@@ -112,6 +116,7 @@ export function createProductionWikiProducer(options: WikiProducerOptions = {}):
         plan,
         controller: new AbortController(),
         done: Promise.resolve(),
+        activity: [],
       };
       startLive(live, workspace, options, { resume: false, focus: request.focus });
       active.set(runKey(workspace.root, id), live);
@@ -119,7 +124,7 @@ export function createProductionWikiProducer(options: WikiProducerOptions = {}):
     },
     async list(cwd) {
       const workspace = await loadWikiWorkspace(cwd);
-      return await Promise.all((await listRecords(workspace.root)).map(toView));
+      return await Promise.all((await listRecords(workspace.root)).map((record) => toView(record)));
     },
     async open(runId, cwd) {
       const workspace = await loadWikiWorkspace(cwd);
@@ -140,6 +145,7 @@ export function createProductionWikiProducer(options: WikiProducerOptions = {}):
         })),
         controller: new AbortController(),
         done: Promise.resolve(),
+        activity: [],
       }, options, workspace);
     },
   };
@@ -185,7 +191,9 @@ function startLive(
           void writeRecord(live.record);
         },
       };
-      const runLead = options.runLead ?? defaultRunLead(options, record);
+      const runLead = options.runLead ?? defaultRunLead(options, record, (scope, tool, args) => {
+        live.activity = [...live.activity, { scope, tool, args }].slice(-ACTIVITY_LIMIT);
+      });
       await runLead(context);
       if (live.record.status === "running") {
         const published = await publishCandidate(live, context.language);
@@ -204,12 +212,19 @@ function startLive(
 function defaultRunLead(
   options: WikiProducerOptions,
   record: RunRecord,
+  recordActivity: (scope: string, tool: string, args: unknown) => void,
 ): (context: WikiLeadContext) => Promise<void> {
   return async (context) => {
+    const session: RunWikiSessionOptions = {
+      ...options.session,
+      onActivity(event) {
+        recordActivity(event.scope ?? "lead", event.tool, event.args);
+      },
+    };
     const runtime = await createSubagentRuntime(
       context.plan,
       context.candidateRoot,
-      options.session ?? {},
+      session,
       options.agentsDirectory,
       (agent, task, status) => context.note(agent, task, status),
       context.catalog,
@@ -223,7 +238,7 @@ function defaultRunLead(
     ];
     const prompt = await leadPrompt(context);
     await runWikiSession(context.plan.workspaceRoot, tools, prompt, context.signal, {
-      ...options.session,
+      ...session,
       sessionDir: path.join(runDir(record.cwd, record.id), "sessions"),
       sessionFile: record.sessionFile,
       onSessionReady(sessionFile) {
@@ -283,12 +298,12 @@ function handleFor(live: LiveRun, options: WikiProducerOptions, workspace: Resol
   return {
     id: live.record.id,
     async view() {
-      return await toView(live.record);
+      return await toView(live.record, live.activity);
     },
     async control(action: WikiRunControl) {
       if (action === "resume") {
         await resumeLive(live, options, workspace);
-        return await toView(live.record);
+        return await toView(live.record, live.activity);
       }
       if (action === "pause") {
         live.record.status = "paused";
@@ -299,12 +314,12 @@ function handleFor(live: LiveRun, options: WikiProducerOptions, workspace: Resol
       }
       live.record.updatedAt = new Date().toISOString();
       await writeRecord(live.record);
-      return await toView(live.record);
+      return await toView(live.record, live.activity);
     },
     async result() {
       await live.done;
       if (live.result) return live.result;
-      throw new WikiRunResultError(live.record.error ?? `Wiki run ${live.record.id} ${live.record.status}`, await toView(live.record));
+      throw new WikiRunResultError(live.record.error ?? `Wiki run ${live.record.id} ${live.record.status}`, await toView(live.record, live.activity));
     },
   };
 }
@@ -335,7 +350,7 @@ async function resumeLive(
   active.set(runKey(workspace.root, live.record.id), live);
 }
 
-async function toView(record: RunRecord): Promise<WikiRunView> {
+async function toView(record: RunRecord, activity?: WikiActivity[]): Promise<WikiRunView> {
   const board = await createBoardStore(runDir(record.cwd, record.id)).read();
   return {
     id: record.id,
@@ -348,6 +363,7 @@ async function toView(record: RunRecord): Promise<WikiRunView> {
     ...(record.error ? { error: record.error } : {}),
     agents: record.agents,
     ...(board.tasks.length ? { tasks: board.tasks } : {}),
+    ...(activity?.length ? { activity } : {}),
     ...(record.pageCount !== undefined ? { pageCount: record.pageCount } : {}),
   };
 }

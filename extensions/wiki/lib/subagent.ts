@@ -109,7 +109,12 @@ async function runOne(
       tools,
       `${definition.prompt}\n\n# Task\n\n${task.task}`,
       signal,
-      session,
+      {
+        ...session,
+        onActivity(event) {
+          session.onActivity?.({ ...event, scope: task.agent });
+        },
+      },
     );
     return { ...task, text };
   } catch (error) {

@@ -168,6 +168,76 @@ function tokenize(raw: string): string[] {
   return tokens;
 }
 
+export function formatToolCall(tool: string, args: unknown): string {
+  const record = args && typeof args === "object" && !Array.isArray(args)
+    ? args as Record<string, unknown>
+    : {};
+  const pathArg = String(record.path ?? record.file ?? record.file_path ?? record.target ?? "");
+  switch (tool) {
+    case "read": {
+      const offset = typeof record.offset === "number" ? record.offset : undefined;
+      const limit = typeof record.limit === "number" ? record.limit : undefined;
+      let text = pathArg || "...";
+      if (offset !== undefined || limit !== undefined) {
+        const start = offset ?? 1;
+        const end = limit !== undefined ? start + limit - 1 : "";
+        text += `:${start}${end ? `-${end}` : ""}`;
+      }
+      return `read ${text}`;
+    }
+    case "write":
+      return `write ${pathArg || "..."}`;
+    case "edit":
+      return `edit ${pathArg || "..."}`;
+    case "ls":
+      return `ls ${pathArg || "."}`;
+    case "find":
+      return `find ${String(record.pattern ?? "*")} in ${pathArg || "."}`;
+    case "grep":
+      return `grep /${String(record.pattern ?? "")}/ in ${pathArg || "."}`;
+    case "subagent": {
+      if (Array.isArray(record.tasks) && record.tasks.length) {
+        const names = record.tasks
+          .map((task) => task && typeof task === "object" && "agent" in task ? String((task as { agent?: unknown }).agent ?? "") : "")
+          .filter(Boolean)
+          .join(",");
+        return `subagent ${names || `parallel (${record.tasks.length})`}`;
+      }
+      return `subagent ${String(record.agent ?? "...")}`;
+    }
+    case "db_tables":
+      return typeof record.query === "string" && record.query ? `db_tables ${record.query}` : "db_tables";
+    case "db_describe": {
+      const tables = Array.isArray(record.tables) ? record.tables.map(String).join(",") : "";
+      return tables ? `db_describe ${tables}` : "db_describe";
+    }
+    case "todo":
+      return `todo ${String(record.action ?? "")}`.trim();
+    case "publish":
+      return "publish";
+    default: {
+      const preview = args === undefined ? "" : JSON.stringify(args);
+      if (!preview || preview === "{}") return tool;
+      return preview.length > 50 ? `${tool} ${preview.slice(0, 50)}...` : `${tool} ${preview}`;
+    }
+  }
+}
+
+export function renderWikiLive(run: WikiRunView): string[] {
+  const heading = `Wiki ${run.id} | ${run.status}${run.focus ? ` | ${run.focus}` : ""}`;
+  const lines = [heading];
+  for (const task of run.tasks ?? []) {
+    if (task.status === "in_progress") lines.push(`in_progress  ${task.id}  ${truncate(task.content, 60)}`);
+  }
+  for (const agent of run.agents ?? []) {
+    if (agent.status === "running") lines.push(`running  ${agent.agent}`);
+  }
+  for (const item of run.activity ?? []) {
+    lines.push(`→ ${item.scope} · ${formatToolCall(item.tool, item.args)}`);
+  }
+  return lines;
+}
+
 export function renderWikiRun(run: WikiRunView | undefined): string {
   if (!run) return "Wiki: no run.";
   const focus = run.focus ? ` | ${run.focus}` : "";
@@ -179,8 +249,11 @@ export function renderWikiRun(run: WikiRunView | undefined): string {
   const agents = run.agents?.length
     ? `\n${run.agents.map((agent) => `  ${agent.status}  ${agent.agent}  ${truncate(agent.task, 80)}`).join("\n")}`
     : "";
+  const activity = run.activity?.length
+    ? `\n${run.activity.map((item) => `  → ${item.scope} · ${formatToolCall(item.tool, item.args)}`).join("\n")}`
+    : "";
   const pages = run.pageCount !== undefined ? ` | ${run.pageCount} pages` : "";
-  return `Wiki ${run.id} | ${run.status}${focus}${pages}${goal}${tasks}${agents}${error}`;
+  return `Wiki ${run.id} | ${run.status}${focus}${pages}${goal}${tasks}${agents}${activity}${error}`;
 }
 
 export function renderWikiSnapshot(run: WikiRunView): string {

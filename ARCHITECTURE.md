@@ -25,8 +25,8 @@ encode research/write/review stages. The Lead session has `todo`, `subagent`,
 belong to the write agent.
 
 Workspace init and `/wiki source add` stay host commands. Pi TUI is the user's
-shell; Wiki does not ship a status overlay. Print/json `/wiki` waits for the
-Run; TUI updates `setStatus("wiki")` while it runs.
+shell. Print/json `/wiki` waits for the Run. TUI updates `setStatus("wiki")`
+and a below-editor widget of Lead / subagent tool calls while it runs.
 
 Decisions: [0001](docs/adr/0001-isolated-full-generation-runs.md),
 [0004](docs/adr/0004-durable-run-board.md),

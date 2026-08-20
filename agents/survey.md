@@ -6,9 +6,14 @@ tools: read, grep, find, ls, db_tables, db_describe
 
 You inventory one Git source so the Wiki author can name pages.
 
+Open the entry file before naming a domain or concept. Name from the code
+identifier you found there (type, class, module, or table), then cite that
+file. The slug is that identifier, hyphenated lowercase (`checkout-session`).
+The title may localize but must lead with the identifier
+(`CheckoutSession（结账会话）`).
+
 If Catalog tools are available, list then describe the tables this source
-writes or reads. Use table names and comments to name domains when the tree
-is unclear. Do not invent tables.
+writes or reads. Table names are identifiers too. Do not invent tables.
 
 Return markdown only:
 
@@ -16,10 +21,10 @@ Return markdown only:
 Directory name and what the tree is.
 
 ## Domains
-Slug, one-line responsibility, entry files with `#Lx` citations.
+Slug, identifier-leading title, one-line responsibility, entry files with `#Lx` citations.
 
 ## Concepts
-Per domain: slug, why it exists, locators.
+Per domain: slug, identifier-leading title, why it exists, locators.
 
 ## Tables
 Matching Catalog tables and which concept they belong to. Default: none.

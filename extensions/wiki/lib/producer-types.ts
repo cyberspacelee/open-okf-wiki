@@ -9,6 +9,12 @@ export interface WikiProducerRequest {
   focus?: string;
 }
 
+export interface WikiActivity {
+  scope: string;
+  tool: string;
+  args: unknown;
+}
+
 export interface WikiRunView {
   id: string;
   cwd: string;
@@ -20,6 +26,7 @@ export interface WikiRunView {
   error?: string;
   agents?: Array<{ agent: string; task: string; status: "running" | "complete" | "failed" }>;
   tasks?: WikiTask[];
+  activity?: WikiActivity[];
   pageCount?: number;
 }
 
