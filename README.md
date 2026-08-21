@@ -170,24 +170,27 @@ Each template is a markdown file. Filename is the page name. Frontmatter:
 | Field | Meaning | Default |
 | --- | --- | --- |
 | `type` | OKF `type` on the generated page (Title Case, e.g. `Architecture`) | filename without `.md` |
-| `scope` | `wiki` / `source` / `domain` / `concept` | `concept` |
+| `scope` | `wiki` / `repo` / `domain` / `concept` | `concept` |
+| `altitudes` | `wiki` and/or `repo` for dual-placement pages | unset |
 | `diagram` | mermaid kind, or a list of kinds | no mermaid check |
-| `optional` | survey may select this file at its scope | `false` (scope anchor) |
+| `optional` | writer may keep this file after reopening source | `false` (scope anchor) |
 | `instructions` | writer-only completion criteria | required |
 
-`scope` / `diagram` / `optional` / `instructions` stay on the template file. Generated pages
-carry `type`, `title`, `description`, and `sources`. Claims use `[^id]`
-footnotes keyed to `sources[].id`. `sources[].resource` is
-`<scopeId>/path#Lx`.
+`scope` / `altitudes` / `diagram` / `optional` / `instructions` stay on the
+template file. Generated pages carry `type`, `title`, `description`, and
+`sources`. Claims use `[^id]` footnotes keyed to `sources[].id`.
+`sources[].resource` is `<scopeId>/path#Lx` (`self/path#Lx` on an implicit
+Workspace).
 
 `instructions` tells the writer what evidence completes the page. The body is
 the output skeleton: exactly `# {{title}}`, then `{{description}}`, then fixed,
 unique `##` sections. Generated pages preserve that H2 order, fill every
 section, and contain no `{{placeholder}}`. H3 subsections remain available.
 
-Publication fails on an undeclared page, wrong scope depth, missing anchor or
-concept cluster, heading drift, an empty section, an unresolved placeholder,
-invalid diagram, missing source evidence, broken Wiki link, or stale review.
+Publication fails on an undeclared page, wrong placement, missing architecture
+or concept cluster, heading drift, an empty section, a non-diagram H2 without a
+footnote, an unresolved placeholder, invalid diagram, missing source evidence,
+a write that never read its cited files, a broken Wiki link, or stale review.
 
 ## Published layout
 
@@ -195,16 +198,17 @@ invalid diagram, missing source evidence, broken Wiki link, or stale review.
 wiki/index.md
 wiki/log.md
 wiki/overview.md
-wiki/<source>/source.md
-wiki/<source>/development.md | runbook.md
-wiki/<source>/<domain>/domain.md | architecture.md | flows.md
-wiki/<source>/<domain>/<concept>/concept.md
-wiki/<source>/<domain>/<concept>/interfaces.md | models.md | states.md | data.md
+wiki/architecture.md
+wiki/development.md | runbook.md          # implicit Workspace only
+wiki/repos/<scopeId>/architecture.md      # explicit Workspace
+wiki/repos/<scopeId>/development.md | runbook.md
+wiki/<domain>/domain.md | flows.md
+wiki/<domain>/<concept>/concept.md | states.md | data.md
 ```
 
 Filenames at each layer come from the template pack. The host generates every
-`index.md` and root `log.md`. Each index uses the next scope's anchor title and
-description, so agents can choose a branch without opening it. Wiki-to-wiki
+`index.md` and root `log.md`. Each index uses the next scope's identity title
+and description, so agents can choose a branch without opening it. Wiki-to-wiki
 links are standard markdown. Publication validates OKF, paths, templates,
 sources, and review, then installs the Candidate as `wiki/`.
 

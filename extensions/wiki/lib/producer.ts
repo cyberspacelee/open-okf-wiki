@@ -109,6 +109,7 @@ interface RunRecord {
   review?: RunReviewReceipt;
   check?: { candidateRevision: string; ok: boolean; completedAt: string; issueCount: number };
   leadAttempts: Array<{ completedAt: string; usage: WikiAgentUsage }>;
+  repairAttempts?: number;
   pageCount?: number;
   candidateRoot: string;
   fingerprint: string;
@@ -420,8 +421,12 @@ async function checkCandidate(live: LiveRun): Promise<{ ok: boolean; message: st
 async function validateAndRecordCandidate(live: LiveRun): Promise<WikiValidation | undefined> {
   await verifyPinnedSourcePlan(live.plan);
   if (!live.templates) return undefined;
-  const sources = new Map(live.plan.sources.map((source) => [source.scopeId, source.realPath]));
-  const validation = await validateWikiTree(live.record.candidateRoot, sources, live.templates);
+  const pins = live.plan.sources.map((source) => ({
+    scopeId: source.scopeId,
+    logicalPath: source.logicalPath,
+    realPath: source.realPath,
+  }));
+  const validation = await validateWikiTree(live.record.candidateRoot, pins, live.templates);
   live.candidateRevision = await candidateRevision(live.record.candidateRoot);
   live.record.check = {
     candidateRevision: live.candidateRevision.digest,
@@ -429,6 +434,7 @@ async function validateAndRecordCandidate(live: LiveRun): Promise<WikiValidation
     issueCount: validation.issues.length,
     completedAt: new Date().toISOString(),
   };
+  if (!validation.ok) live.record.repairAttempts = (live.record.repairAttempts ?? 0) + 1;
   live.record.updatedAt = new Date().toISOString();
   await writeRecord(live.record);
   await refreshCheckpoint(live);
@@ -499,6 +505,9 @@ async function recordAgent(live: LiveRun, board: WikiBoardStore, update: Subagen
         handoff: receipt.handoff,
         completedAt: now,
       };
+      if (verdict === "changes_requested") {
+        live.record.repairAttempts = (live.record.repairAttempts ?? 0) + 1;
+      }
     } catch (error) {
       receipt.status = "failed";
       receipt.error = errorMessage(error);
@@ -679,6 +688,7 @@ async function refreshCheckpoint(live: LiveRun, board = live.board): Promise<voi
       ...live.record.check,
       status: live.record.check.candidateRevision === live.candidateRevision.digest ? "current" as const : "stale" as const,
     } } : {}),
+    ...(live.record.repairAttempts ? { repairAttempts: live.record.repairAttempts } : {}),
   });
 }
 
@@ -967,7 +977,7 @@ async function leadPrompt(context: WikiLeadContext, checkpoint: string): Promise
   const body = await readFile(fileURLToPath(new URL("../../../prompts/lead.md", import.meta.url)), "utf8");
   const sources = context.plan.sources.map((source) => `- ${source.scopeId}: ${source.logicalPath}`).join("\n");
   const focus = context.focus ? `\nFocus: ${context.focus}\n` : "";
-  const agents = "Available agents: survey, write, review. Every assignment requires an existing in-progress boardTaskId and a stable partition. Survey assignments may be batched; write and review run alone.\n";
+  const agents = "Available agents: survey, write, review. Every assignment requires an existing in-progress boardTaskId and a stable partition. Survey and write may batch disjoint partitions; review runs alone.\n";
   const resume = context.resume
     ? "\nThis is a resumed Run. Reconcile the checkpoint and durable artifacts before doing more work. Do not restart completed partitions.\n"
     : "";

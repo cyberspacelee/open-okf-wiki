@@ -1,9 +1,11 @@
 ---
 type: Runbook
-scope: source
+scope: repo
 optional: true
 instructions: >-
-  Generate this page only when operational evidence defines signals, diagnosis, recovery, and post-recovery verification. Use executable steps and explicit stop conditions.
+  Generate this page when operational evidence defines signals, diagnosis,
+  recovery, and post-recovery verification. Use executable steps and explicit
+  stop conditions. Implicit single-source: wiki root. Explicit: repos/<scopeId>/.
 ---
 
 # {{title}}

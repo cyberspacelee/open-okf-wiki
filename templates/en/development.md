@@ -1,9 +1,11 @@
 ---
 type: Development Guide
-scope: source
+scope: repo
 optional: true
 instructions: >-
-  Generate this page when build files, scripts, or developer documentation provide executable setup, run, test, or debug evidence. Keep commands source-backed.
+  Generate this page when build files, scripts, or developer documentation
+  provide executable setup, run, test, or debug evidence. Keep commands
+  source-backed. Implicit single-source: wiki root. Explicit: repos/<scopeId>/.
 ---
 
 # {{title}}

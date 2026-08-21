@@ -3,6 +3,7 @@ import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { git } from "./git.js";
 import { loadWikiWorkspace, sourceIsIgnored, type ResolvedWikiSource } from "./workspace.js";
+import { IMPLICIT_SOURCE_SCOPE_ID, isImplicitPinPath } from "./path.js";
 
 export interface WikiPinnedSource {
   scopeId: string;
@@ -107,7 +108,7 @@ async function repositoryIdentity(repositoryRoot: string): Promise<string> {
 
 export function wikiSourceSlug(sourcePath: string): string {
   const normalized = sourcePath.replaceAll("\\", "/");
-  return normalized === "." || normalized === "" ? "source" : normalized;
+  return isImplicitPinPath(normalized) ? IMPLICIT_SOURCE_SCOPE_ID : normalized;
 }
 
 async function pinnedSource(

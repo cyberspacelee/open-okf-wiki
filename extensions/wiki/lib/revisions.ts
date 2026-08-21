@@ -30,6 +30,7 @@ export function templatePackRevision(pack: WikiTemplatePack): string {
       file: template.file,
       type: template.type,
       scope: template.scope,
+      altitudes: template.altitudes ?? [],
       diagram: template.diagram ?? [],
       optional: template.optional,
       instructions: template.instructions,

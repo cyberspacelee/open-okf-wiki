@@ -66,13 +66,15 @@ wiki:
   templates: wiki-templates
 ```
 
-Each scope (`wiki` / `source` / `domain` / `concept`) has exactly one
-non-optional anchor template. Other templates use `optional: true` and survey
-selects them with evidence at that scope. `instructions` is the writer brief;
-the body is the final H1/H2 skeleton. A `diagram` field requires a mermaid
-fence of that kind. Generated pages use `sources` + `[^id]` footnotes. Publish
-checks scope, exact sections, non-empty content, placeholders, links, diagrams,
-sources, and a current review pass.
+Wiki, domain, and concept each have one non-optional anchor.
+`architecture.md` uses `altitudes: [wiki, repo]` and is required at those
+altitudes. Other templates use `optional: true`; the writer keeps them after
+reopening source. `instructions` is the writer brief; the body is the final
+H1/H2 skeleton. A `diagram` field requires a mermaid fence of that kind.
+Generated pages use `sources` + `[^id]` footnotes. Publish checks placement,
+exact sections, footnotes, placeholders, links, diagrams, sources, cited-file
+reads, and a current review pass.
 
-Consuming agents start at `wiki/index.md`. Do not put `AGENTS.md` or
-`ARCHITECTURE.md` inside `wiki/`.
+Consuming agents start at `wiki/index.md`. Knowledge pages live at
+`<domain>/<concept>/`. Explicit Workspaces add `repos/<scopeId>/`. Do not put
+`AGENTS.md` or `ARCHITECTURE.md` inside `wiki/`.

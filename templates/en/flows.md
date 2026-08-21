@@ -6,7 +6,9 @@ diagram:
   - flowchart
 optional: true
 instructions: >-
-  Generate this Domain page for source-backed cross-Concept runtime scenarios. Cover the main path, branches, failures, side effects, and observable verification.
+  Generate this Domain page for source-backed cross-Concept runtime scenarios.
+  Cover the main path, branches, failures, side effects, and observable
+  verification. This is the dynamic view, not the structure diagram.
 ---
 
 # {{title}}

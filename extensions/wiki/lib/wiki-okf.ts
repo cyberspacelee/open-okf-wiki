@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { mkdir, readdir, readFile } from "node:fs/promises";
+import { mkdir, readdir } from "node:fs/promises";
 import path from "node:path";
 import { extractOkfSources, wikiLinkTargets, type SourceCitation } from "./citations.js";
 import { HOST_PAGE_KEYS } from "./templates.js";
@@ -7,15 +7,23 @@ import { WikiValidationInfrastructureError, errorMessage } from "./failures.js";
 import { inside, readText, writeText } from "./files.js";
 import { parsePage, stringifyPage } from "./frontmatter.js";
 import { markdownStructure, sectionHasContent } from "./markdown-structure.js";
-import { isReservedWikiPagePath, isSafeWikiPagePath } from "./path.js";
-import { anchorTemplate, type WikiTemplate, type WikiTemplatePack, type WikiTemplateScope } from "./templates.js";
+import { isReservedWikiPagePath, isSafeWikiPagePath, wikiPathKind, isImplicitPinPath, REPO_STRIP } from "./path.js";
+import { anchorTemplate, type WikiTemplate, type WikiTemplatePack } from "./templates.js";
 import { candidateRevision, fileRevision } from "./revisions.js";
 
 export const GENERATED_BY = "open-okf-wiki/1.0.0";
 export const VERIFIED_BY = "process:open-okf-wiki-review";
 
 const MERMAID_KIND = /```mermaid[^\n]*\r?\n\s*([A-Za-z][A-Za-z0-9-]*)/;
-const SCOPE_DEPTH: Record<WikiTemplateScope, number> = { wiki: 1, source: 2, domain: 3, concept: 4 };
+const MERMAID_FENCE = /```mermaid[^\n]*\r?\n([\s\S]*?)```/;
+const INLINE_FOOTNOTE = /\[\^([^\]]+)\]/;
+const FOOTNOTE_DEFINITION = /^\[\^[^\]]+\]:/;
+
+export interface WikiPin {
+  scopeId: string;
+  logicalPath: string;
+  realPath: string;
+}
 
 export interface WikiValidationIssue {
   code: string;
@@ -27,6 +35,18 @@ export interface WikiValidation {
   ok: boolean;
   issues: WikiValidationIssue[];
   pages: string[];
+}
+
+export function wikiPinsImplicit(pins: readonly WikiPin[]): boolean {
+  return pins.length === 1 && isImplicitPinPath(pins[0]?.logicalPath ?? "");
+}
+
+function sourceRootsFromPins(pins: readonly WikiPin[]): Map<string, string> {
+  return new Map(pins.map((pin) => [pin.scopeId, pin.realPath]));
+}
+
+function architectureFile(pack: WikiTemplatePack): string {
+  return pack.templates.find((template) => template.altitudes)?.file ?? "architecture.md";
 }
 
 export function derivedIndexPaths(pages: readonly string[]): string[] {
@@ -76,10 +96,11 @@ export function safeWikiPath(wikiRoot: string, relative: string): string {
 
 export async function validateWikiTree(
   wikiRoot: string,
-  sourceRoots: ReadonlyMap<string, string>,
+  pins: readonly WikiPin[] = [],
   pack?: WikiTemplatePack,
 ): Promise<WikiValidation> {
   const issues: WikiValidationIssue[] = [];
+  const sourceRoots = sourceRootsFromPins(pins);
   let tree;
   try {
     tree = await scanWikiTree(wikiRoot);
@@ -106,7 +127,7 @@ export async function validateWikiTree(
   }
   for (const page of loaded) {
     const template = byFile.get(page.filename);
-    if (pack) issues.push(...templatePlacementIssues(page.relative, template, sourceRoots));
+    if (pack) issues.push(...templatePlacementIssues(page.relative, template, pins));
     issues.push(...pageContractIssues(page.relative, page.filename, page.parsed, template, pack, sourceRoots));
     for (const target of wikiLinkTargets(page.relative, page.parsed.body)) {
       if (!wikiTargetExists(target, pages)) {
@@ -114,7 +135,7 @@ export async function validateWikiTree(
       }
     }
   }
-  if (pack) issues.push(...topologyIssues(pages, sourceRoots, pack));
+  if (pack) issues.push(...topologyIssues(pages, pins, pack));
   return { ok: issues.length === 0, issues, pages: pages.sort() };
 }
 
@@ -158,24 +179,35 @@ function pageContractIssues(
 function templatePlacementIssues(
   relative: string,
   template: WikiTemplate | undefined,
-  sourceRoots: ReadonlyMap<string, string>,
+  pins: readonly WikiPin[],
 ): WikiValidationIssue[] {
   if (!template) {
     return [{ code: "template", page: relative, message: "Page filename is not declared by the Wiki template pack" }];
   }
-  const segments = relative.split("/");
-  const issues: WikiValidationIssue[] = [];
-  if (segments.length !== SCOPE_DEPTH[template.scope]) {
-    issues.push({
-      code: "template",
-      page: relative,
-      message: `${template.file} has ${template.scope} scope and must be at depth ${SCOPE_DEPTH[template.scope]}`,
-    });
+  if (!placementAllowed(relative, template, pins)) {
+    return [{ code: "template", page: relative, message: `${template.file} is not allowed at ${relative}` }];
   }
-  if (template.scope !== "wiki" && segments[0] && !sourceRoots.has(segments[0])) {
-    issues.push({ code: "template", page: relative, message: `Unknown Source directory ${segments[0]}` });
+  return [];
+}
+
+function placementAllowed(relative: string, template: WikiTemplate, pins: readonly WikiPin[]): boolean {
+  const kind = wikiPathKind(relative);
+  if (!kind) return false;
+  const implicit = wikiPinsImplicit(pins);
+  const pinIds = new Set(pins.map((pin) => pin.scopeId));
+  const repoId = relative.split("/")[1];
+  if (template.altitudes) {
+    if (kind === "root") return template.altitudes.includes("wiki");
+    return !implicit && kind === "repo" && template.altitudes.includes("repo") && pinIds.has(repoId!);
   }
-  return issues;
+  if (template.scope === "wiki") return kind === "root";
+  if (template.scope === "repo") {
+    if (implicit) return kind === "root";
+    return kind === "repo" && pinIds.has(repoId!);
+  }
+  if (template.scope === "domain") return kind === "domain";
+  if (template.scope === "concept") return kind === "concept";
+  return false;
 }
 
 function markdownContractIssues(
@@ -205,9 +237,13 @@ function markdownContractIssues(
       message: `H2 sections must be exactly: ${template.sections.join(" | ")}`,
     });
   }
+  const diagram = new Set(template.diagramSections);
   for (const section of structure.sections) {
     if (template.sections.includes(section.title) && !sectionHasContent(section)) {
       issues.push({ code: "markdown", page: relative, message: `H2 section is empty: ${section.title}` });
+    }
+    if (template.sections.includes(section.title) && !diagram.has(section.title) && !sectionCitesSource(section)) {
+      issues.push({ code: "markdown", page: relative, message: `H2 section is missing a sources footnote: ${section.title}` });
     }
   }
   if (structure.placeholders.length) {
@@ -218,6 +254,10 @@ function markdownContractIssues(
     });
   }
   return issues;
+}
+
+function sectionCitesSource(section: { lines: string[] }): boolean {
+  return section.lines.some((line) => INLINE_FOOTNOTE.test(line) && !FOOTNOTE_DEFINITION.test(line.trim()));
 }
 
 function sourceFileLines(
@@ -283,39 +323,55 @@ function mermaidIssues(page: string, body: string, template: WikiTemplate): Wiki
       message: `${template.file} mermaid must be ${allowed.join(" or ")}, not ${kind}`,
     }];
   }
+  const inner = MERMAID_FENCE.exec(body)?.[1] ?? "";
+  const content = inner.split(/\r?\n/).some((line) => {
+    const trimmed = line.trim();
+    return Boolean(trimmed) && !trimmed.startsWith("%%");
+  });
+  if (!content) {
+    return [{ code: "mermaid", page, message: `${template.file} mermaid fence is empty` }];
+  }
   return [];
 }
 
 function topologyIssues(
   pages: readonly string[],
-  sourceRoots: ReadonlyMap<string, string>,
+  pins: readonly WikiPin[],
   pack: WikiTemplatePack,
 ): WikiValidationIssue[] {
   const issues: WikiValidationIssue[] = [];
   const present = new Set(pages);
-  const required = (scope: WikiTemplate["scope"]) => [anchorTemplate(pack, scope)];
+  const implicit = wikiPinsImplicit(pins);
+  const overview = anchorTemplate(pack, "wiki").file;
+  if (!present.has(overview)) {
+    issues.push({ code: "topology", page: overview, message: `Required template ${overview} is missing` });
+  }
+  const architecture = architectureFile(pack);
+  if (!present.has(architecture)) {
+    issues.push({ code: "topology", page: architecture, message: `Required template ${architecture} is missing` });
+  }
+  if (implicit) {
+    if (pages.some((page) => page === REPO_STRIP || page.startsWith(`${REPO_STRIP}/`))) {
+      issues.push({ code: "topology", message: "Implicit Workspace Wiki must not contain repos/" });
+    }
+  } else {
+    for (const pin of [...pins].sort((left, right) => left.scopeId.localeCompare(right.scopeId))) {
+      const page = `${REPO_STRIP}/${pin.scopeId}/${architecture}`;
+      if (!present.has(page)) {
+        issues.push({ code: "topology", page, message: `Required template ${architecture} is missing` });
+      }
+    }
+  }
+  const pinIds = new Set(pins.map((pin) => pin.scopeId.toLowerCase()));
   const domainFiles = new Set(pack.templates.filter((template) => template.scope === "domain").map((template) => template.file));
   const conceptFiles = new Set(pack.templates.filter((template) => template.scope === "concept").map((template) => template.file));
   const conceptDirs = [...new Set(
     pages
       .filter((page) => conceptFiles.has(page.split("/").at(-1) ?? ""))
       .map((page) => path.posix.dirname(page))
-      .filter((directory) => directory.split("/").length === 3),
+      .filter((directory) => directory.split("/").length === 2 && !directory.startsWith(`${REPO_STRIP}/`)),
   )].sort();
-  for (const template of required("wiki")) {
-    if (!present.has(template.file)) {
-      issues.push({ code: "topology", page: template.file, message: `Required template ${template.file} is missing` });
-    }
-  }
-  for (const source of [...sourceRoots.keys()].sort()) {
-    for (const template of required("source")) {
-      const page = `${source}/${template.file}`;
-      if (!present.has(page)) {
-        issues.push({ code: "topology", page, message: `Required template ${template.file} is missing` });
-      }
-    }
-  }
-  if (required("concept").length && !conceptDirs.length) {
+  if (!conceptDirs.length) {
     issues.push({ code: "topology", message: "Wiki requires at least one concept cluster" });
   }
   const domainDirs = [...new Set([
@@ -323,22 +379,21 @@ function topologyIssues(
     ...pages
       .filter((page) => domainFiles.has(page.split("/").at(-1) ?? ""))
       .map((page) => path.posix.dirname(page))
-      .filter((directory) => directory.split("/").length === 2),
+      .filter((directory) => directory.split("/").length === 1 && directory !== REPO_STRIP),
   ])].sort();
   for (const directory of domainDirs) {
-    for (const template of required("domain")) {
-      const page = `${directory}/${template.file}`;
-      if (!present.has(page)) {
-        issues.push({ code: "topology", page, message: `Required template ${template.file} is missing` });
-      }
+    if (pinIds.has(directory.toLowerCase())) {
+      issues.push({ code: "topology", page: `${directory}/domain.md`, message: `Domain slug collides with Source ${directory}` });
+    }
+    const page = `${directory}/${anchorTemplate(pack, "domain").file}`;
+    if (!present.has(page)) {
+      issues.push({ code: "topology", page, message: `Required template ${anchorTemplate(pack, "domain").file} is missing` });
     }
   }
   for (const directory of conceptDirs) {
-    for (const template of required("concept")) {
-      const page = `${directory}/${template.file}`;
-      if (!present.has(page)) {
-        issues.push({ code: "topology", page, message: `Required template ${template.file} is missing` });
-      }
+    const page = `${directory}/${anchorTemplate(pack, "concept").file}`;
+    if (!present.has(page)) {
+      issues.push({ code: "topology", page, message: `Required template ${anchorTemplate(pack, "concept").file} is missing` });
     }
   }
   return issues;
@@ -355,7 +410,7 @@ export async function materializeWikiIndexes(
   const written: string[] = [];
   for (const indexPath of indexes) {
     const content = await renderIndex(wikiRoot, indexPath, pages, language, pack);
-    const absolute = indexPath === "index.md" ? path.join(wikiRoot, "index.md") : safeWikiPath(wikiRoot, indexPath);
+    const absolute = safeWikiPath(wikiRoot, indexPath);
     await mkdir(path.dirname(absolute), { recursive: true });
     await writeText(absolute, content);
     written.push(indexPath);
@@ -372,7 +427,7 @@ export async function stampPublication(
   const pages = tree.markdown.filter((page) => !isReservedWikiPagePath(page) && isSafeWikiPagePath(page));
   for (const relative of tree.markdown) {
     if (isReservedWikiPagePath(relative) && relative !== "index.md") continue;
-    const absolute = relative === "index.md" ? path.join(wikiRoot, "index.md") : safeWikiPath(wikiRoot, relative);
+    const absolute = safeWikiPath(wikiRoot, relative);
     let raw;
     try {
       raw = await readText(absolute);
@@ -385,7 +440,6 @@ export async function stampPublication(
       }
       continue;
     }
-    if (isReservedWikiPagePath(relative)) continue;
     try {
       const parsed = parsePage(raw);
       parsed.frontmatter.generated = { by: GENERATED_BY, at };
@@ -404,6 +458,20 @@ export async function stampPublication(
   await writeText(path.join(wikiRoot, "log.md"), `# Directory Update Log\n\n## ${day}\n* **Creation**: ${creation}\n`);
 }
 
+type WikiDirectoryKind = "wiki" | "repos-root" | "repo" | "domain" | "concept";
+
+function classifyWikiDirectory(directory: string): WikiDirectoryKind {
+  if (!directory) return "wiki";
+  const parts = directory.split("/");
+  if (parts[0] === REPO_STRIP) {
+    if (parts.length === 1) return "repos-root";
+    if (parts.length === 2) return "repo";
+  }
+  if (parts.length === 1) return "domain";
+  if (parts.length === 2) return "concept";
+  throw new Error(`Wiki index directory is deeper than the template topology: ${directory}`);
+}
+
 async function renderIndex(
   wikiRoot: string,
   indexPath: string,
@@ -412,6 +480,7 @@ async function renderIndex(
   pack: WikiTemplatePack,
 ): Promise<string> {
   const relativeDirectory = path.posix.dirname(indexPath) === "." ? "" : path.posix.dirname(indexPath);
+  const kind = classifyWikiDirectory(relativeDirectory);
   const directPages = pages
     .filter((page) => (path.posix.dirname(page) === "." ? "" : path.posix.dirname(page)) === relativeDirectory)
     .sort();
@@ -421,22 +490,62 @@ async function renderIndex(
       .map((candidate) => path.posix.dirname(candidate) === "." ? "" : path.posix.dirname(candidate))
       .filter((directory) => directory && (path.posix.dirname(directory) === "." ? "" : path.posix.dirname(directory)) === relativeDirectory),
   )].sort();
-  const anchor = anchorTemplate(pack, directoryScope(relativeDirectory));
-  const anchorPath = relativeDirectory ? `${relativeDirectory}/${anchor.file}` : anchor.file;
-  const identity = await pageIdentity(wikiRoot, anchorPath);
-  const title = identity.title;
+  const identity = kind === "repos-root"
+    ? {
+      title: language === "zh" ? "仓库" : "Repositories",
+      description: language === "zh"
+        ? "每个 Git Source 作为可部署单元的架构与操作页。"
+        : "Architecture and operations pages for each Git Source as a deployable.",
+    }
+    : await pageIdentity(wikiRoot, identityPage(relativeDirectory, kind, pack));
   const intro = language === "zh"
     ? "从本页开始，按描述打开子目录或页面，不要一次读完整包。"
     : "Start here. Open a child index or page from the descriptions; do not ingest the whole bundle.";
   const lines = indexPath === "index.md"
-    ? ["---", 'okf_version: "0.2"', "---", "", `# ${title}`, "", identity.description, "", intro, ""]
-    : [`# ${title}`, "", identity.description, ""];
+    ? ["---", 'okf_version: "0.2"', "---", "", `# ${identity.title}`, "", identity.description, "", intro, ""]
+    : [`# ${identity.title}`, "", identity.description, ""];
+  if (indexPath === "index.md") {
+    const domainDirs = childDirs.filter((directory) => directory !== REPO_STRIP);
+    const uniquePins = [...new Set(
+      pages
+        .filter((page) => wikiPathKind(page) === "repo" && page.endsWith(`/${architectureFile(pack)}`))
+        .map((page) => path.posix.dirname(page)),
+    )].sort();
+    if (directPages.length) {
+      lines.push(language === "zh" ? "## 系统" : "## System", "");
+      for (const page of directPages) {
+        const pageInfo = await pageIdentity(wikiRoot, page);
+        lines.push(`* [${pageInfo.title}](./${path.posix.basename(page)}) - ${pageInfo.description}`);
+      }
+      lines.push("");
+    }
+    if (uniquePins.length) {
+      lines.push(language === "zh" ? "## 仓库" : "## Repositories", "");
+      for (const directory of uniquePins) {
+        const childIdentity = await pageIdentity(wikiRoot, `${directory}/${architectureFile(pack)}`);
+        lines.push(`* [${childIdentity.title}](./${directory}/index.md) - ${childIdentity.description}`);
+      }
+      lines.push("");
+    }
+    if (domainDirs.length) {
+      lines.push(language === "zh" ? "## Domain" : "## Domains", "");
+      for (const child of domainDirs) {
+        const childIdentity = await pageIdentity(wikiRoot, `${child}/${anchorTemplate(pack, "domain").file}`);
+        lines.push(`* [${childIdentity.title}](./${path.posix.basename(child)}/index.md) - ${childIdentity.description}`);
+      }
+      lines.push("");
+    }
+    return `${lines.join("\n").trimEnd()}\n`;
+  }
   if (childDirs.length) {
     lines.push(language === "zh" ? "## 目录" : "## Directories", "");
     for (const child of childDirs) {
       const name = path.posix.basename(child);
-      const childAnchor = anchorTemplate(pack, directoryScope(child));
-      const childIdentity = await pageIdentity(wikiRoot, `${child}/${childAnchor.file}`);
+      const childKind = classifyWikiDirectory(child);
+      const childPage = identityPage(child, childKind, pack);
+      const childIdentity = childKind === "repos-root"
+        ? { title: name, description: language === "zh" ? "仓库" : "Repositories" }
+        : await pageIdentity(wikiRoot, childPage);
       lines.push(`* [${childIdentity.title}](./${name}/index.md) - ${childIdentity.description}`);
     }
     lines.push("");
@@ -453,13 +562,12 @@ async function renderIndex(
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
-function directoryScope(directory: string): WikiTemplateScope {
-  const depth = directory ? directory.split("/").length : 0;
-  if (depth === 0) return "wiki";
-  if (depth === 1) return "source";
-  if (depth === 2) return "domain";
-  if (depth === 3) return "concept";
-  throw new Error(`Wiki index directory is deeper than the template topology: ${directory}`);
+function identityPage(directory: string, kind: WikiDirectoryKind, pack: WikiTemplatePack): string {
+  if (kind === "wiki") return anchorTemplate(pack, "wiki").file;
+  if (kind === "repo") return `${directory}/${architectureFile(pack)}`;
+  if (kind === "domain") return `${directory}/${anchorTemplate(pack, "domain").file}`;
+  if (kind === "concept") return `${directory}/${anchorTemplate(pack, "concept").file}`;
+  return `${directory}/${architectureFile(pack)}`;
 }
 
 async function pageIdentity(wikiRoot: string, relative: string): Promise<{ title: string; description: string }> {

@@ -321,7 +321,7 @@ test("subagent prompts project templates by role", async (t) => {
   assert.doesNotMatch(prompts[2], /Skeleton/);
 });
 
-test("subagent batches allow parallel survey only", async (t) => {
+test("subagent batches allow parallel survey and disjoint writes", async (t) => {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-subagent-guards-"));
   t.after(async () => await rm(workspaceRoot, { recursive: true, force: true }));
   const runtime = await createSubagentRuntime({
@@ -334,9 +334,39 @@ test("subagent batches allow parallel survey only", async (t) => {
     fingerprint: "test",
   }, path.join(workspaceRoot, "candidate"), {});
   await assert.rejects(() => runtime.run([
-    { agent: "write", task: "a", boardTaskId: "write", partition: "a" },
-    { agent: "write", task: "b", boardTaskId: "write", partition: "b" },
-  ], new AbortController().signal), /write must run alone/);
+    { agent: "write", task: "a", boardTaskId: "write", partition: "billing" },
+    { agent: "write", task: "b", boardTaskId: "write", partition: "billing/invoice" },
+  ], new AbortController().signal), /overlapping write partitions/);
+  const parallelWrite = await createSubagentRuntime({
+    workspaceRoot,
+    workspaceRealPath: workspaceRoot,
+    configPath: path.join(workspaceRoot, "workspace.yaml"),
+    defaultSourceIgnores: true,
+    excludes: [],
+    sources: [],
+    fingerprint: "test",
+  }, path.join(workspaceRoot, "parallel-candidate"), {
+    async createSession() {
+      return {
+        session: {
+          sessionFile: undefined,
+          subscribe() { return () => {}; },
+          async prompt() {},
+          async waitForIdle() {},
+          getLastAssistantText() { return "wrote"; },
+          dispose() {},
+          abort() {},
+        },
+        modelFallbackMessage: undefined,
+      };
+    },
+  });
+  const writes = await parallelWrite.run([
+    { agent: "write", task: "a", boardTaskId: "write", partition: "billing" },
+    { agent: "write", task: "b", boardTaskId: "write", partition: "checkout" },
+  ], new AbortController().signal);
+  assert.equal(writes.length, 2);
+  assert.equal(writes.every((result) => !result.error), true);
   await assert.rejects(() => runtime.run([
     { agent: "survey", task: "a", boardTaskId: "survey", partition: "a" },
     { agent: "review", task: "b", boardTaskId: "survey", partition: "b" },

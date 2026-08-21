@@ -4,6 +4,22 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 
 ## [Unreleased]
 
+### Breaking: knowledge-shaped Wiki tree
+
+- Published Wiki is organized by Domain and Concept, not by Git Source folder.
+  Implicit Workspaces cite `self` and must not create `wiki/source/` or
+  `wiki/repos/`. Explicit Workspaces put pin architecture and operations under
+  `wiki/repos/<scopeId>/`.
+- `architecture.md` is required at wiki root and, on explicit Workspaces, at
+  each `repos/<scopeId>/`. Domain-level architecture, `source.md`,
+  `interfaces.md`, and `models.md` are removed.
+- Template scopes are `wiki` / `repo` / `domain` / `concept`. Dual-placement
+  pages use `altitudes` instead of `scope`.
+- Write may batch disjoint path prefixes. The writer is injected only the
+  skeletons for that prefix and must `read` cited pin files in the same
+  session. Survey hints optional templates; it does not bind them.
+- Publish requires a sources footnote in every non-diagram H2.
+
 ### Breaking: agent-oriented template contract
 
 - Every template requires writer-only `instructions`; its body defines the

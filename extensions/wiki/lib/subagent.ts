@@ -4,14 +4,17 @@ import path from "node:path";
 import { Type } from "typebox";
 import type { AgentToolUpdateCallback, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { loadWikiAgents, type WikiAgentDefinition } from "./agents.js";
-import { writeText } from "./files.js";
-import { writeGuardFromPlan, type WikiWriteGuard } from "./path-policy.js";
+import { readText, writeText } from "./files.js";
+import { assertReadable, writeGuardFromPlan, writePartitionsOverlap, type WikiWriteGuard } from "./path-policy.js";
 import type { WikiPinnedSourcePlan } from "./inspect.js";
+import { isImplicitPinPath } from "./path.js";
 import { candidateTools, createCatalogTools } from "./pi/tools.js";
 import { runWikiSession, type RunWikiSessionOptions } from "./pi/session.js";
 import type { WikiCatalog } from "./catalog.js";
 import type { WikiToolView } from "./producer-types.js";
-import { formatWikiTemplateCatalog, formatWikiTemplatesForPrompt, type WikiTemplatePack } from "./templates.js";
+import { formatWikiTemplateCatalog, formatWikiTemplatesForPrompt, templatesForPartition, type WikiTemplatePack } from "./templates.js";
+import { parsePage } from "./frontmatter.js";
+import { extractOkfSources } from "./citations.js";
 import { candidateRevision, fileRevision } from "./revisions.js";
 import type { WikiAgentUsage } from "./producer-types.js";
 
@@ -24,8 +27,6 @@ export interface SubagentTask {
 
 export interface SubagentResult extends SubagentTask {
   id: string;
-  agent: string;
-  task: string;
   text: string;
   handoff?: string;
   handoffRevision?: string;
@@ -150,12 +151,12 @@ export function createSubagentTool(runtime: SubagentRuntime): ToolDefinition<any
     name: "subagent",
     label: "Subagent",
     description:
-      "Run a named Wiki agent in an isolated session. Agents: survey (map a source), write (author wiki/ pages), review (read-only critique). Use tasks[] to run several in parallel; repeated single {agent,task} calls are serial. Each result is a handoff path, not the full body.",
+      "Run a named Wiki agent in an isolated session. Agents: survey (map a source), write (author wiki/ pages), review (read-only critique). Survey may batch by pin. Write may batch disjoint path prefixes (domain, repos/<scopeId>, wiki-root). Review runs alone. Each result is a handoff path, not the full body.",
     parameters: Type.Object({
       agent: Type.Optional(Type.String({ description: "survey, write, or review" })),
       task: Type.Optional(Type.String({ description: "Assignment for a single agent" })),
       boardTaskId: Type.Optional(Type.String({ description: "Existing in-progress Board Task id" })),
-      partition: Type.Optional(Type.String({ description: "Stable Source id or candidate partition" })),
+      partition: Type.Optional(Type.String({ description: "Survey pin id, write path prefix, or wiki-root" })),
       tasks: Type.Optional(Type.Array(Type.Object({
         agent: Type.String({ description: "survey, write, or review" }),
         task: Type.String(),
@@ -202,14 +203,23 @@ async function runOne(
       ? { digest: "not-applicable" }
       : await candidateRevision(guard.candidateRoot);
     const touched = new Set<string>();
+    const readFiles = new Set<string>();
     const extra = catalog ? createCatalogTools(catalog) : [];
     const allowed = definition.tools ? new Set(definition.tools) : undefined;
+    const taskGuard = task.agent === "write" ? { ...guard, writePartition: task.partition } : guard;
     const tools = [
-      ...candidateTools(guard, definition.tools),
+      ...candidateTools(taskGuard, definition.tools),
       ...extra.filter((tool) => !allowed || allowed.has(tool.name)),
     ];
+    const logical = [...guard.sourceLogicalPaths.values()];
+    const implicit = logical.length === 1 && isImplicitPinPath(logical[0] ?? "");
+    const scoped = templates && task.agent === "write"
+      ? templatesForPartition(templates, task.partition, implicit)
+      : templates?.templates ?? [];
     const pack = templates
-      ? `\n\n${task.agent === "write" ? formatWikiTemplatesForPrompt(templates) : formatWikiTemplateCatalog(templates)}`
+      ? `\n\n${task.agent === "write"
+        ? formatWikiTemplatesForPrompt(templates, new Set(scoped.map((template) => template.file)))
+        : formatWikiTemplateCatalog(templates)}`
       : "";
     const result = await runWikiSession(
       guard.workspaceRoot,
@@ -220,14 +230,35 @@ async function runOne(
         ...session,
         onActivity(event) {
           session.onActivity?.(event);
-          if ((event.tool === "write" || event.tool === "edit") && event.args && typeof event.args === "object") {
+          if (event.args && typeof event.args === "object") {
             const location = (event.args as Record<string, unknown>).path;
-            if (typeof location === "string") touched.add(location);
+            if (typeof location === "string") {
+              if (event.tool === "read" && event.status === "complete") {
+                try {
+                  readFiles.add(path.resolve(assertReadable(taskGuard, location)));
+                } catch {
+                  readFiles.add(path.resolve(guard.workspaceRoot, location));
+                }
+              }
+              if ((event.tool === "write" || event.tool === "edit") && event.status !== "failed") {
+                touched.add(location);
+              }
+            }
           }
         },
         onCompaction: () => formatWorkerCheckpoint(task, sourceFingerprint, base.digest, touched),
       },
     );
+    if (task.agent === "write") {
+      const unread = await unreadCitedPinFiles(taskGuard, touched, readFiles);
+      if (unread.length) {
+        return {
+          ...task,
+          text: result.text,
+          error: `write did not read cited sources: ${unread.join(", ")}`,
+        };
+      }
+    }
     const completed = task.agent === "survey" ? undefined : await candidateRevision(guard.candidateRoot);
     const handoff = await writeHandoff(guard, task, result.text, base.digest, completed?.digest);
     return {
@@ -299,8 +330,17 @@ function assertSafeBatch(tasks: readonly SubagentTask[]): void {
     if (partitions.has(key)) throw new Error(`duplicate subagent partition: ${task.boardTaskId}/${task.partition}`);
     partitions.add(key);
   }
-  if (roles.has("write") && tasks.length > 1) throw new Error("write must run alone");
   if (roles.has("review") && tasks.length > 1) throw new Error("review must run alone");
+  if (roles.has("write") && tasks.length > 1) {
+    const prefixes = tasks.map((task) => task.partition);
+    for (let index = 0; index < prefixes.length; index += 1) {
+      for (let other = index + 1; other < prefixes.length; other += 1) {
+        if (writePartitionsOverlap(prefixes[index]!, prefixes[other]!)) {
+          throw new Error(`overlapping write partitions: ${prefixes[index]} ${prefixes[other]}`);
+        }
+      }
+    }
+  }
   if (roles.size > 1) throw new Error("subagent batches must contain one agent role");
 }
 
@@ -314,7 +354,7 @@ function formatWorkerCheckpoint(
     ? "Continue this exact Source survey. Reopen load-bearing Source locators before finalizing the handoff."
     : task.agent === "review"
       ? "Continue read-only review of the frozen Candidate revision. Reopen load-bearing Source locators before the verdict."
-      : "Continue this exact write assignment. Inspect current Candidate files and referenced handoffs before changing them.";
+      : "Continue this exact write assignment. Reopen each cited pin file before writing. Inspect current Candidate files and referenced handoffs before changing them.";
   const lines = [
     "<wiki_checkpoint>",
     `Execution: ${task.id}`,
@@ -342,6 +382,44 @@ function formatWorkerCheckpoint(
   }
   lines.push(instruction, "</wiki_checkpoint>");
   return lines.join("\n");
+}
+
+async function unreadCitedPinFiles(
+  guard: WikiWriteGuard,
+  touched: ReadonlySet<string>,
+  readFiles: ReadonlySet<string>,
+): Promise<string[]> {
+  const resolvedReads = new Set([...readFiles].map((entry) => path.resolve(entry)));
+  const unread: string[] = [];
+  for (const location of touched) {
+    let absolute: string;
+    try {
+      absolute = assertReadable(guard, location);
+    } catch {
+      continue;
+    }
+    const fromCandidate = path.relative(guard.candidateRoot, absolute);
+    if (fromCandidate.startsWith("..") || path.isAbsolute(fromCandidate)) continue;
+    let text: string;
+    try {
+      text = await readText(absolute);
+    } catch {
+      continue;
+    }
+    let parsed;
+    try {
+      parsed = parsePage(text);
+    } catch {
+      continue;
+    }
+    for (const citation of extractOkfSources(parsed.frontmatter, parsed.body).citations) {
+      const root = guard.sourceRoots.get(citation.scope);
+      if (!root) continue;
+      const pinFile = path.resolve(root, ...citation.path.split("/"));
+      if (!resolvedReads.has(pinFile)) unread.push(`${citation.scope}/${citation.path}`);
+    }
+  }
+  return [...new Set(unread)];
 }
 
 function estimateTokens(text: string): number {

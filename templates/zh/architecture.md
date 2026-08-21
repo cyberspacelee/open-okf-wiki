@@ -1,10 +1,13 @@
 ---
 type: Architecture
-scope: domain
+altitudes: [wiki, repo]
 diagram: flowchart
-optional: true
+optional: false
 instructions: >-
-  仅当源码体现有意义的跨 Concept 结构时生成这个 Domain 页面；组件名和 Mermaid 节点使用源码标识符。
+  Wiki 根页只写系统如何由各 Git Source 与外部系统组成：容器边界、依赖、失败域。
+  隐式单仓时同一页继续写本仓内部容器。
+  repos/<scopeId>/ 页只写该仓内部结构，链到 /architecture.md，不重复系统地图，不写 Domain 列表。
+  「组件」节每个节点必须是源码标识符、一句话职责、入边和出边。
 ---
 
 # {{title}}

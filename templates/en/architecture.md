@@ -1,10 +1,16 @@
 ---
 type: Architecture
-scope: domain
+altitudes: [wiki, repo]
 diagram: flowchart
-optional: true
+optional: false
 instructions: >-
-  Generate this Domain page when source evidence shows meaningful cross-Concept structure. Name components and Mermaid nodes with source identifiers.
+  At wiki root, describe how Git Sources and external systems compose:
+  container boundaries, dependencies, and failure domains. On an implicit
+  single-source Workspace, continue with this repo's internal containers on
+  the same page. Under repos/<scopeId>/, describe only that pin's internals,
+  link to /architecture.md, and do not repeat the system map or list Domains.
+  In Components, every node is a source identifier, one-sentence
+  responsibility, and its inbound and outbound edges.
 ---
 
 # {{title}}

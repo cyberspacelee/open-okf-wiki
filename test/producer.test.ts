@@ -20,15 +20,15 @@ function mermaidStub(kind: string): string {
   return "```mermaid\nflowchart TD\n  A --> B\n```\n";
 }
 
-async function writeValidCandidate(candidateRoot: string, sourceId = "source") {
+async function writeValidCandidate(candidateRoot: string, sourceId = "self") {
   const pack = await loadWikiTemplatePack(packagedTemplatesRoot("zh"));
   const writePage = async (relative: string, template: (typeof pack.templates)[number], title: string) => {
     const absolute = path.join(candidateRoot, ...relative.split("/"));
     await mkdir(path.dirname(absolute), { recursive: true });
     const description = `${title} description.`;
-    const sections = template.sections.map((section, index) => {
-      const diagram = template.diagram?.length && index === template.sections.length - 1
-        ? mermaidStub(template.diagram[0]!)
+    const sections = template.sections.map((section) => {
+      const diagram = template.diagramSections.includes(section)
+        ? mermaidStub(template.diagram?.[0] ?? "flowchart")
         : `${section} is grounded here. [^main]\n`;
       return `## ${section}\n\n${diagram}`;
     }).join("\n");
@@ -54,9 +54,9 @@ async function writeValidCandidate(candidateRoot: string, sourceId = "source") {
   for (const template of pack.templates) {
     if (template.optional) continue;
     if (template.scope === "wiki") await writePage(template.file, template, "Overview");
-    else if (template.scope === "source") await writePage(`${sourceId}/${template.file}`, template, sourceId);
-    else if (template.scope === "domain") await writePage(`${sourceId}/runtime/${template.file}`, template, "runtime");
-    else await writePage(`${sourceId}/runtime/ready/${template.file}`, template, "ready");
+    else if (template.altitudes) await writePage(template.file, template, "Architecture");
+    else if (template.scope === "domain") await writePage(`runtime/${template.file}`, template, "runtime");
+    else if (template.scope === "concept") await writePage(`runtime/ready/${template.file}`, template, "ready");
   }
 }
 
@@ -122,10 +122,9 @@ test("publish installs a valid Candidate as wiki/", async (t) => {
   assert.match(installed, /type: Overview/);
   assert.match(installed, /verified:/);
   const rootIndex = await readFile(path.join(root, "wiki", "index.md"), "utf8");
-  assert.match(rootIndex, /## 目录/);
-  assert.match(rootIndex, /\[source\]\(\.\/source\/index\.md\) - source description\./);
-  const sourceIndex = await readFile(path.join(root, "wiki", "source", "index.md"), "utf8");
-  assert.match(sourceIndex, /\[runtime\]\(\.\/runtime\/index\.md\) - runtime description\./);
+  assert.match(rootIndex, /## 系统/);
+  assert.match(rootIndex, /## Domain/);
+  assert.match(rootIndex, /\[runtime\]\(\.\/runtime\/index\.md\) - runtime description\./);
   assert.equal((await handle.view()).status, "succeeded");
 });
 

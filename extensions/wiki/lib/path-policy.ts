@@ -11,6 +11,7 @@ export interface WikiWriteGuard {
   sourceLogicalPaths: Map<string, string>;
   defaultSourceIgnores: boolean;
   excludes: string[];
+  writePartition?: string;
 }
 
 export function writeGuardFromPlan(plan: WikiPinnedSourcePlan, candidateRoot: string): WikiWriteGuard {
@@ -73,11 +74,28 @@ function contained(root: string, candidate: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+export function writePartitionAllows(partition: string | undefined, relative: string): boolean {
+  if (!partition || partition === "candidate" || partition === "wiki") return true;
+  const posix = relative.replaceAll("\\", "/");
+  if (partition === "wiki-root") return !posix.includes("/");
+  return posix === partition || posix.startsWith(`${partition}/`);
+}
+
+export function writePartitionsOverlap(left: string, right: string): boolean {
+  if (left === right) return true;
+  if (left === "wiki-root" || right === "wiki-root") return false;
+  if (left === "candidate" || left === "wiki" || right === "candidate" || right === "wiki") return true;
+  return left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+}
+
 export function assertWritable(guard: WikiWriteGuard, input: string): string {
   const resolved = assertReadable(guard, input);
   const relative = path.relative(guard.candidateRoot, resolved);
   if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new Error("Wiki writes must stay in the unpublished Candidate (use wiki/ paths)");
+  }
+  if (!writePartitionAllows(guard.writePartition, relative.replaceAll("\\", "/"))) {
+    throw new Error(`Wiki writes for partition ${guard.writePartition} cannot include ${relative}`);
   }
   const ledger = path.join(guard.workspaceRoot, ".okf-wiki");
   const fromLedger = path.relative(ledger, resolved);

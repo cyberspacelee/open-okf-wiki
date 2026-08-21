@@ -31,6 +31,7 @@ export interface LeadCheckpointInput {
   executions: readonly CheckpointExecution[];
   review?: CheckpointReview;
   check?: { candidateRevision: string; ok: boolean; issueCount: number; status: "current" | "stale" };
+  repairAttempts?: number;
 }
 
 export function formatLeadCheckpoint(input: LeadCheckpointInput): string {
@@ -51,6 +52,7 @@ export function formatLeadCheckpoint(input: LeadCheckpointInput): string {
     `Candidate: ${short(input.candidateRevision)}; ${input.pageCount} files`,
     `Deterministic check: ${check}`,
     `Review: ${review}`,
+    `Repair attempts: ${input.repairAttempts ?? 0}/2${(input.repairAttempts ?? 0) >= 2 ? "; do not start another write repair; leave durable failure diagnostics" : ""}`,
     "",
     formatBoard(input.board),
     "",

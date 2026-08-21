@@ -23,15 +23,19 @@ on demand (`db_tables`, `db_describe`). Only Postgres. Read-only.
 
 SOP is `prompts/lead.md`. Named workers are `agents/*.md`. Page kinds come
 from `wiki-templates/` after init (or packaged `templates/zh` /
-`templates/en`). Every scope has one anchor; optional templates are selected
-from survey evidence. Survey and review receive a compact template catalog;
-only the writer receives full H1/H2 skeletons. Structure is mechanically
-validated. `type` is Title Case; filenames stay kebab-case. TypeScript does not
-encode research/write/review stages. It does enforce execution receipts,
-single-writer/reviewer exclusivity, Candidate validation, review freshness,
-and publication. The Lead session has `todo`, `subagent`, `candidate_check`,
+`templates/en`). Wiki, domain, and concept each have one anchor.
+`architecture.md` is required at wiki and repo altitudes. Optional templates
+are kept or dropped after the writer reopens source. Survey and review receive
+a compact template catalog; the writer receives only the skeletons for its
+path prefix. Structure is mechanically validated. `type` is Title Case;
+filenames stay kebab-case. TypeScript does not encode research/write/review
+stages. It does enforce execution receipts, disjoint write prefixes, review
+exclusivity, cited-file reads, Candidate validation, review freshness, and
+publication. The Lead session has `todo`, `subagent`, `candidate_check`,
 `publish`, and read-only Candidate tools. `write` / `edit` belong to the write
-agent.
+agent. Published Wiki is knowledge-shaped (`<domain>/<concept>/`). Explicit
+Workspaces add a `repos/<scopeId>/` pin strip. Implicit Workspaces cite `self`
+and have no `repos/` directory.
 
 Workspace init and `/wiki source add` stay host commands. Pi TUI is the user's
 shell. Print/json `/wiki` waits for the Run. TUI updates `setStatus("wiki")`

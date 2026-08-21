@@ -13,7 +13,9 @@ const WORKSPACE_FILE = "workspace.yaml";
 const WORKSPACE_ENV_FILE = ".env";
 const WORKSPACE_LOCK_FILE = ".okf-wiki-workspace.lock";
 export const WORKSPACE_TEMPLATES_DIRECTORY = "wiki-templates";
-const RESERVED_WORKSPACE_DIRECTORIES = new Set(["wiki", ".okf-wiki", WORKSPACE_TEMPLATES_DIRECTORY]);
+const RESERVED_WORKSPACE_DIRECTORIES = new Set([
+  "wiki", ".okf-wiki", WORKSPACE_TEMPLATES_DIRECTORY, "self", "source", "sources", "repos",
+]);
 const WINDOWS_RESERVED_SOURCE_NAMES = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
 
 /** Applied to source discovery and source tools by default. Users add more with `wiki.exclude`. */
