@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
 import { assertReadable, assertWritable, resolveToolPath, writeGuardFromPlan, writePartitionAllows, writePartitionsOverlap } from "../extensions/wiki/lib/path-policy.js";
+import { isSafeWikiPagePath, wikiPathKind } from "../extensions/wiki/lib/path.js";
 
 function plan(workspaceRoot) {
   return {
@@ -88,8 +89,8 @@ test("write partitions lock Candidate prefixes", () => {
   assert.equal(writePartitionAllows("wiki-root", "billing/domain.md"), false);
   assert.equal(writePartitionAllows("billing", "billing/domain.md"), true);
   assert.equal(writePartitionAllows("billing", "checkout/domain.md"), false);
-  assert.equal(writePartitionAllows("repos/api", "repos/api/architecture.md"), true);
-  assert.equal(writePartitionAllows("repos/api", "repos/api/billing/invoice/concept.md"), true);
+  assert.equal(writePartitionAllows("api", "api/architecture.md"), true);
+  assert.equal(writePartitionAllows("api", "api/billing/invoice/concept.md"), true);
   assert.equal(writePartitionsOverlap("billing", "billing/invoice"), true);
   assert.equal(writePartitionsOverlap("billing", "checkout"), false);
   assert.equal(writePartitionsOverlap("wiki-root", "billing"), false);
@@ -99,4 +100,15 @@ test("write partitions lock Candidate prefixes", () => {
   const guard = { ...writeGuardFromPlan(plan(workspaceRoot), candidateRoot), writePartition: "billing" };
   assert.equal(assertWritable(guard, "wiki/billing/domain.md"), path.join(candidateRoot, "billing", "domain.md"));
   assert.throws(() => assertWritable(guard, "wiki/overview.md"), /partition billing/);
+});
+
+test("explicit repository paths use the Source id directly", () => {
+  const repositories = new Set(["my.repo_ui"]);
+  assert.equal(isSafeWikiPagePath("my.repo_ui/architecture.md"), true);
+  assert.equal(isSafeWikiPagePath("my.repo_ui/billing/invoice/concept.md"), true);
+  assert.equal(wikiPathKind("my.repo_ui/architecture.md", repositories), "repo");
+  assert.equal(wikiPathKind("my.repo_ui/billing/domain.md", repositories), "domain");
+  assert.equal(wikiPathKind("my.repo_ui/billing/invoice/concept.md", repositories), "concept");
+  assert.equal(isSafeWikiPagePath("repos/api/architecture.md"), false);
+  assert.equal(wikiPathKind("repos/api/architecture.md", new Set(["api"])), undefined);
 });

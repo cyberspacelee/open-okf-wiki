@@ -37,10 +37,10 @@ digests, review exclusivity, cited-file reads, Candidate validation, review
 freshness, and publication. The Lead session has `todo`, `subagent`, `candidate_check`,
 `publish`, and read-only Candidate tools. `write` / `edit` belong to the write
 agent. An explicit Workspace owns knowledge by Repository Section
-(`repos/<scopeId>/<domain>/<concept>/`); its root pages own cross-Source
+(`<scopeId>/<domain>/<concept>/`); its root pages own cross-Source
 composition. An implicit Workspace remains knowledge-shaped at
 `<domain>/<concept>/`, uses Workspace-root citation paths without a `self/`
-segment, and has no `repos/` directory.
+segment, and has no synthetic repository grouping directory.
 
 Workspace init and `/wiki source add` stay host commands. Pi TUI is the user's
 shell. Print/json `/wiki` waits for the Run. TUI updates `setStatus("wiki")`

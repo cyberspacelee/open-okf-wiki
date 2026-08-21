@@ -204,10 +204,10 @@ wiki/log.md
 wiki/overview.md
 wiki/architecture.md
 wiki/development.md | runbook.md          # implicit Workspace only
-wiki/repos/<scopeId>/architecture.md      # explicit Workspace
-wiki/repos/<scopeId>/development.md | runbook.md
-wiki/repos/<scopeId>/<domain>/domain.md | flows.md
-wiki/repos/<scopeId>/<domain>/<concept>/concept.md | states.md | data.md
+wiki/<scopeId>/architecture.md            # explicit Workspace
+wiki/<scopeId>/development.md | runbook.md
+wiki/<scopeId>/<domain>/domain.md | flows.md
+wiki/<scopeId>/<domain>/<concept>/concept.md | states.md | data.md
 wiki/<domain>/domain.md | flows.md         # implicit Workspace only
 wiki/<domain>/<concept>/concept.md | states.md | data.md
 ```

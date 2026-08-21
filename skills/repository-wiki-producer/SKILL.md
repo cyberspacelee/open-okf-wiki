@@ -76,7 +76,7 @@ exact sections, footnotes, placeholders, links, diagrams, sources, cited-file
 reads, and a current review pass.
 
 Consuming agents start at `wiki/index.md`. Explicit Workspace knowledge pages
-live at `repos/<scopeId>/<domain>/<concept>/`; Workspace root pages explain
+live at `<scopeId>/<domain>/<concept>/`; Workspace root pages explain
 cross-Source composition. Implicit Workspace knowledge pages remain at
 `<domain>/<concept>/`. Do not put `AGENTS.md` or `ARCHITECTURE.md` inside
 `wiki/`.

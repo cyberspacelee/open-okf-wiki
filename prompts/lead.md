@@ -44,7 +44,7 @@ cross-Source evidence map consumed by later writers; it never writes pages.
 Write partitions are Candidate path prefixes. Disjoint prefixes may run in one
 batch. Overlapping prefixes are rejected.
 
-- Explicit Workspace repository: `repos/<scopeId>` owns repo pages and all
+- Explicit Workspace repository: `<scopeId>` owns repo pages and all
   domain/concept pages beneath that repository.
 - Implicit Workspace domain: `partition` is the domain slug
   (`billing` → `wiki/billing/**`).
@@ -64,7 +64,7 @@ Default loop:
 3. Read the handoff paths. Domain and concept slugs are Source-local; never
    union or merge them across repositories.
 4. Create an in-progress write Task. In an explicit Workspace, write one
-   complete `repos/<scopeId>` partition per Source in parallel, passing that
+   complete `<scopeId>` partition per Source in parallel, passing that
    Source's survey handoff and the synthesis handoff when present. In an
    implicit Workspace, write disjoint domain partitions as before.
 5. After repository writes finish, write `wiki-root`. For multiple Sources,
@@ -80,9 +80,9 @@ Default loop:
    for the current Candidate revision.
 
 Do not survey or synthesize after write has started. Explicit Workspace
-knowledge lives at `repos/<scopeId>/<domain>/<concept>/`; the Workspace root
+knowledge lives at `<scopeId>/<domain>/<concept>/`; the Workspace root
 contains only cross-repository pages. Implicit Workspace knowledge remains at
-`<domain>/<concept>/` and has no `repos/` directory.
+`<domain>/<concept>/` and has no repository directory layer.
 
 ## Finish
 

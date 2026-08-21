@@ -77,15 +77,16 @@ test("packaged zh and en templates share a contract and differ in body language"
   assert.match(domainOnly, /domain\.md/);
   assert.doesNotMatch(domainOnly, /type `Overview`/);
   assert.equal(templatesForPartition(en, "wiki-root", true).some((template) => template.file === "overview.md"), true);
-  assert.equal(templatesForPartition(en, "billing", false).every((template) => template.scope === "domain" || template.scope === "concept"), true);
-  const repoTemplates = templatesForPartition(en, "repos/api", false);
+  assert.equal(templatesForPartition(en, "billing", true).every((template) => template.scope === "domain" || template.scope === "concept"), true);
+  const repoTemplates = templatesForPartition(en, "api", false);
   assert.equal(repoTemplates.some((template) => template.scope === "domain"), true);
   assert.equal(repoTemplates.some((template) => template.scope === "concept"), true);
   assert.equal(repoTemplates.some((template) => template.altitudes?.includes("repo")), true);
   assert.match(
-    formatWikiTemplatesForPrompt(en, new Set(repoTemplates.map((template) => template.file)), "repos/api"),
-    /under repos\/<scopeId>/,
+    formatWikiTemplatesForPrompt(en, new Set(repoTemplates.map((template) => template.file)), "api"),
+    /under <scopeId>/,
   );
+  assert.doesNotMatch(formatWikiTemplatesForPrompt(en, new Set(repoTemplates.map((template) => template.file)), "api"), /repos\//);
 });
 
 test("resolveWikiTemplatePack selects the packaged language when wiki.templates is unset", async () => {

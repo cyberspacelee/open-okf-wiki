@@ -7,7 +7,7 @@ import { WikiValidationInfrastructureError, errorMessage } from "./failures.js";
 import { inside, readText, writeText } from "./files.js";
 import { parsePage, stringifyPage } from "./frontmatter.js";
 import { markdownStructure, sectionHasContent } from "./markdown-structure.js";
-import { isReservedWikiPagePath, isSafeWikiPagePath, wikiPathKind, isImplicitPinPath, REPO_STRIP } from "./path.js";
+import { isReservedWikiPagePath, isSafeWikiPagePath, wikiPathKind, isImplicitPinPath } from "./path.js";
 import { anchorTemplate, type WikiTemplate, type WikiTemplatePack } from "./templates.js";
 import { candidateRevision, fileRevision } from "./revisions.js";
 
@@ -53,7 +53,7 @@ export function derivedIndexPaths(pages: readonly string[]): string[] {
   }
   return [...directories]
     .map((directory) => directory ? `${directory}/index.md` : "index.md")
-    .sort();
+    .sort((left, right) => left === "index.md" ? -1 : right === "index.md" ? 1 : left.localeCompare(right));
 }
 
 async function scanWikiTree(wikiRoot: string, relative = ""): Promise<{ markdown: string[]; issues: WikiValidationIssue[] }> {
@@ -142,8 +142,8 @@ function repositorySourceOwnershipIssues(
 ): WikiValidationIssue[] {
   if (wikiPinsImplicit(pins)) return [];
   const segments = relative.split("/");
-  if (segments[0] !== REPO_STRIP || !segments[1]) return [];
-  const owner = segments[1];
+  const owner = segments[0];
+  if (!pins.some((pin) => pin.scopeId === owner)) return [];
   const citations = extractOkfSources(parsed.frontmatter, parsed.body).citations;
   const foreign = [...new Set(citations
     .map((citation) => resolveSourceCitation(citation, pins)?.scopeId)
@@ -152,7 +152,7 @@ function repositorySourceOwnershipIssues(
     ? [{
       code: "citation-owner",
       page: relative,
-      message: `Repository pages under ${REPO_STRIP}/${owner}/ may cite only Source ${owner}; found ${foreign.join(", ")}`,
+      message: `Repository pages under ${owner}/ may cite only Source ${owner}; found ${foreign.join(", ")}`,
     }]
     : [];
 }
@@ -227,13 +227,13 @@ function templatePlacementIssues(
 }
 
 function placementAllowed(relative: string, template: WikiTemplate, pins: readonly WikiPin[]): boolean {
-  const kind = wikiPathKind(relative);
-  if (!kind) return false;
   const implicit = wikiPinsImplicit(pins);
-  const pinIds = new Set(pins.map((pin) => pin.scopeId));
+  const repositoryIds = implicit ? new Set<string>() : new Set(pins.map((pin) => pin.scopeId));
+  const kind = wikiPathKind(relative, repositoryIds);
+  if (!kind) return false;
   const segments = relative.split("/");
-  const repoId = segments[0] === REPO_STRIP ? segments[1] : undefined;
-  const inDeclaredRepo = !implicit && repoId !== undefined && pinIds.has(repoId);
+  const repoId = repositoryIds.has(segments[0]!) ? segments[0] : undefined;
+  const inDeclaredRepo = !implicit && repoId !== undefined;
   if (template.altitudes) {
     if (kind === "root") return template.altitudes.includes("wiki");
     return kind === "repo" && template.altitudes.includes("repo") && inDeclaredRepo;
@@ -394,30 +394,22 @@ function topologyIssues(
   if (!present.has(architecture)) {
     issues.push({ code: "topology", page: architecture, message: `Required template ${architecture} is missing` });
   }
-  if (implicit) {
-    if (pages.some((page) => page === REPO_STRIP || page.startsWith(`${REPO_STRIP}/`))) {
-      issues.push({ code: "topology", message: "Implicit Workspace Wiki must not contain repos/" });
-    }
-  } else {
+  if (!implicit) {
     for (const pin of [...pins].sort((left, right) => left.scopeId.localeCompare(right.scopeId))) {
-      const page = `${REPO_STRIP}/${pin.scopeId}/${architecture}`;
+      const page = `${pin.scopeId}/${architecture}`;
       if (!present.has(page)) {
         issues.push({ code: "topology", page, message: `Required template ${architecture} is missing` });
       }
     }
   }
-  const pinIds = new Set(pins.map((pin) => pin.scopeId));
+  const repositoryIds = implicit ? new Set<string>() : new Set(pins.map((pin) => pin.scopeId));
   const domainFiles = new Set(pack.templates.filter((template) => template.scope === "domain").map((template) => template.file));
   const conceptFiles = new Set(pack.templates.filter((template) => template.scope === "concept").map((template) => template.file));
   const conceptDirs = [...new Set(
     pages
       .filter((page) => conceptFiles.has(page.split("/").at(-1) ?? ""))
       .map((page) => path.posix.dirname(page))
-      .filter((directory) => {
-        const segments = directory.split("/");
-        if (implicit) return segments.length === 2 && segments[0] !== REPO_STRIP;
-        return segments.length === 4 && segments[0] === REPO_STRIP && pinIds.has(segments[1]!);
-      }),
+      .filter((directory) => wikiPathKind(`${directory}/page.md`, repositoryIds) === "concept"),
   )].sort();
   if (!conceptDirs.length) {
     issues.push({ code: "topology", message: "Wiki requires at least one concept cluster" });
@@ -427,11 +419,7 @@ function topologyIssues(
     ...pages
       .filter((page) => domainFiles.has(page.split("/").at(-1) ?? ""))
       .map((page) => path.posix.dirname(page))
-      .filter((directory) => {
-        const segments = directory.split("/");
-        if (implicit) return segments.length === 1 && segments[0] !== REPO_STRIP;
-        return segments.length === 3 && segments[0] === REPO_STRIP && pinIds.has(segments[1]!);
-      }),
+      .filter((directory) => wikiPathKind(`${directory}/page.md`, repositoryIds) === "domain"),
   ])].sort();
   for (const directory of domainDirs) {
     const page = `${directory}/${anchorTemplate(pack, "domain").file}`;
@@ -452,13 +440,15 @@ export async function materializeWikiIndexes(
   wikiRoot: string,
   language: "zh" | "en",
   pack: WikiTemplatePack,
+  pins: readonly WikiPin[] = [],
 ): Promise<string[]> {
   const tree = await scanWikiTree(wikiRoot);
   const pages = tree.markdown.filter((page) => !isReservedWikiPagePath(page) && isSafeWikiPagePath(page));
   const indexes = derivedIndexPaths(pages);
+  const repositoryIds = wikiPinsImplicit(pins) ? new Set<string>() : new Set(pins.map((pin) => pin.scopeId));
   const written: string[] = [];
   for (const indexPath of indexes) {
-    const content = await renderIndex(wikiRoot, indexPath, pages, language, pack);
+    const content = await renderIndex(wikiRoot, indexPath, pages, language, pack, repositoryIds);
     const absolute = safeWikiPath(wikiRoot, indexPath);
     await mkdir(path.dirname(absolute), { recursive: true });
     await writeText(absolute, content);
@@ -507,12 +497,11 @@ export async function stampPublication(
   await writeText(path.join(wikiRoot, "log.md"), `# Directory Update Log\n\n## ${day}\n* **Creation**: ${creation}\n`);
 }
 
-type WikiDirectoryKind = "wiki" | "repos-root" | "repo" | "domain" | "concept";
+type WikiDirectoryKind = "wiki" | "repo" | "domain" | "concept";
 
-function classifyWikiDirectory(directory: string): WikiDirectoryKind {
+function classifyWikiDirectory(directory: string, repositoryIds: ReadonlySet<string>): WikiDirectoryKind {
   if (!directory) return "wiki";
-  if (directory === REPO_STRIP) return "repos-root";
-  const kind = wikiPathKind(`${directory}/page.md`);
+  const kind = wikiPathKind(`${directory}/page.md`, repositoryIds);
   if (kind && kind !== "root") return kind;
   throw new Error(`Wiki index directory is deeper than the template topology: ${directory}`);
 }
@@ -523,9 +512,10 @@ async function renderIndex(
   pages: readonly string[],
   language: "zh" | "en",
   pack: WikiTemplatePack,
+  repositoryIds: ReadonlySet<string>,
 ): Promise<string> {
   const relativeDirectory = path.posix.dirname(indexPath) === "." ? "" : path.posix.dirname(indexPath);
-  const kind = classifyWikiDirectory(relativeDirectory);
+  const kind = classifyWikiDirectory(relativeDirectory, repositoryIds);
   const directPages = pages
     .filter((page) => (path.posix.dirname(page) === "." ? "" : path.posix.dirname(page)) === relativeDirectory)
     .sort();
@@ -535,14 +525,7 @@ async function renderIndex(
       .map((candidate) => path.posix.dirname(candidate) === "." ? "" : path.posix.dirname(candidate))
       .filter((directory) => directory && (path.posix.dirname(directory) === "." ? "" : path.posix.dirname(directory)) === relativeDirectory),
   )].sort();
-  const identity = kind === "repos-root"
-    ? {
-      title: language === "zh" ? "仓库" : "Repositories",
-      description: language === "zh"
-        ? "每个 Git Source 作为可部署单元的架构与操作页。"
-        : "Architecture and operations pages for each Git Source as a deployable.",
-    }
-    : await pageIdentity(wikiRoot, identityPage(relativeDirectory, kind, pack));
+  const identity = await pageIdentity(wikiRoot, identityPage(relativeDirectory, kind, pack));
   const intro = language === "zh"
     ? "从本页开始，按描述打开子目录或页面，不要一次读完整包。"
     : "Start here. Open a child index or page from the descriptions; do not ingest the whole bundle.";
@@ -550,10 +533,10 @@ async function renderIndex(
     ? ["---", 'okf_version: "0.2"', "---", "", `# ${identity.title}`, "", identity.description, "", intro, ""]
     : [`# ${identity.title}`, "", identity.description, ""];
   if (indexPath === "index.md") {
-    const domainDirs = childDirs.filter((directory) => directory !== REPO_STRIP);
+    const domainDirs = childDirs.filter((directory) => !repositoryIds.has(directory));
     const uniquePins = [...new Set(
       pages
-        .filter((page) => wikiPathKind(page) === "repo" && page.endsWith(`/${ARCHITECTURE_PAGE}`))
+        .filter((page) => wikiPathKind(page, repositoryIds) === "repo" && page.endsWith(`/${ARCHITECTURE_PAGE}`))
         .map((page) => path.posix.dirname(page)),
     )].sort();
     if (directPages.length) {
@@ -586,11 +569,9 @@ async function renderIndex(
     lines.push(language === "zh" ? "## 目录" : "## Directories", "");
     for (const child of childDirs) {
       const name = path.posix.basename(child);
-      const childKind = classifyWikiDirectory(child);
+      const childKind = classifyWikiDirectory(child, repositoryIds);
       const childPage = identityPage(child, childKind, pack);
-      const childIdentity = childKind === "repos-root"
-        ? { title: name, description: language === "zh" ? "仓库" : "Repositories" }
-        : await pageIdentity(wikiRoot, childPage);
+      const childIdentity = await pageIdentity(wikiRoot, childPage);
       lines.push(`* [${childIdentity.title}](./${name}/index.md) - ${childIdentity.description}`);
     }
     lines.push("");
@@ -612,7 +593,7 @@ function identityPage(directory: string, kind: WikiDirectoryKind, pack: WikiTemp
   if (kind === "repo") return `${directory}/${ARCHITECTURE_PAGE}`;
   if (kind === "domain") return `${directory}/${anchorTemplate(pack, "domain").file}`;
   if (kind === "concept") return `${directory}/${anchorTemplate(pack, "concept").file}`;
-  return `${directory}/${ARCHITECTURE_PAGE}`;
+  throw new Error(`Unsupported Wiki directory kind: ${kind}`);
 }
 
 async function pageIdentity(wikiRoot: string, relative: string): Promise<{ title: string; description: string }> {

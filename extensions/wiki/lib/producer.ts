@@ -393,7 +393,16 @@ async function publishCandidate(live: LiveRun, language: "zh" | "en"): Promise<{
     handoffRevision: receipt.handoff.sha256,
   } : undefined);
   if (!review.ok) return review;
-  await materializeWikiIndexes(live.record.candidateRoot, language, templates);
+  await materializeWikiIndexes(
+    live.record.candidateRoot,
+    language,
+    templates,
+    live.plan.sources.map((source) => ({
+      scopeId: source.scopeId,
+      logicalPath: source.logicalPath,
+      realPath: source.realPath,
+    })),
+  );
   const at = new Date().toISOString();
   await stampPublication(live.record.candidateRoot, at, { reviewed: true, language });
   const wikiRoot = path.join(live.plan.workspaceRoot, "wiki");

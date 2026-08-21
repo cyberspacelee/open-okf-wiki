@@ -22,8 +22,8 @@ Source owns a Repository Section keyed by `scopeId`; domains and concepts are
 local to that section. Workspace root pages own cross-Source composition.
 
 **Implicit** (no `workspace.yaml`, pin `path: "."`). The internal Source id
-is `self`, but citation resources do not add that segment. No `repos/`, no
-`source/`.
+is `self`, but citation resources do not add that segment. No synthetic Source
+or repository grouping directory is published.
 
 ```text
 wiki/overview.md
@@ -40,13 +40,13 @@ wiki/<domain>/<concept>/states.md | data.md
 ```text
 wiki/overview.md
 wiki/architecture.md                            # required; L1 only
-wiki/repos/<scopeId>/architecture.md            # required per Source; L2 only
-wiki/repos/<scopeId>/development.md | runbook.md
-wiki/repos/<scopeId>/<domain>/domain.md | flows.md
-wiki/repos/<scopeId>/<domain>/<concept>/concept.md | states.md | data.md
+wiki/<scopeId>/architecture.md                  # required per Source; L2 only
+wiki/<scopeId>/development.md | runbook.md
+wiki/<scopeId>/<domain>/domain.md | flows.md
+wiki/<scopeId>/<domain>/<concept>/concept.md | states.md | data.md
 ```
 
-`repos/<scopeId>/` is the Repository Section for one Source. The Source remains
+`<scopeId>/` is the Repository Section for one Source. The Source remains
 evidence/provenance; the section is the generated navigation and ownership
 view. Same-named domains in different Sources remain distinct.
 
@@ -63,7 +63,7 @@ Scopes: `wiki` | `repo` | `domain` | `concept`. Delete `source.md`,
 |---|---|---|
 | `overview.md` | Overview | wiki anchor |
 | `architecture.md` | Architecture | `altitudes: [wiki, repo]`; required at those altitudes (implicit collapses to root) |
-| `development.md` / `runbook.md` | repo optional | root if implicit; `repos/<scopeId>/` if explicit |
+| `development.md` / `runbook.md` | repo optional | root if implicit; `<scopeId>/` if explicit |
 | `domain.md` | Domain | domain anchor |
 | `flows.md` | Flow | domain optional |
 | `concept.md` | Concept | concept anchor |
@@ -81,7 +81,7 @@ internals and links to `/architecture.md`.
 ```text
 parallel survey(Source)
   → synthesize(workspace-analysis)     # multi-Source only, after all surveys
-  → parallel write(repos/<Source>)     # full Repository Sections
+  → parallel write(<Source>)           # full Repository Sections
   → write(wiki-root)                   # cross-Source root files only
   → candidate_check → prefix repair
   → exclusive review → prefix repair (host counts two attempts)
@@ -94,7 +94,7 @@ survey handoffs and reopens both ends of supported relationships. It does not
 write pages.
 
 Write partitions are Candidate prefixes. Explicit Workspace writers own a
-complete `repos/<scopeId>` prefix, including its domain/concept tree. Disjoint
+complete `<scopeId>` prefix, including its domain/concept tree. Disjoint
 prefixes may run in one batch. Overlap is rejected. Writer is injected only
 in-scope skeletons.
 Before writing a page, `read` every pin file that page will cite. Optional

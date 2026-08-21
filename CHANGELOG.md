@@ -7,15 +7,15 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 ### Breaking: knowledge-shaped Wiki tree
 
 - Explicit Workspaces organize repository, Domain, and Concept knowledge under
-  `wiki/repos/<scopeId>/`; root pages own cross-Source composition. Implicit
+  `wiki/<scopeId>/`; root pages own cross-Source composition. Implicit
   Workspaces keep the compact root Domain/Concept tree, cite `self`, and must
-  not create `wiki/source/` or `wiki/repos/`.
+  not create a synthetic Source or repository grouping directory.
 - Multi-Source Runs survey Sources in parallel, then require one read-only
   `synthesize` execution after every survey and before writing. Root
   `architecture.md` must cite every Source, and Repository Section pages may
   cite only their owning Source.
 - `architecture.md` is required at wiki root and, on explicit Workspaces, at
-  each `repos/<scopeId>/`. Domain-level architecture, `source.md`,
+  each `<scopeId>/`. Domain-level architecture, `source.md`,
   `interfaces.md`, and `models.md` are removed.
 - Template scopes are `wiki` / `repo` / `domain` / `concept`. Dual-placement
   pages use `altitudes` instead of `scope`.

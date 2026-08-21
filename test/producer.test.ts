@@ -22,7 +22,7 @@ function mermaidStub(kind: string): string {
   return "```mermaid\nflowchart TD\n  A --> B\n```\n";
 }
 
-async function writeValidCandidate(candidateRoot: string, sourceResource = "main.ts#L1") {
+async function writeValidCandidate(candidateRoot: string, sourceResource = "main.ts#L1", repositoryId?: string) {
   const pack = await loadWikiTemplatePack(packagedTemplatesRoot("zh"));
   const writePage = async (relative: string, template: (typeof pack.templates)[number], title: string) => {
     const absolute = path.join(candidateRoot, ...relative.split("/"));
@@ -56,9 +56,14 @@ async function writeValidCandidate(candidateRoot: string, sourceResource = "main
   for (const template of pack.templates) {
     if (template.optional) continue;
     if (template.scope === "wiki") await writePage(template.file, template, "Overview");
-    else if (template.altitudes) await writePage(template.file, template, "Architecture");
-    else if (template.scope === "domain") await writePage(`runtime/${template.file}`, template, "runtime");
-    else if (template.scope === "concept") await writePage(`runtime/ready/${template.file}`, template, "ready");
+    else if (template.altitudes) {
+      await writePage(template.file, template, "Architecture");
+      if (repositoryId) await writePage(`${repositoryId}/${template.file}`, template, `${repositoryId} architecture`);
+    } else if (template.scope === "domain") {
+      await writePage(`${repositoryId ? `${repositoryId}/` : ""}runtime/${template.file}`, template, "runtime");
+    } else if (template.scope === "concept") {
+      await writePage(`${repositoryId ? `${repositoryId}/` : ""}runtime/ready/${template.file}`, template, "ready");
+    }
   }
 }
 
@@ -128,6 +133,27 @@ test("publish installs a valid Candidate as wiki/", async (t) => {
   assert.match(rootIndex, /## Domain/);
   assert.match(rootIndex, /\[runtime\]\(\.\/runtime\/index\.md\) - runtime description\./);
   assert.equal((await handle.view()).status, "succeeded");
+});
+
+test("explicit Workspace publishes repository sections directly under the Source id", async (t) => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "wiki-run-explicit-"));
+  t.after(async () => await rm(parent, { recursive: true, force: true }));
+  const workspace = await wikiWorkspaceManagement.init({ cwd: parent, workspace: "workspace" });
+  const source = await gitRepo(t);
+  await wikiWorkspaceManagement.addLink({ cwd: workspace.root, localPath: source, name: "my.repo_ui" });
+  const producer = createProductionWikiProducer({
+    async runLead(context) {
+      await writeValidCandidate(context.candidateRoot, "my.repo_ui/main.ts#L1", "my.repo_ui");
+      await writeReviewPass(context);
+      const published = await context.publish();
+      assert.equal(published.ok, true, published.message);
+    },
+  });
+
+  await (await producer.start({ cwd: workspace.root })).result();
+  assert.match(await readFile(path.join(workspace.root, "wiki", "my.repo_ui", "architecture.md"), "utf8"), /my\.repo_ui architecture/);
+  assert.match(await readFile(path.join(workspace.root, "wiki", "my.repo_ui", "index.md"), "utf8"), /runtime/);
+  await assert.rejects(() => readFile(path.join(workspace.root, "wiki", "repos", "my.repo_ui", "architecture.md"), "utf8"));
 });
 
 test("resume continues the same Candidate and Board", async (t) => {

@@ -164,7 +164,7 @@ export function templatesForPartition(
       || (implicit && (template.scope === "repo" || template.altitudes?.includes("repo")))
     ));
   }
-  if (partition.startsWith("repos/")) {
+  if (!implicit) {
     return pack.templates.filter((template) => (
       template.scope === "repo"
       || template.scope === "domain"
@@ -191,16 +191,19 @@ export function formatWikiTemplatesForPrompt(
   };
   const required = selected.filter((template) => !template.optional);
   const optional = selected.filter((template) => template.optional);
+  const repositoryPartition = selected.some((template) => (
+    template.scope === "repo" || template.altitudes?.includes("repo")
+  ));
   const placement = partition === "wiki-root"
     ? "Write selected wiki-root files in this partition."
-    : partition?.startsWith("repos/")
-      ? "Write selected repo, domain, and concept files under repos/<scopeId>/ in this partition."
+    : partition && repositoryPartition
+      ? "Write selected repo, domain, and concept files under <scopeId>/ in this partition."
       : partition
         ? "Write domain.md and concept.md for every cluster in this prefix. Keep or drop optionals after reopening source."
         : selected.some((template) => template.scope === "wiki" || template.altitudes?.includes("wiki"))
           ? "Write selected wiki-root files in this partition."
           : selected.some((template) => template.scope === "repo" || template.altitudes?.includes("repo"))
-            ? "Write selected repo, domain, and concept files under repos/<scopeId>/ in this partition."
+            ? "Write selected repo, domain, and concept files under <scopeId>/ in this partition."
             : "Write domain.md and concept.md for every cluster in this prefix. Keep or drop optionals after reopening source.";
   const sections = [
     "## Page templates",
