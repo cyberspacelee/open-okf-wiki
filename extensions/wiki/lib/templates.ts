@@ -210,7 +210,7 @@ export function formatWikiTemplatesForPrompt(
     "",
     placement,
     "Candidate frontmatter is type, title, description, and sources only. Template fields never appear on pages.",
-    "Attribute claims with [^id] footnotes whose id matches sources[].id. Resource locators are path#Lx from the Workspace root (api/src/main.ts#L1, or src/main.ts#L1 in an implicit Workspace).",
+    "Attribute claims with [^id] footnotes whose id matches sources[].id. Resource locators are paths from the Workspace root with optional exact #Lx[-Ly] ranges (api/src/main.ts#L1, or src/main.ts in an implicit Workspace).",
     "Copy the skeleton H1 and H2 order exactly. Fill every H2 section. H3 subsections are allowed.",
     "Replace every {{placeholder}}. Mermaid nodes use source identifiers, not translations.",
     "This is an OKF bundle for later agents. They start at wiki/index.md.",

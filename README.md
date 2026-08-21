@@ -68,6 +68,7 @@ defaultSourceIgnores: true
 wiki:
   exclude: []
   maxConcurrentAgents: 3
+  maxEvidenceRepairRounds: 6
   transientRetries: 1
   baseRetryDelayMs: 1000
   sessionTimeoutSeconds: 1200
@@ -90,6 +91,7 @@ the defaults below; implicit single-source Workspaces use the same defaults.
 | --- | ---: | ---: | --- |
 | `exclude` | `[]` | source globs | Extra source globs excluded from evidence discovery and from `read` / `grep` / `find` / `ls`. |
 | `maxConcurrentAgents` | `3` | `2..64` | Total concurrent model sessions, including the Lead. At most `value - 1` delegated agents run together. |
+| `maxEvidenceRepairRounds` | `6` | `1..64` | Maximum same-session writer follow-ups while citation evidence issues keep changing. The host stops earlier after two unchanged issue batches. |
 | `transientRetries` | `1` | `0..10` | Retries after a transient model failure, in addition to the initial attempt. |
 | `baseRetryDelayMs` | `1000` | `0..300000` | Base delay used by Pi's retry backoff. |
 | `sessionTimeoutSeconds` | `1200` | `1..2147483` | Wall-clock deadline for each Lead or delegated-agent session. |
@@ -104,7 +106,8 @@ built-in list off.
 The concurrency limit applies to parallel Source surveys and disjoint
 Repository Section writes while the Lead occupies one session slot. The
 cross-Source synthesize worker and review worker each run alone. Retry and
-timeout values apply to both the Lead and delegated agents. Wiki sessions use
+timeout values apply to both the Lead and delegated agents. Evidence repair
+rounds apply to each writer partition. Wiki sessions use
 these settings instead of project or user Pi retry settings. Unknown `wiki`
 fields are rejected so misspelled or removed configuration cannot be silently
 ignored.
@@ -180,9 +183,10 @@ Each template is a markdown file. Filename is the page name. Frontmatter:
 `scope` / `altitudes` / `diagram` / `optional` / `instructions` stay on the
 template file. Generated pages carry `type`, `title`, `description`, and
 `sources`. Claims use `[^id]` footnotes keyed to `sources[].id`.
-`sources[].resource` is always a POSIX path from the Workspace root plus
-`#Lx` or `#Lx-Ly`: for example `api/src/main.ts#L12` in an explicit
-Workspace and `src/main.ts#L12` in an implicit Workspace. It is never
+`sources[].resource` is always a POSIX path from the Workspace root, optionally
+followed by `#Lx` or `#Lx-Ly`: for example `api/src/main.ts#L12` in an explicit
+Workspace and `src/main.ts` in an implicit Workspace. A supplied range must
+exist in the pinned file and must have been read by the writer. It is never
 relative to the page or Source root, and implicit Workspaces never add
 `self/`.
 

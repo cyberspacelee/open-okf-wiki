@@ -164,6 +164,20 @@ test("implicit Workspace citations are relative to the Workspace root", async (t
   assert.equal(result.ok, true, result.issues.map((issue) => issue.message).join("\n"));
 });
 
+test("validation accepts file citations and checks optional line ranges against the pinned file", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-citation-range-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  const source = await sourceTree(t, "self", true);
+  const templates = packOf();
+  await writeCore(root, "main.ts", templates, source.pins);
+  const withoutLines = await validateWikiTree(root, source.pins, templates);
+  assert.equal(withoutLines.ok, true, withoutLines.issues.map((issue) => issue.message).join("\n"));
+
+  await writeCore(root, "main.ts#L3", templates, source.pins);
+  const outsideFile = await validateWikiTree(root, source.pins, templates);
+  assert.ok(outsideFile.issues.some((issue) => issue.code === "citation" && issue.message.includes("main.ts#L3")));
+});
+
 test("validate requires mermaid kind from the template pack", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-mermaid-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));
@@ -336,7 +350,7 @@ test("validate rejects unknown pages, empty sections, missing footnotes, and pla
   const templates = packOf();
   await writeCore(root, src.resource, templates, src.pins);
   await writeFile(path.join(root, "billing", "invoice", "extra.md"), fill(templates.templates.find((template) => template.file === "concept.md"), "Extra", src.resource).replace("type: Concept", "type: Extra"));
-  await writeFile(path.join(root, "overview.md"), fill(templates.templates.find((template) => template.file === "overview.md"), "Overview", src.resource).replace("Claim. [^main]", "{{todo}}"));
+  await writeFile(path.join(root, "overview.md"), fill(templates.templates.find((template) => template.file === "overview.md"), "Overview", src.resource).replace("Claim. [^main]", "{{todo}} {{later}}"));
   await writeFile(
     path.join(root, "billing", "invoice", "concept.md"),
     fill(templates.templates.find((template) => template.file === "concept.md"), "Invoice", src.resource).replace("Claim. [^main]", ""),
@@ -346,6 +360,7 @@ test("validate rejects unknown pages, empty sections, missing footnotes, and pla
   assert.ok(result.issues.some((issue) => issue.code === "template" && issue.page?.endsWith("extra.md")));
   assert.ok(result.issues.some((issue) => issue.code === "markdown" && issue.message.includes("empty")));
   assert.ok(result.issues.some((issue) => issue.code === "markdown" && issue.message.includes("placeholder")));
+  assert.equal(result.issues.filter((issue) => issue.code === "markdown" && issue.message.includes("placeholder")).length, 2);
   assert.ok(result.issues.some((issue) => issue.code === "markdown" && issue.message.includes("footnote")));
 });
 

@@ -352,7 +352,7 @@ test("a reopened process-crash Run reconciles persisted running receipts", async
   }, null, 2)}\n`);
   const now = new Date().toISOString();
   await writeText(path.join(directory, "run.json"), `${JSON.stringify({
-    schemaVersion: 2,
+    schemaVersion: 1,
     id,
     cwd: root,
     status: "running",
@@ -362,6 +362,7 @@ test("a reopened process-crash Run reconciles persisted running receipts", async
     updatedAt: now,
     candidateRoot,
     fingerprint: plan.fingerprint,
+    leadAttempts: [],
     executions: [{
       id: "survey-crash",
       boardTaskId: "survey",
@@ -484,6 +485,7 @@ test("candidate_check and publish share deterministic diagnostics", async (t) =>
       assert.equal(checked.ok, false);
       assert.equal(published.ok, false);
       assert.match(checked.message, /frontmatter|type/);
+      assert.match(checked.message, /Suggested action/);
       assert.match(published.message, /frontmatter|type/);
     },
   });

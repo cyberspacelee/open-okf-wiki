@@ -49,6 +49,7 @@ export interface WikiSessionActivity {
   tool: string;
   args: unknown;
   status: WikiToolStatus;
+  result?: unknown;
   scope?: string;
   usage?: WikiAgentUsage;
 }

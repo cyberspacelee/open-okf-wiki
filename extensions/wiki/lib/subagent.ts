@@ -4,8 +4,8 @@ import path from "node:path";
 import { Type } from "typebox";
 import type { AgentToolUpdateCallback, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { loadWikiAgents, type WikiAgentDefinition } from "./agents.js";
-import { readText, writeText } from "./files.js";
-import { assertReadable, writeGuardFromPlan, writePartitionsOverlap, type WikiWriteGuard } from "./path-policy.js";
+import { writeText } from "./files.js";
+import { writeGuardFromPlan, writePartitionsOverlap, type WikiWriteGuard } from "./path-policy.js";
 import type { WikiPinnedSourcePlan } from "./inspect.js";
 import { isImplicitPinPath } from "./path.js";
 import { candidateTools, createCatalogTools } from "./pi/tools.js";
@@ -13,8 +13,7 @@ import { runWikiSession, type RunWikiSessionOptions } from "./pi/session.js";
 import type { WikiCatalog } from "./catalog.js";
 import type { WikiToolView } from "./producer-types.js";
 import { formatWikiTemplateCatalog, formatWikiTemplatesForPrompt, templatesForPartition, type WikiTemplatePack } from "./templates.js";
-import { parsePage } from "./frontmatter.js";
-import { extractOkfSources, resolveSourceCitation } from "./citations.js";
+import { createWriterEvidenceGate } from "./evidence.js";
 import { candidatePartitionRevision, candidateRevision, fileRevision } from "./revisions.js";
 import type { WikiAgentUsage } from "./producer-types.js";
 
@@ -59,7 +58,7 @@ export async function createSubagentRuntime(
   agentsDirectory?: string,
   onTask?: SubagentTaskListener,
   catalog?: WikiCatalog,
-  options: { maxConcurrency?: number; templates?: WikiTemplatePack } = {},
+  options: { maxConcurrency?: number; maxEvidenceRepairRounds?: number; templates?: WikiTemplatePack } = {},
 ): Promise<SubagentRuntime> {
   const agents = await loadWikiAgents(agentsDirectory);
   const byName = new Map(agents.map((agent) => [agent.name, agent]));
@@ -97,7 +96,7 @@ export async function createSubagentRuntime(
               applyChildTool(live.get(task.id)!.tools, scoped);
               void report();
             },
-          }, signal, catalog, options.templates);
+          }, signal, catalog, options.templates, options.maxEvidenceRepairRounds);
           const status = result.error ? "failed" : "complete";
           const entry = live.get(result.id)!;
           entry.status = status;
@@ -192,6 +191,7 @@ async function runOne(
   signal: AbortSignal,
   catalog?: WikiCatalog,
   templates?: WikiTemplatePack,
+  maxEvidenceRepairRounds?: number,
 ): Promise<SubagentResult> {
   const definition = byName.get(task.agent);
   if (!definition) {
@@ -206,10 +206,15 @@ async function runOne(
       ? { digest: "not-applicable" }
       : await outputRevision();
     const touched = new Set<string>();
-    const readFiles = new Set<string>();
     const extra = catalog ? createCatalogTools(catalog) : [];
     const allowed = definition.tools ? new Set(definition.tools) : undefined;
     const taskGuard = task.agent === "write" ? { ...guard, writePartition: task.partition } : guard;
+    const evidenceGate = task.agent === "write"
+      ? createWriterEvidenceGate(taskGuard, {
+        maxRepairRounds: maxEvidenceRepairRounds,
+        onTouched: (location) => touched.add(location),
+      })
+      : undefined;
     const tools = [
       ...candidateTools(taskGuard, definition.tools),
       ...extra.filter((tool) => !allowed || allowed.has(tool.name)),
@@ -233,35 +238,12 @@ async function runOne(
         ...session,
         onActivity(event) {
           session.onActivity?.(event);
-          if (event.args && typeof event.args === "object") {
-            const location = (event.args as Record<string, unknown>).path;
-            if (typeof location === "string") {
-              if (event.tool === "read" && event.status === "complete") {
-                try {
-                  readFiles.add(path.resolve(assertReadable(taskGuard, location)));
-                } catch {
-                  readFiles.add(path.resolve(guard.workspaceRoot, location));
-                }
-              }
-              if ((event.tool === "write" || event.tool === "edit") && event.status !== "failed") {
-                touched.add(location);
-              }
-            }
-          }
+          evidenceGate?.observe(event);
         },
         onCompaction: () => formatWorkerCheckpoint(task, sourceFingerprint, base.digest, touched),
+        nextPrompt: evidenceGate?.nextPrompt,
       },
     );
-    if (task.agent === "write") {
-      const unread = await unreadCitedPinFiles(taskGuard, touched, readFiles);
-      if (unread.length) {
-        return {
-          ...task,
-          text: result.text,
-          error: `write did not read cited sources: ${unread.join(", ")}`,
-        };
-      }
-    }
     const completed = task.agent === "survey" ? undefined : await outputRevision();
     const handoff = await writeHandoff(guard, task, result.text, base.digest, completed?.digest);
     return {
@@ -389,43 +371,6 @@ function formatWorkerCheckpoint(
   }
   lines.push(instruction, "</wiki_checkpoint>");
   return lines.join("\n");
-}
-
-async function unreadCitedPinFiles(
-  guard: WikiWriteGuard,
-  touched: ReadonlySet<string>,
-  readFiles: ReadonlySet<string>,
-): Promise<string[]> {
-  const resolvedReads = new Set([...readFiles].map((entry) => path.resolve(entry)));
-  const unread: string[] = [];
-  for (const location of touched) {
-    let absolute: string;
-    try {
-      absolute = assertReadable(guard, location);
-    } catch {
-      continue;
-    }
-    const fromCandidate = path.relative(guard.candidateRoot, absolute);
-    if (fromCandidate.startsWith("..") || path.isAbsolute(fromCandidate)) continue;
-    let text: string;
-    try {
-      text = await readText(absolute);
-    } catch {
-      continue;
-    }
-    let parsed;
-    try {
-      parsed = parsePage(text);
-    } catch {
-      continue;
-    }
-    for (const citation of extractOkfSources(parsed.frontmatter, parsed.body).citations) {
-      if (!resolveSourceCitation(citation, guard.sources)) continue;
-      const pinFile = path.resolve(guard.workspaceRoot, ...citation.path.split("/"));
-      if (!resolvedReads.has(pinFile)) unread.push(citation.path);
-    }
-  }
-  return [...new Set(unread)];
 }
 
 function estimateTokens(text: string): number {

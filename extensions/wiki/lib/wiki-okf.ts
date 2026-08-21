@@ -288,11 +288,11 @@ function markdownContractIssues(
       issues.push({ code: "markdown", page: relative, message: `H2 section is missing a sources footnote: ${section.title}` });
     }
   }
-  if (structure.placeholders.length) {
+  for (const placeholder of structure.placeholders) {
     issues.push({
       code: "markdown",
       page: relative,
-      message: `Unresolved template placeholder: ${structure.placeholders[0]}`,
+      message: `Unresolved template placeholder: ${placeholder}`,
     });
   }
   return issues;
@@ -605,5 +605,25 @@ async function pageIdentity(wikiRoot: string, relative: string): Promise<{ title
 }
 
 export function formatIssue(issue: WikiValidationIssue): string {
-  return issue.page ? `${issue.page}: ${issue.message}` : issue.message;
+  const diagnostic = issue.page ? `${issue.page}: ${issue.message}` : issue.message;
+  return `${diagnostic}\n  Suggested action: ${issueSuggestion(issue.code)}`;
+}
+
+function issueSuggestion(code: string): string {
+  switch (code) {
+    case "citation": return "Correct sources[].resource or its matching footnote; use a Workspace-relative pinned file path with an optional valid #Lx[-Ly] range.";
+    case "citation-owner": return "Replace foreign repository evidence with the owning Source, or move the cross-repository claim to a Workspace-root page.";
+    case "cross-source": return "Add evidence from every pinned Source to the Workspace architecture after reading the synthesis handoff and cited files.";
+    case "frontmatter": return "Repair the YAML frontmatter so the page can be parsed, preserving only fields allowed by its template.";
+    case "link": return "Correct the Wiki-relative target or add the missing declared page.";
+    case "markdown": return "Rewrite the page to match the template heading order, required content, and source-footnote contract.";
+    case "mermaid": return "Use an allowed Mermaid diagram kind and valid fenced syntax for the required diagram section.";
+    case "okf": return "Fill the required OKF metadata with values matching the selected page template.";
+    case "path": return "Move or rename the page to a legal path in its repository, domain, or concept partition.";
+    case "template": return "Use a filename and placement declared for this page scope by the active template pack.";
+    case "topology": return "Add the required anchor page or move/remove the page so the repository/domain/concept tree is complete.";
+    case "wiki-safety": return "Remove the unsafe entry and keep the Candidate tree to regular Markdown files and directories.";
+    case "workflow": return "Complete every Source survey and the required cross-Source synthesis before checking or publishing.";
+    default: return "Inspect the reported page and repair the stated invariant before running the full check again.";
+  }
 }

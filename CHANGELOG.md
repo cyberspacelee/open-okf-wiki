@@ -20,8 +20,13 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 - Template scopes are `wiki` / `repo` / `domain` / `concept`. Dual-placement
   pages use `altitudes` instead of `scope`.
 - Write may batch disjoint path prefixes. The writer is injected only the
-  skeletons for that prefix and must `read` cited pin files in the same
-  session. Survey hints optional templates; it does not bind them.
+  skeletons for that prefix and must `read` cited pin files or exact cited line
+  ranges in the same session. Evidence failures return one exhaustive repair
+  batch and may continue for `wiki.maxEvidenceRepairRounds` progress-making
+  rounds (default six); the old global
+  two-attempt limit is removed. Citation line ranges are optional, but supplied
+  ranges must exist in the pinned file. Survey hints optional templates; it
+  does not bind them.
 - Publish requires a sources footnote in every non-diagram H2.
 
 ### Breaking: agent-oriented template contract

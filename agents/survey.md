@@ -33,7 +33,9 @@ Directory name, one-sentence description, what the tree is, and entry locators.
 
 ## Domains
 Slug, identifier-leading title, one-sentence description, and entry locators
-as POSIX paths from the Workspace root plus `#Lx` or `#Lx-Ly`.
+as POSIX paths from the Workspace root, optionally followed by `#Lx` or
+`#Lx-Ly`. Prefer an exact range when the evidence is localized; omit it rather
+than guessing.
 
 ## Concepts
 Per domain: slug, identifier-leading title, one-sentence description, and

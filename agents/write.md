@@ -25,8 +25,9 @@ If Catalog tools are available, describe only the tables the page must explain.
 The run prompt includes the skeletons for this partition. That pack is the
 page contract:
 
-- Before writing a page, `read` every pin file that page will cite. Grep is
-  not a substitute. Then fill the skeleton from what you opened.
+- Before writing a page, `read` every pin file that page will cite. For a
+  line-range citation, the successful read must cover that exact range. Grep
+  is not a substitute. Then fill the skeleton from what you opened.
 - Write overview.md and architecture.md at wiki root when this partition is
   `wiki-root`. In a multi-Source Workspace these pages own cross-repository
   composition and must use the synthesis handoff plus the completed repository
@@ -44,8 +45,8 @@ page contract:
   use source identifiers for nodes.
 - Candidate frontmatter is `type` (exactly the template type), `title`,
   `description`, and `sources`. Template fields stay out of Candidate pages.
-- `sources[].resource` is a POSIX path from the Workspace root plus `#Lx` or
-  `#Lx-Ly`. Use `api/src/main.ts#L12` in an explicit Workspace and
+- `sources[].resource` is a POSIX path from the Workspace root, optionally
+  followed by `#Lx` or `#Lx-Ly`. Use `api/src/main.ts#L12` in an explicit Workspace and
   `src/main.ts#L12` in an implicit Workspace; never use `self/`, a Source-root
   path, `./`, or a path relative to the Candidate page. Attribute claims with
   `[^id]` footnotes whose id matches `sources[].id`. Every non-diagram H2
@@ -65,4 +66,7 @@ Rules:
 - Do not duplicate the system architecture on a domain page.
 
 When finished, confirm that every selected page is non-empty and list the pages
-you wrote or repaired. Do not claim that the whole Candidate passes host checks.
+you wrote or repaired. The host may return one exhaustive evidence-repair batch
+in this same session. Read every requested file or span, revise unsupported
+claims, and continue until that check passes. Do not claim that the whole
+Candidate passes host checks.

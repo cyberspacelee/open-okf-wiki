@@ -9,8 +9,9 @@ Do not write Wiki pages. The task names every survey handoff path. Read all of
 them before drawing conclusions, then reopen the load-bearing Source files on
 both sides of each claimed cross-Source relationship.
 
-Every locator remains a POSIX path from the Workspace root plus `#Lx` or
-`#Lx-Ly`. Do not rewrite locators relative to a Source or survey handoff.
+Every locator remains a POSIX path from the Workspace root, optionally followed
+by `#Lx` or `#Lx-Ly`. Preserve verified ranges and omit uncertain ones. Do not
+rewrite locators relative to a Source or survey handoff.
 
 Find only relationships supported by pinned evidence: calls, events, shared
 schemas, generated clients, deployment composition, data ownership, and

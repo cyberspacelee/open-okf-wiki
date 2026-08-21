@@ -7,7 +7,7 @@ import {
   wikiLinkTargets,
 } from "../extensions/wiki/lib/citations.js";
 
-test("parseSourceResource reads a Workspace-relative path#Lx", () => {
+test("parseSourceResource reads a Workspace-relative path with an optional line range", () => {
   assert.deepEqual(parseSourceResource("api/src/main.ts#L4-L8"), {
     path: "api/src/main.ts",
     startLine: 4,
@@ -18,9 +18,13 @@ test("parseSourceResource reads a Workspace-relative path#Lx", () => {
     startLine: 1,
     endLine: 1,
   });
+  assert.deepEqual(parseSourceResource("api/src/main.ts"), {
+    path: "api/src/main.ts",
+  });
   assert.equal(parseSourceResource("./api/main.ts#L1"), undefined);
   assert.equal(parseSourceResource("../api/main.ts#L1"), undefined);
   assert.equal(parseSourceResource("api\\main.ts#L1"), undefined);
+  assert.equal(parseSourceResource("api/main.ts#section"), undefined);
 });
 
 test("resolveSourceCitation maps Workspace paths to pinned Sources", () => {
@@ -63,6 +67,11 @@ test("extractOkfSources requires sources ids and matching footnotes", () => {
     sources: [{ id: "main", resource: "api/src/main.ts#L1" }],
   }, "See [main](api/src/main.ts#L1).\n\n[^main]: main\n");
   assert.ok(legacy.invalid.some((issue) => issue.includes("body link")));
+
+  const wikiLink = extractOkfSources({
+    sources: [{ id: "main", resource: "api/src/main.ts" }],
+  }, "See [architecture](architecture.md). [^main]\n\n[^main]: main\n");
+  assert.deepEqual(wikiLink.invalid, []);
 });
 
 test("wikiLinkTargets resolves bundle-root and relative links", () => {
@@ -70,4 +79,5 @@ test("wikiLinkTargets resolves bundle-root and relative links", () => {
     wikiLinkTargets("api/billing/invoice/concept.md", "See [flows](/api/billing/invoice/flows.md) and [domain](../domain.md)."),
     ["api/billing/invoice/flows.md", "api/billing/domain.md"],
   );
+  assert.deepEqual(wikiLinkTargets("api/overview.md", "See [architecture](architecture.md)."), ["api/architecture.md"]);
 });

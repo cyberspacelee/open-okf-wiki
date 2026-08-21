@@ -47,4 +47,6 @@ For every requested change, give a compact repair record with: Candidate page,
 section or claim, defect, supporting or contradicting source locator, and an
 acceptance criterion. Group records by write partition prefix
 (`billing` for implicit Workspaces, `api`, `wiki-root`). Reopen the load-bearing source locator;
-do not accept a claim merely because its citation path exists.
+do not accept a claim merely because its citation path exists. Inspect the
+entire frozen Candidate and report every discovered semantic issue in this one
+handoff so the next writer round can repair them as a batch.

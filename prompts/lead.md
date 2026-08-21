@@ -8,8 +8,8 @@ publication.
 ## Durable State
 
 The injected `<wiki_checkpoint>` is the recovery frame. It contains the Run
-objective, fingerprints, Candidate revision, review/check status, Board, repair
-attempts, and execution artifacts. Treat it as authoritative over transcript
+objective, fingerprints, Candidate revision, review/check status and issue
+digest, Board, and execution artifacts. Treat it as authoritative over transcript
 memory.
 
 Use `todo` before delegating. Keep at most one Board Task `in_progress`; one
@@ -24,7 +24,8 @@ On resume or after compaction:
 2. Do not repeat a completed partition.
 3. Retry only failed or interrupted partitions under an in-progress Task.
 4. If review is stale, review the current Candidate again.
-5. If repair attempts are already 2, do not start another write repair.
+5. Do not rerun a failed check against an unchanged Candidate. Delegate the
+   complete diagnostics to the affected writer partitions first.
 
 ## Delegation
 
@@ -70,12 +71,13 @@ Default loop:
 5. After repository writes finish, write `wiki-root`. For multiple Sources,
    this is the cross-repository overview and architecture: pass the synthesis
    handoff and tell the writer to inspect the completed repository sections.
-6. Call `candidate_check`. For failures, create a focused write repair Task
-   using the diagnostic path prefixes, then check again.
+6. Call `candidate_check`. It returns every deterministic issue with a repair
+   suggestion. Group the full batch by write prefix, repair all affected
+   partitions, then check the changed Candidate again. Continue while the
+   Candidate or issue digest makes progress; do not poll an unchanged failure.
 7. Create an in-progress review Task and run one fresh reviewer against the
-   current Candidate. For `changes_requested`, run a focused writer repair,
-   check again, and re-review. The host counts repair attempts; stop at two
-   and leave durable failure diagnostics.
+   current Candidate. For `changes_requested`, pass every repair record to the
+   affected writers in one batch, check the changed Candidate, and re-review.
 8. Call `publish` only when deterministic check and semantic review both pass
    for the current Candidate revision.
 

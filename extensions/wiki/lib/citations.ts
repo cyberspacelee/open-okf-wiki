@@ -1,19 +1,19 @@
 import path from "node:path";
 
-/** OKF provenance: `sources[].resource` is Workspace-relative `path#Lx` or `#Lx-Ly`. */
+/** OKF provenance: `sources[].resource` is a Workspace-relative path with an optional line range. */
 
-const SOURCE_RESOURCE = /^([^#]+?)#L([1-9]\d*)(?:-L([1-9]\d*))?$/;
+const SOURCE_RESOURCE = /^([^#]+?)(?:#L([1-9]\d*)(?:-L([1-9]\d*))?)?$/;
 const MARKDOWN_LINK = /(?<!!)\[[^\]\n]*\]\([ \t]*(?:<([^>\n]+)>|([^\s)]+))(?:[ \t]+(?:"[^"]*"|'[^']*'|\([^)]*\)))?[ \t]*\)/g;
 const FOOTNOTE = /\[\^([^\]]+)\]/g;
 const LEGACY_BODY_CITATION = /#L[1-9]\d*/;
 
-export const SOURCE_RESOURCE_GRAMMAR = "path#Lx relative to the Workspace root";
+export const SOURCE_RESOURCE_GRAMMAR = "Workspace-relative path or path#Lx[-Ly]";
 
 export interface SourceCitation {
   id: string;
   path: string;
-  startLine: number;
-  endLine: number;
+  startLine?: number;
+  endLine?: number;
 }
 
 export interface CitationSource {
@@ -30,11 +30,10 @@ export function parseSourceResource(value: string): Omit<SourceCitation, "id"> |
   if (!resourcePath || resourcePath.startsWith("/") || resourcePath.includes("//")) return undefined;
   const segments = resourcePath.split("/");
   if (segments.some((segment) => !segment || segment === "." || segment === "..")) return undefined;
-  return {
-    path: resourcePath,
-    startLine: Number(match[2]),
-    endLine: Number(match[3] ?? match[2]),
-  };
+  const startLine = match[2] ? Number(match[2]) : undefined;
+  return startLine === undefined
+    ? { path: resourcePath }
+    : { path: resourcePath, startLine, endLine: Number(match[3] ?? match[2]) };
 }
 
 export function resolveSourceCitation(
@@ -87,7 +86,7 @@ export function extractOkfSources(
   MARKDOWN_LINK.lastIndex = 0;
   for (const match of body.matchAll(MARKDOWN_LINK)) {
     const href = (match[1] ?? match[2] ?? "").trim();
-    if (parseSourceResource(href) || (LEGACY_BODY_CITATION.test(href) && !href.startsWith("#"))) {
+    if (sourceBodyHref(href)) {
       invalid.push(`${href} belongs in sources[].resource, not a body link`);
     }
   }
@@ -118,10 +117,10 @@ function parseSourceEntry(
   if (!resource) return { error: `sources ${id} missing resource` };
   const locator = parseSourceResource(resource);
   if (!locator) return { error: `${resource} need ${SOURCE_RESOURCE_GRAMMAR}` };
-  if (locator.endLine < locator.startLine) return { error: `${resource} end<start` };
+  if (locator.startLine !== undefined && locator.endLine! < locator.startLine) return { error: `${resource} end<start` };
   const file = fileLines?.(locator);
   if (file === "missing") return { error: `${resource} missing` };
-  if (typeof file === "number" && locator.endLine > file) {
+  if (typeof file === "number" && locator.endLine !== undefined && locator.endLine > file) {
     return { error: `${resource} ${locator.path.split("/").pop()}:${file} lines` };
   }
   return { citation: { id, ...locator } };
@@ -151,7 +150,13 @@ function stripTrailingPunctuation(href: string): string {
 }
 
 function skipWikiHref(href: string): boolean {
-  return /^https?:\/\//i.test(href) || href.startsWith("#") || href.startsWith("mailto:") || parseSourceResource(href) !== undefined;
+  return /^https?:\/\//i.test(href) || href.startsWith("#") || href.startsWith("mailto:") || sourceBodyHref(href);
+}
+
+function sourceBodyHref(href: string): boolean {
+  if (LEGACY_BODY_CITATION.test(href) && !href.startsWith("#")) return true;
+  const parsed = parseSourceResource(href);
+  return parsed !== undefined && !parsed.path.endsWith(".md");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -96,7 +96,7 @@ interface RunReviewReceipt {
 }
 
 interface RunRecord {
-  schemaVersion: 2;
+  schemaVersion: 1;
   id: string;
   cwd: string;
   status: WikiRunStatus;
@@ -107,9 +107,8 @@ interface RunRecord {
   error?: string;
   executions: RunExecutionReceipt[];
   review?: RunReviewReceipt;
-  check?: { candidateRevision: string; ok: boolean; completedAt: string; issueCount: number };
+  check?: { candidateRevision: string; ok: boolean; completedAt: string; issueCount: number; issueDigest: string };
   leadAttempts: Array<{ completedAt: string; usage: WikiAgentUsage }>;
-  repairAttempts?: number;
   pageCount?: number;
   candidateRoot: string;
   fingerprint: string;
@@ -152,7 +151,7 @@ export function createProductionWikiProducer(options: WikiProducerOptions = {}):
       await mkdir(candidateRoot, { recursive: true });
       const now = new Date().toISOString();
       const record: RunRecord = {
-        schemaVersion: 2,
+        schemaVersion: 1,
         id,
         cwd: workspace.root,
         status: "running",
@@ -302,7 +301,11 @@ function defaultRunLead(
       options.agentsDirectory,
       (update) => context.record(update),
       context.catalog,
-      { maxConcurrency: config.maxConcurrentAgents - 1, templates: context.templates },
+      {
+        maxConcurrency: config.maxConcurrentAgents - 1,
+        maxEvidenceRepairRounds: config.maxEvidenceRepairRounds,
+        templates: context.templates,
+      },
     );
     const tools: ToolDefinition<any, any, any>[] = [
       ...candidateTools(writeGuardFromPlan(context.plan, context.candidateRoot), LEAD_CANDIDATE_TOOLS),
@@ -446,9 +449,9 @@ async function validateAndRecordCandidate(live: LiveRun): Promise<WikiValidation
     candidateRevision: live.candidateRevision.digest,
     ok: validation.ok,
     issueCount: validation.issues.length,
+    issueDigest: validationIssueDigest(validation),
     completedAt: new Date().toISOString(),
   };
-  if (!validation.ok && !workflowIssue) live.record.repairAttempts = (live.record.repairAttempts ?? 0) + 1;
   live.record.updatedAt = new Date().toISOString();
   await writeRecord(live.record);
   await refreshCheckpoint(live);
@@ -558,9 +561,6 @@ async function recordAgent(live: LiveRun, board: WikiBoardStore, update: Subagen
         handoff: receipt.handoff,
         completedAt: now,
       };
-      if (verdict === "changes_requested") {
-        live.record.repairAttempts = (live.record.repairAttempts ?? 0) + 1;
-      }
     } catch (error) {
       receipt.status = "failed";
       receipt.error = errorMessage(error);
@@ -744,8 +744,16 @@ async function refreshCheckpoint(live: LiveRun, board = live.board): Promise<voi
       ...live.record.check,
       status: live.record.check.candidateRevision === live.candidateRevision.digest ? "current" as const : "stale" as const,
     } } : {}),
-    ...(live.record.repairAttempts ? { repairAttempts: live.record.repairAttempts } : {}),
   });
+}
+
+function validationIssueDigest(validation: WikiValidation): string {
+  return createHash("sha256")
+    .update(validation.issues
+      .map((issue) => `${issue.code}\0${issue.page ?? ""}\0${issue.message}`)
+      .sort()
+      .join("\n"))
+    .digest("hex");
 }
 
 function parseReviewVerdict(text: string): "pass" | "changes_requested" {
@@ -1011,22 +1019,12 @@ async function listRecords(cwd: string): Promise<RunRecord[]> {
 function normalizeRunRecord(value: unknown): RunRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Run record must be an object");
   const raw = value as Record<string, unknown>;
-  if (raw.schemaVersion !== undefined && raw.schemaVersion !== 2) {
+  if (raw.schemaVersion !== 1) {
     throw new Error(`Unsupported Run record schema version: ${String(raw.schemaVersion)}`);
   }
-  if (raw.schemaVersion === 2) {
-    if (!Array.isArray(raw.executions)) throw new Error("Run record executions must be an array");
-    if (!Array.isArray(raw.leadAttempts)) raw.leadAttempts = [];
-    return raw as unknown as RunRecord;
-  }
-  const focus = typeof raw.focus === "string" ? raw.focus : undefined;
-  return {
-    ...(raw as unknown as Omit<RunRecord, "schemaVersion" | "executions" | "leadAttempts">),
-    schemaVersion: 2,
-    executions: [],
-    leadAttempts: [],
-    ...(focus ? { focus } : {}),
-  };
+  if (!Array.isArray(raw.executions)) throw new Error("Run record executions must be an array");
+  if (!Array.isArray(raw.leadAttempts)) throw new Error("Run record leadAttempts must be an array");
+  return raw as unknown as RunRecord;
 }
 
 async function leadPrompt(context: WikiLeadContext, checkpoint: string): Promise<string> {

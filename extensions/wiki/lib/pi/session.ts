@@ -30,6 +30,8 @@ export interface RunWikiSessionOptions {
   /** Must be synchronous so the recovery frame is queued before Pi checks for follow-up work. */
   onCompaction?: () => string;
   onActivity?: (event: WikiSessionActivity) => void;
+  /** Return a prompt to continue the same session after it becomes idle. */
+  nextPrompt?: () => Promise<string | undefined>;
 }
 
 export interface RunWikiSessionResult {
@@ -127,6 +129,7 @@ export async function runWikiSession(
           tool: event.toolName,
           args,
           status: event.isError ? "failed" : "complete",
+          result: event.result,
           ...(stats ? { usage: stats } : {}),
         });
       }
@@ -163,10 +166,14 @@ export async function runWikiSession(
         reject(new Error(`Wiki agent session timed out after ${timeoutMs}ms`));
       }, timeoutMs);
     });
-    await Promise.race([session.prompt(prompt), deadline]);
-    await Promise.race([session.waitForIdle(), deadline]);
-    await compactionDelivery;
-    if (compactionDeliveryError) throw compactionDeliveryError;
+    let currentPrompt: string | undefined = prompt;
+    while (currentPrompt !== undefined) {
+      await Promise.race([session.prompt(currentPrompt), deadline]);
+      await Promise.race([session.waitForIdle(), deadline]);
+      await compactionDelivery;
+      if (compactionDeliveryError) throw compactionDeliveryError;
+      currentPrompt = await options.nextPrompt?.();
+    }
     const usage = readSessionUsage(session, compactions);
     return {
       text: session.getLastAssistantText() ?? "",

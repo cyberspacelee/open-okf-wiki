@@ -30,8 +30,7 @@ export interface LeadCheckpointInput {
   pageCount: number;
   executions: readonly CheckpointExecution[];
   review?: CheckpointReview;
-  check?: { candidateRevision: string; ok: boolean; issueCount: number; status: "current" | "stale" };
-  repairAttempts?: number;
+  check?: { candidateRevision: string; ok: boolean; issueCount: number; issueDigest: string; status: "current" | "stale" };
 }
 
 export function formatLeadCheckpoint(input: LeadCheckpointInput): string {
@@ -41,7 +40,7 @@ export function formatLeadCheckpoint(input: LeadCheckpointInput): string {
     ? `${input.review.verdict} (${input.review.status}); candidate ${short(input.review.candidateRevision)}; ${input.review.handoff.path}`
     : "missing";
   const check = input.check
-    ? `${input.check.ok ? "pass" : `failed with ${input.check.issueCount} issues`} (${input.check.status}); candidate ${short(input.check.candidateRevision)}`
+    ? `${input.check.ok ? "pass" : `failed with ${input.check.issueCount} issues`} (${input.check.status}); candidate ${short(input.check.candidateRevision)}; issues ${short(input.check.issueDigest)}`
     : "not run";
   const mandatory = [
     "<wiki_checkpoint>",
@@ -52,7 +51,6 @@ export function formatLeadCheckpoint(input: LeadCheckpointInput): string {
     `Candidate: ${short(input.candidateRevision)}; ${input.pageCount} files`,
     `Deterministic check: ${check}`,
     `Review: ${review}`,
-    `Repair attempts: ${input.repairAttempts ?? 0}/2${(input.repairAttempts ?? 0) >= 2 ? "; do not start another write repair; leave durable failure diagnostics" : ""}`,
     "",
     formatBoard(input.board),
     "",

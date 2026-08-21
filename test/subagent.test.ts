@@ -7,6 +7,28 @@ import { loadWikiAgents, packagedAgentsRoot, parseAgentMarkdown } from "../exten
 import { createSubagentRuntime, createSubagentTool } from "../extensions/wiki/lib/subagent.js";
 import { loadWikiTemplatePack, packagedTemplatesRoot } from "../extensions/wiki/lib/templates.js";
 
+function implicitPlan(workspaceRoot: string) {
+  return {
+    workspaceRoot,
+    workspaceRealPath: workspaceRoot,
+    configPath: undefined,
+    defaultSourceIgnores: true,
+    excludes: [],
+    sources: [{
+      scopeId: "self",
+      logicalPath: ".",
+      absolutePath: workspaceRoot,
+      realPath: workspaceRoot,
+      repositoryRoot: workspaceRoot,
+      repositoryIdentity: "test",
+      origin: { type: "implicit" as const },
+      head: "test",
+      dirtyFingerprint: "test",
+    }],
+    fingerprint: "test",
+  };
+}
+
 test("unknown agent names are reported in parseable agent files", () => {
   const parsed = parseAgentMarkdown("---\nname: survey\ndescription: Map a source\n---\nBody\n", "survey.md");
   assert.equal(parsed.name, "survey");
@@ -493,6 +515,92 @@ test("writer read ledger resolves linked Source citations from the Workspace roo
   });
   const [result] = await runtime.run([
     { agent: "write", task: "Write overview", boardTaskId: "write", partition: "wiki-root" },
+  ], new AbortController().signal);
+  assert.equal(result.error, undefined);
+});
+
+test("writer repairs every unread citation in one session for more than two rounds", async (t) => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-citation-repair-"));
+  t.after(async () => await rm(workspaceRoot, { recursive: true, force: true }));
+  const candidateRoot = path.join(workspaceRoot, ".okf-wiki", "runs", "abcd", "candidate");
+  await mkdir(candidateRoot, { recursive: true });
+  for (const name of ["a.ts", "b.ts", "c.ts"]) {
+    await writeFile(path.join(workspaceRoot, name), `export const ${name[0]} = true;\n`);
+  }
+  let listener = () => {};
+  const prompts: string[] = [];
+  const runtime = await createSubagentRuntime(implicitPlan(workspaceRoot), candidateRoot, {
+    async createSession() {
+      return {
+        session: {
+          sessionFile: undefined,
+          subscribe(next) { listener = next; return () => {}; },
+          async prompt(value) {
+            prompts.push(value);
+            if (prompts.length === 1) {
+              await writeFile(path.join(candidateRoot, "overview.md"), [
+                "---", "type: Overview", "title: Overview", "description: Overview.", "sources:",
+                "  - id: a", "    resource: a.ts#L1",
+                "  - id: b", "    resource: b.ts#L1",
+                "  - id: c", "    resource: c.ts#L1",
+                "---", "# Overview", "", "Overview.", "", "## Details", "", "Grounded. [^a] [^b] [^c]",
+                "", "[^a]: a", "[^b]: b", "[^c]: c", "",
+              ].join("\n"));
+              listener({ type: "tool_execution_start", toolCallId: "write-1", toolName: "write", args: { path: "wiki/overview.md" } });
+              listener({ type: "tool_execution_end", toolCallId: "write-1", toolName: "write", result: {}, isError: false });
+              return;
+            }
+            const resource = ["a.ts", "b.ts", "c.ts"][prompts.length - 2];
+            listener({ type: "tool_execution_start", toolCallId: `read-${prompts.length}`, toolName: "read", args: { path: resource } });
+            listener({ type: "tool_execution_end", toolCallId: `read-${prompts.length}`, toolName: "read", result: {}, isError: false });
+          },
+          async waitForIdle() {},
+          getLastAssistantText() { return "repaired"; },
+          dispose() {},
+          abort() {},
+        },
+        modelFallbackMessage: undefined,
+      };
+    },
+  });
+  const [result] = await runtime.run([
+    { agent: "write", task: "Write overview", boardTaskId: "write", partition: "wiki-root" },
+  ], new AbortController().signal);
+  assert.equal(result.error, undefined);
+  assert.equal(prompts.length, 4);
+  assert.match(prompts[1], /a\.ts#L1/);
+  assert.match(prompts[1], /b\.ts#L1/);
+  assert.match(prompts[1], /c\.ts#L1/);
+  assert.match(prompts[1], /Suggested action/i);
+});
+
+test("failed writes do not validate stale Candidate citations", async (t) => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-failed-write-"));
+  t.after(async () => await rm(workspaceRoot, { recursive: true, force: true }));
+  const candidateRoot = path.join(workspaceRoot, ".okf-wiki", "runs", "abcd", "candidate");
+  await mkdir(candidateRoot, { recursive: true });
+  await writeFile(path.join(workspaceRoot, "main.ts"), "source\n");
+  await writeFile(path.join(candidateRoot, "overview.md"), [
+    "---", "type: Overview", "title: Old", "description: Old.", "sources:",
+    "  - id: main", "    resource: main.ts#L1", "---", "# Old", "", "Old.", "", "## Details", "",
+    "Old. [^main]", "", "[^main]: main", "",
+  ].join("\n"));
+  const runtime = await createSubagentRuntime(implicitPlan(workspaceRoot), candidateRoot, {
+    async createSession() {
+      return { session: {
+        sessionFile: undefined,
+        subscribe(listener) {
+          listener({ type: "tool_execution_start", toolCallId: "write-1", toolName: "write", args: { path: "wiki/overview.md" } });
+          listener({ type: "tool_execution_end", toolCallId: "write-1", toolName: "write", result: {}, isError: true });
+          return () => {};
+        },
+        async prompt() {}, async waitForIdle() {}, getLastAssistantText() { return "failed write"; },
+        dispose() {}, abort() {},
+      }, modelFallbackMessage: undefined };
+    },
+  });
+  const [result] = await runtime.run([
+    { agent: "write", task: "Repair overview", boardTaskId: "write", partition: "wiki-root" },
   ], new AbortController().signal);
   assert.equal(result.error, undefined);
 });
