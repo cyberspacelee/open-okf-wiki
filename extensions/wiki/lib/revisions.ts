@@ -10,6 +10,19 @@ export interface TreeRevision {
 
 export async function candidateRevision(root: string): Promise<TreeRevision> {
   const files = await regularFiles(root);
+  return await treeRevision(root, files);
+}
+
+export async function candidatePartitionRevision(root: string, partition: string): Promise<TreeRevision> {
+  const files = (await regularFiles(root)).filter((relative) => {
+    if (partition === "candidate" || partition === "wiki") return true;
+    if (partition === "wiki-root") return !relative.includes("/");
+    return relative.startsWith(`${partition}/`);
+  });
+  return await treeRevision(root, files);
+}
+
+async function treeRevision(root: string, files: readonly string[]): Promise<TreeRevision> {
   const hash = createHash("sha256");
   for (const relative of files) {
     const body = await readFile(path.join(root, ...relative.split("/")));
@@ -20,7 +33,7 @@ export async function candidateRevision(root: string): Promise<TreeRevision> {
     hash.update(body);
     hash.update("\0");
   }
-  return { digest: hash.digest("hex"), files };
+  return { digest: hash.digest("hex"), files: [...files] };
 }
 
 export function templatePackRevision(pack: WikiTemplatePack): string {

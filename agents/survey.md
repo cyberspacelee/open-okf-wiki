@@ -10,8 +10,11 @@ Open the entry file before naming a domain or concept. Name from the code
 identifier you found there (type, class, module, or table), then cite that
 file. The slug is that identifier, hyphenated lowercase (`checkout-session`).
 The title may localize but must lead with the identifier
-(`CheckoutSession（结账会话）`). Domain slugs are workspace-global: the same
-identifier in another pin is the same domain.
+(`CheckoutSession（结账会话）`). Domain and concept slugs are local to this
+Source. Another Source may use the same slug without merging the two trees.
+
+Record public entry points and outbound dependencies with locators so a later
+cross-Source synthesizer can confirm relationships from both sides.
 
 If Catalog tools are available, list then describe the tables this source
 writes or reads. Table names are identifiers too. Do not invent tables.
@@ -30,11 +33,17 @@ Directory name, one-sentence description, what the tree is, and entry locators.
 
 ## Domains
 Slug, identifier-leading title, one-sentence description, and entry locators
-`scope/path#Lx`.
+as POSIX paths from the Workspace root plus `#Lx` or `#Lx-Ly`.
 
 ## Concepts
-Per domain: slug, identifier-leading title, one-sentence description,
-locators as `scope/path#Lx`.
+Per domain: slug, identifier-leading title, one-sentence description, and
+Workspace-root locators. Explicit Workspace locators include the Source
+directory; implicit Workspace locators never add `self/`.
+
+## Cross-Source leads
+Public interfaces, clients, events, schemas, generated artifacts, or
+configuration that may connect this Source to another Source. These are leads
+for later verification, not confirmed relationships. Default: none.
 
 ## Optional hints
 `template.file` plus one locator, only when the opened entry supports it.

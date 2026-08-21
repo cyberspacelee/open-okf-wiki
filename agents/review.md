@@ -24,6 +24,9 @@ Then list evidence. Request changes when:
 - an optional page lacks enough source evidence to justify its existence
 - two pages repeat the same explanation instead of linking to one owner
 - a domain page restates wiki or repo architecture instead of linking to it
+- an explicit Workspace page appears outside its owning `repos/<scopeId>/`
+  subtree, or a repository page duplicates a cross-Source relationship instead
+  of linking to the Workspace root
 - a responsibility, boundary, invariant, interface, flow, or failure behavior is
   contradicted by the cited source
 - a development or recovery step is not executable from the cited files
@@ -43,5 +46,5 @@ Candidate writes after a pass make the review stale.
 For every requested change, give a compact repair record with: Candidate page,
 section or claim, defect, supporting or contradicting source locator, and an
 acceptance criterion. Group records by write partition prefix
-(`billing`, `repos/api`, `wiki-root`). Reopen the load-bearing source locator;
+(`billing` for implicit Workspaces, `repos/api`, `wiki-root`). Reopen the load-bearing source locator;
 do not accept a claim merely because its citation path exists.

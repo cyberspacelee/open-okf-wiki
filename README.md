@@ -101,12 +101,13 @@ test trees (`src/test/**`, `*Test.java`, and the usual `node_modules` /
 Add more with `wiki.exclude`. `/wiki init --no-default-ignores` turns the
 built-in list off.
 
-The concurrency limit applies to a parallel survey batch while the Lead
-occupies one session slot. Writers run serially and review is exclusive across
-concurrent `subagent` calls. Retry and timeout values apply to both the Lead
-and delegated agents. Wiki sessions use these settings instead of project or
-user Pi retry settings. Unknown `wiki` fields are rejected so misspelled or
-removed configuration cannot be silently ignored.
+The concurrency limit applies to parallel Source surveys and disjoint
+Repository Section writes while the Lead occupies one session slot. The
+cross-Source synthesize worker and review worker each run alone. Retry and
+timeout values apply to both the Lead and delegated agents. Wiki sessions use
+these settings instead of project or user Pi retry settings. Unknown `wiki`
+fields are rejected so misspelled or removed configuration cannot be silently
+ignored.
 
 ### Board
 
@@ -179,8 +180,11 @@ Each template is a markdown file. Filename is the page name. Frontmatter:
 `scope` / `altitudes` / `diagram` / `optional` / `instructions` stay on the
 template file. Generated pages carry `type`, `title`, `description`, and
 `sources`. Claims use `[^id]` footnotes keyed to `sources[].id`.
-`sources[].resource` is `<scopeId>/path#Lx` (`self/path#Lx` on an implicit
-Workspace).
+`sources[].resource` is always a POSIX path from the Workspace root plus
+`#Lx` or `#Lx-Ly`: for example `api/src/main.ts#L12` in an explicit
+Workspace and `src/main.ts#L12` in an implicit Workspace. It is never
+relative to the page or Source root, and implicit Workspaces never add
+`self/`.
 
 `instructions` tells the writer what evidence completes the page. The body is
 the output skeleton: exactly `# {{title}}`, then `{{description}}`, then fixed,
@@ -202,7 +206,9 @@ wiki/architecture.md
 wiki/development.md | runbook.md          # implicit Workspace only
 wiki/repos/<scopeId>/architecture.md      # explicit Workspace
 wiki/repos/<scopeId>/development.md | runbook.md
-wiki/<domain>/domain.md | flows.md
+wiki/repos/<scopeId>/<domain>/domain.md | flows.md
+wiki/repos/<scopeId>/<domain>/<concept>/concept.md | states.md | data.md
+wiki/<domain>/domain.md | flows.md         # implicit Workspace only
 wiki/<domain>/<concept>/concept.md | states.md | data.md
 ```
 
@@ -210,7 +216,8 @@ Filenames at each layer come from the template pack. The host generates every
 `index.md` and root `log.md`. Each index uses the next scope's identity title
 and description, so agents can choose a branch without opening it. Wiki-to-wiki
 links are standard markdown. Publication validates OKF, paths, templates,
-sources, and review, then installs the Candidate as `wiki/`.
+Source ownership, cross-Source architecture coverage, workflow synthesis, and
+review, then installs the Candidate as `wiki/`.
 
 Lead sessions use Pi auto-compaction. Wiki sessions do not inherit other
 project or user Pi settings.
@@ -226,8 +233,9 @@ const view = await handle.view();
 const result = await handle.result();
 ```
 
-SOP is `prompts/lead.md`. Named workers are `agents/*.md`. TypeScript does
-not encode survey / write / review stages.
+SOP is `prompts/lead.md`. Named workers are `agents/*.md`. The host requires a
+completed survey for every Source and one subsequent synthesize receipt before
+publishing a multi-Source Run; the Lead owns the remaining stage orchestration.
 
 See [CONTEXT.md](CONTEXT.md) for terms and [ARCHITECTURE.md](ARCHITECTURE.md)
 for the host shape.

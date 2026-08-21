@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -20,7 +20,7 @@ test("unknown subagent names return Unknown agent and list packaged agents", asy
   const names = agents.map((agent) => agent.name);
   assert.ok(files.length > 0);
   assert.equal(agents.length, files.length);
-  assert.deepEqual(names, ["review", "survey", "write"]);
+  assert.deepEqual(names, ["review", "survey", "synthesize", "write"]);
 
   const workspaceRoot = path.resolve("/tmp/okf-wiki-subagent");
   const runtime = await createSubagentRuntime(
@@ -306,7 +306,7 @@ test("subagent prompts project templates by role", async (t) => {
     undefined,
     { templates: await loadWikiTemplatePack(packagedTemplatesRoot("en")) },
   );
-  for (const agent of ["survey", "write", "review"]) {
+  for (const agent of ["survey", "synthesize", "write", "review"]) {
     await runtime.run([{
       agent,
       task: `${agent} candidate`,
@@ -316,9 +316,11 @@ test("subagent prompts project templates by role", async (t) => {
   }
   assert.match(prompts[0], /Page template catalog/);
   assert.doesNotMatch(prompts[0], /Skeleton/);
-  assert.match(prompts[1], /Skeleton/);
-  assert.match(prompts[2], /Page template catalog/);
-  assert.doesNotMatch(prompts[2], /Skeleton/);
+  assert.match(prompts[1], /Page template catalog/);
+  assert.doesNotMatch(prompts[1], /Skeleton/);
+  assert.match(prompts[2], /Skeleton/);
+  assert.match(prompts[3], /Page template catalog/);
+  assert.doesNotMatch(prompts[3], /Skeleton/);
 });
 
 test("subagent batches allow parallel survey and disjoint writes", async (t) => {
@@ -375,6 +377,10 @@ test("subagent batches allow parallel survey and disjoint writes", async (t) => 
     { agent: "survey", task: "a", boardTaskId: "survey", partition: "same" },
     { agent: "survey", task: "b", boardTaskId: "survey", partition: "same" },
   ], new AbortController().signal), /duplicate subagent partition/);
+  await assert.rejects(() => runtime.run([
+    { agent: "synthesize", task: "a", boardTaskId: "synthesize", partition: "workspace-a" },
+    { agent: "synthesize", task: "b", boardTaskId: "synthesize", partition: "workspace-b" },
+  ], new AbortController().signal), /synthesize must run alone/);
 
   let release;
   let announce;
@@ -413,4 +419,80 @@ test("subagent batches allow parallel survey and disjoint writes", async (t) => 
   ], new AbortController().signal), /exclusive/);
   release();
   await writer;
+});
+
+test("writer read ledger resolves linked Source citations from the Workspace root", async (t) => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-citation-ledger-"));
+  t.after(async () => await rm(parent, { recursive: true, force: true }));
+  const workspaceRoot = path.join(parent, "workspace");
+  const sourceRoot = path.join(parent, "source");
+  const candidateRoot = path.join(workspaceRoot, ".okf-wiki", "runs", "abcd", "candidate");
+  await mkdir(sourceRoot, { recursive: true });
+  await mkdir(candidateRoot, { recursive: true });
+  await writeFile(path.join(sourceRoot, "main.ts"), "export const ready = true;\n");
+  await symlink(sourceRoot, path.join(workspaceRoot, "api"), "dir");
+  let listener = () => {};
+  const runtime = await createSubagentRuntime({
+    workspaceRoot,
+    workspaceRealPath: workspaceRoot,
+    configPath: path.join(workspaceRoot, "workspace.yaml"),
+    defaultSourceIgnores: true,
+    excludes: [],
+    sources: [{
+      scopeId: "api",
+      logicalPath: "api",
+      absolutePath: path.join(workspaceRoot, "api"),
+      realPath: sourceRoot,
+      repositoryRoot: sourceRoot,
+      repositoryIdentity: "test",
+      origin: { type: "link", localPath: sourceRoot },
+      head: "test",
+      dirtyFingerprint: "test",
+    }],
+    fingerprint: "test",
+  }, candidateRoot, {
+    async createSession() {
+      return {
+        session: {
+          sessionFile: undefined,
+          subscribe(next) { listener = next; return () => {}; },
+          async prompt() {
+            await writeFile(path.join(candidateRoot, "overview.md"), [
+              "---",
+              "type: Overview",
+              "title: Overview",
+              "description: Overview.",
+              "sources:",
+              "  - id: main",
+              "    resource: api/main.ts#L1",
+              "---",
+              "# Overview",
+              "",
+              "Overview.",
+              "",
+              "## Details",
+              "",
+              "Grounded. [^main]",
+              "",
+              "[^main]: main",
+              "",
+            ].join("\n"));
+            listener({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "api/main.ts" } });
+            listener({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read", result: {}, isError: false });
+            listener({ type: "tool_execution_start", toolCallId: "write-1", toolName: "write", args: { path: "wiki/overview.md" } });
+            listener({ type: "tool_execution_end", toolCallId: "write-1", toolName: "write", result: {}, isError: false });
+          },
+          async waitForIdle() {},
+          getLastAssistantText() { return "wrote"; },
+          dispose() {},
+          abort() {},
+        },
+        modelFallbackMessage: undefined,
+      };
+    },
+  });
+  const [result] = await runtime.run([
+    { agent: "write", task: "Write overview", boardTaskId: "write", partition: "wiki-root" },
+  ], new AbortController().signal);
+  assert.equal(result.error, undefined);
 });

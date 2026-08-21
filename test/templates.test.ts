@@ -78,6 +78,14 @@ test("packaged zh and en templates share a contract and differ in body language"
   assert.doesNotMatch(domainOnly, /type `Overview`/);
   assert.equal(templatesForPartition(en, "wiki-root", true).some((template) => template.file === "overview.md"), true);
   assert.equal(templatesForPartition(en, "billing", false).every((template) => template.scope === "domain" || template.scope === "concept"), true);
+  const repoTemplates = templatesForPartition(en, "repos/api", false);
+  assert.equal(repoTemplates.some((template) => template.scope === "domain"), true);
+  assert.equal(repoTemplates.some((template) => template.scope === "concept"), true);
+  assert.equal(repoTemplates.some((template) => template.altitudes?.includes("repo")), true);
+  assert.match(
+    formatWikiTemplatesForPrompt(en, new Set(repoTemplates.map((template) => template.file)), "repos/api"),
+    /under repos\/<scopeId>/,
+  );
 });
 
 test("resolveWikiTemplatePack selects the packaged language when wiki.templates is unset", async () => {
@@ -120,6 +128,9 @@ test("loadWikiTemplatePack requires wiki domain concept anchors and architecture
   t.after(async () => await rm(root, { recursive: true, force: true }));
   await writeFile(path.join(root, "overview.md"), templateText("wiki"));
   await assert.rejects(loadWikiTemplatePack(root), /exactly one non-optional domain template|architecture.md/);
+  await writeMinimalPack(root);
+  await writeFile(path.join(root, "system.md"), architectureText());
+  await assert.rejects(loadWikiTemplatePack(root), /exactly one altitudes page/);
 });
 
 test("markdown structure ignores headings inside fenced code", () => {

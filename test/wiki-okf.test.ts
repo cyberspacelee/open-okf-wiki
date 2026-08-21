@@ -102,20 +102,21 @@ async function writeCore(root: string, resource: string, pack: WikiTemplatePack,
       );
     }
   }
-  const concept = path.join(root, "billing", "invoice");
+  const knowledgeRoot = wikiPinsImplicit(pins) ? root : path.join(root, "repos", pins[0]!.scopeId);
+  const concept = path.join(knowledgeRoot, "billing", "invoice");
   await mkdir(concept, { recursive: true });
-  await writeFile(path.join(root, "billing", "domain.md"), fill(byFile["domain.md"], "Billing", resource));
+  await writeFile(path.join(knowledgeRoot, "billing", "domain.md"), fill(byFile["domain.md"], "Billing", resource));
   await writeFile(path.join(concept, "concept.md"), fill(byFile["concept.md"], "Invoice", resource));
 }
 
-async function sourceTree(t: { after: (fn: () => Promise<void>) => void }, scope = "api", implicit = false) {
+async function sourceTree(t: { after: (fn: () => Promise<void>) => void }, scope = "api", implicit = true) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-src-"));
   t.after(async () => await rm(dir, { recursive: true, force: true }));
   await writeFile(path.join(dir, "main.ts"), "export const ready = true;\n");
   const pin: WikiPin = implicit
     ? { scopeId: "self", logicalPath: ".", realPath: dir }
     : { scopeId: scope, logicalPath: scope, realPath: dir };
-  return { pins: [pin], resource: `${pin.scopeId}/main.ts#L1` };
+  return { pins: [pin], resource: implicit ? "main.ts#L1" : `${pin.logicalPath}/main.ts#L1` };
 }
 
 test("derived indexes cover root, repos, domain, and concept directories", () => {
@@ -123,14 +124,14 @@ test("derived indexes cover root, repos, domain, and concept directories", () =>
     "overview.md",
     "architecture.md",
     "repos/api/architecture.md",
-    "billing/domain.md",
-    "billing/invoice/concept.md",
-    "checkout/domain.md",
+    "repos/api/billing/domain.md",
+    "repos/api/billing/invoice/concept.md",
+    "repos/api/checkout/domain.md",
   ]), [
-    "billing/index.md",
-    "billing/invoice/index.md",
-    "checkout/index.md",
     "index.md",
+    "repos/api/billing/index.md",
+    "repos/api/billing/invoice/index.md",
+    "repos/api/checkout/index.md",
     "repos/api/index.md",
     "repos/index.md",
   ]);
@@ -152,6 +153,16 @@ test("validate accepts a typed overview page without a template pack", async (t)
   const result = await validateWikiTree(root, []);
   assert.equal(result.ok, true);
   assert.deepEqual(result.pages, ["overview.md"]);
+});
+
+test("implicit Workspace citations are relative to the Workspace root", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-root-citation-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  const source = await sourceTree(t, "self", true);
+  const templates = packOf();
+  await writeCore(root, "main.ts#L1", templates, source.pins);
+  const result = await validateWikiTree(root, source.pins, templates);
+  assert.equal(result.ok, true, result.issues.map((issue) => issue.message).join("\n"));
 });
 
 test("validate requires mermaid kind from the template pack", async (t) => {
@@ -202,7 +213,7 @@ test("validate uses the template pack as the page contract", async (t) => {
   assert.equal(withoutOptional.ok, true);
 });
 
-test("implicit wiki rejects repos/ and named wiki requires repos architecture", async (t) => {
+test("implicit wiki rejects repos/ and explicit wiki keeps knowledge inside its repository", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-implicit-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));
   const implicit = await sourceTree(t, "api", true);
@@ -216,6 +227,44 @@ test("implicit wiki rejects repos/ and named wiki requires repos architecture", 
   const withRepos = await validateWikiTree(root, implicit.pins, templates);
   assert.equal(withRepos.ok, false);
   assert.ok(withRepos.issues.some((issue) => issue.message.includes("repos/")));
+
+  const explicitRoot = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-explicit-"));
+  t.after(async () => await rm(explicitRoot, { recursive: true, force: true }));
+  const explicit = await sourceTree(t, "api", false);
+  await writeCore(explicitRoot, explicit.resource, templates, explicit.pins);
+  assert.equal((await validateWikiTree(explicitRoot, explicit.pins, templates)).ok, true);
+  await writeFile(
+    path.join(explicitRoot, "repos", "api", "billing", "domain.md"),
+    fill(templates.templates.find((template) => template.file === "domain.md"), "Wrong origin", "main.ts#L1"),
+  );
+  const sourceRelative = await validateWikiTree(explicitRoot, explicit.pins, templates);
+  assert.ok(sourceRelative.issues.some((issue) => issue.code === "citation" && issue.message.includes("main.ts#L1 missing")));
+  await writeFile(
+    path.join(explicitRoot, "repos", "api", "billing", "domain.md"),
+    fill(templates.templates.find((template) => template.file === "domain.md"), "Billing", explicit.resource),
+  );
+  await materializeWikiIndexes(explicitRoot, "en", templates);
+  assert.match(await readFile(path.join(explicitRoot, "repos", "api", "index.md"), "utf8"), /Billing/);
+  await mkdir(path.join(explicitRoot, "billing"), { recursive: true });
+  await writeFile(
+    path.join(explicitRoot, "billing", "domain.md"),
+    fill(templates.templates.find((template) => template.file === "domain.md"), "Wrong", explicit.resource),
+  );
+  const misplaced = await validateWikiTree(explicitRoot, explicit.pins, templates);
+  assert.ok(misplaced.issues.some((issue) => issue.code === "template" && issue.page === "billing/domain.md"));
+});
+
+test("multi-Source validation enforces repository citation ownership and root coverage", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-multi-source-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  const api = await sourceTree(t, "api", false);
+  const web = await sourceTree(t, "web", false);
+  const pins = [...api.pins, ...web.pins];
+  const templates = packOf();
+  await writeCore(root, api.resource, templates, pins);
+  const result = await validateWikiTree(root, pins, templates);
+  assert.ok(result.issues.some((issue) => issue.code === "cross-source" && issue.page === "architecture.md"));
+  assert.ok(result.issues.some((issue) => issue.code === "citation-owner" && issue.page === "repos/web/architecture.md"));
 });
 
 test("validate rejects domain-level architecture and undeclared pages", async (t) => {
@@ -305,7 +354,7 @@ test("validate rejects unknown pages, empty sections, missing footnotes, and pla
 test("packaged default templates reject a single overview page", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-default-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));
-  await writeFile(path.join(root, "overview.md"), okfPage("Overview", "Overview", "", "self/main.ts#L1"));
+  await writeFile(path.join(root, "overview.md"), okfPage("Overview", "Overview", "", "main.ts#L1"));
   const pack = await loadWikiTemplatePack(packagedTemplatesRoot("en"));
   const result = await validateWikiTree(root, [{ scopeId: "self", logicalPath: ".", realPath: "/tmp/source" }], pack);
   assert.equal(result.ok, false);

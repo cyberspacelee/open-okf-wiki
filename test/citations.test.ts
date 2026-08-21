@@ -1,14 +1,50 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { extractOkfSources, parseSourceResource, wikiLinkTargets } from "../extensions/wiki/lib/citations.js";
+import {
+  extractOkfSources,
+  parseSourceResource,
+  resolveSourceCitation,
+  wikiLinkTargets,
+} from "../extensions/wiki/lib/citations.js";
 
-test("parseSourceResource reads scope/path#Lx", () => {
+test("parseSourceResource reads a Workspace-relative path#Lx", () => {
   assert.deepEqual(parseSourceResource("api/src/main.ts#L4-L8"), {
-    scope: "api",
-    path: "src/main.ts",
+    path: "api/src/main.ts",
     startLine: 4,
     endLine: 8,
   });
+  assert.deepEqual(parseSourceResource("main.ts#L1"), {
+    path: "main.ts",
+    startLine: 1,
+    endLine: 1,
+  });
+  assert.equal(parseSourceResource("./api/main.ts#L1"), undefined);
+  assert.equal(parseSourceResource("../api/main.ts#L1"), undefined);
+  assert.equal(parseSourceResource("api\\main.ts#L1"), undefined);
+});
+
+test("resolveSourceCitation maps Workspace paths to pinned Sources", () => {
+  assert.deepEqual(
+    resolveSourceCitation(
+      { path: "api/src/main.ts" },
+      [{ scopeId: "api", logicalPath: "api" }],
+    ),
+    { scopeId: "api", sourcePath: "src/main.ts" },
+  );
+  assert.deepEqual(
+    resolveSourceCitation(
+      { path: "src/main.ts" },
+      [{ scopeId: "self", logicalPath: "." }],
+    ),
+    { scopeId: "self", sourcePath: "src/main.ts" },
+  );
+  assert.equal(
+    resolveSourceCitation(
+      { path: "src/main.ts" },
+      [{ scopeId: "api", logicalPath: "api" }],
+    ),
+    undefined,
+  );
 });
 
 test("extractOkfSources requires sources ids and matching footnotes", () => {

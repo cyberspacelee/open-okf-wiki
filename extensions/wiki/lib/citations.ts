@@ -1,43 +1,56 @@
 import path from "node:path";
 
-/** OKF provenance: `sources[].resource` is `scope/path#Lx` or `#Lx-Ly`; body footnotes are `[^id]`. */
+/** OKF provenance: `sources[].resource` is Workspace-relative `path#Lx` or `#Lx-Ly`. */
 
-const SOURCE_SCOPE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const SOURCE_RESOURCE = /^(?:\.[/\\])?([^#]+?)#L([1-9]\d*)(?:-L([1-9]\d*))?$/;
+const SOURCE_RESOURCE = /^([^#]+?)#L([1-9]\d*)(?:-L([1-9]\d*))?$/;
 const MARKDOWN_LINK = /(?<!!)\[[^\]\n]*\]\([ \t]*(?:<([^>\n]+)>|([^\s)]+))(?:[ \t]+(?:"[^"]*"|'[^']*'|\([^)]*\)))?[ \t]*\)/g;
 const FOOTNOTE = /\[\^([^\]]+)\]/g;
 const LEGACY_BODY_CITATION = /#L[1-9]\d*/;
 
-export const SOURCE_RESOURCE_GRAMMAR = "scope/path#Lx";
+export const SOURCE_RESOURCE_GRAMMAR = "path#Lx relative to the Workspace root";
 
 export interface SourceCitation {
   id: string;
-  scope: string;
   path: string;
   startLine: number;
   endLine: number;
 }
 
+export interface CitationSource {
+  scopeId: string;
+  logicalPath: string;
+}
+
 export function parseSourceResource(value: string): Omit<SourceCitation, "id"> | undefined {
   const href = value.trim().replace(/^<|>$/g, "");
-  if (!href || /^[a-z][a-z0-9+.-]*:/i.test(href)) return undefined;
-  const match = SOURCE_RESOURCE.exec(href.replaceAll("\\", "/"));
+  if (!href || href.includes("\\") || /^[a-z][a-z0-9+.-]*:/i.test(href)) return undefined;
+  const match = SOURCE_RESOURCE.exec(href);
   if (!match) return undefined;
   const resourcePath = match[1];
   if (!resourcePath || resourcePath.startsWith("/") || resourcePath.includes("//")) return undefined;
-  const slash = resourcePath.indexOf("/");
-  if (slash < 1) return undefined;
-  const scope = resourcePath.slice(0, slash);
-  const remainder = resourcePath.slice(slash + 1);
-  if (!SOURCE_SCOPE.test(scope)) return undefined;
-  const segments = remainder.split("/");
+  const segments = resourcePath.split("/");
   if (segments.some((segment) => !segment || segment === "." || segment === "..")) return undefined;
   return {
-    scope,
-    path: remainder,
+    path: resourcePath,
     startLine: Number(match[2]),
     endLine: Number(match[3] ?? match[2]),
   };
+}
+
+export function resolveSourceCitation(
+  citation: Pick<SourceCitation, "path">,
+  sources: readonly CitationSource[],
+): { scopeId: string; sourcePath: string } | undefined {
+  for (const source of [...sources].sort((left, right) => right.logicalPath.length - left.logicalPath.length)) {
+    const logicalPath = source.logicalPath.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, "");
+    if (!logicalPath || logicalPath === ".") {
+      return { scopeId: source.scopeId, sourcePath: citation.path };
+    }
+    if (citation.path.startsWith(`${logicalPath}/`)) {
+      return { scopeId: source.scopeId, sourcePath: citation.path.slice(logicalPath.length + 1) };
+    }
+  }
+  return undefined;
 }
 
 export function extractOkfSources(

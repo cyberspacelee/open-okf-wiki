@@ -121,7 +121,7 @@ Attested Computation（§10）是「数是不是按指定算法算的」，对�
 | `type` 形态 | `Architecture`、`Playbook`、描述性 Title Case | 模板是 `arch`、`overview`、`concept`（文件名腔） |
 | `description` | index / snippet 用 | 不要求；index 只用 `title` 或文件名（`wiki-okf.ts` `renderIndex`） |
 | 架构页文件名 | kebab `architecture.md` | 模板文件 `arch.md` → 生成 `arch.md` |
-| 出处 | `sources:` + `[^id]` 脚注 | 正文 `[label](scope/path#Lx)`，frontmatter 无 `sources` |
+| 出处 | `sources:` + `[^id]` 脚注 | `sources[].resource` 使用 Workspace 根相对路径和行号，正文用同 id 脚注 |
 | Wiki 内链 | 推荐 `/source/domain/concept.md` | 未规定；易写成相对或源码 citation |
 | `verified` | 对照证据的确认 | publish 给**每页**盖 `process:open-okf-wiki`（`stampPublication`），无独立 review 也是 machine-confirmed |
 | 正文结构 | `# Schema` / `# Examples` / 表 / 列表 | 模板几乎只有一段说明 + mermaid；没有给消费 agent 的固定标题 |
@@ -166,7 +166,7 @@ flowchart TD
 
 `# 消费注意` / `# Notes for consumers` 对齐样本 `orders.md`：专门写给下一个 agent 的陷阱，不写散文综述。
 
-5. **出处**：短期可继续正文 `[label](scope/path#Lx)`（本仓库已有校验）。下一步再叠 OKF `sources`+脚注：`resource` 写成 `scope/path#Lx`，脚注 label = source id。不要两套互相矛盾的必填。
+5. **出处**：只使用 OKF `sources` + 脚注。`resource` 写成从 Workspace 根开始的 POSIX 路径并追加 `#Lx` 或 `#Lx-Ly`；正文脚注 id 与 `sources[].id` 一致。显式 Workspace 路径包含 Source 目录，隐式 Workspace 不添加 `self/`。
 
 ### 4.2 工作流
 
@@ -185,7 +185,7 @@ Lead / write 用正向指令（不要靠一堆禁止）：
 - 「这是给后续 agent 读的 OKF bundle。入口是 `wiki/index.md`。」
 - 「`type` 用模板里的 Title Case；`description` 是一句话，会进 index。」
 - 「正文用模板里的 `#` 标题；图放在 `# 图`；陷阱放在 `# 消费注意`。」
-- 「概念之间用标准 markdown 链接；源码用 `[label](scope/path#Lx)`。」
+- 「概念之间用标准 markdown 链接；源码放进 `sources[].resource`，路径从 Workspace 根开始，正文用同 id 脚注。」
 
 Agent SOP（`prompts/lead.md`、`agents/*.md`）保持英文；页面语言仍由 `templates/zh|en` 决定。
 

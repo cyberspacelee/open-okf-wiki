@@ -6,10 +6,14 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 
 ### Breaking: knowledge-shaped Wiki tree
 
-- Published Wiki is organized by Domain and Concept, not by Git Source folder.
-  Implicit Workspaces cite `self` and must not create `wiki/source/` or
-  `wiki/repos/`. Explicit Workspaces put pin architecture and operations under
-  `wiki/repos/<scopeId>/`.
+- Explicit Workspaces organize repository, Domain, and Concept knowledge under
+  `wiki/repos/<scopeId>/`; root pages own cross-Source composition. Implicit
+  Workspaces keep the compact root Domain/Concept tree, cite `self`, and must
+  not create `wiki/source/` or `wiki/repos/`.
+- Multi-Source Runs survey Sources in parallel, then require one read-only
+  `synthesize` execution after every survey and before writing. Root
+  `architecture.md` must cite every Source, and Repository Section pages may
+  cite only their owning Source.
 - `architecture.md` is required at wiki root and, on explicit Workspaces, at
   each `repos/<scopeId>/`. Domain-level architecture, `source.md`,
   `interfaces.md`, and `models.md` are removed.
@@ -37,7 +41,7 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
   selected by Workspace `language`. Companion file is `architecture.md`
   with `type: Architecture` (Title Case). Generated pages need
   `description` and `sources`; claims use `[^id]` footnotes, not
-  `[label](scope/path#Lx)`.
+  body source links.
 - Publish requires a review handoff `verdict: pass` newer than Candidate
   pages. `verified` is stamped only then (`process:open-okf-wiki-review`).
   Host writes root `log.md`. `index.md` entries include descriptions.
@@ -86,15 +90,16 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 
 ### Source identity
 
-- `scopeId` is the original workspace Source directory name. Implicit single
-  Source still uses the synthetic folder `source`. Mixed-case in-flight Runs
-  fail closed on resume; start a new Run.
-- Citations are CommonMark source links `[label](<scopeId>/<path>#Lx)`
-  with GitHub line anchors (`#Lx` or `#Lx-Ly`). Research and review
-  `## Evidence` lists those links (also `[n]: url` definitions or a bare
-  locator). Published pages keep GFM footnotes whose link target is that
-  URL. Wiki source folders use that same scope name; domain and concept
-  segments stay lowercase slugs.
+- `scopeId` is the original Workspace Source directory name and keys its
+  Repository Section. Implicit single Source uses internal id `self` and no
+  synthetic Source folder. Mixed-case in-flight Runs fail closed on resume;
+  start a new Run.
+- Published citation resources are POSIX paths from the Workspace root with
+  GitHub line anchors (`#Lx` or `#Lx-Ly`). Explicit Workspace paths begin
+  with the Source directory; implicit paths do not add `self/`. Published
+  claims use GFM footnotes keyed to `sources[].id`. Research and review
+  `## Evidence` lists may use those locators as links, definitions, or bare
+  locators. Domain and concept segments stay lowercase slugs.
 
 ### Lead session budget
 

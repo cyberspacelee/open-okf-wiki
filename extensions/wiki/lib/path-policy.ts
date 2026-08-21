@@ -1,4 +1,5 @@
 import path from "node:path";
+import type { CitationSource } from "./citations.js";
 import type { WikiPinnedSourcePlan } from "./inspect.js";
 import { sourceIsIgnored } from "./workspace.js";
 
@@ -7,8 +8,7 @@ export interface WikiWriteGuard {
   candidateRoot: string;
   publishedWikiRoot: string;
   handoffsRoot: string;
-  sourceRoots: Map<string, string>;
-  sourceLogicalPaths: Map<string, string>;
+  sources: CitationSource[];
   defaultSourceIgnores: boolean;
   excludes: string[];
   writePartition?: string;
@@ -22,8 +22,7 @@ export function writeGuardFromPlan(plan: WikiPinnedSourcePlan, candidateRoot: st
     candidateRoot: resolvedCandidate,
     publishedWikiRoot: path.join(workspaceRoot, "wiki"),
     handoffsRoot: path.join(path.dirname(resolvedCandidate), "handoffs"),
-    sourceRoots: new Map(plan.sources.map((source) => [source.scopeId, source.realPath])),
-    sourceLogicalPaths: new Map(plan.sources.map((source) => [source.scopeId, source.logicalPath])),
+    sources: plan.sources.map(({ scopeId, logicalPath }) => ({ scopeId, logicalPath })),
     defaultSourceIgnores: plan.defaultSourceIgnores,
     excludes: [...plan.excludes],
   };
@@ -55,10 +54,10 @@ export function assertReadable(guard: WikiWriteGuard, input: string): string {
 export function pathIsIgnored(guard: WikiWriteGuard, absolutePath: string): boolean {
   const resolved = path.resolve(absolutePath);
   if (contained(guard.candidateRoot, resolved) || contained(guard.handoffsRoot, resolved)) return false;
-  for (const [scopeId, root] of guard.sourceRoots) {
+  for (const { logicalPath: sourcePath } of guard.sources) {
+    const root = path.resolve(guard.workspaceRoot, sourcePath);
     const relative = path.relative(root, resolved);
     if (relative.startsWith("..") || path.isAbsolute(relative)) continue;
-    const sourcePath = guard.sourceLogicalPaths.get(scopeId) ?? scopeId;
     return sourceIsIgnored(
       { path: sourcePath },
       relative === "" ? "." : relative,

@@ -37,11 +37,17 @@ subagent({tasks:[
 ]})
 ```
 
+Synthesize runs once, alone, after every Source survey in a multi-Source
+Workspace. Its task must name all survey handoff paths. It produces the
+cross-Source evidence map consumed by later writers; it never writes pages.
+
 Write partitions are Candidate path prefixes. Disjoint prefixes may run in one
 batch. Overlapping prefixes are rejected.
 
-- Domain cluster: `partition` is the domain slug (`billing` → `wiki/billing/**`).
-- Pin strip (explicit Workspace only): `repos/<scopeId>`.
+- Explicit Workspace repository: `repos/<scopeId>` owns repo pages and all
+  domain/concept pages beneath that repository.
+- Implicit Workspace domain: `partition` is the domain slug
+  (`billing` → `wiki/billing/**`).
 - Wiki root files: `wiki-root`.
 
 Pass handoff paths and the concrete objective; do not paste or recopy
@@ -50,14 +56,20 @@ format. Review runs alone.
 
 Default loop:
 
-1. Create an in-progress survey Task and survey all pinned sources.
-2. Read the survey handoff paths. Union workspace-global domain and concept
-   slugs. Same identifier across pins is one domain; cite both pins. If Gaps
-   say the names collide in meaning, prefix the slug (`api-billing`).
-3. Create an in-progress write Task and write every domain partition. Batch
-   disjoint prefixes (host cap 16).
-4. On an explicit Workspace, write each `repos/<scopeId>` partition.
-5. Write `wiki-root` (overview, architecture, and implicit development/runbook).
+1. Create an in-progress survey Task and survey all pinned Sources in parallel.
+2. In a Workspace with multiple Sources, create a new in-progress synthesis
+   Task after every survey completes. Run one `synthesize` assignment with
+   partition `workspace-analysis` and all survey handoff paths. Do not run it
+   as an initial N+1 parallel task: it depends on all N survey results.
+3. Read the handoff paths. Domain and concept slugs are Source-local; never
+   union or merge them across repositories.
+4. Create an in-progress write Task. In an explicit Workspace, write one
+   complete `repos/<scopeId>` partition per Source in parallel, passing that
+   Source's survey handoff and the synthesis handoff when present. In an
+   implicit Workspace, write disjoint domain partitions as before.
+5. After repository writes finish, write `wiki-root`. For multiple Sources,
+   this is the cross-repository overview and architecture: pass the synthesis
+   handoff and tell the writer to inspect the completed repository sections.
 6. Call `candidate_check`. For failures, create a focused write repair Task
    using the diagnostic path prefixes, then check again.
 7. Create an in-progress review Task and run one fresh reviewer against the
@@ -67,9 +79,10 @@ Default loop:
 8. Call `publish` only when deterministic check and semantic review both pass
    for the current Candidate revision.
 
-Do not survey after write has started. Do not invent a Source directory under
-`wiki/`. Knowledge pages live at `<domain>/<concept>/`. Pin identity pages live
-at `repos/<scopeId>/` only on explicit Workspaces.
+Do not survey or synthesize after write has started. Explicit Workspace
+knowledge lives at `repos/<scopeId>/<domain>/<concept>/`; the Workspace root
+contains only cross-repository pages. Implicit Workspace knowledge remains at
+`<domain>/<concept>/` and has no `repos/` directory.
 
 ## Finish
 

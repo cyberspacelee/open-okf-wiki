@@ -14,8 +14,8 @@ import type { WikiCatalog } from "./catalog.js";
 import type { WikiToolView } from "./producer-types.js";
 import { formatWikiTemplateCatalog, formatWikiTemplatesForPrompt, templatesForPartition, type WikiTemplatePack } from "./templates.js";
 import { parsePage } from "./frontmatter.js";
-import { extractOkfSources } from "./citations.js";
-import { candidateRevision, fileRevision } from "./revisions.js";
+import { extractOkfSources, resolveSourceCitation } from "./citations.js";
+import { candidatePartitionRevision, candidateRevision, fileRevision } from "./revisions.js";
 import type { WikiAgentUsage } from "./producer-types.js";
 
 export interface SubagentTask {
@@ -114,12 +114,12 @@ export async function createSubagentRuntime(
   function acquireBatch(tasks: readonly SubagentTask[]): () => void {
     const shared = tasks.every((task) => task.agent === "survey");
     if (shared) {
-      if (exclusiveBatch) throw new Error("survey cannot start while write or review is running");
+      if (exclusiveBatch) throw new Error("survey cannot start while synthesize, write, or review is running");
       activeSharedBatches += 1;
       return () => { activeSharedBatches -= 1; };
     }
     if (exclusiveBatch || activeSharedBatches > 0) {
-      throw new Error("write and review require exclusive subagent execution");
+      throw new Error("synthesize, write, and review require exclusive subagent execution");
     }
     exclusiveBatch = true;
     return () => { exclusiveBatch = false; };
@@ -151,14 +151,14 @@ export function createSubagentTool(runtime: SubagentRuntime): ToolDefinition<any
     name: "subagent",
     label: "Subagent",
     description:
-      "Run a named Wiki agent in an isolated session. Agents: survey (map a source), write (author wiki/ pages), review (read-only critique). Survey may batch by pin. Write may batch disjoint path prefixes (domain, repos/<scopeId>, wiki-root). Review runs alone. Each result is a handoff path, not the full body.",
+      "Run a named Wiki agent in an isolated session. Agents: survey (map one Source), synthesize (analyze completed surveys across Sources), write (author wiki/ pages), review (read-only critique). Survey may batch by Source. Synthesize and review run alone. Write may batch disjoint repository prefixes or wiki-root. Each result is a handoff path, not the full body.",
     parameters: Type.Object({
-      agent: Type.Optional(Type.String({ description: "survey, write, or review" })),
+      agent: Type.Optional(Type.String({ description: "survey, synthesize, write, or review" })),
       task: Type.Optional(Type.String({ description: "Assignment for a single agent" })),
       boardTaskId: Type.Optional(Type.String({ description: "Existing in-progress Board Task id" })),
-      partition: Type.Optional(Type.String({ description: "Survey pin id, write path prefix, or wiki-root" })),
+      partition: Type.Optional(Type.String({ description: "Source id, workspace-analysis, write path prefix, or candidate" })),
       tasks: Type.Optional(Type.Array(Type.Object({
-        agent: Type.String({ description: "survey, write, or review" }),
+        agent: Type.String({ description: "survey, synthesize, write, or review" }),
         task: Type.String(),
         boardTaskId: Type.String(),
         partition: Type.String(),
@@ -199,9 +199,12 @@ async function runOne(
     return { ...task, text: "", error: `Unknown agent "${task.agent}". Available: ${available}` };
   }
   try {
+    const outputRevision = async () => task.agent === "write"
+      ? await candidatePartitionRevision(guard.candidateRoot, task.partition)
+      : await candidateRevision(guard.candidateRoot);
     const base = task.agent === "survey"
       ? { digest: "not-applicable" }
-      : await candidateRevision(guard.candidateRoot);
+      : await outputRevision();
     const touched = new Set<string>();
     const readFiles = new Set<string>();
     const extra = catalog ? createCatalogTools(catalog) : [];
@@ -211,14 +214,14 @@ async function runOne(
       ...candidateTools(taskGuard, definition.tools),
       ...extra.filter((tool) => !allowed || allowed.has(tool.name)),
     ];
-    const logical = [...guard.sourceLogicalPaths.values()];
+    const logical = guard.sources.map((source) => source.logicalPath);
     const implicit = logical.length === 1 && isImplicitPinPath(logical[0] ?? "");
     const scoped = templates && task.agent === "write"
       ? templatesForPartition(templates, task.partition, implicit)
       : templates?.templates ?? [];
     const pack = templates
       ? `\n\n${task.agent === "write"
-        ? formatWikiTemplatesForPrompt(templates, new Set(scoped.map((template) => template.file)))
+        ? formatWikiTemplatesForPrompt(templates, new Set(scoped.map((template) => template.file)), task.partition)
         : formatWikiTemplateCatalog(templates)}`
       : "";
     const result = await runWikiSession(
@@ -259,7 +262,7 @@ async function runOne(
         };
       }
     }
-    const completed = task.agent === "survey" ? undefined : await candidateRevision(guard.candidateRoot);
+    const completed = task.agent === "survey" ? undefined : await outputRevision();
     const handoff = await writeHandoff(guard, task, result.text, base.digest, completed?.digest);
     return {
       ...task,
@@ -330,7 +333,9 @@ function assertSafeBatch(tasks: readonly SubagentTask[]): void {
     if (partitions.has(key)) throw new Error(`duplicate subagent partition: ${task.boardTaskId}/${task.partition}`);
     partitions.add(key);
   }
-  if (roles.has("review") && tasks.length > 1) throw new Error("review must run alone");
+  if ((roles.has("review") || roles.has("synthesize")) && tasks.length > 1) {
+    throw new Error(`${roles.has("review") ? "review" : "synthesize"} must run alone`);
+  }
   if (roles.has("write") && tasks.length > 1) {
     const prefixes = tasks.map((task) => task.partition);
     for (let index = 0; index < prefixes.length; index += 1) {
@@ -352,6 +357,8 @@ function formatWorkerCheckpoint(
 ): string {
   const instruction = task.agent === "survey"
     ? "Continue this exact Source survey. Reopen load-bearing Source locators before finalizing the handoff."
+    : task.agent === "synthesize"
+      ? "Continue this exact cross-Source analysis. Read every survey handoff and reopen both sides of each claimed relationship before finalizing the handoff."
     : task.agent === "review"
       ? "Continue read-only review of the frozen Candidate revision. Reopen load-bearing Source locators before the verdict."
       : "Continue this exact write assignment. Reopen each cited pin file before writing. Inspect current Candidate files and referenced handoffs before changing them.";
@@ -413,10 +420,9 @@ async function unreadCitedPinFiles(
       continue;
     }
     for (const citation of extractOkfSources(parsed.frontmatter, parsed.body).citations) {
-      const root = guard.sourceRoots.get(citation.scope);
-      if (!root) continue;
-      const pinFile = path.resolve(root, ...citation.path.split("/"));
-      if (!resolvedReads.has(pinFile)) unread.push(`${citation.scope}/${citation.path}`);
+      if (!resolveSourceCitation(citation, guard.sources)) continue;
+      const pinFile = path.resolve(guard.workspaceRoot, ...citation.path.split("/"));
+      if (!resolvedReads.has(pinFile)) unread.push(citation.path);
     }
   }
   return [...new Set(unread)];

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { mkdir, readdir } from "node:fs/promises";
 import path from "node:path";
-import { extractOkfSources, wikiLinkTargets, type SourceCitation } from "./citations.js";
+import { extractOkfSources, resolveSourceCitation, wikiLinkTargets, type SourceCitation } from "./citations.js";
 import { HOST_PAGE_KEYS } from "./templates.js";
 import { WikiValidationInfrastructureError, errorMessage } from "./failures.js";
 import { inside, readText, writeText } from "./files.js";
@@ -13,6 +13,7 @@ import { candidateRevision, fileRevision } from "./revisions.js";
 
 export const GENERATED_BY = "open-okf-wiki/1.0.0";
 export const VERIFIED_BY = "process:open-okf-wiki-review";
+const ARCHITECTURE_PAGE = "architecture.md";
 
 const MERMAID_KIND = /```mermaid[^\n]*\r?\n\s*([A-Za-z][A-Za-z0-9-]*)/;
 const MERMAID_FENCE = /```mermaid[^\n]*\r?\n([\s\S]*?)```/;
@@ -39,14 +40,6 @@ export interface WikiValidation {
 
 export function wikiPinsImplicit(pins: readonly WikiPin[]): boolean {
   return pins.length === 1 && isImplicitPinPath(pins[0]?.logicalPath ?? "");
-}
-
-function sourceRootsFromPins(pins: readonly WikiPin[]): Map<string, string> {
-  return new Map(pins.map((pin) => [pin.scopeId, pin.realPath]));
-}
-
-function architectureFile(pack: WikiTemplatePack): string {
-  return pack.templates.find((template) => template.altitudes)?.file ?? "architecture.md";
 }
 
 export function derivedIndexPaths(pages: readonly string[]): string[] {
@@ -100,7 +93,6 @@ export async function validateWikiTree(
   pack?: WikiTemplatePack,
 ): Promise<WikiValidation> {
   const issues: WikiValidationIssue[] = [];
-  const sourceRoots = sourceRootsFromPins(pins);
   let tree;
   try {
     tree = await scanWikiTree(wikiRoot);
@@ -128,7 +120,11 @@ export async function validateWikiTree(
   for (const page of loaded) {
     const template = byFile.get(page.filename);
     if (pack) issues.push(...templatePlacementIssues(page.relative, template, pins));
-    issues.push(...pageContractIssues(page.relative, page.filename, page.parsed, template, pack, sourceRoots));
+    issues.push(...pageContractIssues(page.relative, page.filename, page.parsed, template, pack, pins));
+    issues.push(...repositorySourceOwnershipIssues(page.relative, page.parsed, pins));
+    if (pack && pins.length > 1 && page.relative === ARCHITECTURE_PAGE) {
+      issues.push(...workspaceArchitectureCoverageIssues(page.relative, page.parsed, pins));
+    }
     for (const target of wikiLinkTargets(page.relative, page.parsed.body)) {
       if (!wikiTargetExists(target, pages)) {
         issues.push({ code: "link", page: page.relative, message: `Wiki link missing ${target}` });
@@ -139,13 +135,53 @@ export async function validateWikiTree(
   return { ok: issues.length === 0, issues, pages: pages.sort() };
 }
 
+function repositorySourceOwnershipIssues(
+  relative: string,
+  parsed: { frontmatter: Record<string, unknown>; body: string },
+  pins: readonly WikiPin[],
+): WikiValidationIssue[] {
+  if (wikiPinsImplicit(pins)) return [];
+  const segments = relative.split("/");
+  if (segments[0] !== REPO_STRIP || !segments[1]) return [];
+  const owner = segments[1];
+  const citations = extractOkfSources(parsed.frontmatter, parsed.body).citations;
+  const foreign = [...new Set(citations
+    .map((citation) => resolveSourceCitation(citation, pins)?.scopeId)
+    .filter((scopeId): scopeId is string => Boolean(scopeId) && scopeId !== owner))];
+  return foreign.length
+    ? [{
+      code: "citation-owner",
+      page: relative,
+      message: `Repository pages under ${REPO_STRIP}/${owner}/ may cite only Source ${owner}; found ${foreign.join(", ")}`,
+    }]
+    : [];
+}
+
+function workspaceArchitectureCoverageIssues(
+  relative: string,
+  parsed: { frontmatter: Record<string, unknown>; body: string },
+  pins: readonly WikiPin[],
+): WikiValidationIssue[] {
+  const cited = new Set(extractOkfSources(parsed.frontmatter, parsed.body).citations
+    .map((citation) => resolveSourceCitation(citation, pins)?.scopeId)
+    .filter((scopeId): scopeId is string => Boolean(scopeId)));
+  const missing = pins.map((pin) => pin.scopeId).filter((scopeId) => !cited.has(scopeId));
+  return missing.length
+    ? [{
+      code: "cross-source",
+      page: relative,
+      message: `Workspace architecture must cite every Source after cross-Source analysis; missing ${missing.join(", ")}`,
+    }]
+    : [];
+}
+
 function pageContractIssues(
   relative: string,
   filename: string,
   parsed: { frontmatter: Record<string, unknown>; body: string },
   template: WikiTemplate | undefined,
   pack: WikiTemplatePack | undefined,
-  sourceRoots: ReadonlyMap<string, string>,
+  pins: readonly WikiPin[],
 ): WikiValidationIssue[] {
   const issues: WikiValidationIssue[] = [];
   const type = typeof parsed.frontmatter.type === "string" ? parsed.frontmatter.type.trim() : "";
@@ -169,7 +205,7 @@ function pageContractIssues(
     if (template) issues.push(...markdownContractIssues(relative, parsed, template, title, description));
   }
   if (template?.diagram?.length) issues.push(...mermaidIssues(relative, parsed.body, template));
-  const citations = extractOkfSources(parsed.frontmatter, parsed.body, (citation) => sourceFileLines(sourceRoots, citation));
+  const citations = extractOkfSources(parsed.frontmatter, parsed.body, (citation) => sourceFileLines(pins, citation));
   for (const invalid of citations.invalid) {
     issues.push({ code: "citation", page: relative, message: invalid });
   }
@@ -195,18 +231,24 @@ function placementAllowed(relative: string, template: WikiTemplate, pins: readon
   if (!kind) return false;
   const implicit = wikiPinsImplicit(pins);
   const pinIds = new Set(pins.map((pin) => pin.scopeId));
-  const repoId = relative.split("/")[1];
+  const segments = relative.split("/");
+  const repoId = segments[0] === REPO_STRIP ? segments[1] : undefined;
+  const inDeclaredRepo = !implicit && repoId !== undefined && pinIds.has(repoId);
   if (template.altitudes) {
     if (kind === "root") return template.altitudes.includes("wiki");
-    return !implicit && kind === "repo" && template.altitudes.includes("repo") && pinIds.has(repoId!);
+    return kind === "repo" && template.altitudes.includes("repo") && inDeclaredRepo;
   }
   if (template.scope === "wiki") return kind === "root";
   if (template.scope === "repo") {
     if (implicit) return kind === "root";
-    return kind === "repo" && pinIds.has(repoId!);
+    return kind === "repo" && inDeclaredRepo;
   }
-  if (template.scope === "domain") return kind === "domain";
-  if (template.scope === "concept") return kind === "concept";
+  if (template.scope === "domain") {
+    return kind === "domain" && (implicit ? repoId === undefined : inDeclaredRepo);
+  }
+  if (template.scope === "concept") {
+    return kind === "concept" && (implicit ? repoId === undefined : inDeclaredRepo);
+  }
   return false;
 }
 
@@ -261,13 +303,15 @@ function sectionCitesSource(section: { lines: string[] }): boolean {
 }
 
 function sourceFileLines(
-  sourceRoots: ReadonlyMap<string, string>,
+  pins: readonly WikiPin[],
   citation: Omit<SourceCitation, "id">,
 ): number | "missing" | undefined {
-  const root = sourceRoots.get(citation.scope);
-  if (!root) return "missing";
+  const resolved = resolveSourceCitation(citation, pins);
+  if (!resolved) return "missing";
+  const pin = pins.find((candidate) => candidate.scopeId === resolved.scopeId);
+  if (!pin) return "missing";
   try {
-    return readFileSync(path.join(root, ...citation.path.split("/")), "utf8").split(/\r?\n/).length;
+    return readFileSync(path.join(pin.realPath, ...resolved.sourcePath.split("/")), "utf8").split(/\r?\n/).length;
   } catch {
     return "missing";
   }
@@ -346,7 +390,7 @@ function topologyIssues(
   if (!present.has(overview)) {
     issues.push({ code: "topology", page: overview, message: `Required template ${overview} is missing` });
   }
-  const architecture = architectureFile(pack);
+  const architecture = ARCHITECTURE_PAGE;
   if (!present.has(architecture)) {
     issues.push({ code: "topology", page: architecture, message: `Required template ${architecture} is missing` });
   }
@@ -362,14 +406,18 @@ function topologyIssues(
       }
     }
   }
-  const pinIds = new Set(pins.map((pin) => pin.scopeId.toLowerCase()));
+  const pinIds = new Set(pins.map((pin) => pin.scopeId));
   const domainFiles = new Set(pack.templates.filter((template) => template.scope === "domain").map((template) => template.file));
   const conceptFiles = new Set(pack.templates.filter((template) => template.scope === "concept").map((template) => template.file));
   const conceptDirs = [...new Set(
     pages
       .filter((page) => conceptFiles.has(page.split("/").at(-1) ?? ""))
       .map((page) => path.posix.dirname(page))
-      .filter((directory) => directory.split("/").length === 2 && !directory.startsWith(`${REPO_STRIP}/`)),
+      .filter((directory) => {
+        const segments = directory.split("/");
+        if (implicit) return segments.length === 2 && segments[0] !== REPO_STRIP;
+        return segments.length === 4 && segments[0] === REPO_STRIP && pinIds.has(segments[1]!);
+      }),
   )].sort();
   if (!conceptDirs.length) {
     issues.push({ code: "topology", message: "Wiki requires at least one concept cluster" });
@@ -379,12 +427,13 @@ function topologyIssues(
     ...pages
       .filter((page) => domainFiles.has(page.split("/").at(-1) ?? ""))
       .map((page) => path.posix.dirname(page))
-      .filter((directory) => directory.split("/").length === 1 && directory !== REPO_STRIP),
+      .filter((directory) => {
+        const segments = directory.split("/");
+        if (implicit) return segments.length === 1 && segments[0] !== REPO_STRIP;
+        return segments.length === 3 && segments[0] === REPO_STRIP && pinIds.has(segments[1]!);
+      }),
   ])].sort();
   for (const directory of domainDirs) {
-    if (pinIds.has(directory.toLowerCase())) {
-      issues.push({ code: "topology", page: `${directory}/domain.md`, message: `Domain slug collides with Source ${directory}` });
-    }
     const page = `${directory}/${anchorTemplate(pack, "domain").file}`;
     if (!present.has(page)) {
       issues.push({ code: "topology", page, message: `Required template ${anchorTemplate(pack, "domain").file} is missing` });
@@ -462,13 +511,9 @@ type WikiDirectoryKind = "wiki" | "repos-root" | "repo" | "domain" | "concept";
 
 function classifyWikiDirectory(directory: string): WikiDirectoryKind {
   if (!directory) return "wiki";
-  const parts = directory.split("/");
-  if (parts[0] === REPO_STRIP) {
-    if (parts.length === 1) return "repos-root";
-    if (parts.length === 2) return "repo";
-  }
-  if (parts.length === 1) return "domain";
-  if (parts.length === 2) return "concept";
+  if (directory === REPO_STRIP) return "repos-root";
+  const kind = wikiPathKind(`${directory}/page.md`);
+  if (kind && kind !== "root") return kind;
   throw new Error(`Wiki index directory is deeper than the template topology: ${directory}`);
 }
 
@@ -508,7 +553,7 @@ async function renderIndex(
     const domainDirs = childDirs.filter((directory) => directory !== REPO_STRIP);
     const uniquePins = [...new Set(
       pages
-        .filter((page) => wikiPathKind(page) === "repo" && page.endsWith(`/${architectureFile(pack)}`))
+        .filter((page) => wikiPathKind(page) === "repo" && page.endsWith(`/${ARCHITECTURE_PAGE}`))
         .map((page) => path.posix.dirname(page)),
     )].sort();
     if (directPages.length) {
@@ -522,7 +567,7 @@ async function renderIndex(
     if (uniquePins.length) {
       lines.push(language === "zh" ? "## 仓库" : "## Repositories", "");
       for (const directory of uniquePins) {
-        const childIdentity = await pageIdentity(wikiRoot, `${directory}/${architectureFile(pack)}`);
+        const childIdentity = await pageIdentity(wikiRoot, `${directory}/${ARCHITECTURE_PAGE}`);
         lines.push(`* [${childIdentity.title}](./${directory}/index.md) - ${childIdentity.description}`);
       }
       lines.push("");
@@ -564,10 +609,10 @@ async function renderIndex(
 
 function identityPage(directory: string, kind: WikiDirectoryKind, pack: WikiTemplatePack): string {
   if (kind === "wiki") return anchorTemplate(pack, "wiki").file;
-  if (kind === "repo") return `${directory}/${architectureFile(pack)}`;
+  if (kind === "repo") return `${directory}/${ARCHITECTURE_PAGE}`;
   if (kind === "domain") return `${directory}/${anchorTemplate(pack, "domain").file}`;
   if (kind === "concept") return `${directory}/${anchorTemplate(pack, "concept").file}`;
-  return `${directory}/${architectureFile(pack)}`;
+  return `${directory}/${ARCHITECTURE_PAGE}`;
 }
 
 async function pageIdentity(wikiRoot: string, relative: string): Promise<{ title: string; description: string }> {

@@ -30,15 +30,21 @@ export function wikiPathKind(relative: string): WikiPathKind | undefined {
   if (!isSafeWikiPagePath(relative)) return undefined;
   const directories = relative.split("/").slice(0, -1);
   if (directories.length === 0) return "root";
-  if (directories[0] === REPO_STRIP) return "repo";
+  if (directories[0] === REPO_STRIP) {
+    if (directories.length === 2) return "repo";
+    if (directories.length === 3) return "domain";
+    if (directories.length === 4) return "concept";
+    return undefined;
+  }
   if (directories.length === 1) return "domain";
-  return "concept";
+  if (directories.length === 2) return "concept";
+  return undefined;
 }
 
 /**
  * Wiki page paths are POSIX-relative kebab filenames.
- * Knowledge lives at wiki root, `<domain>/`, or `<domain>/<concept>/`.
- * Pin-identity pages live at `repos/<scopeId>/`.
+ * Implicit Workspace knowledge lives at `<domain>/<concept>/`. Explicit
+ * Workspace knowledge lives at `repos/<scopeId>/<domain>/<concept>/`.
  */
 export function isSafeWikiPagePath(value: unknown): value is string {
   if (typeof value !== "string" || value.includes("\\") || value.startsWith("/")) return false;
@@ -52,7 +58,10 @@ export function isSafeWikiPagePath(value: unknown): value is string {
   const directories = segments.slice(0, -1);
   if (directories.length === 0) return true;
   if (directories[0] === REPO_STRIP) {
-    return directories.length === 2 && isWikiSourceDirectoryName(directories[1]!);
+    return directories.length >= 2
+      && directories.length <= 4
+      && isWikiSourceDirectoryName(directories[1]!)
+      && directories.slice(2).every((segment) => isWikiTaxonomySlug(segment));
   }
   return directories.length <= 2 && directories.every((segment) => isWikiTaxonomySlug(segment));
 }

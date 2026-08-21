@@ -8,9 +8,11 @@ import { git } from "../extensions/wiki/lib/git.js";
 import { writeText } from "../extensions/wiki/lib/files.js";
 import { createProductionWikiProducer } from "../extensions/wiki/lib/producer.js";
 import type { WikiLeadContext } from "../extensions/wiki/lib/producer.js";
-import { candidateRevision, fileRevision } from "../extensions/wiki/lib/revisions.js";
+import { candidatePartitionRevision, candidateRevision, fileRevision } from "../extensions/wiki/lib/revisions.js";
 import { inspectWiki } from "../extensions/wiki/lib/inspect.js";
 import { loadWikiTemplatePack, packagedTemplatesRoot } from "../extensions/wiki/lib/templates.js";
+import { createSubagentRuntime } from "../extensions/wiki/lib/subagent.js";
+import { wikiWorkspaceManagement } from "../extensions/wiki/lib/workspace.js";
 
 function mermaidStub(kind: string): string {
   if (kind === "sequenceDiagram") return "```mermaid\nsequenceDiagram\n  A->>B: call\n```\n";
@@ -20,7 +22,7 @@ function mermaidStub(kind: string): string {
   return "```mermaid\nflowchart TD\n  A --> B\n```\n";
 }
 
-async function writeValidCandidate(candidateRoot: string, sourceId = "self") {
+async function writeValidCandidate(candidateRoot: string, sourceResource = "main.ts#L1") {
   const pack = await loadWikiTemplatePack(packagedTemplatesRoot("zh"));
   const writePage = async (relative: string, template: (typeof pack.templates)[number], title: string) => {
     const absolute = path.join(candidateRoot, ...relative.split("/"));
@@ -39,7 +41,7 @@ async function writeValidCandidate(candidateRoot: string, sourceId = "self") {
       `description: ${description}`,
       "sources:",
       "  - id: main",
-      `    resource: ${sourceId}/main.ts#L1`,
+      `    resource: ${sourceResource}`,
       "    title: main",
       "---",
       `# ${title}`,
@@ -254,6 +256,63 @@ test("resume adopts an exact handoff written before the terminal receipt", async
   assert.equal(leads, 2);
 });
 
+test("resume adopts a partition-bound writer handoff after a sibling partition changes", async (t) => {
+  const root = await gitRepo(t);
+  let leads = 0;
+  let handle;
+  const producer = createProductionWikiProducer({
+    async runLead(context) {
+      leads += 1;
+      if (leads === 1) {
+        await context.board.write({
+          goal: "Recover writer",
+          tasks: [{ id: "write", content: "Write billing", status: "in_progress" }],
+        });
+        const assignment = {
+          id: "write-adopt",
+          agent: "write",
+          task: "Write billing",
+          boardTaskId: "write",
+          partition: "billing",
+        };
+        await context.record({ ...assignment, status: "running" });
+        await mkdir(path.join(context.candidateRoot, "billing"), { recursive: true });
+        await writeText(path.join(context.candidateRoot, "billing", "domain.md"), "billing\n");
+        const metadata = {
+          executionId: assignment.id,
+          boardTaskId: assignment.boardTaskId,
+          partition: assignment.partition,
+          agent: assignment.agent,
+          taskDigest: createHash("sha256").update(assignment.task).digest("hex"),
+          baseCandidateRevision: (await candidateRevision(context.candidateRoot)).digest,
+          completedCandidateRevision: (
+            await candidatePartitionRevision(context.candidateRoot, assignment.partition)
+          ).digest,
+        };
+        const handoff = path.join(path.dirname(context.candidateRoot), "handoffs", `${assignment.id}.md`);
+        await mkdir(path.dirname(handoff), { recursive: true });
+        await writeText(handoff, `<!-- wiki-handoff ${JSON.stringify(metadata)} -->\n# write handoff\n\ncomplete\n`);
+        await mkdir(path.join(context.candidateRoot, "checkout"), { recursive: true });
+        await writeText(path.join(context.candidateRoot, "checkout", "domain.md"), "checkout\n");
+        return;
+      }
+      assert.equal((await context.board.read()).tasks[0]?.status, "completed");
+      const record = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", handle.id, "run.json"), "utf8"));
+      assert.equal(record.executions[0].status, "complete");
+      await rm(context.candidateRoot, { recursive: true, force: true });
+      await mkdir(context.candidateRoot, { recursive: true });
+      await writeValidCandidate(context.candidateRoot);
+      await writeReviewPass(context);
+      assert.equal((await context.publish()).ok, true);
+    },
+  });
+  handle = await producer.start({ cwd: root });
+  await assert.rejects(() => handle.result(), /running|failed/);
+  await handle.control("resume");
+  await handle.result();
+  assert.equal(leads, 2);
+});
+
 test("a reopened process-crash Run reconciles persisted running receipts", async (t) => {
   const root = await gitRepo(t);
   const plan = await inspectWiki(root);
@@ -406,6 +465,76 @@ test("candidate_check and publish share deterministic diagnostics", async (t) =>
   await assert.rejects(() => handle.result(), /frontmatter|type|failed/);
 });
 
+test("multi-Source checks require survey fan-in followed by synthesis", async (t) => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "wiki-run-multi-source-"));
+  t.after(async () => await rm(parent, { recursive: true, force: true }));
+  const workspace = await wikiWorkspaceManagement.init({ cwd: parent, workspace: "workspace" });
+  const api = await gitRepo(t);
+  const web = await gitRepo(t);
+  await wikiWorkspaceManagement.addLink({ cwd: workspace.root, localPath: api, name: "api" });
+  await wikiWorkspaceManagement.addLink({ cwd: workspace.root, localPath: web, name: "web" });
+  let checked = false;
+  const producer = createProductionWikiProducer({
+    async runLead(context) {
+      await context.board.write({
+        goal: "Check multi-Source workflow",
+        tasks: [{ id: "survey", content: "Survey every Source", status: "in_progress" }],
+      });
+      const runtime = await createSubagentRuntime(
+        context.plan,
+        context.candidateRoot,
+        {
+          async createSession() {
+            return {
+              session: {
+                sessionFile: undefined,
+                subscribe() { return () => {}; },
+                async prompt() {},
+                async waitForIdle() {},
+                getLastAssistantText() { return "survey complete"; },
+                dispose() {},
+                abort() {},
+              },
+              modelFallbackMessage: undefined,
+            };
+          },
+        },
+        undefined,
+        (update) => context.record(update),
+        undefined,
+        { templates: context.templates },
+      );
+      const surveyResults = await runtime.run([
+        { agent: "survey", task: "Survey api", boardTaskId: "survey", partition: "api" },
+        { agent: "survey", task: "Survey web", boardTaskId: "survey", partition: "web" },
+      ], context.signal);
+      const result = await context.check();
+      assert.equal(result.ok, false);
+      assert.match(result.message, /requires one completed synthesize execution/);
+      await context.board.write({
+        goal: "Check multi-Source workflow",
+        tasks: [
+          { id: "survey", content: "Survey every Source", status: "completed" },
+          { id: "synthesize", content: "Analyze across Sources", status: "in_progress" },
+        ],
+      });
+      await runtime.run([{
+        agent: "synthesize",
+        task: `Read both survey handoffs and analyze the Workspace: ${surveyResults.map((entry) => entry.handoff).join(", ")}`,
+        boardTaskId: "synthesize",
+        partition: "workspace-analysis",
+      }], context.signal);
+      const afterSynthesis = await context.check();
+      assert.equal(afterSynthesis.ok, false);
+      assert.doesNotMatch(afterSynthesis.message, /Cross-Source|synthesize execution|completed surveys/);
+      checked = true;
+    },
+  });
+  const handle = await producer.start({ cwd: workspace.root });
+  await assert.rejects(() => handle.result(), /Required template|concept cluster/);
+  assert.equal(checked, true);
+});
+
 test("Lead prompt receives a bounded recovery frame without template skeletons", async (t) => {
   const root = await gitRepo(t);
   let prompt = "";
@@ -433,6 +562,7 @@ test("Lead prompt receives a bounded recovery frame without template skeletons",
   await assert.rejects(() => handle.result());
   assert.match(prompt, /<wiki_checkpoint>/);
   assert.match(prompt, /Goal: runtime/);
+  assert.match(prompt, /survey, synthesize, write, review/);
   assert.doesNotMatch(prompt, /Skeleton:|Page template catalog/);
   assert.ok(tools.includes("candidate_check"));
   assert.equal(tools.includes("db_tables"), false);
@@ -469,6 +599,57 @@ test("parallel terminal receipts persist only after both handoffs are attested",
       }));
       const record = JSON.parse(await readFile(path.join(path.dirname(context.candidateRoot), "run.json"), "utf8"));
       assert.equal(record.executions.every((entry) => entry.status === "complete" && entry.handoff?.sha256), true);
+      await writeValidCandidate(context.candidateRoot);
+      await writeReviewPass(context);
+      assert.equal((await context.publish()).ok, true);
+    },
+  });
+  await (await producer.start({ cwd: root })).result();
+});
+
+test("parallel disjoint write receipts are not invalidated by sibling writes", async (t) => {
+  const root = await gitRepo(t);
+  const producer = createProductionWikiProducer({
+    async runLead(context) {
+      await context.board.write({
+        goal: "Write disjoint partitions",
+        tasks: [{ id: "write", content: "Write both partitions", status: "in_progress" }],
+      });
+      const assignments = ["billing", "checkout"].map((partition) => ({
+        id: `write-${partition}`,
+        agent: "write",
+        task: `Write ${partition}`,
+        boardTaskId: "write",
+        partition,
+      }));
+      for (const assignment of assignments) await context.record({ ...assignment, status: "running" });
+
+      await mkdir(path.join(context.candidateRoot, "billing"), { recursive: true });
+      await writeText(path.join(context.candidateRoot, "billing", "domain.md"), "billing\n");
+      const billingRevision = (await candidatePartitionRevision(context.candidateRoot, "billing")).digest;
+      await mkdir(path.join(context.candidateRoot, "checkout"), { recursive: true });
+      await writeText(path.join(context.candidateRoot, "checkout", "domain.md"), "checkout\n");
+      const checkoutRevision = (await candidatePartitionRevision(context.candidateRoot, "checkout")).digest;
+
+      const handoffs = path.join(path.dirname(context.candidateRoot), "handoffs");
+      await mkdir(handoffs, { recursive: true });
+      for (const [index, assignment] of assignments.entries()) {
+        const handoff = path.join(handoffs, `${assignment.id}.md`);
+        await writeText(handoff, `${assignment.partition} complete\n`);
+        await context.record({
+          ...assignment,
+          status: "complete",
+          text: "complete",
+          handoff: path.relative(root, handoff).replaceAll("\\", "/"),
+          handoffRevision: await fileRevision(handoff),
+          candidateRevision: index === 0 ? billingRevision : checkoutRevision,
+        });
+      }
+      const record = JSON.parse(await readFile(path.join(path.dirname(context.candidateRoot), "run.json"), "utf8"));
+      assert.equal(record.executions.every((entry) => entry.status === "complete"), true);
+
+      await rm(context.candidateRoot, { recursive: true, force: true });
+      await mkdir(context.candidateRoot, { recursive: true });
       await writeValidCandidate(context.candidateRoot);
       await writeReviewPass(context);
       assert.equal((await context.publish()).ok, true);

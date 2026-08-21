@@ -13,9 +13,15 @@ _Avoid_: Project, working directory
 
 **Source**:
 A declared Git repository whose pinned content is admissible evidence for a Run.
-Citation id is the workspace directory name, or `self` when the Workspace is
-the repository. Source is pin and provenance, not a Wiki knowledge directory.
+Citation resources address its files from the Workspace root. Source is pin and
+provenance, not a generated Wiki tree.
 _Avoid_: Input repository, codebase, Wiki folder
+
+**Repository Section**:
+The Published Wiki subtree owned by one named Source in an explicit Workspace.
+It organizes that Source's repository, domain, and concept knowledge without
+changing the Source's role as evidence.
+_Avoid_: Source directory, pin strip, global domain branch
 
 **Run**:
 One isolated, full generation of a Wiki from pinned Sources and settings. A Run never derives content or topology from another Run.

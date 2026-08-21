@@ -90,9 +90,9 @@ export async function loadWikiTemplatePack(directory: string): Promise<WikiTempl
     throw new Error(`Wiki templates allow at most one repo anchor, found ${repoAnchors.length}`);
   }
   const dual = templates.filter((template) => template.altitudes);
-  if (!dual.some((template) => template.file === "architecture.md" && !template.optional
-    && template.altitudes?.includes("wiki") && template.altitudes.includes("repo"))) {
-    throw new Error("Wiki templates require architecture.md with altitudes wiki and repo");
+  if (dual.length !== 1 || dual[0]?.file !== "architecture.md" || dual[0].optional
+    || !dual[0].altitudes?.includes("wiki") || !dual[0].altitudes.includes("repo")) {
+    throw new Error("Wiki templates require exactly one altitudes page: architecture.md with wiki and repo");
   }
   return { templates };
 }
@@ -165,12 +165,21 @@ export function templatesForPartition(
     ));
   }
   if (partition.startsWith("repos/")) {
-    return pack.templates.filter((template) => template.scope === "repo" || template.altitudes?.includes("repo"));
+    return pack.templates.filter((template) => (
+      template.scope === "repo"
+      || template.scope === "domain"
+      || template.scope === "concept"
+      || template.altitudes?.includes("repo")
+    ));
   }
   return pack.templates.filter((template) => template.scope === "domain" || template.scope === "concept");
 }
 
-export function formatWikiTemplatesForPrompt(pack: WikiTemplatePack, files?: ReadonlySet<string>): string {
+export function formatWikiTemplatesForPrompt(
+  pack: WikiTemplatePack,
+  files?: ReadonlySet<string>,
+  partition?: string,
+): string {
   const selected = files ? pack.templates.filter((template) => files.has(template.file)) : pack.templates;
   if (!selected.length) return "";
   const line = (template: WikiTemplate) => {
@@ -182,17 +191,23 @@ export function formatWikiTemplatesForPrompt(pack: WikiTemplatePack, files?: Rea
   };
   const required = selected.filter((template) => !template.optional);
   const optional = selected.filter((template) => template.optional);
-  const placement = selected.some((template) => template.scope === "wiki" || template.altitudes?.includes("wiki"))
+  const placement = partition === "wiki-root"
     ? "Write selected wiki-root files in this partition."
-    : selected.some((template) => template.scope === "repo" || template.altitudes?.includes("repo"))
-      ? "Write selected repos/<scopeId>/ files in this partition."
-      : "Write domain.md and concept.md for every cluster in this prefix. Keep or drop optionals after reopening source.";
+    : partition?.startsWith("repos/")
+      ? "Write selected repo, domain, and concept files under repos/<scopeId>/ in this partition."
+      : partition
+        ? "Write domain.md and concept.md for every cluster in this prefix. Keep or drop optionals after reopening source."
+        : selected.some((template) => template.scope === "wiki" || template.altitudes?.includes("wiki"))
+          ? "Write selected wiki-root files in this partition."
+          : selected.some((template) => template.scope === "repo" || template.altitudes?.includes("repo"))
+            ? "Write selected repo, domain, and concept files under repos/<scopeId>/ in this partition."
+            : "Write domain.md and concept.md for every cluster in this prefix. Keep or drop optionals after reopening source.";
   const sections = [
     "## Page templates",
     "",
     placement,
     "Candidate frontmatter is type, title, description, and sources only. Template fields never appear on pages.",
-    "Attribute claims with [^id] footnotes whose id matches sources[].id. Resource locators are scope/path#Lx against pinned sources.",
+    "Attribute claims with [^id] footnotes whose id matches sources[].id. Resource locators are path#Lx from the Workspace root (api/src/main.ts#L1, or src/main.ts#L1 in an implicit Workspace).",
     "Copy the skeleton H1 and H2 order exactly. Fill every H2 section. H3 subsections are allowed.",
     "Replace every {{placeholder}}. Mermaid nodes use source identifiers, not translations.",
     "This is an OKF bundle for later agents. They start at wiki/index.md.",

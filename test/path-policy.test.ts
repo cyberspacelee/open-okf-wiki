@@ -24,14 +24,15 @@ test("default ignores reject Java tests and keep production sources readable", (
   const workspaceRoot = path.resolve("/tmp/okf-wiki-path-policy");
   const candidateRoot = path.join(workspaceRoot, ".okf-wiki", "runs", "abcd", "candidate");
   const sourceRoot = path.join(workspaceRoot, "backend");
+  const realSourceRoot = path.resolve("/tmp/okf-wiki-linked-source");
   const guard = writeGuardFromPlan({
     ...plan(workspaceRoot),
     sources: [{
       scopeId: "backend",
       logicalPath: "backend",
       absolutePath: sourceRoot,
-      realPath: sourceRoot,
-      repositoryRoot: sourceRoot,
+      realPath: realSourceRoot,
+      repositoryRoot: realSourceRoot,
       repositoryIdentity: "id",
       origin: { type: "link", localPath: sourceRoot },
       head: "abc",
@@ -88,6 +89,7 @@ test("write partitions lock Candidate prefixes", () => {
   assert.equal(writePartitionAllows("billing", "billing/domain.md"), true);
   assert.equal(writePartitionAllows("billing", "checkout/domain.md"), false);
   assert.equal(writePartitionAllows("repos/api", "repos/api/architecture.md"), true);
+  assert.equal(writePartitionAllows("repos/api", "repos/api/billing/invoice/concept.md"), true);
   assert.equal(writePartitionsOverlap("billing", "billing/invoice"), true);
   assert.equal(writePartitionsOverlap("billing", "checkout"), false);
   assert.equal(writePartitionsOverlap("wiki-root", "billing"), false);

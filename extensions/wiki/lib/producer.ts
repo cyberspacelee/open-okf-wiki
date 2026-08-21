@@ -38,7 +38,7 @@ import {
   type WikiToolView,
   type WikiAgentUsage,
 } from "./producer-types.js";
-import { candidateRevision, fileRevision, templatePackRevision } from "./revisions.js";
+import { candidatePartitionRevision, candidateRevision, fileRevision, templatePackRevision } from "./revisions.js";
 import { formatLeadCheckpoint, type CheckpointExecution, type CheckpointReview } from "./checkpoint.js";
 
 const LEAD_CANDIDATE_TOOLS = ["read", "ls"] as const;
@@ -427,6 +427,11 @@ async function validateAndRecordCandidate(live: LiveRun): Promise<WikiValidation
     realPath: source.realPath,
   }));
   const validation = await validateWikiTree(live.record.candidateRoot, pins, live.templates);
+  const workflowIssue = crossSourceWorkflowIssue(live);
+  if (workflowIssue) {
+    validation.issues.unshift({ code: "workflow", message: workflowIssue });
+    validation.ok = false;
+  }
   live.candidateRevision = await candidateRevision(live.record.candidateRoot);
   live.record.check = {
     candidateRevision: live.candidateRevision.digest,
@@ -434,11 +439,47 @@ async function validateAndRecordCandidate(live: LiveRun): Promise<WikiValidation
     issueCount: validation.issues.length,
     completedAt: new Date().toISOString(),
   };
-  if (!validation.ok) live.record.repairAttempts = (live.record.repairAttempts ?? 0) + 1;
+  if (!validation.ok && !workflowIssue) live.record.repairAttempts = (live.record.repairAttempts ?? 0) + 1;
   live.record.updatedAt = new Date().toISOString();
   await writeRecord(live.record);
   await refreshCheckpoint(live);
   return validation;
+}
+
+function crossSourceWorkflowIssue(live: LiveRun): string | undefined {
+  if (live.plan.sources.length <= 1) return undefined;
+  const latest = (agent: string, partition: string) => live.record.executions
+    .filter((entry) => entry.agent === agent && entry.partition === partition)
+    .reduce<RunExecutionReceipt | undefined>((current, entry) => (
+      !current || entry.startedAt >= current.startedAt ? entry : current
+    ), undefined);
+  const surveys = live.plan.sources.map((source) => latest("survey", source.scopeId));
+  const missing = live.plan.sources
+    .filter((_source, index) => (
+      surveys[index]?.status !== "complete" || !surveys[index]?.handoff || !surveys[index]?.completedAt
+    ))
+    .map((source) => source.scopeId);
+  if (missing.length) return `Cross-Source analysis requires completed surveys for: ${missing.join(", ")}`;
+  const synthesis = latest("synthesize", "workspace-analysis");
+  if (synthesis?.status !== "complete" || !synthesis.handoff || !synthesis.completedAt) {
+    return "Multi-Source Workspace requires one completed synthesize execution for partition workspace-analysis";
+  }
+  const omittedHandoffs = surveys
+    .filter((entry) => entry?.handoff && !synthesis.task.includes(entry.handoff.path))
+    .map((entry) => entry!.partition);
+  if (omittedHandoffs.length) {
+    return `Cross-Source synthesis task must name every survey handoff; missing ${omittedHandoffs.join(", ")}`;
+  }
+  const lastSurvey = surveys.reduce((latest, entry) => {
+    const completedAt = entry?.completedAt ?? "";
+    return completedAt > latest ? completedAt : latest;
+  }, "");
+  if (synthesis.startedAt < lastSurvey) {
+    return "Cross-Source synthesis must start after every Source survey completes";
+  }
+  const earlyWrite = live.record.executions.find((entry) => entry.agent === "write" && entry.startedAt < (synthesis.completedAt ?? ""));
+  if (earlyWrite) return `Write partition ${earlyWrite.partition} started before cross-Source synthesis completed`;
+  return undefined;
 }
 
 async function recordAgent(live: LiveRun, board: WikiBoardStore, update: SubagentTaskUpdate): Promise<void> {
@@ -490,7 +531,10 @@ async function recordAgent(live: LiveRun, board: WikiBoardStore, update: Subagen
     live.candidateRevision = await candidateRevision(live.record.candidateRoot);
   }
   live.candidateRevision ??= await candidateRevision(live.record.candidateRoot);
-  if (update.candidateRevision && update.agent !== "survey" && update.candidateRevision !== live.candidateRevision.digest) {
+  const completedRevision = update.agent === "write"
+    ? await candidatePartitionRevision(live.record.candidateRoot, update.partition)
+    : live.candidateRevision;
+  if (update.candidateRevision && update.agent !== "survey" && update.candidateRevision !== completedRevision.digest) {
     receipt.status = "failed";
     receipt.error = "Candidate digest does not match the terminal update";
   }
@@ -593,8 +637,11 @@ async function adoptCompletedHandoff(live: LiveRun, receipt: RunExecutionReceipt
     || metadata.agent !== receipt.agent
     || metadata.taskDigest !== receipt.taskDigest
   ) return false;
+  const completedRevision = receipt.agent === "write"
+    ? await candidatePartitionRevision(live.record.candidateRoot, receipt.partition)
+    : live.candidateRevision;
   if ((receipt.agent === "write" || receipt.agent === "review")
-    && metadata.completedCandidateRevision !== live.candidateRevision?.digest) return false;
+    && metadata.completedCandidateRevision !== completedRevision?.digest) return false;
   if (receipt.agent === "review" && metadata.baseCandidateRevision !== live.candidateRevision?.digest) return false;
   const bodyMarker = "<!-- wiki-handoff-body -->\n";
   const bodyOffset = text.lastIndexOf(bodyMarker);
@@ -977,7 +1024,7 @@ async function leadPrompt(context: WikiLeadContext, checkpoint: string): Promise
   const body = await readFile(fileURLToPath(new URL("../../../prompts/lead.md", import.meta.url)), "utf8");
   const sources = context.plan.sources.map((source) => `- ${source.scopeId}: ${source.logicalPath}`).join("\n");
   const focus = context.focus ? `\nFocus: ${context.focus}\n` : "";
-  const agents = "Available agents: survey, write, review. Every assignment requires an existing in-progress boardTaskId and a stable partition. Survey and write may batch disjoint partitions; review runs alone.\n";
+  const agents = "Available agents: survey, synthesize, write, review. Every assignment requires an existing in-progress boardTaskId and a stable partition. Survey and write may batch disjoint partitions; synthesize and review run alone.\n";
   const resume = context.resume
     ? "\nThis is a resumed Run. Reconcile the checkpoint and durable artifacts before doing more work. Do not restart completed partitions.\n"
     : "";
