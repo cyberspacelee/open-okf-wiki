@@ -82,6 +82,33 @@ test("initializes explicit workspace defaults and normalized Wiki excludes", asy
   await assert.rejects(wikiWorkspaceManagement.init({ cwd: parent, workspace: "docs" }), /already exists/);
 });
 
+test("an implicit Workspace loads a Catalog from .okf-wiki/database.yaml", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-implicit-db-"));
+  temporaryDirectories.push(parent);
+  const root = await repository(parent, "self");
+  const variable = `WIKI_TEST_PG_IMPLICIT_${process.pid}`;
+  delete process.env[variable];
+  await writeFile(path.join(root, ".env"), `${variable}=postgresql://wiki:secret@localhost:5432/app\n`);
+  await mkdir(path.join(root, ".okf-wiki"), { recursive: true });
+  await writeFile(path.join(root, ".okf-wiki", "database.yaml"), [
+    "database:",
+    `  url: \${${variable}}`,
+    "  schema: billing",
+    "  tables: [orders]",
+    "",
+  ].join("\n"));
+  const loaded = await loadWikiWorkspace(root);
+  assert.equal(loaded.configPath, path.join(root, "workspace.yaml"));
+  assert.deepEqual(loaded.database, { url: `\${${variable}}`, schema: "billing", tables: ["orders"] });
+  assert.equal((await resolveWorkspaceDatabase(loaded.database!, loaded.root)).url, "postgresql://wiki:secret@localhost:5432/app");
+
+  await writeFile(path.join(root, ".okf-wiki", "database.yaml"), "database:\n  url: mysql://localhost/app\n");
+  await assert.rejects(loadWikiWorkspace(root), /postgresql:\/\//);
+
+  await writeFile(path.join(root, ".okf-wiki", "database.yaml"), "databose:\n  url: x\n");
+  await assert.rejects(loadWikiWorkspace(root), /unknown field: databose/);
+});
+
 test("loads an optional Postgres Catalog and keeps the raw URL", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-database-"));
   temporaryDirectories.push(parent);

@@ -143,12 +143,16 @@ URL-encode special characters in the password. `schema` defaults to `public`.
 Omit `tables` to allow every table in that schema; otherwise names are
 fuzzy-matched (`user` → `users`, `user_account`; `order%` → `orders`). Agents
 call `db_tables` then `db_describe`; the host never dumps the schema into the
-Lead prompt. Connections and transactions are read-only. Connection and SQL
+Lead prompt. The schema is only the Catalog query scope: Agent tools expose
+table names without it, and generated pages cite tables as `catalog:orders`.
+Connections and transactions are read-only. Connection and SQL
 statement deadlines remain fixed host safety limits, not Workspace tuning
 parameters. Do not commit the expanded URL or `.env`.
 
-A Catalog needs an explicit `workspace.yaml`. Implicit single-source
-workspaces have no database block.
+A Catalog needs an explicit `workspace.yaml`, or in an implicit single-source
+workspace, a `.okf-wiki/database.yaml` beside the repository root containing
+one `database:` block (same fields, same `.env` resolution from the
+repository root).
 
 ### Templates
 

@@ -16,7 +16,7 @@ interface EvidenceReceipt {
 }
 
 interface WriterEvidenceIssue {
-  code: "citation-unread";
+  code: "citation-unread" | "catalog-undescribed";
   page: string;
   resource: string;
   message: string;
@@ -38,11 +38,16 @@ export function createWriterEvidenceGate(
   }
   const touched = new Set<string>();
   const reads: Array<Promise<EvidenceReceipt | undefined>> = [];
+  const describedTables = new Set<string>();
   let previousIssues: string | undefined;
   let stagnantRounds = 0;
   let repairRounds = 0;
   return {
     observe(event) {
+      if (event.tool === "db_describe" && event.status === "complete") {
+        for (const table of describedTableNames(event.result)) describedTables.add(table);
+        return;
+      }
       if (!isRecord(event.args) || typeof event.args.path !== "string") return;
       if (event.tool === "read" && event.status === "complete") {
         reads.push(captureEvidenceRead(guard, event.args, event.result));
@@ -54,7 +59,7 @@ export function createWriterEvidenceGate(
     },
     async nextPrompt() {
       const receipts = (await Promise.all(reads)).filter((entry): entry is EvidenceReceipt => entry !== undefined);
-      const issues = await validateWriterEvidence(guard, touched, receipts);
+      const issues = await validateWriterEvidence(guard, touched, receipts, describedTables);
       if (!issues.length) return undefined;
       const issueDigest = writerEvidenceIssueDigest(issues);
       stagnantRounds = issueDigest === previousIssues ? stagnantRounds + 1 : 0;
@@ -113,6 +118,7 @@ async function validateWriterEvidence(
   guard: WikiWriteGuard,
   touched: ReadonlySet<string>,
   receipts: readonly EvidenceReceipt[],
+  describedTables: ReadonlySet<string>,
 ): Promise<WriterEvidenceIssue[]> {
   const issues: WriterEvidenceIssue[] = [];
   const digests = new Map<string, string>();
@@ -127,6 +133,17 @@ async function validateWriterEvidence(
     }
     const page = path.relative(guard.candidateRoot, absolute).replaceAll("\\", "/");
     for (const citation of extractOkfSources(parsed.frontmatter, parsed.body).citations) {
+      if (citation.catalogTable) {
+        if (describedTables.has(citation.catalogTable)) continue;
+        issues.push({
+          code: "catalog-undescribed",
+          page,
+          resource: citation.path,
+          message: "The cited Catalog table was not successfully described in this writer session.",
+          suggestedAction: `Call db_describe for ${citation.catalogTable}, then verify the claim or correct/remove the citation.`,
+        });
+        continue;
+      }
       if (!resolveSourceCitation(citation, guard.sources)) continue;
       const file = path.resolve(guard.workspaceRoot, ...citation.path.split("/"));
       const currentDigest = await digest(file, digests);
@@ -223,6 +240,11 @@ function uniqueIssues(issues: readonly WriterEvidenceIssue[]): WriterEvidenceIss
   const byKey = new Map<string, WriterEvidenceIssue>();
   for (const issue of issues) byKey.set(`${issue.page}\0${issue.resource}`, issue);
   return [...byKey.values()];
+}
+
+function describedTableNames(result: unknown): string[] {
+  if (!isRecord(result) || !isRecord(result.details) || !Array.isArray(result.details.tables)) return [];
+  return result.details.tables.filter((table): table is string => typeof table === "string");
 }
 
 function readTruncation(value: unknown): Record<string, unknown> | undefined {

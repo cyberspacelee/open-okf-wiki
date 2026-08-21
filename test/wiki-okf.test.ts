@@ -178,6 +178,20 @@ test("validation accepts file citations and checks optional line ranges against 
   assert.ok(outsideFile.issues.some((issue) => issue.code === "citation" && issue.message.includes("main.ts#L3")));
 });
 
+test("catalog citations require a configured Workspace database", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-catalog-citation-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  const source = await sourceTree(t, "self", true);
+  const templates = packOf();
+  await writeCore(root, "catalog:orders", templates, source.pins);
+  const withoutCatalog = await validateWikiTree(root, source.pins, templates);
+  assert.ok(withoutCatalog.issues.some((issue) =>
+    issue.code === "citation" && issue.message.includes("declares no database")));
+
+  const withCatalog = await validateWikiTree(root, source.pins, templates, { catalogAvailable: true });
+  assert.equal(withCatalog.ok, true, withCatalog.issues.map((issue) => issue.message).join("\n"));
+});
+
 test("validate requires mermaid kind from the template pack", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-mermaid-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));
@@ -382,7 +396,9 @@ test("indexes include descriptions and stamp writes log.md without unverified ve
   await materializeWikiIndexes(root, "en", pack);
   const index = await readFile(path.join(root, "index.md"), "utf8");
   assert.match(index, /Start here/);
-  assert.match(index, /Overview description/);
+  assert.match(index, /# \[Overview\]\(\.\/overview\.md\)/);
+  assert.equal(index.match(/Overview description/g)?.length, 1);
+  assert.doesNotMatch(index, /\* \[Overview\]\(\.\/overview\.md\)/);
   await stampPublication(root, "2026-08-20T00:00:00.000Z", { reviewed: false, language: "en" });
   const overview = await readFile(path.join(root, "overview.md"), "utf8");
   assert.match(overview, /generated:/);

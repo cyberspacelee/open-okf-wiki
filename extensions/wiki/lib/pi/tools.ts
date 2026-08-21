@@ -111,8 +111,8 @@ export function createCatalogTools(catalog: WikiCatalog): ToolDefinition<any, an
       async execute(_id, params) {
         const tables = (params as { tables?: string[] }).tables ?? [];
         try {
-          const text = await catalog.describeTables(tables);
-          return { content: [{ type: "text", text }], details: { text } };
+          const described = await catalog.describeTables(tables);
+          return { content: [{ type: "text", text: described.text }], details: described };
         } catch (error) {
           return {
             content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],

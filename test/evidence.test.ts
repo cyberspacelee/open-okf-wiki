@@ -57,3 +57,27 @@ test("the configured evidence repair limit bounds a writer session", async (t) =
   assert.match(await gate.nextPrompt() ?? "", /round 1 of 1/i);
   await assert.rejects(() => gate.nextPrompt(), /after 1 rounds/);
 });
+
+test("a catalog citation requires a successful db_describe of that table", async (t) => {
+  const gate = await fixture(t, "catalog:orders");
+  assert.match(await gate.nextPrompt() ?? "", /catalog-undescribed[\s\S]*db_describe for orders/);
+
+  gate.observe({
+    tool: "db_describe",
+    args: { tables: ["orders"] },
+    status: "complete",
+    result: { details: { text: "display text may change", tables: ["orders"] } },
+  });
+  assert.equal(await gate.nextPrompt(), undefined);
+});
+
+test("catalog evidence uses the exact structured table identity", async (t) => {
+  const gate = await fixture(t, "catalog:orders");
+  gate.observe({
+    tool: "db_describe",
+    args: { tables: ["orders"] },
+    status: "complete",
+    result: { details: { text: "# orders (table)", tables: ["Orders"] } },
+  });
+  assert.match(await gate.nextPrompt() ?? "", /catalog-undescribed/);
+});

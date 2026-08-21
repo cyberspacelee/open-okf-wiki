@@ -11,6 +11,7 @@ import { packagedTemplatesRoot } from "./templates.js";
 
 const WORKSPACE_FILE = "workspace.yaml";
 const WORKSPACE_ENV_FILE = ".env";
+const IMPLICIT_DATABASE_FILE = path.join(".okf-wiki", "database.yaml");
 const WORKSPACE_LOCK_FILE = ".okf-wiki-workspace.lock";
 export const WORKSPACE_TEMPLATES_DIRECTORY = "wiki-templates";
 const RESERVED_WORKSPACE_DIRECTORIES = new Set([
@@ -268,6 +269,7 @@ async function implicitSelfWorkspace(cwd: string): Promise<ResolvedWikiWorkspace
     realPath: repository,
     repositoryRoot: repository,
   };
+  const database = await readImplicitDatabaseConfig(repository);
   return {
     version: 1,
     root: repository,
@@ -275,8 +277,34 @@ async function implicitSelfWorkspace(cwd: string): Promise<ResolvedWikiWorkspace
     language: "zh",
     defaultSourceIgnores: true,
     wiki: structuredClone(DEFAULT_WORKSPACE_WIKI_CONFIG),
+    ...(database ? { database } : {}),
     sources: [source],
   };
+}
+
+/** Implicit Workspaces declare a Catalog in `.okf-wiki/database.yaml` (a lone `database:` block). */
+async function readImplicitDatabaseConfig(root: string): Promise<WikiWorkspaceDatabase | undefined> {
+  const configPath = path.join(root, IMPLICIT_DATABASE_FILE);
+  let text: string;
+  try {
+    text = await readFile(configPath, "utf8");
+  } catch (error) {
+    if (isMissing(error)) return undefined;
+    throw error;
+  }
+  let document: unknown;
+  try {
+    document = YAML.parse(text);
+  } catch (error) {
+    throw new Error(`Invalid ${IMPLICIT_DATABASE_FILE} at ${configPath}: ${errorMessage(error)}`);
+  }
+  if (!isRecord(document)) throw new Error(`${IMPLICIT_DATABASE_FILE} must be a mapping with one database block`);
+  const unknown = Object.keys(document).filter((key) => key !== "database");
+  if (unknown.length > 0) throw new Error(`${IMPLICIT_DATABASE_FILE} has unknown field: ${unknown[0]}`);
+  if (document.database === undefined) {
+    throw new Error(`${IMPLICIT_DATABASE_FILE} must contain a database block`);
+  }
+  return parseWorkspaceDatabase(document.database, await workspaceEnvironment(root));
 }
 
 function normalizeRepoRelative(value: string): string {

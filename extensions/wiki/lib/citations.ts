@@ -1,19 +1,21 @@
 import path from "node:path";
 
-/** OKF provenance: `sources[].resource` is a Workspace-relative path with an optional line range. */
+/** OKF provenance: `sources[].resource` is a Workspace-relative path with an optional line range, or a Catalog table. */
 
 const SOURCE_RESOURCE = /^([^#]+?)(?:#L([1-9]\d*)(?:-L([1-9]\d*))?)?$/;
+const CATALOG_RESOURCE = /^catalog:([A-Za-z_][A-Za-z0-9_$]*)$/;
 const MARKDOWN_LINK = /(?<!!)\[[^\]\n]*\]\([ \t]*(?:<([^>\n]+)>|([^\s)]+))(?:[ \t]+(?:"[^"]*"|'[^']*'|\([^)]*\)))?[ \t]*\)/g;
 const FOOTNOTE = /\[\^([^\]]+)\]/g;
 const LEGACY_BODY_CITATION = /#L[1-9]\d*/;
 
-export const SOURCE_RESOURCE_GRAMMAR = "Workspace-relative path or path#Lx[-Ly]";
+export const SOURCE_RESOURCE_GRAMMAR = "Workspace-relative path, path#Lx[-Ly], or catalog:table";
 
 export interface SourceCitation {
   id: string;
   path: string;
   startLine?: number;
   endLine?: number;
+  catalogTable?: string;
 }
 
 export interface CitationSource {
@@ -23,7 +25,10 @@ export interface CitationSource {
 
 export function parseSourceResource(value: string): Omit<SourceCitation, "id"> | undefined {
   const href = value.trim().replace(/^<|>$/g, "");
-  if (!href || href.includes("\\") || /^[a-z][a-z0-9+.-]*:/i.test(href)) return undefined;
+  if (!href || href.includes("\\")) return undefined;
+  const catalog = CATALOG_RESOURCE.exec(href);
+  if (catalog) return { path: href, catalogTable: catalog[1]! };
+  if (href.startsWith("catalog:") || /^[a-z][a-z0-9+.-]*:/i.test(href)) return undefined;
   const match = SOURCE_RESOURCE.exec(href);
   if (!match) return undefined;
   const resourcePath = match[1];
@@ -40,6 +45,7 @@ export function resolveSourceCitation(
   citation: Pick<SourceCitation, "path">,
   sources: readonly CitationSource[],
 ): { scopeId: string; sourcePath: string } | undefined {
+  if (citation.path.startsWith("catalog:")) return undefined;
   for (const source of [...sources].sort((left, right) => right.logicalPath.length - left.logicalPath.length)) {
     const logicalPath = source.logicalPath.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, "");
     if (!logicalPath || logicalPath === ".") {
@@ -118,6 +124,7 @@ function parseSourceEntry(
   const locator = parseSourceResource(resource);
   if (!locator) return { error: `${resource} need ${SOURCE_RESOURCE_GRAMMAR}` };
   if (locator.startLine !== undefined && locator.endLine! < locator.startLine) return { error: `${resource} end<start` };
+  if (locator.catalogTable) return { citation: { id, ...locator } };
   const file = fileLines?.(locator);
   if (file === "missing") return { error: `${resource} missing` };
   if (typeof file === "number" && locator.endLine !== undefined && locator.endLine > file) {

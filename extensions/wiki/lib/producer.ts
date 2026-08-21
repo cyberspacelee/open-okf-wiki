@@ -128,6 +128,7 @@ interface LiveRun {
   result?: WikiProducerResult;
   board?: WikiBoard;
   templates?: WikiTemplatePack;
+  catalogAvailable?: boolean;
   candidateRevision?: { digest: string; files: string[] };
   checkpointText?: string;
   recordUpdates: Promise<void>;
@@ -215,6 +216,7 @@ function startLive(
       const catalog = workspace.database
         ? createPostgresCatalog(await resolveWorkspaceDatabase(workspace.database, workspace.root))
         : undefined;
+      live.catalogAvailable = Boolean(catalog);
       const templates = await resolveWikiTemplatePack(
         workspace.root,
         workspace.wiki.templates,
@@ -438,7 +440,9 @@ async function validateAndRecordCandidate(live: LiveRun): Promise<WikiValidation
     logicalPath: source.logicalPath,
     realPath: source.realPath,
   }));
-  const validation = await validateWikiTree(live.record.candidateRoot, pins, live.templates);
+  const validation = await validateWikiTree(live.record.candidateRoot, pins, live.templates, {
+    catalogAvailable: live.catalogAvailable,
+  });
   const workflowIssue = crossSourceWorkflowIssue(live);
   if (workflowIssue) {
     validation.issues.unshift({ code: "workflow", message: workflowIssue });

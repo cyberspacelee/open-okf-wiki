@@ -7,7 +7,6 @@ export interface WikiDatabaseConfig {
 }
 
 export interface WikiTableRef {
-  schema: string;
   name: string;
   kind: "table" | "view" | "materialized_view";
   comment?: string;
@@ -41,12 +40,17 @@ export interface WikiTableDefinition {
   indexes: WikiTableIndex[];
 }
 
+export interface WikiCatalogDescription {
+  text: string;
+  tables: string[];
+}
+
 export type CatalogQuery = (sql: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 
 export interface WikiCatalog {
   config: WikiDatabaseConfig;
   listTables(query?: string): Promise<string>;
-  describeTables(names: readonly string[]): Promise<string>;
+  describeTables(names: readonly string[]): Promise<WikiCatalogDescription>;
 }
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -114,26 +118,32 @@ export function createCatalog(config: WikiDatabaseConfig, query: CatalogQuery): 
     },
     async describeTables(names) {
       const requested = names.map((name) => name.trim()).filter(Boolean);
-      if (requested.length === 0) return "Provide at least one table name.";
+      if (requested.length === 0) return { text: "Provide at least one table name.", tables: [] };
       const refs = await loadTableRefs(query, config.schema);
       const scoped = matchTableNames(refs.map((ref) => ref.name), config.tables);
       const matched = matchTableNames(scoped, requested);
       if (matched.length === 0) {
-        return `No Catalog tables matched ${requested.join(", ")} in ${config.schema}.`;
+        return { text: `No Catalog tables matched ${requested.join(", ")}.`, tables: [] };
       }
       if (matched.length > MAX_DESCRIBE_TABLES) {
-        return `Matched ${matched.length} tables; describe at most ${MAX_DESCRIBE_TABLES} at a time. Refine the names.`;
+        return {
+          text: `Matched ${matched.length} tables; describe at most ${MAX_DESCRIBE_TABLES} at a time. Refine the names.`,
+          tables: [],
+        };
       }
       const definitions = await loadTableDefinitions(query, config.schema, matched);
-      return definitions.map(formatTableDefinition).join("\n\n");
+      return {
+        text: definitions.map(formatTableDefinition).join("\n\n"),
+        tables: definitions.map(({ ref }) => ref.name),
+      };
     },
   };
 }
 
 function formatTableList(config: WikiDatabaseConfig, tables: readonly WikiTableRef[], filter?: string): string {
   const header = [
-    `Catalog ${config.schema}`,
-    config.tables.length ? `patterns: ${config.tables.join(", ")}` : "patterns: (all tables in schema)",
+    "Catalog",
+    config.tables.length ? `patterns: ${config.tables.join(", ")}` : "patterns: (all configured tables)",
     ...(filter?.trim() ? [`query: ${filter.trim()}`] : []),
   ].join(" · ");
   if (tables.length === 0) return `${header}\nNo matching tables.`;
@@ -143,7 +153,7 @@ function formatTableList(config: WikiDatabaseConfig, tables: readonly WikiTableR
   const lines = [header, `${tables.length} table(s):`];
   for (const table of tables) {
     const comment = table.comment ? ` — ${table.comment}` : "";
-    lines.push(`- ${table.schema}.${table.name} (${table.kind})${comment}`);
+    lines.push(`- ${table.name} (${table.kind})${comment}`);
   }
   return lines.join("\n");
 }
@@ -168,7 +178,7 @@ export function formatTableDefinition(table: WikiTableDefinition): string {
     return `- ${index.name}${unique} (${index.columns.join(", ")})`;
   });
   return [
-    `# ${table.ref.schema}.${table.ref.name} (${table.ref.kind})${comment}`,
+    `# ${table.ref.name} (${table.ref.kind})${comment}`,
     "",
     "## columns",
     ...columns,
@@ -179,7 +189,7 @@ export function formatTableDefinition(table: WikiTableDefinition): string {
 
 async function loadTableRefs(query: CatalogQuery, schema: string): Promise<WikiTableRef[]> {
   const rows = await query(
-    `SELECT n.nspname AS schema, c.relname AS name, c.relkind AS kind, obj_description(c.oid) AS comment
+    `SELECT c.relname AS name, c.relkind AS kind, obj_description(c.oid) AS comment
      FROM pg_class c
      JOIN pg_namespace n ON n.oid = c.relnamespace
      WHERE n.nspname = $1 AND c.relkind = ANY($2)
@@ -187,7 +197,6 @@ async function loadTableRefs(query: CatalogQuery, schema: string): Promise<WikiT
     [schema, ["r", "p", "v", "m"]],
   );
   return rows.map((row) => ({
-    schema: String(row.schema),
     name: String(row.name),
     kind: kindFromRelkind(String(row.kind ?? "r")),
     ...(row.comment ? { comment: String(row.comment) } : {}),
@@ -201,7 +210,7 @@ async function loadTableDefinitions(
 ): Promise<WikiTableDefinition[]> {
   const refs = (await loadTableRefs(query, schema)).filter((ref) => names.includes(ref.name));
   const columns = await query(
-    `SELECT n.nspname AS schema, c.relname AS table_name, a.attname AS name,
+    `SELECT c.relname AS table_name, a.attname AS name,
             format_type(a.atttypid, a.atttypmod) AS type, NOT a.attnotnull AS nullable,
             pg_get_expr(ad.adbin, ad.adrelid) AS default_value,
             col_description(a.attrelid, a.attnum) AS comment, a.attnum AS position
@@ -214,17 +223,17 @@ async function loadTableDefinitions(
     [schema, [...names]],
   );
   const constraints = await query(
-    `SELECT n.nspname AS schema, rel.relname AS table_name, con.conname AS name, con.contype AS type,
+    `SELECT rel.relname AS table_name, con.conname AS name, con.contype AS type,
             ARRAY(SELECT att.attname FROM unnest(con.conkey) WITH ORDINALITY AS cols(attnum, ord)
                   JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = cols.attnum
                   ORDER BY cols.ord) AS columns,
             CASE WHEN con.confrelid <> 0
-              THEN (SELECT nsp.nspname || '.' || ref.relname || '(' ||
+              THEN (SELECT ref.relname || '(' ||
                     array_to_string(ARRAY(SELECT att.attname
                       FROM unnest(con.confkey) WITH ORDINALITY AS cols(attnum, ord)
                       JOIN pg_attribute att ON att.attrelid = con.confrelid AND att.attnum = cols.attnum
                       ORDER BY cols.ord), ', ') || ')'
-                    FROM pg_class ref JOIN pg_namespace nsp ON nsp.oid = ref.relnamespace
+                    FROM pg_class ref
                     WHERE ref.oid = con.confrelid)
               ELSE NULL END AS referenced
      FROM pg_constraint con
@@ -235,7 +244,7 @@ async function loadTableDefinitions(
     [schema, [...names]],
   );
   const indexes = await query(
-    `SELECT n.nspname AS schema, rel.relname AS table_name, idx.relname AS name, i.indisunique AS unique,
+    `SELECT rel.relname AS table_name, idx.relname AS name, i.indisunique AS unique,
             ARRAY(SELECT att.attname FROM unnest(i.indkey::smallint[]) WITH ORDINALITY AS cols(attnum, ord)
                   JOIN pg_attribute att ON att.attrelid = rel.oid AND att.attnum = cols.attnum
                   ORDER BY cols.ord) AS columns

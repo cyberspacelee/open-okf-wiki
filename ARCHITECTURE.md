@@ -19,7 +19,9 @@ as an immediate follow-up; the transcript is not the source of truth. The Lead s
 `.okf-wiki/runs/<id>/sessions/` when present.
 
 An optional Postgres Catalog is declared on the Workspace and retrieved
-on demand (`db_tables`, `db_describe`). Only Postgres. Read-only.
+on demand (`db_tables`, `db_describe`). Only Postgres. Read-only. Pages may
+cite described tables as `catalog:table`; the configured database schema stays
+inside the Catalog Adapter.
 
 SOP is `prompts/lead.md`. Named workers are `agents/*.md`. Multi-Source Runs
 fan in all Source survey handoffs through one read-only synthesize worker before

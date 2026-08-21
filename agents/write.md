@@ -39,6 +39,13 @@ page contract:
 - Write domain.md and concept.md for every cluster in this prefix.
 - Keep or drop an optional template only after reopening source evidence.
   You may only write filenames injected in this prompt.
+- Dropping an optional page that a survey hint backed with a locator requires
+  a rebuttal: in your final confirmation, list each such dropped page as
+  `dropped <path> — <why the reopened locator does not support it>`. Reopen
+  the hinted locator before rebutting; an unread hint cannot be dropped. An
+  implicit lifecycle or flow still counts as evidence: a status field updated
+  under conditions in several places supports states.md even without an
+  explicit state enum.
 - Follow each template's Instructions, then copy its Skeleton H1 and H2 order
   exactly. Fill every H2; use H3 only inside those sections.
 - Replace every `{{placeholder}}`. Put mermaid under the diagram heading and
@@ -48,7 +55,12 @@ page contract:
 - `sources[].resource` is a POSIX path from the Workspace root, optionally
   followed by `#Lx` or `#Lx-Ly`. Use `api/src/main.ts#L12` in an explicit Workspace and
   `src/main.ts#L12` in an implicit Workspace; never use `self/`, a Source-root
-  path, `./`, or a path relative to the Candidate page. Attribute claims with
+  path, `./`, or a path relative to the Candidate page. When Catalog tools are
+  available, a resource may instead be `catalog:table` (e.g.
+  `catalog:orders`); cite it only after a successful `db_describe` of
+  that table in this session. Prefer `catalog:` evidence for schema facts
+  (columns, keys, constraints) over reverse-engineering them from ORM code.
+  Attribute claims with
   `[^id]` footnotes whose id matches `sources[].id`. Every non-diagram H2
   needs at least one footnote.
 - Link Wiki pages with standard markdown (`/billing/domain.md` in an implicit

@@ -38,6 +38,11 @@ export interface WikiValidation {
   pages: string[];
 }
 
+export interface WikiValidationOptions {
+  /** Whether the Workspace provides a Catalog; its schema remains internal to the Adapter. */
+  catalogAvailable?: boolean;
+}
+
 export function wikiPinsImplicit(pins: readonly WikiPin[]): boolean {
   return pins.length === 1 && isImplicitPinPath(pins[0]?.logicalPath ?? "");
 }
@@ -91,6 +96,7 @@ export async function validateWikiTree(
   wikiRoot: string,
   pins: readonly WikiPin[] = [],
   pack?: WikiTemplatePack,
+  options: WikiValidationOptions = {},
 ): Promise<WikiValidation> {
   const issues: WikiValidationIssue[] = [];
   let tree;
@@ -120,7 +126,7 @@ export async function validateWikiTree(
   for (const page of loaded) {
     const template = byFile.get(page.filename);
     if (pack) issues.push(...templatePlacementIssues(page.relative, template, pins));
-    issues.push(...pageContractIssues(page.relative, page.filename, page.parsed, template, pack, pins));
+    issues.push(...pageContractIssues(page.relative, page.filename, page.parsed, template, pack, pins, options));
     issues.push(...repositorySourceOwnershipIssues(page.relative, page.parsed, pins));
     if (pack && pins.length > 1 && page.relative === ARCHITECTURE_PAGE) {
       issues.push(...workspaceArchitectureCoverageIssues(page.relative, page.parsed, pins));
@@ -182,6 +188,7 @@ function pageContractIssues(
   template: WikiTemplate | undefined,
   pack: WikiTemplatePack | undefined,
   pins: readonly WikiPin[],
+  options: WikiValidationOptions = {},
 ): WikiValidationIssue[] {
   const issues: WikiValidationIssue[] = [];
   const type = typeof parsed.frontmatter.type === "string" ? parsed.frontmatter.type.trim() : "";
@@ -208,6 +215,16 @@ function pageContractIssues(
   const citations = extractOkfSources(parsed.frontmatter, parsed.body, (citation) => sourceFileLines(pins, citation));
   for (const invalid of citations.invalid) {
     issues.push({ code: "citation", page: relative, message: invalid });
+  }
+  for (const citation of citations.citations) {
+    if (!citation.catalogTable) continue;
+    if (!options.catalogAvailable) {
+      issues.push({
+        code: "citation",
+        page: relative,
+        message: `${citation.path} cites the Catalog but this Workspace declares no database`,
+      });
+    }
   }
   return issues;
 }
@@ -516,8 +533,10 @@ async function renderIndex(
 ): Promise<string> {
   const relativeDirectory = path.posix.dirname(indexPath) === "." ? "" : path.posix.dirname(indexPath);
   const kind = classifyWikiDirectory(relativeDirectory, repositoryIds);
+  const identityPath = identityPage(relativeDirectory, kind, pack);
   const directPages = pages
     .filter((page) => (path.posix.dirname(page) === "." ? "" : path.posix.dirname(page)) === relativeDirectory)
+    .filter((page) => page !== identityPath)
     .sort();
   const childDirs = [...new Set(
     derivedIndexPaths(pages)
@@ -525,13 +544,14 @@ async function renderIndex(
       .map((candidate) => path.posix.dirname(candidate) === "." ? "" : path.posix.dirname(candidate))
       .filter((directory) => directory && (path.posix.dirname(directory) === "." ? "" : path.posix.dirname(directory)) === relativeDirectory),
   )].sort();
-  const identity = await pageIdentity(wikiRoot, identityPage(relativeDirectory, kind, pack));
+  const identity = await pageIdentity(wikiRoot, identityPath);
+  const identityLink = `./${path.posix.basename(identityPath)}`;
   const intro = language === "zh"
     ? "从本页开始，按描述打开子目录或页面，不要一次读完整包。"
     : "Start here. Open a child index or page from the descriptions; do not ingest the whole bundle.";
   const lines = indexPath === "index.md"
-    ? ["---", 'okf_version: "0.2"', "---", "", `# ${identity.title}`, "", identity.description, "", intro, ""]
-    : [`# ${identity.title}`, "", identity.description, ""];
+    ? ["---", 'okf_version: "0.2"', "---", "", `# [${identity.title}](${identityLink})`, "", identity.description, "", intro, ""]
+    : [`# [${identity.title}](${identityLink})`, "", identity.description, ""];
   if (indexPath === "index.md") {
     const domainDirs = childDirs.filter((directory) => !repositoryIds.has(directory));
     const uniquePins = [...new Set(

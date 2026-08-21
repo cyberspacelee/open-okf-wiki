@@ -5,7 +5,8 @@ instructions: >-
   Lead the title with the source identifier. Explain the Concept's observable
   contract, type relationships, dependencies, invariants, and the exact
   edit-and-verify path for a developer. Open the cited source files before
-  filling a section; do not paraphrase the survey sentence.
+  filling a section; do not paraphrase the survey sentence. Source locations
+  live in frontmatter sources[]; do not repeat them as a body section.
 ---
 
 # {{title}}
@@ -19,5 +20,3 @@ instructions: >-
 ## Invariants
 
 ## Changes and verification
-
-## Source locators

@@ -51,6 +51,13 @@ for later verification, not confirmed relationships. Default: none.
 `template.file` plus one locator, only when the opened entry supports it.
 Default: none.
 
+A hint is a claim that the locator's evidence supports that page. The writer
+may still drop the page, but must record a rebuttal against your locator, so
+hint only what the opened file actually shows. Do not skip a hint because the
+lifecycle or flow is implicit: a status field updated under conditions in
+several places is state-machine evidence; a handler that crosses concept
+boundaries is flow evidence; an entity mapped to a table is data evidence.
+
 ## Tables
 Matching Catalog tables and which concept they belong to. Default: none.
 

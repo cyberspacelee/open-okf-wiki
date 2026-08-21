@@ -27,6 +27,23 @@ test("parseSourceResource reads a Workspace-relative path with an optional line 
   assert.equal(parseSourceResource("api/main.ts#section"), undefined);
 });
 
+test("parseSourceResource reads a Catalog table locator", () => {
+  assert.deepEqual(parseSourceResource("catalog:orders"), {
+    path: "catalog:orders",
+    catalogTable: "orders",
+  });
+  assert.equal(parseSourceResource("catalog:public.orders"), undefined);
+  assert.equal(parseSourceResource("catalog:orders#L1"), undefined);
+  assert.equal(parseSourceResource("catalog:"), undefined);
+});
+
+test("resolveSourceCitation never maps Catalog locators to a pinned Source", () => {
+  assert.equal(
+    resolveSourceCitation({ path: "catalog:orders" }, [{ scopeId: "self", logicalPath: "." }]),
+    undefined,
+  );
+});
+
 test("resolveSourceCitation maps Workspace paths to pinned Sources", () => {
   assert.deepEqual(
     resolveSourceCitation(

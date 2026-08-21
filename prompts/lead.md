@@ -76,7 +76,9 @@ Default loop:
    partitions, then check the changed Candidate again. Continue while the
    Candidate or issue digest makes progress; do not poll an unchanged failure.
 7. Create an in-progress review Task and run one fresh reviewer against the
-   current Candidate. For `changes_requested`, pass every repair record to the
+   current Candidate. Name every survey and write handoff path in the review
+   task so the reviewer can weigh optional-page hints against writer
+   rebuttals. For `changes_requested`, pass every repair record to the
    affected writers in one batch, check the changed Candidate, and re-review.
 8. Call `publish` only when deterministic check and semantic review both pass
    for the current Candidate revision.

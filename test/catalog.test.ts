@@ -80,18 +80,21 @@ test("catalog lists and describes only matching tables", async () => {
     },
   );
   const listed = await catalog.listTables("user");
-  assert.match(listed, /public\.users/);
+  assert.match(listed, /users/);
+  assert.doesNotMatch(listed, /public/);
   assert.doesNotMatch(listed, /orders|audit_log/);
   const described = await catalog.describeTables(["user"]);
-  assert.match(described, /# public\.users/);
-  assert.match(described, /email text not null/);
-  assert.match(described, /primary_key users_pkey/);
-  assert.match(await catalog.describeTables(["orders"]), /No Catalog tables matched/);
+  assert.deepEqual(described.tables, ["users"]);
+  assert.match(described.text, /# users/);
+  assert.doesNotMatch(described.text, /public/);
+  assert.match(described.text, /email text not null/);
+  assert.match(described.text, /primary_key users_pkey/);
+  assert.match((await catalog.describeTables(["orders"])).text, /No Catalog tables matched/);
 });
 
 test("formatTableDefinition stays compact", () => {
   const text = formatTableDefinition({
-    ref: { schema: "public", name: "users", kind: "table", comment: "accounts" },
+    ref: { name: "users", kind: "table", comment: "accounts" },
     columns: [{ name: "id", type: "bigint", nullable: false }],
     constraints: [{ type: "primary_key", name: "users_pkey", columns: ["id"] }],
     indexes: [],
