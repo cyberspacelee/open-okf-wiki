@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { assertReadable, assertWritable, resolveToolPath, writeGuardFromPlan, writePartitionAllows, writePartitionsOverlap } from "../extensions/wiki/lib/path-policy.js";
+import { assertAgentPartition, assertReadable, assertWritable, resolveToolPath, writeGuardFromPlan, writePartitionAllows, writePartitionsOverlap } from "../extensions/wiki/lib/path-policy.js";
+import { candidatePartitionRevision } from "../extensions/wiki/lib/revisions.js";
 import { isSafeWikiPagePath, wikiPathKind } from "../extensions/wiki/lib/path.js";
 
 function plan(workspaceRoot) {
@@ -100,6 +103,58 @@ test("write partitions lock Candidate prefixes", () => {
   const guard = { ...writeGuardFromPlan(plan(workspaceRoot), candidateRoot), writePartition: "billing" };
   assert.equal(assertWritable(guard, "wiki/billing/domain.md"), path.join(candidateRoot, "billing", "domain.md"));
   assert.throws(() => assertWritable(guard, "wiki/overview.md"), /partition billing/);
+});
+
+test("writePartitionAllows matches candidatePartitionRevision prefixes", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-partition-rev-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  await mkdir(path.join(root, "billing"), { recursive: true });
+  await writeFile(path.join(root, "overview.md"), "root\n");
+  await writeFile(path.join(root, "billing", "domain.md"), "billing\n");
+  const cases = [
+    ["wiki-root", ["overview.md"]],
+    ["billing", ["billing/domain.md"]],
+    ["candidate", ["billing/domain.md", "overview.md"]],
+  ];
+  for (const [partition, expected] of cases) {
+    for (const relative of ["overview.md", "billing/domain.md"]) {
+      const allowed = writePartitionAllows(partition, relative);
+      assert.equal(allowed, expected.includes(relative), `${partition} ${relative}`);
+    }
+    const revision = await candidatePartitionRevision(root, partition);
+    assert.deepEqual(revision.files, expected);
+  }
+});
+
+test("assertWritable rejects reserved and illegal Wiki page paths", () => {
+  const workspaceRoot = path.resolve("/tmp/okf-wiki-path-policy");
+  const candidateRoot = path.join(workspaceRoot, ".okf-wiki", "runs", "abcd", "candidate");
+  const guard = writeGuardFromPlan(plan(workspaceRoot), candidateRoot);
+  assert.throws(() => assertWritable(guard, "wiki/index.md"), /Illegal Wiki page path/);
+  assert.throws(() => assertWritable(guard, "wiki/Foo.md"), /Illegal Wiki page path/);
+});
+
+test("assertAgentPartition binds survey to pinned Sources", () => {
+  const pinned = {
+    ...plan("/tmp/okf-wiki-path-policy"),
+    sources: [{
+      scopeId: "api",
+      logicalPath: "api",
+      absolutePath: "/tmp/api",
+      realPath: "/tmp/api",
+      repositoryRoot: "/tmp/api",
+      repositoryIdentity: "id",
+      origin: { type: "link", localPath: "/tmp/api" },
+      head: "abc",
+      dirtyFingerprint: "dirty",
+    }],
+  };
+  assertAgentPartition("survey", "api", pinned);
+  assert.throws(() => assertAgentPartition("survey", "web", pinned), /pinned Source id/);
+  assert.throws(() => assertAgentPartition("synthesize", "api", pinned), /workspace-analysis/);
+  assertAgentPartition("write", "api", pinned);
+  assertAgentPartition("write", "wiki-root", pinned);
+  assert.throws(() => assertAgentPartition("write", "billing", pinned), /Repository Section/);
 });
 
 test("explicit repository paths use the Source id directly", () => {

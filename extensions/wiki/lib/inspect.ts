@@ -2,8 +2,16 @@ import { createHash } from "node:crypto";
 import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { git } from "./git.js";
-import { loadWikiWorkspace, sourceIsIgnored, type ResolvedWikiSource } from "./workspace.js";
+import { loadWikiWorkspace, type ResolvedWikiSource } from "./workspace.js";
 import { IMPLICIT_SOURCE_SCOPE_ID, isImplicitPinPath } from "./path.js";
+
+const DEFAULT_SOURCE_IGNORES = [
+  ".git", "node_modules", ".pnpm-store", "dist", "build", "out", "target", ".venv", "venv",
+  "__pycache__", ".mypy_cache", ".pytest_cache", ".tox", ".coverage", "coverage", ".nyc_output",
+  ".idea", ".vscode", ".gradle", ".mvn", ".DS_Store", "Thumbs.db",
+  "*.pyc", "*.pyo", "*.pyd", "*.class", "*.log", "*.o", "*.so", "*.dylib", "*.dll",
+  "src/test/**", "**/src/test/**", "**/*Test.java", "**/*Tests.java", "**/*IT.java", "**/*ITCase.java",
+];
 
 export interface WikiPinnedSource {
   scopeId: string;
@@ -111,6 +119,66 @@ export function wikiSourceSlug(sourcePath: string): string {
   return isImplicitPinPath(normalized) ? IMPLICIT_SOURCE_SCOPE_ID : normalized;
 }
 
+export function sourceIsIgnored(
+  source: { path: string },
+  relativePath: string,
+  defaultsEnabled: boolean,
+  workspaceExcludes: readonly string[] = [],
+): boolean {
+  const normalized = normalizeRepoRelative(relativePath);
+  const parts = normalized.split("/");
+  const declaredPath = source.path === "." ? normalized : `${source.path.replaceAll("\\", "/")}/${normalized}`;
+  if (workspaceExcludes.some((pattern) => matchesIgnorePattern(normalized, pattern) || matchesIgnorePattern(declaredPath, pattern))) {
+    return true;
+  }
+  if (source.path === "." && (parts[0] === ".okf-wiki" || parts[0] === "wiki" || normalized === "workspace.yaml")) return true;
+  if (!defaultsEnabled) return false;
+  return DEFAULT_SOURCE_IGNORES.some((pattern) => matchesIgnorePattern(normalized, pattern));
+}
+
+export function pinsFromPlan(plan: WikiPinnedSourcePlan): Array<{ scopeId: string; logicalPath: string; realPath: string }> {
+  return plan.sources.map((source) => ({
+    scopeId: source.scopeId,
+    logicalPath: source.logicalPath,
+    realPath: source.realPath,
+  }));
+}
+
+function normalizeRepoRelative(value: string): string {
+  return value.replaceAll("\\", "/").replace(/^\.\//, "").replace(/^\/+/, "").replace(/\/+$/, "");
+}
+
+function matchesIgnorePattern(relativePath: string, pattern: string): boolean {
+  const candidate = normalizeRepoRelative(relativePath);
+  const glob = normalizeRepoRelative(pattern);
+  if (!candidate || !glob) return false;
+  if (!glob.includes("/") && !/[?*]/.test(glob)) {
+    return candidate === glob || candidate.split("/").includes(glob);
+  }
+  if (!glob.includes("/")) return path.matchesGlob(path.posix.basename(candidate), glob);
+  const prefixed = glob.startsWith("**/") ? glob : `**/${glob}`;
+  for (const value of [candidate, `${candidate}/`]) {
+    if (path.matchesGlob(value, glob) || path.matchesGlob(value, prefixed)) return true;
+  }
+  if (glob.endsWith("/**")) {
+    const prefix = glob.slice(0, -3);
+    if (path.matchesGlob(candidate, prefix) || path.matchesGlob(candidate, prefix.startsWith("**/") ? prefix : `**/${prefix}`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function planFingerprint(sources: readonly WikiPinnedSource[], defaultSourceIgnores: boolean, excludes: readonly string[]): string {
+  return createHash("sha256").update([
+    defaultSourceIgnores ? "1" : "0",
+    ...[...excludes].sort(),
+    ...sources
+      .map((source) => `${source.scopeId}\0${JSON.stringify(source.origin)}\0${source.realPath}\0${source.repositoryIdentity}\0${source.dirtyFingerprint}`)
+      .sort(),
+  ].join("\0")).digest("hex");
+}
+
 async function pinnedSource(
   source: ResolvedWikiSource,
   head: string,
@@ -135,9 +203,7 @@ export async function inspectWiki(cwd: string): Promise<WikiPinnedSourcePlan> {
   if (workspace.sources.length === 0) throw new Error("workspace.yaml has no sources. Run /wiki source add first.");
   const states = await Promise.all(workspace.sources.map((source) => sourceState(source, workspace.defaultSourceIgnores, workspace.wiki.exclude)));
   const sources = await Promise.all(states.map(({ source, head, fingerprint }) => pinnedSource(source, head, fingerprint)));
-  const sourceFingerprint = createHash("sha256").update(sources
-    .map((source) => `${source.scopeId}\0${JSON.stringify(source.origin)}\0${source.realPath}\0${source.repositoryIdentity}\0${source.dirtyFingerprint}`)
-    .sort().join("\0")).digest("hex");
+  const sourceFingerprint = planFingerprint(sources, workspace.defaultSourceIgnores, workspace.wiki.exclude);
   return {
     workspaceRoot: path.resolve(workspace.root),
     workspaceRealPath: await realpath(workspace.root),
@@ -177,8 +243,6 @@ export async function verifyPinnedSourcePlan(plan: WikiPinnedSourcePlan): Promis
       throw new Error("Repository sources changed while the Wiki run was active; start a new Wiki run");
     }
   }
-  const fingerprint = createHash("sha256").update(current
-    .map((source) => `${source.scopeId}\0${JSON.stringify(source.origin)}\0${source.realPath}\0${source.repositoryIdentity}\0${source.dirtyFingerprint}`)
-    .sort().join("\0")).digest("hex");
+  const fingerprint = planFingerprint(current, plan.defaultSourceIgnores, plan.excludes);
   if (fingerprint !== plan.fingerprint) throw new Error("Pinned Wiki source fingerprint changed");
 }

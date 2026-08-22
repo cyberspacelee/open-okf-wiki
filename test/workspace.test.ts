@@ -8,7 +8,6 @@ import {
   createWikiWorkspaceManagement,
   loadWikiWorkspace,
   resolveWorkspaceDatabase,
-  sourceIsIgnored,
   wikiWorkspaceManagement,
 } from "../extensions/wiki/lib/workspace.js";
 
@@ -48,13 +47,6 @@ test("loads a Git repository without workspace.yaml as an implicit self source",
     exclude: [], maxConcurrentAgents: 3, maxEvidenceRepairRounds: 6, transientRetries: 1,
     baseRetryDelayMs: 1_000, sessionTimeoutSeconds: 1_200,
   });
-  assert.equal(sourceIsIgnored(loaded.sources[0], ".okf-wiki/runs/a/run.json", true), true);
-  assert.equal(sourceIsIgnored(loaded.sources[0], "wiki/overview.md", true), true);
-  assert.equal(sourceIsIgnored(loaded.sources[0], "src/index.ts", true), false);
-  assert.equal(sourceIsIgnored(loaded.sources[0], "src/test/java/com/acme/OrderServiceTest.java", true), true);
-  assert.equal(sourceIsIgnored(loaded.sources[0], "module-a/src/test/java/FooTest.java", true), true);
-  assert.equal(sourceIsIgnored(loaded.sources[0], "src/main/java/com/acme/OrderService.java", true), false);
-  assert.equal(sourceIsIgnored(loaded.sources[0], "src/test/java/com/acme/OrderServiceTest.java", false), false);
   await assert.rejects(lstat(path.join(root, "workspace.yaml")), { code: "ENOENT" });
 });
 

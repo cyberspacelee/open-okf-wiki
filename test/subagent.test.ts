@@ -29,6 +29,40 @@ function implicitPlan(workspaceRoot: string) {
   };
 }
 
+test("illegal survey partitions are rejected when Sources are pinned", async () => {
+  const workspaceRoot = path.resolve("/tmp/okf-wiki-subagent-partition");
+  const runtime = await createSubagentRuntime(
+    {
+      workspaceRoot,
+      workspaceRealPath: workspaceRoot,
+      configPath: path.join(workspaceRoot, "workspace.yaml"),
+      defaultSourceIgnores: true,
+      excludes: [],
+      sources: [{
+        scopeId: "api",
+        logicalPath: "api",
+        absolutePath: path.join(workspaceRoot, "api"),
+        realPath: workspaceRoot,
+        repositoryRoot: workspaceRoot,
+        repositoryIdentity: "test",
+        origin: { type: "link", localPath: workspaceRoot },
+        head: "test",
+        dirtyFingerprint: "test",
+      }],
+      fingerprint: "test",
+    },
+    path.join(workspaceRoot, ".okf-wiki", "runs", "abcd", "candidate"),
+    {},
+  );
+  await assert.rejects(
+    () => runtime.run(
+      [{ agent: "survey", task: "map", boardTaskId: "survey", partition: "web" }],
+      new AbortController().signal,
+    ),
+    /pinned Source id/,
+  );
+});
+
 test("unknown agent names are reported in parseable agent files", () => {
   const parsed = parseAgentMarkdown("---\nname: survey\ndescription: Map a source\n---\nBody\n", "survey.md");
   assert.equal(parsed.name, "survey");

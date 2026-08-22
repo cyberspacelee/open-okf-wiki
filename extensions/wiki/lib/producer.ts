@@ -4,7 +4,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { inspectWiki, verifyPinnedSourcePlan, type WikiPinnedSourcePlan } from "./inspect.js";
+import { inspectWiki, pinsFromPlan, verifyPinnedSourcePlan, type WikiPinnedSourcePlan } from "./inspect.js";
+import { taskDigest, verifyHandoff } from "./handoff.js";
 import { exists, renamePath, writeText } from "./files.js";
 import { errorMessage } from "./failures.js";
 import { loadWikiWorkspace, resolveWorkspaceDatabase, type ResolvedWikiWorkspace, type WikiWorkspaceWikiConfig } from "./workspace.js";
@@ -20,7 +21,7 @@ import { resolveWikiTemplatePack, type WikiTemplatePack } from "./templates.js";
 import { writeGuardFromPlan } from "./path-policy.js";
 import { candidateTools, createTodoTool } from "./pi/tools.js";
 import { runWikiSession, type RunWikiSessionOptions } from "./pi/session.js";
-import { createSubagentRuntime, createSubagentTool, type SubagentTaskUpdate } from "./subagent.js";
+import { createSubagentRuntime, createSubagentTool, type SubagentTask, type SubagentTaskUpdate } from "./subagent.js";
 import { createBoardStore, emptyBoard, replaceBoard, type WikiBoard, type WikiBoardStore } from "./board.js";
 import { createPostgresCatalog } from "./postgres.js";
 import type { WikiCatalog } from "./catalog.js";
@@ -64,6 +65,7 @@ export interface WikiLeadContext {
   note(id: string, agent: string, task: string, status: "running" | "complete" | "failed"): void;
   record(update: SubagentTaskUpdate): Promise<void>;
   observe(event: WikiSessionActivity): void;
+  assertDispatch(tasks: readonly SubagentTask[]): void;
 }
 
 interface RunArtifactRef {
@@ -96,7 +98,7 @@ interface RunReviewReceipt {
 }
 
 interface RunRecord {
-  schemaVersion: 1;
+  schemaVersion: 2;
   id: string;
   cwd: string;
   status: WikiRunStatus;
@@ -112,6 +114,7 @@ interface RunRecord {
   pageCount?: number;
   candidateRoot: string;
   fingerprint: string;
+  plan: WikiPinnedSourcePlan;
   templateFingerprint?: string;
   sessionFile?: string;
 }
@@ -152,7 +155,7 @@ export function createProductionWikiProducer(options: WikiProducerOptions = {}):
       await mkdir(candidateRoot, { recursive: true });
       const now = new Date().toISOString();
       const record: RunRecord = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         id,
         cwd: workspace.root,
         status: "running",
@@ -164,6 +167,7 @@ export function createProductionWikiProducer(options: WikiProducerOptions = {}):
         leadAttempts: [],
         candidateRoot,
         fingerprint: plan.fingerprint,
+        plan,
       };
       await writeRecord(record);
       const live: LiveRun = emptyLive(record, plan);
@@ -181,15 +185,7 @@ export function createProductionWikiProducer(options: WikiProducerOptions = {}):
       if (live) return handleFor(live, options, workspace);
       const record = await readRecord(workspace.root, runId);
       if (!record) return undefined;
-      return handleFor(emptyLive(record, await inspectWiki(workspace.root).catch(() => ({
-        workspaceRoot: workspace.root,
-        workspaceRealPath: workspace.root,
-        configPath: workspace.configPath,
-        defaultSourceIgnores: workspace.defaultSourceIgnores,
-        excludes: workspace.wiki.exclude,
-        sources: [],
-        fingerprint: record.fingerprint,
-      }))), options, workspace);
+      return handleFor(emptyLive(record, record.plan), options, workspace);
     },
   };
 }
@@ -261,6 +257,10 @@ function startLive(
         observe(event) {
           observeTool(live, event);
         },
+        assertDispatch(tasks) {
+          const issue = fanInIssue(live, tasks);
+          if (issue) throw new Error(issue);
+        },
       };
       const runLead = options.runLead ?? defaultRunLead(options, live, workspace.wiki);
       await runLead(context);
@@ -307,6 +307,7 @@ function defaultRunLead(
         maxConcurrency: config.maxConcurrentAgents - 1,
         maxEvidenceRepairRounds: config.maxEvidenceRepairRounds,
         templates: context.templates,
+        assertDispatch: context.assertDispatch,
       },
     );
     const tools: ToolDefinition<any, any, any>[] = [
@@ -382,6 +383,8 @@ async function publishCandidate(live: LiveRun, language: "zh" | "en"): Promise<{
   if (live.record.executions.some((entry) => entry.status === "running")) {
     return { ok: false, message: "Cannot publish while subagent executions are running" };
   }
+  const workflowIssue = fanInIssue(live);
+  if (workflowIssue) return { ok: false, message: workflowIssue };
   const validation = await validateAndRecordCandidate(live);
   if (!validation) return { ok: false, message: "Wiki template pack is unavailable" };
   if (!validation.ok) {
@@ -402,11 +405,7 @@ async function publishCandidate(live: LiveRun, language: "zh" | "en"): Promise<{
     live.record.candidateRoot,
     language,
     templates,
-    live.plan.sources.map((source) => ({
-      scopeId: source.scopeId,
-      logicalPath: source.logicalPath,
-      realPath: source.realPath,
-    })),
+    pinsFromPlan(live.plan),
   );
   const at = new Date().toISOString();
   await stampPublication(live.record.candidateRoot, at, { reviewed: true, language });
@@ -435,19 +434,9 @@ async function checkCandidate(live: LiveRun): Promise<{ ok: boolean; message: st
 async function validateAndRecordCandidate(live: LiveRun): Promise<WikiValidation | undefined> {
   await verifyPinnedSourcePlan(live.plan);
   if (!live.templates) return undefined;
-  const pins = live.plan.sources.map((source) => ({
-    scopeId: source.scopeId,
-    logicalPath: source.logicalPath,
-    realPath: source.realPath,
-  }));
-  const validation = await validateWikiTree(live.record.candidateRoot, pins, live.templates, {
+  const validation = await validateWikiTree(live.record.candidateRoot, pinsFromPlan(live.plan), live.templates, {
     catalogAvailable: live.catalogAvailable,
   });
-  const workflowIssue = crossSourceWorkflowIssue(live);
-  if (workflowIssue) {
-    validation.issues.unshift({ code: "workflow", message: workflowIssue });
-    validation.ok = false;
-  }
   live.candidateRevision = await candidateRevision(live.record.candidateRoot);
   live.record.check = {
     candidateRevision: live.candidateRevision.digest,
@@ -462,7 +451,7 @@ async function validateAndRecordCandidate(live: LiveRun): Promise<WikiValidation
   return validation;
 }
 
-function crossSourceWorkflowIssue(live: LiveRun): string | undefined {
+function fanInIssue(live: LiveRun, incoming?: readonly SubagentTask[]): string | undefined {
   if (live.plan.sources.length <= 1) return undefined;
   const latest = (agent: string, partition: string) => live.record.executions
     .filter((entry) => entry.agent === agent && entry.partition === partition)
@@ -475,20 +464,35 @@ function crossSourceWorkflowIssue(live: LiveRun): string | undefined {
       surveys[index]?.status !== "complete" || !surveys[index]?.handoff || !surveys[index]?.completedAt
     ))
     .map((source) => source.scopeId);
-  if (missing.length) return `Cross-Source analysis requires completed surveys for: ${missing.join(", ")}`;
   const synthesis = latest("synthesize", "workspace-analysis");
+  const agents = incoming ? new Set(incoming.map((task) => task.agent)) : undefined;
+  if (agents?.has("survey")) return undefined;
+  if (agents?.has("synthesize") || !agents) {
+    if (missing.length) return `Cross-Source analysis requires completed surveys for: ${missing.join(", ")}`;
+  }
+  if (agents?.has("synthesize")) {
+    const task = incoming!.map((entry) => entry.task).join("\n");
+    const omittedHandoffs = surveys
+      .filter((entry) => entry?.handoff && !task.includes(entry.handoff.path))
+      .map((entry) => entry!.partition);
+    if (omittedHandoffs.length) {
+      return `Cross-Source synthesis task must name every survey handoff; missing ${omittedHandoffs.join(", ")}`;
+    }
+    return undefined;
+  }
   if (synthesis?.status !== "complete" || !synthesis.handoff || !synthesis.completedAt) {
     return "Multi-Source Workspace requires one completed synthesize execution for partition workspace-analysis";
   }
+  if (agents?.has("write")) return undefined;
   const omittedHandoffs = surveys
     .filter((entry) => entry?.handoff && !synthesis.task.includes(entry.handoff.path))
     .map((entry) => entry!.partition);
   if (omittedHandoffs.length) {
     return `Cross-Source synthesis task must name every survey handoff; missing ${omittedHandoffs.join(", ")}`;
   }
-  const lastSurvey = surveys.reduce((latest, entry) => {
+  const lastSurvey = surveys.reduce((latestAt, entry) => {
     const completedAt = entry?.completedAt ?? "";
-    return completedAt > latest ? completedAt : latest;
+    return completedAt > latestAt ? completedAt : latestAt;
   }, "");
   if (synthesis.startedAt < lastSurvey) {
     return "Cross-Source synthesis must start after every Source survey completes";
@@ -515,7 +519,7 @@ async function recordAgent(live: LiveRun, board: WikiBoardStore, update: Subagen
       partition: update.partition,
       agent: update.agent,
       task: update.task,
-      taskDigest: digestText(update.task),
+      taskDigest: taskDigest(update.task),
       status: "running",
       startedAt: now,
     });
@@ -533,41 +537,46 @@ async function recordAgent(live: LiveRun, board: WikiBoardStore, update: Subagen
   receipt.completedAt = now;
   receipt.error = update.error;
   receipt.usage = update.usage;
-  if (update.handoff && update.handoffRevision) {
-    try {
-      const revision = await fileRevision(artifactLocation(live, update.handoff));
-      if (revision !== update.handoffRevision) throw new Error("Handoff digest does not match the terminal update");
-      receipt.handoff = { path: update.handoff, sha256: revision };
-    } catch (error) {
-      receipt.status = "failed";
-      receipt.error = errorMessage(error);
-    }
-  }
   if (update.agent !== "survey") {
     live.candidateRevision = await candidateRevision(live.record.candidateRoot);
   }
   live.candidateRevision ??= await candidateRevision(live.record.candidateRoot);
-  const completedRevision = update.agent === "write"
-    ? await candidatePartitionRevision(live.record.candidateRoot, update.partition)
-    : live.candidateRevision;
-  if (update.candidateRevision && update.agent !== "survey" && update.candidateRevision !== completedRevision.digest) {
-    receipt.status = "failed";
-    receipt.error = "Candidate digest does not match the terminal update";
-  }
-  if (update.agent === "review" && receipt.status === "complete" && receipt.handoff && update.text) {
+  if (update.status === "complete") {
+    const completedRevision = update.agent === "write"
+      ? await candidatePartitionRevision(live.record.candidateRoot, update.partition)
+      : live.candidateRevision;
+    let verified;
     try {
-      const verdict = parseReviewVerdict(update.text);
-      live.record.review = {
-        executionId: update.id,
-        verdict,
-        candidateRevision: live.candidateRevision.digest,
-        sourceFingerprint: live.record.fingerprint,
-        handoff: receipt.handoff,
-        completedAt: now,
-      };
+      verified = update.handoff
+        ? await verifyHandoff(artifactLocation(live, update.handoff), {
+          executionId: update.id,
+          boardTaskId: update.boardTaskId,
+          partition: update.partition,
+          agent: update.agent,
+          taskDigest: receipt.taskDigest,
+          candidateRevision: completedRevision.digest,
+        })
+        : undefined;
     } catch (error) {
       receipt.status = "failed";
       receipt.error = errorMessage(error);
+      verified = undefined;
+    }
+    if (receipt.status === "complete" && !verified) {
+      receipt.status = "failed";
+      receipt.error = "Handoff is missing or does not match the execution receipt";
+    } else if (verified && update.handoff) {
+      receipt.handoff = { path: update.handoff, sha256: verified.sha256 };
+      if (update.agent === "review") {
+        live.record.review = {
+          executionId: update.id,
+          verdict: verified.verdict!,
+          candidateRevision: live.candidateRevision.digest,
+          sourceFingerprint: live.record.fingerprint,
+          handoff: receipt.handoff,
+          completedAt: now,
+        };
+      }
     }
   }
   live.record.updatedAt = now;
@@ -627,51 +636,33 @@ async function adoptCompletedHandoff(live: LiveRun, receipt: RunExecutionReceipt
     live.record.cwd,
     path.join(runDir(live.record.cwd, live.record.id), "handoffs", `${receipt.id}.md`),
   ).replaceAll("\\", "/");
-  const location = artifactLocation(live, relative);
-  let text: string;
-  try {
-    text = await readFile(location, "utf8");
-  } catch {
-    return false;
-  }
-  const first = text.split(/\r?\n/, 1)[0] ?? "";
-  const match = /^<!-- wiki-handoff (\{.*\}) -->$/.exec(first);
-  if (!match) return false;
-  let metadata: Record<string, unknown>;
-  try {
-    metadata = JSON.parse(match[1]!) as Record<string, unknown>;
-  } catch {
-    return false;
-  }
-  if (
-    metadata.executionId !== receipt.id
-    || metadata.boardTaskId !== receipt.boardTaskId
-    || metadata.partition !== receipt.partition
-    || metadata.agent !== receipt.agent
-    || metadata.taskDigest !== receipt.taskDigest
-  ) return false;
   const completedRevision = receipt.agent === "write"
     ? await candidatePartitionRevision(live.record.candidateRoot, receipt.partition)
     : live.candidateRevision;
-  if ((receipt.agent === "write" || receipt.agent === "review")
-    && metadata.completedCandidateRevision !== completedRevision?.digest) return false;
-  if (receipt.agent === "review" && metadata.baseCandidateRevision !== live.candidateRevision?.digest) return false;
-  const bodyMarker = "<!-- wiki-handoff-body -->\n";
-  const bodyOffset = text.lastIndexOf(bodyMarker);
-  const reviewBody = bodyOffset >= 0 ? text.slice(bodyOffset + bodyMarker.length) : undefined;
-  const reviewVerdict = receipt.agent === "review" && reviewBody ? safeReviewVerdict(reviewBody) : undefined;
-  if (receipt.agent === "review" && !reviewVerdict) return false;
-
+  let verified;
+  try {
+    verified = await verifyHandoff(artifactLocation(live, relative), {
+      executionId: receipt.id,
+      boardTaskId: receipt.boardTaskId,
+      partition: receipt.partition,
+      agent: receipt.agent,
+      taskDigest: receipt.taskDigest,
+      candidateRevision: completedRevision?.digest,
+    });
+  } catch {
+    return false;
+  }
+  if (!verified) return false;
   const now = new Date().toISOString();
   receipt.status = "complete";
   receipt.completedAt = now;
-  receipt.handoff = { path: relative, sha256: await fileRevision(location) };
+  receipt.handoff = { path: relative, sha256: verified.sha256 };
   receipt.error = undefined;
   if (receipt.agent === "review") {
-    if (!reviewVerdict || !live.candidateRevision) return false;
+    if (!verified.verdict || !live.candidateRevision) return false;
     live.record.review = {
       executionId: receipt.id,
-      verdict: reviewVerdict,
+      verdict: verified.verdict,
       candidateRevision: live.candidateRevision.digest,
       sourceFingerprint: live.record.fingerprint,
       handoff: receipt.handoff,
@@ -693,11 +684,10 @@ async function reconcileBoardTask(
   const attempts = latestExecutions(live.record.executions.filter((entry) => entry.boardTaskId === taskId));
   if (!attempts.length || attempts.some((entry) => entry.status === "running")) return;
   const complete = attempts.every((entry) => entry.status === "complete");
-  const artifacts = attempts.flatMap((entry) => entry.handoff ? [entry.handoff.path] : []);
   const failures = attempts.filter((entry) => entry.status === "failed" || entry.status === "interrupted");
   const status: WikiBoard["tasks"][number]["status"] = complete ? "completed" : resume ? "pending" : "failed";
   const note = complete
-    ? artifacts.length ? `handoff: ${artifacts.join(", ")}` : "execution receipts complete"
+    ? "execution receipts complete"
     : failures.map((entry) => `${entry.partition}: ${entry.error ?? entry.status}`).join("; ");
   const tasks = current.tasks.map((task) => task.id === taskId ? { ...task, status, ...(note ? { note } : {}) } : task);
   await board.write(replaceBoard(current, { tasks }));
@@ -758,25 +748,6 @@ function validationIssueDigest(validation: WikiValidation): string {
       .sort()
       .join("\n"))
     .digest("hex");
-}
-
-function parseReviewVerdict(text: string): "pass" | "changes_requested" {
-  const first = text.trimStart().split(/\r?\n/, 1)[0]?.trim();
-  const match = /^verdict:\s*(pass|changes_requested)$/.exec(first ?? "");
-  if (!match) throw new Error("Review handoff must start with verdict: pass or verdict: changes_requested");
-  return match[1] as "pass" | "changes_requested";
-}
-
-function safeReviewVerdict(text: string): "pass" | "changes_requested" | undefined {
-  try {
-    return parseReviewVerdict(text);
-  } catch {
-    return undefined;
-  }
-}
-
-function digestText(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
 }
 
 function artifactLocation(live: LiveRun, relative: string): string {
@@ -1023,12 +994,23 @@ async function listRecords(cwd: string): Promise<RunRecord[]> {
 function normalizeRunRecord(value: unknown): RunRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Run record must be an object");
   const raw = value as Record<string, unknown>;
-  if (raw.schemaVersion !== 1) {
+  if (raw.schemaVersion !== 2) {
     throw new Error(`Unsupported Run record schema version: ${String(raw.schemaVersion)}`);
   }
   if (!Array.isArray(raw.executions)) throw new Error("Run record executions must be an array");
   if (!Array.isArray(raw.leadAttempts)) throw new Error("Run record leadAttempts must be an array");
+  if (!isPinnedPlan(raw.plan)) throw new Error("Run record plan is missing");
   return raw as unknown as RunRecord;
+}
+
+function isPinnedPlan(value: unknown): value is WikiPinnedSourcePlan {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const raw = value as Record<string, unknown>;
+  return typeof raw.workspaceRoot === "string"
+    && typeof raw.fingerprint === "string"
+    && typeof raw.defaultSourceIgnores === "boolean"
+    && Array.isArray(raw.excludes)
+    && Array.isArray(raw.sources);
 }
 
 async function leadPrompt(context: WikiLeadContext, checkpoint: string): Promise<string> {

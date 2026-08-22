@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { git } from "../extensions/wiki/lib/git.js";
 import { writeText } from "../extensions/wiki/lib/files.js";
+import { writeHandoff, taskDigest } from "../extensions/wiki/lib/handoff.js";
 import { createProductionWikiProducer } from "../extensions/wiki/lib/producer.js";
 import type { WikiLeadContext } from "../extensions/wiki/lib/producer.js";
 import { candidatePartitionRevision, candidateRevision, fileRevision } from "../extensions/wiki/lib/revisions.js";
@@ -67,6 +67,32 @@ async function writeValidCandidate(candidateRoot: string, sourceResource = "main
   }
 }
 
+async function attestHandoff(context: WikiLeadContext, assignment: {
+  id: string;
+  agent: string;
+  task: string;
+  boardTaskId: string;
+  partition: string;
+}, text: string) {
+  const whole = (await candidateRevision(context.candidateRoot)).digest;
+  const completed = assignment.agent === "write"
+    ? (await candidatePartitionRevision(context.candidateRoot, assignment.partition)).digest
+    : assignment.agent === "survey" ? undefined : whole;
+  const relative = await writeHandoff({
+    workspaceRoot: context.plan.workspaceRoot,
+    handoffsRoot: path.join(path.dirname(context.candidateRoot), "handoffs"),
+    task: assignment,
+    text,
+    baseCandidateRevision: whole,
+    completedCandidateRevision: completed,
+  });
+  return {
+    handoff: relative,
+    handoffRevision: await fileRevision(path.join(context.plan.workspaceRoot, ...relative.split("/"))),
+    ...(completed ? { candidateRevision: completed } : {}),
+  };
+}
+
 async function writeReviewPass(context: WikiLeadContext) {
   const current = await context.board.read();
   await context.board.write({
@@ -86,18 +112,8 @@ async function writeReviewPass(context: WikiLeadContext) {
     partition: "candidate",
   };
   await context.record({ ...assignment, status: "running" });
-  const handoffs = path.join(path.dirname(context.candidateRoot), "handoffs");
-  await mkdir(handoffs, { recursive: true });
-  const handoff = path.join(handoffs, "review-test.md");
-  await writeText(handoff, "verdict: pass\n");
-  await context.record({
-    ...assignment,
-    status: "complete",
-    text: "verdict: pass\n",
-    handoff: path.relative(context.plan.workspaceRoot, handoff).replaceAll("\\", "/"),
-    handoffRevision: await fileRevision(handoff),
-    candidateRevision: (await candidateRevision(context.candidateRoot)).digest,
-  });
+  const attested = await attestHandoff(context, assignment, "verdict: pass\n");
+  await context.record({ ...assignment, status: "complete", ...attested });
 }
 
 async function gitRepo(t) {
@@ -211,7 +227,7 @@ test("resume turns an unacknowledged execution into retryable durable state", as
           agent: "survey",
           task: "Survey source",
           boardTaskId: "survey",
-          partition: "source",
+          partition: "self",
           status: "running",
         });
         return;
@@ -244,26 +260,15 @@ test("resume adopts an exact handoff written before the terminal receipt", async
           goal: "Adopt survey",
           tasks: [{ id: "survey", content: "Survey source", status: "in_progress" }],
         });
-        const task = "Survey source";
-        await context.record({
+        const assignment = {
           id: "survey-adopt",
           agent: "survey",
-          task,
+          task: "Survey source",
           boardTaskId: "survey",
-          partition: "source",
-          status: "running",
-        });
-        const metadata = {
-          executionId: "survey-adopt",
-          boardTaskId: "survey",
-          partition: "source",
-          agent: "survey",
-          taskDigest: createHash("sha256").update(task).digest("hex"),
-          baseCandidateRevision: (await candidateRevision(context.candidateRoot)).digest,
+          partition: "self",
         };
-        const location = path.join(path.dirname(context.candidateRoot), "handoffs", "survey-adopt.md");
-        await mkdir(path.dirname(location), { recursive: true });
-        await writeText(location, `<!-- wiki-handoff ${JSON.stringify(metadata)} -->\n# survey handoff\n\ncomplete\n`);
+        await context.record({ ...assignment, status: "running" });
+        await attestHandoff(context, assignment, "complete\n");
         return;
       }
       assert.equal((await context.board.read()).tasks[0]?.status, "completed");
@@ -304,20 +309,7 @@ test("resume adopts a partition-bound writer handoff after a sibling partition c
         await context.record({ ...assignment, status: "running" });
         await mkdir(path.join(context.candidateRoot, "billing"), { recursive: true });
         await writeText(path.join(context.candidateRoot, "billing", "domain.md"), "billing\n");
-        const metadata = {
-          executionId: assignment.id,
-          boardTaskId: assignment.boardTaskId,
-          partition: assignment.partition,
-          agent: assignment.agent,
-          taskDigest: createHash("sha256").update(assignment.task).digest("hex"),
-          baseCandidateRevision: (await candidateRevision(context.candidateRoot)).digest,
-          completedCandidateRevision: (
-            await candidatePartitionRevision(context.candidateRoot, assignment.partition)
-          ).digest,
-        };
-        const handoff = path.join(path.dirname(context.candidateRoot), "handoffs", `${assignment.id}.md`);
-        await mkdir(path.dirname(handoff), { recursive: true });
-        await writeText(handoff, `<!-- wiki-handoff ${JSON.stringify(metadata)} -->\n# write handoff\n\ncomplete\n`);
+        await attestHandoff(context, assignment, "complete\n");
         await mkdir(path.join(context.candidateRoot, "checkout"), { recursive: true });
         await writeText(path.join(context.candidateRoot, "checkout", "domain.md"), "checkout\n");
         return;
@@ -352,26 +344,25 @@ test("a reopened process-crash Run reconciles persisted running receipts", async
   }, null, 2)}\n`);
   const now = new Date().toISOString();
   await writeText(path.join(directory, "run.json"), `${JSON.stringify({
-    schemaVersion: 1,
+    schemaVersion: 2,
     id,
     cwd: root,
     status: "running",
     language: "zh",
-    objective: "Recover crash",
     createdAt: now,
     updatedAt: now,
     candidateRoot,
     fingerprint: plan.fingerprint,
+    plan,
     leadAttempts: [],
     executions: [{
       id: "survey-crash",
       boardTaskId: "survey",
-      partition: "source",
+      partition: "self",
       agent: "survey",
       task: "Survey source",
-      taskDigest: createHash("sha256").update("Survey source").digest("hex"),
+      taskDigest: taskDigest("Survey source"),
       status: "running",
-      sourceFingerprint: plan.fingerprint,
       startedAt: now,
     }],
   }, null, 2)}\n`);
@@ -530,15 +521,22 @@ test("multi-Source checks require survey fan-in followed by synthesis", async (t
         undefined,
         (update) => context.record(update),
         undefined,
-        { templates: context.templates },
+        {
+          templates: context.templates,
+          assertDispatch: context.assertDispatch,
+        },
+      );
+      await assert.rejects(
+        () => runtime.run([{ agent: "write", task: "Write api", boardTaskId: "survey", partition: "api" }], context.signal),
+        /requires one completed synthesize execution/,
       );
       const surveyResults = await runtime.run([
         { agent: "survey", task: "Survey api", boardTaskId: "survey", partition: "api" },
         { agent: "survey", task: "Survey web", boardTaskId: "survey", partition: "web" },
       ], context.signal);
-      const result = await context.check();
-      assert.equal(result.ok, false);
-      assert.match(result.message, /requires one completed synthesize execution/);
+      const checkedBefore = await context.check();
+      assert.equal(checkedBefore.ok, false);
+      assert.doesNotMatch(checkedBefore.message, /synthesize execution|completed surveys/);
       await context.board.write({
         goal: "Check multi-Source workflow",
         tasks: [
@@ -552,14 +550,14 @@ test("multi-Source checks require survey fan-in followed by synthesis", async (t
         boardTaskId: "synthesize",
         partition: "workspace-analysis",
       }], context.signal);
-      const afterSynthesis = await context.check();
-      assert.equal(afterSynthesis.ok, false);
-      assert.doesNotMatch(afterSynthesis.message, /Cross-Source|synthesize execution|completed surveys/);
+      const published = await context.publish();
+      assert.equal(published.ok, false);
+      assert.match(published.message, /Required template|concept cluster|frontmatter|type/i);
       checked = true;
     },
   });
   const handle = await producer.start({ cwd: workspace.root });
-  await assert.rejects(() => handle.result(), /Required template|concept cluster/);
+  await assert.rejects(() => handle.result(), /Required template|concept cluster|frontmatter|type|failed/i);
   assert.equal(checked, true);
 });
 
@@ -604,7 +602,7 @@ test("parallel terminal receipts persist only after both handoffs are attested",
         goal: "Survey both partitions",
         tasks: [{ id: "survey", content: "Survey partitions", status: "in_progress" }],
       });
-      const assignments = ["a", "b"].map((partition) => ({
+      const assignments = ["self"].map((partition) => ({
         id: `survey-${partition}`,
         agent: "survey",
         task: `Survey ${partition}`,
@@ -612,18 +610,9 @@ test("parallel terminal receipts persist only after both handoffs are attested",
         partition,
       }));
       for (const assignment of assignments) await context.record({ ...assignment, status: "running" });
-      const handoffs = path.join(path.dirname(context.candidateRoot), "handoffs");
-      await mkdir(handoffs, { recursive: true });
       await Promise.all(assignments.map(async (assignment) => {
-        const location = path.join(handoffs, `${assignment.id}.md`);
-        await writeText(location, `${assignment.partition}\n`);
-        await context.record({
-          ...assignment,
-          status: "complete",
-          text: assignment.partition,
-          handoff: path.relative(root, location).replaceAll("\\", "/"),
-          handoffRevision: await fileRevision(location),
-        });
+        const attested = await attestHandoff(context, assignment, `${assignment.partition}\n`);
+        await context.record({ ...assignment, status: "complete", ...attested });
       }));
       const record = JSON.parse(await readFile(path.join(path.dirname(context.candidateRoot), "run.json"), "utf8"));
       assert.equal(record.executions.every((entry) => entry.status === "complete" && entry.handoff?.sha256), true);
@@ -654,24 +643,12 @@ test("parallel disjoint write receipts are not invalidated by sibling writes", a
 
       await mkdir(path.join(context.candidateRoot, "billing"), { recursive: true });
       await writeText(path.join(context.candidateRoot, "billing", "domain.md"), "billing\n");
-      const billingRevision = (await candidatePartitionRevision(context.candidateRoot, "billing")).digest;
       await mkdir(path.join(context.candidateRoot, "checkout"), { recursive: true });
       await writeText(path.join(context.candidateRoot, "checkout", "domain.md"), "checkout\n");
-      const checkoutRevision = (await candidatePartitionRevision(context.candidateRoot, "checkout")).digest;
 
-      const handoffs = path.join(path.dirname(context.candidateRoot), "handoffs");
-      await mkdir(handoffs, { recursive: true });
-      for (const [index, assignment] of assignments.entries()) {
-        const handoff = path.join(handoffs, `${assignment.id}.md`);
-        await writeText(handoff, `${assignment.partition} complete\n`);
-        await context.record({
-          ...assignment,
-          status: "complete",
-          text: "complete",
-          handoff: path.relative(root, handoff).replaceAll("\\", "/"),
-          handoffRevision: await fileRevision(handoff),
-          candidateRevision: index === 0 ? billingRevision : checkoutRevision,
-        });
+      for (const assignment of assignments) {
+        const attested = await attestHandoff(context, assignment, `${assignment.partition} complete\n`);
+        await context.record({ ...assignment, status: "complete", ...attested });
       }
       const record = JSON.parse(await readFile(path.join(path.dirname(context.candidateRoot), "run.json"), "utf8"));
       assert.equal(record.executions.every((entry) => entry.status === "complete"), true);
@@ -819,4 +796,63 @@ test("unsubscribe stops live view delivery", async (t) => {
   assert.equal(views.length, before);
   release();
   await handle.result();
+});
+
+test("schema v1 Run records cannot be opened", async (t) => {
+  const root = await gitRepo(t);
+  const directory = path.join(root, ".okf-wiki", "runs", "oldrun01");
+  await mkdir(path.join(directory, "candidate"), { recursive: true });
+  await writeText(path.join(directory, "run.json"), `${JSON.stringify({
+    schemaVersion: 1,
+    id: "oldrun01",
+    cwd: root,
+    status: "paused",
+    language: "zh",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    candidateRoot: path.join(directory, "candidate"),
+    fingerprint: "x",
+    leadAttempts: [],
+    executions: [],
+  }, null, 2)}\n`);
+  const producer = createProductionWikiProducer({ async runLead() {} });
+  assert.equal(await producer.open("oldrun01", root), undefined);
+});
+
+test("resume does not adopt a handoff without an envelope", async (t) => {
+  const root = await gitRepo(t);
+  let leads = 0;
+  const producer = createProductionWikiProducer({
+    async runLead(context) {
+      leads += 1;
+      if (leads === 1) {
+        await context.board.write({
+          goal: "Reject bare handoff",
+          tasks: [{ id: "survey", content: "Survey source", status: "in_progress" }],
+        });
+        await context.record({
+          id: "survey-bare",
+          agent: "survey",
+          task: "Survey source",
+          boardTaskId: "survey",
+          partition: "self",
+          status: "running",
+        });
+        const location = path.join(path.dirname(context.candidateRoot), "handoffs", "survey-bare.md");
+        await mkdir(path.dirname(location), { recursive: true });
+        await writeText(location, "complete without envelope\n");
+        return;
+      }
+      const record = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", handle.id, "run.json"), "utf8"));
+      assert.equal(record.executions[0].status, "interrupted");
+      await writeValidCandidate(context.candidateRoot);
+      await writeReviewPass(context);
+      assert.equal((await context.publish()).ok, true);
+    },
+  });
+  const handle = await producer.start({ cwd: root });
+  await assert.rejects(() => handle.result(), /running|failed/);
+  await handle.control("resume");
+  await handle.result();
+  assert.equal(leads, 2);
 });

@@ -4,6 +4,19 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 
 ## [Unreleased]
 
+### Breaking: attested handoffs and pinned evidence
+
+- `run.json` is schema 2 and stores the pinned Source plan. Schema 1 records
+  cannot be opened; start a new Run.
+- Live completion and crash resume attest the same handoff file. Review
+  verdicts come from the file body, not session text. Old HTML-comment
+  envelopes are not adopted.
+- `subagent` rejects illegal partitions and, on multi-Source Runs, write
+  before synthesis. `candidate_check` reports only Candidate tree issues;
+  publish still requires fan-in receipts.
+- Ignore rules are part of the pin fingerprint. Writers cannot persist
+  illegal Wiki page paths.
+
 ### Breaking: knowledge-shaped Wiki tree
 
 - Explicit Workspaces organize repository, Domain, and Concept knowledge under

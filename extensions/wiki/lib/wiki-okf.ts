@@ -643,7 +643,6 @@ function issueSuggestion(code: string): string {
     case "template": return "Use a filename and placement declared for this page scope by the active template pack.";
     case "topology": return "Add the required anchor page or move/remove the page so the repository/domain/concept tree is complete.";
     case "wiki-safety": return "Remove the unsafe entry and keep the Candidate tree to regular Markdown files and directories.";
-    case "workflow": return "Complete every Source survey and the required cross-Source synthesis before checking or publishing.";
     default: return "Inspect the reported page and repair the stated invariant before running the full check again.";
   }
 }

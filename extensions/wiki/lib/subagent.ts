@@ -1,11 +1,11 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { Type } from "typebox";
 import type { AgentToolUpdateCallback, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { loadWikiAgents, type WikiAgentDefinition } from "./agents.js";
-import { writeText } from "./files.js";
-import { writeGuardFromPlan, writePartitionsOverlap, type WikiWriteGuard } from "./path-policy.js";
+import { writeHandoff } from "./handoff.js";
+import { assertAgentPartition, writeGuardFromPlan, writePartitionsOverlap, type WikiWriteGuard } from "./path-policy.js";
 import type { WikiPinnedSourcePlan } from "./inspect.js";
 import { isImplicitPinPath } from "./path.js";
 import { candidateTools, createCatalogTools } from "./pi/tools.js";
@@ -58,7 +58,12 @@ export async function createSubagentRuntime(
   agentsDirectory?: string,
   onTask?: SubagentTaskListener,
   catalog?: WikiCatalog,
-  options: { maxConcurrency?: number; maxEvidenceRepairRounds?: number; templates?: WikiTemplatePack } = {},
+  options: {
+    maxConcurrency?: number;
+    maxEvidenceRepairRounds?: number;
+    templates?: WikiTemplatePack;
+    assertDispatch?: (tasks: readonly SubagentTask[]) => void;
+  } = {},
 ): Promise<SubagentRuntime> {
   const agents = await loadWikiAgents(agentsDirectory);
   const byName = new Map(agents.map((agent) => [agent.name, agent]));
@@ -70,6 +75,8 @@ export async function createSubagentRuntime(
     async run(tasks, signal, onUpdate) {
       if (!tasks.length) throw new Error("subagent requires at least one task");
       assertSafeBatch(tasks);
+      for (const task of tasks) assertAgentPartition(task.agent, task.partition, plan);
+      options.assertDispatch?.(tasks);
       const release = acquireBatch(tasks);
       try {
         const maxConcurrency = options.maxConcurrency ?? tasks.length;
@@ -245,7 +252,14 @@ async function runOne(
       },
     );
     const completed = task.agent === "survey" ? undefined : await outputRevision();
-    const handoff = await writeHandoff(guard, task, result.text, base.digest, completed?.digest);
+    const handoff = await writeHandoff({
+      workspaceRoot: guard.workspaceRoot,
+      handoffsRoot: guard.handoffsRoot,
+      task,
+      text: result.text,
+      baseCandidateRevision: base.digest,
+      completedCandidateRevision: completed?.digest,
+    });
     return {
       ...task,
       text: result.text,
@@ -257,29 +271,6 @@ async function runOne(
   } catch (error) {
     return { ...task, text: "", error: error instanceof Error ? error.message : String(error) };
   }
-}
-
-async function writeHandoff(
-  guard: WikiWriteGuard,
-  task: SubagentTask & { id: string },
-  text: string,
-  baseCandidateRevision: string,
-  completedCandidateRevision?: string,
-): Promise<string> {
-  await mkdir(guard.handoffsRoot, { recursive: true });
-  const location = path.join(guard.handoffsRoot, `${task.id}.md`);
-  const metadata = {
-    executionId: task.id,
-    boardTaskId: task.boardTaskId,
-    partition: task.partition,
-    agent: task.agent,
-    taskDigest: createHash("sha256").update(task.task).digest("hex"),
-    baseCandidateRevision,
-    ...(completedCandidateRevision ? { completedCandidateRevision } : {}),
-  };
-  const body = `<!-- wiki-handoff ${JSON.stringify(metadata)} -->\n# ${task.agent} handoff\n\nTask: ${task.task}\n\n<!-- wiki-handoff-body -->\n${text.trim()}\n`;
-  await writeText(location, body);
-  return path.relative(guard.workspaceRoot, location).replaceAll("\\", "/");
 }
 
 function formatResult(result: SubagentResult): string {

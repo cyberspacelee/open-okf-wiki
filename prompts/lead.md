@@ -15,8 +15,10 @@ memory.
 Use `todo` before delegating. Keep at most one Board Task `in_progress`; one
 Task may own a parallel survey batch or a parallel write batch of disjoint
 prefixes. Every `subagent` assignment must name that `boardTaskId` and a stable
-`partition`. The host records each execution before it starts and reconciles
-the Board after it finishes.
+`partition`. The host rejects unknown partitions and, in a multi-Source
+Workspace, rejects synthesize before every survey handoff exists and write
+before synthesis completes. The host records each execution before it starts
+and reconciles the Board after it finishes.
 
 On resume or after compaction:
 

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { writePartitionAllows } from "./path-policy.js";
 import type { WikiTemplatePack } from "./templates.js";
 
 export interface TreeRevision {
@@ -14,11 +15,7 @@ export async function candidateRevision(root: string): Promise<TreeRevision> {
 }
 
 export async function candidatePartitionRevision(root: string, partition: string): Promise<TreeRevision> {
-  const files = (await regularFiles(root)).filter((relative) => {
-    if (partition === "candidate" || partition === "wiki") return true;
-    if (partition === "wiki-root") return !relative.includes("/");
-    return relative.startsWith(`${partition}/`);
-  });
+  const files = (await regularFiles(root)).filter((relative) => writePartitionAllows(partition, relative));
   return await treeRevision(root, files);
 }
 
