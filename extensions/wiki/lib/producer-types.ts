@@ -35,24 +35,42 @@ export interface WikiToolView {
   status: WikiToolStatus;
 }
 
+interface WikiActivityBase {
+  id: string;
+  at: string;
+}
+
+export interface WikiInputActivityView extends WikiActivityBase {
+  kind: "input";
+  text: string;
+}
+
+export interface WikiOutputActivityView extends WikiActivityBase {
+  kind: "output";
+  text: string;
+  status: WikiAgentStatus;
+}
+
+export interface WikiToolActivityView extends WikiActivityBase, WikiToolView {
+  kind: "tool";
+  result?: string;
+}
+
+export type WikiActivityView = WikiInputActivityView | WikiOutputActivityView | WikiToolActivityView;
+
 export interface WikiAgentView {
   id: string;
   agent: string;
   task?: string;
   status: WikiAgentStatus;
-  tools: WikiToolView[];
+  activity: WikiActivityView[];
   usage?: WikiAgentUsage;
 }
 
-export interface WikiSessionActivity {
-  id: string;
-  tool: string;
-  args: unknown;
-  status: WikiToolStatus;
-  result?: unknown;
+export type WikiSessionActivity = WikiActivityView & {
   scope?: string;
   usage?: WikiAgentUsage;
-}
+};
 
 export interface WikiRunView {
   id: string;

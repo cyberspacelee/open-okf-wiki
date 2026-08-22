@@ -3,8 +3,10 @@ import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { createWikiOverlay, openWikiStatusOverlay, wikiWidgetFactory } from "../extensions/wiki/lib/tui.js";
 
+const ACTIVITY_AT = "2026-08-12T00:00:30.000Z";
+
 function view(overrides = {}) {
-  return {
+  const current = {
     id: "run-1",
     cwd: "/repo",
     status: "running",
@@ -27,6 +29,14 @@ function view(overrides = {}) {
       },
     ],
     ...overrides,
+  };
+  return {
+    ...current,
+    agents: current.agents?.map((agent) => {
+      if (agent.activity) return agent;
+      const { tools = [], ...rest } = agent;
+      return { ...rest, activity: tools.map((tool) => ({ kind: "tool", at: ACTIVITY_AT, ...tool })) };
+    }),
   };
 }
 
@@ -141,7 +151,7 @@ test("agents are the default view and layout responds to readable pane widths", 
     assert.doesNotMatch(split, /run-1/);
     assert.match(split, /\[Agents 2 · 2 active\].*Board 0\/1/s);
     assert.match(split, /> .*lead/);
-    assert.match(split, /Process tail.*lead/s);
+    assert.match(split, /Process.*lead/s);
     assert.doesNotMatch(compact, / │ /);
     assert.match(split, / │ /);
     assert.doesNotMatch(compact, /Write overview/);
@@ -167,6 +177,32 @@ test("Tab opens a complete Board with goal, Task content, notes, and source orde
     assert.ok(board.indexOf("write") < board.indexOf("review"));
     component.handleInput("\t");
     assert.match(rendered(component, 60), /\[Agents 2 · 2 active\]/);
+  } finally { dispose(); }
+});
+
+test("Process renders complete input, assistant output, tool calls, and tool results", () => {
+  const current = view({ agents: [{
+    id: "write",
+    agent: "write",
+    task: "author authentication",
+    status: "running",
+    activity: [
+      { kind: "input", id: "input-1", at: ACTIVITY_AT, text: "Inspect authentication before writing." },
+      { kind: "output", id: "output-1", at: ACTIVITY_AT, text: "I found the authentication boundary.", status: "complete" },
+      { kind: "tool", id: "tool-1", at: ACTIVITY_AT, tool: "read", args: { path: "src/auth.ts" }, status: "complete", result: "export function authenticate()" },
+    ],
+  }] });
+  const { component, dispose } = overlay(current);
+  try {
+    component.handleInput("tui.select.confirm");
+    const process = rendered(component, 80);
+    const localTime = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "medium" }).format(Date.parse(ACTIVITY_AT));
+    assert.match(process, /Process.*write.*author authentication/s);
+    assert.match(process, /Input.*Inspect authentication before writing\./s);
+    assert.match(process, /Assistant.*I found the authentication boundary\./s);
+    assert.match(process, /Tool.*read src\/auth\.ts/s);
+    assert.match(process, /Result.*export function authenticate\(\)/s);
+    assert.ok(process.includes(localTime));
   } finally { dispose(); }
 });
 
@@ -202,7 +238,7 @@ test("agent focus follows stable id across insertion and reordering", () => {
   try {
     component.handleInput("j");
     component.handleInput("tui.select.confirm");
-    assert.match(rendered(component), /Process tail.*survey.*backend/s);
+    assert.match(rendered(component), /Process.*survey.*backend/s);
     run.emit(view({ agents: [
       { id: "new", agent: "survey", task: "new", status: "running", tools: [] },
       current.agents[2],
@@ -210,7 +246,7 @@ test("agent focus follows stable id across insertion and reordering", () => {
       current.agents[1],
     ] }));
     const detail = rendered(component);
-    assert.match(detail, /Process tail.*survey.*backend/s);
+    assert.match(detail, /Process.*survey.*backend/s);
     assert.match(detail, /backend\.ts/);
     assert.doesNotMatch(detail, /frontend\.ts/);
   } finally { dispose(); }
@@ -230,17 +266,20 @@ test("removing the selected agent returns to Agents and chooses the nearest row"
     const listing = rendered(component);
     assert.match(listing, /selected agent is no longer available/i);
     assert.match(listing, /> .*c/);
-    assert.doesNotMatch(listing, /Process tail.* b/);
+    assert.doesNotMatch(listing, /Process.* b/);
   } finally { dispose(); }
 });
 
-test("Process tail preserves reading position, reports newer activity, and follows tail on demand", () => {
+test("Process preserves complete history, reading position, and explicit tail following", () => {
   const tools = Array.from({ length: 30 }, (_, index) => ({
     id: `t${index}`, tool: "read", args: { path: `src/${index}.ts` }, status: "complete",
   }));
   const current = view({ agents: [{ id: "write", agent: "write", status: "running", tools }] });
   const { component, handle: run, dispose } = overlay(current);
   try {
+    const preview = rendered(component, 80);
+    assert.match(preview, /Process.*write/s);
+    assert.match(preview, /src\/29\.ts/);
     component.handleInput("tui.select.confirm");
     assert.match(rendered(component, 60), /src\/0\.ts/);
     run.emit(view({ agents: [{
@@ -257,19 +296,6 @@ test("Process tail preserves reading position, reports newer activity, and follo
     assert.doesNotMatch(tail, /new activity/);
     component.handleInput("g");
     assert.match(rendered(component, 60), /src\/0\.ts/);
-  } finally { dispose(); }
-});
-
-test("expired Process anchors are explained when the retained tail rotates", () => {
-  const tools = Array.from({ length: 18 }, (_, index) => ({ id: `t${index}`, tool: "read", args: { path: `${index}.ts` }, status: "complete" }));
-  const current = view({ agents: [{ id: "write", agent: "write", status: "running", tools }] });
-  const { component, handle: run, tui, dispose } = overlay(current);
-  tui.terminal.rows = 12;
-  try {
-    component.handleInput("tui.select.confirm");
-    component.render(50);
-    run.emit(view({ agents: [{ id: "write", agent: "write", status: "running", tools: tools.slice(5) }] }));
-    assert.match(rendered(component, 50), /Older process activity is no longer retained/);
   } finally { dispose(); }
 });
 
@@ -434,7 +460,7 @@ test("small viewports keep selected agents visible and report list position", ()
     assert.match(listing, /> .*agent-14/);
     assert.match(listing, /15\/18/);
     component.handleInput("tui.select.confirm");
-    assert.match(rendered(component, 60), /Process tail.*agent-14/s);
+    assert.match(rendered(component, 60), /Process.*agent-14/s);
   } finally { dispose(); }
 });
 

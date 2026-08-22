@@ -1,4 +1,4 @@
-import type { WikiRunView } from "./producer-types.js";
+import type { WikiAgentView, WikiRunView, WikiToolActivityView } from "./producer-types.js";
 
 const LOCAL_DATE_TIME = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -203,10 +203,13 @@ export function renderWikiLive(run: WikiRunView): string[] {
   }
   for (const agent of run.agents ?? []) {
     if (agent.status !== "running") continue;
-    const current = agent.tools.find((tool) => tool.status === "running") ?? agent.tools.at(-1);
+    const current = currentTool(agent);
+    const latest = agent.activity.at(-1);
     lines.push(current
       ? `◆ ${agent.agent} · ${formatToolCall(current.tool, current.args)}`
-      : `running  ${agent.agent}`);
+      : latest?.kind === "output"
+        ? `◆ ${agent.agent} · ${truncate(singleLine(latest.text), 60)}`
+        : `running  ${agent.agent}`);
   }
   return lines.slice(0, 6);
 }
@@ -228,9 +231,14 @@ export function renderWikiRun(run: WikiRunView | undefined): string {
 
 function agentLines(agent: NonNullable<WikiRunView["agents"]>[number]): string {
   const task = agent.task ? `  ${truncate(agent.task, 80)}` : "";
-  const current = agent.tools.find((tool) => tool.status === "running") ?? agent.tools.at(-1);
-  const tool = current ? `  ${toolMarker(current.status)} ${formatToolCall(current.tool, current.args)}` : "";
-  return `  ${agent.status}  ${agent.agent}${task}${tool}`;
+  const current = currentTool(agent);
+  const latest = agent.activity.at(-1);
+  const detail = current
+    ? `  ${toolMarker(current.status)} ${formatToolCall(current.tool, current.args)}`
+    : latest?.kind === "output"
+      ? `  ← ${truncate(singleLine(latest.text), 80)}`
+      : "";
+  return `  ${agent.status}  ${agent.agent}${task}${detail}`;
 }
 
 function toolMarker(status: "running" | "complete" | "failed"): string {
@@ -243,7 +251,7 @@ export function wikiFooterStatus(run: WikiRunView): string {
   if (run.status !== "running") return `wiki ${run.status}`;
   const flying = (run.agents ?? []).filter((agent) => agent.status === "running");
   for (const agent of flying) {
-    const current = agent.tools.find((tool) => tool.status === "running");
+    const current = toolActivity(agent).find((tool) => tool.status === "running");
     if (current) return `wiki running · ${agent.agent} · ${formatToolCall(current.tool, current.args)}`;
   }
   if (flying.length) return `wiki running · ${flying.map((agent) => agent.agent).join(",")}`;
@@ -270,4 +278,17 @@ export function wikiCliHelp(): string {
 
 function truncate(value: string, max: number): string {
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
+}
+
+function toolActivity(agent: WikiAgentView): WikiToolActivityView[] {
+  return agent.activity.filter((entry): entry is WikiToolActivityView => entry.kind === "tool");
+}
+
+function currentTool(agent: WikiAgentView): WikiToolActivityView | undefined {
+  const tools = toolActivity(agent);
+  return tools.find((tool) => tool.status === "running") ?? tools.at(-1);
+}
+
+function singleLine(value: string): string {
+  return value.replaceAll(/[\r\n]+/g, " ").replaceAll(/\s+/g, " ").trim();
 }

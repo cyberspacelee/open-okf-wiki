@@ -64,7 +64,7 @@ test("renders plain run and snapshot output", () => {
     status: "paused",
     goal: "Auth wiki",
     tasks: [{ id: "write", content: "Write overview", status: "in_progress" }],
-    agents: [{ id: "write-1", agent: "write", task: "author pages", status: "running", tools: [{ id: "1", tool: "read", args: { path: "src/a.ts" }, status: "running" }] }],
+    agents: [{ id: "write-1", agent: "write", task: "author pages", status: "running", activity: [{ kind: "tool", id: "1", at: "2026-08-12T00:00:00.000Z", tool: "read", args: { path: "src/a.ts" }, status: "running" }] }],
     createdAt: "2026-08-12T00:00:00.000Z",
     updatedAt: "2026-08-12T00:00:00.000Z",
   }), /in_progress  write  Write overview[\s\S]*◆ read src\/a\.ts/);
@@ -104,7 +104,7 @@ test("renders a compact live widget from running agent tools", () => {
       agent: "write",
       task: "author pages",
       status: "running",
-      tools: [{ id: "1", tool: "read", args: { path: "src/checkout.ts", offset: 1, limit: 80 }, status: "running" }],
+      activity: [{ kind: "tool", id: "1", at: "2026-08-12T00:00:00.000Z", tool: "read", args: { path: "src/checkout.ts", offset: 1, limit: 80 }, status: "running" }],
     }],
   }), [
     "Wiki run-1 | running | auth",

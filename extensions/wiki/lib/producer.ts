@@ -36,12 +36,12 @@ import {
   type WikiRunStatus,
   type WikiRunView,
   type WikiSessionActivity,
-  type WikiToolView,
   type WikiAgentUsage,
 } from "./producer-types.js";
 import { candidatePartitionRevision, candidateRevision, fileRevision, templatePackRevision } from "./revisions.js";
 import { formatLeadCheckpoint, type CheckpointExecution, type CheckpointReview } from "./checkpoint.js";
 import { installWikiPublication, recoverWikiPublication } from "./publication.js";
+import { RunActivity } from "./run-activity.js";
 
 const LEAD_CANDIDATE_TOOLS = ["read", "ls"] as const;
 
@@ -123,8 +123,6 @@ interface RunRecord {
 
 const active = new Map<string, LiveRun>();
 
-const TOOL_LIMIT = 12;
-
 interface LiveRun {
   record: RunRecord;
   plan: WikiPinnedSourcePlan;
@@ -137,7 +135,7 @@ interface LiveRun {
   candidateRevision?: { digest: string; files: string[] };
   checkpointText?: string;
   recordUpdates: Promise<void>;
-  agents: Map<string, WikiAgentView>;
+  activity: RunActivity;
   listeners: Set<(view: WikiRunView) => void>;
   ownerToken?: string;
 }
@@ -181,7 +179,7 @@ export function createProductionWikiProducer(options: WikiProducerOptions = {}):
           plan,
         };
         await writeRecord(record);
-        const live: LiveRun = emptyLive(record, plan);
+        const live: LiveRun = emptyLive(record, plan, new RunActivity(runDir(record.cwd)));
         await claimRunOwner(live);
         active.set(key, live);
         startLive(live, workspace, options, { resume: false, focus: request.focus });
@@ -201,7 +199,8 @@ export function createProductionWikiProducer(options: WikiProducerOptions = {}):
         return undefined;
       }
       if (!record) return undefined;
-      return handleFor(emptyLive(record, record.plan), options, workspace);
+      const activity = await RunActivity.open(runDir(record.cwd));
+      return handleFor(emptyLive(record, record.plan, activity), options, workspace);
     },
   };
 }
@@ -217,7 +216,7 @@ function startLive(
   const controller = new AbortController();
   live.controller = controller;
   live.result = undefined;
-  live.agents.set("lead", { id: "lead", agent: "lead", status: "running", tools: [] });
+  live.activity.noteAgent("lead", "lead", undefined, "running");
   live.done = (async () => {
     try {
       const initial = emptyBoard(record.focus ?? "Generate a complete repository Wiki");
@@ -271,7 +270,7 @@ function startLive(
           await transition;
         },
         observe(event) {
-          observeTool(live, event);
+          observeActivity(live, event);
         },
         assertDispatch(tasks) {
           const issue = fanInIssue(live, tasks);
@@ -294,6 +293,17 @@ function startLive(
       emit(live);
     }
     finally {
+      try {
+        await live.activity.flush();
+      } catch (error) {
+        if (record.status !== "succeeded" && record.status !== "cancelled") {
+          record.status = "failed";
+          record.error = `Run activity persistence failed: ${errorMessage(error)}`;
+          record.updatedAt = new Date().toISOString();
+          await writeRecord(record);
+          emit(live);
+        }
+      }
       await releaseRunOwner(live);
       if (record.status === "succeeded" || record.status === "cancelled") {
         await cleanupCurrentRun(record.cwd);
@@ -642,8 +652,7 @@ async function reconcileRun(live: LiveRun, board: WikiBoardStore): Promise<void>
       receipt.status = "interrupted";
       receipt.completedAt = new Date().toISOString();
       receipt.error = "Execution was interrupted before a terminal receipt was persisted";
-      const agent = live.agents.get(receipt.id);
-      if (agent) live.agents.set(receipt.id, { ...agent, status: "failed" });
+      live.activity.noteAgent(receipt.id, receipt.agent, receipt.task, "failed");
       changed = true;
     }
     if (receipt.status === "complete" && !receipt.handoff) {
@@ -842,6 +851,7 @@ function handleFor(live: LiveRun, options: WikiProducerOptions, workspace: Resol
         emit(live);
       });
       if (action === "cancel" && active.get(runKey(workspace.root)) !== live) {
+        await live.activity.flush().catch(() => {});
         await cleanupCurrentRun(workspace.root);
       }
       return await toView(live);
@@ -887,10 +897,10 @@ async function resumeLive(
 }
 
 async function toView(live: LiveRun): Promise<WikiRunView> {
-  return toViewFrom(live.record, live.board ?? await createBoardStore(runDir(live.record.cwd)).read(), live.agents);
+  return toViewFrom(live.record, live.board ?? await createBoardStore(runDir(live.record.cwd)).read(), live.activity.agents());
 }
 
-function toViewFrom(record: RunRecord, board: WikiBoard, agents: Map<string, WikiAgentView>): WikiRunView {
+function toViewFrom(record: RunRecord, board: WikiBoard, agents: WikiAgentView[]): WikiRunView {
   return {
     id: record.id,
     cwd: record.cwd,
@@ -906,38 +916,47 @@ function toViewFrom(record: RunRecord, board: WikiBoard, agents: Map<string, Wik
   };
 }
 
-function presentAgents(record: RunRecord, live: Map<string, WikiAgentView>): WikiAgentView[] {
-  if (live.size > 0) {
-    const lead = live.get("lead");
-    const rest = [...live.values()].filter((agent) => agent.id !== "lead" && agent.agent !== "lead");
-    return lead ? [lead, ...rest] : rest;
-  }
-  const leadStatus = record.status === "succeeded"
+function presentAgents(record: RunRecord, live: WikiAgentView[]): WikiAgentView[] {
+  const leadStatus: WikiAgentView["status"] = record.status === "succeeded"
     ? "complete"
     : record.status === "running" || record.status === "paused"
       ? "running"
       : "failed";
-  return [
-    { id: "lead", agent: "lead", status: leadStatus, tools: [] },
-    ...record.executions.map((execution) => ({
+  const byId = new Map(live.map((agent) => [agent.id, agent]));
+  const currentLead = byId.get("lead");
+  const leadUsage = currentLead?.usage ?? record.leadAttempts.at(-1)?.usage;
+  const lead = {
+    ...(currentLead ?? { id: "lead", agent: "lead", status: leadStatus, activity: [] }),
+    status: leadStatus,
+    ...(leadUsage ? { usage: leadUsage } : {}),
+  };
+  const executions = record.executions.map((execution) => {
+    const current = byId.get(execution.id);
+    return current ? {
+      ...current,
+      ...(current.usage ? {} : execution.usage ? { usage: execution.usage } : {}),
+    } : {
       id: execution.id,
       agent: execution.agent,
       task: execution.task,
       status: execution.status === "interrupted" ? "failed" as const : execution.status,
       ...(execution.usage ? { usage: execution.usage } : {}),
-      tools: [],
-    })),
-  ];
+      activity: [],
+    };
+  });
+  const recorded = new Set(["lead", ...record.executions.map((execution) => execution.id)]);
+  const transient = live.filter((agent) => !recorded.has(agent.id) && agent.agent !== "lead");
+  return [lead, ...executions, ...transient];
 }
 
-function emptyLive(record: RunRecord, plan: WikiPinnedSourcePlan): LiveRun {
+function emptyLive(record: RunRecord, plan: WikiPinnedSourcePlan, activity: RunActivity): LiveRun {
   return {
     record,
     plan,
     controller: new AbortController(),
     done: Promise.resolve(),
     recordUpdates: Promise.resolve(),
-    agents: new Map(),
+    activity,
     listeners: new Set(),
   };
 }
@@ -962,45 +981,19 @@ function watchBoard(store: WikiBoardStore, live: LiveRun): WikiBoardStore {
 }
 
 function noteAgent(live: LiveRun, id: string, agent: string, task: string, status: WikiAgentView["status"]): void {
-  const current = live.agents.get(id) ?? { id, agent, tools: [] as WikiToolView[] };
-  live.agents.set(id, { ...current, id, agent, task, status, tools: current.tools });
+  live.activity.noteAgent(id, agent, task, status);
   live.record.updatedAt = new Date().toISOString();
   emit(live);
 }
 
-function observeTool(live: LiveRun, event: WikiSessionActivity): void {
-  const id = event.scope ?? "lead";
-  const current = live.agents.get(id) ?? { id, agent: id === "lead" ? "lead" : id, status: "running" as const, tools: [] as WikiToolView[] };
-  const tools = current.tools.slice();
-  const index = tools.findIndex((tool) => tool.id === event.id);
-  const row: WikiToolView = { id: event.id, tool: event.tool, args: event.args, status: event.status };
-  if (index >= 0) tools[index] = row;
-  else tools.push(row);
-  live.agents.set(id, {
-    ...current,
-    id,
-    status: current.status === "complete" || current.status === "failed" ? current.status : "running",
-    tools: capTools(tools),
-    ...(event.usage ? { usage: event.usage } : {}),
-  });
+function observeActivity(live: LiveRun, event: WikiSessionActivity): void {
+  live.activity.observe(event);
   live.record.updatedAt = new Date().toISOString();
   emit(live);
-}
-
-function capTools(tools: WikiToolView[]): WikiToolView[] {
-  const running = tools.filter((tool) => tool.status === "running");
-  if (tools.length <= Math.max(TOOL_LIMIT, running.length)) return tools;
-  const keep = new Set(running.map((tool) => tool.id));
-  for (const tool of tools.slice().reverse()) {
-    if (keep.size >= Math.max(TOOL_LIMIT, running.length)) break;
-    keep.add(tool.id);
-  }
-  return tools.filter((tool) => keep.has(tool.id));
 }
 
 function settleLead(live: LiveRun, status: WikiAgentView["status"]): void {
-  const lead = live.agents.get("lead") ?? { id: "lead", agent: "lead", tools: [] as WikiToolView[] };
-  live.agents.set("lead", { ...lead, id: "lead", agent: "lead", status, tools: lead.tools });
+  live.activity.noteAgent("lead", "lead", undefined, status);
 }
 
 function emit(live: LiveRun): void {

@@ -13,7 +13,18 @@ import { candidatePartitionRevision, candidateRevision, fileRevision } from "../
 import { inspectWiki } from "../extensions/wiki/lib/inspect.js";
 import { loadWikiTemplatePack, packagedTemplatesRoot } from "../extensions/wiki/lib/templates.js";
 import { createSubagentRuntime } from "../extensions/wiki/lib/subagent.js";
+import { RunActivity } from "../extensions/wiki/lib/run-activity.js";
 import { wikiWorkspaceManagement } from "../extensions/wiki/lib/workspace.js";
+
+const ACTIVITY_AT = "2026-08-22T00:00:00.000Z";
+
+function toolEvent(id, tool, args, status, scope) {
+  return { kind: "tool", id, at: ACTIVITY_AT, tool, args, status, ...(scope ? { scope } : {}) };
+}
+
+function toolActivity(agent) {
+  return agent.activity.filter((entry) => entry.kind === "tool");
+}
 
 function mermaidStub(kind: string): string {
   if (kind === "sequenceDiagram") return "```mermaid\nsequenceDiagram\n  A->>B: call\n```\n";
@@ -372,6 +383,12 @@ test("a reopened process-crash Run reconciles persisted running receipts", async
       startedAt: now,
     }],
   }, null, 2)}\n`);
+  const activity = new RunActivity(directory);
+  activity.noteAgent("survey-crash", "survey", "Survey source", "running");
+  activity.observe({ kind: "input", id: "input-crash", at: ACTIVITY_AT, text: "Survey the Source", scope: "survey-crash" });
+  activity.observe({ kind: "output", id: "output-crash", at: ACTIVITY_AT, text: "The Source contains one module.", status: "complete", scope: "survey-crash" });
+  activity.observe(toolEvent("tool-crash", "read", { path: "main.ts" }, "complete", "survey-crash"));
+  await activity.flush();
   const producer = createProductionWikiProducer({
     async runLead(context) {
       assert.equal((await context.board.read()).tasks[0]?.status, "pending");
@@ -384,6 +401,10 @@ test("a reopened process-crash Run reconciles persisted running receipts", async
   });
   const handle = await producer.current(root);
   assert.ok(handle);
+  const restored = await handle.view();
+  const restoredSurvey = restored.agents.find((agent) => agent.id === "survey-crash");
+  assert.ok(restoredSurvey);
+  assert.deepEqual(restoredSurvey.activity.map((entry) => entry.kind), ["input", "output", "tool"]);
   await handle.control("resume");
   await handle.result();
   assert.equal((await handle.view()).status, "succeeded");
@@ -410,6 +431,7 @@ test("start refuses a paused Run", async (t) => {
   await handle.control("pause");
   assert.equal((await handle.view()).status, "paused");
   await assert.rejects(() => producer.start({ cwd: root }), /paused; use \/wiki resume/);
+  await assert.rejects(() => handle.result(), /paused/);
 });
 
 test("concurrent starts admit only one current Run", async (t) => {
@@ -761,12 +783,12 @@ test("live view puts nested tools on the named agent and notifies subscribers", 
   const producer = createProductionWikiProducer({
     async runLead(context) {
       await wait;
-      context.observe({ id: "lead-1", tool: "read", args: { path: "src/a.ts" }, status: "running" });
+      context.observe(toolEvent("lead-1", "read", { path: "src/a.ts" }, "running"));
       context.note("survey-a", "survey", "map source a", "running");
       context.note("survey-b", "survey", "map source b", "running");
-      context.observe({ scope: "survey-a", id: "s1", tool: "grep", args: { pattern: "Order" }, status: "running" });
-      context.observe({ scope: "survey-a", id: "s1", tool: "grep", args: { pattern: "Order" }, status: "complete" });
-      context.observe({ scope: "survey-b", id: "s2", tool: "ls", args: { path: "frontend" }, status: "running" });
+      context.observe(toolEvent("s1", "grep", { pattern: "Order" }, "running", "survey-a"));
+      context.observe(toolEvent("s1", "grep", { pattern: "Order" }, "complete", "survey-a"));
+      context.observe(toolEvent("s2", "ls", { path: "frontend" }, "running", "survey-b"));
       await writeValidCandidate(context.candidateRoot);
       await writeReviewPass(context);
       const published = await context.publish();
@@ -783,14 +805,14 @@ test("live view puts nested tools on the named agent and notifies subscribers", 
   assert.ok(live);
   const lead = live.agents.find((agent) => agent.agent === "lead");
   const surveys = live.agents.filter((agent) => agent.agent === "survey");
-  assert.equal(lead.tools[0].tool, "read");
+  assert.equal(toolActivity(lead)[0].tool, "read");
   assert.equal(surveys.length, 2);
-  assert.equal(surveys[0].tools[0].tool, "grep");
-  assert.equal(surveys[0].tools[0].status, "complete");
-  assert.equal(surveys[1].tools[0].tool, "ls");
+  assert.equal(toolActivity(surveys[0])[0].tool, "grep");
+  assert.equal(toolActivity(surveys[0])[0].status, "complete");
+  assert.equal(toolActivity(surveys[1])[0].tool, "ls");
 });
 
-test("board writes notify subscribers and tool tails stay capped", async (t) => {
+test("board writes notify subscribers and complete tool history is retained", async (t) => {
   const root = await gitRepo(t);
   let gate;
   const wait = new Promise((resolve) => { gate = resolve; });
@@ -802,9 +824,9 @@ test("board writes notify subscribers and tool tails stay capped", async (t) => 
         tasks: [{ id: "write", content: "Write overview", status: "in_progress" }],
       });
       for (let index = 0; index < 20; index += 1) {
-        context.observe({ id: `t${index}`, tool: "read", args: { path: `src/${index}.ts` }, status: "complete" });
+        context.observe(toolEvent(`t${index}`, "read", { path: `src/${index}.ts` }, "complete"));
       }
-      context.observe({ id: "live", tool: "grep", args: { pattern: "x" }, status: "running" });
+      context.observe(toolEvent("live", "grep", { pattern: "x" }, "running"));
       await writeValidCandidate(context.candidateRoot);
       await writeReviewPass(context);
       assert.equal((await context.publish()).ok, true);
@@ -816,12 +838,14 @@ test("board writes notify subscribers and tool tails stay capped", async (t) => 
   gate();
   await handle.result();
   assert.ok(views.some((view) => view.tasks?.[0]?.id === "write"));
-  const capped = views.find((view) => view.agents?.[0]?.tools.some((tool) => tool.id === "live"));
-  assert.ok(capped);
-  const lead = capped.agents.find((agent) => agent.agent === "lead");
-  assert.equal(lead.tools.length, 12);
-  assert.ok(lead.tools.some((tool) => tool.id === "live" && tool.status === "running"));
-  assert.equal(lead.tools.filter((tool) => tool.status === "running").length, 1);
+  const complete = views.find((view) => view.agents?.[0]?.activity.some((entry) => entry.id === "live"));
+  assert.ok(complete);
+  const lead = complete.agents.find((agent) => agent.agent === "lead");
+  const tools = toolActivity(lead);
+  assert.equal(tools.length, 21);
+  assert.ok(tools.some((tool) => tool.id === "t0"));
+  assert.ok(tools.some((tool) => tool.id === "live" && tool.status === "running"));
+  assert.equal(tools.filter((tool) => tool.status === "running").length, 1);
 });
 
 test("unsubscribe stops live view delivery", async (t) => {
@@ -851,7 +875,7 @@ test("unsubscribe stops live view delivery", async (t) => {
   });
   stop();
   const before = views.length;
-  context.observe({ id: "1", tool: "ls", args: { path: "." }, status: "running" });
+  context.observe(toolEvent("1", "ls", { path: "." }, "running"));
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(views.length, before);
   release();

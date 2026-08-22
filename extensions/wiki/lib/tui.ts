@@ -1,7 +1,14 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { formatToolCall, renderWikiLive, wikiFooterStatus } from "./cli.js";
-import type { WikiAgentView, WikiRunControl, WikiRunHandle, WikiRunView, WikiToolView } from "./producer-types.js";
+import type {
+  WikiActivityView,
+  WikiAgentView,
+  WikiRunControl,
+  WikiRunHandle,
+  WikiRunView,
+  WikiToolActivityView,
+} from "./producer-types.js";
 
 const PAGE = 10;
 const NAV_MIN_WIDTH = 24;
@@ -9,6 +16,7 @@ const NAV_MAX_WIDTH = 36;
 const DETAIL_MIN_WIDTH = 40;
 const COLUMN_SEPARATOR = " │ ";
 const MAX_VIEWPORT_ROWS = 40;
+const LOCAL_DATE_TIME = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "medium" });
 
 type ThemeColor = "text" | "dim" | "muted" | "accent" | "success" | "warning" | "error" | "border" | "borderMuted";
 type ThemeLike = {
@@ -189,17 +197,11 @@ export function createWikiOverlay(args: {
     } else if (!state.selectedAgentId && next.agents?.length) {
       state = { ...state, selectedAgentId: next.agents[0]?.id };
     } else if (state.screen === "agent" && previousAgent && nextAgent) {
-      const previousLast = previousAgent.tools.at(-1)?.id;
-      const nextLast = nextAgent.tools.at(-1)?.id;
-      const anchor = state.agentScroll.anchorKey?.replace(/^tool:/, "");
-      const anchorExpired = Boolean(!state.followTail && anchor && !nextAgent.tools.some((tool) => tool.id === anchor));
+      const previousLast = activityVersion(previousAgent.activity.at(-1));
+      const nextLast = activityVersion(nextAgent.activity.at(-1));
       state = {
         ...state,
         hasNewer: state.followTail ? false : state.hasNewer || Boolean(nextLast && nextLast !== previousLast),
-        ...(anchorExpired ? {
-          agentScroll: emptyScroll(),
-          notice: { kind: "info" as const, message: "Older process activity is no longer retained." },
-        } : {}),
       };
     }
 
@@ -432,8 +434,8 @@ function renderBody(
   }
 
   const heading = selected
-    ? `${strong(theme, "Process tail", "text")}  ${marker(selected.status, theme)} ${strong(theme, selected.agent, "accent")}${selected.task ? paint(theme, "muted", `  ${singleLine(selected.task)}`) : ""}`
-    : strong(theme, "Process tail", "text");
+    ? `${strong(theme, "Process", "text")}  ${marker(selected.status, theme)} ${strong(theme, selected.agent, "accent")}${selected.task ? paint(theme, "muted", `  ${singleLine(selected.task)}`) : ""}`
+    : strong(theme, "Process", "text");
   const fixed = [heading];
   const stats = renderContextStats(selected);
   if (stats && rows >= 8) fixed.push(paint(theme, "muted", stats));
@@ -467,7 +469,7 @@ interface NavigationLine {
 function navigationLines(view: WikiRunView, selectedAgentId: string | undefined, theme: ThemeLike): NavigationLine[] {
   return (view.agents ?? []).map((agent) => {
     const isSelected = agent.id === selectedAgentId;
-    const current = agent.tools.find((tool) => tool.status === "running") ?? agent.tools.at(-1);
+    const current = currentTool(agent);
     const detail = current ? `  ${formatToolCall(current.tool, current.args)}` : agent.task ? `  ${singleLine(agent.task)}` : "";
     const text = `${marker(agent.status, theme)} ${strong(theme, agent.agent, isSelected ? "accent" : "text")}${detail ? paint(theme, "muted", detail) : ""}`;
     return { text, selected: isSelected };
@@ -476,25 +478,21 @@ function navigationLines(view: WikiRunView, selectedAgentId: string | undefined,
 
 function processPreviewLines(agent: WikiAgentView | undefined, view: WikiRunView, theme: ThemeLike): string[] {
   if (!agent) return [paint(theme, "dim", "No agent selected.")];
-  const lines = [`${strong(theme, "Process tail", "text")}  ${marker(agent.status, theme)} ${strong(theme, agent.agent, "accent")}`];
-  if (agent.tools.length === 0) {
-    lines.push(paint(theme, "dim", view.status === "running" ? "waiting for tools" : "no process activity"));
+  const lines = [`${strong(theme, "Process", "text")}  ${marker(agent.status, theme)} ${strong(theme, agent.agent, "accent")}`];
+  if (agent.activity.length === 0) {
+    lines.push(paint(theme, "dim", view.status === "running" ? "waiting for activity" : "no process activity"));
     return lines;
   }
-  lines.push(...agent.tools.map((tool) => toolLine(tool, theme)));
+  lines.push(...agent.activity.map((activity) => activityPreviewLine(activity, theme)));
   return lines;
 }
 
 function processContent(agent: WikiAgentView | undefined, view: WikiRunView, width: number, theme: ThemeLike): ContentLine[] {
   if (!agent) return [{ key: "empty", text: paint(theme, "dim", "No agent selected.") }];
-  if (agent.tools.length === 0) {
-    return [{ key: "empty", text: paint(theme, "dim", view.status === "running" ? "waiting for tools" : "no process activity") }];
+  if (agent.activity.length === 0) {
+    return [{ key: "empty", text: paint(theme, "dim", view.status === "running" ? "waiting for activity" : "no process activity") }];
   }
-  return agent.tools.flatMap((tool) => wrappedContent(
-    `tool:${tool.id}`,
-    `${marker(tool.status, theme)} ${formatToolCall(tool.tool, tool.args)}`,
-    width,
-  ));
+  return agent.activity.flatMap((activity) => activityContent(activity, width, theme));
 }
 
 function boardContent(view: WikiRunView, width: number, theme: ThemeLike): ContentLine[] {
@@ -547,8 +545,38 @@ function statusLine(state: OverlayState, view: WikiRunView, theme: ThemeLike): s
   return "";
 }
 
-function toolLine(tool: WikiToolView, theme: ThemeLike): string {
+function toolLine(tool: WikiToolActivityView, theme: ThemeLike): string {
   return `  ${marker(tool.status, theme)} ${formatToolCall(tool.tool, tool.args)}`;
+}
+
+function activityPreviewLine(activity: WikiActivityView, theme: ThemeLike): string {
+  if (activity.kind === "input") return `  ${paint(theme, "accent", "→")} Input · ${singleLine(activity.text)}`;
+  if (activity.kind === "output") return `  ${marker(activity.status, theme)} Assistant · ${singleLine(activity.text)}`;
+  return toolLine(activity, theme);
+}
+
+function activityContent(activity: WikiActivityView, width: number, theme: ThemeLike): ContentLine[] {
+  const key = activityKey(activity);
+  const at = formatActivityTime(activity.at);
+  let lines: ContentLine[];
+  if (activity.kind === "input") {
+    lines = [
+      ...wrappedContent(key, `${paint(theme, "accent", "→")} ${strong(theme, "Input", "text")}  ${paint(theme, "muted", at)}`, width),
+      ...wrappedContent(key, `  ${activity.text}`, width),
+    ];
+  } else if (activity.kind === "output") {
+    const streaming = activity.status === "running" ? "  streaming" : "";
+    lines = [
+      ...wrappedContent(key, `${marker(activity.status, theme)} ${strong(theme, "Assistant", "text")}  ${paint(theme, "muted", `${at}${streaming}`)}`, width),
+      ...wrappedContent(key, `  ${activity.text}`, width),
+    ];
+  } else {
+    lines = wrappedContent(key, `${marker(activity.status, theme)} ${strong(theme, "Tool", "text")}  ${paint(theme, "muted", at)}  ${formatToolCall(activity.tool, activity.args)}`, width);
+    if (activity.result) {
+      lines.push(...wrappedContent(key, `  ${strong(theme, "Result", "text")}  ${activity.result}`, width));
+    }
+  }
+  return [...lines, { key, text: "" }];
 }
 
 function overlayFooter(state: OverlayState, view: WikiRunView, metrics: ScrollMetrics | undefined, width: number): string {
@@ -594,9 +622,10 @@ function splitNavWidth(width: number): number | undefined {
 
 function columns(left: NavigationLine[], right: string[], navWidth: number, width: number, rows: number, theme: ThemeLike): string[] {
   const rightWidth = Math.max(1, width - navWidth - visibleWidth(COLUMN_SEPARATOR));
-  const hidden = Math.max(0, right.length - rows);
-  const visibleRight = hidden > 0
-    ? [...right.slice(0, Math.max(0, rows - 1)), paint(theme, "muted", `… ${hidden + 1} more · Enter process`)]
+  const visibleRight = right.length > rows
+    ? rows === 1
+      ? right.slice(0, 1)
+      : [right[0], paint(theme, "muted", `… ${right.length - rows + 1} older · Enter process`), ...right.slice(-(rows - 2))]
     : right;
   const lines: string[] = [];
   for (let index = 0; index < rows; index += 1) {
@@ -626,7 +655,7 @@ function navigationWindow(lines: NavigationLine[], rows: number, theme: ThemeLik
   ];
 }
 
-function marker(status: WikiAgentView["status"] | WikiToolView["status"], theme: ThemeLike): string {
+function marker(status: WikiAgentView["status"], theme: ThemeLike): string {
   if (status === "complete") return paint(theme, "success", "✓");
   if (status === "failed") return paint(theme, "error", "✗");
   return paint(theme, "accent", "◆");
@@ -747,6 +776,31 @@ function firstLine(value: string): string {
 
 function singleLine(value: string): string {
   return value.replaceAll(/[\r\n]+/g, " ").replaceAll(/\s+/g, " ").trim();
+}
+
+function activityKey(activity: WikiActivityView): string {
+  return `activity:${activity.kind}:${activity.id}`;
+}
+
+function activityVersion(activity: WikiActivityView | undefined): string | undefined {
+  if (!activity) return undefined;
+  if (activity.kind === "input") return activityKey(activity);
+  if (activity.kind === "output") return `${activityKey(activity)}:${activity.status}:${activity.text.length}:${activity.text.slice(-32)}`;
+  return `${activityKey(activity)}:${activity.status}:${formatToolCall(activity.tool, activity.args)}:${activity.result?.length ?? 0}`;
+}
+
+function toolActivity(agent: WikiAgentView): WikiToolActivityView[] {
+  return agent.activity.filter((entry): entry is WikiToolActivityView => entry.kind === "tool");
+}
+
+function currentTool(agent: WikiAgentView): WikiToolActivityView | undefined {
+  const tools = toolActivity(agent);
+  return tools.find((tool) => tool.status === "running") ?? tools.at(-1);
+}
+
+function formatActivityTime(value: string): string {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? LOCAL_DATE_TIME.format(timestamp) : value;
 }
 
 function errorText(error: unknown): string {

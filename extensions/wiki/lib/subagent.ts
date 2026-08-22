@@ -100,7 +100,7 @@ export async function createSubagentRuntime(
             onActivity(event) {
               const scoped = { ...event, scope: task.id };
               session.onActivity?.(scoped);
-              applyChildTool(live.get(task.id)!.tools, scoped);
+              if (scoped.kind === "tool") applyChildTool(live.get(task.id)!.tools, scoped);
               void report();
             },
           }, signal, catalog, options.templates, options.maxEvidenceRepairRounds);
@@ -245,7 +245,7 @@ async function runOne(
         ...session,
         onActivity(event) {
           session.onActivity?.(event);
-          evidenceGate?.observe(event);
+          if (event.kind === "tool") evidenceGate?.observe(event);
         },
         onCompaction: () => formatWorkerCheckpoint(task, sourceFingerprint, base.digest, touched),
         nextPrompt: evidenceGate?.nextPrompt,

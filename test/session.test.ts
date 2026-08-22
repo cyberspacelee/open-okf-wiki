@@ -31,7 +31,7 @@ test("session forwards tool start, update, and end to onActivity", async (t) => 
         session: fakeSession([
           { type: "tool_execution_start", toolCallId: "call-1", toolName: "read", args: { path: "src/a.ts" } },
           { type: "tool_execution_update", toolCallId: "call-1", toolName: "read", args: { path: "src/a.ts", offset: 1 } },
-          { type: "tool_execution_end", toolCallId: "call-1", toolName: "read", result: {}, isError: false },
+          { type: "tool_execution_end", toolCallId: "call-1", toolName: "read", result: { content: [{ type: "text", text: "file content" }] }, isError: false },
           { type: "tool_execution_start", toolCallId: "call-2", toolName: "grep", args: { pattern: "x" } },
           { type: "tool_execution_end", toolCallId: "call-2", toolName: "grep", result: {}, isError: true },
           { type: "message_update", message: {}, assistantMessageEvent: {} },
@@ -44,13 +44,44 @@ test("session forwards tool start, update, and end to onActivity", async (t) => 
     },
   });
   assert.equal(result.text, "ok");
-  assert.deepEqual(events.map((event) => ({ id: event.id, tool: event.tool, status: event.status, args: event.args })), [
-    { id: "call-1", tool: "read", status: "running", args: { path: "src/a.ts" } },
-    { id: "call-1", tool: "read", status: "running", args: { path: "src/a.ts", offset: 1 } },
-    { id: "call-1", tool: "read", status: "complete", args: { path: "src/a.ts", offset: 1 } },
-    { id: "call-2", tool: "grep", status: "running", args: { pattern: "x" } },
-    { id: "call-2", tool: "grep", status: "failed", args: { pattern: "x" } },
+  assert.deepEqual(events.map((event) => ({ kind: event.kind, id: event.id, tool: event.tool, status: event.status, args: event.args, result: event.result })), [
+    { kind: "tool", id: "call-1", tool: "read", status: "running", args: { path: "src/a.ts" }, result: undefined },
+    { kind: "tool", id: "call-1", tool: "read", status: "running", args: { path: "src/a.ts", offset: 1 }, result: undefined },
+    { kind: "tool", id: "call-1", tool: "read", status: "complete", args: { path: "src/a.ts", offset: 1 }, result: "file content" },
+    { kind: "tool", id: "call-2", tool: "grep", status: "running", args: { pattern: "x" }, result: undefined },
+    { kind: "tool", id: "call-2", tool: "grep", status: "failed", args: { pattern: "x" }, result: undefined },
   ]);
+});
+
+test("session forwards input and streaming assistant output as semantic activity", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-session-messages-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  const events = [];
+  const input = { role: "user", content: "Inspect authentication", timestamp: Date.parse("2026-08-22T00:00:00.000Z") };
+  const started = { role: "assistant", content: [], timestamp: Date.parse("2026-08-22T00:00:01.000Z"), stopReason: "stop" };
+  const partial = { ...started, content: [{ type: "text", text: "I will inspect" }] };
+  const completed = { ...started, content: [{ type: "text", text: "I will inspect authentication." }] };
+  await runWikiSession(root, [], "unused", new AbortController().signal, {
+    sessionDir: path.join(root, "sessions"),
+    async createSession() {
+      return {
+        session: fakeSession([
+          { type: "message_start", message: input },
+          { type: "message_start", message: started },
+          { type: "message_update", message: partial, assistantMessageEvent: {} },
+          { type: "message_end", message: completed },
+        ]),
+        modelFallbackMessage: undefined,
+      };
+    },
+    onActivity(event) { events.push(event); },
+  });
+  assert.deepEqual(events.map((event) => ({ kind: event.kind, text: event.text, status: event.status, at: event.at })), [
+    { kind: "input", text: "Inspect authentication", status: undefined, at: "2026-08-22T00:00:00.000Z" },
+    { kind: "output", text: "I will inspect", status: "running", at: "2026-08-22T00:00:01.000Z" },
+    { kind: "output", text: "I will inspect authentication.", status: "complete", at: "2026-08-22T00:00:01.000Z" },
+  ]);
+  assert.equal(events[1].id, events[2].id);
 });
 
 test("session samples token usage on tool start and end", async (t) => {

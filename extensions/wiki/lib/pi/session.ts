@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -108,28 +109,60 @@ export async function runWikiSession(
     const onActivity = options.onActivity;
     const onCompaction = options.onCompaction;
     const argsById = new Map<string, unknown>();
+    let assistant: { id: string; at: string } | undefined;
     const usage = (): WikiAgentUsage | undefined => readSessionUsage(session);
     session.subscribe((event) => {
+      if (onActivity && event.type === "message_start" && event.message.role === "user") {
+        const text = displayText(event.message.content);
+        if (text) onActivity({ kind: "input", id: randomUUID(), at: messageTime(event.message), text });
+      }
+      if (onActivity && event.type === "message_start" && event.message.role === "assistant") {
+        assistant = { id: randomUUID(), at: messageTime(event.message) };
+      }
+      if (onActivity && event.type === "message_update" && event.message.role === "assistant") {
+        assistant ??= { id: randomUUID(), at: messageTime(event.message) };
+        const text = displayText(event.message.content);
+        if (text) onActivity({ kind: "output", ...assistant, text, status: "running" });
+      }
+      if (onActivity && event.type === "message_end" && event.message.role === "assistant") {
+        assistant ??= { id: randomUUID(), at: messageTime(event.message) };
+        const text = displayText(event.message.content);
+        if (text) {
+          const failed = event.message.stopReason === "error" || event.message.stopReason === "aborted";
+          const stats = usage();
+          onActivity({
+            kind: "output",
+            ...assistant,
+            text,
+            status: failed ? "failed" : "complete",
+            ...(stats ? { usage: stats } : {}),
+          });
+        }
+        assistant = undefined;
+      }
       if (onActivity && event.type === "tool_execution_start") {
         argsById.set(event.toolCallId, event.args);
         const stats = usage();
-        onActivity({ id: event.toolCallId, tool: event.toolName, args: event.args, status: "running", ...(stats ? { usage: stats } : {}) });
+        onActivity({ kind: "tool", id: event.toolCallId, at: new Date().toISOString(), tool: event.toolName, args: event.args, status: "running", ...(stats ? { usage: stats } : {}) });
       }
       if (onActivity && event.type === "tool_execution_update") {
         argsById.set(event.toolCallId, event.args);
         const stats = usage();
-        onActivity({ id: event.toolCallId, tool: event.toolName, args: event.args, status: "running", ...(stats ? { usage: stats } : {}) });
+        onActivity({ kind: "tool", id: event.toolCallId, at: new Date().toISOString(), tool: event.toolName, args: event.args, status: "running", ...(stats ? { usage: stats } : {}) });
       }
       if (onActivity && event.type === "tool_execution_end") {
         const args = argsById.get(event.toolCallId) ?? {};
         argsById.delete(event.toolCallId);
         const stats = usage();
+        const result = displayToolResult(event.result);
         onActivity({
+          kind: "tool",
           id: event.toolCallId,
+          at: new Date().toISOString(),
           tool: event.toolName,
           args,
           status: event.isError ? "failed" : "complete",
-          result: event.result,
+          ...(result ? { result } : {}),
           ...(stats ? { usage: stats } : {}),
         });
       }
@@ -184,6 +217,32 @@ export async function runWikiSession(
     signal.removeEventListener("abort", abort);
     session.dispose();
   }
+}
+
+function messageTime(message: { timestamp?: unknown }): string {
+  return typeof message.timestamp === "number" && Number.isFinite(message.timestamp)
+    ? new Date(message.timestamp).toISOString()
+    : new Date().toISOString();
+}
+
+function displayText(content: unknown): string {
+  if (typeof content === "string") return content.trim();
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((entry): entry is { type: "text"; text: string } => (
+      Boolean(entry) && typeof entry === "object" && (entry as { type?: unknown }).type === "text"
+      && typeof (entry as { text?: unknown }).text === "string"
+    ))
+    .map((entry) => entry.text)
+    .join("\n")
+    .trim();
+}
+
+function displayToolResult(result: unknown): string | undefined {
+  if (typeof result === "string") return result.trim() || undefined;
+  if (!result || typeof result !== "object" || Array.isArray(result)) return undefined;
+  const text = displayText((result as { content?: unknown }).content);
+  return text || undefined;
 }
 
 function readSessionUsage(session: AgentSession | undefined, compactions = 0): WikiAgentUsage | undefined {
