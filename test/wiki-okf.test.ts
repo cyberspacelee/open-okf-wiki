@@ -399,11 +399,14 @@ test("indexes include descriptions and stamp writes log.md without unverified ve
   assert.match(index, /# \[Overview\]\(\.\/overview\.md\)/);
   assert.equal(index.match(/Overview description/g)?.length, 1);
   assert.doesNotMatch(index, /\* \[Overview\]\(\.\/overview\.md\)/);
-  await stampPublication(root, "2026-08-20T00:00:00.000Z", { reviewed: false, language: "en" });
+  const publishedAt = "2026-08-20T23:30:00.000Z";
+  await stampPublication(root, publishedAt, { reviewed: false, language: "en" });
   const overview = await readFile(path.join(root, "overview.md"), "utf8");
   assert.match(overview, /generated:/);
   assert.doesNotMatch(overview, /verified:/);
   const log = await readFile(path.join(root, "log.md"), "utf8");
+  const localDay = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(Date.parse(publishedAt));
+  assert.ok(log.includes(`## ${localDay}`));
   assert.match(log, /Published 1 pages/);
 });
 

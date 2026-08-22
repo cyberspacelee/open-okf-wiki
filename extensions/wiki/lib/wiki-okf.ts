@@ -14,6 +14,7 @@ import { candidateRevision, fileRevision } from "./revisions.js";
 export const GENERATED_BY = "open-okf-wiki/1.0.0";
 export const VERIFIED_BY = "process:open-okf-wiki-review";
 const ARCHITECTURE_PAGE = "architecture.md";
+const LOCAL_DATE = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
 
 const MERMAID_KIND = /```mermaid[^\n]*\r?\n\s*([A-Za-z][A-Za-z0-9-]*)/;
 const MERMAID_FENCE = /```mermaid[^\n]*\r?\n([\s\S]*?)```/;
@@ -512,7 +513,8 @@ export async function stampPublication(
       // leave unreadable files for validate to report
     }
   }
-  const day = at.slice(0, 10);
+  const timestamp = Date.parse(at);
+  const day = Number.isFinite(timestamp) ? LOCAL_DATE.format(timestamp) : at;
   const language = options.language ?? "en";
   const count = pages.length;
   const creation = language === "zh" ? `发布 ${count} 页。` : `Published ${count} pages.`;

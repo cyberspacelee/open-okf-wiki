@@ -1,14 +1,14 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { formatToolCall, renderWikiLive, wikiFooterStatus } from "./cli.js";
-import type { WikiAgentView, WikiRunHandle, WikiRunView, WikiToolView } from "./producer-types.js";
+import type { WikiAgentView, WikiRunControl, WikiRunHandle, WikiRunView, WikiToolView } from "./producer-types.js";
 
 const PAGE = 10;
-const NAV_WIDTH = 32;
+const NAV_MIN_WIDTH = 24;
+const NAV_MAX_WIDTH = 36;
+const DETAIL_MIN_WIDTH = 40;
 const COLUMN_SEPARATOR = " │ ";
-const WORKBENCH = 100;
 const MAX_VIEWPORT_ROWS = 40;
-const OVERLAY_HEIGHT_PERCENT = 88;
 
 type ThemeColor = "text" | "dim" | "muted" | "accent" | "success" | "warning" | "error" | "border" | "borderMuted";
 type ThemeLike = {
@@ -18,12 +18,44 @@ type ThemeLike = {
 };
 type OverlayTui = { requestRender(force?: boolean): void; terminal?: { rows?: number } };
 type KeybindingsLike = { matches(data: string, keybinding: string): boolean };
+type OverlayScreen = "agents" | "board" | "agent" | "error";
+type Operation = WikiRunControl | "confirmCancel";
+
+interface ScrollState {
+  top: number;
+  anchorKey?: string;
+  anchorOffset: number;
+}
 
 interface OverlayState {
-  kind: "run" | "agent";
-  cursor: number;
-  scrollTop: number;
+  screen: OverlayScreen;
+  returnScreen: Exclude<OverlayScreen, "error">;
+  selectedAgentId?: string;
+  agentScroll: ScrollState;
+  boardScroll: ScrollState;
+  errorScroll: ScrollState;
   followTail: boolean;
+  hasNewer: boolean;
+  operation?: Operation;
+  notice?: { kind: "info" | "error"; message: string };
+}
+
+interface ContentLine {
+  text: string;
+  key: string;
+}
+
+interface ScrollMetrics {
+  screen: OverlayScreen;
+  content: ContentLine[];
+  rows: number;
+  start: number;
+  maxScroll: number;
+}
+
+interface RenderedBody {
+  lines: string[];
+  metrics?: ScrollMetrics;
 }
 
 export function wikiWidgetFactory(box: { view: WikiRunView; tui?: OverlayTui }) {
@@ -80,7 +112,7 @@ export function createLiveChrome(context: {
 
 export async function openWikiStatusOverlay(args: {
   ui: Pick<ExtensionUIContext, "custom" | "confirm">;
-  handle: Pick<WikiRunHandle, "id" | "view" | "subscribe" | "control">;
+  handle: Pick<WikiRunHandle, "view" | "subscribe" | "control">;
 }): Promise<void> {
   if (typeof args.ui.custom !== "function") return;
   await args.ui.custom(async (tui, theme, keybindings, done) => {
@@ -90,17 +122,15 @@ export async function openWikiStatusOverlay(args: {
       keybindings,
       done: () => done(undefined),
       handle: args.handle,
-      view: await args.handle.view(),
-      confirmCancel: typeof args.ui.confirm === "function"
-        ? async () => await args.ui.confirm("Cancel Wiki run", `Cancel ${args.handle.id}?`)
-        : undefined,
+      initialView: await args.handle.view(),
+      confirmCancel: async () => await args.ui.confirm("Cancel Wiki run", "Cancel the current Wiki run?"),
     });
   }, {
     overlay: true,
     overlayOptions: {
       width: "92%",
       minWidth: 36,
-      maxHeight: "88%",
+      maxHeight: MAX_VIEWPORT_ROWS,
       anchor: "center",
       margin: 1,
       visible: (width: number, height: number) => width >= 36 && height >= 10,
@@ -113,33 +143,75 @@ export function createWikiOverlay(args: {
   theme: ThemeLike;
   keybindings: KeybindingsLike;
   done(): void;
-  handle: Pick<WikiRunHandle, "id" | "view" | "subscribe" | "control">;
-  view: WikiRunView;
-  confirmCancel?: () => Promise<boolean>;
+  handle: Pick<WikiRunHandle, "subscribe" | "control">;
+  initialView: WikiRunView;
+  confirmCancel: () => Promise<boolean>;
   now?: () => number;
 }) {
-  let view = args.view;
-  let state: OverlayState = { kind: "run", cursor: 0, scrollTop: 0, followTail: false };
+  let view = args.initialView;
+  let state: OverlayState = {
+    screen: "agents",
+    returnScreen: "agents",
+    selectedAgentId: view.agents?.[0]?.id,
+    agentScroll: emptyScroll(),
+    boardScroll: emptyScroll(),
+    errorScroll: emptyScroll(),
+    followTail: false,
+    hasNewer: false,
+  };
   let closed = false;
-  let busy: string | undefined;
-  let warning: string | undefined;
   let cached: { width: number; viewport: number; lines: string[] } | undefined;
-  let detailMaxScroll = 0;
+  let metrics: ScrollMetrics | undefined;
   const clock = args.now ?? Date.now;
   let now = clock();
   const invalidate = () => { cached = undefined; };
-  const selected = () => (view.agents ?? [])[state.cursor];
+  const selected = (source = view) => source.agents?.find((agent) => agent.id === state.selectedAgentId);
 
   const unsubscribe = args.handle.subscribe((next) => {
     if (closed) return;
+    const previous = view;
+    const previousAgent = selected(previous);
+    const previousIndex = Math.max(0, previous.agents?.findIndex((agent) => agent.id === state.selectedAgentId) ?? 0);
     view = next;
-    state = { ...state, cursor: clamp(state.cursor, 0, Math.max(0, (view.agents ?? []).length - 1)) };
+    const nextAgent = selected(next);
+
+    if (state.selectedAgentId && !nextAgent) {
+      const replacement = next.agents?.[clamp(previousIndex, 0, Math.max(0, (next.agents?.length ?? 1) - 1))];
+      state = {
+        ...state,
+        screen: state.screen === "agent" ? "agents" : state.screen,
+        selectedAgentId: replacement?.id,
+        agentScroll: emptyScroll(),
+        followTail: false,
+        hasNewer: false,
+        notice: { kind: "info", message: "The selected agent is no longer available." },
+      };
+    } else if (!state.selectedAgentId && next.agents?.length) {
+      state = { ...state, selectedAgentId: next.agents[0]?.id };
+    } else if (state.screen === "agent" && previousAgent && nextAgent) {
+      const previousLast = previousAgent.tools.at(-1)?.id;
+      const nextLast = nextAgent.tools.at(-1)?.id;
+      const anchor = state.agentScroll.anchorKey?.replace(/^tool:/, "");
+      const anchorExpired = Boolean(!state.followTail && anchor && !nextAgent.tools.some((tool) => tool.id === anchor));
+      state = {
+        ...state,
+        hasNewer: state.followTail ? false : state.hasNewer || Boolean(nextLast && nextLast !== previousLast),
+        ...(anchorExpired ? {
+          agentScroll: emptyScroll(),
+          notice: { kind: "info" as const, message: "Older process activity is no longer retained." },
+        } : {}),
+      };
+    }
+
+    if (state.screen === "error" && !detailError(state, view)) {
+      state = { ...state, screen: state.returnScreen, errorScroll: emptyScroll() };
+    }
     now = clock();
     invalidate();
     args.tui.requestRender();
   });
   const tick = setInterval(() => {
-    if (closed) return;
+    if (closed || (view.status !== "running" && view.status !== "paused")) return;
     now = clock();
     invalidate();
     args.tui.requestRender();
@@ -153,56 +225,129 @@ export function createWikiOverlay(args: {
     unsubscribe();
   };
   const finish = () => { cleanup(); args.done(); };
-
-  const apply = (action: "up" | "down" | "pageUp" | "pageDown" | "forward" | "back" | "top" | "tail") => {
-    const max = Math.max(0, (view.agents ?? []).length - 1);
-    if (state.kind === "run") {
-      if (action === "up") state = { ...state, cursor: clamp(state.cursor - 1, 0, max) };
-      if (action === "down") state = { ...state, cursor: clamp(state.cursor + 1, 0, max) };
-      if (action === "pageUp") state = { ...state, cursor: clamp(state.cursor - PAGE, 0, max) };
-      if (action === "pageDown") state = { ...state, cursor: clamp(state.cursor + PAGE, 0, max) };
-      if (action === "forward" && selected()) {
-        state = { kind: "agent", cursor: state.cursor, scrollTop: 0, followTail: false };
-      }
-    } else {
-      if (action === "up") {
-        const from = state.followTail ? detailMaxScroll : state.scrollTop;
-        state = { ...state, scrollTop: Math.max(0, from - 1), followTail: false };
-      }
-      if (action === "down" && !state.followTail) {
-        state = { ...state, scrollTop: Math.min(detailMaxScroll, state.scrollTop + 1) };
-      }
-      if (action === "pageUp") {
-        const from = state.followTail ? detailMaxScroll : state.scrollTop;
-        state = { ...state, scrollTop: Math.max(0, from - PAGE), followTail: false };
-      }
-      if (action === "pageDown" && !state.followTail) {
-        state = { ...state, scrollTop: Math.min(detailMaxScroll, state.scrollTop + PAGE) };
-      }
-      if (action === "top") state = { ...state, scrollTop: 0, followTail: false };
-      if (action === "tail") state = { ...state, scrollTop: detailMaxScroll, followTail: true };
-      if (action === "back") state = { kind: "run", cursor: state.cursor, scrollTop: 0, followTail: false };
-    }
+  const redraw = () => {
+    if (closed) return;
     invalidate();
     args.tui.requestRender();
   };
 
-  const control = async (action: "pause" | "resume" | "cancel") => {
-    if (busy || state.kind !== "run") return;
-    if (action === "cancel" && args.confirmCancel && !await args.confirmCancel()) return;
-    busy = action === "cancel" ? "Cancelling..." : action === "pause" ? "Pausing..." : "Resuming...";
-    invalidate();
-    args.tui.requestRender();
+  const moveAgent = (amount: number) => {
+    const agents = view.agents ?? [];
+    if (agents.length === 0) return;
+    const current = Math.max(0, agents.findIndex((agent) => agent.id === state.selectedAgentId));
+    const next = agents[clamp(current + amount, 0, agents.length - 1)];
+    state = { ...state, selectedAgentId: next?.id, notice: undefined };
+    redraw();
+  };
+
+  const openAgent = () => {
+    if (!selected()) return;
+    state = {
+      ...state,
+      screen: "agent",
+      returnScreen: "agents",
+      agentScroll: emptyScroll(),
+      followTail: false,
+      hasNewer: false,
+      notice: undefined,
+    };
+    redraw();
+  };
+
+  const toggleTopLevel = () => {
+    if (state.screen === "agents") {
+      const target = initialBoardTask(view);
+      state = {
+        ...state,
+        screen: "board",
+        returnScreen: "board",
+        boardScroll: target ? { top: 0, anchorKey: `task:${target.id}`, anchorOffset: 0 } : emptyScroll(),
+        notice: undefined,
+      };
+    } else if (state.screen === "board") {
+      state = { ...state, screen: "agents", returnScreen: "agents", notice: undefined };
+    }
+    redraw();
+  };
+
+  const openError = () => {
+    if (!detailError(state, view) || state.screen === "error") return;
+    state = {
+      ...state,
+      returnScreen: state.screen,
+      screen: "error",
+      errorScroll: emptyScroll(),
+    };
+    redraw();
+  };
+
+  const back = () => {
+    if (state.screen === "agent") {
+      state = { ...state, screen: "agents", returnScreen: "agents", followTail: false, hasNewer: false };
+      redraw();
+      return;
+    }
+    if (state.screen === "error") {
+      state = { ...state, screen: state.returnScreen, errorScroll: emptyScroll() };
+      redraw();
+      return;
+    }
+    finish();
+  };
+
+  const moveScroll = (amount: number | "top" | "tail") => {
+    if (!metrics || metrics.screen !== state.screen || state.screen === "agents") return;
+    let top: number;
+    if (amount === "top") top = 0;
+    else if (amount === "tail") top = metrics.maxScroll;
+    else top = clamp((state.followTail && state.screen === "agent" ? metrics.maxScroll : metrics.start) + amount, 0, metrics.maxScroll);
+    state = updateScroll(state, anchorScroll(top, metrics.content));
+    if (state.screen === "agent") {
+      const followTail = amount === "tail" || top === metrics.maxScroll;
+      state = { ...state, followTail, hasNewer: followTail ? false : state.hasNewer };
+    }
+    redraw();
+  };
+
+  const control = async (action: WikiRunControl) => {
+    if (closed || state.operation || !actionsForStatus(view.status).includes(action)) return;
+    if (action === "cancel") {
+      state = { ...state, operation: "confirmCancel", notice: undefined };
+      redraw();
+      let confirmed: boolean;
+      try {
+        confirmed = await args.confirmCancel();
+      } catch (error) {
+        if (!closed) {
+          state = { ...state, operation: undefined, notice: { kind: "error", message: errorText(error) } };
+          redraw();
+        }
+        return;
+      }
+      if (closed) return;
+      if (!confirmed) {
+        state = { ...state, operation: undefined };
+        redraw();
+        return;
+      }
+    }
+    state = { ...state, operation: action, notice: undefined };
+    redraw();
     try {
       view = await args.handle.control(action);
-      warning = undefined;
-      if (action === "cancel") finish();
+      if (closed) return;
+      state = { ...state, notice: undefined };
+      if (action === "cancel") {
+        finish();
+        return;
+      }
     } catch (error) {
-      warning = error instanceof Error ? error.message : String(error);
+      if (!closed) state = { ...state, notice: { kind: "error", message: errorText(error) } };
     } finally {
-      busy = undefined;
-      invalidate();
-      args.tui.requestRender();
+      if (!closed) {
+        state = { ...state, operation: undefined };
+        redraw();
+      }
     }
   };
 
@@ -211,40 +356,41 @@ export function createWikiOverlay(args: {
     dispose: cleanup,
     handleInput(data: string) {
       if (closed) return;
-      if (args.keybindings.matches(data, "tui.select.up") || matchesKey(data, "k")) return apply("up");
-      if (args.keybindings.matches(data, "tui.select.down") || matchesKey(data, "j")) return apply("down");
-      if (args.keybindings.matches(data, "tui.select.pageUp")) return apply("pageUp");
-      if (args.keybindings.matches(data, "tui.select.pageDown")) return apply("pageDown");
-      if (args.keybindings.matches(data, "tui.select.confirm") || matchesKey(data, Key.right) || matchesKey(data, Key.enter) || matchesKey(data, Key.return)) return apply("forward");
-      if (args.keybindings.matches(data, "tui.select.cancel") || matchesKey(data, Key.left) || matchesKey(data, Key.escape)) {
-        if (state.kind === "run") finish();
-        else apply("back");
+      if (matchesKey(data, "p") && actionsForStatus(view.status).includes("pause")) return void control("pause");
+      if (matchesKey(data, "r") && actionsForStatus(view.status).includes("resume")) return void control("resume");
+      if (matchesKey(data, "x") && actionsForStatus(view.status).includes("cancel")) return void control("cancel");
+      if (matchesKey(data, "e") && detailError(state, view)) return openError();
+      if (matchesKey(data, Key.tab) && (state.screen === "agents" || state.screen === "board")) return toggleTopLevel();
+      if (args.keybindings.matches(data, "tui.select.cancel") || matchesKey(data, Key.left) || matchesKey(data, Key.escape)) return back();
+
+      if (state.screen === "agents") {
+        if (args.keybindings.matches(data, "tui.select.up") || matchesKey(data, "k")) return moveAgent(-1);
+        if (args.keybindings.matches(data, "tui.select.down") || matchesKey(data, "j")) return moveAgent(1);
+        if (args.keybindings.matches(data, "tui.select.pageUp")) return moveAgent(-PAGE);
+        if (args.keybindings.matches(data, "tui.select.pageDown")) return moveAgent(PAGE);
+        if (args.keybindings.matches(data, "tui.select.confirm") || matchesKey(data, Key.right) || matchesKey(data, Key.enter) || matchesKey(data, Key.return)) return openAgent();
         return;
       }
-      if (state.kind === "agent" && matchesKey(data, "t")) return apply("tail");
-      if (state.kind === "agent" && matchesKey(data, "g")) return apply("top");
-      if (state.kind === "run" && matchesKey(data, "p") && view.status === "running") void control("pause");
-      if (state.kind === "run" && matchesKey(data, "r") && view.status === "paused") void control("resume");
-      if (state.kind === "run" && matchesKey(data, "x") && (view.status === "running" || view.status === "paused")) {
-        void control("cancel");
-      }
+
+      const page = Math.max(1, (metrics?.rows ?? PAGE) - 1);
+      if (args.keybindings.matches(data, "tui.select.up") || matchesKey(data, "k")) return moveScroll(-1);
+      if (args.keybindings.matches(data, "tui.select.down") || matchesKey(data, "j")) return moveScroll(1);
+      if (args.keybindings.matches(data, "tui.select.pageUp")) return moveScroll(-page);
+      if (args.keybindings.matches(data, "tui.select.pageDown")) return moveScroll(page);
+      if (matchesKey(data, "g") || matchesKey(data, Key.home)) return moveScroll("top");
+      if ((state.screen === "agent" && matchesKey(data, "t")) || matchesKey(data, Key.end) || matchesKey(data, "shift+g")) return moveScroll("tail");
     },
     render(width: number): string[] {
       const viewport = viewportRows(args.tui);
       if (cached?.width === width && cached.viewport === viewport) return cached.lines;
-      const inner = Math.max(8, width);
-      const rawStats = renderContextStats(selected());
-      const stats = rawStats ? paint(args.theme, "muted", rawStats) : "";
-      const chrome = stats ? 4 : 2;
-      const bodyRows = Math.max(1, viewport - chrome);
-      const title = styledTitle(view, now, args.theme);
-      const body = renderBody(state, view, selected(), inner - 3, bodyRows, args.theme, warning, busy);
-      const footer = overlayFooter(state, view);
-      detailMaxScroll = body.maxScroll;
-      if (state.kind === "agent" && !state.followTail && state.scrollTop > detailMaxScroll) {
-        state = { ...state, scrollTop: detailMaxScroll };
-      }
-      const lines = frame(inner, title, body.lines, footer, args.theme, bodyRows, stats);
+      const frameWidth = Math.max(8, width);
+      const bodyRows = Math.max(1, viewport - 2);
+      const contentWidth = Math.max(1, frameWidth - 3);
+      const body = renderBody(state, view, selected(), contentWidth, bodyRows, args.theme);
+      metrics = body.metrics;
+      if (metrics) state = updateScroll(state, anchorScroll(metrics.start, metrics.content));
+      const footer = overlayFooter(state, view, metrics, contentWidth);
+      const lines = frame(frameWidth, styledTitle(view, now, args.theme), body.lines, footer, args.theme, bodyRows);
       cached = { width, viewport, lines };
       return lines;
     },
@@ -258,144 +404,226 @@ function renderBody(
   width: number,
   rows: number,
   theme: ThemeLike,
-  warning?: string,
-  busy?: string,
-): { lines: string[]; maxScroll: number } {
-  const notice = busy ? paint(theme, "accent", `◆ ${busy}`) : warning ? paint(theme, "warning", `! ${warning}`) : "";
-  const fixed = [summaryLine(view, theme), notice].filter(Boolean);
-  const contentRows = Math.max(0, rows - fixed.length);
-  const nav = navigationLines(view, state.cursor, theme);
-  if (state.kind === "run" && width + 3 >= WORKBENCH) {
-    const visibleNav = navigationWindow(nav, contentRows);
-    const right = dashboardLines(view, selected, theme);
-    return { lines: [...fixed, ...columns(visibleNav, right, width, contentRows, theme)], maxScroll: 0 };
-  }
-  if (state.kind === "run") {
-    if (contentRows < 5) {
-      return { lines: [...fixed, ...navigationWindow(nav, contentRows).map((line) => renderNavRow(line, width, theme))], maxScroll: 0 };
+): RenderedBody {
+  const status = statusLine(state, view, theme);
+  if (state.screen === "agents") {
+    const fixed = [topLevelTabs("agents", view, theme)];
+    if (view.focus && rows >= 6) fixed.push(`${strong(theme, "Focus", "text")}  ${paint(theme, "muted", singleLine(view.focus))}`);
+    if (status) fixed.push(status);
+    const contentRows = Math.max(0, rows - fixed.length);
+    const nav = navigationLines(view, state.selectedAgentId, theme);
+    const navWidth = splitNavWidth(width);
+    if (navWidth !== undefined) {
+      const visibleNav = navigationWindow(nav, contentRows, theme);
+      const preview = processPreviewLines(selected, view, theme);
+      return { lines: [...fixed, ...columns(visibleNav, preview, navWidth, width, contentRows, theme)] };
     }
-    const board = boardLines(view, theme);
-    const boardRows = Math.min(board.length, Math.max(1, Math.floor(contentRows / 3)));
-    const navRows = Math.max(1, contentRows - boardRows - 1);
-    const visibleNav = navigationWindow(nav, navRows).map((line) => renderNavRow(line, width, theme));
-    return { lines: [...fixed, ...visibleNav, "", ...board.slice(0, boardRows)], maxScroll: 0 };
+    return { lines: [...fixed, ...navigationWindow(nav, contentRows, theme).map((line) => renderNavRow(line, width, theme))] };
   }
-  const process = processLines(selected, view, theme);
-  const maxScroll = Math.max(0, process.length - contentRows);
-  const start = state.followTail ? maxScroll : clamp(state.scrollTop, 0, maxScroll);
-  return { lines: [...fixed, ...process.slice(start, start + contentRows)], maxScroll };
+
+  if (state.screen === "board") {
+    const fixed = [topLevelTabs("board", view, theme)];
+    if (status) fixed.push(status);
+    return renderScrollable(state, "board", fixed, boardContent(view, width, theme), rows);
+  }
+
+  if (state.screen === "error") {
+    return renderScrollable(state, "error", [strong(theme, "Run error", "error")], errorContent(detailError(state, view), width, theme), rows);
+  }
+
+  const heading = selected
+    ? `${strong(theme, "Process tail", "text")}  ${marker(selected.status, theme)} ${strong(theme, selected.agent, "accent")}${selected.task ? paint(theme, "muted", `  ${singleLine(selected.task)}`) : ""}`
+    : strong(theme, "Process tail", "text");
+  const fixed = [heading];
+  const stats = renderContextStats(selected);
+  if (stats && rows >= 8) fixed.push(paint(theme, "muted", stats));
+  if (status) fixed.push(status);
+  return renderScrollable(state, "agent", fixed, processContent(selected, view, width, theme), rows);
 }
 
-function navigationLines(view: WikiRunView, cursor: number, theme: ThemeLike): Array<{ text: string; selected: boolean }> {
-  return (view.agents ?? []).map((agent, index) => {
-    const selected = index === cursor;
-    const current = agent.tools.find((tool) => tool.status === "running");
-    const detail = current ? `  ${formatToolCall(current.tool, current.args)}` : agent.task ? `  ${agent.task}` : "";
-    const text = `${marker(agent.status, theme)} ${strong(theme, agent.agent, selected ? "accent" : "text")}${detail ? paint(theme, "muted", detail) : ""}`;
-    return { text, selected };
+function renderScrollable(
+  state: OverlayState,
+  screen: Exclude<OverlayScreen, "agents">,
+  fixed: string[],
+  content: ContentLine[],
+  rows: number,
+): RenderedBody {
+  const contentRows = Math.max(0, rows - fixed.length);
+  const scroll = scrollFor(state);
+  const maxScroll = Math.max(0, content.length - contentRows);
+  const anchored = resolveAnchor(scroll, content);
+  const start = state.screen === "agent" && state.followTail ? maxScroll : clamp(anchored, 0, maxScroll);
+  return {
+    lines: [...fixed, ...content.slice(start, start + contentRows).map((line) => line.text)],
+    metrics: { screen, content, rows: contentRows, start, maxScroll },
+  };
+}
+
+interface NavigationLine {
+  text: string;
+  selected: boolean;
+}
+
+function navigationLines(view: WikiRunView, selectedAgentId: string | undefined, theme: ThemeLike): NavigationLine[] {
+  return (view.agents ?? []).map((agent) => {
+    const isSelected = agent.id === selectedAgentId;
+    const current = agent.tools.find((tool) => tool.status === "running") ?? agent.tools.at(-1);
+    const detail = current ? `  ${formatToolCall(current.tool, current.args)}` : agent.task ? `  ${singleLine(agent.task)}` : "";
+    const text = `${marker(agent.status, theme)} ${strong(theme, agent.agent, isSelected ? "accent" : "text")}${detail ? paint(theme, "muted", detail) : ""}`;
+    return { text, selected: isSelected };
   });
 }
 
-function processLines(agent: WikiAgentView | undefined, view: WikiRunView, theme: ThemeLike): string[] {
+function processPreviewLines(agent: WikiAgentView | undefined, view: WikiRunView, theme: ThemeLike): string[] {
   if (!agent) return [paint(theme, "dim", "No agent selected.")];
-  const heading = `${strong(theme, "Process", "text")}  ${marker(agent.status, theme)} ${strong(theme, agent.agent, "accent")}${agent.task ? paint(theme, "muted", `  ${agent.task}`) : ""}`;
+  const lines = [`${strong(theme, "Process tail", "text")}  ${marker(agent.status, theme)} ${strong(theme, agent.agent, "accent")}`];
   if (agent.tools.length === 0) {
-    return [heading, paint(theme, "dim", view.status === "running" ? "waiting for tools" : "no process tail")];
+    lines.push(paint(theme, "dim", view.status === "running" ? "waiting for tools" : "no process activity"));
+    return lines;
   }
-  return [heading, ...agent.tools.map((tool) => toolLine(tool, theme))];
+  lines.push(...agent.tools.map((tool) => toolLine(tool, theme)));
+  return lines;
 }
 
-function dashboardLines(view: WikiRunView, selected: WikiAgentView | undefined, theme: ThemeLike): string[] {
-  return [...boardLines(view, theme), "", ...processLines(selected, view, theme)];
+function processContent(agent: WikiAgentView | undefined, view: WikiRunView, width: number, theme: ThemeLike): ContentLine[] {
+  if (!agent) return [{ key: "empty", text: paint(theme, "dim", "No agent selected.") }];
+  if (agent.tools.length === 0) {
+    return [{ key: "empty", text: paint(theme, "dim", view.status === "running" ? "waiting for tools" : "no process activity") }];
+  }
+  return agent.tools.flatMap((tool) => wrappedContent(
+    `tool:${tool.id}`,
+    `${marker(tool.status, theme)} ${formatToolCall(tool.tool, tool.args)}`,
+    width,
+  ));
 }
 
-function boardLines(view: WikiRunView, theme: ThemeLike): string[] {
+function boardContent(view: WikiRunView, width: number, theme: ThemeLike): ContentLine[] {
+  const lines: ContentLine[] = [];
+  if (view.goal) {
+    lines.push(...wrappedContent("goal", `${strong(theme, "Goal", "text")}  ${paint(theme, "muted", view.goal)}`, width));
+    lines.push({ key: "goal:space", text: "" });
+  }
   const tasks = view.tasks ?? [];
-  if (tasks.length === 0) return [paint(theme, "dim", view.goal ?? "Board is empty.")];
-  const done = tasks.filter((task) => task.status === "completed").length;
-  return [
-    `${strong(theme, "Board", "text")}  ${paint(theme, "muted", `${done}/${tasks.length}${view.goal ? `  ${view.goal}` : ""}`)}`,
-    ...tasks.map((task) => `${taskMarker(task.status, theme)} ${task.id}  ${task.content}`),
-  ];
+  if (tasks.length === 0) {
+    lines.push({ key: "empty", text: paint(theme, "dim", "Board is empty.") });
+    return lines;
+  }
+  for (const task of tasks) {
+    const key = `task:${task.id}`;
+    lines.push(...wrappedContent(key, `${taskMarker(task.status, theme)} ${strong(theme, task.id, "text")}  ${task.content}`, width));
+    if (task.note) lines.push(...wrappedContent(key, `  ${paint(theme, "muted", `note: ${task.note}`)}`, width));
+  }
+  return lines;
 }
 
-function summaryLine(view: WikiRunView, theme: ThemeLike): string {
+function errorContent(error: string | undefined, width: number, theme: ThemeLike): ContentLine[] {
+  return wrappedContent("error", paint(theme, "error", error ?? "No error details are available."), width);
+}
+
+function wrappedContent(key: string, text: string, width: number): ContentLine[] {
+  return wrapTextWithAnsi(text, Math.max(1, width)).map((line) => ({ key, text: line }));
+}
+
+function topLevelTabs(active: "agents" | "board", view: WikiRunView, theme: ThemeLike): string {
   const agents = view.agents ?? [];
-  const active = agents.filter((agent) => agent.status === "running").length;
+  const activeAgents = agents.filter((agent) => agent.status === "running").length;
   const tasks = view.tasks ?? [];
   const done = tasks.filter((task) => task.status === "completed").length;
-  const activity = active ? `${paint(theme, "accent", "◆")} ${active} active` : paint(theme, "dim", "idle");
-  return `${strong(theme, "Agents", "text")}  ${agents.length}  ${activity}   ${strong(theme, "Board", "text")}  ${done}/${tasks.length}`;
+  const agentLabel = `Agents ${agents.length}${activeAgents ? ` · ${activeAgents} active` : ""}`;
+  const boardLabel = `Board ${done}/${tasks.length}`;
+  return [
+    active === "agents" ? strong(theme, `[${agentLabel}]`, "accent") : paint(theme, "muted", agentLabel),
+    active === "board" ? strong(theme, `[${boardLabel}]`, "accent") : paint(theme, "muted", boardLabel),
+  ].join("   ");
+}
+
+function statusLine(state: OverlayState, view: WikiRunView, theme: ThemeLike): string {
+  if (state.operation) return paint(theme, "accent", `◆ ${operationLabel(state.operation)}`);
+  if (state.notice) {
+    const color = state.notice.kind === "error" ? "error" : "warning";
+    return paint(theme, color, `${state.notice.kind === "error" ? "✗" : "!"} ${firstLine(state.notice.message)}${state.notice.kind === "error" ? "  e details" : ""}`);
+  }
+  if (view.error) return paint(theme, "error", `✗ ${firstLine(view.error)}  e details`);
+  return "";
 }
 
 function toolLine(tool: WikiToolView, theme: ThemeLike): string {
   return `  ${marker(tool.status, theme)} ${formatToolCall(tool.tool, tool.args)}`;
 }
 
-function overlayFooter(state: OverlayState, view: WikiRunView): string {
-  if (state.kind === "agent") return "↑↓ scroll  PgUp/PgDn  g top  t tail  ← back";
-  const control = view.status === "paused" ? "r resume  x cancel" : view.status === "running" ? "p pause  x cancel" : "";
-  return ["↑↓ select", "→/Enter open", control, "Esc close"].filter(Boolean).join("   ");
+function overlayFooter(state: OverlayState, view: WikiRunView, metrics: ScrollMetrics | undefined, width: number): string {
+  const controls = controlHints(view.status);
+  const error = detailError(state, view) ? "e error" : "";
+  const position = scrollPosition(metrics);
+  if (width < 72) {
+    const navigation = state.screen === "agents" ? "↑↓ Enter Tab" : state.screen === "agent" ? "↑↓ Pg t" : "↑↓ Pg g";
+    const newer = state.screen === "agent" && state.hasNewer ? "↓ new activity" : "";
+    const availableControls = position || newer ? controls.replaceAll(/ (pause|resume|cancel)/g, "") : controls;
+    return [navigation, position, newer, availableControls, error, "Esc"].filter(Boolean).join("  ");
+  }
+  const navigation = state.screen === "agents"
+    ? "↑↓ select  Enter process  Tab Board"
+    : state.screen === "board"
+      ? "↑↓ scroll  PgUp/PgDn  g top  Tab Agents"
+      : state.screen === "agent"
+        ? "↑↓ scroll  PgUp/PgDn  g top  t tail"
+        : "↑↓ scroll  PgUp/PgDn  g top";
+  const newer = state.screen === "agent" && state.hasNewer ? "↓ newer activity" : "";
+  return [navigation, position, newer, controls, error, state.screen === "agents" || state.screen === "board" ? "Esc close" : "Esc back"]
+    .filter(Boolean)
+    .join("   ");
 }
 
-function frame(
-  width: number,
-  title: string,
-  body: string[],
-  footer: string,
-  theme: ThemeLike,
-  bodyRows: number,
-  stats?: string,
-): string[] {
+function frame(width: number, title: string, body: string[], footer: string, theme: ThemeLike, bodyRows: number): string[] {
   const inner = Math.max(1, width - 2);
   const window = body.slice(0, bodyRows);
   while (window.length < bodyRows) window.push("");
   const border = (text: string) => paint(theme, "border", text);
-  const lines = [
+  return [
     titleBorderLine(title, inner, border),
     ...window.map((line) => `${border("│")}${padLine(` ${line}`, inner)}${border("│")}`),
+    `${border("╰")}${paint(theme, "borderMuted", padRule(footer, inner))}${border("╯")}`,
   ];
-  if (stats) {
-    lines.push(`${border("├")}${paint(theme, "borderMuted", padRule("context", inner))}${border("┤")}`);
-    lines.push(`${border("│")}${padLine(` ${stats}`, inner)}${border("│")}`);
-  }
-  lines.push(`${border("╰")}${paint(theme, "borderMuted", padRule(footer, inner))}${border("╯")}`);
-  return lines;
 }
 
-function columns(
-  left: Array<{ text: string; selected: boolean }>,
-  right: string[],
-  width: number,
-  rows: number,
-  theme: ThemeLike,
-): string[] {
-  const rightWidth = Math.max(1, width - NAV_WIDTH - visibleWidth(COLUMN_SEPARATOR));
-  const visibleRight = right.length > rows
-    ? [...right.slice(0, Math.max(0, rows - 1)), paint(theme, "muted", "… Enter to inspect")]
+function splitNavWidth(width: number): number | undefined {
+  const separator = visibleWidth(COLUMN_SEPARATOR);
+  const target = clamp(Math.floor(width * 0.34), NAV_MIN_WIDTH, NAV_MAX_WIDTH);
+  return width - target - separator >= DETAIL_MIN_WIDTH ? target : undefined;
+}
+
+function columns(left: NavigationLine[], right: string[], navWidth: number, width: number, rows: number, theme: ThemeLike): string[] {
+  const rightWidth = Math.max(1, width - navWidth - visibleWidth(COLUMN_SEPARATOR));
+  const hidden = Math.max(0, right.length - rows);
+  const visibleRight = hidden > 0
+    ? [...right.slice(0, Math.max(0, rows - 1)), paint(theme, "muted", `… ${hidden + 1} more · Enter process`)]
     : right;
   const lines: string[] = [];
   for (let index = 0; index < rows; index += 1) {
     const nav = left[index];
-    const leftText = renderNavRow(nav ?? { text: "", selected: false }, NAV_WIDTH, theme);
+    const leftText = renderNavRow(nav ?? { text: "", selected: false }, navWidth, theme);
     const rightText = padLine(visibleRight[index] ?? "", rightWidth);
     lines.push(`${leftText}${paint(theme, "borderMuted", COLUMN_SEPARATOR)}${rightText}`);
   }
   return lines;
 }
 
-function renderNavRow(line: { text: string; selected: boolean }, width: number, theme: ThemeLike): string {
+function renderNavRow(line: NavigationLine, width: number, theme: ThemeLike): string {
   const prefix = line.selected ? paint(theme, "accent", "> ") : "  ";
   const padded = padLine(`${prefix}${line.text}`, width);
   return line.selected ? background(theme, padded) : padded;
 }
 
-function navigationWindow(lines: Array<{ text: string; selected: boolean }>, rows: number): Array<{ text: string; selected: boolean }> {
+function navigationWindow(lines: NavigationLine[], rows: number, theme: ThemeLike): NavigationLine[] {
   if (rows <= 0) return [];
   if (lines.length <= rows) return lines;
-  const selected = lines.findIndex((line) => line.selected);
-  const start = selected < 0 ? 0 : clamp(selected - rows + 1, 0, lines.length - rows);
-  return lines.slice(start, start + rows);
+  const listRows = Math.max(1, rows - 1);
+  const selected = Math.max(0, lines.findIndex((line) => line.selected));
+  const start = clamp(selected - listRows + 1, 0, lines.length - listRows);
+  return [
+    ...lines.slice(start, start + listRows),
+    { text: paint(theme, "muted", `${selected + 1}/${lines.length}`), selected: false },
+  ];
 }
 
 function marker(status: WikiAgentView["status"] | WikiToolView["status"], theme: ThemeLike): string {
@@ -440,8 +668,7 @@ function elapsed(view: WikiRunView, now: number): string {
 }
 
 function styledTitle(view: WikiRunView, now: number, theme: ThemeLike): string {
-  const status = strong(theme, view.status, statusColor(view.status));
-  return `Wiki ${view.id} | ${status}${view.focus ? ` | ${view.focus}` : ""}${elapsed(view, now)}`;
+  return `Wiki status | ${strong(theme, view.status, statusColor(view.status))}${elapsed(view, now)}`;
 }
 
 function statusColor(status: WikiRunView["status"]): ThemeColor {
@@ -451,25 +678,99 @@ function statusColor(status: WikiRunView["status"]): ThemeColor {
   return "accent";
 }
 
+function actionsForStatus(status: WikiRunView["status"]): WikiRunControl[] {
+  if (status === "running") return ["pause", "cancel"];
+  if (status === "paused" || status === "failed") return ["resume", "cancel"];
+  return [];
+}
+
+function controlHints(status: WikiRunView["status"]): string {
+  return actionsForStatus(status).map((action) => `${action === "pause" ? "p" : action === "resume" ? "r" : "x"} ${action}`).join("  ");
+}
+
+function operationLabel(operation: Operation): string {
+  if (operation === "confirmCancel") return "Confirming cancellation…";
+  if (operation === "pause") return "Pausing…";
+  if (operation === "resume") return "Resuming…";
+  return "Cancelling…";
+}
+
+function initialBoardTask(view: WikiRunView) {
+  return view.tasks?.find((task) => task.status === "in_progress")
+    ?? view.tasks?.find((task) => task.status === "failed")
+    ?? view.tasks?.[0];
+}
+
+function detailError(state: OverlayState, view: WikiRunView): string | undefined {
+  return state.notice?.kind === "error" ? state.notice.message : view.error;
+}
+
+function emptyScroll(): ScrollState {
+  return { top: 0, anchorOffset: 0 };
+}
+
+function scrollFor(state: OverlayState): ScrollState {
+  if (state.screen === "agent") return state.agentScroll;
+  if (state.screen === "board") return state.boardScroll;
+  return state.errorScroll;
+}
+
+function updateScroll(state: OverlayState, scroll: ScrollState): OverlayState {
+  if (state.screen === "agent") return { ...state, agentScroll: scroll };
+  if (state.screen === "board") return { ...state, boardScroll: scroll };
+  if (state.screen === "error") return { ...state, errorScroll: scroll };
+  return state;
+}
+
+function resolveAnchor(scroll: ScrollState, content: ContentLine[]): number {
+  if (!scroll.anchorKey) return scroll.top;
+  const start = content.findIndex((line) => line.key === scroll.anchorKey);
+  return start < 0 ? scroll.top : start + scroll.anchorOffset;
+}
+
+function anchorScroll(top: number, content: ContentLine[]): ScrollState {
+  const line = content[top];
+  if (!line) return { top, anchorOffset: 0 };
+  const start = content.findIndex((entry) => entry.key === line.key);
+  return { top, anchorKey: line.key, anchorOffset: Math.max(0, top - start) };
+}
+
+function scrollPosition(metrics: ScrollMetrics | undefined): string {
+  if (!metrics || metrics.content.length <= metrics.rows || metrics.rows <= 0) return "";
+  const end = Math.min(metrics.content.length, metrics.start + metrics.rows);
+  return `${metrics.start + 1}–${end}/${metrics.content.length}`;
+}
+
+function firstLine(value: string): string {
+  return value.split(/\r?\n/, 1)[0]?.trim() || "Wiki run failed";
+}
+
+function singleLine(value: string): string {
+  return value.replaceAll(/[\r\n]+/g, " ").replaceAll(/\s+/g, " ").trim();
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function padRule(label: string, inner: number): string {
-  const clipped = truncateToWidth(label.trim() ? ` ${label.trim()} ` : "", inner, "…", true);
+  const clipped = truncateToWidth(label.trim() ? ` ${label.trim()} ` : "", inner, "…");
   return `${clipped}${"─".repeat(Math.max(0, inner - visibleWidth(clipped)))}`;
 }
 
 function titleBorderLine(title: string, inner: number, border: (text: string) => string): string {
-  const clipped = truncateToWidth(title.trim(), Math.max(1, inner - 2), "…", true);
+  const clipped = truncateToWidth(title.trim(), Math.max(1, inner - 2), "…");
   const rule = "─".repeat(Math.max(0, inner - visibleWidth(clipped) - 2));
   return `${border("╭")}${border(" ")}${clipped}${border(" ")}${border(rule)}${border("╮")}`;
 }
 
 function viewportRows(tui: OverlayTui): number {
   const terminalRows = Math.max(1, Math.floor(tui.terminal?.rows ?? 24));
-  return Math.max(1, Math.min(MAX_VIEWPORT_ROWS, Math.floor(terminalRows * OVERLAY_HEIGHT_PERCENT / 100), Math.max(1, terminalRows - 2)));
+  return Math.max(1, Math.min(MAX_VIEWPORT_ROWS, terminalRows - 2));
 }
 
 function padLine(value: string, width: number): string {
-  const clipped = truncateToWidth(value, width, "…", true);
-  return `${clipped}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}`;
+  return truncateToWidth(value, width, "…", true);
 }
 
 function paint(theme: ThemeLike, color: ThemeColor, text: string): string {

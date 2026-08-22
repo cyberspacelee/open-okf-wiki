@@ -64,13 +64,13 @@ test("renders plain run and snapshot output", () => {
     status: "paused",
     goal: "Auth wiki",
     tasks: [{ id: "write", content: "Write overview", status: "in_progress" }],
-    agents: [{ agent: "write", task: "author pages", status: "running", tools: [{ id: "1", tool: "read", args: { path: "src/a.ts" }, status: "running" }] }],
+    agents: [{ id: "write-1", agent: "write", task: "author pages", status: "running", tools: [{ id: "1", tool: "read", args: { path: "src/a.ts" }, status: "running" }] }],
     createdAt: "2026-08-12T00:00:00.000Z",
     updatedAt: "2026-08-12T00:00:00.000Z",
   }), /in_progress  write  Write overview[\s\S]*◆ read src\/a\.ts/);
 });
 
-test("status snapshots state their freshness", () => {
+test("status snapshots format freshness in the system-default locale and time zone", () => {
   const rendered = renderWikiSnapshot({
     id: "run-1", cwd: "/repo", status: "running",
     createdAt: "2026-08-12T00:00:00.000Z", updatedAt: "2026-08-12T00:01:02.000Z",
@@ -79,6 +79,7 @@ test("status snapshots state their freshness", () => {
     dateStyle: "medium", timeStyle: "medium",
   }).format(Date.parse("2026-08-12T00:01:02.000Z"));
   assert.ok(rendered.endsWith(`snapshot as of ${expected}`));
+  assert.doesNotMatch(rendered, /2026-08-12T00:01:02\.000Z/);
 });
 
 test("formats tool calls for the live widget", () => {
@@ -99,6 +100,7 @@ test("renders a compact live widget from running agent tools", () => {
     updatedAt: "2026-08-12T00:00:00.000Z",
     tasks: [{ id: "write", content: "Write CheckoutSession pages", status: "in_progress" }],
     agents: [{
+      id: "write-1",
       agent: "write",
       task: "author pages",
       status: "running",

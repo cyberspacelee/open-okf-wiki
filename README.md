@@ -20,7 +20,10 @@ pi -e ./extensions/wiki/index.ts -p --mode json -a "/wiki"
 Print/json mode waits until the Run finishes and prints the final status.
 Interactive TUI returns after start, updates the footer status, and shows a
 live widget of Lead / subagent tool calls. `/wiki status` opens an inspect
-overlay (agents, Board, and the selected agent's process).
+overlay. `Tab` switches between the Agents and complete Board views; `Enter`
+opens the selected agent's retained Process tail, and `e` opens full Run or
+control errors. Pause, resume, and cancel remain available from every view when
+the current Run state permits them.
 
 CLI contract (no LLM): `./scripts/e2e-wiki-cli.sh`  
 Live generation: `WIKI_E2E=1 ./scripts/e2e-wiki-live.sh`
@@ -53,6 +56,8 @@ A Workspace keeps at most one current Run under `.okf-wiki/run/`. After pause
 or failure, `/wiki resume` continues its Candidate, Board, and Lead session.
 Success and cancel remove the Run state; the next `/wiki` starts from an empty
 Candidate. Legacy `.okf-wiki/runs/` history is deleted when a new Run starts.
+Run timestamps remain UTC ISO strings in persisted state. User-facing absolute
+times are formatted in the user's system-default locale and time zone.
 
 `language: zh` or `language: en` controls generated titles and body text.
 Code identifiers and source citations stay unchanged.

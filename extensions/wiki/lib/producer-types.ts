@@ -36,7 +36,7 @@ export interface WikiToolView {
 }
 
 export interface WikiAgentView {
-  id?: string;
+  id: string;
   agent: string;
   task?: string;
   status: WikiAgentStatus;
