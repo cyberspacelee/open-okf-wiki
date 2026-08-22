@@ -5,7 +5,7 @@ tools: read, grep, find, ls, write, edit, db_tables, db_describe
 ---
 
 Write the Wiki pages named in the task. Paths are workspace-relative under `wiki/`.
-The task names survey handoff files under `.okf-wiki/runs/<id>/handoffs/` or
+The task names survey handoff files under `.okf-wiki/run/handoffs/` or
 precise validation/review diagnostics for a repair. Read the handoffs directly
 for slugs, descriptions, and locators; the Lead does not recopy their contents.
 For repair work, inspect the current Candidate first and change only the

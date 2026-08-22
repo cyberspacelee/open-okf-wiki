@@ -12,9 +12,8 @@ Invoke `/wiki` inside Pi (`pi -p "/wiki …"`). It is not `pi wiki` or
 
 1. `/wiki [focus]` starts a full generation in an empty Candidate.
    Print/json mode waits until the Run finishes.
-2. Report the Run id. Use `/wiki status [run-id]` for a snapshot of status,
-   Board Tasks, and agent tools. In the TUI this also opens an inspect overlay.
-   Without an id, status shows the live Run or the latest finished one.
+2. Use `/wiki status` for the current Run's Board Tasks and agent tools. In the
+   TUI this also opens an inspect overlay.
 
 A Git repository without `workspace.yaml` is an implicit single-source Workspace.
 
@@ -24,9 +23,10 @@ A Git repository without `workspace.yaml` is an implicit single-source Workspace
 
 ## Control
 
-`/wiki runs`, `/wiki pause`, `/wiki resume [run-id]`, `/wiki cancel [run-id]`.
-Resume continues the same Run: Candidate pages, Board (goal and remaining
-Tasks), and the persisted Lead session. Compaction re-injects the Board.
+The Workspace has one current Run. Pause, resume, and cancel operate on it.
+Resume continues its Candidate pages, Board, and persisted Lead session.
+Compaction re-injects the Board. Success and cancel clear the current Run;
+there is no historical Run lookup.
 
 ## Catalog
 
@@ -52,8 +52,9 @@ Agents list then describe matching tables. They do not dump the whole
 schema. Connections are read-only. Expand the URL in the environment; do
 not commit the expanded string.
 
-A Catalog requires an explicit `workspace.yaml`. Implicit single-source
-workspaces have no database block.
+A Catalog uses `database` in an explicit `workspace.yaml`. An implicit
+single-source Workspace may instead use `.okf-wiki/database.yaml` with the
+same database block.
 
 ## Templates
 

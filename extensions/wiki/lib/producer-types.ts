@@ -93,6 +93,5 @@ export interface WikiRunHandle {
 
 export interface WikiProducer {
   start(request: WikiProducerRequest): Promise<WikiRunHandle>;
-  list(cwd: string): Promise<WikiRunView[]>;
-  open(runId: string, cwd: string): Promise<WikiRunHandle | undefined>;
+  current(cwd: string): Promise<WikiRunHandle | undefined>;
 }

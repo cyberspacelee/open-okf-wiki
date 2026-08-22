@@ -15,6 +15,7 @@ const PURE_MODULES = [
   "failures.ts",
   "path.ts",
   "path-policy.ts",
+  "publication.ts",
   "wiki-okf.ts",
   "templates.ts",
   "frontmatter.ts",

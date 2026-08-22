@@ -1,4 +1,5 @@
 import path from "node:path";
+import { realpath } from "node:fs/promises";
 import type { CitationSource } from "./citations.js";
 import { sourceIsIgnored, type WikiPinnedSourcePlan } from "./inspect.js";
 import { isImplicitPinPath, isSafeWikiPagePath, isWikiTaxonomySlug } from "./path.js";
@@ -8,7 +9,7 @@ export interface WikiWriteGuard {
   candidateRoot: string;
   publishedWikiRoot: string;
   handoffsRoot: string;
-  sources: CitationSource[];
+  sources: Array<CitationSource & { realPath: string }>;
   defaultSourceIgnores: boolean;
   excludes: string[];
   writePartition?: string;
@@ -22,7 +23,7 @@ export function writeGuardFromPlan(plan: WikiPinnedSourcePlan, candidateRoot: st
     candidateRoot: resolvedCandidate,
     publishedWikiRoot: path.join(workspaceRoot, "wiki"),
     handoffsRoot: path.join(path.dirname(resolvedCandidate), "handoffs"),
-    sources: plan.sources.map(({ scopeId, logicalPath }) => ({ scopeId, logicalPath })),
+    sources: plan.sources.map(({ scopeId, logicalPath, realPath }) => ({ scopeId, logicalPath, realPath })),
     defaultSourceIgnores: plan.defaultSourceIgnores,
     excludes: [...plan.excludes],
   };
@@ -48,6 +49,28 @@ export function assertReadable(guard: WikiWriteGuard, input: string): string {
   if (pathIsIgnored(guard, resolved)) {
     throw new Error(`Path is excluded by source ignore rules: ${input}`);
   }
+  if (!readRoot(guard, resolved)) {
+    throw new Error(`Path is outside the current Run evidence view: ${input}`);
+  }
+  return resolved;
+}
+
+/** Verify filesystem resolution as well as lexical containment before a tool reads an entry. */
+export async function assertReadableEntry(guard: WikiWriteGuard, input: string): Promise<string> {
+  const resolved = assertReadable(guard, input);
+  let actual: string;
+  try {
+    actual = await realpath(resolved);
+  } catch (error) {
+    if (error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT") return resolved;
+    throw error;
+  }
+  const root = readRoot(guard, resolved);
+  if (!root) throw new Error(`Path is outside the current Run evidence view: ${input}`);
+  const actualRoot = await realpath(root);
+  if (!contained(actualRoot, actual)) {
+    throw new Error(`Path resolves outside the current Run evidence view: ${input}`);
+  }
   return resolved;
 }
 
@@ -66,6 +89,16 @@ export function pathIsIgnored(guard: WikiWriteGuard, absolutePath: string): bool
     );
   }
   return false;
+}
+
+function readRoot(guard: WikiWriteGuard, resolved: string): string | undefined {
+  if (contained(guard.candidateRoot, resolved)) return guard.candidateRoot;
+  if (contained(guard.handoffsRoot, resolved)) return guard.handoffsRoot;
+  for (const source of guard.sources) {
+    const logicalRoot = path.resolve(guard.workspaceRoot, source.logicalPath);
+    if (contained(logicalRoot, resolved)) return source.realPath;
+  }
+  return undefined;
 }
 
 function contained(root: string, candidate: string): boolean {

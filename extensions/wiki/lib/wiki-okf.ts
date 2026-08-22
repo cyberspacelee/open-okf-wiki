@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { mkdir, readdir } from "node:fs/promises";
 import path from "node:path";
 import { extractOkfSources, resolveSourceCitation, wikiLinkTargets, type SourceCitation } from "./citations.js";
@@ -328,7 +328,12 @@ function sourceFileLines(
   const pin = pins.find((candidate) => candidate.scopeId === resolved.scopeId);
   if (!pin) return "missing";
   try {
-    return readFileSync(path.join(pin.realPath, ...resolved.sourcePath.split("/")), "utf8").split(/\r?\n/).length;
+    const file = path.join(pin.realPath, ...resolved.sourcePath.split("/"));
+    if (lstatSync(file).isSymbolicLink()) return "missing";
+    const actual = realpathSync(file);
+    const relative = path.relative(realpathSync(pin.realPath), actual);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) return "missing";
+    return readFileSync(actual, "utf8").split(/\r?\n/).length;
   } catch {
     return "missing";
   }

@@ -39,9 +39,9 @@ for line in sys.stdin:
 fail() {
   echo "FAIL: $*" >&2
   echo "workspace: $WS" >&2
-  if [[ -f "$WS/.okf-wiki/runs/"*/run.json ]]; then
+  if [[ -f "$WS/.okf-wiki/run/run.json" ]]; then
     echo "--- run.json ---" >&2
-    cat "$WS"/.okf-wiki/runs/*/run.json >&2 || true
+    cat "$WS/.okf-wiki/run/run.json" >&2 || true
   fi
   if [[ -f "$WS/host.jsonl" ]]; then
     echo "--- host.jsonl tail ---" >&2
@@ -61,7 +61,7 @@ if ! ( cd "$WS" && timeout "$TIMEOUT" "${PI[@]}" "/wiki" > "$WS/host.jsonl" ); t
 fi
 
 python3 - "$WS" "$NAME" <<'PY' || fail "live assertions"
-import json, glob, os, sys, re
+import json, os, sys, re
 ws, name = sys.argv[1], sys.argv[2]
 host = open(os.path.join(ws, "host.jsonl"), encoding="utf-8").read()
 texts = []
@@ -79,32 +79,12 @@ for line in host.splitlines():
 if not any("succeeded" in t for t in texts):
     raise SystemExit(f"host.jsonl missing succeeded, got {texts!r}")
 
-runs = glob.glob(os.path.join(ws, ".okf-wiki", "runs", "*", "run.json"))
-if len(runs) != 1:
-    raise SystemExit(f"expected 1 run, got {runs}")
-record = json.load(open(runs[0], encoding="utf-8"))
-if record.get("status") != "succeeded":
-    raise SystemExit(f"status {record.get('status')} error={record.get('error')}")
-if record.get("language") != "zh":
-    raise SystemExit(f"language {record.get('language')}")
-if (record.get("pageCount") or 0) < 3:
-    raise SystemExit(f"pageCount {record.get('pageCount')}")
-if not record.get("sessionFile") or not os.path.isfile(record["sessionFile"]):
-    raise SystemExit("missing sessionFile")
-agents = record.get("agents") or []
-if not any(a.get("agent") == "write" and a.get("status") == "complete" for a in agents):
-    raise SystemExit(f"agents missing write complete: {agents!r}")
-if not any(a.get("agent") == "review" and a.get("status") == "complete" for a in agents):
-    raise SystemExit(f"agents missing review complete: {agents!r}")
-
-board = json.load(open(os.path.join(os.path.dirname(runs[0]), "board.json"), encoding="utf-8"))
-by_id = {t["id"]: t for t in board.get("tasks") or []}
-for task_id in ("survey", "write", "publish"):
-    if by_id.get(task_id, {}).get("status") != "completed":
-        raise SystemExit(f"board {task_id} {by_id.get(task_id)}")
+run_dir = os.path.join(ws, ".okf-wiki", "run")
+if os.path.exists(run_dir):
+    raise SystemExit(f"successful Run state was not cleaned: {run_dir}")
 
 wiki = os.path.join(ws, "wiki")
-for rel in ("overview.md", f"{name}/source.md", "index.md", "log.md"):
+for rel in ("overview.md", "architecture.md", f"{name}/architecture.md", "index.md", "log.md"):
     path = os.path.join(wiki, rel)
     if not os.path.isfile(path):
         raise SystemExit(f"missing {rel}")
@@ -136,8 +116,11 @@ if not architecture_pages:
     raise SystemExit("missing architecture.md")
 if not mermaid_pages:
     raise SystemExit("missing mermaid diagram")
-candidate = os.path.join(os.path.dirname(runs[0]), "candidate")
-if os.path.isdir(candidate) and os.listdir(candidate):
-    raise SystemExit(f"candidate leftover {os.listdir(candidate)}")
-print(f"ok {record['id']} pages={record['pageCount']} {ws}")
+page_count = sum(
+    1 for dirpath, _dirs, files in os.walk(wiki)
+    for filename in files if filename.endswith(".md")
+)
+if page_count < 5:
+    raise SystemExit(f"pageCount {page_count}")
+print(f"ok pages={page_count} {ws}")
 PY

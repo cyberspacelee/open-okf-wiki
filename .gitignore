@@ -6,3 +6,10 @@ tmp/
 .claude/
 .pi/
 skills-lock.json
+.env
+.env.*
+!.env.example
+!.env.sample
+.okf-wiki/run/
+.okf-wiki/publication/
+.okf-wiki/*.lock

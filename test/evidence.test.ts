@@ -22,7 +22,7 @@ async function fixture(t, resource: string, options: Parameters<typeof createWri
     candidateRoot,
     publishedWikiRoot: path.join(root, "wiki"),
     handoffsRoot: path.join(root, ".okf-wiki", "runs", "run", "handoffs"),
-    sources: [{ scopeId: "self", logicalPath: "." }],
+    sources: [{ scopeId: "self", logicalPath: ".", realPath: root }],
     defaultSourceIgnores: true,
     excludes: [],
   };

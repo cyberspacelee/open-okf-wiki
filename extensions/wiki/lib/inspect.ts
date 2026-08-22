@@ -131,9 +131,15 @@ export function sourceIsIgnored(
   if (workspaceExcludes.some((pattern) => matchesIgnorePattern(normalized, pattern) || matchesIgnorePattern(declaredPath, pattern))) {
     return true;
   }
+  if (parts.some(isPrivateDotenvName)) return true;
   if (source.path === "." && (parts[0] === ".okf-wiki" || parts[0] === "wiki" || normalized === "workspace.yaml")) return true;
   if (!defaultsEnabled) return false;
   return DEFAULT_SOURCE_IGNORES.some((pattern) => matchesIgnorePattern(normalized, pattern));
+}
+
+function isPrivateDotenvName(name: string): boolean {
+  if (name === ".env") return true;
+  return name.startsWith(".env.") && name !== ".env.example" && name !== ".env.sample";
 }
 
 export function pinsFromPlan(plan: WikiPinnedSourcePlan): Array<{ scopeId: string; logicalPath: string; realPath: string }> {

@@ -4,10 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { git } from "../extensions/wiki/lib/git.js";
-import { writeText } from "../extensions/wiki/lib/files.js";
+import { exists, writeText } from "../extensions/wiki/lib/files.js";
 import { writeHandoff, taskDigest } from "../extensions/wiki/lib/handoff.js";
 import { createProductionWikiProducer } from "../extensions/wiki/lib/producer.js";
 import type { WikiLeadContext } from "../extensions/wiki/lib/producer.js";
+import { installWikiPublication } from "../extensions/wiki/lib/publication.js";
 import { candidatePartitionRevision, candidateRevision, fileRevision } from "../extensions/wiki/lib/revisions.js";
 import { inspectWiki } from "../extensions/wiki/lib/inspect.js";
 import { loadWikiTemplatePack, packagedTemplatesRoot } from "../extensions/wiki/lib/templates.js";
@@ -94,6 +95,8 @@ async function attestHandoff(context: WikiLeadContext, assignment: {
 }
 
 async function writeReviewPass(context: WikiLeadContext) {
+  const checked = await context.check();
+  assert.equal(checked.ok, true, checked.message);
   const current = await context.board.read();
   await context.board.write({
     goal: current.goal,
@@ -134,6 +137,9 @@ test("publish installs a valid Candidate as wiki/", async (t) => {
     async runLead(context) {
       await writeValidCandidate(context.candidateRoot);
       await writeReviewPass(context);
+      const record = JSON.parse(await readFile(path.join(root, ".okf-wiki", "run", "run.json"), "utf8"));
+      assert.ok(Array.isArray(record.executions));
+      assert.equal(record.executions.some((entry) => entry.tools), false);
       const published = await context.publish();
       assert.equal(published.ok, true, published.message);
     },
@@ -234,7 +240,7 @@ test("resume turns an unacknowledged execution into retryable durable state", as
       }
       const board = await context.board.read();
       assert.equal(board.tasks.find((task) => task.id === "survey")?.status, "pending");
-      const record = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", handle.id, "run.json"), "utf8"));
+      const record = JSON.parse(await readFile(path.join(root, ".okf-wiki", "run", "run.json"), "utf8"));
       assert.equal(record.executions[0].status, "interrupted");
       await writeValidCandidate(context.candidateRoot);
       await writeReviewPass(context);
@@ -272,7 +278,7 @@ test("resume adopts an exact handoff written before the terminal receipt", async
         return;
       }
       assert.equal((await context.board.read()).tasks[0]?.status, "completed");
-      const record = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", handle.id, "run.json"), "utf8"));
+      const record = JSON.parse(await readFile(path.join(root, ".okf-wiki", "run", "run.json"), "utf8"));
       assert.equal(record.executions[0].status, "complete");
       assert.match(record.executions[0].handoff.path, /survey-adopt\.md$/);
       await writeValidCandidate(context.candidateRoot);
@@ -315,7 +321,7 @@ test("resume adopts a partition-bound writer handoff after a sibling partition c
         return;
       }
       assert.equal((await context.board.read()).tasks[0]?.status, "completed");
-      const record = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", handle.id, "run.json"), "utf8"));
+      const record = JSON.parse(await readFile(path.join(root, ".okf-wiki", "run", "run.json"), "utf8"));
       assert.equal(record.executions[0].status, "complete");
       await rm(context.candidateRoot, { recursive: true, force: true });
       await mkdir(context.candidateRoot, { recursive: true });
@@ -335,7 +341,7 @@ test("a reopened process-crash Run reconciles persisted running receipts", async
   const root = await gitRepo(t);
   const plan = await inspectWiki(root);
   const id = "crash001";
-  const directory = path.join(root, ".okf-wiki", "runs", id);
+  const directory = path.join(root, ".okf-wiki", "run");
   const candidateRoot = path.join(directory, "candidate");
   await mkdir(candidateRoot, { recursive: true });
   await writeText(path.join(directory, "board.json"), `${JSON.stringify({
@@ -344,7 +350,7 @@ test("a reopened process-crash Run reconciles persisted running receipts", async
   }, null, 2)}\n`);
   const now = new Date().toISOString();
   await writeText(path.join(directory, "run.json"), `${JSON.stringify({
-    schemaVersion: 2,
+    schemaVersion: 3,
     id,
     cwd: root,
     status: "running",
@@ -376,7 +382,7 @@ test("a reopened process-crash Run reconciles persisted running receipts", async
       assert.equal((await context.publish()).ok, true);
     },
   });
-  const handle = await producer.open(id, root);
+  const handle = await producer.current(root);
   assert.ok(handle);
   await handle.control("resume");
   await handle.result();
@@ -404,6 +410,63 @@ test("start refuses a paused Run", async (t) => {
   await handle.control("pause");
   assert.equal((await handle.view()).status, "paused");
   await assert.rejects(() => producer.start({ cwd: root }), /paused; use \/wiki resume/);
+});
+
+test("concurrent starts admit only one current Run", async (t) => {
+  const root = await gitRepo(t);
+  const producer = createProductionWikiProducer({
+    async runLead(context) {
+      await new Promise((resolve) => context.signal.addEventListener("abort", resolve, { once: true }));
+    },
+  });
+  const attempts = await Promise.allSettled([
+    producer.start({ cwd: root }),
+    producer.start({ cwd: root }),
+  ]);
+  const accepted = attempts.filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof producer.start>>> => result.status === "fulfilled");
+  const rejected = attempts.filter((result) => result.status === "rejected");
+  assert.equal(accepted.length, 1);
+  assert.equal(rejected.length, 1);
+  await accepted[0]!.value.control("cancel");
+});
+
+test("successful Runs are terminal and leave no historical Run directory", async (t) => {
+  const root = await gitRepo(t);
+  const producer = createProductionWikiProducer({
+    async runLead(context) {
+      await writeValidCandidate(context.candidateRoot);
+      await writeReviewPass(context);
+      assert.equal((await context.publish()).ok, true);
+    },
+  });
+  const handle = await producer.start({ cwd: root });
+  await handle.result();
+  assert.equal(await producer.current(root), undefined);
+  assert.equal(await exists(path.join(root, ".okf-wiki", "run")), false);
+  await assert.rejects(() => handle.control("pause"), /Cannot pause a succeeded/);
+});
+
+test("current reconciles a publication interrupted after Candidate install", async (t) => {
+  const root = await gitRepo(t);
+  await mkdir(path.join(root, "wiki"));
+  await writeFile(path.join(root, "wiki", "old.md"), "old\n");
+  const producer = createProductionWikiProducer({
+    async runLead(context) {
+      await writeValidCandidate(context.candidateRoot);
+      await writeReviewPass(context);
+      throw new Error("stop before publication");
+    },
+  });
+  const handle = await producer.start({ cwd: root });
+  await assert.rejects(() => handle.result(), /stop before publication/);
+  await assert.rejects(() => installWikiPublication(root, path.join(root, ".okf-wiki", "run", "candidate"), {
+    fault(phase) { if (phase === "candidate_installed") throw new Error("simulated publication crash"); },
+  }), /simulated publication crash/);
+
+  assert.equal(await producer.current(root), undefined);
+  assert.equal(await exists(path.join(root, ".okf-wiki", "run")), false);
+  assert.equal(await exists(path.join(root, "wiki", "old.md")), false);
+  assert.equal(await exists(path.join(root, "wiki", "overview.md")), true);
 });
 
 test("resume waits for the paused Lead generation to finish", async (t) => {
@@ -725,9 +788,6 @@ test("live view puts nested tools on the named agent and notifies subscribers", 
   assert.equal(surveys[0].tools[0].tool, "grep");
   assert.equal(surveys[0].tools[0].status, "complete");
   assert.equal(surveys[1].tools[0].tool, "ls");
-  const record = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", handle.id, "run.json"), "utf8"));
-  assert.ok(Array.isArray(record.executions));
-  assert.equal(record.executions.some((entry) => entry.tools), false);
 });
 
 test("board writes notify subscribers and tool tails stay capped", async (t) => {
@@ -798,7 +858,7 @@ test("unsubscribe stops live view delivery", async (t) => {
   await handle.result();
 });
 
-test("schema v1 Run records cannot be opened", async (t) => {
+test("starting the current layout discards legacy Run history without migration", async (t) => {
   const root = await gitRepo(t);
   const directory = path.join(root, ".okf-wiki", "runs", "oldrun01");
   await mkdir(path.join(directory, "candidate"), { recursive: true });
@@ -815,8 +875,41 @@ test("schema v1 Run records cannot be opened", async (t) => {
     leadAttempts: [],
     executions: [],
   }, null, 2)}\n`);
-  const producer = createProductionWikiProducer({ async runLead() {} });
-  assert.equal(await producer.open("oldrun01", root), undefined);
+  const producer = createProductionWikiProducer({
+    async runLead(context) {
+      await new Promise((resolve) => context.signal.addEventListener("abort", resolve, { once: true }));
+    },
+  });
+  const handle = await producer.start({ cwd: root });
+  assert.equal(await exists(path.join(root, ".okf-wiki", "runs")), false);
+  await handle.control("cancel");
+});
+
+test("current deletes a schema 3 record with malformed nested receipts", async (t) => {
+  const root = await gitRepo(t);
+  const plan = await inspectWiki(root);
+  const directory = path.join(root, ".okf-wiki", "run");
+  const candidateRoot = path.join(directory, "candidate");
+  await mkdir(candidateRoot, { recursive: true });
+  const now = new Date().toISOString();
+  await writeText(path.join(directory, "run.json"), `${JSON.stringify({
+    schemaVersion: 3,
+    id: "broken01",
+    cwd: root,
+    status: "failed",
+    language: "zh",
+    createdAt: now,
+    updatedAt: now,
+    candidateRoot,
+    fingerprint: plan.fingerprint,
+    plan,
+    leadAttempts: [],
+    executions: [{ status: "complete" }],
+  }, null, 2)}\n`);
+
+  const producer = createProductionWikiProducer();
+  assert.equal(await producer.current(root), undefined);
+  assert.equal(await exists(directory), false);
 });
 
 test("resume does not adopt a handoff without an envelope", async (t) => {
@@ -843,7 +936,7 @@ test("resume does not adopt a handoff without an envelope", async (t) => {
         await writeText(location, "complete without envelope\n");
         return;
       }
-      const record = JSON.parse(await readFile(path.join(root, ".okf-wiki", "runs", handle.id, "run.json"), "utf8"));
+      const record = JSON.parse(await readFile(path.join(root, ".okf-wiki", "run", "run.json"), "utf8"));
       assert.equal(record.executions[0].status, "interrupted");
       await writeValidCandidate(context.candidateRoot);
       await writeReviewPass(context);

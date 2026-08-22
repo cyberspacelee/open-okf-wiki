@@ -60,10 +60,10 @@ grep -q "path: tradingflow" "$WS/workspace.yaml" || fail "yaml missing tradingfl
 text="$(wiki_text status)" || fail "status failed"
 [[ "$text" == *"Wiki: no run."* ]] || fail "status empty: $text"
 
-text="$(wiki_text runs)" || fail "runs failed"
-[[ "$text" == *"Wiki runs: none."* ]] || fail "runs empty: $text"
+text="$(wiki_text runs)" || fail "removed runs command failed"
+[[ "$text" == *"was removed"* ]] || fail "runs removal text: $text"
 
-text="$(wiki_text runs extra)" || fail "runs extra should still print"
-[[ "$text" == *"does not accept arguments"* ]] || [[ "$text" == *"Usage:"* ]] || fail "runs extra: $text"
+text="$(wiki_text resume stale-run-id)" || fail "resume argument validation failed"
+[[ "$text" == *"does not accept arguments"* ]] || fail "resume argument text: $text"
 
 echo "ok $WS"

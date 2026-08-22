@@ -2,9 +2,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import {
   parseWikiCliCommand,
   renderWikiRun,
-  renderWikiRuns,
   renderWikiSnapshot,
-  selectWikiRun,
   wikiCliHelp,
   type WikiCliCommand,
 } from "./lib/cli.js";
@@ -81,11 +79,7 @@ async function dispatch(
     watchRun(context, handle);
     return;
   }
-  if (command.action === "runs") {
-    output(pi, context, renderWikiRuns(await producer.list(cwd)));
-    return;
-  }
-  const handle = await selectedRun(producer, cwd, "runId" in command ? command.runId : undefined);
+  const handle = await producer.current(cwd);
   if (command.action === "status") {
     if (!handle) {
       output(pi, context, renderWikiRun(undefined));
@@ -125,13 +119,6 @@ function watchRun(context: ExtensionCommandContext, handle: WikiRunHandle): void
 function stopWatch(): void {
   unsubscribe?.();
   unsubscribe = undefined;
-}
-
-async function selectedRun(producer: WikiProducer, cwd: string, runId?: string): Promise<WikiRunHandle | undefined> {
-  if (runId) return await producer.open(runId, cwd);
-  const selected = selectWikiRun(await producer.list(cwd));
-  if (!selected) return undefined;
-  return await producer.open(selected.id, cwd);
 }
 
 async function dispatchWorkspace(
@@ -182,11 +169,10 @@ function output(pi: ExtensionAPI, context: ExtensionCommandContext, text: string
 const COMPLETIONS = [
   { value: "init ", label: "init", description: "Initialize a Wiki workspace" },
   { value: "source add ", label: "source", description: "Link or clone a Git source" },
-  { value: "status ", label: "status", description: "Show a run" },
-  { value: "runs", label: "runs", description: "List repository Wiki runs" },
+  { value: "status", label: "status", description: "Show the current run" },
   { value: "pause", label: "pause", description: "Pause the active run" },
-  { value: "resume ", label: "resume", description: "Continue a paused or failed run from its Board" },
-  { value: "cancel ", label: "cancel", description: "Cancel a run" },
+  { value: "resume", label: "resume", description: "Continue the current paused or failed run" },
+  { value: "cancel", label: "cancel", description: "Cancel the current run" },
 ];
 
 function wikiArgumentCompletions(argumentPrefix: string) {

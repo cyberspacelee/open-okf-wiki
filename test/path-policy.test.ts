@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { assertAgentPartition, assertReadable, assertWritable, resolveToolPath, writeGuardFromPlan, writePartitionAllows, writePartitionsOverlap } from "../extensions/wiki/lib/path-policy.js";
+import { assertAgentPartition, assertReadable, assertReadableEntry, assertWritable, resolveToolPath, writeGuardFromPlan, writePartitionAllows, writePartitionsOverlap } from "../extensions/wiki/lib/path-policy.js";
+import { candidateTools } from "../extensions/wiki/lib/pi/tools.js";
 import { candidatePartitionRevision } from "../extensions/wiki/lib/revisions.js";
 import { isSafeWikiPagePath, wikiPathKind } from "../extensions/wiki/lib/path.js";
 
@@ -75,16 +76,88 @@ test("wiki/overview.md remaps into the Candidate; .okf-wiki and published wiki w
 
   assert.throws(
     () => assertWritable(guard, ".okf-wiki/runs/abcd/run.json"),
-    /unpublished Candidate|ledgers/,
+    /unpublished Candidate|ledgers|evidence view/,
   );
   assert.throws(
     () => assertWritable(guard, path.join(workspaceRoot, ".okf-wiki", "state.json")),
-    /unpublished Candidate|ledgers/,
+    /unpublished Candidate|ledgers|evidence view/,
   );
 
   assert.equal(resolveToolPath(guard, "wiki"), publishedWikiRoot);
-  assert.throws(() => assertWritable(guard, "wiki"), /unpublished Candidate/);
-  assert.throws(() => assertWritable(guard, publishedWikiRoot), /unpublished Candidate/);
+  assert.throws(() => assertWritable(guard, "wiki"), /unpublished Candidate|evidence view/);
+  assert.throws(() => assertWritable(guard, publishedWikiRoot), /unpublished Candidate|evidence view/);
+});
+
+test("read access is limited to pinned Sources, the Candidate, and current handoffs", async (t) => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "wiki-read-policy-"));
+  t.after(async () => await rm(workspaceRoot, { recursive: true, force: true }));
+  const sourceRoot = path.join(workspaceRoot, "backend");
+  const candidateRoot = path.join(workspaceRoot, ".okf-wiki", "run", "candidate");
+  await mkdir(sourceRoot, { recursive: true });
+  await mkdir(candidateRoot, { recursive: true });
+  await writeFile(path.join(sourceRoot, "main.ts"), "export {};\n");
+  await writeFile(path.join(workspaceRoot, ".env"), "SECRET=value\n");
+  const guard = writeGuardFromPlan({
+    ...plan(workspaceRoot),
+    sources: [{
+      scopeId: "backend",
+      logicalPath: "backend",
+      absolutePath: sourceRoot,
+      realPath: sourceRoot,
+      repositoryRoot: sourceRoot,
+      repositoryIdentity: "backend",
+      origin: { type: "link" as const, localPath: sourceRoot },
+      head: "head",
+      dirtyFingerprint: "clean",
+    }],
+  }, candidateRoot);
+
+  assert.equal(assertReadable(guard, "backend/main.ts"), path.join(sourceRoot, "main.ts"));
+  assert.throws(() => assertReadable(guard, ".env"), /outside the current Run evidence view/);
+  assert.throws(() => assertReadable(guard, ".okf-wiki/run/run.json"), /outside the current Run evidence view/);
+
+  const outside = path.join(workspaceRoot, "outside.txt");
+  await writeFile(outside, "private\n");
+  await symlink(outside, path.join(sourceRoot, "escape.txt"));
+  await assert.rejects(() => assertReadableEntry(guard, "backend/escape.txt"), /resolves outside/);
+
+  const tools = candidateTools(guard);
+  const grep = tools.find((tool) => tool.name === "grep")!;
+  const missingRoot = await grep.execute("grep-default", { pattern: "private" }, new AbortController().signal, undefined, undefined);
+  assert.equal(missingRoot.isError, true);
+  assert.match(missingRoot.content[0].text, /requires an explicit path/);
+
+  const find = tools.find((tool) => tool.name === "find")!;
+  const escaped = await find.execute("find-escape", { pattern: "escape.txt", path: "backend" }, new AbortController().signal, undefined, undefined);
+  assert.doesNotMatch(escaped.content.map((part) => part.text ?? "").join("\n"), /escape\.txt/);
+});
+
+test("implicit Sources never expose runtime state, published pages, or dotenv secrets", async (t) => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "wiki-implicit-read-policy-"));
+  t.after(async () => await rm(workspaceRoot, { recursive: true, force: true }));
+  const candidateRoot = path.join(workspaceRoot, ".okf-wiki", "run", "candidate");
+  await mkdir(candidateRoot, { recursive: true });
+  const guard = writeGuardFromPlan({
+    ...plan(workspaceRoot),
+    defaultSourceIgnores: false,
+    sources: [{
+      scopeId: "self",
+      logicalPath: ".",
+      absolutePath: workspaceRoot,
+      realPath: workspaceRoot,
+      repositoryRoot: workspaceRoot,
+      repositoryIdentity: "self",
+      origin: { type: "link" as const, localPath: workspaceRoot },
+      head: "head",
+      dirtyFingerprint: "clean",
+    }],
+  }, candidateRoot);
+
+  assert.throws(() => assertReadable(guard, ".env"), /ignore rules/);
+  assert.throws(() => assertReadable(guard, "services/api/.env.production"), /ignore rules/);
+  assert.throws(() => assertReadable(guard, ".okf-wiki/run/run.json"), /ignore rules/);
+  assert.throws(() => assertReadable(guard, "wiki"), /ignore rules/);
+  assert.equal(assertReadable(guard, ".env.example"), path.join(workspaceRoot, ".env.example"));
 });
 
 test("write partitions lock Candidate prefixes", () => {

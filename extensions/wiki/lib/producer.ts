@@ -1,12 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, rm } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { inspectWiki, pinsFromPlan, verifyPinnedSourcePlan, type WikiPinnedSourcePlan } from "./inspect.js";
 import { taskDigest, verifyHandoff } from "./handoff.js";
-import { exists, renamePath, writeText } from "./files.js";
+import { ensureDirectory, exists, removePath, withExclusiveLock, writeText } from "./files.js";
 import { errorMessage } from "./failures.js";
 import { loadWikiWorkspace, resolveWorkspaceDatabase, type ResolvedWikiWorkspace, type WikiWorkspaceWikiConfig } from "./workspace.js";
 import {
@@ -41,6 +41,7 @@ import {
 } from "./producer-types.js";
 import { candidatePartitionRevision, candidateRevision, fileRevision, templatePackRevision } from "./revisions.js";
 import { formatLeadCheckpoint, type CheckpointExecution, type CheckpointReview } from "./checkpoint.js";
+import { installWikiPublication, recoverWikiPublication } from "./publication.js";
 
 const LEAD_CANDIDATE_TOOLS = ["read", "ls"] as const;
 
@@ -98,7 +99,7 @@ interface RunReviewReceipt {
 }
 
 interface RunRecord {
-  schemaVersion: 2;
+  schemaVersion: 3;
   id: string;
   cwd: string;
   status: WikiRunStatus;
@@ -116,6 +117,7 @@ interface RunRecord {
   fingerprint: string;
   plan: WikiPinnedSourcePlan;
   templateFingerprint?: string;
+  finalizedRevision?: string;
   sessionFile?: string;
 }
 
@@ -137,53 +139,67 @@ interface LiveRun {
   recordUpdates: Promise<void>;
   agents: Map<string, WikiAgentView>;
   listeners: Set<(view: WikiRunView) => void>;
+  ownerToken?: string;
 }
 
 export function createProductionWikiProducer(options: WikiProducerOptions = {}): WikiProducer {
   return {
     async start(request) {
       const workspace = await loadWikiWorkspace(request.cwd);
-      const blocking = (await listRecords(workspace.root)).find((run) => run.status === "running" || run.status === "paused");
-      if (blocking) {
-        throw new Error(blocking.status === "paused"
-          ? `Wiki run ${blocking.id} is paused; use /wiki resume`
-          : `Wiki run ${blocking.id} is already running`);
-      }
-      const plan = await inspectWiki(workspace.root);
-      const id = randomUUID().slice(0, 8);
-      const candidateRoot = path.join(workspace.root, ".okf-wiki", "runs", id, "candidate");
-      await mkdir(candidateRoot, { recursive: true });
-      const now = new Date().toISOString();
-      const record: RunRecord = {
-        schemaVersion: 2,
-        id,
-        cwd: workspace.root,
-        status: "running",
-        language: workspace.language,
-        ...(request.focus ? { focus: request.focus } : {}),
-        createdAt: now,
-        updatedAt: now,
-        executions: [],
-        leadAttempts: [],
-        candidateRoot,
-        fingerprint: plan.fingerprint,
-        plan,
-      };
-      await writeRecord(record);
-      const live: LiveRun = emptyLive(record, plan);
-      startLive(live, workspace, options, { resume: false, focus: request.focus });
-      active.set(runKey(workspace.root, id), live);
-      return handleFor(live, options, workspace);
+      return await withExclusiveLock(transitionLock(workspace.root), async () => {
+        await recoverWikiPublication(workspace.root);
+        await reconcileRecoveredPublication(workspace.root);
+        const key = runKey(workspace.root);
+        const inMemory = active.get(key);
+        if (inMemory?.record.status === "running" || inMemory?.record.status === "paused") {
+          throw blockingRunError(inMemory.record);
+        }
+        await discardLegacyRuns(workspace.root);
+        let current: RunRecord | undefined;
+        try { current = await readRecord(workspace.root); }
+        catch { await cleanupCurrentRun(workspace.root); }
+        if (current?.status === "running" || current?.status === "paused") throw blockingRunError(current);
+        await cleanupCurrentRun(workspace.root);
+        const plan = await inspectWiki(workspace.root);
+        const id = randomUUID().slice(0, 8);
+        const candidateRoot = path.join(runDir(workspace.root), "candidate");
+        await ensureDirectory(candidateRoot);
+        const now = new Date().toISOString();
+        const record: RunRecord = {
+          schemaVersion: 3,
+          id,
+          cwd: workspace.root,
+          status: "running",
+          language: workspace.language,
+          ...(request.focus ? { focus: request.focus } : {}),
+          createdAt: now,
+          updatedAt: now,
+          executions: [],
+          leadAttempts: [],
+          candidateRoot,
+          fingerprint: plan.fingerprint,
+          plan,
+        };
+        await writeRecord(record);
+        const live: LiveRun = emptyLive(record, plan);
+        await claimRunOwner(live);
+        active.set(key, live);
+        startLive(live, workspace, options, { resume: false, focus: request.focus });
+        return handleFor(live, options, workspace);
+      });
     },
-    async list(cwd) {
+    async current(cwd) {
       const workspace = await loadWikiWorkspace(cwd);
-      return await Promise.all((await listRecords(workspace.root)).map((record) => toViewFromRecord(record)));
-    },
-    async open(runId, cwd) {
-      const workspace = await loadWikiWorkspace(cwd);
-      const live = active.get(runKey(workspace.root, runId));
+      await recoverWikiPublication(workspace.root);
+      await reconcileRecoveredPublication(workspace.root);
+      const live = active.get(runKey(workspace.root));
       if (live) return handleFor(live, options, workspace);
-      const record = await readRecord(workspace.root, runId);
+      let record: RunRecord | undefined;
+      try { record = await readRecord(workspace.root); }
+      catch {
+        await cleanupCurrentRun(workspace.root);
+        return undefined;
+      }
       if (!record) return undefined;
       return handleFor(emptyLive(record, record.plan), options, workspace);
     },
@@ -205,7 +221,7 @@ function startLive(
   live.done = (async () => {
     try {
       const initial = emptyBoard(record.focus ?? "Generate a complete repository Wiki");
-      const stored = createBoardStore(runDir(record.cwd, record.id), initial);
+      const stored = createBoardStore(runDir(record.cwd), initial);
       const board = watchBoard(stored, live);
       if (!flags.resume) await board.write(initial);
       else live.board = await board.read();
@@ -241,7 +257,7 @@ function startLive(
         ...(catalog ? { catalog } : {}),
         signal: controller.signal,
         async publish() {
-          return await publishCandidate(live, context.language);
+          return await publishCandidate(live);
         },
         async check() {
           return await checkCandidate(live);
@@ -265,7 +281,7 @@ function startLive(
       const runLead = options.runLead ?? defaultRunLead(options, live, workspace.wiki);
       await runLead(context);
       if (live.record.status === "running") {
-        const published = await publishCandidate(live, context.language);
+        const published = await publishCandidate(live);
         if (!published.ok) throw new Error(published.message);
       }
     } catch (error) {
@@ -276,6 +292,16 @@ function startLive(
       settleLead(live, "failed");
       await writeRecord(live.record);
       emit(live);
+    }
+    finally {
+      await releaseRunOwner(live);
+      if (record.status === "succeeded" || record.status === "cancelled") {
+        await cleanupCurrentRun(record.cwd);
+      }
+      if (record.status !== "running" && record.status !== "paused") {
+        const key = runKey(record.cwd);
+        if (active.get(key) === live) active.delete(key);
+      }
     }
   })();
 }
@@ -320,7 +346,7 @@ function defaultRunLead(
     const prompt = await leadPrompt(context, checkpointFor(live));
     const result = await runWikiSession(context.plan.workspaceRoot, tools, prompt, context.signal, {
       ...session,
-      sessionDir: path.join(runDir(record.cwd, record.id), "sessions"),
+      sessionDir: path.join(runDir(record.cwd), "sessions"),
       sessionFile: record.sessionFile,
       async onSessionReady(sessionFile) {
         if (!sessionFile) return;
@@ -377,9 +403,7 @@ function createPublishTool(publish: () => Promise<{ ok: boolean; message: string
   } as ToolDefinition<any, any, any>;
 }
 
-async function publishCandidate(live: LiveRun, language: "zh" | "en"): Promise<{ ok: boolean; message: string }> {
-  const templates = live.templates;
-  if (!templates) return { ok: false, message: "Wiki template pack is unavailable" };
+async function publishCandidate(live: LiveRun): Promise<{ ok: boolean; message: string }> {
   if (live.record.executions.some((entry) => entry.status === "running")) {
     return { ok: false, message: "Cannot publish while subagent executions are running" };
   }
@@ -389,6 +413,9 @@ async function publishCandidate(live: LiveRun, language: "zh" | "en"): Promise<{
   if (!validation) return { ok: false, message: "Wiki template pack is unavailable" };
   if (!validation.ok) {
     return { ok: false, message: validation.issues.map(formatIssue).join("\n") };
+  }
+  if (!live.candidateRevision || live.record.finalizedRevision !== live.candidateRevision.digest) {
+    return { ok: false, message: "Candidate must pass candidate_check after its final write and before review" };
   }
   const receipt = live.record.review;
   if (receipt && receipt.sourceFingerprint !== live.record.fingerprint) {
@@ -401,17 +428,9 @@ async function publishCandidate(live: LiveRun, language: "zh" | "en"): Promise<{
     handoffRevision: receipt.handoff.sha256,
   } : undefined);
   if (!review.ok) return review;
-  await materializeWikiIndexes(
-    live.record.candidateRoot,
-    language,
-    templates,
-    pinsFromPlan(live.plan),
-  );
   const at = new Date().toISOString();
-  await stampPublication(live.record.candidateRoot, at, { reviewed: true, language });
   const wikiRoot = path.join(live.plan.workspaceRoot, "wiki");
-  if (await exists(wikiRoot)) await rm(wikiRoot, { recursive: true, force: true });
-  await renamePath(live.record.candidateRoot, wikiRoot);
+  await installWikiPublication(live.plan.workspaceRoot, live.record.candidateRoot);
   live.record.status = "succeeded";
   live.record.pageCount = validation.pages.length;
   live.record.updatedAt = at;
@@ -424,8 +443,31 @@ async function publishCandidate(live: LiveRun, language: "zh" | "en"): Promise<{
 }
 
 async function checkCandidate(live: LiveRun): Promise<{ ok: boolean; message: string }> {
+  const templates = live.templates;
+  if (!templates) return { ok: false, message: "Wiki template pack is unavailable" };
+  const initial = await validateAndRecordCandidate(live);
+  if (!initial) return { ok: false, message: "Wiki template pack is unavailable" };
+  if (!initial.ok) {
+    live.record.finalizedRevision = undefined;
+    await writeRecord(live.record);
+    return { ok: false, message: initial.issues.map(formatIssue).join("\n") };
+  }
+  await materializeWikiIndexes(
+    live.record.candidateRoot,
+    live.record.language,
+    templates,
+    pinsFromPlan(live.plan),
+  );
+  await stampPublication(live.record.candidateRoot, new Date().toISOString(), { reviewed: true, language: live.record.language });
   const validation = await validateAndRecordCandidate(live);
   if (!validation) return { ok: false, message: "Wiki template pack is unavailable" };
+  if (validation.ok && live.candidateRevision) {
+    live.record.finalizedRevision = live.candidateRevision.digest;
+  } else {
+    live.record.finalizedRevision = undefined;
+  }
+  await writeRecord(live.record);
+  await refreshCheckpoint(live);
   return validation.ok
     ? { ok: true, message: `Candidate check passed (${validation.pages.length} pages)` }
     : { ok: false, message: validation.issues.map(formatIssue).join("\n") };
@@ -540,6 +582,7 @@ async function recordAgent(live: LiveRun, board: WikiBoardStore, update: Subagen
   if (update.agent !== "survey") {
     live.candidateRevision = await candidateRevision(live.record.candidateRoot);
   }
+  if (update.agent === "write") live.record.finalizedRevision = undefined;
   live.candidateRevision ??= await candidateRevision(live.record.candidateRoot);
   if (update.status === "complete") {
     const completedRevision = update.agent === "write"
@@ -634,7 +677,7 @@ async function reconcileRun(live: LiveRun, board: WikiBoardStore): Promise<void>
 async function adoptCompletedHandoff(live: LiveRun, receipt: RunExecutionReceipt): Promise<boolean> {
   const relative = path.relative(
     live.record.cwd,
-    path.join(runDir(live.record.cwd, live.record.id), "handoffs", `${receipt.id}.md`),
+    path.join(runDir(live.record.cwd), "handoffs", `${receipt.id}.md`),
   ).replaceAll("\\", "/");
   const completedRevision = receipt.agent === "write"
     ? await candidatePartitionRevision(live.record.candidateRoot, receipt.partition)
@@ -751,7 +794,7 @@ function validationIssueDigest(validation: WikiValidation): string {
 }
 
 function artifactLocation(live: LiveRun, relative: string): string {
-  const root = path.resolve(runDir(live.record.cwd, live.record.id));
+  const root = path.resolve(runDir(live.record.cwd));
   const location = path.resolve(live.record.cwd, ...relative.split("/"));
   if (location !== root && !location.startsWith(`${root}${path.sep}`)) {
     throw new Error(`Artifact path escapes the Run: ${relative}`);
@@ -774,20 +817,33 @@ function handleFor(live: LiveRun, options: WikiProducerOptions, workspace: Resol
     },
     async control(action: WikiRunControl) {
       if (action === "resume") {
+        if (live.record.status !== "paused" && live.record.status !== "failed" && live.record.status !== "running") {
+          throw new Error(`Cannot resume a ${live.record.status} Wiki run`);
+        }
         await resumeLive(live, options, workspace);
         return await toView(live);
       }
-      if (action === "pause") {
-        live.record.status = "paused";
-        live.controller.abort();
-      } else if (action === "cancel") {
-        live.record.status = "cancelled";
-        live.controller.abort();
-        settleLead(live, "failed");
+      await withExclusiveLock(transitionLock(workspace.root), async () => {
+        await assertRunOwnerAvailable(live);
+        if (action === "pause") {
+          if (live.record.status !== "running") throw new Error(`Cannot pause a ${live.record.status} Wiki run`);
+          live.record.status = "paused";
+          live.controller.abort();
+        } else if (action === "cancel") {
+          if (live.record.status !== "running" && live.record.status !== "paused" && live.record.status !== "failed") {
+            throw new Error(`Cannot cancel a ${live.record.status} Wiki run`);
+          }
+          live.record.status = "cancelled";
+          live.controller.abort();
+          settleLead(live, "failed");
+        }
+        live.record.updatedAt = new Date().toISOString();
+        await writeRecord(live.record);
+        emit(live);
+      });
+      if (action === "cancel" && active.get(runKey(workspace.root)) !== live) {
+        await cleanupCurrentRun(workspace.root);
       }
-      live.record.updatedAt = new Date().toISOString();
-      await writeRecord(live.record);
-      emit(live);
       return await toView(live);
     },
     async result() {
@@ -803,35 +859,35 @@ async function resumeLive(
   options: WikiProducerOptions,
   workspace: ResolvedWikiWorkspace,
 ): Promise<void> {
-  const key = runKey(workspace.root, live.record.id);
+  const key = runKey(workspace.root);
   if (live.record.status === "running" && active.get(key) === live) return;
   if (live.record.status !== "running" && live.record.status !== "paused" && live.record.status !== "failed") {
     throw new Error(`Cannot resume a ${live.record.status} Wiki run`);
   }
   if (active.get(key) === live) await live.done;
-  if (!await exists(live.record.candidateRoot)) {
-    throw new Error(`Wiki run ${live.record.id} has no Candidate to continue`);
-  }
-  const plan = await inspectWiki(workspace.root);
-  if (plan.fingerprint !== live.record.fingerprint) {
-    throw new Error("Pinned sources changed; start a new Run instead of resume");
-  }
-  await verifyPinnedSourcePlan(plan);
-  live.plan = plan;
-  live.record.status = "running";
-  live.record.error = undefined;
-  live.record.updatedAt = new Date().toISOString();
-  await writeRecord(live.record);
-  startLive(live, workspace, options, { resume: true, focus: live.record.focus });
-  active.set(key, live);
+  await withExclusiveLock(transitionLock(workspace.root), async () => {
+    await assertRunOwnerAvailable(live);
+    if (!await exists(live.record.candidateRoot)) {
+      throw new Error(`Wiki run ${live.record.id} has no Candidate to continue`);
+    }
+    const plan = await inspectWiki(workspace.root);
+    if (plan.fingerprint !== live.record.fingerprint) {
+      throw new Error("Pinned sources changed; start a new Run instead of resume");
+    }
+    await verifyPinnedSourcePlan(plan);
+    live.plan = plan;
+    live.record.status = "running";
+    live.record.error = undefined;
+    live.record.updatedAt = new Date().toISOString();
+    await writeRecord(live.record);
+    await claimRunOwner(live);
+    active.set(key, live);
+    startLive(live, workspace, options, { resume: true, focus: live.record.focus });
+  });
 }
 
 async function toView(live: LiveRun): Promise<WikiRunView> {
-  return toViewFrom(live.record, live.board ?? await createBoardStore(runDir(live.record.cwd, live.record.id)).read(), live.agents);
-}
-
-async function toViewFromRecord(record: RunRecord): Promise<WikiRunView> {
-  return toViewFrom(record, await createBoardStore(runDir(record.cwd, record.id)).read(), new Map());
+  return toViewFrom(live.record, live.board ?? await createBoardStore(runDir(live.record.cwd)).read(), live.agents);
 }
 
 function toViewFrom(record: RunRecord, board: WikiBoard, agents: Map<string, WikiAgentView>): WikiRunView {
@@ -954,52 +1010,55 @@ function emit(live: LiveRun): void {
   });
 }
 
-function runKey(cwd: string, id: string): string {
-  return `${path.resolve(cwd)}:${id}`;
+function runKey(cwd: string): string {
+  return path.resolve(cwd);
 }
 
-function runDir(cwd: string, id: string): string {
-  return path.join(cwd, ".okf-wiki", "runs", id);
+function runDir(cwd: string): string {
+  return path.join(cwd, ".okf-wiki", "run");
 }
 
 async function writeRecord(record: RunRecord): Promise<void> {
-  await mkdir(runDir(record.cwd, record.id), { recursive: true });
-  await writeText(path.join(runDir(record.cwd, record.id), "run.json"), `${JSON.stringify(record, null, 2)}\n`);
+  await ensureDirectory(runDir(record.cwd));
+  await writeText(path.join(runDir(record.cwd), "run.json"), `${JSON.stringify(record, null, 2)}\n`);
 }
 
-async function readRecord(cwd: string, id: string): Promise<RunRecord | undefined> {
+async function readRecord(cwd: string): Promise<RunRecord | undefined> {
   try {
-    return normalizeRunRecord(JSON.parse(await readFile(path.join(runDir(cwd, id), "run.json"), "utf8")));
-  } catch {
-    return undefined;
+    return normalizeRunRecord(JSON.parse(await readFile(path.join(runDir(cwd), "run.json"), "utf8")), cwd);
+  } catch (error) {
+    if (error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
   }
 }
 
-async function listRecords(cwd: string): Promise<RunRecord[]> {
-  const root = path.join(cwd, ".okf-wiki", "runs");
-  let names: string[] = [];
-  try {
-    names = await readdir(root);
-  } catch {
-    return [];
-  }
-  const records: RunRecord[] = [];
-  for (const name of names) {
-    const record = await readRecord(cwd, name);
-    if (record) records.push(record);
-  }
-  return records.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-}
-
-function normalizeRunRecord(value: unknown): RunRecord {
+function normalizeRunRecord(value: unknown, cwd: string): RunRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Run record must be an object");
   const raw = value as Record<string, unknown>;
-  if (raw.schemaVersion !== 2) {
+  if (raw.schemaVersion !== 3) {
     throw new Error(`Unsupported Run record schema version: ${String(raw.schemaVersion)}`);
   }
-  if (!Array.isArray(raw.executions)) throw new Error("Run record executions must be an array");
-  if (!Array.isArray(raw.leadAttempts)) throw new Error("Run record leadAttempts must be an array");
-  if (!isPinnedPlan(raw.plan)) throw new Error("Run record plan is missing");
+  const root = path.resolve(cwd);
+  if (raw.cwd !== root) throw new Error("Run record cwd does not match the Workspace");
+  if (raw.candidateRoot !== path.join(runDir(root), "candidate")) throw new Error("Run record Candidate path is invalid");
+  if (typeof raw.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(raw.id)) throw new Error("Run record id is invalid");
+  if (!isRunStatus(raw.status)) throw new Error("Run record status is invalid");
+  if (raw.language !== "zh" && raw.language !== "en") throw new Error("Run record language is invalid");
+  if (!isTimestamp(raw.createdAt) || !isTimestamp(raw.updatedAt)) throw new Error("Run record timestamps are invalid");
+  if (typeof raw.fingerprint !== "string") throw new Error("Run record fingerprint is invalid");
+  if (!Array.isArray(raw.executions) || !raw.executions.every(isExecutionReceipt)) throw new Error("Run record executions are invalid");
+  if (!Array.isArray(raw.leadAttempts) || !raw.leadAttempts.every(isLeadAttempt)) throw new Error("Run record leadAttempts are invalid");
+  if (!isPinnedPlan(raw.plan) || path.resolve(raw.plan.workspaceRoot) !== root || raw.plan.fingerprint !== raw.fingerprint) {
+    throw new Error("Run record plan is invalid");
+  }
+  if (raw.review !== undefined && !isReviewReceipt(raw.review)) throw new Error("Run record review is invalid");
+  if (raw.check !== undefined && !isCheckReceipt(raw.check)) throw new Error("Run record check is invalid");
+  for (const key of ["focus", "error", "templateFingerprint", "finalizedRevision", "sessionFile"] as const) {
+    if (raw[key] !== undefined && typeof raw[key] !== "string") throw new Error(`Run record ${key} is invalid`);
+  }
+  if (raw.pageCount !== undefined && (!Number.isInteger(raw.pageCount) || (raw.pageCount as number) < 0)) {
+    throw new Error("Run record pageCount is invalid");
+  }
   return raw as unknown as RunRecord;
 }
 
@@ -1007,10 +1066,187 @@ function isPinnedPlan(value: unknown): value is WikiPinnedSourcePlan {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const raw = value as Record<string, unknown>;
   return typeof raw.workspaceRoot === "string"
+    && typeof raw.workspaceRealPath === "string"
+    && typeof raw.configPath === "string"
     && typeof raw.fingerprint === "string"
     && typeof raw.defaultSourceIgnores === "boolean"
-    && Array.isArray(raw.excludes)
-    && Array.isArray(raw.sources);
+    && Array.isArray(raw.excludes) && raw.excludes.every((entry) => typeof entry === "string")
+    && Array.isArray(raw.sources)
+    && raw.sources.every((source) => {
+      if (!source || typeof source !== "object" || Array.isArray(source)) return false;
+      const entry = source as Record<string, unknown>;
+      return typeof entry.scopeId === "string"
+        && typeof entry.logicalPath === "string"
+        && typeof entry.absolutePath === "string"
+        && typeof entry.realPath === "string"
+        && typeof entry.repositoryRoot === "string"
+        && typeof entry.repositoryIdentity === "string"
+        && typeof entry.head === "string"
+        && typeof entry.dirtyFingerprint === "string"
+        && isSourceOrigin(entry.origin);
+    });
+}
+
+function isSourceOrigin(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const raw = value as Record<string, unknown>;
+  if (raw.type === "link") return typeof raw.localPath === "string";
+  return raw.type === "clone"
+    && typeof raw.remoteUrl === "string"
+    && (raw.ref === undefined || typeof raw.ref === "string");
+}
+
+function isExecutionReceipt(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const raw = value as Record<string, unknown>;
+  return ["id", "boardTaskId", "partition", "agent", "task", "taskDigest"].every((key) => typeof raw[key] === "string")
+    && (raw.status === "running" || raw.status === "complete" || raw.status === "failed" || raw.status === "interrupted")
+    && isTimestamp(raw.startedAt)
+    && (raw.completedAt === undefined || isTimestamp(raw.completedAt))
+    && (raw.error === undefined || typeof raw.error === "string")
+    && (raw.handoff === undefined || isArtifactRef(raw.handoff))
+    && (raw.usage === undefined || isUsage(raw.usage));
+}
+
+function isReviewReceipt(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const raw = value as Record<string, unknown>;
+  return typeof raw.executionId === "string"
+    && (raw.verdict === "pass" || raw.verdict === "changes_requested")
+    && typeof raw.candidateRevision === "string"
+    && typeof raw.sourceFingerprint === "string"
+    && isArtifactRef(raw.handoff)
+    && isTimestamp(raw.completedAt);
+}
+
+function isCheckReceipt(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const raw = value as Record<string, unknown>;
+  return typeof raw.candidateRevision === "string"
+    && typeof raw.ok === "boolean"
+    && isTimestamp(raw.completedAt)
+    && Number.isInteger(raw.issueCount) && (raw.issueCount as number) >= 0
+    && typeof raw.issueDigest === "string";
+}
+
+function isLeadAttempt(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const raw = value as Record<string, unknown>;
+  return isTimestamp(raw.completedAt) && isUsage(raw.usage);
+}
+
+function isArtifactRef(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const raw = value as Record<string, unknown>;
+  return typeof raw.path === "string" && typeof raw.sha256 === "string";
+}
+
+function isUsage(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const raw = value as Record<string, unknown>;
+  if (!["input", "output", "total"].every((key) => isNonNegativeNumber(raw[key]))) return false;
+  return ["cacheRead", "cacheWrite", "cost", "compactions", "turns", "toolCalls", "contextTokens", "contextWindow", "contextPercent"]
+    .every((key) => raw[key] === undefined || isNonNegativeNumber(raw[key]));
+}
+
+function isNonNegativeNumber(value: unknown): boolean {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isTimestamp(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function isRunStatus(value: unknown): value is WikiRunStatus {
+  return value === "running" || value === "paused" || value === "succeeded" || value === "failed" || value === "cancelled";
+}
+
+function blockingRunError(record: RunRecord): Error {
+  return new Error(record.status === "paused"
+    ? `Wiki run ${record.id} is paused; use /wiki resume`
+    : `Wiki run ${record.id} is already running`);
+}
+
+function transitionLock(cwd: string): string {
+  return path.join(cwd, ".okf-wiki", "run-transition.lock");
+}
+
+async function discardLegacyRuns(cwd: string): Promise<void> {
+  await removePath(path.join(cwd, ".okf-wiki", "runs"), { recursive: true, force: true });
+}
+
+async function cleanupCurrentRun(cwd: string): Promise<void> {
+  await removePath(runDir(cwd), { recursive: true, force: true });
+}
+
+async function reconcileRecoveredPublication(cwd: string): Promise<void> {
+  let record: RunRecord | undefined;
+  try { record = await readRecord(cwd); }
+  catch { return; }
+  if (!record || (record.status !== "running" && record.status !== "failed")) return;
+  if (!record.finalizedRevision || record.review?.verdict !== "pass") return;
+  if (record.review.candidateRevision !== record.finalizedRevision) return;
+  if (await exists(record.candidateRoot)) return;
+  const owner = await readRunOwner(cwd);
+  if (owner && processIsAlive(owner.pid)) return;
+  const wikiRoot = path.join(cwd, "wiki");
+  if (!await exists(wikiRoot)) return;
+  try {
+    if ((await candidateRevision(wikiRoot)).digest === record.finalizedRevision) {
+      await cleanupCurrentRun(cwd);
+    }
+  } catch {
+    // Leave the failed-closed Run in place when the installed tree is unreadable.
+  }
+}
+
+async function claimRunOwner(live: LiveRun): Promise<void> {
+  const token = randomUUID();
+  live.ownerToken = token;
+  await writeText(ownerFile(live.record.cwd), `${JSON.stringify({
+    version: 1,
+    pid: process.pid,
+    token,
+    runId: live.record.id,
+  })}\n`);
+}
+
+async function assertRunOwnerAvailable(live: LiveRun): Promise<void> {
+  const owner = await readRunOwner(live.record.cwd);
+  if (!owner || owner.token === live.ownerToken) return;
+  if (processIsAlive(owner.pid)) {
+    throw new Error(`Wiki run ${live.record.id} is owned by live process ${owner.pid}`);
+  }
+  await removePath(ownerFile(live.record.cwd), { force: true });
+}
+
+async function releaseRunOwner(live: LiveRun): Promise<void> {
+  if (!live.ownerToken) return;
+  const owner = await readRunOwner(live.record.cwd);
+  if (owner?.token === live.ownerToken) await removePath(ownerFile(live.record.cwd), { force: true });
+  live.ownerToken = undefined;
+}
+
+async function readRunOwner(cwd: string): Promise<{ pid: number; token: string } | undefined> {
+  try {
+    const value = JSON.parse(await readFile(ownerFile(cwd), "utf8")) as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const record = value as Record<string, unknown>;
+    if (!Number.isInteger(record.pid) || typeof record.token !== "string") return undefined;
+    return { pid: record.pid as number, token: record.token };
+  } catch (error) {
+    if (error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    return undefined;
+  }
+}
+
+function ownerFile(cwd: string): string {
+  return path.join(runDir(cwd), "owner.json");
+}
+
+function processIsAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 }
 
 async function leadPrompt(context: WikiLeadContext, checkpoint: string): Promise<string> {

@@ -6,8 +6,6 @@ import {
   renderWikiLive,
   renderWikiRun,
   renderWikiSnapshot,
-  renderWikiRuns,
-  selectWikiRun,
   wikiCliHelp,
 } from "../extensions/wiki/lib/cli.js";
 
@@ -21,11 +19,10 @@ test("parses the compact Wiki command surface", () => {
     action: "run",
     focus: "full public API",
   });
-  assert.deepEqual(parseWikiCliCommand("status run-1"), { action: "status", runId: "run-1" });
-  assert.deepEqual(parseWikiCliCommand("runs"), { action: "runs" });
+  assert.deepEqual(parseWikiCliCommand("status"), { action: "status" });
   assert.deepEqual(parseWikiCliCommand("pause"), { action: "pause" });
   assert.deepEqual(parseWikiCliCommand("resume"), { action: "resume" });
-  assert.deepEqual(parseWikiCliCommand("cancel run.2"), { action: "cancel", runId: "run.2" });
+  assert.deepEqual(parseWikiCliCommand("cancel"), { action: "cancel" });
   assert.deepEqual(parseWikiCliCommand("init"), {
     action: "init", language: "zh", exclude: [], defaultSourceIgnores: true,
   });
@@ -41,9 +38,9 @@ test("parses the compact Wiki command surface", () => {
 });
 
 test("rejects ambiguous control commands", () => {
-  assert.throws(() => parseWikiCliCommand("runs extra"), /does not accept arguments/);
-  assert.throws(() => parseWikiCliCommand("resume one two"), /Usage/);
-  assert.throws(() => parseWikiCliCommand("status ../run"), /Invalid Wiki run id/);
+  assert.throws(() => parseWikiCliCommand("runs"), /removed/);
+  assert.throws(() => parseWikiCliCommand("resume one"), /does not accept arguments/);
+  assert.throws(() => parseWikiCliCommand("status run"), /does not accept arguments/);
   assert.throws(() => parseWikiCliCommand("init a b"), /Usage/);
   assert.throws(() => parseWikiCliCommand("init --lang fr"), /zh or en/);
   assert.throws(() => parseWikiCliCommand("init --exclude"), /requires a value/);
@@ -51,7 +48,7 @@ test("rejects ambiguous control commands", () => {
   assert.throws(() => parseWikiCliCommand("source add clone"), /Usage/);
 });
 
-test("renders plain run, list, and snapshot output", () => {
+test("renders plain run and snapshot output", () => {
   assert.equal(renderWikiRun(undefined), "Wiki: no run.");
   assert.equal(renderWikiRun({
     id: "run-1",
@@ -71,8 +68,6 @@ test("renders plain run, list, and snapshot output", () => {
     createdAt: "2026-08-12T00:00:00.000Z",
     updatedAt: "2026-08-12T00:00:00.000Z",
   }), /in_progress  write  Write overview[\s\S]*◆ read src\/a\.ts/);
-  assert.equal(renderWikiRuns([]), "Wiki runs: none.");
-  assert.match(renderWikiRuns([{ id: "run-1", status: "paused", updatedAt: "2026-08-12" }]), /run-1 \| paused/);
 });
 
 test("status snapshots state their freshness", () => {
@@ -84,18 +79,6 @@ test("status snapshots state their freshness", () => {
     dateStyle: "medium", timeStyle: "medium",
   }).format(Date.parse("2026-08-12T00:01:02.000Z"));
   assert.ok(rendered.endsWith(`snapshot as of ${expected}`));
-});
-
-test("selects live run then latest when no id is given", () => {
-  const succeeded = { id: "old", status: "succeeded" };
-  const running = { id: "live", status: "running" };
-  const paused = { id: "hold", status: "paused" };
-  assert.equal(selectWikiRun([]), undefined);
-  assert.equal(selectWikiRun([succeeded])?.id, "old");
-  assert.equal(selectWikiRun([succeeded, running])?.id, "live");
-  assert.equal(selectWikiRun([succeeded, paused])?.id, "hold");
-  assert.equal(selectWikiRun([succeeded, running], "old")?.id, "old");
-  assert.equal(selectWikiRun([succeeded], "missing"), undefined);
 });
 
 test("formats tool calls for the live widget", () => {
@@ -135,8 +118,9 @@ test("help lists management and run commands", () => {
   assert.match(help, /\/wiki init/);
   assert.match(help, /\/wiki source add link/);
   assert.match(help, /\/wiki source add clone/);
-  assert.match(help, /\/wiki status \[run-id\]/);
-  assert.match(help, /\/wiki resume \[run-id\]/);
+  assert.match(help, /\/wiki status/);
+  assert.match(help, /\/wiki resume/);
+  assert.doesNotMatch(help, /run-id|\/wiki runs/);
   assert.doesNotMatch(help, /does not restore Pi sessions/);
   assert.doesNotMatch(help, /batch-N|--process/);
 });

@@ -12,11 +12,13 @@ not the Lead.
 Inspect → Candidate + Board → survey(N) → synthesize(1) → write → review → publish
 ```
 
-`/wiki resume` re-enters that Lead on the same Candidate. The durable recovery
+The Workspace has one current Run at `.okf-wiki/run/`. `/wiki resume` re-enters
+that Lead on the same Candidate. The durable recovery
 frame is derived from `board.json`, versioned execution receipts in `run.json`,
 Candidate content, and hashed handoffs. Compaction injects that bounded frame
-as an immediate follow-up; the transcript is not the source of truth. The Lead session file lives under
-`.okf-wiki/runs/<id>/sessions/` when present.
+as an immediate follow-up; the transcript is not the source of truth. The Lead
+session file lives under `.okf-wiki/run/sessions/` when present. Successful and
+cancelled Runs leave no Run directory or history.
 
 An optional Postgres Catalog is declared on the Workspace and retrieved
 on demand (`db_tables`, `db_describe`). Only Postgres. Read-only. Pages may
@@ -50,7 +52,12 @@ and a below-editor widget of Lead / subagent tool calls. `/wiki status` opens
 an inspect overlay. Tool start/update/end are pushed through `handle.subscribe`;
 the process tail is memory-only.
 
+Publication freezes the Candidate before review, verifies the reviewed digest
+again at install, and replaces `wiki/` as one recoverable transaction. The old
+Wiki exists only as `.okf-wiki/publication/previous` during that transaction.
+
 Decisions: [0001](docs/adr/0001-isolated-full-generation-runs.md),
+[0002](docs/adr/0002-recoverable-snapshot-transactions.md),
 [0004](docs/adr/0004-durable-run-board.md),
 [0005](docs/adr/0005-postgres-catalog-on-demand.md),
 [0006](docs/adr/0006-repository-sections-and-cross-source-synthesis.md).

@@ -11,7 +11,7 @@ import {
   createWriteToolDefinition,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { assertReadable, assertWritable, pathIsIgnored, type WikiWriteGuard } from "../path-policy.js";
+import { assertReadableEntry, assertWritable, pathIsIgnored, type WikiWriteGuard } from "../path-policy.js";
 import {
   formatBoard,
   replaceBoard,
@@ -137,7 +137,8 @@ function wrap(
     name,
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       try {
-        remapParams(params, guard, mode);
+        if (mode === "read") applyDefaultReadRoot(name, params, guard);
+        await remapParams(params, guard, mode);
       } catch (error) {
         return {
           content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
@@ -147,11 +148,23 @@ function wrap(
       }
       const result = await execute(toolCallId, params, signal, onUpdate, ctx);
       if (mode === "read" && (name === "grep" || name === "find")) {
-        return filterSearchResult(name, params, result, guard);
+        return await filterSearchResult(name, params, result, guard);
       }
       return result;
     },
   } as ToolDefinition<any, any, any>;
+}
+
+function applyDefaultReadRoot(name: string, params: unknown, guard: WikiWriteGuard): void {
+  if (name !== "grep" && name !== "find" && name !== "ls") return;
+  if (!params || typeof params !== "object") return;
+  const record = params as Record<string, unknown>;
+  const hasPath = PATH_KEYS.some((key) => typeof record[key] === "string")
+    || (Array.isArray(record.paths) && record.paths.some((value) => typeof value === "string"));
+  if (hasPath) return;
+  const implicit = guard.sources.length === 1 && guard.sources[0]?.logicalPath === ".";
+  if (!implicit) throw new Error(`${name} requires an explicit path in a multi-Source Workspace`);
+  record.path = guard.workspaceRoot;
 }
 
 function lsOperations(guard: WikiWriteGuard) {
@@ -165,20 +178,20 @@ function lsOperations(guard: WikiWriteGuard) {
   };
 }
 
-function filterSearchResult(
+async function filterSearchResult(
   name: "grep" | "find",
   params: unknown,
   result: { content?: Array<{ type: string; text?: string }>; details?: unknown; isError?: boolean },
   guard: WikiWriteGuard,
-) {
+): Promise<{ content?: Array<{ type: string; text?: string }>; details?: unknown; isError?: boolean }> {
   const searchRoot = searchRootOf(params) ?? guard.workspaceRoot;
   const content = result.content;
   if (!Array.isArray(content) || result.isError) return result;
-  const next = content.map((part) => {
+  const next = await Promise.all(content.map(async (part) => {
     if (part.type !== "text" || typeof part.text !== "string") return part;
-    const text = filterSearchText(name, part.text, searchRoot, guard);
+    const text = await filterSearchText(name, part.text, searchRoot, guard);
     return { ...part, text };
-  });
+  }));
   return { ...result, content: next };
 }
 
@@ -188,12 +201,21 @@ function searchRootOf(params: unknown): string | undefined {
   return typeof record.path === "string" ? record.path : undefined;
 }
 
-function filterSearchText(kind: "grep" | "find", text: string, searchRoot: string, guard: WikiWriteGuard): string {
-  const kept = text.split("\n").filter((line) => {
+async function filterSearchText(kind: "grep" | "find", text: string, searchRoot: string, guard: WikiWriteGuard): Promise<string> {
+  const kept: string[] = [];
+  for (const line of text.split("\n")) {
     const relative = kind === "find" ? findPath(line) : grepPath(line);
-    if (!relative) return true;
-    return !pathIsIgnored(guard, path.resolve(searchRoot, relative));
-  });
+    if (!relative) {
+      kept.push(line);
+      continue;
+    }
+    try {
+      await assertReadableEntry(guard, path.resolve(searchRoot, relative));
+      kept.push(line);
+    } catch {
+      // Search output is untrusted until each result resolves inside the evidence view.
+    }
+  }
   return kept.join("\n");
 }
 
@@ -208,17 +230,19 @@ function grepPath(line: string): string | undefined {
   return match?.[1] || undefined;
 }
 
-function remapParams(params: unknown, guard: WikiWriteGuard, mode: "read" | "write"): void {
+async function remapParams(params: unknown, guard: WikiWriteGuard, mode: "read" | "write"): Promise<void> {
   if (!params || typeof params !== "object") return;
   const record = params as Record<string, unknown>;
   for (const key of PATH_KEYS) {
     if (typeof record[key] !== "string") continue;
-    record[key] = mode === "write" ? assertWritable(guard, record[key]) : assertReadable(guard, record[key]);
+    record[key] = mode === "write"
+      ? assertWritable(guard, record[key])
+      : await assertReadableEntry(guard, record[key]);
   }
   if (Array.isArray(record.paths)) {
-    record.paths = record.paths.map((value) => {
+    record.paths = await Promise.all(record.paths.map(async (value) => {
       if (typeof value !== "string") return value;
-      return mode === "write" ? assertWritable(guard, value) : assertReadable(guard, value);
-    });
+      return mode === "write" ? assertWritable(guard, value) : await assertReadableEntry(guard, value);
+    }));
   }
 }

@@ -1,4 +1,4 @@
-import type { WikiRunStatus, WikiRunView } from "./producer-types.js";
+import type { WikiRunView } from "./producer-types.js";
 
 const LOCAL_DATE_TIME = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -15,19 +15,10 @@ export type WikiCliCommand =
   | { action: "init"; workspace?: string; language: "zh" | "en"; exclude: string[]; defaultSourceIgnores: boolean }
   | { action: "source-add"; kind: "link"; localPath: string; name?: string; workspace?: string }
   | { action: "source-add"; kind: "clone"; url: string; ref?: string; name?: string; workspace?: string }
-  | { action: "status"; runId?: string }
-  | { action: "runs" }
+  | { action: "status" }
   | { action: "pause" }
-  | { action: "resume"; runId?: string }
-  | { action: "cancel"; runId?: string };
-
-export function selectWikiRun<T extends { id: string; status: WikiRunStatus }>(
-  runs: readonly T[],
-  runId?: string,
-): T | undefined {
-  if (runId) return runs.find((run) => run.id === runId);
-  return runs.find((run) => run.status === "running" || run.status === "paused") ?? runs[0];
-}
+  | { action: "resume" }
+  | { action: "cancel" };
 
 export function parseWikiCliCommand(raw: string): WikiCliCommand {
   const values = tokenize(raw);
@@ -41,35 +32,22 @@ export function parseWikiCliCommand(raw: string): WikiCliCommand {
     case "source":
       return parseSource(rest);
     case "status":
-      return parseStatus(rest);
-    case "runs":
-      requireNoArguments(rest, "runs");
+      requireNoArguments(rest, "status");
       return { action };
+    case "runs":
+      throw new Error("/wiki runs was removed; only the current Run is retained");
     case "pause":
       requireNoArguments(rest, "pause");
       return { action };
     case "resume":
-      return withOptionalRunId("resume", optionalRunId(rest, "resume"));
+      requireNoArguments(rest, "resume");
+      return { action };
     case "cancel":
-      return withOptionalRunId("cancel", optionalRunId(rest, "cancel"));
+      requireNoArguments(rest, "cancel");
+      return { action };
     default:
       return { action: "run", focus: joinedFocus(values) };
   }
-}
-
-function withOptionalRunId<T extends "resume" | "cancel">(
-  action: T,
-  runId: string | undefined,
-): Extract<WikiCliCommand, { action: T }> {
-  return (runId ? { action, runId } : { action }) as Extract<WikiCliCommand, { action: T }>;
-}
-
-const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-
-function parseStatus(values: string[]): Extract<WikiCliCommand, { action: "status" }> {
-  if (values.length > 1) throw new Error("Usage: /wiki status [run-id]");
-  if (values[0] && !SAFE_ID.test(values[0])) throw new Error("Invalid Wiki run id");
-  return values[0] ? { action: "status", runId: values[0] } : { action: "status" };
 }
 
 function parseInit(values: string[]): Extract<WikiCliCommand, { action: "init" }> {
@@ -145,12 +123,6 @@ function parseSource(values: string[]): Extract<WikiCliCommand, { action: "sourc
     ...(name ? { name } : {}),
     ...(workspace ? { workspace } : {}),
   };
-}
-
-function optionalRunId(values: string[], action: string): string | undefined {
-  if (values.length > 1) throw new Error(`Usage: /wiki ${action} [run-id]`);
-  if (values[0] && !SAFE_ID.test(values[0])) throw new Error("Invalid Wiki run id");
-  return values[0];
 }
 
 function requireNoArguments(values: string[], action: string): void {
@@ -282,15 +254,6 @@ export function renderWikiSnapshot(run: WikiRunView): string {
   return `${renderWikiRun(run)}\n\nsnapshot as of ${formatLocalDateTime(run.updatedAt)}`;
 }
 
-export function renderWikiRuns(runs: readonly WikiRunView[]): string {
-  if (runs.length === 0) return "Wiki runs: none.";
-  return ["Wiki runs", ...runs.map((run) => {
-    const focus = run.focus ? ` | ${run.focus}` : "";
-    const updated = run.updatedAt ? `${formatLocalDateTime(run.updatedAt)} | ` : "";
-    return `${updated}${run.id} | ${run.status}${focus}`;
-  })].join("\n");
-}
-
 export function wikiCliHelp(): string {
   return [
     "Usage:",
@@ -298,11 +261,10 @@ export function wikiCliHelp(): string {
     "  /wiki init [workspace] [--lang zh|en] [--exclude <glob>]... [--no-default-ignores]",
     "  /wiki source add link <local-path> [--name <name>] [--workspace <dir>]",
     "  /wiki source add clone <url> [--ref <ref>] [--name <name>] [--workspace <dir>]",
-    "  /wiki status [run-id]",
-    "  /wiki runs",
+    "  /wiki status",
     "  /wiki pause",
-    "  /wiki resume [run-id]",
-    "  /wiki cancel [run-id]",
+    "  /wiki resume",
+    "  /wiki cancel",
   ].join("\n");
 }
 

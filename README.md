@@ -35,11 +35,10 @@ The host skill is declared in `package.json` (`pi.skills`) and loaded by
 /wiki init [workspace] [--lang zh|en] [--exclude <glob>]... [--no-default-ignores]
 /wiki source add link <local-path> [--name <name>] [--workspace <dir>]
 /wiki source add clone <url> [--ref <ref>] [--name <name>] [--workspace <dir>]
-/wiki status [run-id]
-/wiki runs
+/wiki status
 /wiki pause
-/wiki resume [run-id]
-/wiki cancel [run-id]
+/wiki resume
+/wiki cancel
 ```
 
 `/wiki [focus]` starts a full generation in an empty Candidate. A Git
@@ -50,9 +49,10 @@ Use `init` only for an explicit workspace, then add one or more sources.
 Linux/macOS, junction on Windows). `source add clone` clones a URL;
 `--ref` checks out a branch, tag, or commit.
 
-A Workspace admits one running or paused Run. After pause or a failed
-publish, `/wiki resume` continues that Run. After success, failure, or
-cancel, `/wiki` starts a new one.
+A Workspace keeps at most one current Run under `.okf-wiki/run/`. After pause
+or failure, `/wiki resume` continues its Candidate, Board, and Lead session.
+Success and cancel remove the Run state; the next `/wiki` starts from an empty
+Candidate. Legacy `.okf-wiki/runs/` history is deleted when a new Run starts.
 
 `language: zh` or `language: en` controls generated titles and body text.
 Code identifiers and source citations stay unchanged.
@@ -102,6 +102,8 @@ test trees (`src/test/**`, `*Test.java`, and the usual `node_modules` /
 `target` noise) from inspect and from agent `read` / `grep` / `find` / `ls`.
 Add more with `wiki.exclude`. `/wiki init --no-default-ignores` turns the
 built-in list off.
+Runtime dotenv files are always excluded from agent evidence, even when default
+ignores are disabled. `.env.example` and `.env.sample` remain readable.
 
 The concurrency limit applies to parallel Source surveys and disjoint
 Repository Section writes while the Lead occupies one session slot. The
@@ -114,7 +116,7 @@ ignored.
 
 ### Board
 
-Each Run keeps a host-owned Board in `.okf-wiki/runs/<id>/board.json`:
+The current Run keeps a host-owned Board in `.okf-wiki/run/board.json`:
 the goal and Tasks. The Lead updates it with `todo`; `run.json` stores
 versioned execution receipts and digest-bound review evidence. Compaction
 injects a bounded recovery frame derived from those files, the Candidate, and
