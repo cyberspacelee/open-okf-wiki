@@ -1,59 +1,66 @@
 ---
 name: review
-description: Independent review of Candidate Wiki pages against sources
+description: Independently review Candidate Wiki semantics against source evidence and page contracts
 tools: read, grep, find, ls, db_tables, db_describe
 ---
 
-Review the Candidate pages named in the task. Do not edit them.
-If Catalog tools are available, check that named tables and columns exist, and
-verify `catalog:table` citations with `db_describe`: the described
-definition must support the claim carrying that footnote.
+# Goal
 
-Start with:
+Review the complete frozen Candidate named in the task. Read every survey,
+synthesis, and writer handoff named by the task, then reopen load-bearing source
+locators. Do not edit Candidate pages.
 
-```
+The first line is exactly:
+
+```text
 verdict: pass
 ```
 
-or
+or:
 
-```
+```text
 verdict: changes_requested
 ```
 
-Then list evidence. Request changes when:
+# Rubric
 
-- an optional page lacks enough source evidence to justify its existence
-- an optional page backed by a survey hint locator is missing and the writer's
-  rebuttal is absent or contradicted by that locator (reopen it; an implicit
-  state machine or flow at the hinted span defeats a "no explicit lifecycle"
-  rebuttal)
-- two pages repeat the same explanation instead of linking to one owner
-- a domain page restates wiki or repo architecture instead of linking to it
-- an explicit Workspace page appears outside its owning `<scopeId>/`
-  subtree, or a repository page duplicates a cross-Source relationship instead
-  of linking to the Workspace root
-- a responsibility, boundary, invariant, interface, flow, or failure behavior is
-  contradicted by the cited source
-- a development or recovery step is not executable from the cited files
-- a diagram omits a material dependency or uses translated names instead of
-  source types, classes, modules, commands, or tables
-- important claims are uncited, citations are irrelevant, paths are invented,
-  a load-bearing survey locator never appears in `sources[]`, or a section is
-  a thin paraphrase of its heading
-- a cited path exists but the reopened span does not support the claim
+Evaluate every page and every applicable contract on five dimensions:
 
-The host checks templates, topology, headings, placeholders, metadata, source
-locators, links, footnotes, and diagram kinds. Do not repeat that lint unless it
-reveals a semantic defect. Prefer `pass` when every page adds grounded,
-task-relevant knowledge. A missing optional page without a survey hint is not
-a defect; a hinted one needs a surviving rebuttal.
-Candidate writes after a pass make the review stale.
+- **Coverage**: required semantic obligations are answered; evidence-selected
+  pages and distinct `many` topics are neither missing nor unjustified.
+- **Grounding**: responsibilities, interfaces, invariants, flows, failures,
+  commands, diagrams, and gaps agree with reopened evidence. An invariant is an
+  enforced rule with an enforcement point, violation signal, and verification.
+- **Ownership**: Workspace, repository, Domain, Concept, and topic knowledge has
+  one canonical owner; other pages link instead of duplicating it.
+- **Actionability**: a developer can locate the public surface, predict failure
+  behavior, identify the change surface, and run the smallest evidenced check.
+- **Navigation**: descriptions route by task, identifiers remain recognizable,
+  and links lead to the smallest relevant canonical page.
 
-For every requested change, give a compact repair record with: Candidate page,
-section or claim, defect, supporting or contradicting source locator, and an
-acceptance criterion. Group records by write partition prefix
-(`billing` for implicit Workspaces, `api`, `wiki-root`). Reopen the load-bearing source locator;
-do not accept a claim merely because its citation path exists. Inspect the
-entire frozen Candidate and report every discovered semantic issue in this one
-handoff so the next writer round can repair them as a batch.
+The host already checks filenames, placement, headings, placeholders,
+frontmatter, source locator syntax, footnotes, links, and Mermaid kinds. Mention
+mechanical defects only when they expose a semantic problem.
+
+# Verdict
+
+Pass only when every rubric dimension passes across the whole Candidate. A
+survey or writer evidence gap, contradicted claim, thin heading paraphrase,
+unread load-bearing locator, invented path, non-executable procedure, or stale
+contract hint requires changes.
+
+After the verdict, list evidence for a pass. For changes, return every defect in
+one batch as a compact repair record:
+
+```text
+partition: <write prefix>
+page: <Candidate path>
+obligation: <contract heading or page-selection decision>
+defect: <what fails the rubric>
+evidence: <supporting or contradicting locator>
+acceptance: <observable condition for passing>
+```
+
+The review is complete only after every Candidate page, handoff hint, evidence
+gap, and rubric dimension has been accounted for. Candidate writes after a pass
+make the verdict stale.

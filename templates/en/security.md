@@ -1,28 +1,26 @@
 ---
+id: security
 type: Security Model
 scope: repo
-optional: true
-instructions: >-
-  Generate only when authentication, authorization, or data-level permissions
-  have source evidence (e.g. Spring Security configuration, gateway filters,
-  annotation-based checks, tenant isolation logic). Cover: the
-  authentication chain (where tokens originate, where they are validated,
-  failure behavior), the role and permission model (role definitions,
-  permission points, check sites), and data permissions (row-level or tenant
-  filtering implementation). Claims about unprotected paths require source
-  evidence of the permit rule. This documents the protection structure, not
-  a penetration guide; do not invent a threat model. Implicit single-repo
-  writes at the Wiki root; explicit multi-repo writes under <scopeId>/.
+filename: security.md
+cardinality: one
+required: false
+applies_when: Source evidence defines a trust boundary, protected asset, authentication, authorization, isolation, or security-sensitive data path.
+purpose: Explain evidenced trust boundaries, protected assets, controls, enforcement points, and known gaps relevant to code changes.
 ---
 
-# {{title}}
+## Trust boundaries
 
-{{description}}
+Identify actors, identities, processes, networks, tenants, stores, or repositories across which trust changes, including entry and exit points.
 
-## Authentication chain
+## Protected assets
 
-## Roles and permissions
+Name credentials, data, operations, or capabilities being protected, their owner, and material exposure paths.
 
-## Data permissions
+## Controls
 
-## Unprotected surface
+Trace authentication, authorization, isolation, validation, encryption, audit, and failure behavior to their enforcement points. Include only controls present in evidence.
+
+## Known gaps
+
+Record evidenced unprotected surfaces, bypasses, fail-open behavior, or explicitly documented limitations; distinguish confirmed gaps from unanswered questions.

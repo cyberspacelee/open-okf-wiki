@@ -35,18 +35,8 @@ async function treeRevision(root: string, files: readonly string[]): Promise<Tre
 
 export function templatePackRevision(pack: WikiTemplatePack): string {
   const hash = createHash("sha256");
-  for (const template of pack.templates.slice().sort((left, right) => left.file.localeCompare(right.file))) {
-    hash.update(JSON.stringify({
-      file: template.file,
-      type: template.type,
-      scope: template.scope,
-      altitudes: template.altitudes ?? [],
-      diagram: template.diagram ?? [],
-      optional: template.optional,
-      instructions: template.instructions,
-      sections: template.sections,
-      body: template.body,
-    }));
+  for (const template of pack.templates.slice().sort((left, right) => left.id.localeCompare(right.id))) {
+    hash.update(JSON.stringify(template));
     hash.update("\0");
   }
   return hash.digest("hex");

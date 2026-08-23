@@ -167,15 +167,18 @@ repository root).
 ### Templates
 
 Packaged defaults are `templates/zh/` and `templates/en/`, chosen by
-`language`. They are the page contract: which files exist at wiki /
-source / domain / concept, their fixed sections, and which need a mermaid diagram.
+`language`. They are structured page contracts: placement, selection,
+cardinality, filename pattern, purpose, semantic obligations, and diagrams.
 `/wiki init` copies the pack for `language` into `wiki-templates/` and
 sets `wiki.templates: wiki-templates`. Edit those files in the Workspace
 repository. The pack replaces the defaults as a whole. Unset `wiki.templates` to use
 the packaged pack instead.
-Each scope has exactly one non-optional anchor; every other template is
-evidence-selected. Headings and writer instructions follow the pack language;
-`type` stays English Title Case and mermaid node IDs stay source identifiers.
+Every directory kind has one explicit `identity` contract for generated
+indexes. Required singleton contracts may coexist at the same placement. One
+required singleton contract spans Wiki and repository altitudes. Other
+contracts are evidence-selected and may produce one page or multiple topic
+pages. Headings and obligation guidance follow the pack language; `type` stays
+English Title Case and Mermaid node IDs stay source identifiers.
 Consuming agents start at `wiki/index.md`.
 
 ```yaml
@@ -183,19 +186,26 @@ wiki:
   templates: wiki-templates
 ```
 
-Each template is a markdown file. Filename is the page name. Frontmatter:
+Each template is a Markdown page-contract file. Its source filename is only the
+contract file name; `filename` declares generated Candidate filenames.
+Frontmatter has no defaults:
 
 | Field | Meaning | Default |
 | --- | --- | --- |
-| `type` | OKF `type` on the generated page (Title Case, e.g. `Architecture`) | filename without `.md` |
-| `scope` | `wiki` / `repo` / `domain` / `concept` | `concept` |
-| `altitudes` | `wiki` and/or `repo` for dual-placement pages | unset |
-| `diagram` | mermaid kind, or a list of kinds | no mermaid check |
-| `optional` | writer may keep this file after reopening source | `false` (scope anchor) |
-| `instructions` | writer-only completion criteria | required |
+| `id` | stable lowercase contract id used in survey/write handoffs | required |
+| `type` | unique OKF `type` on generated pages | required |
+| `identity` | directory kinds whose generated index uses this page | optional; exactly one per kind in the pack |
+| `scope` | `wiki` / `repo` / `domain` / `concept` placement | one of scope/altitudes |
+| `altitudes` | dual `wiki` and `repo` placement | one of scope/altitudes |
+| `filename` | exact basename, or one `{slug}` pattern for `many` | required |
+| `cardinality` | `one` or `many` pages per applicable directory | required |
+| `required` | whether every applicable directory must contain the singleton | required |
+| `applies_when` | evidence condition for a non-required contract | required when `required: false` |
+| `purpose` | routing-quality ownership statement | required |
+| `diagram` | `{ section, kinds }` Mermaid requirement | optional |
 
-`scope` / `altitudes` / `diagram` / `optional` / `instructions` stay on the
-template file. Generated pages carry `type`, `title`, `description`, and
+Contract fields stay on the template file. Generated pages carry only `type`,
+`title`, `description`, and
 `sources`. Claims use `[^id]` footnotes keyed to `sources[].id`.
 `sources[].resource` is always a POSIX path from the Workspace root, optionally
 followed by `#Lx` or `#Lx-Ly`: for example `api/src/main.ts#L12` in an explicit
@@ -204,10 +214,11 @@ exist in the pinned file and must have been read by the writer. It is never
 relative to the page or Source root, and implicit Workspaces never add
 `self/`.
 
-`instructions` tells the writer what evidence completes the page. The body is
-the output skeleton: exactly `# {{title}}`, then `{{description}}`, then fixed,
-unique `##` sections. Generated pages preserve that H2 order, fill every
-section, and contain no `{{placeholder}}`. H3 subsections remain available.
+The contract body contains unique H2 semantic obligations. Each H2 body tells
+survey, writer, and reviewer what question must be answered. The host derives
+the output skeleton from those headings, so guidance never leaks into generated
+pages. Generated pages preserve the H2 order, fill every section, and contain
+no `{{placeholder}}`. H3 subsections remain available.
 
 Publication fails on an undeclared page, wrong placement, missing architecture
 or concept cluster, heading drift, an empty section, a non-diagram H2 without a
@@ -221,12 +232,13 @@ wiki/index.md
 wiki/log.md
 wiki/overview.md
 wiki/architecture.md
-wiki/development.md | runbook.md          # implicit Workspace only
+wiki/development.md | runbook-<topic>.md  # implicit Workspace only
 wiki/<scopeId>/architecture.md            # explicit Workspace
-wiki/<scopeId>/development.md | runbook.md
-wiki/<scopeId>/<domain>/domain.md | flows.md
+wiki/<scopeId>/development.md | runbook-<topic>.md
+wiki/<scopeId>/api-<surface>.md
+wiki/<scopeId>/<domain>/domain.md | flow-<scenario>.md
 wiki/<scopeId>/<domain>/<concept>/concept.md | states.md | data.md
-wiki/<domain>/domain.md | flows.md         # implicit Workspace only
+wiki/<domain>/domain.md | flow-<scenario>.md # implicit Workspace only
 wiki/<domain>/<concept>/concept.md | states.md | data.md
 ```
 

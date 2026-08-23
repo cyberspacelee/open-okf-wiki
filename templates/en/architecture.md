@@ -1,31 +1,29 @@
 ---
+id: architecture
 type: Architecture
 altitudes: [wiki, repo]
-diagram: flowchart
-optional: false
-instructions: >-
-  At wiki root, describe how Git Sources and external systems compose:
-  container boundaries, dependencies, and failure domains. On an implicit
-  single-source Workspace, continue with this repo's internal containers on
-  the same page. Under <scopeId>/, describe only that Source's internals,
-  link to /architecture.md, and do not repeat the cross-Source system map.
-  In Components, every node is a source identifier, one-sentence
-  responsibility, and its inbound and outbound edges.
+identity: repo
+filename: architecture.md
+cardinality: one
+required: true
+purpose: Explain structural composition, ownership seams, dependencies, and failure propagation at the current altitude.
+diagram:
+  section: Diagram
+  kinds: [flowchart]
 ---
-
-# {{title}}
-
-{{description}}
 
 ## Components
 
+Name each source-level module or external system, its responsibility, and the public surface through which other modules use it. At Wiki altitude cover cross-Source composition; at repository altitude cover only that Source's internals.
+
 ## Boundaries and dependencies
 
-## Extension and failure modes
+Explain ownership, allowed dependency directions, trust or process boundaries, and the contracts crossing them. Link to the other altitude instead of duplicating it.
+
+## Failure and change impact
+
+Trace material failure propagation and identify which modules, contracts, or verification paths are affected by structural changes.
 
 ## Diagram
 
-```mermaid
-flowchart TD
-  {{diagram}}
-```
+Show the components and directional dependencies with source identifiers as Mermaid nodes.

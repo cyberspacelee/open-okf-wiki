@@ -1,28 +1,29 @@
 ---
+id: architecture
 type: Architecture
 altitudes: [wiki, repo]
-diagram: flowchart
-optional: false
-instructions: >-
-  Wiki 根页只写系统如何由各 Git Source 与外部系统组成：容器边界、依赖、失败域。
-  隐式单仓时同一页继续写本仓内部容器。
-  <scopeId>/ 页只写该仓内部结构，链到 /architecture.md，不重复跨仓系统地图。
-  「组件」节每个节点必须是源码标识符、一句话职责、入边和出边。
+identity: repo
+filename: architecture.md
+cardinality: one
+required: true
+purpose: 解释当前层级的结构组成、所有权接口、依赖方向及失败传播。
+diagram:
+  section: 图
+  kinds: [flowchart]
 ---
 
-# {{title}}
+## 组成模块
 
-{{description}}
-
-## 组件
+列出源码层模块或外部系统、各自职责及供其他模块使用的公开面。Wiki 层只写跨 Source 组成，仓库层只写该 Source 内部。
 
 ## 边界与依赖
 
-## 扩展点与失败模式
+说明所有权、允许的依赖方向、信任或进程边界，以及跨边界契约。链接另一层架构页，不重复内容。
+
+## 失败与变更影响
+
+追踪关键失败如何传播，并指出结构变更会影响的模块、契约和验证路径。
 
 ## 图
 
-```mermaid
-flowchart TD
-  {{diagram}}
-```
+用源码标识符作为 Mermaid 节点，展示模块及其有向依赖。

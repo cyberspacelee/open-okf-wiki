@@ -1,22 +1,26 @@
 ---
+id: concept
 type: Concept
 scope: concept
-instructions: >-
-  Lead the title with the source identifier. Explain the Concept's observable
-  contract, type relationships, dependencies, invariants, and the exact
-  edit-and-verify path for a developer. Open the cited source files before
-  filling a section; do not paraphrase the survey sentence. Source locations
-  live in frontmatter sources[]; do not repeat them as a body section.
+identity: concept
+filename: concept.md
+cardinality: one
+required: true
+purpose: Give a developer the observable contract and exact edit-and-verify path for one source-identified Concept.
 ---
 
-# {{title}}
+## Purpose and public surface
 
-{{description}}
+Explain the Concept's responsibility, callers or consumers, inputs, outputs, and source identifiers that form its observable interface.
 
-## Purpose and responsibilities
+## Lifecycle and failure semantics
 
-## Contract and dependencies
+Describe creation, use, state-changing behavior, termination, errors, retries, and cleanup when evidenced. Link a dedicated state or flow page for detailed paths.
 
-## Invariants
+## Invariants and constraints
 
-## Changes and verification
+Record rules enforced by code, schema, or state guards. Use `Invariant | Enforced at | Violation signal | Verify`; distinguish invariants from preconditions and design wishes.
+
+## Change surface and verification
+
+Name the implementation, contracts, callers, persistence, and tests affected by a change, followed by the smallest focused verification commands or test paths.

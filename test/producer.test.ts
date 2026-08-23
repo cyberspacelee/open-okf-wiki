@@ -40,11 +40,11 @@ async function writeValidCandidate(candidateRoot: string, sourceResource = "main
     const absolute = path.join(candidateRoot, ...relative.split("/"));
     await mkdir(path.dirname(absolute), { recursive: true });
     const description = `${title} description.`;
-    const sections = template.sections.map((section) => {
-      const diagram = template.diagramSections.includes(section)
-        ? mermaidStub(template.diagram?.[0] ?? "flowchart")
+    const sections = template.sections.map(({ title: section }) => {
+      const content = template.diagram?.section === section
+        ? mermaidStub(template.diagram.kinds[0] ?? "flowchart")
         : `${section} is grounded here. [^main]\n`;
-      return `## ${section}\n\n${diagram}`;
+      return `## ${section}\n\n${content}`;
     }).join("\n");
     await writeText(absolute, [
       "---",
@@ -66,15 +66,15 @@ async function writeValidCandidate(candidateRoot: string, sourceResource = "main
     ].join("\n"));
   };
   for (const template of pack.templates) {
-    if (template.optional) continue;
-    if (template.scope === "wiki") await writePage(template.file, template, "Overview");
+    if (!template.required) continue;
+    if (template.scope === "wiki") await writePage(template.filename, template, "Overview");
     else if (template.altitudes) {
-      await writePage(template.file, template, "Architecture");
-      if (repositoryId) await writePage(`${repositoryId}/${template.file}`, template, `${repositoryId} architecture`);
+      await writePage(template.filename, template, "Architecture");
+      if (repositoryId) await writePage(`${repositoryId}/${template.filename}`, template, `${repositoryId} architecture`);
     } else if (template.scope === "domain") {
-      await writePage(`${repositoryId ? `${repositoryId}/` : ""}runtime/${template.file}`, template, "runtime");
+      await writePage(`${repositoryId ? `${repositoryId}/` : ""}runtime/${template.filename}`, template, "runtime");
     } else if (template.scope === "concept") {
-      await writePage(`${repositoryId ? `${repositoryId}/` : ""}runtime/ready/${template.file}`, template, "ready");
+      await writePage(`${repositoryId ? `${repositoryId}/` : ""}runtime/ready/${template.filename}`, template, "ready");
     }
   }
 }
@@ -674,7 +674,7 @@ test("Lead prompt receives a bounded recovery frame without template skeletons",
   assert.match(prompt, /<wiki_checkpoint>/);
   assert.match(prompt, /Goal: runtime/);
   assert.match(prompt, /survey, synthesize, write, review/);
-  assert.doesNotMatch(prompt, /Skeleton:|Page template catalog/);
+  assert.doesNotMatch(prompt, /Output skeleton|Page contract catalog/);
   assert.ok(tools.includes("candidate_check"));
   assert.equal(tools.includes("db_tables"), false);
 });

@@ -370,13 +370,13 @@ test("subagent prompts project templates by role", async (t) => {
       partition: "candidate",
     }], new AbortController().signal);
   }
-  assert.match(prompts[0], /Page template catalog/);
-  assert.doesNotMatch(prompts[0], /Skeleton/);
-  assert.match(prompts[1], /Page template catalog/);
-  assert.doesNotMatch(prompts[1], /Skeleton/);
-  assert.match(prompts[2], /Skeleton/);
-  assert.match(prompts[3], /Page template catalog/);
-  assert.doesNotMatch(prompts[3], /Skeleton/);
+  assert.match(prompts[0], /Page contract catalog/);
+  assert.doesNotMatch(prompts[0], /Output skeleton/);
+  assert.match(prompts[1], /Page contract catalog/);
+  assert.doesNotMatch(prompts[1], /Output skeleton/);
+  assert.match(prompts[2], /Output skeleton/);
+  assert.match(prompts[3], /Page contract catalog/);
+  assert.doesNotMatch(prompts[3], /Output skeleton/);
 });
 
 test("subagent batches allow parallel survey and disjoint writes", async (t) => {

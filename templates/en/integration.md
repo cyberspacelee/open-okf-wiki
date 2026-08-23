@@ -1,36 +1,29 @@
 ---
+id: integration
 type: Integration
 scope: domain
-optional: true
-diagram: flowchart
-instructions: >-
-  Generate only when this Domain has source evidence of asynchronous or
-  cross-system integration: message production/consumption (topics, consumer
-  groups, retry and dead-letter), scheduled jobs (scheduler, cron,
-  idempotency), external system calls (clients, timeouts, fallbacks), and
-  event contracts (payload shape and versioning). This is inventory
-  knowledge: flows.md narrates one scenario; this page lists every
-  integration point the Domain produces or consumes. Cite the declaration
-  site for each; the diagram shows integration topology (this Domain's
-  connections to topics/jobs/external systems) with source identifiers as
-  nodes.
+filename: integration.md
+cardinality: one
+required: false
+applies_when: The Domain produces or consumes asynchronous work or crosses a process, repository, vendor, or deployment boundary.
+purpose: Inventory the Domain's integration points and the contracts, delivery behavior, and recovery semantics that govern them.
+diagram:
+  section: Diagram
+  kinds: [flowchart]
 ---
 
-# {{title}}
+## Integration points
 
-{{description}}
+Inventory each produced or consumed call, event, job, file, generated artifact, or shared schema with its direction, owner, and declaration site.
 
-## Message production and consumption
+## Contracts and delivery
 
-## Scheduled jobs
+Describe payload or call contracts, versioning, ordering, delivery guarantees, idempotency, scheduling, timeouts, and compatibility only where applicable.
 
-## External calls
+## Failures and recovery
 
-## Event contracts
+Explain observable failures, retries, dead letters, fallbacks, compensation, replay, and operator or developer verification for each material integration.
 
 ## Diagram
 
-```mermaid
-flowchart TD
-  {{diagram}}
-```
+Show the Domain and its integration endpoints with directional edges and source identifiers.

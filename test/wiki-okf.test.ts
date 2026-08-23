@@ -7,25 +7,42 @@ import { assertReviewPass, derivedIndexPaths, materializeWikiIndexes, stampPubli
 import { loadWikiTemplatePack, packagedTemplatesRoot, type WikiTemplate, type WikiTemplatePack } from "../extensions/wiki/lib/templates.js";
 import { candidateRevision, fileRevision } from "../extensions/wiki/lib/revisions.js";
 
-function packOf(...templates: Array<Partial<WikiTemplate> & { file: string }>): WikiTemplatePack {
-  const defaults: Array<Partial<WikiTemplate> & { file: string }> = [
-    { file: "overview.md", scope: "wiki", type: "Overview" },
-    { file: "architecture.md", type: "Architecture", altitudes: ["wiki", "repo"], diagram: ["flowchart"], diagramSections: ["Diagram"], sections: ["Components", "Diagram"] },
-    { file: "domain.md", scope: "domain", type: "Domain" },
-    { file: "concept.md", scope: "concept", type: "Concept" },
+type TestTemplate = Partial<WikiTemplate> & { id: string };
+
+const sections = (...titles: string[]) => titles.map((title) => ({ title, guidance: "Fill from evidence." }));
+
+function packOf(...templates: TestTemplate[]): WikiTemplatePack {
+  const defaults: TestTemplate[] = [
+    { id: "overview", filename: "overview.md", scope: "wiki", identities: ["wiki"], type: "Overview" },
+    {
+      id: "architecture",
+      filename: "architecture.md",
+      type: "Architecture",
+      altitudes: ["wiki", "repo"],
+      identities: ["repo"],
+      diagram: { section: "Diagram", kinds: ["flowchart"] },
+      sections: sections("Components", "Diagram"),
+    },
+    { id: "domain", filename: "domain.md", scope: "domain", identities: ["domain"], type: "Domain" },
+    { id: "concept", filename: "concept.md", scope: "concept", identities: ["concept"], type: "Concept" },
   ];
-  const byFile = new Map<string, Partial<WikiTemplate> & { file: string }>();
-  for (const template of [...defaults, ...templates]) byFile.set(template.file, template);
+  const byId = new Map<string, TestTemplate>();
+  for (const template of [...defaults, ...templates]) byId.set(template.id, template);
   return {
-    templates: [...byFile.values()].map((template) => ({
-      type: template.type ?? "Concept",
-      optional: false,
-      instructions: "Fill from evidence.",
-      sections: template.sections ?? ["Details"],
-      diagramSections: template.diagramSections ?? [],
-      body: "# {{title}}\n\n{{description}}\n\n## Details\n",
-      ...template,
-    })),
+    templates: [...byId.values()].map((template) => ({
+        sourceFile: template.sourceFile ?? `${template.id}.md`,
+        id: template.id,
+        type: template.type ?? "Concept",
+        filename: template.filename ?? `${template.id}.md`,
+        cardinality: template.cardinality ?? "one",
+        required: template.required ?? true,
+        purpose: template.purpose ?? "Fill from evidence.",
+        ...(template.scope ? { scope: template.scope } : {}),
+        ...(template.altitudes ? { altitudes: template.altitudes } : {}),
+        ...(template.identities ? { identities: template.identities } : {}),
+        ...(template.diagram ? { diagram: template.diagram } : {}),
+        sections: template.sections ?? sections("Details"),
+      })),
   };
 }
 
@@ -36,12 +53,12 @@ function mermaid(kind: string, body: string): string {
 function fill(template: WikiTemplate | undefined, title: string, resource: string, extra = ""): string {
   if (!template) throw new Error(`missing template for ${title}`);
   const description = `${title} description.`;
-  const sections = template.sections.map((name) => {
-    if (template.diagramSections.includes(name) || name === "Diagram" || name === "图") {
-      const kind = template.diagram?.[0] ?? "flowchart";
-      return `## ${name}\n\n${extra || mermaid(kind, "  Invoice --> Ledger")}`;
+  const sections = template.sections.map(({ title }) => {
+    if (template.diagram?.section === title || title === "Diagram" || title === "图") {
+      const kind = template.diagram?.kinds[0] ?? "flowchart";
+      return `## ${title}\n\n${extra || mermaid(kind, "  Invoice --> Ledger")}`;
     }
-    return `## ${name}\n\nClaim. [^main]`;
+    return `## ${title}\n\nClaim. [^main]`;
   }).join("\n\n");
   return [
     "---",
@@ -90,23 +107,23 @@ function okfPage(type: string, title: string, extra = "", resource = "api/main.t
 }
 
 async function writeCore(root: string, resource: string, pack: WikiTemplatePack, pins: readonly WikiPin[]): Promise<void> {
-  const byFile = Object.fromEntries(pack.templates.map((template) => [template.file, template]));
-  await writeFile(path.join(root, "overview.md"), fill(byFile["overview.md"], "Overview", resource));
-  await writeFile(path.join(root, "architecture.md"), fill(byFile["architecture.md"], "Architecture", resource));
+  const byId = Object.fromEntries(pack.templates.map((template) => [template.id, template]));
+  await writeFile(path.join(root, "overview.md"), fill(byId.overview, "Overview", resource));
+  await writeFile(path.join(root, "architecture.md"), fill(byId.architecture, "Architecture", resource));
   if (!wikiPinsImplicit(pins)) {
     for (const pin of pins) {
       await mkdir(path.join(root, pin.scopeId), { recursive: true });
       await writeFile(
         path.join(root, pin.scopeId, "architecture.md"),
-        fill(byFile["architecture.md"], `${pin.scopeId} architecture`, resource),
+        fill(byId.architecture, `${pin.scopeId} architecture`, resource),
       );
     }
   }
   const knowledgeRoot = wikiPinsImplicit(pins) ? root : path.join(root, pins[0]!.scopeId);
   const concept = path.join(knowledgeRoot, "billing", "invoice");
   await mkdir(concept, { recursive: true });
-  await writeFile(path.join(knowledgeRoot, "billing", "domain.md"), fill(byFile["domain.md"], "Billing", resource));
-  await writeFile(path.join(concept, "concept.md"), fill(byFile["concept.md"], "Invoice", resource));
+  await writeFile(path.join(knowledgeRoot, "billing", "domain.md"), fill(byId.domain, "Billing", resource));
+  await writeFile(path.join(concept, "concept.md"), fill(byId.concept, "Invoice", resource));
 }
 
 async function sourceTree(t: { after: (fn: () => Promise<void>) => void }, scope = "api", implicit = true) {
@@ -197,23 +214,30 @@ test("validate requires mermaid kind from the template pack", async (t) => {
   t.after(async () => await rm(root, { recursive: true, force: true }));
   const src = await sourceTree(t);
   const templates = packOf({
-    file: "flows.md",
+    id: "flow",
+    filename: "flow-{slug}.md",
+    cardinality: "many",
     scope: "domain",
     type: "Flow",
-    diagram: ["sequenceDiagram", "flowchart"],
-    optional: true,
-    sections: ["Details"],
-    diagramSections: ["Details"],
+    required: false,
+    appliesWhen: "A runtime flow exists.",
+    diagram: { section: "Details", kinds: ["sequenceDiagram", "flowchart"] },
+    sections: sections("Details"),
   });
   await writeCore(root, src.resource, templates, src.pins);
   const domain = path.join(root, "billing");
-  await writeFile(path.join(domain, "flows.md"), fill({ ...templates.templates.find((template) => template.file === "flows.md")!, diagramSections: [] }, "Billing flows", src.resource));
+  await writeFile(path.join(domain, "flow-checkout.md"), fill(
+    templates.templates.find((template) => template.id === "flow"),
+    "Billing flows",
+    src.resource,
+    "Claim. [^main]",
+  ));
   const missing = await validateWikiTree(root, src.pins, templates);
   assert.equal(missing.ok, false);
-  assert.ok(missing.issues.some((issue) => issue.code === "mermaid" && issue.page === "billing/flows.md"));
+  assert.ok(missing.issues.some((issue) => issue.code === "mermaid" && issue.page === "billing/flow-checkout.md"));
 
-  await writeFile(path.join(domain, "flows.md"), fill(
-    { ...templates.templates.find((template) => template.file === "flows.md")!, diagramSections: ["Details"] },
+  await writeFile(path.join(domain, "flow-checkout.md"), fill(
+    templates.templates.find((template) => template.id === "flow"),
     "Billing flows",
     src.resource,
     mermaid("sequenceDiagram", "  Invoice->>Ledger: post"),
@@ -227,9 +251,17 @@ test("validate uses the template pack as the page contract", async (t) => {
   t.after(async () => await rm(root, { recursive: true, force: true }));
   const src = await sourceTree(t);
   const templates = packOf(
-    { file: "states.md", scope: "concept", type: "State Machine", diagram: ["stateDiagram-v2"], optional: true, diagramSections: ["Details"] },
+    {
+      id: "state-machine",
+      filename: "states.md",
+      scope: "concept",
+      type: "State Machine",
+      required: false,
+      appliesWhen: "A lifecycle exists.",
+      diagram: { section: "Details", kinds: ["stateDiagram-v2"] },
+    },
   );
-  await writeFile(path.join(root, "overview.md"), fill(templates.templates.find((template) => template.file === "overview.md"), "Overview", src.resource));
+  await writeFile(path.join(root, "overview.md"), fill(templates.templates.find((template) => template.id === "overview"), "Overview", src.resource));
   const overviewOnly = await validateWikiTree(root, src.pins, templates);
   assert.equal(overviewOnly.ok, false);
   assert.ok(overviewOnly.issues.some((issue) => issue.code === "topology" && issue.page === "architecture.md"));
@@ -250,7 +282,7 @@ test("implicit wiki rejects repository sections and explicit wiki keeps knowledg
   assert.equal(ok.ok, true);
 
   await mkdir(path.join(root, "api"), { recursive: true });
-  await writeFile(path.join(root, "api", "architecture.md"), fill(templates.templates.find((template) => template.file === "architecture.md"), "Wrong", implicit.resource));
+  await writeFile(path.join(root, "api", "architecture.md"), fill(templates.templates.find((template) => template.id === "architecture"), "Wrong", implicit.resource));
   const withRepository = await validateWikiTree(root, implicit.pins, templates);
   assert.equal(withRepository.ok, false);
 
@@ -261,20 +293,20 @@ test("implicit wiki rejects repository sections and explicit wiki keeps knowledg
   assert.equal((await validateWikiTree(explicitRoot, explicit.pins, templates)).ok, true);
   await writeFile(
     path.join(explicitRoot, "my.repo_ui", "billing", "domain.md"),
-    fill(templates.templates.find((template) => template.file === "domain.md"), "Wrong origin", "main.ts#L1"),
+    fill(templates.templates.find((template) => template.id === "domain"), "Wrong origin", "main.ts#L1"),
   );
   const sourceRelative = await validateWikiTree(explicitRoot, explicit.pins, templates);
   assert.ok(sourceRelative.issues.some((issue) => issue.code === "citation" && issue.message.includes("main.ts#L1 missing")));
   await writeFile(
     path.join(explicitRoot, "my.repo_ui", "billing", "domain.md"),
-    fill(templates.templates.find((template) => template.file === "domain.md"), "Billing", explicit.resource),
+    fill(templates.templates.find((template) => template.id === "domain"), "Billing", explicit.resource),
   );
   await materializeWikiIndexes(explicitRoot, "en", templates, explicit.pins);
   assert.match(await readFile(path.join(explicitRoot, "my.repo_ui", "index.md"), "utf8"), /Billing/);
   await mkdir(path.join(explicitRoot, "billing"), { recursive: true });
   await writeFile(
     path.join(explicitRoot, "billing", "domain.md"),
-    fill(templates.templates.find((template) => template.file === "domain.md"), "Wrong", explicit.resource),
+    fill(templates.templates.find((template) => template.id === "domain"), "Wrong", explicit.resource),
   );
   const misplaced = await validateWikiTree(explicitRoot, explicit.pins, templates);
   assert.ok(misplaced.issues.some((issue) => issue.code === "template" && issue.page === "billing/domain.md"));
@@ -301,24 +333,32 @@ test("validate rejects domain-level architecture and undeclared pages", async (t
   await writeCore(root, src.resource, templates, src.pins);
   await writeFile(
     path.join(root, "billing", "architecture.md"),
-    fill(templates.templates.find((template) => template.file === "architecture.md"), "Billing architecture", src.resource),
+    fill(templates.templates.find((template) => template.id === "architecture"), "Billing architecture", src.resource),
   );
   const result = await validateWikiTree(root, src.pins, templates);
   assert.equal(result.ok, false);
   assert.ok(result.issues.some((issue) => issue.code === "template" && issue.page === "billing/architecture.md"));
 });
 
-test("validate requires a Domain anchor beside optional Domain pages", async (t) => {
+test("validate requires a Domain identity beside evidence-selected Domain pages", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-domain-anchor-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));
   const src = await sourceTree(t);
-  const templates = packOf({ file: "flows.md", scope: "domain", type: "Flow", optional: true, diagram: ["sequenceDiagram"], diagramSections: ["Details"] });
+  const templates = packOf({
+    id: "flow",
+    filename: "flows.md",
+    scope: "domain",
+    type: "Flow",
+    required: false,
+    appliesWhen: "A runtime flow exists.",
+    diagram: { section: "Details", kinds: ["sequenceDiagram"] },
+  });
   await writeCore(root, src.resource, templates, src.pins);
   const orphan = path.join(root, "orphan");
   await mkdir(orphan, { recursive: true });
   await writeFile(
     path.join(orphan, "flows.md"),
-    fill(templates.templates.find((template) => template.file === "flows.md"), "Orphan flows", src.resource, mermaid("sequenceDiagram", "  A->>B: go")),
+    fill(templates.templates.find((template) => template.id === "flow"), "Orphan flows", src.resource, mermaid("sequenceDiagram", "  A->>B: go")),
   );
   const result = await validateWikiTree(root, src.pins, templates);
   assert.equal(result.ok, false);
@@ -363,11 +403,11 @@ test("validate rejects unknown pages, empty sections, missing footnotes, and pla
   const src = await sourceTree(t);
   const templates = packOf();
   await writeCore(root, src.resource, templates, src.pins);
-  await writeFile(path.join(root, "billing", "invoice", "extra.md"), fill(templates.templates.find((template) => template.file === "concept.md"), "Extra", src.resource).replace("type: Concept", "type: Extra"));
-  await writeFile(path.join(root, "overview.md"), fill(templates.templates.find((template) => template.file === "overview.md"), "Overview", src.resource).replace("Claim. [^main]", "{{todo}} {{later}}"));
+  await writeFile(path.join(root, "billing", "invoice", "extra.md"), fill(templates.templates.find((template) => template.id === "concept"), "Extra", src.resource).replace("type: Concept", "type: Extra"));
+  await writeFile(path.join(root, "overview.md"), fill(templates.templates.find((template) => template.id === "overview"), "Overview", src.resource).replace("Claim. [^main]", "{{todo}} {{later}}"));
   await writeFile(
     path.join(root, "billing", "invoice", "concept.md"),
-    fill(templates.templates.find((template) => template.file === "concept.md"), "Invoice", src.resource).replace("Claim. [^main]", ""),
+    fill(templates.templates.find((template) => template.id === "concept"), "Invoice", src.resource).replace("Claim. [^main]", ""),
   );
   const result = await validateWikiTree(root, src.pins, templates);
   assert.equal(result.ok, false);

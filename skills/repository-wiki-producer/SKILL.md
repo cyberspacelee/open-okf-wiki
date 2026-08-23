@@ -67,14 +67,18 @@ wiki:
   templates: wiki-templates
 ```
 
-Wiki, domain, and concept each have one non-optional anchor.
-`architecture.md` uses `altitudes: [wiki, repo]` and is required at those
-altitudes. Other templates use `optional: true`; the writer keeps them after
-reopening source. `instructions` is the writer brief; the body is the final
-H1/H2 skeleton. A `diagram` field requires a mermaid fence of that kind.
-Generated pages use `sources` + `[^id]` footnotes. Publish checks placement,
-exact sections, footnotes, placeholders, links, diagrams, sources, cited-file
-reads, and a current review pass.
+Every Wiki directory kind has exactly one `identity` contract for its generated
+index. Identity contracts are required singletons, while other required
+singletons may share their placement. One required singleton uses
+`altitudes: [wiki, repo]`. Other contracts
+set `required: false` plus an evidence condition in `applies_when`; `many`
+contracts use one `{slug}` in `filename` to create separate topic pages.
+`purpose` defines page ownership. Each body H2 is a semantic obligation whose
+body guides survey, writing, and review; the host derives the output skeleton.
+A `diagram` mapping names its H2 `section` and allowed Mermaid `kinds`.
+Generated pages use `sources` + `[^id]` footnotes. Publish checks contract
+selection, placement, exact sections, footnotes, placeholders, links, diagrams,
+sources, cited-file reads, and a current review pass.
 
 Consuming agents start at `wiki/index.md`. Explicit Workspace knowledge pages
 live at `<scopeId>/<domain>/<concept>/`; Workspace root pages explain

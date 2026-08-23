@@ -29,11 +29,15 @@ SOP is `prompts/lead.md`. Named workers are `agents/*.md`. Multi-Source Runs
 fan in all Source survey handoffs through one read-only synthesize worker before
 writing begins. Page kinds come
 from `wiki-templates/` after init (or packaged `templates/zh` /
-`templates/en`). Wiki, domain, and concept each have one anchor.
-`architecture.md` is required at wiki and repo altitudes. Optional templates
-are kept or dropped after the writer reopens source. Survey and review receive
-a compact template catalog; the writer receives only the skeletons for its
-path prefix. Structure is mechanically validated. `type` is Title Case;
+`templates/en`). A page contract owns placement, cardinality, filename pattern,
+selection condition, purpose, semantic obligations, and diagram requirements.
+Every Wiki directory kind has one explicit identity contract for generated
+indexes; required singleton contracts remain independent of identity. One
+required singleton spans Wiki and repository altitudes. Evidence-selected contracts are
+kept or dropped after the writer reopens source, and `many` contracts create
+separate topic pages. Survey and review receive the semantic contract catalog;
+the writer receives active contracts and host-derived skeletons for its path
+prefix. Structure is mechanically validated. `type` is Title Case;
 filenames stay kebab-case. The host enforces Source-survey fan-in before
 cross-Source synthesis and rejects writes that predate synthesis. It also
 enforces execution receipts, disjoint write prefixes, prefix-bound writer

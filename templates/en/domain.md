@@ -1,23 +1,26 @@
 ---
+id: domain
 type: Domain
 scope: domain
-instructions: >-
-  State what this Domain owns and excludes, and record invariants and change
-  impact that are expensive to rediscover. Concept collaboration covers only
-  the calls, dependencies, and ordering between Concepts (who triggers whom,
-  where data flows); do not enumerate the Concepts themselves (index.md
-  already does). This is the cross-Concept structure page; do not also write
-  an architecture page here.
+identity: domain
+filename: domain.md
+cardinality: one
+required: true
+purpose: Own the cross-Concept responsibilities, collaboration rules, invariants, and change impact for one Domain.
 ---
-
-# {{title}}
-
-{{description}}
 
 ## Responsibilities and boundaries
 
+State what the Domain owns, what it excludes, its public entry points, and where responsibility transfers to another Domain or external system.
+
 ## Concept collaboration
 
-## Invariants
+Explain source-backed calls, data movement, ordering, and ownership transfer between Concepts. Link to Concept pages instead of enumerating or restating them.
 
-## Change impact
+## Invariants and constraints
+
+Record only enforced rules, not aspirations or caller advice. Use `Invariant | Enforced at | Violation signal | Verify` when multiple rules exist.
+
+## Change impact and verification
+
+Identify the affected Concepts, contracts, consumers, failure paths, and the smallest source-backed checks that establish a safe change.

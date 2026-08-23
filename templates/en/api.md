@@ -1,28 +1,26 @@
 ---
+id: api
 type: API Contract
 scope: repo
-optional: true
-instructions: >-
-  Generate only when this repository exposes callable interfaces
-  (REST/RPC/GraphQL/OpenAPI). List endpoints from the consumer's view: path
-  or method name, request/response essentials, authentication requirements,
-  idempotency, and error semantics. Every endpoint needs source evidence from
-  a controller/handler/proto/OpenAPI file; never infer from call sites. Group
-  by resource or capability when there are many, and enumerate them — do not
-  defer to "see the code". Compatibility and evolution covers versioning
-  policy, deprecation markers, and evidenced breaking changes; state when
-  there are none. Implicit single-repo writes at the Wiki root; explicit
-  multi-repo writes under <scopeId>/.
+filename: api-{slug}.md
+cardinality: many
+required: false
+applies_when: The repository exposes a distinct callable public interface whose consumers need a source-backed contract.
+purpose: Document one coherent network or programmatic public interface from the consumer's point of view.
 ---
 
-# {{title}}
+## Consumers and conventions
 
-{{description}}
+Identify intended consumers, entry mechanism, authentication or authorization when present, naming, encoding, versioning, idempotency, and other shared conventions.
 
-## Authentication and conventions
+## Surface
 
-## Endpoint inventory
+Enumerate the callable operations, paths, messages, or exported symbols with essential inputs, outputs, and declaration evidence. Group only within this coherent interface.
 
-## Error semantics
+## Failure semantics
 
-## Compatibility and evolution
+Document validation failures, error values or responses, retryability, partial success, timeouts, and observable failure behavior.
+
+## Compatibility
+
+Explain compatibility guarantees, deprecation or migration paths, and source-backed breaking-change constraints.

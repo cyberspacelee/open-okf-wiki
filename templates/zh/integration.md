@@ -1,32 +1,29 @@
 ---
+id: integration
 type: Integration
 scope: domain
-optional: true
-diagram: flowchart
-instructions: >-
-  仅当这个 Domain 有异步或跨系统集成的源码证据时生成：MQ 生产/消费
-  （topic、consumer group、重试与死信）、定时任务（调度器、cron、幂等性）、
-  外部系统调用（客户端、超时与降级）、事件契约（payload 结构与版本）。
-  这是清单性知识：flows.md 讲一个场景怎么流动，本页讲这个 Domain
-  生产和消费哪些集成点。每个集成点引用声明处源码；图画集成拓扑
-  （本 Domain 与 topic/任务/外部系统的连接），节点用源码标识符。
+filename: integration.md
+cardinality: one
+required: false
+applies_when: Domain 生产或消费异步工作，或跨越进程、仓库、供应商或部署边界。
+purpose: 盘点 Domain 的集成点以及约束它们的契约、交付行为和恢复语义。
+diagram:
+  section: 图
+  kinds: [flowchart]
 ---
 
-# {{title}}
+## 集成点
 
-{{description}}
+盘点生产或消费的调用、事件、任务、文件、生成物或共享 Schema，并说明方向、所有者和声明位置。
 
-## 消息生产与消费
+## 契约与交付
 
-## 定时任务
+按适用情况说明载荷或调用契约、版本、顺序、交付保证、幂等、调度、超时和兼容性。
 
-## 外部调用
+## 失败与恢复
 
-## 事件契约
+说明每个关键集成的可观察失败、重试、死信、降级、补偿、重放及运维或开发验证方式。
 
 ## 图
 
-```mermaid
-flowchart TD
-  {{diagram}}
-```
+用有向边和源码标识符展示 Domain 及其集成端点。

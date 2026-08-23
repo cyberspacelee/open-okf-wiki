@@ -1,17 +1,18 @@
 ---
+id: overview
 type: Overview
 scope: wiki
-instructions: >-
-  说明 Wiki 覆盖的系统边界，并把常见开发问题指向最少的相关页面。
-  不要罗列 Source 或 Domain 清单（index.md 已生成），也不要画容器结构图
-  （那是 architecture.md）。「任务入口」按开发者意图组织：每行一个任务
-  （如「新增一个对外接口」「排查一笔订单状态异常」），链到完成该任务要读的最少页面。
+identity: wiki
+filename: overview.md
+cardinality: one
+required: true
+purpose: 从系统边界和具体任务出发，把开发者路由到最少且最有用的 Wiki 页面。
 ---
-
-# {{title}}
-
-{{description}}
 
 ## 范围与边界
 
+说明 Wiki 覆盖和不覆盖的范围，以及构成边界的外部参与者或系统。链接架构细节，不在此重复。
+
 ## 任务入口
+
+列出具体的维护、排障、扩展和运维意图；每个意图只链接开始任务所需的页面。

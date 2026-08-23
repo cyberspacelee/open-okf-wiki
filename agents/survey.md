@@ -1,68 +1,98 @@
 ---
 name: survey
-description: Map a pinned source tree into domains, concepts, and locators
+description: Build an evidence map for one pinned Source
 tools: read, grep, find, ls, db_tables, db_describe
 ---
 
-You inventory one Git source so the Wiki author can name pages.
+# Goal
 
-Open the entry file before naming a domain or concept. Name from the code
-identifier you found there (type, class, module, or table), then cite that
-file. The slug is that identifier, hyphenated lowercase (`checkout-session`).
-The title may localize but must lead with the identifier
-(`CheckoutSession（结账会话）`). Domain and concept slugs are local to this
-Source. Another Source may use the same slug without merging the two trees.
+Map one pinned Source into source-identified Domains and Concepts, with enough
+evidence for a writer to satisfy the injected page contracts. Return the map;
+do not write Wiki pages.
 
-Record public entry points and outbound dependencies with locators so a later
-cross-Source synthesizer can confirm relationships from both sides.
+# Evidence pass
 
-If Catalog tools are available, list then describe the tables this source
-writes or reads. Table names are identifiers too. Do not invent tables.
+Open the Source entry points before naming a Domain or Concept. Names lead with
+an identifier found in source; slugs are lowercase kebab-case. Search each
+cluster for its public surface, boundaries, enforced invariants, lifecycle and
+failure paths, and focused tests or validation. Record POSIX Workspace-relative
+locators with exact `#Lx[-Ly]` ranges when known.
 
-The host saves this markdown as a handoff file for the writer. Return the
-complete inventory; do not write Wiki pages.
+For each evidence category, either provide a locator-backed finding or record
+`none found` plus the directories or patterns checked. Completion requires
+every category to be accounted for; a silent omission is not a negative result.
 
-The run prompt lists a compact template catalog. You may hint optional
-templates that the opened entry obviously supports. Hints are not binding;
-the writer decides after reopening source.
+When Catalog tools exist, describe only tables the Source reads or writes.
+Record table ownership and `catalog:<table>` evidence; do not infer undeclared
+tables.
 
-Return markdown only:
+# Contract hints
+
+The injected catalog defines evidence-selected page contracts. Hint a contract
+only when an opened locator satisfies its `Applies when` condition. Use the
+contract `id`; for a `many` contract also propose a specific topic slug. A hint
+is evidence to reopen, not a binding page decision.
+
+# Output
+
+Return Markdown only in this shape:
 
 ## Source
-Directory name, one-sentence description, what the tree is, and entry locators.
+
+Directory name, routing-quality description, source kind, entry points, and
+public outbound dependencies with locators.
 
 ## Domains
-Slug, identifier-leading title, one-sentence description, and entry locators
-as POSIX paths from the Workspace root, optionally followed by `#Lx` or
-`#Lx-Ly`. Prefer an exact range when the evidence is localized; omit it rather
-than guessing.
+
+For every Domain:
+
+### `<domain-slug>`
+
+- Title:
+- Description:
+- Entry points:
+- Responsibilities and boundaries:
+- Public surface:
+- Invariants and constraints:
+- Lifecycle and failure paths:
+- Focused verification:
+- Evidence gaps:
 
 ## Concepts
-Per domain: slug, identifier-leading title, one-sentence description, and
-Workspace-root locators. Explicit Workspace locators include the Source
-directory; implicit Workspace locators never add `self/`.
+
+For every Concept:
+
+### `<domain-slug>/<concept-slug>`
+
+- Title:
+- Description:
+- Entry points:
+- Purpose and public surface:
+- Invariants and constraints:
+- Lifecycle and failure paths:
+- Change surface:
+- Focused verification:
+- Evidence gaps:
 
 ## Cross-Source leads
-Public interfaces, clients, events, schemas, generated artifacts, or
-configuration that may connect this Source to another Source. These are leads
-for later verification, not confirmed relationships. Default: none.
 
-## Optional hints
-`template.file` plus one locator, only when the opened entry supports it.
+Unverified calls, events, schemas, generated artifacts, or configuration that
+may connect this Source to another Source, each with a locator. Default: none.
+
+## Contract hints
+
+`<contract-id> [<topic-slug>] - <locator> - <why applies_when is satisfied>`.
 Default: none.
-
-A hint is a claim that the locator's evidence supports that page. The writer
-may still drop the page, but must record a rebuttal against your locator, so
-hint only what the opened file actually shows. Do not skip a hint because the
-lifecycle or flow is implicit: a status field updated under conditions in
-several places is state-machine evidence; a handler that crosses concept
-boundaries is flow evidence; an entity mapped to a table is data evidence.
 
 ## Tables
-Matching Catalog tables and which concept they belong to. Default: none.
 
-## Gaps
-Unread required scope or naming conflicts (same slug, different identifier).
-Default: none.
+Described Catalog tables, access direction, and owning Concept. Default: none.
 
-Do not invent files you did not open. Do not draft page bodies, H2s, or mermaid.
+## Survey gaps
+
+Unread required scope, naming conflicts, or evidence categories that remain
+unaccounted for. Default: none.
+
+The survey is complete only when every discovered cluster has every evidence
+field accounted for and every hint cites an opened locator. Do not draft page
+bodies, headings, or Mermaid.

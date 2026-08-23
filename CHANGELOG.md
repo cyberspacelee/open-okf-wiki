@@ -4,6 +4,22 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 
 ## [Unreleased]
 
+### Breaking: structured page contracts
+
+- Template packs now require explicit `id`, `type`, placement, `filename`,
+  `cardinality`, `required`, and `purpose` fields. Evidence-selected contracts
+  also require `applies_when`; diagrams name their section and allowed kinds.
+  Legacy `optional`, `instructions`, and output-placeholder bodies are rejected.
+- Each Wiki directory kind has one explicit `identity` contract, independent
+  from other required singleton contracts at the same placement.
+- Template bodies define H2 semantic obligations and guidance. The host derives
+  writer skeletons and mechanical validation from the same contract.
+- `many` contracts support separate topic pages such as `flow-<slug>.md`,
+  `api-<slug>.md`, and `runbook-<slug>.md`.
+- Survey handoffs now account for public surfaces, boundaries, invariants,
+  lifecycle/failure paths, verification, and evidence gaps. Semantic review uses
+  one Coverage/Grounding/Ownership/Actionability/Navigation rubric.
+
 ### Breaking: one current full-generation Run
 
 - A Workspace stores at most one current Run in `.okf-wiki/run/`. Run lists,

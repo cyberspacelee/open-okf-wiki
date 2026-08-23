@@ -3,170 +3,138 @@ import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { markdownStructure } from "../extensions/wiki/lib/markdown-structure.js";
 import {
+  formatWikiTemplateCatalog,
   formatWikiTemplatesForPrompt,
   loadWikiTemplatePack,
-  packagedTemplatesRoot,
   parseWikiTemplate,
   resolveWikiTemplatePack,
+  templateMatchesFilename,
+  templateOutputSkeleton,
   templatesForPartition,
 } from "../extensions/wiki/lib/templates.js";
 
-function contract(pack: Awaited<ReturnType<typeof loadWikiTemplatePack>>) {
-  return pack.templates.map((template) => ({
-    file: template.file,
-    type: template.type,
-    scope: template.scope,
-    altitudes: template.altitudes,
-    diagram: template.diagram,
-    optional: template.optional,
-  }));
-}
-
-function templateText(scope: "wiki" | "repo" | "domain" | "concept", extra = ""): string {
-  return `---\nscope: ${scope}\ninstructions: Fill the page from evidence.\n${extra}---\n\n# {{title}}\n\n{{description}}\n\n## Details\n`;
+function contractText(
+  id: string,
+  scope: "wiki" | "repo" | "domain" | "concept",
+  options: { required?: boolean; filename?: string; cardinality?: "one" | "many"; identity?: boolean } = {},
+): string {
+  const required = options.required ?? true;
+  return [
+    "---",
+    `id: ${id}`,
+    `type: ${id}`,
+    `scope: ${scope}`,
+    ...((options.identity ?? required) ? [`identity: ${scope}`] : []),
+    `filename: ${options.filename ?? `${id}.md`}`,
+    `cardinality: ${options.cardinality ?? "one"}`,
+    `required: ${required}`,
+    ...(!required ? ["applies_when: Source evidence satisfies this contract."] : []),
+    `purpose: Explain ${id}.`,
+    "---",
+    "",
+    "## Details",
+    "",
+    "Answer the required question from evidence.",
+    "",
+  ].join("\n");
 }
 
 function architectureText(): string {
-  return `---\ntype: Architecture\naltitudes: [wiki, repo]\ninstructions: Fill architecture from evidence.\n---\n\n# {{title}}\n\n{{description}}\n\n## Details\n`;
+  return [
+    "---",
+    "id: architecture",
+    "type: Architecture",
+    "altitudes: [wiki, repo]",
+    "identity: repo",
+    "filename: architecture.md",
+    "cardinality: one",
+    "required: true",
+    "purpose: Explain architecture.",
+    "---",
+    "",
+    "## Details",
+    "",
+    "Answer the required question from evidence.",
+    "",
+  ].join("\n");
 }
 
-async function writeMinimalPack(directory: string): Promise<void> {
+async function writePack(directory: string): Promise<void> {
   await mkdir(directory, { recursive: true });
   await Promise.all([
-    writeFile(path.join(directory, "overview.md"), templateText("wiki")),
+    writeFile(path.join(directory, "overview.md"), contractText("overview", "wiki")),
     writeFile(path.join(directory, "architecture.md"), architectureText()),
-    writeFile(path.join(directory, "domain.md"), templateText("domain")),
-    writeFile(path.join(directory, "concept.md"), templateText("concept")),
+    writeFile(path.join(directory, "domain.md"), contractText("domain", "domain")),
+    writeFile(path.join(directory, "concept.md"), contractText("concept", "concept")),
   ]);
 }
 
-test("packaged zh and en templates share a contract and differ in body language", async () => {
-  const zh = await loadWikiTemplatePack(packagedTemplatesRoot("zh"));
-  const en = await loadWikiTemplatePack(packagedTemplatesRoot("en"));
-  assert.deepEqual(contract(zh), contract(en));
-  const byFile = Object.fromEntries(zh.templates.map((template) => [template.file, template]));
-  assert.equal(byFile["overview.md"]?.scope, "wiki");
-  assert.equal(byFile["source.md"], undefined);
-  assert.equal(byFile["interfaces.md"], undefined);
-  assert.equal(byFile["models.md"], undefined);
-  assert.equal(byFile["domain.md"]?.scope, "domain");
-  assert.equal(byFile["concept.md"]?.scope, "concept");
-  assert.equal(byFile["architecture.md"]?.type, "Architecture");
-  assert.equal(byFile["architecture.md"]?.scope, undefined);
-  assert.deepEqual(byFile["architecture.md"]?.altitudes, ["wiki", "repo"]);
-  assert.equal(byFile["architecture.md"]?.optional, false);
-  assert.deepEqual(byFile["architecture.md"]?.diagram, ["flowchart"]);
-  assert.deepEqual(byFile["flows.md"]?.diagram, ["sequenceDiagram", "flowchart"]);
-  assert.equal(byFile["flows.md"]?.scope, "domain");
-  assert.equal(byFile["development.md"]?.scope, "repo");
-  assert.equal(byFile["runbook.md"]?.scope, "repo");
-  assert.equal(byFile["states.md"]?.optional, true);
-  assert.equal(byFile["data.md"]?.optional, true);
-  assert.equal(byFile["concept.md"]?.optional, false);
-  assert.match(zh.templates.find((template) => template.file === "architecture.md")?.body ?? "", /组件/);
-  assert.match(en.templates.find((template) => template.file === "architecture.md")?.body ?? "", /Components/);
-  assert.match(formatWikiTemplatesForPrompt(zh), /Required:/);
-  assert.match(formatWikiTemplatesForPrompt(en), /`architecture\.md`/);
-  assert.match(formatWikiTemplatesForPrompt(en), /Optional \(writer keeps or drops after reading source\):/);
-  assert.match(formatWikiTemplatesForPrompt(en), /Write selected wiki-root files/);
-  assert.match(formatWikiTemplatesForPrompt(en), /Instructions:/);
-  assert.match(formatWikiTemplatesForPrompt(en), /Skeleton:/);
-  const domainOnly = formatWikiTemplatesForPrompt(en, new Set(["domain.md", "concept.md"]));
-  assert.match(domainOnly, /domain\.md/);
-  assert.doesNotMatch(domainOnly, /type `Overview`/);
-  assert.equal(templatesForPartition(en, "wiki-root", true).some((template) => template.file === "overview.md"), true);
-  assert.equal(templatesForPartition(en, "billing", true).every((template) => template.scope === "domain" || template.scope === "concept"), true);
-  const repoTemplates = templatesForPartition(en, "api", false);
-  assert.equal(repoTemplates.some((template) => template.scope === "domain"), true);
-  assert.equal(repoTemplates.some((template) => template.scope === "concept"), true);
-  assert.equal(repoTemplates.some((template) => template.altitudes?.includes("repo")), true);
-  assert.match(
-    formatWikiTemplatesForPrompt(en, new Set(repoTemplates.map((template) => template.file)), "api"),
-    /under <scopeId>/,
+test("parseWikiTemplate exposes one explicit page contract", () => {
+  const parsed = parseWikiTemplate("architecture.md", architectureText());
+  assert.equal(parsed.id, "architecture");
+  assert.equal(parsed.filename, "architecture.md");
+  assert.deepEqual(parsed.altitudes, ["wiki", "repo"]);
+  assert.equal(parsed.required, true);
+  assert.deepEqual(parsed.sections, [{ title: "Details", guidance: "Answer the required question from evidence." }]);
+});
+
+test("repeatable contracts accept only concrete safe topic filenames", () => {
+  const flow = parseWikiTemplate("flow.md", contractText("flow", "domain", {
+    required: false,
+    cardinality: "many",
+    filename: "flow-{slug}.md",
+  }));
+  assert.equal(templateMatchesFilename(flow, "flow-checkout.md"), true);
+  assert.equal(templateMatchesFilename(flow, "flow-.md"), false);
+  assert.equal(templateMatchesFilename(flow, "flow-Checkout.md"), false);
+  assert.match(templateOutputSkeleton(flow), /## Details/);
+});
+
+test("legacy and incomplete template contracts are rejected", () => {
+  assert.throws(() => parseWikiTemplate("architecture.md", "---\nscope: concept\ninstructions: Fill.\n---\n"), /unknown field: instructions/);
+  assert.throws(() => parseWikiTemplate("architecture.md", architectureText().replace("purpose: Explain architecture.\n", "")), /purpose/);
+  assert.throws(() => parseWikiTemplate("architecture.md", architectureText().replace("cardinality: one", "cardinality: many")), /required templates/);
+  assert.throws(() => parseWikiTemplate("architecture.md", architectureText().replace("filename: architecture.md", "filename: architecture-{slug}.md")), /singleton filename/);
+  assert.throws(() => parseWikiTemplate("architecture.md", architectureText().replace("## Details", "# Output\n\n## Details")), /not an output H1/);
+});
+
+test("loadWikiTemplatePack allows required peers and enforces unique types", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-template-pack-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  await writePack(root);
+  const pack = await loadWikiTemplatePack(root);
+  assert.equal(pack.templates.length, 4);
+  await writeFile(path.join(root, "operations.md"), contractText("operations", "repo", { identity: false }));
+  assert.equal((await loadWikiTemplatePack(root)).templates.length, 5);
+  await writeFile(
+    path.join(root, "duplicate.md"),
+    contractText("duplicate", "repo", { filename: "duplicate.md", identity: false }).replace("type: duplicate", "type: concept"),
   );
-  assert.doesNotMatch(formatWikiTemplatesForPrompt(en, new Set(repoTemplates.map((template) => template.file)), "api"), /repos\//);
+  await assert.rejects(loadWikiTemplatePack(root), /unique type/);
 });
 
-test("resolveWikiTemplatePack selects the packaged language when wiki.templates is unset", async () => {
-  const zh = await resolveWikiTemplatePack("/tmp", undefined, "zh");
-  const en = await resolveWikiTemplatePack("/tmp", undefined, "en");
-  assert.match(zh.templates.find((template) => template.file === "flows.md")?.body ?? "", /参与者/);
-  assert.match(en.templates.find((template) => template.file === "flows.md")?.body ?? "", /Participants/);
-});
-
-test("parseWikiTemplate defaults scope to concept and type to the filename", () => {
-  const parsed = parseWikiTemplate("arch.md", templateText("concept", "diagram: flowchart\n"));
-  assert.equal(parsed.type, "arch");
-  assert.equal(parsed.scope, "concept");
-  assert.deepEqual(parsed.diagram, ["flowchart"]);
-  assert.equal(parsed.optional, false);
-});
-
-test("parseWikiTemplate rejects unknown fields and illegal names", () => {
-  assert.throws(() => parseWikiTemplate("arch.md", "---\nscope: concept\ntitle: Arch\n---\n"), /unknown field: title/);
-  assert.throws(() => parseWikiTemplate("Arch.md", "---\nscope: concept\n---\n"), /Illegal Wiki template filename/);
-  assert.throws(() => parseWikiTemplate("arch.md", templateText("concept").replace("scope: concept", "scope: entity")), /scope must be wiki, repo, domain, or concept/);
-  assert.throws(() => parseWikiTemplate("arch.md", templateText("concept").replace("instructions: Fill the page from evidence.\n", "")), /instructions/);
-  assert.throws(() => parseWikiTemplate("arch.md", templateText("concept").replace("# {{title}}", "# Wrong")), /# \{\{title\}\}/);
-  assert.throws(() => parseWikiTemplate("arch.md", templateText("concept").replace("## Details", "## Details\n\n## Details")), /duplicate H2/);
-  assert.throws(() => parseWikiTemplate("arch.md", "# no frontmatter\n"), /missing YAML frontmatter/);
-  assert.throws(() => parseWikiTemplate("architecture.md", "---\nscope: wiki\naltitudes: [wiki, repo]\ninstructions: Fill.\n---\n\n# {{title}}\n\n{{description}}\n\n## Details\n"), /both scope and altitudes/);
-});
-
-test("loadWikiTemplatePack rejects nested directories and an empty pack", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-templates-"));
+test("template prompt and catalog are derived from the same contract", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-template-format-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));
-  await assert.rejects(loadWikiTemplatePack(root), /empty/);
-  await mkdir(path.join(root, "nested"));
-  await writeFile(path.join(root, "arch.md"), templateText("concept"));
-  await assert.rejects(loadWikiTemplatePack(root), /flat directory/);
+  await writePack(root);
+  const pack = await loadWikiTemplatePack(root);
+  const prompt = formatWikiTemplatesForPrompt(pack, new Set(["domain"]), "billing");
+  assert.match(prompt, /### domain/);
+  assert.match(prompt, /Output skeleton/);
+  assert.doesNotMatch(prompt, /### overview/);
+  assert.match(formatWikiTemplateCatalog(pack), /### domain/);
+  assert.equal(templatesForPartition(pack, "billing", true).every((item) => item.scope === "domain" || item.scope === "concept"), true);
 });
 
-test("loadWikiTemplatePack requires wiki domain concept anchors and architecture altitudes", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-template-anchors-"));
-  t.after(async () => await rm(root, { recursive: true, force: true }));
-  await writeFile(path.join(root, "overview.md"), templateText("wiki"));
-  await assert.rejects(loadWikiTemplatePack(root), /exactly one non-optional domain template|architecture.md/);
-  await writeMinimalPack(root);
-  await writeFile(path.join(root, "system.md"), architectureText());
-  await assert.rejects(loadWikiTemplatePack(root), /exactly one altitudes page/);
-});
-
-test("markdown structure ignores headings inside fenced code", () => {
-  const structure = markdownStructure([
-    "# Page",
-    "",
-    "Summary.",
-    "",
-    "## First",
-    "",
-    "```md",
-    "# Not an H1",
-    "## Not a section",
-    "```",
-    "",
-    "## Second",
-    "",
-    "Content.",
-  ].join("\n"));
-  assert.deepEqual(structure.headings.map(({ level, title }) => ({ level, title })), [
-    { level: 1, title: "Page" },
-    { level: 2, title: "First" },
-    { level: 2, title: "Second" },
-  ]);
-});
-
-test("resolveWikiTemplatePack uses a Workspace directory and rejects paths outside it", async (t) => {
+test("resolveWikiTemplatePack rejects missing, outside, and non-directory paths", async (t) => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-templates-resolve-"));
   t.after(async () => await rm(parent, { recursive: true, force: true }));
-  const workspace = path.join(parent, "ws");
+  const workspace = path.join(parent, "workspace");
   const outside = path.join(parent, "outside");
-  await writeMinimalPack(path.join(workspace, "wiki-templates"));
+  await writePack(path.join(workspace, "wiki-templates"));
   await mkdir(outside);
-  const pack = await resolveWikiTemplatePack(workspace, "wiki-templates");
-  assert.equal(pack.templates.length, 4);
+  assert.equal((await resolveWikiTemplatePack(workspace, "wiki-templates")).templates.length, 4);
   await assert.rejects(resolveWikiTemplatePack(workspace, "missing"), /not found/);
   await assert.rejects(resolveWikiTemplatePack(workspace, "../outside"), /inside the Workspace/);
   await writeFile(path.join(workspace, "file.md"), "---\nscope: wiki\n---\n");

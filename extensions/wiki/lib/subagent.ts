@@ -233,7 +233,7 @@ async function runOne(
       : templates?.templates ?? [];
     const pack = templates
       ? `\n\n${task.agent === "write"
-        ? formatWikiTemplatesForPrompt(templates, new Set(scoped.map((template) => template.file)), task.partition)
+        ? formatWikiTemplatesForPrompt(templates, new Set(scoped.map((template) => template.id)), task.partition)
         : formatWikiTemplateCatalog(templates)}`
       : "";
     const result = await runWikiSession(

@@ -70,7 +70,6 @@ test("initializes explicit workspace defaults and normalized Wiki excludes", asy
   assert.match(config, /language: zh/);
   assert.match(config, /maxEvidenceRepairRounds: 6/);
   assert.match(config, /templates: wiki-templates/);
-  assert.match(await readFile(path.join(workspace.root, "wiki-templates", "architecture.md"), "utf8"), /组件/);
   await assert.rejects(wikiWorkspaceManagement.init({ cwd: parent, workspace: "docs" }), /already exists/);
 });
 
