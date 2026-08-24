@@ -236,14 +236,16 @@ wiki/index.md
 wiki/log.md
 wiki/overview.md
 wiki/architecture.md
-wiki/development.md | runbook-<topic>.md  # implicit Workspace only
-wiki/<scopeId>/architecture.md            # explicit Workspace
-wiki/<scopeId>/development.md | runbook-<topic>.md
-wiki/<scopeId>/api-<surface>.md
-wiki/<scopeId>/<domain>/domain.md | flow-<scenario>.md
+wiki/api-<surface>.md | config.md | development.md       # implicit only
+wiki/runbook-<topic>.md | security.md                    # implicit only
+wiki/<scopeId>/architecture.md | api-<surface>.md        # explicit only
+wiki/<scopeId>/config.md | development.md                # explicit only
+wiki/<scopeId>/runbook-<topic>.md | security.md           # explicit only
+wiki/<scopeId>/<domain>/domain.md | flow-<scenario>.md   # explicit only
+wiki/<scopeId>/<domain>/integration.md                   # explicit only
 wiki/<scopeId>/<domain>/<concept>/concept.md | states.md | data.md
-wiki/<domain>/domain.md | flow-<scenario>.md # implicit Workspace only
-wiki/<domain>/<concept>/concept.md | states.md | data.md
+wiki/<domain>/domain.md | flow-<scenario>.md | integration.md # implicit only
+wiki/<domain>/<concept>/concept.md | states.md | data.md       # implicit only
 ```
 
 Filenames at each layer come from the template pack. The host generates every

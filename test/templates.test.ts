@@ -7,6 +7,7 @@ import {
   formatWikiTemplateCatalog,
   formatWikiTemplatesForPrompt,
   loadWikiTemplatePack,
+  packagedTemplatesRoot,
   parseWikiTemplate,
   resolveWikiTemplatePack,
   templateMatchesFilename,
@@ -140,6 +141,19 @@ test("template prompt and catalog are derived from the same contract", async (t)
   assert.doesNotMatch(rootOnly, /<domain>/);
   assert.match(formatWikiTemplateCatalog(pack), /### domain/);
   assert.equal(templatesForPartition(pack, "billing", true).every((item) => item.scope === "domain" || item.scope === "concept"), true);
+});
+
+test("packaged writer directory contract maps every default page type", async () => {
+  const pack = await loadWikiTemplatePack(packagedTemplatesRoot("en"));
+  const repositoryTemplates = templatesForPartition(pack, "backend", false);
+  const repository = formatWikiTemplatesForPrompt(pack, new Set(repositoryTemplates.map((item) => item.id)), { partition: "backend" });
+  assert.ok(repository.includes("- Repository pages: `wiki/backend/{api-{slug}.md, architecture.md, config.md, development.md, runbook-{slug}.md, security.md}`"));
+  assert.ok(repository.includes("- Domain pages: `wiki/backend/<domain>/{domain.md, flow-{slug}.md, integration.md}`"));
+  assert.ok(repository.includes("- Concept pages: `wiki/backend/<domain>/<concept>/{concept.md, data.md, states.md}`"));
+
+  const rootTemplates = templatesForPartition(pack, "wiki-root", true);
+  const root = formatWikiTemplatesForPrompt(pack, new Set(rootTemplates.map((item) => item.id)), { partition: "wiki-root", implicit: true });
+  assert.ok(root.includes("- Wiki-root pages: `wiki/{architecture.md, overview.md, api-{slug}.md, config.md, development.md, runbook-{slug}.md, security.md}`"));
 });
 
 test("resolveWikiTemplatePack rejects missing, outside, and non-directory paths", async (t) => {

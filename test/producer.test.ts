@@ -674,7 +674,8 @@ test("Lead prompt receives a bounded recovery frame without template skeletons",
   assert.match(prompt, /<wiki_checkpoint>/);
   assert.match(prompt, /Goal: runtime/);
   assert.match(prompt, /survey, synthesize, write, review/);
-  assert.doesNotMatch(prompt, /Output skeleton|Page contract catalog/);
+  assert.match(prompt, /Explicit Workspace repository|Implicit Workspace domain|Wiki root files/);
+  assert.doesNotMatch(prompt, /Output skeleton|Page contract catalog|Directory contract/);
   assert.ok(tools.includes("candidate_check"));
   assert.equal(tools.includes("db_tables"), false);
 });
