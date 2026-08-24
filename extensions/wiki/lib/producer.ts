@@ -23,7 +23,7 @@ import { candidateTools, createTodoTool } from "./pi/tools.js";
 import { runWikiSession, type RunWikiSessionOptions } from "./pi/session.js";
 import { createSubagentRuntime, createSubagentTool, type SubagentTask, type SubagentTaskUpdate } from "./subagent.js";
 import { createBoardStore, emptyBoard, replaceBoard, type WikiBoard, type WikiBoardStore } from "./board.js";
-import { createPostgresCatalog } from "./postgres.js";
+import { createOpenGaussCatalog } from "./opengauss.js";
 import type { WikiCatalog } from "./catalog.js";
 import {
   WikiRunResultError,
@@ -225,7 +225,7 @@ function startLive(
       if (!flags.resume) await board.write(initial);
       else live.board = await board.read();
       const catalog = workspace.database
-        ? createPostgresCatalog(await resolveWorkspaceDatabase(workspace.database, workspace.root))
+        ? createOpenGaussCatalog(await resolveWorkspaceDatabase(workspace.database, workspace.root))
         : undefined;
       live.catalogAvailable = Boolean(catalog);
       const templates = await resolveWikiTemplatePack(

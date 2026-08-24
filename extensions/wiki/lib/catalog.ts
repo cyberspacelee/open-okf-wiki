@@ -66,11 +66,11 @@ export function parseDatabaseConfig(
   const unknown = Object.keys(value).filter((key) => !["url", "schema", "tables"].includes(key));
   if (unknown.length > 0) throw new Error(`workspace.yaml ${field} has unknown field: ${unknown[0]}`);
   if (typeof value.url !== "string" || !value.url.trim()) {
-    throw new Error(`workspace.yaml ${field}.url must be a non-empty Postgres URL`);
+    throw new Error(`workspace.yaml ${field}.url must be a non-empty openGauss URL`);
   }
   const url = expandEnv(value.url.trim(), `${field}.url`, env);
   if (!/^postgres(ql)?:\/\//i.test(url)) {
-    throw new Error(`workspace.yaml ${field}.url must be a postgresql:// connection string`);
+    throw new Error(`workspace.yaml ${field}.url must be an openGauss postgres:// or postgresql:// connection string`);
   }
   const schema = value.schema === undefined ? "public" : parseIdentifier(value.schema, `${field}.schema`);
   const tables = parsePatterns(value.tables, `${field}.tables`);
@@ -194,7 +194,7 @@ async function loadTableRefs(query: CatalogQuery, schema: string): Promise<WikiT
      JOIN pg_namespace n ON n.oid = c.relnamespace
      WHERE n.nspname = $1 AND c.relkind = ANY($2)
      ORDER BY c.relname`,
-    [schema, ["r", "p", "v", "m"]],
+    [schema, ["r", "v", "m"]],
   );
   return rows.map((row) => ({
     name: String(row.name),
@@ -224,14 +224,14 @@ async function loadTableDefinitions(
   );
   const constraints = await query(
     `SELECT rel.relname AS table_name, con.conname AS name, con.contype AS type,
-            ARRAY(SELECT att.attname FROM unnest(con.conkey) WITH ORDINALITY AS cols(attnum, ord)
-                  JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = cols.attnum
-                  ORDER BY cols.ord) AS columns,
+            ARRAY(SELECT att.attname FROM generate_subscripts(con.conkey, 1) AS cols(ord)
+                  JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = con.conkey[cols.ord]
+                  ORDER BY cols.ord)::text[] AS columns,
             CASE WHEN con.confrelid <> 0
               THEN (SELECT ref.relname || '(' ||
                     array_to_string(ARRAY(SELECT att.attname
-                      FROM unnest(con.confkey) WITH ORDINALITY AS cols(attnum, ord)
-                      JOIN pg_attribute att ON att.attrelid = con.confrelid AND att.attnum = cols.attnum
+                      FROM generate_subscripts(con.confkey, 1) AS cols(ord)
+                      JOIN pg_attribute att ON att.attrelid = con.confrelid AND att.attnum = con.confkey[cols.ord]
                       ORDER BY cols.ord), ', ') || ')'
                     FROM pg_class ref
                     WHERE ref.oid = con.confrelid)
@@ -245,9 +245,9 @@ async function loadTableDefinitions(
   );
   const indexes = await query(
     `SELECT rel.relname AS table_name, idx.relname AS name, i.indisunique AS unique,
-            ARRAY(SELECT att.attname FROM unnest(i.indkey::smallint[]) WITH ORDINALITY AS cols(attnum, ord)
-                  JOIN pg_attribute att ON att.attrelid = rel.oid AND att.attnum = cols.attnum
-                  ORDER BY cols.ord) AS columns
+            ARRAY(SELECT att.attname FROM generate_subscripts(i.indkey::smallint[], 1) AS cols(ord)
+                  JOIN pg_attribute att ON att.attrelid = rel.oid AND att.attnum = (i.indkey::smallint[])[cols.ord]
+                  ORDER BY cols.ord)::text[] AS columns
      FROM pg_index i
      JOIN pg_class rel ON rel.oid = i.indrelid
      JOIN pg_class idx ON idx.oid = i.indexrelid
@@ -281,7 +281,7 @@ async function loadTableDefinitions(
 
 function parseIdentifier(value: unknown, field: string): string {
   if (typeof value !== "string" || !IDENTIFIER.test(value.trim())) {
-    throw new Error(`workspace.yaml ${field} must be a Postgres identifier`);
+    throw new Error(`workspace.yaml ${field} must be an openGauss identifier`);
   }
   return value.trim();
 }

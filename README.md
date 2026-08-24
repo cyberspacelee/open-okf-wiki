@@ -134,7 +134,7 @@ and, in the TUI, opens an inspect overlay.
 
 ### Catalog
 
-Optional Postgres evidence. Username and password belong in the connection
+Optional openGauss evidence. Username and password belong in the connection
 URL (`postgresql://USER:PASSWORD@HOST:PORT/DB`), not as separate yaml fields:
 
 ```dotenv
@@ -148,7 +148,8 @@ Workspace declares `database`; loading one Workspace does not mutate
 an already exported process variable, then the Workspace `.env`. An unresolved
 variable fails Workspace loading with its variable name.
 
-`database.url` must resolve to `postgresql://` and may use `${ENV}` or `$ENV`.
+`database.url` must resolve to an openGauss `postgres://` or `postgresql://`
+connection string and may use `${ENV}` or `$ENV`.
 URL-encode special characters in the password. `schema` defaults to `public`.
 Omit `tables` to allow every table in that schema; otherwise names are
 fuzzy-matched (`user` → `users`, `user_account`; `order%` → `orders`). Agents

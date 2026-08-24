@@ -19,11 +19,11 @@ test("table patterns fuzzy-match without requiring every name", () => {
 });
 
 test("parseDatabaseConfig expands env URLs and rejects unknown fields", () => {
-  const previous = process.env.WIKI_TEST_PG;
-  process.env.WIKI_TEST_PG = "postgresql://wiki:secret@db.example:5432/app";
+  const previous = process.env.WIKI_TEST_OPENGAUSS;
+  process.env.WIKI_TEST_OPENGAUSS = "postgresql://wiki:secret@db.example:5432/app";
   try {
     const parsed = parseDatabaseConfig({
-      url: "${WIKI_TEST_PG}",
+      url: "${WIKI_TEST_OPENGAUSS}",
       schema: "billing",
       tables: ["user*", "payment"],
     });
@@ -32,14 +32,17 @@ test("parseDatabaseConfig expands env URLs and rejects unknown fields", () => {
     assert.deepEqual(parsed.tables, ["user*", "payment"]);
     assert.equal(redactDatabaseUrl(parsed.url), "postgresql://wiki:***@db.example:5432/app");
   } finally {
-    if (previous === undefined) delete process.env.WIKI_TEST_PG;
-    else process.env.WIKI_TEST_PG = previous;
+    if (previous === undefined) delete process.env.WIKI_TEST_OPENGAUSS;
+    else process.env.WIKI_TEST_OPENGAUSS = previous;
   }
   assert.throws(() => parseDatabaseConfig({ url: "postgresql://x", extra: true }), /unknown field/);
+  assert.equal(parseDatabaseConfig({ url: "postgres://x" }).url, "postgres://x");
   assert.throws(() => parseDatabaseConfig({ url: "mysql://x" }), /postgresql:\/\//);
 });
 
 test("catalog lists and describes only matching tables", async () => {
+  const sqlStatements: string[] = [];
+  const sqlParameters: (unknown[] | undefined)[] = [];
   const rows = {
     refs: [
       { schema: "public", name: "users", kind: "r", comment: "accounts" },
@@ -71,7 +74,9 @@ test("catalog lists and describes only matching tables", async () => {
   };
   const catalog = createCatalog(
     { url: "postgresql://wiki:***@localhost/app", schema: "public", tables: ["user*"] },
-    async (sql) => {
+    async (sql, params) => {
+      sqlStatements.push(sql);
+      sqlParameters.push(params);
       if (sql.includes("FROM pg_constraint")) return rows.constraints;
       if (sql.includes("FROM pg_index")) return rows.indexes;
       if (sql.includes("FROM pg_attribute")) return rows.columns;
@@ -89,6 +94,11 @@ test("catalog lists and describes only matching tables", async () => {
   assert.doesNotMatch(described.text, /public/);
   assert.match(described.text, /email text not null/);
   assert.match(described.text, /primary_key users_pkey/);
+  const sql = sqlStatements.join("\n");
+  assert.doesNotMatch(sql, /WITH ORDINALITY|\bunnest\s*\(/i);
+  assert.equal(sql.match(/generate_subscripts/g)?.length, 3);
+  assert.equal(sql.match(/\)::text\[\] AS columns/g)?.length, 2);
+  assert.deepEqual(sqlParameters[0], ["public", ["r", "v", "m"]]);
   assert.match((await catalog.describeTables(["orders"])).text, /No Catalog tables matched/);
 });
 

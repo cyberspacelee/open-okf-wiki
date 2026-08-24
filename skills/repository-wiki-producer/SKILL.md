@@ -30,7 +30,7 @@ there is no historical Run lookup.
 
 ## Catalog
 
-Optional Postgres evidence in `workspace.yaml`. Username and password go in
+Optional openGauss evidence in `workspace.yaml`. Username and password go in
 the URL:
 
 ```yaml
@@ -44,7 +44,7 @@ database:
 export DATABASE_URL='postgresql://wiki:secret@127.0.0.1:5432/app'
 ```
 
-`url` is a `postgresql://` connection string (or `${ENV}` / `$ENV`).
+`url` is an openGauss `postgres://` or `postgresql://` connection string (or `${ENV}` / `$ENV`).
 URL-encode special characters in the password. `schema` defaults to
 `public`. Omit `tables` to allow every table in that schema; otherwise names
 are fuzzy-matched (`user` → `users`, `user_account`; `order%` → `orders`).

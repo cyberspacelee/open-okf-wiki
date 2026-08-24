@@ -83,7 +83,7 @@ export function createCatalogTools(catalog: WikiCatalog): ToolDefinition<any, an
     {
       name: "db_tables",
       label: "Catalog tables",
-      description: "List Postgres tables in the configured Catalog. Optional query fuzzy-matches names. Use this before db_describe. Do not invent tables.",
+      description: "List openGauss tables in the configured Catalog. Optional query fuzzy-matches names. Use this before db_describe. Do not invent tables.",
       parameters: Type.Object({
         query: Type.Optional(Type.String({ description: "Fuzzy table name or glob (user, order%, pay*)" })),
       }),

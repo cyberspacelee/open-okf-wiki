@@ -100,12 +100,12 @@ test("an implicit Workspace loads a Catalog from .okf-wiki/database.yaml", async
   await assert.rejects(loadWikiWorkspace(root), /unknown field: databose/);
 });
 
-test("loads an optional Postgres Catalog and keeps the raw URL", async () => {
+test("loads an optional openGauss Catalog and keeps the raw URL", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-database-"));
   temporaryDirectories.push(parent);
   const root = await repository(parent, "configured");
-  const previous = process.env.WIKI_TEST_PG;
-  process.env.WIKI_TEST_PG = "postgresql://wiki:secret@localhost:5432/app";
+  const previous = process.env.WIKI_TEST_OPENGAUSS;
+  process.env.WIKI_TEST_OPENGAUSS = "postgresql://wiki:secret@localhost:5432/app";
   try {
     await writeFile(path.join(root, "workspace.yaml"), [
       "version: 1",
@@ -114,7 +114,7 @@ test("loads an optional Postgres Catalog and keeps the raw URL", async () => {
       "wiki:",
       "  exclude: []",
       "database:",
-      "  url: ${WIKI_TEST_PG}",
+      "  url: ${WIKI_TEST_OPENGAUSS}",
       "  schema: billing",
       "  tables: [user*, payment]",
       "sources: []",
@@ -122,13 +122,13 @@ test("loads an optional Postgres Catalog and keeps the raw URL", async () => {
     ].join("\n"));
     const loaded = await loadWikiWorkspace(root);
     assert.deepEqual(loaded.database, {
-      url: "${WIKI_TEST_PG}",
+      url: "${WIKI_TEST_OPENGAUSS}",
       schema: "billing",
       tables: ["user*", "payment"],
     });
   } finally {
-    if (previous === undefined) delete process.env.WIKI_TEST_PG;
-    else process.env.WIKI_TEST_PG = previous;
+    if (previous === undefined) delete process.env.WIKI_TEST_OPENGAUSS;
+    else process.env.WIKI_TEST_OPENGAUSS = previous;
   }
 
   await writeFile(path.join(root, "workspace.yaml"), [
@@ -138,11 +138,11 @@ test("loads an optional Postgres Catalog and keeps the raw URL", async () => {
   await assert.rejects(loadWikiWorkspace(root), /postgresql:\/\//);
 });
 
-test("loads a Postgres URL from the Workspace .env without overriding the process environment", async () => {
+test("loads an openGauss URL from the Workspace .env without overriding the process environment", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-workspace-env-"));
   temporaryDirectories.push(parent);
   const root = await repository(parent, "configured");
-  const variable = `WIKI_TEST_PG_FILE_${process.pid}`;
+  const variable = `WIKI_TEST_OPENGAUSS_FILE_${process.pid}`;
   delete process.env[variable];
   await writeFile(path.join(root, ".env"), `${variable}=postgresql://file:secret@localhost:5432/app\n`);
   await writeFile(path.join(root, "workspace.yaml"), [

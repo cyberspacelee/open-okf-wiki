@@ -20,8 +20,8 @@ as an immediate follow-up; the transcript is not the source of truth. The Lead
 session file lives under `.okf-wiki/run/sessions/` when present. Successful and
 cancelled Runs leave no Run directory or history.
 
-An optional Postgres Catalog is declared on the Workspace and retrieved
-on demand (`db_tables`, `db_describe`). Only Postgres. Read-only. Pages may
+An optional openGauss Catalog is declared on the Workspace and retrieved
+on demand (`db_tables`, `db_describe`). Only openGauss. Read-only. Pages may
 cite described tables as `catalog:table`; the configured database schema stays
 inside the Catalog Adapter.
 
@@ -63,5 +63,5 @@ Wiki exists only as `.okf-wiki/publication/previous` during that transaction.
 Decisions: [0001](docs/adr/0001-isolated-full-generation-runs.md),
 [0002](docs/adr/0002-recoverable-snapshot-transactions.md),
 [0004](docs/adr/0004-durable-run-board.md),
-[0005](docs/adr/0005-postgres-catalog-on-demand.md),
+[0005](docs/adr/0005-opengauss-catalog-on-demand.md),
 [0006](docs/adr/0006-repository-sections-and-cross-source-synthesis.md).

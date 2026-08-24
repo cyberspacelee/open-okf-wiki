@@ -66,7 +66,7 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 - Template packs define required page placement, H1/H2 structure, evidence,
   and Mermaid requirements. Host-generated `index.md` and `log.md` are included
   in the frozen Candidate before review.
-- Optional Postgres Catalog evidence remains on-demand and read-only through
+- Optional openGauss Catalog evidence remains on-demand and read-only through
   `db_tables` and `db_describe`; pages cite described tables as `catalog:table`.
 
 ### Commands
