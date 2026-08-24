@@ -375,6 +375,8 @@ test("subagent prompts project templates by role", async (t) => {
   assert.match(prompts[1], /Page contract catalog/);
   assert.doesNotMatch(prompts[1], /Output skeleton/);
   assert.match(prompts[2], /Output skeleton/);
+  assert.match(prompts[2], /## Directory contract/);
+  assert.match(prompts[2], /Assigned write partition: `candidate`/);
   assert.match(prompts[2], /## Output language/);
   assert.match(prompts[2], /Run language is `en`/);
   assert.match(prompts[2], /Simplified Chinese/);
@@ -382,6 +384,7 @@ test("subagent prompts project templates by role", async (t) => {
   assert.match(prompts[3], /Page contract catalog/);
   assert.doesNotMatch(prompts[3], /Output skeleton/);
   assert.equal(prompts.filter((prompt) => prompt.includes("## Output language")).length, 1);
+  assert.equal(prompts.filter((prompt) => prompt.includes("## Directory contract")).length, 1);
 });
 
 test("subagent batches allow parallel survey and disjoint writes", async (t) => {

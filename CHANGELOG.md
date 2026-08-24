@@ -71,6 +71,8 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
   rejects an inline `[^id]` reference without its `[^id]: ...` definition.
 - Writers receive the Run language explicitly instead of inferring it from the
   selected template pack.
+- Writers receive their assigned partition and template-derived directory tree,
+  including the host-owned `index.md` and `log.md` rule.
 - Optional openGauss Catalog evidence remains on-demand and read-only through
   `db_tables` and `db_describe`; pages cite described tables as `catalog:table`.
 

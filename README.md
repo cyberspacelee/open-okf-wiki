@@ -248,7 +248,8 @@ wiki/<domain>/<concept>/concept.md | states.md | data.md
 
 Filenames at each layer come from the template pack. The host generates every
 `index.md` and root `log.md`. Each index uses the next scope's identity title
-and description, so agents can choose a branch without opening it. Wiki-to-wiki
+and description, so agents can choose a branch without opening it. Each writer
+receives its template-derived subtree and assigned partition directly. Wiki-to-wiki
 links are standard markdown. Publication validates OKF, paths, templates,
 Source ownership, cross-Source architecture coverage, workflow synthesis, and
 review, then installs the Candidate as `wiki/`.

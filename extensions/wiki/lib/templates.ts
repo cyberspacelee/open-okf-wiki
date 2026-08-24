@@ -221,6 +221,7 @@ export function templatesForPartition(
   partition: string,
   implicit: boolean,
 ): WikiTemplate[] {
+  if (partition === "candidate" || partition === "wiki") return pack.templates;
   if (partition === "wiki-root") {
     return pack.templates.filter((template) => (
       template.scope === "wiki"
@@ -242,20 +243,43 @@ export function templatesForPartition(
 export function formatWikiTemplatesForPrompt(
   pack: WikiTemplatePack,
   ids?: ReadonlySet<string>,
-  partition?: string,
+  context: { partition?: string; implicit?: boolean } = {},
 ): string {
+  const { partition, implicit = false } = context;
   const selected = ids ? pack.templates.filter((template) => ids.has(template.id)) : pack.templates;
   if (!selected.length) return "";
   const repositoryPartition = selected.some((template) => template.scope === "repo" || template.altitudes?.includes("repo"));
-  const placement = partition === "wiki-root"
-    ? "Write only contracts placed at the Wiki root."
-    : partition && repositoryPartition
-      ? "Write repository, Domain, and Concept contracts under the assigned <scopeId>/ prefix."
-      : "Write Domain and Concept contracts under the assigned Domain prefix.";
+  const directory: string[] = [];
+  const addDirectory = (label: string, prefix: string, scopes: WikiTemplateScope[]) => {
+    const filenames = [...new Set(scopes.flatMap((scope) => selected
+      .filter((template) => template.scope === scope || template.altitudes?.includes(scope))
+      .map((template) => template.filename)))];
+    if (filenames.length) directory.push(`- ${label}: \`${prefix}/{${filenames.join(", ")}}\``);
+  };
+  if (partition === "wiki-root") {
+    addDirectory("Wiki-root pages", "wiki", implicit ? ["wiki", "repo"] : ["wiki"]);
+  } else if (!partition || partition === "candidate" || partition === "wiki") {
+    addDirectory("Wiki-root pages", "wiki", implicit ? ["wiki", "repo"] : ["wiki"]);
+    if (!implicit) addDirectory("Repository pages", "wiki/<scopeId>", ["repo"]);
+    addDirectory("Domain pages", implicit ? "wiki/<domain>" : "wiki/<scopeId>/<domain>", ["domain"]);
+    addDirectory("Concept pages", implicit ? "wiki/<domain>/<concept>" : "wiki/<scopeId>/<domain>/<concept>", ["concept"]);
+  } else if (repositoryPartition) {
+    addDirectory("Repository pages", `wiki/${partition}`, ["repo"]);
+    addDirectory("Domain pages", `wiki/${partition}/<domain>`, ["domain"]);
+    addDirectory("Concept pages", `wiki/${partition}/<domain>/<concept>`, ["concept"]);
+  } else {
+    addDirectory("Domain pages", `wiki/${partition}`, ["domain"]);
+    addDirectory("Concept pages", `wiki/${partition}/<concept>`, ["concept"]);
+  }
   const lines = [
+    "## Directory contract",
+    "",
+    `Assigned write partition: \`${partition ?? "candidate"}\`. Paths are Workspace-relative and write into the unpublished Candidate.`,
+    ...directory,
+    "Author only applicable contract pages within this partition. The host generates every `index.md` and root `log.md`.",
+    "",
     "## Active page contracts",
     "",
-    placement,
     "A required singleton must exist at every applicable directory. `Identity` marks the page used by that directory's generated index. An evidence-selected contract is written only when inspected evidence satisfies `Applies when`; a `many` contract may produce multiple pages by replacing `{slug}` with a specific topic slug.",
     "Candidate frontmatter contains only `type`, `title`, `description`, and `sources`. The H1 equals `title`; the first paragraph equals the routing-quality `description`; H2 headings follow the contract exactly. Replace every placeholder and use source identifiers in Mermaid nodes. Follow the injected Citation contract for provenance.",
   ];

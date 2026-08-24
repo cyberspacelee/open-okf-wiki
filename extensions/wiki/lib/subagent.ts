@@ -236,7 +236,7 @@ async function runOne(
       : templates?.templates ?? [];
     const pack = templates
       ? `\n\n${task.agent === "write"
-        ? formatWikiTemplatesForPrompt(templates, new Set(scoped.map((template) => template.id)), task.partition)
+        ? formatWikiTemplatesForPrompt(templates, new Set(scoped.map((template) => template.id)), { partition: task.partition, implicit })
         : formatWikiTemplateCatalog(templates)}`
       : "";
     const citations = task.agent === "write"
