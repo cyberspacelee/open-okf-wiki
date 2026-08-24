@@ -363,7 +363,7 @@ test("a reopened process-crash Run reconciles persisted running receipts", async
   }, null, 2)}\n`);
   const now = new Date().toISOString();
   await writeText(path.join(directory, "run.json"), `${JSON.stringify({
-    schemaVersion: 5,
+    schemaVersion: 1,
     id,
     cwd: root,
     status: "running",
@@ -942,7 +942,7 @@ test("starting the current layout discards legacy Run history without migration"
   await handle.control("cancel");
 });
 
-test("current deletes a schema 3 record with malformed nested receipts", async (t) => {
+test("current deletes a Run record with malformed nested receipts", async (t) => {
   const root = await gitRepo(t);
   const plan = await inspectWiki(root);
   const directory = path.join(root, ".okf-wiki", "run");
@@ -950,7 +950,7 @@ test("current deletes a schema 3 record with malformed nested receipts", async (
   await mkdir(candidateRoot, { recursive: true });
   const now = new Date().toISOString();
   await writeText(path.join(directory, "run.json"), `${JSON.stringify({
-    schemaVersion: 5,
+    schemaVersion: 1,
     id: "broken01",
     cwd: root,
     status: "failed",

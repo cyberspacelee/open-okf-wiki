@@ -101,7 +101,7 @@ interface RunReviewReceipt {
 }
 
 interface RunRecord {
-  schemaVersion: 5;
+  schemaVersion: 1;
   id: string;
   cwd: string;
   status: WikiRunStatus;
@@ -166,7 +166,7 @@ export function createProductionWikiProducer(options: WikiProducerOptions = {}):
         await ensureDirectory(candidateRoot);
         const now = new Date().toISOString();
         const record: RunRecord = {
-          schemaVersion: 5,
+          schemaVersion: 1,
           id,
           cwd: workspace.root,
           status: "running",
@@ -1041,7 +1041,7 @@ async function readRecord(cwd: string): Promise<RunRecord | undefined> {
 function normalizeRunRecord(value: unknown, cwd: string): RunRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Run record must be an object");
   const raw = value as Record<string, unknown>;
-  if (raw.schemaVersion !== 5) {
+  if (raw.schemaVersion !== 1) {
     throw new Error(`Unsupported Run record schema version: ${String(raw.schemaVersion)}`);
   }
   const root = path.resolve(cwd);
