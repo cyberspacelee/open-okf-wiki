@@ -12,7 +12,7 @@ import {
   resolveWikiTemplatePack,
   templateMatchesFilename,
   templateOutputSkeleton,
-  templatesForPartition,
+  templatesForTarget,
 } from "../extensions/wiki/lib/templates.js";
 
 function contractText(
@@ -120,39 +120,52 @@ test("template prompt and catalog are derived from the same contract", async (t)
   t.after(async () => await rm(root, { recursive: true, force: true }));
   await writePack(root);
   const pack = await loadWikiTemplatePack(root);
-  const prompt = formatWikiTemplatesForPrompt(pack, new Set(["domain", "concept"]), { partition: "billing", implicit: true });
+  const prompt = formatWikiTemplatesForPrompt(pack, new Set(["domain", "concept"]), { target: { path: "billing", mode: "subtree" }, implicit: true });
   assert.match(prompt, /### domain/);
   assert.match(prompt, /Output skeleton/);
   assert.doesNotMatch(prompt, /### overview/);
-  assert.match(prompt, /Assigned write partition: `billing`/);
+  assert.match(prompt, /Assigned write target: `subtree:billing`/);
   assert.match(prompt, /wiki\/billing\/\{domain\.md\}/);
   assert.match(prompt, /wiki\/billing\/<concept>\/\{concept\.md\}/);
   assert.match(prompt, /host generates every `index\.md` and root `log\.md`/);
-  const full = formatWikiTemplatesForPrompt(pack, undefined, { partition: "candidate" });
+  const full = formatWikiTemplatesForPrompt(pack);
   assert.match(full, /wiki\/<scopeId>\/<domain>\/<concept>\/\{concept\.md\}/);
-  assert.equal(templatesForPartition(pack, "candidate", false).length, pack.templates.length);
-  const repositoryTemplates = templatesForPartition(pack, "backend", false);
-  const repository = formatWikiTemplatesForPrompt(pack, new Set(repositoryTemplates.map((item) => item.id)), { partition: "backend" });
-  assert.match(repository, /wiki\/backend\/<domain>\/\{domain\.md\}/);
-  assert.match(repository, /wiki\/backend\/<domain>\/<concept>\/\{concept\.md\}/);
-  const rootTemplates = templatesForPartition(pack, "wiki-root", true);
-  const rootOnly = formatWikiTemplatesForPrompt(pack, new Set(rootTemplates.map((item) => item.id)), { partition: "wiki-root", implicit: true });
+  const repositoryTarget = { path: "backend", mode: "directory" } as const;
+  const repositoryTemplates = templatesForTarget(pack, repositoryTarget, false);
+  const repository = formatWikiTemplatesForPrompt(pack, new Set(repositoryTemplates.map((item) => item.id)), { target: repositoryTarget });
+  assert.match(repository, /Repository pages: `wiki\/backend\/\{architecture\.md\}`/);
+  assert.doesNotMatch(repository, /<domain>|<concept>/);
+  const domainTarget = { path: "backend/billing", mode: "subtree" } as const;
+  const domainTemplates = templatesForTarget(pack, domainTarget, false);
+  const domain = formatWikiTemplatesForPrompt(pack, new Set(domainTemplates.map((item) => item.id)), { target: domainTarget });
+  assert.match(domain, /wiki\/backend\/billing\/\{domain\.md\}/);
+  assert.match(domain, /wiki\/backend\/billing\/<concept>\/\{concept\.md\}/);
+  const rootTarget = { path: "wiki-root", mode: "directory" } as const;
+  const rootTemplates = templatesForTarget(pack, rootTarget, true);
+  const rootOnly = formatWikiTemplatesForPrompt(pack, new Set(rootTemplates.map((item) => item.id)), { target: rootTarget, implicit: true });
   assert.match(rootOnly, /Wiki-root pages: `wiki\/\{architecture\.md, overview\.md\}`/);
   assert.doesNotMatch(rootOnly, /<domain>/);
   assert.match(formatWikiTemplateCatalog(pack), /### domain/);
-  assert.equal(templatesForPartition(pack, "billing", true).every((item) => item.scope === "domain" || item.scope === "concept"), true);
+  assert.equal(templatesForTarget(pack, { path: "billing", mode: "subtree" }, true).every((item) => item.scope === "domain" || item.scope === "concept"), true);
 });
 
 test("packaged writer directory contract maps every default page type", async () => {
   const pack = await loadWikiTemplatePack(packagedTemplatesRoot("en"));
-  const repositoryTemplates = templatesForPartition(pack, "backend", false);
-  const repository = formatWikiTemplatesForPrompt(pack, new Set(repositoryTemplates.map((item) => item.id)), { partition: "backend" });
+  const repositoryTarget = { path: "backend", mode: "directory" } as const;
+  const repositoryTemplates = templatesForTarget(pack, repositoryTarget, false);
+  const repository = formatWikiTemplatesForPrompt(pack, new Set(repositoryTemplates.map((item) => item.id)), { target: repositoryTarget });
   assert.ok(repository.includes("- Repository pages: `wiki/backend/{api-{slug}.md, architecture.md, config.md, development.md, runbook-{slug}.md, security.md}`"));
-  assert.ok(repository.includes("- Domain pages: `wiki/backend/<domain>/{domain.md, flow-{slug}.md, integration.md}`"));
-  assert.ok(repository.includes("- Concept pages: `wiki/backend/<domain>/<concept>/{concept.md, data.md, states.md}`"));
+  assert.doesNotMatch(repository, /Domain pages|Concept pages/);
 
-  const rootTemplates = templatesForPartition(pack, "wiki-root", true);
-  const root = formatWikiTemplatesForPrompt(pack, new Set(rootTemplates.map((item) => item.id)), { partition: "wiki-root", implicit: true });
+  const domainTarget = { path: "backend/runtime", mode: "subtree" } as const;
+  const domainTemplates = templatesForTarget(pack, domainTarget, false);
+  const domain = formatWikiTemplatesForPrompt(pack, new Set(domainTemplates.map((item) => item.id)), { target: domainTarget });
+  assert.ok(domain.includes("- Domain pages: `wiki/backend/runtime/{domain.md, flow-{slug}.md, integration.md}`"));
+  assert.ok(domain.includes("- Concept pages: `wiki/backend/runtime/<concept>/{concept.md, data.md, states.md}`"));
+
+  const rootTarget = { path: "wiki-root", mode: "directory" } as const;
+  const rootTemplates = templatesForTarget(pack, rootTarget, true);
+  const root = formatWikiTemplatesForPrompt(pack, new Set(rootTemplates.map((item) => item.id)), { target: rootTarget, implicit: true });
   assert.ok(root.includes("- Wiki-root pages: `wiki/{architecture.md, overview.md, api-{slug}.md, config.md, development.md, runbook-{slug}.md, security.md}`"));
 });
 

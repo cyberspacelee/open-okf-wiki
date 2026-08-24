@@ -53,7 +53,7 @@ After the verdict, list evidence for a pass. For changes, return every defect in
 one batch as a compact repair record:
 
 ```text
-partition: <write prefix>
+partition: <write target>
 page: <Candidate path>
 obligation: <contract heading or page-selection decision>
 defect: <what fails the rubric>

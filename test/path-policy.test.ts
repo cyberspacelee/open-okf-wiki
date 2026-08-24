@@ -3,9 +3,9 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { assertAgentPartition, assertReadable, assertReadableEntry, assertWritable, resolveToolPath, writeGuardFromPlan, writePartitionAllows, writePartitionsOverlap } from "../extensions/wiki/lib/path-policy.js";
+import { assertAgentPartition, assertReadable, assertReadableEntry, assertWritable, resolveToolPath, writeGuardFromPlan, writeTargetAllows, writeTargetsOverlap } from "../extensions/wiki/lib/path-policy.js";
 import { candidateTools } from "../extensions/wiki/lib/pi/tools.js";
-import { candidatePartitionRevision } from "../extensions/wiki/lib/revisions.js";
+import { candidateTargetRevision } from "../extensions/wiki/lib/revisions.js";
 import { isSafeWikiPagePath, wikiPathKind } from "../extensions/wiki/lib/path.js";
 
 function plan(workspaceRoot) {
@@ -160,41 +160,41 @@ test("implicit Sources never expose runtime state, published pages, or dotenv se
   assert.equal(assertReadable(guard, ".env.example"), path.join(workspaceRoot, ".env.example"));
 });
 
-test("write partitions lock Candidate prefixes", () => {
-  assert.equal(writePartitionAllows("wiki-root", "overview.md"), true);
-  assert.equal(writePartitionAllows("wiki-root", "billing/domain.md"), false);
-  assert.equal(writePartitionAllows("billing", "billing/domain.md"), true);
-  assert.equal(writePartitionAllows("billing", "checkout/domain.md"), false);
-  assert.equal(writePartitionAllows("api", "api/architecture.md"), true);
-  assert.equal(writePartitionAllows("api", "api/billing/invoice/concept.md"), true);
-  assert.equal(writePartitionsOverlap("billing", "billing/invoice"), true);
-  assert.equal(writePartitionsOverlap("billing", "checkout"), false);
-  assert.equal(writePartitionsOverlap("wiki-root", "billing"), false);
+test("write targets separate Domain subtrees from aggregation directories", () => {
+  assert.equal(writeTargetAllows({ path: "wiki-root", mode: "directory" }, "overview.md"), true);
+  assert.equal(writeTargetAllows({ path: "wiki-root", mode: "directory" }, "billing/domain.md"), false);
+  assert.equal(writeTargetAllows({ path: "billing", mode: "subtree" }, "billing/domain.md"), true);
+  assert.equal(writeTargetAllows({ path: "billing", mode: "subtree" }, "checkout/domain.md"), false);
+  assert.equal(writeTargetAllows({ path: "api", mode: "directory" }, "api/architecture.md"), true);
+  assert.equal(writeTargetAllows({ path: "api", mode: "directory" }, "api/billing/invoice/concept.md"), false);
+  assert.equal(writeTargetsOverlap({ path: "api", mode: "directory" }, { path: "api/billing", mode: "subtree" }), false);
+  assert.equal(writeTargetsOverlap({ path: "billing", mode: "subtree" }, { path: "billing/invoice", mode: "subtree" }), true);
+  assert.equal(writeTargetsOverlap({ path: "billing", mode: "subtree" }, { path: "checkout", mode: "subtree" }), false);
+  assert.equal(writeTargetsOverlap({ path: "wiki-root", mode: "directory" }, { path: "billing", mode: "subtree" }), false);
 
   const workspaceRoot = path.resolve("/tmp/okf-wiki-path-policy");
   const candidateRoot = path.join(workspaceRoot, ".okf-wiki", "runs", "abcd", "candidate");
-  const guard = { ...writeGuardFromPlan(plan(workspaceRoot), candidateRoot), writePartition: "billing" };
+  const guard = { ...writeGuardFromPlan(plan(workspaceRoot), candidateRoot), writeTarget: { path: "billing", mode: "subtree" } };
   assert.equal(assertWritable(guard, "wiki/billing/domain.md"), path.join(candidateRoot, "billing", "domain.md"));
-  assert.throws(() => assertWritable(guard, "wiki/overview.md"), /partition billing/);
+  assert.throws(() => assertWritable(guard, "wiki/overview.md"), /target subtree:billing/);
 });
 
-test("writePartitionAllows matches candidatePartitionRevision prefixes", async (t) => {
+test("writeTargetAllows matches candidateTargetRevision targets", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-partition-rev-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));
   await mkdir(path.join(root, "billing"), { recursive: true });
   await writeFile(path.join(root, "overview.md"), "root\n");
   await writeFile(path.join(root, "billing", "domain.md"), "billing\n");
   const cases = [
-    ["wiki-root", ["overview.md"]],
-    ["billing", ["billing/domain.md"]],
-    ["candidate", ["billing/domain.md", "overview.md"]],
+    [{ path: "wiki-root", mode: "directory" }, ["overview.md"]],
+    [{ path: "billing", mode: "subtree" }, ["billing/domain.md"]],
   ];
-  for (const [partition, expected] of cases) {
+  for (const [target, expected] of cases) {
     for (const relative of ["overview.md", "billing/domain.md"]) {
-      const allowed = writePartitionAllows(partition, relative);
-      assert.equal(allowed, expected.includes(relative), `${partition} ${relative}`);
+      const allowed = writeTargetAllows(target, relative);
+      assert.equal(allowed, expected.includes(relative), `${target.mode}:${target.path} ${relative}`);
     }
-    const revision = await candidatePartitionRevision(root, partition);
+    const revision = await candidateTargetRevision(root, target);
     assert.deepEqual(revision.files, expected);
   }
 });
@@ -225,9 +225,10 @@ test("assertAgentPartition binds survey to pinned Sources", () => {
   assertAgentPartition("survey", "api", pinned);
   assert.throws(() => assertAgentPartition("survey", "web", pinned), /pinned Source id/);
   assert.throws(() => assertAgentPartition("synthesize", "api", pinned), /workspace-analysis/);
-  assertAgentPartition("write", "api", pinned);
-  assertAgentPartition("write", "wiki-root", pinned);
-  assert.throws(() => assertAgentPartition("write", "billing", pinned), /Repository Section/);
+  assertAgentPartition("write", "api", pinned, "directory");
+  assertAgentPartition("write", "api/billing", pinned, "subtree");
+  assertAgentPartition("write", "wiki-root", pinned, "directory");
+  assert.throws(() => assertAgentPartition("write", "api", pinned, "subtree"), /Repository directory or Domain subtree/);
 });
 
 test("explicit repository paths use the Source id directly", () => {

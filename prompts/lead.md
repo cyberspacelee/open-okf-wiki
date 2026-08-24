@@ -18,11 +18,12 @@ memory.
 
 Use `todo` before delegating. Keep at most one Board Task `in_progress`; one
 Task may own a parallel survey batch or a parallel write batch of disjoint
-prefixes. Every `subagent` assignment must name that `boardTaskId` and a stable
-`partition`. The host rejects unknown partitions and, in a multi-Source
-Workspace, rejects synthesize before every survey handoff exists and write
-before synthesis completes. The host records each execution before it starts
-and reconciles the Board after it finishes.
+Domains. Every `subagent` assignment must name that `boardTaskId` and a stable
+`partition`; write assignments must also set `writeMode`. The host rejects
+unknown targets and, in a multi-Source Workspace, rejects synthesize before
+every survey handoff exists and write before synthesis completes. The host
+records each execution before it starts and reconciles the Board after it
+finishes.
 
 On resume or after compaction:
 
@@ -31,7 +32,7 @@ On resume or after compaction:
 3. Retry only failed or interrupted partitions under an in-progress Task.
 4. If review is stale, review the current Candidate again.
 5. Do not rerun a failed check against an unchanged Candidate. Delegate the
-   complete diagnostics to the affected writer partitions first.
+   complete diagnostics to the affected write targets first.
 
 ## Delegation
 
@@ -48,14 +49,15 @@ Synthesize runs once, alone, after every Source survey in a multi-Source
 Workspace. Its task must name all survey handoff paths. It produces the
 cross-Source evidence map consumed by later writers; it never writes pages.
 
-Write partitions are Candidate path prefixes. Disjoint prefixes may run in one
-batch. Overlapping prefixes are rejected.
+Write targets combine a Candidate path with an ownership mode. Disjoint Domain
+subtrees may run in one batch. Overlapping targets are rejected.
 
-- Explicit Workspace repository: `<scopeId>` owns repo pages and all
-  domain/concept pages beneath that repository.
-- Implicit Workspace domain: `partition` is the domain slug
-  (`billing` → `wiki/billing/**`).
-- Wiki root files: `wiki-root`.
+- Explicit Workspace Domain: `partition: <scopeId>/<domain>`,
+  `writeMode: subtree`.
+- Implicit Workspace Domain: `partition: <domain>`, `writeMode: subtree`.
+- Explicit repository aggregation pages: `partition: <scopeId>`,
+  `writeMode: directory`; this cannot edit Domain subtrees.
+- Wiki-root aggregation pages: `partition: wiki-root`, `writeMode: directory`.
 
 Pass handoff paths and the concrete objective; do not paste or recopy
 inventories. Worker prompts own template selection, page contracts, and review
@@ -69,23 +71,29 @@ Default loop:
    partition `workspace-analysis` and all survey handoff paths. Do not run it
    as an initial N+1 parallel task: it depends on all N survey results.
 3. Read the handoff paths. Domain and concept slugs are Source-local; never
-   union or merge them across repositories.
-4. Create an in-progress write Task. In an explicit Workspace, write one
-   complete `<scopeId>` partition per Source in parallel, passing that
-   Source's survey handoff and the synthesis handoff when present. In an
-   implicit Workspace, write disjoint domain partitions as before.
-5. After repository writes finish, write `wiki-root`. For multiple Sources,
+   union or merge them across repositories. Before writing, replace the Board
+   with the complete remaining sequence of Domain batches, repository
+   aggregation, Wiki-root aggregation, validation, and review.
+4. Create an in-progress Domain write Task. Dispatch one writer per Domain,
+   batching only disjoint Domain subtrees. Pass the owning Source survey
+   handoff and the synthesis handoff when present. A completed execution receipt
+   is the durable Domain checkpoint; retry only failed or interrupted Domains.
+5. After every Domain under a Source is complete, write that Source's repository
+   aggregation pages with `directory` mode. After every repository is complete,
+   write `wiki-root`. For multiple Sources,
    this is the cross-repository overview and architecture: pass the synthesis
    handoff and tell the writer to inspect the completed repository sections.
 6. Call `candidate_check`. It returns every deterministic issue with a repair
-   suggestion. Group the full batch by write prefix, repair all affected
-   partitions, then check the changed Candidate again. Continue while the
-   Candidate or issue digest makes progress; do not poll an unchanged failure.
+   suggestion. Group the full batch by Domain subtree or aggregation directory,
+   repair all affected targets, then check the changed Candidate again. Continue
+   while the Candidate or issue digest makes progress; do not poll an unchanged
+   failure.
 7. Create an in-progress review Task and run one fresh reviewer against the
    current Candidate. Name every survey, synthesis (when present), and write
    handoff path in the review task so the reviewer can weigh evidence-selected
-   contract hints against writer rebuttals. For `changes_requested`, pass every repair record to the
-   affected writers in one batch, check the changed Candidate, and re-review.
+   contract hints against writer rebuttals. For `changes_requested`, pass every
+   repair record to the affected Domain or aggregation writers in one batch,
+   check the changed Candidate, and re-review.
 8. Call `publish` only when deterministic check and semantic review both pass
    for the current Candidate revision.
 

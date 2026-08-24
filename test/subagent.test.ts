@@ -367,7 +367,8 @@ test("subagent prompts project templates by role", async (t) => {
       agent,
       task: `${agent} candidate`,
       boardTaskId: agent,
-      partition: "candidate",
+      partition: agent === "write" ? "wiki-root" : "candidate",
+      ...(agent === "write" ? { writeMode: "directory" } : {}),
     }], new AbortController().signal);
   }
   assert.match(prompts[0], /Page contract catalog/);
@@ -376,7 +377,7 @@ test("subagent prompts project templates by role", async (t) => {
   assert.doesNotMatch(prompts[1], /Output skeleton/);
   assert.match(prompts[2], /Output skeleton/);
   assert.match(prompts[2], /## Directory contract/);
-  assert.match(prompts[2], /Assigned write partition: `candidate`/);
+  assert.match(prompts[2], /Assigned write target: `directory:wiki-root`/);
   assert.match(prompts[2], /## Output language/);
   assert.match(prompts[2], /Run language is `en`/);
   assert.match(prompts[2], /Simplified Chinese/);
@@ -400,9 +401,9 @@ test("subagent batches allow parallel survey and disjoint writes", async (t) => 
     fingerprint: "test",
   }, path.join(workspaceRoot, "candidate"), {});
   await assert.rejects(() => runtime.run([
-    { agent: "write", task: "a", boardTaskId: "write", partition: "billing" },
-    { agent: "write", task: "b", boardTaskId: "write", partition: "billing/invoice" },
-  ], new AbortController().signal), /overlapping write partitions/);
+    { agent: "write", task: "a", boardTaskId: "write", partition: "billing", writeMode: "subtree" },
+    { agent: "write", task: "b", boardTaskId: "write", partition: "billing/invoice", writeMode: "subtree" },
+  ], new AbortController().signal), /overlapping write targets/);
   const parallelWrite = await createSubagentRuntime({
     workspaceRoot,
     workspaceRealPath: workspaceRoot,
@@ -428,8 +429,8 @@ test("subagent batches allow parallel survey and disjoint writes", async (t) => 
     },
   });
   const writes = await parallelWrite.run([
-    { agent: "write", task: "a", boardTaskId: "write", partition: "billing" },
-    { agent: "write", task: "b", boardTaskId: "write", partition: "checkout" },
+    { agent: "write", task: "a", boardTaskId: "write", partition: "billing", writeMode: "subtree" },
+    { agent: "write", task: "b", boardTaskId: "write", partition: "checkout", writeMode: "subtree" },
   ], new AbortController().signal);
   assert.equal(writes.length, 2);
   assert.equal(writes.every((result) => !result.error), true);
@@ -475,7 +476,7 @@ test("subagent batches allow parallel survey and disjoint writes", async (t) => 
     },
   });
   const writer = exclusive.run([
-    { agent: "write", task: "write", boardTaskId: "write", partition: "candidate" },
+    { agent: "write", task: "write", boardTaskId: "write", partition: "wiki-root", writeMode: "directory" },
   ], new AbortController().signal);
   await started;
   await assert.rejects(() => exclusive.run([
@@ -558,7 +559,7 @@ test("writer read ledger resolves linked Source citations from the Workspace roo
     },
   });
   const [result] = await runtime.run([
-    { agent: "write", task: "Write overview", boardTaskId: "write", partition: "wiki-root" },
+    { agent: "write", task: "Write overview", boardTaskId: "write", partition: "wiki-root", writeMode: "directory" },
   ], new AbortController().signal);
   assert.equal(result.error, undefined);
   assert.match(writerPrompt, /## Citation contract/);
@@ -609,7 +610,7 @@ test("writer repairs every unread citation in one session for more than two roun
     },
   });
   const [result] = await runtime.run([
-    { agent: "write", task: "Write overview", boardTaskId: "write", partition: "wiki-root" },
+    { agent: "write", task: "Write overview", boardTaskId: "write", partition: "wiki-root", writeMode: "directory" },
   ], new AbortController().signal);
   assert.equal(result.error, undefined);
   assert.equal(prompts.length, 4);
@@ -645,7 +646,7 @@ test("failed writes do not validate stale Candidate citations", async (t) => {
     },
   });
   const [result] = await runtime.run([
-    { agent: "write", task: "Repair overview", boardTaskId: "write", partition: "wiki-root" },
+    { agent: "write", task: "Repair overview", boardTaskId: "write", partition: "wiki-root", writeMode: "directory" },
   ], new AbortController().signal);
   assert.equal(result.error, undefined);
 });

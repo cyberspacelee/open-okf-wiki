@@ -16,6 +16,7 @@ import {
   type WikiTemplatePack,
 } from "./templates.js";
 import { candidateRevision, fileRevision } from "./revisions.js";
+import { writeTargetAllows, type WikiWriteTarget } from "./write-target.js";
 
 export const GENERATED_BY = "open-okf-wiki/1.0.0";
 export const VERIFIED_BY = "process:open-okf-wiki-review";
@@ -148,6 +149,46 @@ export async function validateWikiTree(
   }
   if (pack) issues.push(...topologyIssues(pages, resolved, pins, pack));
   return { ok: issues.length === 0, issues, pages: pages.sort() };
+}
+
+export async function validateWikiTarget(
+  wikiRoot: string,
+  target: WikiWriteTarget,
+  pins: readonly WikiPin[],
+  pack: WikiTemplatePack,
+  options: WikiValidationOptions = {},
+): Promise<WikiValidation> {
+  const full = await validateWikiTree(wikiRoot, pins, pack, options);
+  const pages = full.pages.filter((page) => writeTargetAllows(target, page));
+  const issues = full.issues.filter((issue) => {
+    if (!issue.page || !writeTargetAllows(target, issue.page)) return false;
+    if (issue.code !== "link") return true;
+    const missing = /^Wiki link missing (.+)$/.exec(issue.message)?.[1];
+    return Boolean(missing && writeTargetAllows(target, missing));
+  });
+  const root = target.path === "wiki-root" ? "" : target.path;
+  const directories = target.mode === "directory"
+    ? [root]
+    : [
+      root,
+      ...new Set(pages
+        .map((page) => path.posix.dirname(page))
+        .filter((directory) => directory !== root && path.posix.dirname(directory) === root)),
+    ];
+  if (target.mode === "subtree" && directories.length === 1) {
+    issues.push({ code: "topology", page: `${root}/`, message: "Domain write target requires at least one Concept directory" });
+  }
+  const present = new Set(pages);
+  for (const directory of directories) {
+    for (const template of pack.templates.filter((candidate) => candidate.required)) {
+      const page = directory ? `${directory}/${template.filename}` : template.filename;
+      if (placementAllowed(page, template, pins) && !present.has(page)
+        && !issues.some((issue) => issue.code === "topology" && issue.page === page)) {
+        issues.push({ code: "topology", page, message: `Required page contract ${template.id} is missing` });
+      }
+    }
+  }
+  return { ok: issues.length === 0, issues, pages };
 }
 
 function repositorySourceOwnershipIssues(

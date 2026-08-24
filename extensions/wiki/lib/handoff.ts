@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeText } from "./files.js";
+import type { WikiWriteMode } from "./write-target.js";
 
 const BODY_MARKER = "<!-- wiki-handoff-body -->";
 
@@ -9,6 +10,7 @@ export interface HandoffEnvelope {
   executionId: string;
   boardTaskId: string;
   partition: string;
+  writeMode?: WikiWriteMode;
   agent: string;
   taskDigest: string;
   baseCandidateRevision: string;
@@ -49,7 +51,7 @@ export function parseReviewVerdict(text: string): "pass" | "changes_requested" |
 export async function writeHandoff(input: {
   workspaceRoot: string;
   handoffsRoot: string;
-  task: { id: string; boardTaskId: string; partition: string; agent: string; task: string };
+  task: { id: string; boardTaskId: string; partition: string; writeMode?: WikiWriteMode; agent: string; task: string };
   text: string;
   baseCandidateRevision: string;
   completedCandidateRevision?: string;
@@ -60,6 +62,7 @@ export async function writeHandoff(input: {
     executionId: input.task.id,
     boardTaskId: input.task.boardTaskId,
     partition: input.task.partition,
+    ...(input.task.writeMode ? { writeMode: input.task.writeMode } : {}),
     agent: input.task.agent,
     taskDigest: taskDigest(input.task.task),
     baseCandidateRevision: input.baseCandidateRevision,
@@ -78,6 +81,7 @@ export async function verifyHandoff(
     executionId: string;
     boardTaskId: string;
     partition: string;
+    writeMode?: WikiWriteMode;
     agent: string;
     taskDigest: string;
     candidateRevision?: string;
@@ -96,6 +100,7 @@ export async function verifyHandoff(
     envelope.executionId !== expected.executionId
     || envelope.boardTaskId !== expected.boardTaskId
     || envelope.partition !== expected.partition
+    || envelope.writeMode !== expected.writeMode
     || envelope.agent !== expected.agent
     || envelope.taskDigest !== expected.taskDigest
   ) return undefined;
@@ -120,6 +125,7 @@ function isEnvelope(value: unknown): value is HandoffEnvelope {
   return typeof raw.executionId === "string"
     && typeof raw.boardTaskId === "string"
     && typeof raw.partition === "string"
+    && (raw.writeMode === undefined || raw.writeMode === "subtree" || raw.writeMode === "directory")
     && typeof raw.agent === "string"
     && typeof raw.taskDigest === "string"
     && typeof raw.baseCandidateRevision === "string"

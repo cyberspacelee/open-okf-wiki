@@ -5,24 +5,28 @@ import { Type } from "typebox";
 import type { AgentToolUpdateCallback, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { loadWikiAgents, type WikiAgentDefinition } from "./agents.js";
 import { writeHandoff } from "./handoff.js";
-import { assertAgentPartition, writeGuardFromPlan, writePartitionsOverlap, type WikiWriteGuard } from "./path-policy.js";
+import { assertAgentPartition, writeGuardFromPlan, writeTargetsOverlap, type WikiWriteGuard } from "./path-policy.js";
 import type { WikiPinnedSourcePlan } from "./inspect.js";
 import { isImplicitPinPath } from "./path.js";
 import { candidateTools, createCatalogTools } from "./pi/tools.js";
 import { runWikiSession, type RunWikiSessionOptions } from "./pi/session.js";
 import type { WikiCatalog } from "./catalog.js";
 import type { WikiToolView } from "./producer-types.js";
-import { formatWikiTemplateCatalog, formatWikiTemplatesForPrompt, templatesForPartition, type WikiTemplatePack } from "./templates.js";
+import { formatWikiTemplateCatalog, formatWikiTemplatesForPrompt, templatesForTarget, type WikiTemplatePack } from "./templates.js";
 import { createWriterEvidenceGate } from "./evidence.js";
 import { formatWriterCitationContract } from "./citations.js";
-import { candidatePartitionRevision, candidateRevision, fileRevision } from "./revisions.js";
+import { candidateTargetRevision, candidateRevision, fileRevision } from "./revisions.js";
 import type { WikiAgentUsage } from "./producer-types.js";
+import { createWriterTodoTracker, type WriterTodoItem } from "./writer-todo.js";
+import type { WikiWriteMode, WikiWriteTarget } from "./write-target.js";
+import { formatIssue, validateWikiTarget } from "./wiki-okf.js";
 
 export interface SubagentTask {
   agent: string;
   task: string;
   boardTaskId: string;
   partition: string;
+  writeMode?: WikiWriteMode;
 }
 
 export interface SubagentResult extends SubagentTask {
@@ -77,7 +81,7 @@ export async function createSubagentRuntime(
     async run(tasks, signal, onUpdate) {
       if (!tasks.length) throw new Error("subagent requires at least one task");
       assertSafeBatch(tasks);
-      for (const task of tasks) assertAgentPartition(task.agent, task.partition, plan);
+      for (const task of tasks) assertAgentPartition(task.agent, task.partition, plan, task.writeMode);
       options.assertDispatch?.(tasks);
       const release = acquireBatch(tasks);
       try {
@@ -159,25 +163,27 @@ export function createSubagentTool(runtime: SubagentRuntime): ToolDefinition<any
     name: "subagent",
     label: "Subagent",
     description:
-      "Run a named Wiki agent in an isolated session. Agents: survey (map one Source), synthesize (analyze completed surveys across Sources), write (author wiki/ pages), review (read-only critique). Survey may batch by Source. Synthesize and review run alone. Write may batch disjoint repository prefixes or wiki-root. Each result is a handoff path, not the full body.",
+      "Run a named Wiki agent in an isolated session. Agents: survey (map one Source), synthesize (analyze completed surveys across Sources), write (author one Domain subtree or one aggregation directory), review (read-only critique). Survey and disjoint Domain writes may batch. Synthesize and review run alone. Each result is a handoff path, not the full body.",
     parameters: Type.Object({
       agent: Type.Optional(Type.String({ description: "survey, synthesize, write, or review" })),
       task: Type.Optional(Type.String({ description: "Assignment for a single agent" })),
       boardTaskId: Type.Optional(Type.String({ description: "Existing in-progress Board Task id" })),
-      partition: Type.Optional(Type.String({ description: "Source id, workspace-analysis, write path prefix, or candidate" })),
+      partition: Type.Optional(Type.String({ description: "Source id, workspace-analysis, write path, or candidate" })),
+      writeMode: Type.Optional(Type.Union([Type.Literal("subtree"), Type.Literal("directory")], { description: "Required for write: subtree for one Domain, directory for repository or Wiki-root pages" })),
       tasks: Type.Optional(Type.Array(Type.Object({
         agent: Type.String({ description: "survey, synthesize, write, or review" }),
         task: Type.String(),
         boardTaskId: Type.String(),
         partition: Type.String(),
+        writeMode: Type.Optional(Type.Union([Type.Literal("subtree"), Type.Literal("directory")])),
       }))),
     }),
     async execute(_id, params, signal, onUpdate) {
-      const input = params as { agent?: string; task?: string; boardTaskId?: string; partition?: string; tasks?: SubagentTask[] };
+      const input = params as { agent?: string; task?: string; boardTaskId?: string; partition?: string; writeMode?: WikiWriteMode; tasks?: SubagentTask[] };
       const tasks = input.tasks?.length
         ? input.tasks
         : input.agent && input.task && input.boardTaskId && input.partition
-          ? [{ agent: input.agent, task: input.task, boardTaskId: input.boardTaskId, partition: input.partition }]
+          ? [{ agent: input.agent, task: input.task, boardTaskId: input.boardTaskId, partition: input.partition, ...(input.writeMode ? { writeMode: input.writeMode } : {}) }]
           : [];
       if (!tasks.length) {
         return { content: [{ type: "text", text: "Provide agent+task or tasks[]" }], isError: true };
@@ -209,8 +215,9 @@ async function runOne(
     return { ...task, text: "", error: `Unknown agent "${task.agent}". Available: ${available}` };
   }
   try {
-    const outputRevision = async () => task.agent === "write"
-      ? await candidatePartitionRevision(guard.candidateRoot, task.partition)
+    const writeTarget = task.agent === "write" ? targetFromTask(task) : undefined;
+    const outputRevision = async () => writeTarget
+      ? await candidateTargetRevision(guard.candidateRoot, writeTarget)
       : await candidateRevision(guard.candidateRoot);
     const base = task.agent === "survey"
       ? { digest: "not-applicable" }
@@ -218,8 +225,9 @@ async function runOne(
     const touched = new Set<string>();
     const extra = catalog ? createCatalogTools(catalog) : [];
     const allowed = definition.tools ? new Set(definition.tools) : undefined;
-    const taskGuard = task.agent === "write" ? { ...guard, writePartition: task.partition } : guard;
-    const evidenceGate = task.agent === "write"
+    const taskGuard = writeTarget ? { ...guard, writeTarget } : guard;
+    const todo = writeTarget && templates ? createWriterTodoTracker(writeTarget) : undefined;
+    const evidenceGate = writeTarget
       ? createWriterEvidenceGate(taskGuard, {
         maxRepairRounds: maxEvidenceRepairRounds,
         onTouched: (location) => touched.add(location),
@@ -227,16 +235,17 @@ async function runOne(
       : undefined;
     const tools = [
       ...candidateTools(taskGuard, definition.tools),
+      ...(todo ? [todo.tool] : []),
       ...extra.filter((tool) => !allowed || allowed.has(tool.name)),
     ];
     const logical = guard.sources.map((source) => source.logicalPath);
     const implicit = logical.length === 1 && isImplicitPinPath(logical[0] ?? "");
-    const scoped = templates && task.agent === "write"
-      ? templatesForPartition(templates, task.partition, implicit)
+    const scoped = templates && writeTarget
+      ? templatesForTarget(templates, writeTarget, implicit)
       : templates?.templates ?? [];
     const pack = templates
       ? `\n\n${task.agent === "write"
-        ? formatWikiTemplatesForPrompt(templates, new Set(scoped.map((template) => template.id)), { partition: task.partition, implicit })
+        ? formatWikiTemplatesForPrompt(templates, new Set(scoped.map((template) => template.id)), { target: writeTarget, implicit })
         : formatWikiTemplateCatalog(templates)}`
       : "";
     const citations = task.agent === "write"
@@ -256,11 +265,26 @@ async function runOne(
           session.onActivity?.(event);
           if (event.kind === "tool") evidenceGate?.observe(event);
         },
-        onCompaction: () => formatWorkerCheckpoint(task, sourceFingerprint, base.digest, touched),
+        onCompaction: () => formatWorkerCheckpoint(
+          task,
+          sourceFingerprint,
+          base.digest,
+          touched,
+          todo?.snapshot(),
+        ),
         nextPrompt: evidenceGate?.nextPrompt,
       },
     );
     const completed = task.agent === "survey" ? undefined : await outputRevision();
+    if (todo && completed && writeTarget) {
+      todo.assertComplete(completed.files);
+      if (templates) {
+        const validation = await validateWikiTarget(guard.candidateRoot, writeTarget, guard.sources, templates, {
+          catalogAvailable: Boolean(catalog),
+        });
+        if (!validation.ok) throw new Error(`Write target validation failed:\n${validation.issues.map(formatIssue).join("\n")}`);
+      }
+    }
     const handoff = await writeHandoff({
       workspaceRoot: guard.workspaceRoot,
       handoffsRoot: guard.handoffsRoot,
@@ -311,7 +335,13 @@ function assertSafeBatch(tasks: readonly SubagentTask[]): void {
   const roles = new Set(tasks.map((task) => task.agent));
   const partitions = new Set<string>();
   for (const task of tasks) {
-    const key = `${task.boardTaskId}\0${task.partition}`;
+    if (task.agent === "write" && task.writeMode !== "subtree" && task.writeMode !== "directory") {
+      throw new Error("write assignment requires writeMode subtree or directory");
+    }
+    if (task.agent !== "write" && task.writeMode !== undefined) {
+      throw new Error(`${task.agent} assignment cannot set writeMode`);
+    }
+    const key = `${task.boardTaskId}\0${task.writeMode ?? "partition"}\0${task.partition}`;
     if (partitions.has(key)) throw new Error(`duplicate subagent partition: ${task.boardTaskId}/${task.partition}`);
     partitions.add(key);
   }
@@ -319,11 +349,11 @@ function assertSafeBatch(tasks: readonly SubagentTask[]): void {
     throw new Error(`${roles.has("review") ? "review" : "synthesize"} must run alone`);
   }
   if (roles.has("write") && tasks.length > 1) {
-    const prefixes = tasks.map((task) => task.partition);
-    for (let index = 0; index < prefixes.length; index += 1) {
-      for (let other = index + 1; other < prefixes.length; other += 1) {
-        if (writePartitionsOverlap(prefixes[index]!, prefixes[other]!)) {
-          throw new Error(`overlapping write partitions: ${prefixes[index]} ${prefixes[other]}`);
+    const targets = tasks.map(targetFromTask);
+    for (let index = 0; index < targets.length; index += 1) {
+      for (let other = index + 1; other < targets.length; other += 1) {
+        if (writeTargetsOverlap(targets[index]!, targets[other]!)) {
+          throw new Error(`overlapping write targets: ${targets[index]!.mode}:${targets[index]!.path} ${targets[other]!.mode}:${targets[other]!.path}`);
         }
       }
     }
@@ -336,6 +366,7 @@ function formatWorkerCheckpoint(
   sourceFingerprint: string,
   baseCandidateRevision: string,
   touched: ReadonlySet<string>,
+  todo: readonly WriterTodoItem[] = [],
 ): string {
   const instruction = task.agent === "survey"
     ? "Continue this exact Source survey. Reopen load-bearing Source locators before finalizing the handoff."
@@ -350,8 +381,9 @@ function formatWorkerCheckpoint(
     `Role: ${task.agent}`,
     `Board Task: ${task.boardTaskId}`,
     `Partition: ${task.partition}`,
+    ...(task.writeMode ? [`Write mode: ${task.writeMode}`] : []),
     `Source fingerprint: ${sourceFingerprint}`,
-    `Base Candidate: ${baseCandidateRevision}`,
+    `Base target Candidate: ${baseCandidateRevision}`,
     `Assignment: ${task.task}`,
   ];
   if (estimateTokens([...lines, instruction, "</wiki_checkpoint>"].join("\n")) > 4_096) {
@@ -369,8 +401,26 @@ function formatWorkerCheckpoint(
     }
     if (included < changed.length) lines.push(`- ${changed.length - included} older paths omitted from this bounded frame`);
   }
+  if (task.agent === "write") {
+    lines.push("Writer Todo:");
+    if (!todo.length) lines.push("- not planned");
+    else {
+      for (const item of todo) {
+        const next = `- ${item.status}: ${item.path}`;
+        if (estimateTokens([...lines, next, instruction, "</wiki_checkpoint>"].join("\n")) > 4_096) break;
+        lines.push(next);
+      }
+    }
+  }
   lines.push(instruction, "</wiki_checkpoint>");
   return lines.join("\n");
+}
+
+function targetFromTask(task: SubagentTask): WikiWriteTarget {
+  if (task.writeMode !== "subtree" && task.writeMode !== "directory") {
+    throw new Error("write assignment requires writeMode subtree or directory");
+  }
+  return { path: task.partition, mode: task.writeMode };
 }
 
 function estimateTokens(text: string): number {

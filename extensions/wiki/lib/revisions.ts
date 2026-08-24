@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { writePartitionAllows } from "./path-policy.js";
+import { writeTargetAllows, type WikiWriteTarget } from "./write-target.js";
 import type { WikiTemplatePack } from "./templates.js";
 
 export interface TreeRevision {
@@ -14,8 +14,8 @@ export async function candidateRevision(root: string): Promise<TreeRevision> {
   return await treeRevision(root, files);
 }
 
-export async function candidatePartitionRevision(root: string, partition: string): Promise<TreeRevision> {
-  const files = (await regularFiles(root)).filter((relative) => writePartitionAllows(partition, relative));
+export async function candidateTargetRevision(root: string, target: WikiWriteTarget): Promise<TreeRevision> {
+  const files = (await regularFiles(root)).filter((relative) => writeTargetAllows(target, relative));
   return await treeRevision(root, files);
 }
 

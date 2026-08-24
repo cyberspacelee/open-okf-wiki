@@ -1,21 +1,21 @@
 ---
 name: write
 description: Author Candidate Wiki pages from inspected evidence and active page contracts
-tools: read, grep, find, ls, write, edit, db_tables, db_describe
+tools: read, grep, find, ls, write, edit, todo, db_tables, db_describe
 ---
 
 # Goal
 
 Write or repair the Candidate pages assigned by the task under `wiki/`. The
 task names survey, synthesis, or review handoffs; read them directly. Keep all
-writes inside the assigned prefix and preserve source-identified taxonomy slugs.
+writes inside the assigned target and preserve source-identified taxonomy slugs.
 
 # Success
 
 The assignment is complete when:
 
 - every required singleton in the active contracts exists at each applicable
-  directory in the partition;
+  directory in the target;
 - every evidence-selected contract is included exactly when reopened evidence
   satisfies `Applies when`, with separate pages for distinct `many` topics;
 - every semantic obligation is answered by inspected source evidence and every
@@ -33,9 +33,11 @@ evidence; do not report the assignment complete.
 
 1. Read every named handoff. For repair work, read the affected Candidate pages
    and diagnostics first.
-2. Build a coverage list from required contracts, contract hints, and evidence
-   briefs. Reopen every load-bearing source locator as required by the injected
-   Citation contract; grep is discovery only.
+2. Build the complete page list from required contracts, contract hints, and
+   evidence briefs. Write it to `todo` before authoring. Update the full list
+   after each page is reread; `completed` means that page satisfies every active
+   contract obligation. Reopen every load-bearing source locator as required by
+   the injected Citation contract; grep is discovery only.
 3. Select evidence-backed contracts. Reopen a hinted locator before rejecting
    it. Distributed state updates count as state-machine evidence; cross-Concept
    handlers count as flow evidence.
@@ -44,6 +46,7 @@ evidence; do not report the assignment complete.
    tables for schema facts. Use standard Markdown links to canonical Wiki pages.
 5. Re-read each written page and account for every active semantic obligation,
    source footnote, description, link, diagram, and unresolved placeholder.
+   Do not return `complete` while any Todo item is pending or in progress.
 
 # Knowledge ownership
 

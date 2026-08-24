@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { parsePage } from "./frontmatter.js";
 import { markdownStructure, sectionHasContent } from "./markdown-structure.js";
 import { isSafeWikiPagePath } from "./path.js";
+import type { WikiWriteTarget } from "./write-target.js";
 
 const WIKI_TEMPLATE_SCOPES = ["wiki", "repo", "domain", "concept"] as const;
 export type WikiTemplateScope = (typeof WIKI_TEMPLATE_SCOPES)[number];
@@ -216,26 +217,20 @@ export function parseWikiTemplate(sourceFile: string, text: string): WikiTemplat
   };
 }
 
-export function templatesForPartition(
+export function templatesForTarget(
   pack: WikiTemplatePack,
-  partition: string,
+  target: WikiWriteTarget,
   implicit: boolean,
 ): WikiTemplate[] {
-  if (partition === "candidate" || partition === "wiki") return pack.templates;
-  if (partition === "wiki-root") {
+  if (target.path === "wiki-root") {
     return pack.templates.filter((template) => (
       template.scope === "wiki"
       || template.altitudes?.includes("wiki")
       || (implicit && (template.scope === "repo" || template.altitudes?.includes("repo")))
     ));
   }
-  if (!implicit) {
-    return pack.templates.filter((template) => (
-      template.scope === "repo"
-      || template.scope === "domain"
-      || template.scope === "concept"
-      || template.altitudes?.includes("repo")
-    ));
+  if (target.mode === "directory") {
+    return pack.templates.filter((template) => template.scope === "repo" || template.altitudes?.includes("repo"));
   }
   return pack.templates.filter((template) => template.scope === "domain" || template.scope === "concept");
 }
@@ -243,12 +238,13 @@ export function templatesForPartition(
 export function formatWikiTemplatesForPrompt(
   pack: WikiTemplatePack,
   ids?: ReadonlySet<string>,
-  context: { partition?: string; implicit?: boolean } = {},
+  context: { target?: WikiWriteTarget; implicit?: boolean } = {},
 ): string {
-  const { partition, implicit = false } = context;
+  const { target, implicit = false } = context;
+  const partition = target?.path;
+  const mode = target?.mode;
   const selected = ids ? pack.templates.filter((template) => ids.has(template.id)) : pack.templates;
   if (!selected.length) return "";
-  const repositoryPartition = selected.some((template) => template.scope === "repo" || template.altitudes?.includes("repo"));
   const directory: string[] = [];
   const addDirectory = (label: string, prefix: string, scopes: WikiTemplateScope[]) => {
     const filenames = [...new Set(scopes.flatMap((scope) => selected
@@ -258,15 +254,13 @@ export function formatWikiTemplatesForPrompt(
   };
   if (partition === "wiki-root") {
     addDirectory("Wiki-root pages", "wiki", implicit ? ["wiki", "repo"] : ["wiki"]);
-  } else if (!partition || partition === "candidate" || partition === "wiki") {
+  } else if (!partition || !mode) {
     addDirectory("Wiki-root pages", "wiki", implicit ? ["wiki", "repo"] : ["wiki"]);
     if (!implicit) addDirectory("Repository pages", "wiki/<scopeId>", ["repo"]);
     addDirectory("Domain pages", implicit ? "wiki/<domain>" : "wiki/<scopeId>/<domain>", ["domain"]);
     addDirectory("Concept pages", implicit ? "wiki/<domain>/<concept>" : "wiki/<scopeId>/<domain>/<concept>", ["concept"]);
-  } else if (repositoryPartition) {
+  } else if (mode === "directory") {
     addDirectory("Repository pages", `wiki/${partition}`, ["repo"]);
-    addDirectory("Domain pages", `wiki/${partition}/<domain>`, ["domain"]);
-    addDirectory("Concept pages", `wiki/${partition}/<domain>/<concept>`, ["concept"]);
   } else {
     addDirectory("Domain pages", `wiki/${partition}`, ["domain"]);
     addDirectory("Concept pages", `wiki/${partition}/<concept>`, ["concept"]);
@@ -274,9 +268,9 @@ export function formatWikiTemplatesForPrompt(
   const lines = [
     "## Directory contract",
     "",
-    `Assigned write partition: \`${partition ?? "candidate"}\`. Paths are Workspace-relative and write into the unpublished Candidate.`,
+    `Assigned write target: \`${mode ?? "all"}:${partition ?? "candidate"}\`. Paths are Workspace-relative and write into the unpublished Candidate.`,
     ...directory,
-    "Author only applicable contract pages within this partition. The host generates every `index.md` and root `log.md`.",
+    "Author only applicable contract pages within this target. The host generates every `index.md` and root `log.md`.",
     "",
     "## Active page contracts",
     "",

@@ -3,6 +3,7 @@ import { realpath } from "node:fs/promises";
 import type { CitationSource } from "./citations.js";
 import { sourceIsIgnored, type WikiPinnedSourcePlan } from "./inspect.js";
 import { isImplicitPinPath, isSafeWikiPagePath, isWikiTaxonomySlug } from "./path.js";
+import { writeTargetAllows, writeTargetsOverlap, type WikiWriteTarget } from "./write-target.js";
 
 export interface WikiWriteGuard {
   workspaceRoot: string;
@@ -12,7 +13,7 @@ export interface WikiWriteGuard {
   sources: Array<CitationSource & { realPath: string }>;
   defaultSourceIgnores: boolean;
   excludes: string[];
-  writePartition?: string;
+  writeTarget?: WikiWriteTarget;
 }
 
 export function writeGuardFromPlan(plan: WikiPinnedSourcePlan, candidateRoot: string): WikiWriteGuard {
@@ -106,14 +107,12 @@ function contained(root: string, candidate: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-export function writePartitionAllows(partition: string | undefined, relative: string): boolean {
-  if (!partition || partition === "candidate" || partition === "wiki") return true;
-  const posix = relative.replaceAll("\\", "/");
-  if (partition === "wiki-root") return !posix.includes("/");
-  return posix === partition || posix.startsWith(`${partition}/`);
-}
-
-export function assertAgentPartition(agent: string, partition: string, plan: WikiPinnedSourcePlan): void {
+export function assertAgentPartition(
+  agent: string,
+  partition: string,
+  plan: WikiPinnedSourcePlan,
+  writeMode?: WikiWriteTarget["mode"],
+): void {
   if (!plan.sources.length) return;
   const implicit = plan.sources.length === 1 && isImplicitPinPath(plan.sources[0]?.logicalPath ?? "");
   const scopeIds = new Set(plan.sources.map((source) => source.scopeId));
@@ -130,21 +129,22 @@ export function assertAgentPartition(agent: string, partition: string, plan: Wik
     return;
   }
   if (agent !== "write") return;
-  if (partition === "wiki-root" || partition === "candidate" || partition === "wiki") return;
-  if (implicit) {
-    if (isWikiTaxonomySlug(partition)) return;
-    throw new Error(`write partition is not a domain prefix: ${partition}`);
+  if (!writeMode) throw new Error("write assignment requires writeMode subtree or directory");
+  if (partition === "wiki-root") {
+    if (writeMode === "directory") return;
+    throw new Error("wiki-root write target must use directory mode");
   }
-  if (scopeIds.has(partition)) return;
-  throw new Error(`write partition is not a Repository Section: ${partition}`);
+  const segments = partition.split("/");
+  if (implicit) {
+    if (writeMode === "subtree" && segments.length === 1 && isWikiTaxonomySlug(partition)) return;
+    throw new Error(`implicit write target must be one Domain subtree or wiki-root directory: ${writeMode}:${partition}`);
+  }
+  if (writeMode === "directory" && segments.length === 1 && scopeIds.has(partition)) return;
+  if (writeMode === "subtree" && segments.length === 2 && scopeIds.has(segments[0]!) && isWikiTaxonomySlug(segments[1]!)) return;
+  throw new Error(`explicit write target must be one Repository directory or Domain subtree: ${writeMode}:${partition}`);
 }
 
-export function writePartitionsOverlap(left: string, right: string): boolean {
-  if (left === right) return true;
-  if (left === "wiki-root" || right === "wiki-root") return false;
-  if (left === "candidate" || left === "wiki" || right === "candidate" || right === "wiki") return true;
-  return left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
-}
+export { writeTargetAllows, writeTargetsOverlap };
 
 export function assertWritable(guard: WikiWriteGuard, input: string): string {
   const resolved = assertReadable(guard, input);
@@ -153,8 +153,8 @@ export function assertWritable(guard: WikiWriteGuard, input: string): string {
     throw new Error("Wiki writes must stay in the unpublished Candidate (use wiki/ paths)");
   }
   const posix = relative.replaceAll("\\", "/");
-  if (!writePartitionAllows(guard.writePartition, posix)) {
-    throw new Error(`Wiki writes for partition ${guard.writePartition} cannot include ${relative}`);
+  if (!writeTargetAllows(guard.writeTarget, posix)) {
+    throw new Error(`Wiki writes for target ${guard.writeTarget?.mode}:${guard.writeTarget?.path} cannot include ${relative}`);
   }
   if (!isSafeWikiPagePath(posix)) {
     throw new Error(`Illegal Wiki page path: ${posix}`);

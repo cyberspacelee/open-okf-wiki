@@ -38,8 +38,9 @@ import {
   type WikiSessionActivity,
   type WikiAgentUsage,
 } from "./producer-types.js";
-import { candidatePartitionRevision, candidateRevision, fileRevision, templatePackRevision } from "./revisions.js";
+import { candidateTargetRevision, candidateRevision, fileRevision, templatePackRevision } from "./revisions.js";
 import { formatLeadCheckpoint, type CheckpointExecution, type CheckpointReview } from "./checkpoint.js";
+import type { WikiWriteMode } from "./write-target.js";
 import { installWikiPublication, recoverWikiPublication } from "./publication.js";
 import { RunActivity } from "./run-activity.js";
 
@@ -78,6 +79,7 @@ interface RunExecutionReceipt {
   id: string;
   boardTaskId: string;
   partition: string;
+  writeMode?: WikiWriteMode;
   agent: string;
   task: string;
   taskDigest: string;
@@ -99,7 +101,7 @@ interface RunReviewReceipt {
 }
 
 interface RunRecord {
-  schemaVersion: 3;
+  schemaVersion: 4;
   id: string;
   cwd: string;
   status: WikiRunStatus;
@@ -164,7 +166,7 @@ export function createProductionWikiProducer(options: WikiProducerOptions = {}):
         await ensureDirectory(candidateRoot);
         const now = new Date().toISOString();
         const record: RunRecord = {
-          schemaVersion: 3,
+          schemaVersion: 4,
           id,
           cwd: workspace.root,
           status: "running",
@@ -551,7 +553,7 @@ function fanInIssue(live: LiveRun, incoming?: readonly SubagentTask[]): string |
     return "Cross-Source synthesis must start after every Source survey completes";
   }
   const earlyWrite = live.record.executions.find((entry) => entry.agent === "write" && entry.startedAt < (synthesis.completedAt ?? ""));
-  if (earlyWrite) return `Write partition ${earlyWrite.partition} started before cross-Source synthesis completed`;
+  if (earlyWrite) return `Write target ${earlyWrite.partition} started before cross-Source synthesis completed`;
   return undefined;
 }
 
@@ -570,6 +572,7 @@ async function recordAgent(live: LiveRun, board: WikiBoardStore, update: Subagen
       id: update.id,
       boardTaskId: update.boardTaskId,
       partition: update.partition,
+      ...(update.writeMode ? { writeMode: update.writeMode } : {}),
       agent: update.agent,
       task: update.task,
       taskDigest: taskDigest(update.task),
@@ -597,7 +600,7 @@ async function recordAgent(live: LiveRun, board: WikiBoardStore, update: Subagen
   live.candidateRevision ??= await candidateRevision(live.record.candidateRoot);
   if (update.status === "complete") {
     const completedRevision = update.agent === "write"
-      ? await candidatePartitionRevision(live.record.candidateRoot, update.partition)
+      ? await candidateTargetRevision(live.record.candidateRoot, writeTarget(update))
       : live.candidateRevision;
     let verified;
     try {
@@ -606,6 +609,7 @@ async function recordAgent(live: LiveRun, board: WikiBoardStore, update: Subagen
           executionId: update.id,
           boardTaskId: update.boardTaskId,
           partition: update.partition,
+          writeMode: update.writeMode,
           agent: update.agent,
           taskDigest: receipt.taskDigest,
           candidateRevision: completedRevision.digest,
@@ -690,7 +694,7 @@ async function adoptCompletedHandoff(live: LiveRun, receipt: RunExecutionReceipt
     path.join(runDir(live.record.cwd), "handoffs", `${receipt.id}.md`),
   ).replaceAll("\\", "/");
   const completedRevision = receipt.agent === "write"
-    ? await candidatePartitionRevision(live.record.candidateRoot, receipt.partition)
+    ? await candidateTargetRevision(live.record.candidateRoot, writeTarget(receipt))
     : live.candidateRevision;
   let verified;
   try {
@@ -698,6 +702,7 @@ async function adoptCompletedHandoff(live: LiveRun, receipt: RunExecutionReceipt
       executionId: receipt.id,
       boardTaskId: receipt.boardTaskId,
       partition: receipt.partition,
+      writeMode: receipt.writeMode,
       agent: receipt.agent,
       taskDigest: receipt.taskDigest,
       candidateRevision: completedRevision?.digest,
@@ -749,11 +754,18 @@ async function reconcileBoardTask(
 function latestExecutions(executions: readonly RunExecutionReceipt[]): RunExecutionReceipt[] {
   const latest = new Map<string, RunExecutionReceipt>();
   for (const execution of executions) {
-    const key = `${execution.boardTaskId}\0${execution.partition}`;
+    const key = `${execution.boardTaskId}\0${execution.writeMode ?? "partition"}\0${execution.partition}`;
     const current = latest.get(key);
     if (!current || execution.startedAt >= current.startedAt) latest.set(key, execution);
   }
   return [...latest.values()];
+}
+
+function writeTarget(execution: Pick<RunExecutionReceipt, "partition" | "writeMode">) {
+  if (execution.writeMode !== "subtree" && execution.writeMode !== "directory") {
+    throw new Error(`Write execution ${execution.partition} has no writeMode`);
+  }
+  return { path: execution.partition, mode: execution.writeMode } as const;
 }
 
 async function refreshCheckpoint(live: LiveRun, board = live.board): Promise<void> {
@@ -772,6 +784,7 @@ async function refreshCheckpoint(live: LiveRun, board = live.board): Promise<voi
     id: entry.id,
     boardTaskId: entry.boardTaskId,
     partition: entry.partition,
+    ...(entry.writeMode ? { writeMode: entry.writeMode } : {}),
     agent: entry.agent,
     status: entry.status,
     ...(entry.handoff ? { handoff: entry.handoff } : {}),
@@ -1029,7 +1042,7 @@ async function readRecord(cwd: string): Promise<RunRecord | undefined> {
 function normalizeRunRecord(value: unknown, cwd: string): RunRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Run record must be an object");
   const raw = value as Record<string, unknown>;
-  if (raw.schemaVersion !== 3) {
+  if (raw.schemaVersion !== 4) {
     throw new Error(`Unsupported Run record schema version: ${String(raw.schemaVersion)}`);
   }
   const root = path.resolve(cwd);
@@ -1095,6 +1108,9 @@ function isExecutionReceipt(value: unknown): boolean {
   const raw = value as Record<string, unknown>;
   return ["id", "boardTaskId", "partition", "agent", "task", "taskDigest"].every((key) => typeof raw[key] === "string")
     && (raw.status === "running" || raw.status === "complete" || raw.status === "failed" || raw.status === "interrupted")
+    && (raw.agent === "write"
+      ? raw.writeMode === "subtree" || raw.writeMode === "directory"
+      : raw.writeMode === undefined)
     && isTimestamp(raw.startedAt)
     && (raw.completedAt === undefined || isTimestamp(raw.completedAt))
     && (raw.error === undefined || typeof raw.error === "string")
@@ -1247,7 +1263,7 @@ async function leadPrompt(context: WikiLeadContext, checkpoint: string): Promise
   const body = await readFile(fileURLToPath(new URL("../../../prompts/lead.md", import.meta.url)), "utf8");
   const sources = context.plan.sources.map((source) => `- ${source.scopeId}: ${source.logicalPath}`).join("\n");
   const focus = context.focus ? `\nFocus: ${context.focus}\n` : "";
-  const agents = "Available agents: survey, synthesize, write, review. Every assignment requires an existing in-progress boardTaskId and a stable partition. Survey and write may batch disjoint partitions; synthesize and review run alone.\n";
+  const agents = "Available agents: survey, synthesize, write, review. Every assignment requires an existing in-progress boardTaskId and a stable partition; write also requires writeMode. Survey and disjoint Domain writes may batch; synthesize and review run alone.\n";
   const resume = context.resume
     ? "\nThis is a resumed Run. Reconcile the checkpoint and durable artifacts before doing more work. Do not restart completed partitions.\n"
     : "";

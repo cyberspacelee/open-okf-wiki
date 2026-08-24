@@ -1,5 +1,6 @@
 import type { WikiBoard } from "./board.js";
 import { formatBoard } from "./board.js";
+import type { WikiWriteMode } from "./write-target.js";
 
 const MAX_CHECKPOINT_TOKENS = 4_096;
 
@@ -7,6 +8,7 @@ export interface CheckpointExecution {
   id: string;
   boardTaskId: string;
   partition: string;
+  writeMode?: WikiWriteMode;
   agent: string;
   status: "running" | "complete" | "failed" | "interrupted";
   handoff?: { path: string; sha256: string };
@@ -68,7 +70,8 @@ export function formatLeadCheckpoint(input: LeadCheckpointInput): string {
   if (completed.length) lines.push("", "Completed artifacts:");
   let included = 0;
   for (const entry of completed.slice().reverse()) {
-    const next = `- ${entry.boardTaskId}/${entry.partition}: ${entry.handoff!.path} (${short(entry.handoff!.sha256)})`;
+    const target = entry.writeMode ? `${entry.writeMode}:${entry.partition}` : entry.partition;
+    const next = `- ${entry.boardTaskId}/${target}: ${entry.handoff!.path} (${short(entry.handoff!.sha256)})`;
     if (estimateTokens([...lines, next, ...suffix].join("\n")) > MAX_CHECKPOINT_TOKENS) break;
     lines.push(next);
     included += 1;
@@ -84,7 +87,8 @@ export function formatLeadCheckpoint(input: LeadCheckpointInput): string {
 function formatExecution(entry: CheckpointExecution): string {
   const artifact = entry.handoff ? `; ${entry.handoff.path}` : "";
   const error = entry.error ? `; ${truncate(entry.error, 240)}` : "";
-  return `- ${entry.id}: ${entry.agent} ${entry.boardTaskId}/${entry.partition} ${entry.status}${artifact}${error}`;
+  const target = entry.writeMode ? `${entry.writeMode}:${entry.partition}` : entry.partition;
+  return `- ${entry.id}: ${entry.agent} ${entry.boardTaskId}/${target} ${entry.status}${artifact}${error}`;
 }
 
 function truncate(value: string, limit: number): string {

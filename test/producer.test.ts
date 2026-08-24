@@ -9,7 +9,7 @@ import { writeHandoff, taskDigest } from "../extensions/wiki/lib/handoff.js";
 import { createProductionWikiProducer } from "../extensions/wiki/lib/producer.js";
 import type { WikiLeadContext } from "../extensions/wiki/lib/producer.js";
 import { installWikiPublication } from "../extensions/wiki/lib/publication.js";
-import { candidatePartitionRevision, candidateRevision, fileRevision } from "../extensions/wiki/lib/revisions.js";
+import { candidateTargetRevision, candidateRevision, fileRevision } from "../extensions/wiki/lib/revisions.js";
 import { inspectWiki } from "../extensions/wiki/lib/inspect.js";
 import { loadWikiTemplatePack, packagedTemplatesRoot } from "../extensions/wiki/lib/templates.js";
 import { createSubagentRuntime } from "../extensions/wiki/lib/subagent.js";
@@ -85,10 +85,11 @@ async function attestHandoff(context: WikiLeadContext, assignment: {
   task: string;
   boardTaskId: string;
   partition: string;
+  writeMode?: "subtree" | "directory";
 }, text: string) {
   const whole = (await candidateRevision(context.candidateRoot)).digest;
   const completed = assignment.agent === "write"
-    ? (await candidatePartitionRevision(context.candidateRoot, assignment.partition)).digest
+    ? (await candidateTargetRevision(context.candidateRoot, { path: assignment.partition, mode: assignment.writeMode })).digest
     : assignment.agent === "survey" ? undefined : whole;
   const relative = await writeHandoff({
     workspaceRoot: context.plan.workspaceRoot,
@@ -304,7 +305,7 @@ test("resume adopts an exact handoff written before the terminal receipt", async
   assert.equal(leads, 2);
 });
 
-test("resume adopts a partition-bound writer handoff after a sibling partition changes", async (t) => {
+test("resume adopts a target-bound writer handoff after a sibling target changes", async (t) => {
   const root = await gitRepo(t);
   let leads = 0;
   let handle;
@@ -322,6 +323,7 @@ test("resume adopts a partition-bound writer handoff after a sibling partition c
           task: "Write billing",
           boardTaskId: "write",
           partition: "billing",
+          writeMode: "subtree",
         };
         await context.record({ ...assignment, status: "running" });
         await mkdir(path.join(context.candidateRoot, "billing"), { recursive: true });
@@ -361,7 +363,7 @@ test("a reopened process-crash Run reconciles persisted running receipts", async
   }, null, 2)}\n`);
   const now = new Date().toISOString();
   await writeText(path.join(directory, "run.json"), `${JSON.stringify({
-    schemaVersion: 3,
+    schemaVersion: 4,
     id,
     cwd: root,
     status: "running",
@@ -612,7 +614,7 @@ test("multi-Source checks require survey fan-in followed by synthesis", async (t
         },
       );
       await assert.rejects(
-        () => runtime.run([{ agent: "write", task: "Write api", boardTaskId: "survey", partition: "api" }], context.signal),
+        () => runtime.run([{ agent: "write", task: "Write api", boardTaskId: "survey", partition: "api", writeMode: "directory" }], context.signal),
         /requires one completed synthesize execution/,
       );
       const surveyResults = await runtime.run([
@@ -674,7 +676,7 @@ test("Lead prompt receives a bounded recovery frame without template skeletons",
   assert.match(prompt, /<wiki_checkpoint>/);
   assert.match(prompt, /Goal: runtime/);
   assert.match(prompt, /survey, synthesize, write, review/);
-  assert.match(prompt, /Explicit Workspace repository|Implicit Workspace domain|Wiki root files/);
+  assert.match(prompt, /Explicit Workspace Domain|Implicit Workspace Domain|Wiki-root aggregation pages/);
   assert.doesNotMatch(prompt, /Output skeleton|Page contract catalog|Directory contract/);
   assert.ok(tools.includes("candidate_check"));
   assert.equal(tools.includes("db_tables"), false);
@@ -724,6 +726,7 @@ test("parallel disjoint write receipts are not invalidated by sibling writes", a
         task: `Write ${partition}`,
         boardTaskId: "write",
         partition,
+        writeMode: "subtree",
       }));
       for (const assignment of assignments) await context.record({ ...assignment, status: "running" });
 
@@ -918,7 +921,7 @@ test("current deletes a schema 3 record with malformed nested receipts", async (
   await mkdir(candidateRoot, { recursive: true });
   const now = new Date().toISOString();
   await writeText(path.join(directory, "run.json"), `${JSON.stringify({
-    schemaVersion: 3,
+    schemaVersion: 4,
     id: "broken01",
     cwd: root,
     status: "failed",

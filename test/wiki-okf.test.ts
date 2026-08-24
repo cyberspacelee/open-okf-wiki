@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, writeFile, rm, stat, utimes } from "node:fs/p
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { assertReviewPass, derivedIndexPaths, materializeWikiIndexes, stampPublication, validateWikiTree, wikiPinsImplicit, type WikiPin } from "../extensions/wiki/lib/wiki-okf.js";
+import { assertReviewPass, derivedIndexPaths, materializeWikiIndexes, stampPublication, validateWikiTarget, validateWikiTree, wikiPinsImplicit, type WikiPin } from "../extensions/wiki/lib/wiki-okf.js";
 import { loadWikiTemplatePack, packagedTemplatesRoot, type WikiTemplate, type WikiTemplatePack } from "../extensions/wiki/lib/templates.js";
 import { candidateRevision, fileRevision } from "../extensions/wiki/lib/revisions.js";
 
@@ -169,6 +169,28 @@ test("validate accepts a typed overview page without a template pack", async (t)
   const result = await validateWikiTree(root, []);
   assert.equal(result.ok, true);
   assert.deepEqual(result.pages, ["overview.md"]);
+});
+
+test("Domain validation requires its own contracts without requiring unfinished aggregation pages", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-target-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  const source = await sourceTree(t, "self", true);
+  const templates = packOf();
+  const byId = Object.fromEntries(templates.templates.map((template) => [template.id, template]));
+  await mkdir(path.join(root, "billing"), { recursive: true });
+  await writeFile(path.join(root, "billing", "domain.md"), fill(byId.domain, "Billing", source.resource));
+
+  const incomplete = await validateWikiTarget(root, { path: "billing", mode: "subtree" }, source.pins, templates);
+  assert.equal(incomplete.ok, false);
+  assert.ok(incomplete.issues.some((issue) => issue.message.includes("Concept directory")));
+
+  await mkdir(path.join(root, "billing", "invoice"), { recursive: true });
+  await writeFile(
+    path.join(root, "billing", "invoice", "concept.md"),
+    fill(byId.concept, "Invoice", source.resource),
+  );
+  const complete = await validateWikiTarget(root, { path: "billing", mode: "subtree" }, source.pins, templates);
+  assert.equal(complete.ok, true, complete.issues.map((issue) => issue.message).join("\n"));
 });
 
 test("implicit Workspace citations are relative to the Workspace root", async (t) => {

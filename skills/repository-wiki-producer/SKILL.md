@@ -28,6 +28,13 @@ Resume continues its Candidate pages, Board, and persisted Lead session.
 Compaction re-injects the Board. Success and cancel clear the current Run;
 there is no historical Run lookup.
 
+Writing is planned from completed survey handoffs. One writer owns one Domain
+subtree and maintains an execution-local page Todo. Completed Domain receipts
+survive Lead compaction; interrupted Domains restart from the handoff and the
+current Candidate. Repository and Wiki-root aggregation pages are written only
+after their child Domains, using directory-only targets that cannot overwrite
+subtrees.
+
 ## Catalog
 
 Optional openGauss evidence in `workspace.yaml`. Username and password go in
