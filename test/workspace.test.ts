@@ -44,7 +44,7 @@ test("loads a Git repository without workspace.yaml as an implicit self source",
   assert.equal(loaded.sources[0].path, ".");
   assert.equal(loaded.sources[0].realPath, root);
   assert.deepEqual(loaded.wiki, {
-    exclude: [], maxConcurrentAgents: 3, maxEvidenceRepairRounds: 6, transientRetries: 1,
+    exclude: [], maxConcurrentAgents: 3, maxWorkerRepairRounds: 6, transientRetries: 1,
     baseRetryDelayMs: 1_000, sessionTimeoutSeconds: 1_200,
   });
   await assert.rejects(lstat(path.join(root, "workspace.yaml")), { code: "ENOENT" });
@@ -62,13 +62,13 @@ test("initializes explicit workspace defaults and normalized Wiki excludes", asy
   assert.equal(workspace.language, "zh");
   assert.equal(workspace.defaultSourceIgnores, true);
   assert.deepEqual(workspace.wiki, {
-    exclude: ["generated/**", "private/**"], maxConcurrentAgents: 3, maxEvidenceRepairRounds: 6, transientRetries: 1,
+    exclude: ["generated/**", "private/**"], maxConcurrentAgents: 3, maxWorkerRepairRounds: 6, transientRetries: 1,
     baseRetryDelayMs: 1_000, sessionTimeoutSeconds: 1_200, templates: "wiki-templates",
   });
   assert.deepEqual(workspace.sources, []);
   const config = await readFile(workspace.configPath, "utf8");
   assert.match(config, /language: zh/);
-  assert.match(config, /maxEvidenceRepairRounds: 6/);
+  assert.match(config, /maxWorkerRepairRounds: 6/);
   assert.match(config, /templates: wiki-templates/);
   await assert.rejects(wikiWorkspaceManagement.init({ cwd: parent, workspace: "docs" }), /already exists/);
 });
@@ -187,7 +187,7 @@ test("wiki config accepts runtime controls and rejects removed controls", async 
     "wiki:",
     "  exclude: [generated/**]",
     "  maxConcurrentAgents: 6",
-    "  maxEvidenceRepairRounds: 9",
+    "  maxWorkerRepairRounds: 9",
     "  transientRetries: 4",
     "  baseRetryDelayMs: 2500",
     "  sessionTimeoutSeconds: 900",
@@ -197,14 +197,16 @@ test("wiki config accepts runtime controls and rejects removed controls", async 
   await writeFile(configPath, validConfig);
   const loaded = await loadWikiWorkspace(root);
   assert.deepEqual(loaded.wiki, {
-    exclude: ["generated/**"], maxConcurrentAgents: 6, maxEvidenceRepairRounds: 9, transientRetries: 4,
+    exclude: ["generated/**"], maxConcurrentAgents: 6, maxWorkerRepairRounds: 9, transientRetries: 4,
     baseRetryDelayMs: 2_500, sessionTimeoutSeconds: 900,
   });
 
   await writeFile(configPath, validConfig.replace("  maxConcurrentAgents: 6", "  maxConcurrentAgents: 1"));
   await assert.rejects(loadWikiWorkspace(root), /maxConcurrentAgents.*2.*64/);
-  await writeFile(configPath, validConfig.replace("  maxEvidenceRepairRounds: 9", "  maxEvidenceRepairRounds: 0"));
-  await assert.rejects(loadWikiWorkspace(root), /maxEvidenceRepairRounds.*1.*64/);
+  await writeFile(configPath, validConfig.replace("  maxWorkerRepairRounds: 9", "  maxWorkerRepairRounds: 0"));
+  await assert.rejects(loadWikiWorkspace(root), /maxWorkerRepairRounds.*1.*64/);
+  await writeFile(configPath, validConfig.replace("maxWorkerRepairRounds", "maxEvidenceRepairRounds"));
+  await assert.rejects(loadWikiWorkspace(root), /unknown field.*maxEvidenceRepairRounds/);
   await writeFile(configPath, validConfig.replace("  exclude: [generated/**]", "  exclude: []\n  maxDelegateBatches: 12"));
   await assert.rejects(loadWikiWorkspace(root), /unknown field/);
   await writeFile(configPath, validConfig.replace("  exclude: [generated/**]", "  unexpected: true"));

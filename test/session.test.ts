@@ -137,6 +137,40 @@ test("session applies workspace retry controls to Pi settings", async (t) => {
   assert.equal(provider.maxRetries, 5);
 });
 
+test("session validates the latest assistant output before ending", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-session-completion-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  const prompts = [];
+  const checked = [];
+  let output = "";
+  const result = await runWikiSession(root, [], "initial", new AbortController().signal, {
+    async createSession() {
+      return {
+        session: {
+          sessionFile: undefined,
+          subscribe() { return () => {}; },
+          async prompt(value) {
+            prompts.push(value);
+            output = prompts.length === 1 ? "invalid" : "valid";
+          },
+          async waitForIdle() {},
+          getLastAssistantText() { return output; },
+          dispose() {},
+          abort() {},
+        },
+        modelFallbackMessage: undefined,
+      };
+    },
+    async nextPrompt(latest) {
+      checked.push(latest);
+      return latest === "invalid" ? "repair" : undefined;
+    },
+  });
+  assert.deepEqual(prompts, ["initial", "repair"]);
+  assert.deepEqual(checked, ["invalid", "valid"]);
+  assert.equal(result.text, "valid");
+});
+
 test("compaction queues the cached checkpoint as an immediate follow-up", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-session-compaction-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));

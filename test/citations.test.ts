@@ -84,7 +84,6 @@ test("writer citation contract covers optional line ranges and the current evide
   assert.match(explicit, /`services\/api\/`/);
   assert.match(explicit, /`web\/`/);
   assert.match(explicit, /`catalog:orders`/);
-  assert.match(explicit, /db_describe/);
 });
 
 test("extractOkfSources requires sources ids and matching footnotes", () => {

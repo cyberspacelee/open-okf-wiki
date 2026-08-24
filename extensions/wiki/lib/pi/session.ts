@@ -31,8 +31,8 @@ export interface RunWikiSessionOptions {
   /** Must be synchronous so the recovery frame is queued before Pi checks for follow-up work. */
   onCompaction?: () => string;
   onActivity?: (event: WikiSessionActivity) => void;
-  /** Return a prompt to continue the same session after it becomes idle. */
-  nextPrompt?: () => Promise<string | undefined>;
+  /** Validate the latest output and return a prompt to continue the same session after it becomes idle. */
+  nextPrompt?: (output: string) => Promise<string | undefined>;
 }
 
 export interface RunWikiSessionResult {
@@ -205,7 +205,7 @@ export async function runWikiSession(
       await Promise.race([session.waitForIdle(), deadline]);
       await compactionDelivery;
       if (compactionDeliveryError) throw compactionDeliveryError;
-      currentPrompt = await options.nextPrompt?.();
+      currentPrompt = await options.nextPrompt?.(session.getLastAssistantText() ?? "");
     }
     const usage = readSessionUsage(session, compactions);
     return {

@@ -64,3 +64,6 @@ acceptance: <observable condition for passing>
 The review is complete only after every Candidate page, handoff hint, evidence
 gap, and rubric dimension has been accounted for. Candidate writes after a pass
 make the verdict stale.
+
+The host checks the verdict line before ending this session. If it returns a
+format repair, return the complete review again with the required first line.

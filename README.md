@@ -76,7 +76,7 @@ defaultSourceIgnores: true
 wiki:
   exclude: []
   maxConcurrentAgents: 3
-  maxEvidenceRepairRounds: 6
+  maxWorkerRepairRounds: 6
   transientRetries: 1
   baseRetryDelayMs: 1000
   sessionTimeoutSeconds: 1200
@@ -99,7 +99,7 @@ the defaults below; implicit single-source Workspaces use the same defaults.
 | --- | ---: | ---: | --- |
 | `exclude` | `[]` | source globs | Extra source globs excluded from evidence discovery and from `read` / `grep` / `find` / `ls`. |
 | `maxConcurrentAgents` | `3` | `2..64` | Total concurrent model sessions, including the Lead. At most `value - 1` delegated agents run together. |
-| `maxEvidenceRepairRounds` | `6` | `1..64` | Maximum same-session writer follow-ups while citation evidence issues keep changing. The host stops earlier after two unchanged issue batches. |
+| `maxWorkerRepairRounds` | `6` | `1..64` | Maximum same-session follow-ups for writer completion and reviewer verdict repairs. |
 | `transientRetries` | `1` | `0..10` | Retries after a transient model failure, in addition to the initial attempt. |
 | `baseRetryDelayMs` | `1000` | `0..300000` | Base delay used by Pi's retry backoff. |
 | `sessionTimeoutSeconds` | `1200` | `1..2147483` | Wall-clock deadline for each Lead or delegated-agent session. |
@@ -116,11 +116,17 @@ ignores are disabled. `.env.example` and `.env.sample` remain readable.
 The concurrency limit applies to parallel Source surveys and disjoint
 Repository Section writes while the Lead occupies one session slot. The
 cross-Source synthesize worker and review worker each run alone. Retry and
-timeout values apply to both the Lead and delegated agents. Evidence repair
-rounds apply to each writer partition. Wiki sessions use
-these settings instead of project or user Pi retry settings. Unknown `wiki`
+timeout values apply to both the Lead and delegated agents. Worker repair
+rounds apply independently to each writer or reviewer session. Wiki sessions
+use these settings instead of project or user Pi retry settings. Unknown `wiki`
 fields are rejected so misspelled or removed configuration cannot be silently
 ignored.
+
+Before a writer session ends, the host returns one exhaustive batch covering
+cited-file reads, Writer Todo coverage, and deterministic validation of that
+write target. The same writer repairs the batch and is checked again. Reviewer
+verdict formatting is repaired in its original session. The Lead retains only
+whole-Candidate integration checks, semantic repair routing, and publication.
 
 ### Board
 
@@ -153,8 +159,8 @@ connection string and may use `${ENV}` or `$ENV`.
 URL-encode special characters in the password. `schema` defaults to `public`.
 Omit `tables` to allow every table in that schema; otherwise names are
 fuzzy-matched (`user` → `users`, `user_account`; `order%` → `orders`). Agents
-call `db_tables` then `db_describe`; the host never dumps the schema into the
-Lead prompt. The schema is only the Catalog query scope: Agent tools expose
+may call `db_tables` and `db_describe` on demand; the host never dumps the
+schema into the Lead prompt. The schema is only the Catalog query scope: Agent tools expose
 table names without it, and generated pages cite tables as `catalog:orders`.
 Connections and transactions are read-only. Connection and SQL
 statement deadlines remain fixed host safety limits, not Workspace tuning
@@ -211,7 +217,8 @@ Contract fields stay on the template file. Generated pages carry only `type`,
 `title`, `description`, and `sources`. Claims use `[^id]` references keyed to
 `sources[].id` and matching `[^id]: source title` footnote definitions.
 `sources[].resource` is either a POSIX path from the Workspace root or a
-successfully described Catalog table (`catalog:<table>`). A file path may
+Catalog table (`catalog:<table>`). Describe Catalog tables on demand when a
+page needs columns, keys, or constraints. A file path may
 optionally end in `#Lx` or `#Lx-Ly`: for example `api/src/main.ts#L12` in an
 explicit Workspace and `src/main.ts` in an implicit Workspace. A supplied range
 must exist in the pinned file and must have been read by the writer. Paths are
@@ -225,8 +232,8 @@ pages. Generated pages preserve the H2 order, fill every section, and contain
 no `{{placeholder}}`. H3 subsections remain available.
 
 Publication fails on an undeclared page, wrong placement, missing architecture
-or concept cluster, heading drift, an empty section, a non-diagram H2 without a
-footnote, an unresolved placeholder, invalid diagram, missing source evidence,
+or concept cluster, heading drift, an empty section, an unresolved placeholder,
+invalid diagram, missing source evidence,
 a write that never read its cited files, a broken Wiki link, or stale review.
 
 ## Published layout

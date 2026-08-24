@@ -29,8 +29,8 @@ export interface WikiWorkspaceWikiConfig {
   exclude: string[];
   /** Total concurrent model sessions, including the Lead. */
   maxConcurrentAgents: number;
-  /** Maximum same-session writer rounds for unresolved citation evidence. */
-  maxEvidenceRepairRounds: number;
+  /** Maximum same-session worker follow-ups for locally repairable completion issues. */
+  maxWorkerRepairRounds: number;
   /** Pi retries after a transient model failure. */
   transientRetries: number;
   /** Base delay for Pi's exponential retry backoff. */
@@ -44,7 +44,7 @@ export interface WikiWorkspaceWikiConfig {
 export const DEFAULT_WORKSPACE_WIKI_CONFIG: WikiWorkspaceWikiConfig = {
   exclude: [],
   maxConcurrentAgents: 3,
-  maxEvidenceRepairRounds: 6,
+  maxWorkerRepairRounds: 6,
   transientRetries: 1,
   baseRetryDelayMs: 1_000,
   sessionTimeoutSeconds: 1_200,
@@ -350,13 +350,13 @@ function parseWorkspaceDatabase(value: unknown, env: Readonly<Record<string, str
 
 function parseWikiConfig(value: unknown): WikiWorkspaceWikiConfig {
   const wiki = strictObject(value, "wiki", [
-    "exclude", "maxConcurrentAgents", "maxEvidenceRepairRounds", "transientRetries", "baseRetryDelayMs", "sessionTimeoutSeconds", "templates",
+    "exclude", "maxConcurrentAgents", "maxWorkerRepairRounds", "transientRetries", "baseRetryDelayMs", "sessionTimeoutSeconds", "templates",
   ]);
   const templates = parseTemplatesPath(wiki.templates);
   return {
     exclude: parseStringArray(wiki.exclude, "wiki.exclude"),
     maxConcurrentAgents: parseInteger(wiki.maxConcurrentAgents, "wiki.maxConcurrentAgents", DEFAULT_WORKSPACE_WIKI_CONFIG.maxConcurrentAgents, 2, 64),
-    maxEvidenceRepairRounds: parseInteger(wiki.maxEvidenceRepairRounds, "wiki.maxEvidenceRepairRounds", DEFAULT_WORKSPACE_WIKI_CONFIG.maxEvidenceRepairRounds, 1, 64),
+    maxWorkerRepairRounds: parseInteger(wiki.maxWorkerRepairRounds, "wiki.maxWorkerRepairRounds", DEFAULT_WORKSPACE_WIKI_CONFIG.maxWorkerRepairRounds, 1, 64),
     transientRetries: parseInteger(wiki.transientRetries, "wiki.transientRetries", DEFAULT_WORKSPACE_WIKI_CONFIG.transientRetries, 0, 10),
     baseRetryDelayMs: parseInteger(wiki.baseRetryDelayMs, "wiki.baseRetryDelayMs", DEFAULT_WORKSPACE_WIKI_CONFIG.baseRetryDelayMs, 0, 300_000),
     sessionTimeoutSeconds: parseInteger(wiki.sessionTimeoutSeconds, "wiki.sessionTimeoutSeconds", DEFAULT_WORKSPACE_WIKI_CONFIG.sessionTimeoutSeconds, 1, 2_147_483),

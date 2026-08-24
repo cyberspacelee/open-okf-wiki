@@ -4,9 +4,12 @@ import path from "node:path";
 import { extractOkfSources, resolveSourceCitation, type SourceCitation } from "./citations.js";
 import { readText } from "./files.js";
 import { parsePage } from "./frontmatter.js";
+import { parseReviewVerdict } from "./handoff.js";
 import { assertReadable, type WikiWriteGuard } from "./path-policy.js";
-
-const MAX_STAGNANT_ROUNDS = 2;
+import { candidateTargetRevision } from "./revisions.js";
+import type { WikiTemplatePack } from "./templates.js";
+import type { createWriterTodoTracker } from "./writer-todo.js";
+import { formatIssue, validateWikiTarget } from "./wiki-okf.js";
 
 interface EvidenceReceipt {
   file: string;
@@ -15,39 +18,34 @@ interface EvidenceReceipt {
   fileDigest: string;
 }
 
-interface WriterEvidenceIssue {
-  code: "citation-unread" | "catalog-undescribed";
-  page: string;
-  resource: string;
+interface CompletionIssue {
   message: string;
-  suggestedAction: string;
 }
 
-export interface WriterEvidenceGate {
+interface WorkerCompletionGate {
   observe(event: { tool: string; args: unknown; status: string; result?: unknown }): void;
-  nextPrompt(): Promise<string | undefined>;
+  nextPrompt(output: string): Promise<string | undefined>;
 }
 
-export function createWriterEvidenceGate(
+export function createWriterCompletionGate(
   guard: WikiWriteGuard,
-  options: { maxRepairRounds?: number; onTouched?: (location: string) => void } = {},
-): WriterEvidenceGate {
+  options: {
+    maxRepairRounds?: number;
+    onTouched?: (location: string) => void;
+    todo?: ReturnType<typeof createWriterTodoTracker>;
+    templates?: WikiTemplatePack;
+    catalogAvailable?: boolean;
+  } = {},
+): WorkerCompletionGate {
   const maxRepairRounds = options.maxRepairRounds ?? 6;
-  if (!Number.isInteger(maxRepairRounds) || maxRepairRounds < 1) {
-    throw new Error("Writer evidence repair rounds must be a positive integer");
-  }
+  assertRepairRounds(maxRepairRounds);
   const touched = new Set<string>();
   const reads: Array<Promise<EvidenceReceipt | undefined>> = [];
-  const describedTables = new Set<string>();
-  let previousIssues: string | undefined;
-  let stagnantRounds = 0;
-  let repairRounds = 0;
+  const repair = createRepairLoop("Writer completion", maxRepairRounds,
+    "Continue in this same session. Fix every issue in the batch, update the Todo, reread changed pages, and finish only after the next completion check passes.",
+  );
   return {
     observe(event) {
-      if (event.tool === "db_describe" && event.status === "complete") {
-        for (const table of describedTableNames(event.result)) describedTables.add(table);
-        return;
-      }
       if (!isRecord(event.args) || typeof event.args.path !== "string") return;
       if (event.tool === "read" && event.status === "complete") {
         reads.push(captureEvidenceRead(guard, event.args, event.result));
@@ -59,23 +57,26 @@ export function createWriterEvidenceGate(
     },
     async nextPrompt() {
       const receipts = (await Promise.all(reads)).filter((entry): entry is EvidenceReceipt => entry !== undefined);
-      const issues = await validateWriterEvidence(guard, touched, receipts, describedTables);
-      if (!issues.length) return undefined;
-      const issueDigest = writerEvidenceIssueDigest(issues);
-      stagnantRounds = issueDigest === previousIssues ? stagnantRounds + 1 : 0;
-      if (repairRounds >= maxRepairRounds || stagnantRounds >= MAX_STAGNANT_ROUNDS) {
-        throw new Error([
-          `Writer evidence repair did not converge after ${repairRounds} rounds.`,
-          formatWriterEvidenceRepair(issues),
-        ].join("\n"));
-      }
-      previousIssues = issueDigest;
-      repairRounds += 1;
-      return [
-        formatWriterEvidenceRepair(issues),
-        "Continue in this same session. Read every requested source span, then revise or remove any claim whose citation is not supported.",
-        `Repair round ${repairRounds} of ${maxRepairRounds}. All listed issues are from one exhaustive check.`,
-      ].join("\n\n");
+      const issues = [
+        ...await validateWriterEvidence(guard, touched, receipts),
+        ...await validateWriterAssignment(guard, options.todo, options.templates, Boolean(options.catalogAvailable)),
+      ];
+      return repair(issues);
+    },
+  };
+}
+
+export function createReviewerCompletionGate(maxRepairRounds = 6): WorkerCompletionGate {
+  assertRepairRounds(maxRepairRounds);
+  const repair = createRepairLoop("Reviewer completion", maxRepairRounds,
+    "Continue in this same read-only session. Return the complete review again with the required verdict as its first nonblank line.",
+  );
+  return {
+    observe() {},
+    async nextPrompt(output) {
+      return repair(parseReviewVerdict(output) ? [] : [{
+        message: "[review-verdict] The first nonblank line must be exactly `verdict: pass` or `verdict: changes_requested`.",
+      }]);
     },
   };
 }
@@ -118,9 +119,8 @@ async function validateWriterEvidence(
   guard: WikiWriteGuard,
   touched: ReadonlySet<string>,
   receipts: readonly EvidenceReceipt[],
-  describedTables: ReadonlySet<string>,
-): Promise<WriterEvidenceIssue[]> {
-  const issues: WriterEvidenceIssue[] = [];
+): Promise<CompletionIssue[]> {
+  const issues: CompletionIssue[] = [];
   const digests = new Map<string, string>();
   for (const location of [...touched].sort()) {
     const absolute = candidateFile(guard, location);
@@ -133,17 +133,6 @@ async function validateWriterEvidence(
     }
     const page = path.relative(guard.candidateRoot, absolute).replaceAll("\\", "/");
     for (const citation of extractOkfSources(parsed.frontmatter, parsed.body).citations) {
-      if (citation.catalogTable) {
-        if (describedTables.has(citation.catalogTable)) continue;
-        issues.push({
-          code: "catalog-undescribed",
-          page,
-          resource: citation.path,
-          message: "The cited Catalog table was not successfully described in this writer session.",
-          suggestedAction: `Call db_describe for ${citation.catalogTable}, then verify the claim or correct/remove the citation.`,
-        });
-        continue;
-      }
       if (!resolveSourceCitation(citation, guard.sources)) continue;
       const file = path.resolve(guard.workspaceRoot, ...citation.path.split("/"));
       const currentDigest = await digest(file, digests);
@@ -155,39 +144,52 @@ async function validateWriterEvidence(
       const hasRange = startLine !== undefined && endLine !== undefined;
       const range = hasRange ? `${startLine}-${endLine}` : undefined;
       issues.push({
-        code: "citation-unread",
-        page,
-        resource,
-        message: range
-          ? `The successful read spans do not cover cited lines ${range}.`
-          : "The cited pinned file was not successfully read in this writer session.",
-        suggestedAction: hasRange
-          ? `Read lines ${range} from ${citation.path} (offset=${startLine}, limit=${endLine - startLine + 1}), then verify the claim or correct/remove the citation.`
-          : `Read ${citation.path}, then verify the claim or replace/remove the unsupported citation.`,
+        message: [
+          `[citation-unread] ${page}: ${resource}`,
+          `  ${range
+            ? `The successful read spans do not cover cited lines ${range}.`
+            : "The cited pinned file was not successfully read in this writer session."}`,
+          `  Suggested action: ${hasRange
+            ? `Read lines ${range} from ${citation.path} (offset=${startLine}, limit=${endLine - startLine + 1}), then verify the claim or correct/remove the citation.`
+            : `Read ${citation.path}, then verify the claim or replace/remove the unsupported citation.`}`,
+        ].join("\n"),
       });
     }
   }
   return uniqueIssues(issues);
 }
 
-function formatWriterEvidenceRepair(issues: readonly WriterEvidenceIssue[]): string {
-  const lines = [
-    `Writer evidence validation found ${issues.length} issue${issues.length === 1 ? "" : "s"}. Fix all issues in this batch before finishing:`,
-  ];
-  for (const issue of issues) {
-    lines.push(
-      `- [${issue.code}] ${issue.page}: ${issue.resource}`,
-      `  ${issue.message}`,
-      `  Suggested action: ${issue.suggestedAction}`,
-    );
+async function validateWriterAssignment(
+  guard: WikiWriteGuard,
+  todo: ReturnType<typeof createWriterTodoTracker> | undefined,
+  templates: WikiTemplatePack | undefined,
+  catalogAvailable: boolean,
+): Promise<CompletionIssue[]> {
+  if (!todo && !templates) return [];
+  if (!guard.writeTarget) throw new Error("Writer completion requires a write target");
+  const completed = await candidateTargetRevision(guard.candidateRoot, guard.writeTarget);
+  const issues: CompletionIssue[] = [];
+  if (todo) {
+    try {
+      todo.assertComplete(completed.files);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      issues.push({ message: `[writer-todo] ${message}` });
+    }
   }
-  return lines.join("\n");
-}
-
-function writerEvidenceIssueDigest(issues: readonly WriterEvidenceIssue[]): string {
-  return createHash("sha256")
-    .update(issues.map((issue) => `${issue.code}\0${issue.page}\0${issue.resource}`).sort().join("\n"))
-    .digest("hex");
+  if (templates) {
+    const validation = await validateWikiTarget(
+      guard.candidateRoot,
+      guard.writeTarget,
+      guard.sources,
+      templates,
+      { catalogAvailable },
+    );
+    issues.push(...validation.issues.map((issue) => ({
+      message: `[${issue.code}] ${formatIssue(issue)}`,
+    })));
+  }
+  return issues;
 }
 
 function citationCovered(citation: SourceCitation, receipts: readonly EvidenceReceipt[]): boolean {
@@ -236,15 +238,36 @@ function formatResource(citation: SourceCitation): string {
     : `${citation.path}#L${citation.startLine}-L${citation.endLine}`;
 }
 
-function uniqueIssues(issues: readonly WriterEvidenceIssue[]): WriterEvidenceIssue[] {
-  const byKey = new Map<string, WriterEvidenceIssue>();
-  for (const issue of issues) byKey.set(`${issue.page}\0${issue.resource}`, issue);
-  return [...byKey.values()];
+function uniqueIssues(issues: readonly CompletionIssue[]): CompletionIssue[] {
+  return [...new Map(issues.map((issue) => [issue.message, issue])).values()];
 }
 
-function describedTableNames(result: unknown): string[] {
-  if (!isRecord(result) || !isRecord(result.details) || !Array.isArray(result.details.tables)) return [];
-  return result.details.tables.filter((table): table is string => typeof table === "string");
+function createRepairLoop(
+  label: string,
+  maxRepairRounds: number,
+  instruction: string,
+): (issues: readonly CompletionIssue[]) => string | undefined {
+  let repairRounds = 0;
+  return (issues) => {
+    if (!issues.length) return undefined;
+    const report = [
+      `${label} validation found ${issues.length} issue${issues.length === 1 ? "" : "s"}. Fix all issues in this batch before finishing:`,
+      ...issues.map((issue) => `- ${issue.message.replaceAll("\n", "\n  ")}`),
+    ].join("\n");
+    if (repairRounds >= maxRepairRounds) {
+      throw new Error(`${label} repair did not converge after ${repairRounds} rounds.\n${report}`);
+    }
+    repairRounds += 1;
+    return [
+      report,
+      instruction,
+      `Repair round ${repairRounds} of ${maxRepairRounds}. All listed issues are from one exhaustive completion check.`,
+    ].join("\n\n");
+  };
+}
+
+function assertRepairRounds(value: number): void {
+  if (!Number.isInteger(value) || value < 1) throw new Error("Worker repair rounds must be a positive integer");
 }
 
 function readTruncation(value: unknown): Record<string, unknown> | undefined {

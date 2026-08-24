@@ -84,10 +84,11 @@ Default loop:
    this is the cross-repository overview and architecture: pass the synthesis
    handoff and tell the writer to inspect the completed repository sections.
 6. Call `candidate_check`. It returns every deterministic issue with a repair
-   suggestion. Group the full batch by Domain subtree or aggregation directory,
-   repair all affected targets, then check the changed Candidate again. Continue
-   while the Candidate or issue digest makes progress; do not poll an unchanged
-   failure.
+   suggestion after every writer has already passed its own completion gate.
+   Group any remaining cross-target or whole-Candidate batch by Domain subtree
+   or aggregation directory, repair all affected targets, then check the changed
+   Candidate again. Continue while the Candidate or issue digest makes progress;
+   do not poll an unchanged failure.
 7. Create an in-progress review Task and run one fresh reviewer against the
    current Candidate. Name every survey, synthesis (when present), and write
    handoff path in the review task so the reviewer can weigh evidence-selected

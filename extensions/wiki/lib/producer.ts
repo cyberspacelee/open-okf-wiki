@@ -343,7 +343,7 @@ function defaultRunLead(
       context.catalog,
       {
         maxConcurrency: config.maxConcurrentAgents - 1,
-        maxEvidenceRepairRounds: config.maxEvidenceRepairRounds,
+        maxWorkerRepairRounds: config.maxWorkerRepairRounds,
         templates: context.templates,
         language: context.language,
         assertDispatch: context.assertDispatch,

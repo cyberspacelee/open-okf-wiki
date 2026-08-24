@@ -58,9 +58,8 @@ export function formatWriterCitationContract(
     sourceScope,
     "Use paths without a leading slash, `./`, `../`, empty segments, or backslashes.",
     ...(catalogAvailable
-      ? ["A described Catalog table may use `catalog:table`, for example `catalog:orders`, only after `db_describe` succeeds for that table in this session. Prefer it for columns, keys, and constraints."]
+      ? ["A Catalog table may use `catalog:table`, for example `catalog:orders`. Use `db_describe` when the page needs columns, keys, or constraints."]
       : []),
-    "Every non-diagram H2 contains at least one inline source footnote.",
     "",
   ].join("\n");
 }

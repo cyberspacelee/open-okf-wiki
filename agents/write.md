@@ -77,6 +77,7 @@ Default: none.
 Page, semantic obligation, searches performed, and missing evidence. Default:
 none. `complete` requires this section to be `none`.
 
-The host may return one exhaustive evidence-repair batch in this session.
-Repair the full batch and repeat the completion check; do not claim that the
-whole Candidate passed host validation.
+The host runs exhaustive completion checks in this session for cited-file
+reads, Todo coverage, and the assigned write target. Repair each full batch and
+continue until the completion check passes; do not claim that the whole
+Candidate passed global validation.

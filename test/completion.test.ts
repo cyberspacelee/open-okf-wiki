@@ -3,10 +3,14 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createWriterEvidenceGate } from "../extensions/wiki/lib/evidence.js";
+import {
+  createReviewerCompletionGate,
+  createWriterCompletionGate,
+} from "../extensions/wiki/lib/completion.js";
 import type { WikiWriteGuard } from "../extensions/wiki/lib/path-policy.js";
+import { createWriterTodoTracker } from "../extensions/wiki/lib/writer-todo.js";
 
-async function fixture(t, resource: string, options: Parameters<typeof createWriterEvidenceGate>[1] = {}) {
+async function fixture(t, resource: string, options: Parameters<typeof createWriterCompletionGate>[1] = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-evidence-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));
   const candidateRoot = path.join(root, ".okf-wiki", "runs", "run", "candidate");
@@ -25,8 +29,9 @@ async function fixture(t, resource: string, options: Parameters<typeof createWri
     sources: [{ scopeId: "self", logicalPath: ".", realPath: root }],
     defaultSourceIgnores: true,
     excludes: [],
+    writeTarget: { path: "wiki-root", mode: "directory" },
   };
-  const gate = createWriterEvidenceGate(guard, options);
+  const gate = createWriterCompletionGate(guard, options);
   gate.observe({ tool: "write", args: { path: "wiki/overview.md" }, status: "complete" });
   return gate;
 }
@@ -39,45 +44,40 @@ test("evidence receipts cover only lines returned by a truncated read", async (t
     status: "complete",
     result: { details: { truncation: { truncated: true, outputLines: 2 } } },
   });
-  assert.match(await gate.nextPrompt() ?? "", /offset=3, limit=1/);
+  assert.match(await gate.nextPrompt("") ?? "", /offset=3, limit=1/);
 
   gate.observe({ tool: "read", args: { path: "main.ts", offset: 3, limit: 1 }, status: "complete", result: {} });
-  assert.equal(await gate.nextPrompt(), undefined);
+  assert.equal(await gate.nextPrompt(""), undefined);
 });
 
 test("a path-only citation requires a successful read but not a full-file span", async (t) => {
   const gate = await fixture(t, "main.ts");
-  assert.match(await gate.nextPrompt() ?? "", /main\.ts/);
+  assert.match(await gate.nextPrompt("") ?? "", /main\.ts/);
   gate.observe({ tool: "read", args: { path: "main.ts", offset: 2, limit: 1 }, status: "complete", result: {} });
-  assert.equal(await gate.nextPrompt(), undefined);
+  assert.equal(await gate.nextPrompt(""), undefined);
 });
 
-test("the configured evidence repair limit bounds a writer session", async (t) => {
-  const gate = await fixture(t, "main.ts", { maxRepairRounds: 1 });
-  assert.match(await gate.nextPrompt() ?? "", /round 1 of 1/i);
-  await assert.rejects(() => gate.nextPrompt(), /after 1 rounds/);
+test("the configured worker repair limit bounds a writer session", async (t) => {
+  const gate = await fixture(t, "main.ts", { maxRepairRounds: 3 });
+  for (let round = 1; round <= 3; round += 1) {
+    assert.match(await gate.nextPrompt("") ?? "", new RegExp(`round ${round} of 3`, "i"));
+  }
+  await assert.rejects(() => gate.nextPrompt(""), /after 3 rounds/);
 });
 
-test("a catalog citation requires a successful db_describe of that table", async (t) => {
-  const gate = await fixture(t, "catalog:orders");
-  assert.match(await gate.nextPrompt() ?? "", /catalog-undescribed[\s\S]*db_describe for orders/);
-
-  gate.observe({
-    tool: "db_describe",
-    args: { tables: ["orders"] },
-    status: "complete",
-    result: { details: { text: "display text may change", tables: ["orders"] } },
+test("writer completion reports evidence and assignment issues in one repair batch", async (t) => {
+  const todo = createWriterTodoTracker({ path: "wiki-root", mode: "directory" });
+  const gate = await fixture(t, "main.ts", {
+    todo,
   });
-  assert.equal(await gate.nextPrompt(), undefined);
+  const prompt = await gate.nextPrompt("") ?? "";
+  assert.match(prompt, /citation-unread/);
+  assert.match(prompt, /writer-todo/);
+  assert.match(prompt, /one exhaustive completion check/);
 });
 
-test("catalog evidence uses the exact structured table identity", async (t) => {
-  const gate = await fixture(t, "catalog:orders");
-  gate.observe({
-    tool: "db_describe",
-    args: { tables: ["orders"] },
-    status: "complete",
-    result: { details: { text: "# orders (table)", tables: ["Orders"] } },
-  });
-  assert.match(await gate.nextPrompt() ?? "", /catalog-undescribed/);
+test("reviewer repairs an invalid verdict in the same session", async () => {
+  const gate = createReviewerCompletionGate();
+  assert.match(await gate.nextPrompt("Looks good.") ?? "", /verdict: pass/);
+  assert.equal(await gate.nextPrompt("verdict: pass\n\nEvidence checked."), undefined);
 });

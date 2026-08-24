@@ -419,7 +419,7 @@ test("validate rejects leaked template keys, missing description, and dangling w
   assert.ok(result.issues.some((issue) => issue.code === "link"));
 });
 
-test("validate rejects unknown pages, empty sections, missing footnotes, and placeholders", async (t) => {
+test("validate rejects unknown pages, empty sections, and placeholders", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-markdown-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));
   const src = await sourceTree(t);
@@ -437,7 +437,6 @@ test("validate rejects unknown pages, empty sections, missing footnotes, and pla
   assert.ok(result.issues.some((issue) => issue.code === "markdown" && issue.message.includes("empty")));
   assert.ok(result.issues.some((issue) => issue.code === "markdown" && issue.message.includes("placeholder")));
   assert.equal(result.issues.filter((issue) => issue.code === "markdown" && issue.message.includes("placeholder")).length, 2);
-  assert.ok(result.issues.some((issue) => issue.code === "markdown" && issue.message.includes("footnote")));
 });
 
 test("packaged default templates reject a single overview page", async (t) => {

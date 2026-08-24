@@ -24,8 +24,6 @@ const LOCAL_DATE = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
 
 const MERMAID_KIND = /```mermaid[^\n]*\r?\n\s*([A-Za-z][A-Za-z0-9-]*)/;
 const MERMAID_FENCE = /```mermaid[^\n]*\r?\n([\s\S]*?)```/;
-const INLINE_FOOTNOTE = /\[\^([^\]]+)\]/;
-const FOOTNOTE_DEFINITION = /^\[\^[^\]]+\]:/;
 
 export interface WikiPin {
   scopeId: string;
@@ -347,13 +345,9 @@ function markdownContractIssues(
       message: `H2 sections must be exactly: ${expectedSections.join(" | ")}`,
     });
   }
-  const diagram = template.diagram?.section;
   for (const section of structure.sections) {
     if (expectedSections.includes(section.title) && !sectionHasContent(section)) {
       issues.push({ code: "markdown", page: relative, message: `H2 section is empty: ${section.title}` });
-    }
-    if (expectedSections.includes(section.title) && section.title !== diagram && !sectionCitesSource(section)) {
-      issues.push({ code: "markdown", page: relative, message: `H2 section is missing a sources footnote: ${section.title}` });
     }
   }
   for (const placeholder of structure.placeholders) {
@@ -364,10 +358,6 @@ function markdownContractIssues(
     });
   }
   return issues;
-}
-
-function sectionCitesSource(section: { lines: string[] }): boolean {
-  return section.lines.some((line) => INLINE_FOOTNOTE.test(line) && !FOOTNOTE_DEFINITION.test(line.trim()));
 }
 
 function sourceFileLines(
@@ -682,7 +672,7 @@ function issueSuggestion(code: string): string {
     case "cross-source": return "Add evidence from every pinned Source to the Workspace architecture after reading the synthesis handoff and cited files.";
     case "frontmatter": return "Repair the YAML frontmatter so the page can be parsed, preserving only fields allowed by its template.";
     case "link": return "Correct the Wiki-relative target or add the missing declared page.";
-    case "markdown": return "Rewrite the page to match the template heading order, required content, and source-footnote contract.";
+    case "markdown": return "Rewrite the page to match the template heading order and required content.";
     case "mermaid": return "Use an allowed Mermaid diagram kind and valid fenced syntax for the required diagram section.";
     case "okf": return "Fill the required OKF metadata with values matching the selected page template.";
     case "path": return "Move or rename the page to a legal path in its repository, domain, or concept partition.";

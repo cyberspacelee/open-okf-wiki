@@ -73,8 +73,12 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
   selected template pack.
 - Writers receive their assigned partition and template-derived directory tree,
   including the host-owned `index.md` and `log.md` rule.
+- Writer citation reads, Todo coverage, and target validation now repair inside
+  the original writer session; reviewer verdict formatting does the same.
+- `maxWorkerRepairRounds` replaces `maxEvidenceRepairRounds` and bounds all
+  locally repairable worker completion follow-ups.
 - Optional openGauss Catalog evidence remains on-demand and read-only through
-  `db_tables` and `db_describe`; pages cite described tables as `catalog:table`.
+  `db_tables` and `db_describe`; pages cite tables as `catalog:table`.
 
 ### Commands
 

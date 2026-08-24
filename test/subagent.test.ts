@@ -29,6 +29,23 @@ function implicitPlan(workspaceRoot: string) {
   };
 }
 
+function completionPack() {
+  return {
+    templates: [{
+      sourceFile: "overview.md",
+      id: "overview",
+      type: "Overview",
+      altitudes: ["wiki", "repo"] as Array<"wiki" | "repo">,
+      identities: ["wiki", "repo"] as Array<"wiki" | "repo">,
+      filename: "overview.md",
+      cardinality: "one" as const,
+      required: true,
+      purpose: "Route readers into the Wiki.",
+      sections: [{ title: "Details", guidance: "Describe the source." }],
+    }],
+  };
+}
+
 test("illegal survey partitions are rejected when Sources are pinned", async () => {
   const workspaceRoot = path.resolve("/tmp/okf-wiki-subagent-partition");
   const runtime = await createSubagentRuntime(
@@ -371,19 +388,20 @@ test("subagent prompts project templates by role", async (t) => {
       ...(agent === "write" ? { writeMode: "directory" } : {}),
     }], new AbortController().signal);
   }
-  assert.match(prompts[0], /Page contract catalog/);
-  assert.doesNotMatch(prompts[0], /Output skeleton/);
-  assert.match(prompts[1], /Page contract catalog/);
-  assert.doesNotMatch(prompts[1], /Output skeleton/);
-  assert.match(prompts[2], /Output skeleton/);
-  assert.match(prompts[2], /## Directory contract/);
-  assert.match(prompts[2], /Assigned write target: `directory:wiki-root`/);
-  assert.match(prompts[2], /## Output language/);
-  assert.match(prompts[2], /Run language is `en`/);
-  assert.match(prompts[2], /Simplified Chinese/);
-  assert.match(prompts[2], /Preserve source identifiers/);
-  assert.match(prompts[3], /Page contract catalog/);
-  assert.doesNotMatch(prompts[3], /Output skeleton/);
+  const initial = prompts.filter((prompt) => prompt.includes("# Task"));
+  assert.match(initial[0], /Page contract catalog/);
+  assert.doesNotMatch(initial[0], /Output skeleton/);
+  assert.match(initial[1], /Page contract catalog/);
+  assert.doesNotMatch(initial[1], /Output skeleton/);
+  assert.match(initial[2], /Output skeleton/);
+  assert.match(initial[2], /## Directory contract/);
+  assert.match(initial[2], /Assigned write target: `directory:wiki-root`/);
+  assert.match(initial[2], /## Output language/);
+  assert.match(initial[2], /Run language is `en`/);
+  assert.match(initial[2], /Simplified Chinese/);
+  assert.match(initial[2], /Preserve source identifiers/);
+  assert.match(initial[3], /Page contract catalog/);
+  assert.doesNotMatch(initial[3], /Output skeleton/);
   assert.equal(prompts.filter((prompt) => prompt.includes("## Output language")).length, 1);
   assert.equal(prompts.filter((prompt) => prompt.includes("## Directory contract")).length, 1);
 });
@@ -618,6 +636,113 @@ test("writer repairs every unread citation in one session for more than two roun
   assert.match(prompts[1], /b\.ts#L1/);
   assert.match(prompts[1], /c\.ts#L1/);
   assert.match(prompts[1], /Suggested action/i);
+});
+
+test("writer repairs Todo and target validation before its session ends", async (t) => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-writer-completion-"));
+  t.after(async () => await rm(workspaceRoot, { recursive: true, force: true }));
+  const candidateRoot = path.join(workspaceRoot, ".okf-wiki", "run", "candidate");
+  await mkdir(candidateRoot, { recursive: true });
+  await writeFile(path.join(workspaceRoot, "main.ts"), "export const ready = true;\n");
+  let listener = () => {};
+  let output = "";
+  const prompts: string[] = [];
+  const runtime = await createSubagentRuntime(implicitPlan(workspaceRoot), candidateRoot, {
+    async createSession(options) {
+      const todo = options.customTools.find((tool) => tool.name === "todo");
+      assert.ok(todo);
+      return {
+        session: {
+          sessionFile: undefined,
+          subscribe(next) { listener = next; return () => {}; },
+          async prompt(value) {
+            prompts.push(value);
+            if (prompts.length === 1) {
+              await todo.execute("todo-1", {
+                action: "write",
+                items: [{ path: "wiki/overview.md", status: "pending" }],
+              }, new AbortController().signal, undefined, undefined);
+              await writeFile(path.join(candidateRoot, "overview.md"), [
+                "---", "type: Overview", "title: Overview", "description:", "sources:",
+                "  - id: main", "    resource: main.ts#L1", "---", "# Overview", "", "Overview.",
+                "", "## Details", "", "Grounded. [^main]", "", "[^main]: main", "",
+              ].join("\n"));
+              listener({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "main.ts" } });
+              listener({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read", result: {}, isError: false });
+              listener({ type: "tool_execution_start", toolCallId: "write-1", toolName: "write", args: { path: "wiki/overview.md" } });
+              listener({ type: "tool_execution_end", toolCallId: "write-1", toolName: "write", result: {}, isError: false });
+              output = "complete";
+              return;
+            }
+            assert.match(value, /Writer completion validation/);
+            assert.match(value, /writer-todo/);
+            assert.match(value, /description/);
+            await todo.execute("todo-2", {
+              action: "write",
+              items: [{ path: "wiki/overview.md", status: "completed" }],
+            }, new AbortController().signal, undefined, undefined);
+            await writeFile(path.join(candidateRoot, "overview.md"), [
+              "---", "type: Overview", "title: Overview", "description: Overview.", "sources:",
+              "  - id: main", "    resource: main.ts#L1", "---", "# Overview", "", "Overview.",
+              "", "## Details", "", "Grounded. [^main]", "", "[^main]: main", "",
+            ].join("\n"));
+            listener({ type: "tool_execution_start", toolCallId: "edit-1", toolName: "edit", args: { path: "wiki/overview.md" } });
+            listener({ type: "tool_execution_end", toolCallId: "edit-1", toolName: "edit", result: {}, isError: false });
+            output = "complete";
+          },
+          async waitForIdle() {},
+          getLastAssistantText() { return output; },
+          dispose() {},
+          abort() {},
+        },
+        modelFallbackMessage: undefined,
+      };
+    },
+  }, undefined, undefined, undefined, { templates: completionPack() });
+  const [result] = await runtime.run([{
+    agent: "write",
+    task: "Write overview",
+    boardTaskId: "write",
+    partition: "wiki-root",
+    writeMode: "directory",
+  }], new AbortController().signal);
+  assert.equal(result.error, undefined);
+  assert.equal(prompts.length, 2);
+});
+
+test("reviewer repairs its verdict before its session ends", async (t) => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-reviewer-completion-"));
+  t.after(async () => await rm(workspaceRoot, { recursive: true, force: true }));
+  let output = "";
+  const prompts: string[] = [];
+  const runtime = await createSubagentRuntime(implicitPlan(workspaceRoot), path.join(workspaceRoot, "candidate"), {
+    async createSession() {
+      return {
+        session: {
+          sessionFile: undefined,
+          subscribe() { return () => {}; },
+          async prompt(value) {
+            prompts.push(value);
+            output = prompts.length === 1 ? "Candidate looks correct." : "verdict: pass\n\nEvidence checked.";
+          },
+          async waitForIdle() {},
+          getLastAssistantText() { return output; },
+          dispose() {},
+          abort() {},
+        },
+        modelFallbackMessage: undefined,
+      };
+    },
+  });
+  const [result] = await runtime.run([{
+    agent: "review",
+    task: "Review Candidate",
+    boardTaskId: "review",
+    partition: "candidate",
+  }], new AbortController().signal);
+  assert.equal(result.error, undefined);
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[1], /verdict: changes_requested/);
 });
 
 test("failed writes do not validate stale Candidate citations", async (t) => {

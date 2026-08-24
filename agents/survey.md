@@ -22,9 +22,8 @@ For each evidence category, either provide a locator-backed finding or record
 `none found` plus the directories or patterns checked. Completion requires
 every category to be accounted for; a silent omission is not a negative result.
 
-When Catalog tools exist, describe only tables the Source reads or writes.
-Record table ownership and `catalog:<table>` evidence; do not infer undeclared
-tables.
+Use Catalog tools on demand when table metadata is needed. Record inspected
+table ownership and `catalog:<table>` evidence; do not infer undeclared tables.
 
 # Contract hints
 
@@ -86,7 +85,8 @@ Default: none.
 
 ## Tables
 
-Described Catalog tables, access direction, and owning Concept. Default: none.
+Catalog tables inspected on demand, access direction, and owning Concept.
+Default: none.
 
 ## Survey gaps
 

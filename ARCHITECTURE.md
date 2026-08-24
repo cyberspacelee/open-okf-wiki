@@ -22,7 +22,7 @@ cancelled Runs leave no Run directory or history.
 
 An optional openGauss Catalog is declared on the Workspace and retrieved
 on demand (`db_tables`, `db_describe`). Only openGauss. Read-only. Pages may
-cite described tables as `catalog:table`; the configured database schema stays
+cite tables as `catalog:table`; the configured database schema stays
 inside the Catalog Adapter.
 
 SOP is `prompts/lead.md`. Named workers are `agents/*.md`. Multi-Source Runs
@@ -41,8 +41,8 @@ prefix. Structure is mechanically validated. `type` is Title Case;
 filenames stay kebab-case. The host enforces Source-survey fan-in before
 cross-Source synthesis and rejects writes that predate synthesis. It also
 enforces execution receipts, disjoint write prefixes, prefix-bound writer
-digests, review exclusivity, cited-file reads, Candidate validation, review
-freshness, and publication. The Lead session has `todo`, `subagent`, `candidate_check`,
+digests, review exclusivity, same-session writer completion checks, Candidate
+validation, review freshness, and publication. The Lead session has `todo`, `subagent`, `candidate_check`,
 `publish`, and read-only Candidate tools. `write` / `edit` belong to the write
 agent. An explicit Workspace owns knowledge by Repository Section
 (`<scopeId>/<domain>/<concept>/`); its root pages own cross-Source

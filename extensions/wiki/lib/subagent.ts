@@ -13,13 +13,15 @@ import { runWikiSession, type RunWikiSessionOptions } from "./pi/session.js";
 import type { WikiCatalog } from "./catalog.js";
 import type { WikiToolView } from "./producer-types.js";
 import { formatWikiTemplateCatalog, formatWikiTemplatesForPrompt, templatesForTarget, type WikiTemplatePack } from "./templates.js";
-import { createWriterEvidenceGate } from "./evidence.js";
+import {
+  createReviewerCompletionGate,
+  createWriterCompletionGate,
+} from "./completion.js";
 import { formatWriterCitationContract } from "./citations.js";
 import { candidateTargetRevision, candidateRevision, fileRevision } from "./revisions.js";
 import type { WikiAgentUsage } from "./producer-types.js";
 import { createWriterTodoTracker, type WriterTodoItem } from "./writer-todo.js";
 import type { WikiWriteMode, WikiWriteTarget } from "./write-target.js";
-import { formatIssue, validateWikiTarget } from "./wiki-okf.js";
 
 export interface SubagentTask {
   agent: string;
@@ -65,7 +67,7 @@ export async function createSubagentRuntime(
   catalog?: WikiCatalog,
   options: {
     maxConcurrency?: number;
-    maxEvidenceRepairRounds?: number;
+    maxWorkerRepairRounds?: number;
     templates?: WikiTemplatePack;
     language?: "zh" | "en";
     assertDispatch?: (tasks: readonly SubagentTask[]) => void;
@@ -109,7 +111,7 @@ export async function createSubagentRuntime(
               if (scoped.kind === "tool") applyChildTool(live.get(task.id)!.tools, scoped);
               void report();
             },
-          }, signal, catalog, options.templates, options.maxEvidenceRepairRounds, options.language);
+          }, signal, catalog, options.templates, options.maxWorkerRepairRounds, options.language);
           const status = result.error ? "failed" : "complete";
           const entry = live.get(result.id)!;
           entry.status = status;
@@ -206,7 +208,7 @@ async function runOne(
   signal: AbortSignal,
   catalog?: WikiCatalog,
   templates?: WikiTemplatePack,
-  maxEvidenceRepairRounds?: number,
+  maxWorkerRepairRounds?: number,
   language?: "zh" | "en",
 ): Promise<SubagentResult> {
   const definition = byName.get(task.agent);
@@ -227,12 +229,17 @@ async function runOne(
     const allowed = definition.tools ? new Set(definition.tools) : undefined;
     const taskGuard = writeTarget ? { ...guard, writeTarget } : guard;
     const todo = writeTarget && templates ? createWriterTodoTracker(writeTarget) : undefined;
-    const evidenceGate = writeTarget
-      ? createWriterEvidenceGate(taskGuard, {
-        maxRepairRounds: maxEvidenceRepairRounds,
+    const completionGate = writeTarget
+      ? createWriterCompletionGate(taskGuard, {
+        maxRepairRounds: maxWorkerRepairRounds,
         onTouched: (location) => touched.add(location),
+        todo,
+        templates,
+        catalogAvailable: Boolean(catalog),
       })
-      : undefined;
+      : task.agent === "review"
+        ? createReviewerCompletionGate(maxWorkerRepairRounds)
+        : undefined;
     const tools = [
       ...candidateTools(taskGuard, definition.tools),
       ...(todo ? [todo.tool] : []),
@@ -263,7 +270,7 @@ async function runOne(
         ...session,
         onActivity(event) {
           session.onActivity?.(event);
-          if (event.kind === "tool") evidenceGate?.observe(event);
+          if (event.kind === "tool") completionGate?.observe(event);
         },
         onCompaction: () => formatWorkerCheckpoint(
           task,
@@ -272,19 +279,10 @@ async function runOne(
           touched,
           todo?.snapshot(),
         ),
-        nextPrompt: evidenceGate?.nextPrompt,
+        nextPrompt: completionGate?.nextPrompt,
       },
     );
     const completed = task.agent === "survey" ? undefined : await outputRevision();
-    if (todo && completed && writeTarget) {
-      todo.assertComplete(completed.files);
-      if (templates) {
-        const validation = await validateWikiTarget(guard.candidateRoot, writeTarget, guard.sources, templates, {
-          catalogAvailable: Boolean(catalog),
-        });
-        if (!validation.ok) throw new Error(`Write target validation failed:\n${validation.issues.map(formatIssue).join("\n")}`);
-      }
-    }
     const handoff = await writeHandoff({
       workspaceRoot: guard.workspaceRoot,
       handoffsRoot: guard.handoffsRoot,
