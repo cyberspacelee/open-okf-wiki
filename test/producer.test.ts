@@ -363,7 +363,7 @@ test("a reopened process-crash Run reconciles persisted running receipts", async
   }, null, 2)}\n`);
   const now = new Date().toISOString();
   await writeText(path.join(directory, "run.json"), `${JSON.stringify({
-    schemaVersion: 4,
+    schemaVersion: 5,
     id,
     cwd: root,
     status: "running",
@@ -569,6 +569,35 @@ test("candidate_check and publish share deterministic diagnostics", async (t) =>
   });
   const handle = await producer.start({ cwd: root });
   await assert.rejects(() => handle.result(), /frontmatter|type|failed/);
+});
+
+test("Run exposes only Catalogs bound by pinned Sources", async (t) => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "wiki-run-bound-catalogs-"));
+  t.after(async () => await rm(parent, { recursive: true, force: true }));
+  const workspace = await wikiWorkspaceManagement.init({ cwd: parent, workspace: "workspace" });
+  const source = await gitRepo(t);
+  const config = await readFile(workspace.configPath, "utf8");
+  await writeFile(workspace.configPath, config.replace("sources: []", [
+    "catalogs:",
+    "  shared:",
+    "    url: postgresql://shared@localhost/app",
+    "  unused:",
+    "    url: postgresql://unused@localhost/app",
+    "sources: []",
+  ].join("\n")));
+  await wikiWorkspaceManagement.addLink({ cwd: workspace.root, localPath: source, name: "api", catalog: "shared" });
+  let ready;
+  const started = new Promise((resolve) => { ready = resolve; });
+  const producer = createProductionWikiProducer({
+    async runLead(context) {
+      assert.deepEqual([...context.catalogs.keys()], ["shared"]);
+      ready();
+      await new Promise((resolve) => context.signal.addEventListener("abort", resolve, { once: true }));
+    },
+  });
+  const handle = await producer.start({ cwd: workspace.root });
+  await started;
+  await handle.control("cancel");
 });
 
 test("multi-Source checks require survey fan-in followed by synthesis", async (t) => {
@@ -921,7 +950,7 @@ test("current deletes a schema 3 record with malformed nested receipts", async (
   await mkdir(candidateRoot, { recursive: true });
   const now = new Date().toISOString();
   await writeText(path.join(directory, "run.json"), `${JSON.stringify({
-    schemaVersion: 4,
+    schemaVersion: 5,
     id: "broken01",
     cwd: root,
     status: "failed",

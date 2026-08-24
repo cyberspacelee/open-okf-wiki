@@ -4,7 +4,7 @@ import {
   redactDatabaseUrl,
   type CatalogQuery,
   type WikiCatalog,
-  type WikiDatabaseConfig,
+  type WikiCatalogConfig,
 } from "./catalog.js";
 
 async function withOpenGaussQuery<T>(url: string, run: (query: CatalogQuery) => Promise<T>): Promise<T> {
@@ -27,7 +27,7 @@ async function withOpenGaussQuery<T>(url: string, run: (query: CatalogQuery) => 
   }
 }
 
-export function createOpenGaussCatalog(config: WikiDatabaseConfig): WikiCatalog {
+export function createOpenGaussCatalog(config: WikiCatalogConfig): WikiCatalog {
   return {
     config,
     async listTables(filter) {

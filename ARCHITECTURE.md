@@ -20,10 +20,12 @@ as an immediate follow-up; the transcript is not the source of truth. The Lead
 session file lives under `.okf-wiki/run/sessions/` when present. Successful and
 cancelled Runs leave no Run directory or history.
 
-An optional openGauss Catalog is declared on the Workspace and retrieved
-on demand (`db_tables`, `db_describe`). Only openGauss. Read-only. Pages may
-cite tables as `catalog:table`; the configured database schema stays
-inside the Catalog Adapter.
+Named openGauss Catalogs are declared on the Workspace and Sources optionally
+bind one by name; one Catalog may be shared by many Sources. Bound Catalog
+definitions and Source bindings are pinned into the Run. Workers retrieve assigned Catalogs on
+demand (`db_tables`, `db_describe`) with an explicit Catalog name. Only
+openGauss. Read-only. Pages cite tables as `catalog:<catalog>/<table>`; each
+configured schema stays inside its Catalog Adapter.
 
 SOP is `prompts/lead.md`. Named workers are `agents/*.md`. Multi-Source Runs
 fan in all Source survey handoffs through one read-only synthesize worker before

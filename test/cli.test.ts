@@ -29,8 +29,8 @@ test("parses the compact Wiki command surface", () => {
   assert.deepEqual(parseWikiCliCommand('init docs --lang en --exclude "vendor/**" --exclude generated/** --no-default-ignores'), {
     action: "init", workspace: "docs", language: "en", exclude: ["vendor/**", "generated/**"], defaultSourceIgnores: false,
   });
-  assert.deepEqual(parseWikiCliCommand("source add link ../api --name backend --workspace docs"), {
-    action: "source-add", kind: "link", localPath: "../api", name: "backend", workspace: "docs",
+  assert.deepEqual(parseWikiCliCommand("source add link ../api --name backend --catalog app --workspace docs"), {
+    action: "source-add", kind: "link", localPath: "../api", name: "backend", catalog: "app", workspace: "docs",
   });
   assert.deepEqual(parseWikiCliCommand("source add clone https://example.test/web.git --ref main --name web"), {
     action: "source-add", kind: "clone", url: "https://example.test/web.git", ref: "main", name: "web",
@@ -120,6 +120,7 @@ test("help lists management and run commands", () => {
   assert.match(help, /\/wiki init/);
   assert.match(help, /\/wiki source add link/);
   assert.match(help, /\/wiki source add clone/);
+  assert.match(help, /--catalog <name>/);
   assert.match(help, /\/wiki status/);
   assert.match(help, /\/wiki resume/);
   assert.doesNotMatch(help, /run-id|\/wiki runs/);

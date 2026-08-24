@@ -10,7 +10,7 @@ import type { WikiPinnedSourcePlan } from "./inspect.js";
 import { isImplicitPinPath } from "./path.js";
 import { candidateTools, createCatalogTools } from "./pi/tools.js";
 import { runWikiSession, type RunWikiSessionOptions } from "./pi/session.js";
-import type { WikiCatalog } from "./catalog.js";
+import type { WikiCatalogRegistry } from "./catalog.js";
 import type { WikiToolView } from "./producer-types.js";
 import { formatWikiTemplateCatalog, formatWikiTemplatesForPrompt, templatesForTarget, type WikiTemplatePack } from "./templates.js";
 import {
@@ -64,7 +64,7 @@ export async function createSubagentRuntime(
   session: RunWikiSessionOptions,
   agentsDirectory?: string,
   onTask?: SubagentTaskListener,
-  catalog?: WikiCatalog,
+  catalogs: WikiCatalogRegistry = new Map(),
   options: {
     maxConcurrency?: number;
     maxWorkerRepairRounds?: number;
@@ -111,7 +111,7 @@ export async function createSubagentRuntime(
               if (scoped.kind === "tool") applyChildTool(live.get(task.id)!.tools, scoped);
               void report();
             },
-          }, signal, catalog, options.templates, options.maxWorkerRepairRounds, options.language);
+          }, signal, catalogsForTask(task, plan, catalogs), options.templates, options.maxWorkerRepairRounds, options.language);
           const status = result.error ? "failed" : "complete";
           const entry = live.get(result.id)!;
           entry.status = status;
@@ -206,7 +206,7 @@ async function runOne(
   sourceFingerprint: string,
   session: RunWikiSessionOptions,
   signal: AbortSignal,
-  catalog?: WikiCatalog,
+  catalogs: WikiCatalogRegistry,
   templates?: WikiTemplatePack,
   maxWorkerRepairRounds?: number,
   language?: "zh" | "en",
@@ -225,7 +225,7 @@ async function runOne(
       ? { digest: "not-applicable" }
       : await outputRevision();
     const touched = new Set<string>();
-    const extra = catalog ? createCatalogTools(catalog) : [];
+    const extra = createCatalogTools(catalogs);
     const allowed = definition.tools ? new Set(definition.tools) : undefined;
     const taskGuard = writeTarget ? { ...guard, writeTarget } : guard;
     const todo = writeTarget && templates ? createWriterTodoTracker(writeTarget) : undefined;
@@ -235,7 +235,7 @@ async function runOne(
         onTouched: (location) => touched.add(location),
         todo,
         templates,
-        catalogAvailable: Boolean(catalog),
+        catalogs: [...catalogs.keys()],
       })
       : task.agent === "review"
         ? createReviewerCompletionGate(maxWorkerRepairRounds)
@@ -256,7 +256,7 @@ async function runOne(
         : formatWikiTemplateCatalog(templates)}`
       : "";
     const citations = task.agent === "write"
-      ? `\n\n${formatWriterCitationContract(guard.sources, Boolean(catalog))}`
+      ? `\n\n${formatWriterCitationContract(guard.sources, [...catalogs.keys()])}`
       : "";
     const languageContract = task.agent === "write" && language
       ? `\n\n## Output language\n\nThe Run language is \`${language}\` (\`zh\` = Simplified Chinese; \`en\` = English). Write titles, descriptions, prose, table labels, footnote definitions, and human-readable Mermaid labels in that language. Preserve source identifiers, code symbols, paths, commands, configuration keys, frontmatter \`type\`, \`sources[].id\`, and Mermaid node IDs verbatim. Copy the injected contract headings exactly.\n`
@@ -302,6 +302,24 @@ async function runOne(
   } catch (error) {
     return { ...task, text: "", error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+function catalogsForTask(
+  task: SubagentTask,
+  plan: WikiPinnedSourcePlan,
+  catalogs: WikiCatalogRegistry,
+): WikiCatalogRegistry {
+  if (task.agent === "synthesize" || task.agent === "review" || task.partition === "wiki-root") return catalogs;
+  const implicit = plan.sources.length === 1 && isImplicitPinPath(plan.sources[0]?.logicalPath ?? "");
+  const owner = task.agent === "survey"
+    ? plan.sources.find((source) => source.scopeId === task.partition)
+    : implicit
+      ? plan.sources[0]
+      : plan.sources.find((source) => task.partition === source.scopeId || task.partition.startsWith(`${source.scopeId}/`));
+  if (!owner?.catalog) return new Map();
+  const catalog = catalogs.get(owner.catalog);
+  if (!catalog) throw new Error(`Pinned Source ${owner.scopeId} references unavailable Catalog ${owner.catalog}`);
+  return new Map([[owner.catalog, catalog]]);
 }
 
 function formatResult(result: SubagentResult): string {

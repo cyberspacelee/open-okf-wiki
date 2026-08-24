@@ -77,8 +77,12 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
   the original writer session; reviewer verdict formatting does the same.
 - `maxWorkerRepairRounds` replaces `maxEvidenceRepairRounds` and bounds all
   locally repairable worker completion follow-ups.
-- Optional openGauss Catalog evidence remains on-demand and read-only through
-  `db_tables` and `db_describe`; pages cite tables as `catalog:table`.
+- Workspaces may declare multiple named openGauss Catalogs. Each Source binds at
+  most one Catalog and multiple Sources may share it; bound definitions and
+  Source bindings are pinned into the Run, and worker tools are scoped by assignment.
+- Catalog evidence remains on-demand and read-only through `db_tables` and
+  `db_describe`; both select a Catalog and pages cite tables as
+  `catalog:<catalog>/<table>`.
 
 ### Commands
 

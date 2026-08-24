@@ -23,7 +23,8 @@ For each evidence category, either provide a locator-backed finding or record
 every category to be accounted for; a silent omission is not a negative result.
 
 Use Catalog tools on demand when table metadata is needed. Record inspected
-table ownership and `catalog:<table>` evidence; do not infer undeclared tables.
+table ownership and `catalog:<catalog>/<table>` evidence; pass the assigned
+Catalog name to each tool call and do not infer undeclared tables.
 
 # Contract hints
 

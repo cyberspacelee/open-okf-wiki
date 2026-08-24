@@ -18,7 +18,7 @@ import {
   type WikiBoardStore,
   type WikiTaskStatus,
 } from "../board.js";
-import type { WikiCatalog } from "../catalog.js";
+import type { WikiCatalog, WikiCatalogRegistry } from "../catalog.js";
 
 const PATH_KEYS = ["path", "file", "target", "dir", "directory"] as const;
 
@@ -78,20 +78,25 @@ export function createTodoTool(store: WikiBoardStore): ToolDefinition<any, any, 
   } as ToolDefinition<any, any, any>;
 }
 
-export function createCatalogTools(catalog: WikiCatalog): ToolDefinition<any, any, any>[] {
+export function createCatalogTools(catalogs: WikiCatalogRegistry): ToolDefinition<any, any, any>[] {
+  const available = [...catalogs.keys()].sort();
+  if (!available.length) return [];
+  const catalogDescription = `Catalog name. Available: ${available.join(", ")}`;
   return [
     {
       name: "db_tables",
       label: "Catalog tables",
-      description: "List openGauss tables in the configured Catalog. Optional query fuzzy-matches names. Use this before db_describe. Do not invent tables.",
+      description: "List openGauss tables in one assigned Catalog. Optional query fuzzy-matches names. Use this before db_describe. Do not invent tables.",
       parameters: Type.Object({
+        catalog: Type.String({ description: catalogDescription }),
         query: Type.Optional(Type.String({ description: "Fuzzy table name or glob (user, order%, pay*)" })),
       }),
       async execute(_id, params) {
-        const query = (params as { query?: string }).query;
+        const input = params as { catalog?: string; query?: string };
         try {
-          const text = await catalog.listTables(query);
-          return { content: [{ type: "text", text }], details: { text } };
+          const catalog = assignedCatalog(catalogs, input.catalog);
+          const text = `Catalog ${input.catalog}\n${await catalog.listTables(input.query)}`;
+          return { content: [{ type: "text", text }], details: { catalog: input.catalog, text } };
         } catch (error) {
           return {
             content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
@@ -104,15 +109,21 @@ export function createCatalogTools(catalog: WikiCatalog): ToolDefinition<any, an
     {
       name: "db_describe",
       label: "Catalog describe",
-      description: "Describe columns, keys, and indexes for matching Catalog tables. Pass specific names or fuzzy patterns. At most 20 tables per call.",
+      description: "Describe columns, keys, and indexes in one assigned Catalog. Pass specific names or fuzzy patterns. At most 20 tables per call.",
       parameters: Type.Object({
+        catalog: Type.String({ description: catalogDescription }),
         tables: Type.Array(Type.String({ description: "Table name or fuzzy pattern" }), { minItems: 1 }),
       }),
       async execute(_id, params) {
-        const tables = (params as { tables?: string[] }).tables ?? [];
+        const input = params as { catalog?: string; tables?: string[] };
         try {
-          const described = await catalog.describeTables(tables);
-          return { content: [{ type: "text", text: described.text }], details: described };
+          const catalog = assignedCatalog(catalogs, input.catalog);
+          const described = await catalog.describeTables(input.tables ?? []);
+          const text = `Catalog ${input.catalog}\n${described.text}`;
+          return {
+            content: [{ type: "text", text }],
+            details: { ...described, catalog: input.catalog, text },
+          };
         } catch (error) {
           return {
             content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
@@ -123,6 +134,13 @@ export function createCatalogTools(catalog: WikiCatalog): ToolDefinition<any, an
       },
     } as ToolDefinition<any, any, any>,
   ];
+}
+
+function assignedCatalog(catalogs: WikiCatalogRegistry, name: unknown): WikiCatalog {
+  if (typeof name !== "string" || !catalogs.has(name)) {
+    throw new Error(`Unknown or unavailable Catalog: ${String(name)}`);
+  }
+  return catalogs.get(name)!;
 }
 
 function wrap(

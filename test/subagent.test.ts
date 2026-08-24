@@ -14,6 +14,7 @@ function implicitPlan(workspaceRoot: string) {
     configPath: undefined,
     defaultSourceIgnores: true,
     excludes: [],
+    catalogs: {},
     sources: [{
       scopeId: "self",
       logicalPath: ".",
@@ -28,6 +29,55 @@ function implicitPlan(workspaceRoot: string) {
     fingerprint: "test",
   };
 }
+
+test("survey workers receive only the Catalog bound to their Source", async (t) => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-catalog-scope-"));
+  t.after(async () => await rm(workspaceRoot, { recursive: true, force: true }));
+  const plan = implicitPlan(workspaceRoot);
+  plan.sources[0].catalog = "shared";
+  plan.catalogs = {
+    shared: { url: "postgresql://shared@localhost/app", schema: "public", tables: [] },
+    other: { url: "postgresql://other@localhost/app", schema: "public", tables: [] },
+  };
+  const catalog = (name: string) => ({
+    config: plan.catalogs[name],
+    async listTables() { return `${name} tables`; },
+    async describeTables() { return { text: `${name} schema`, tables: [] }; },
+  });
+  let dbTables;
+  const runtime = await createSubagentRuntime(plan, path.join(workspaceRoot, "candidate"), {
+    async createSession(options) {
+      dbTables = options.customTools.find((tool) => tool.name === "db_tables");
+      return {
+        session: {
+          sessionFile: undefined,
+          subscribe() { return () => {}; },
+          async prompt() {},
+          async waitForIdle() {},
+          getLastAssistantText() { return "survey complete"; },
+          dispose() {},
+          abort() {},
+        },
+        modelFallbackMessage: undefined,
+      };
+    },
+  }, undefined, undefined, new Map([
+    ["shared", catalog("shared")],
+    ["other", catalog("other")],
+  ]));
+  const [result] = await runtime.run([{
+    agent: "survey",
+    task: "Map Source",
+    boardTaskId: "survey",
+    partition: "self",
+  }], new AbortController().signal);
+  assert.equal(result.error, undefined);
+  assert.ok(dbTables);
+  const shared = await dbTables.execute("shared", { catalog: "shared" }, undefined, undefined, undefined);
+  const other = await dbTables.execute("other", { catalog: "other" }, undefined, undefined, undefined);
+  assert.match(shared.content[0].text, /shared tables/);
+  assert.equal(other.isError, true);
+});
 
 function completionPack() {
   return {

@@ -3,30 +3,32 @@ import path from "node:path";
 /** OKF provenance: `sources[].resource` is a Workspace-relative path with an optional line range, or a Catalog table. */
 
 const SOURCE_RESOURCE = /^([^#]+?)(?:#L([1-9]\d*)(?:-L([1-9]\d*))?)?$/;
-const CATALOG_RESOURCE = /^catalog:([A-Za-z_][A-Za-z0-9_$]*)$/;
+const CATALOG_RESOURCE = /^catalog:([A-Za-z0-9][A-Za-z0-9._-]*)\/([A-Za-z_][A-Za-z0-9_$]*)$/;
 const MARKDOWN_LINK = /(?<!!)\[[^\]\n]*\]\([ \t]*(?:<([^>\n]+)>|([^\s)]+))(?:[ \t]+(?:"[^"]*"|'[^']*'|\([^)]*\)))?[ \t]*\)/g;
 const FOOTNOTE_REFERENCE = /\[\^([^\]]+)\](?!:)/g;
 const FOOTNOTE_DEFINITION = /^ {0,3}\[\^([^\]]+)\]:/gm;
 const LEGACY_BODY_CITATION = /#L[1-9]\d*/;
 
-const SOURCE_RESOURCE_GRAMMAR = "Workspace-relative path optionally followed by #Lx[-Ly], or catalog:table";
+const SOURCE_RESOURCE_GRAMMAR = "Workspace-relative path optionally followed by #Lx[-Ly], or catalog:name/table";
 
 export interface SourceCitation {
   id: string;
   path: string;
   startLine?: number;
   endLine?: number;
+  catalog?: string;
   catalogTable?: string;
 }
 
 export interface CitationSource {
   scopeId: string;
   logicalPath: string;
+  catalog?: string;
 }
 
 export function formatWriterCitationContract(
   sources: readonly CitationSource[],
-  catalogAvailable: boolean,
+  catalogs: readonly string[],
 ): string {
   const roots = sources.map((source) => source.logicalPath.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, ""));
   const implicit = roots.length === 1 && (!roots[0] || roots[0] === ".");
@@ -57,8 +59,8 @@ export function formatWriterCitationContract(
     "A file `resource` is a POSIX Workspace-relative path. Its line suffix is optional: `path`, `path#L12`, and `path#L12-L18` are valid forms. Every cited file must be read successfully; when a range is supplied, the read must cover the complete range.",
     sourceScope,
     "Use paths without a leading slash, `./`, `../`, empty segments, or backslashes.",
-    ...(catalogAvailable
-      ? ["A Catalog table may use `catalog:table`, for example `catalog:orders`. Use `db_describe` when the page needs columns, keys, or constraints."]
+    ...(catalogs.length
+      ? [`Assigned Catalogs are ${catalogs.map((catalog) => `\`${catalog}\``).join(", ")}. A Catalog table uses \`catalog:<catalog>/<table>\`, for example \`catalog:${catalogs[0]}/orders\`. Pass the same Catalog name to \`db_tables\` and \`db_describe\` when table metadata is needed.`]
       : []),
     "",
   ].join("\n");
@@ -68,7 +70,7 @@ export function parseSourceResource(value: string): Omit<SourceCitation, "id"> |
   const href = value.trim().replace(/^<|>$/g, "");
   if (!href || href.includes("\\")) return undefined;
   const catalog = CATALOG_RESOURCE.exec(href);
-  if (catalog) return { path: href, catalogTable: catalog[1]! };
+  if (catalog) return { path: href, catalog: catalog[1]!, catalogTable: catalog[2]! };
   if (href.startsWith("catalog:") || /^[a-z][a-z0-9+.-]*:/i.test(href)) return undefined;
   const match = SOURCE_RESOURCE.exec(href);
   if (!match) return undefined;

@@ -1,6 +1,6 @@
 import path from "node:path";
 
-export interface WikiDatabaseConfig {
+export interface WikiCatalogConfig {
   url: string;
   schema: string;
   tables: string[];
@@ -48,20 +48,22 @@ export interface WikiCatalogDescription {
 export type CatalogQuery = (sql: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 
 export interface WikiCatalog {
-  config: WikiDatabaseConfig;
+  config: WikiCatalogConfig;
   listTables(query?: string): Promise<string>;
   describeTables(names: readonly string[]): Promise<WikiCatalogDescription>;
 }
+
+export type WikiCatalogRegistry = ReadonlyMap<string, WikiCatalog>;
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const MAX_DESCRIBE_TABLES = 20;
 const MAX_LIST_TABLES = 200;
 
-export function parseDatabaseConfig(
+export function parseCatalogConfig(
   value: unknown,
   field = "database",
   env: Readonly<Record<string, string | undefined>> = process.env,
-): WikiDatabaseConfig {
+): WikiCatalogConfig {
   if (!isRecord(value)) throw new Error(`workspace.yaml ${field} must be an object`);
   const unknown = Object.keys(value).filter((key) => !["url", "schema", "tables"].includes(key));
   if (unknown.length > 0) throw new Error(`workspace.yaml ${field} has unknown field: ${unknown[0]}`);
@@ -104,7 +106,7 @@ export function tableMatches(name: string, pattern: string): boolean {
   return n.split(/[_-]/).some((token) => token === p || (token.startsWith(p) && p.length >= 2));
 }
 
-export function createCatalog(config: WikiDatabaseConfig, query: CatalogQuery): WikiCatalog {
+export function createCatalog(config: WikiCatalogConfig, query: CatalogQuery): WikiCatalog {
   return {
     config,
     async listTables(filter) {
@@ -140,7 +142,7 @@ export function createCatalog(config: WikiDatabaseConfig, query: CatalogQuery): 
   };
 }
 
-function formatTableList(config: WikiDatabaseConfig, tables: readonly WikiTableRef[], filter?: string): string {
+function formatTableList(config: WikiCatalogConfig, tables: readonly WikiTableRef[], filter?: string): string {
   const header = [
     "Catalog",
     config.tables.length ? `patterns: ${config.tables.join(", ")}` : "patterns: (all configured tables)",

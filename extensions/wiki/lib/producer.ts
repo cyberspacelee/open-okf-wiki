@@ -8,7 +8,7 @@ import { inspectWiki, pinsFromPlan, verifyPinnedSourcePlan, type WikiPinnedSourc
 import { taskDigest, verifyHandoff } from "./handoff.js";
 import { ensureDirectory, exists, removePath, withExclusiveLock, writeText } from "./files.js";
 import { errorMessage } from "./failures.js";
-import { loadWikiWorkspace, resolveWorkspaceDatabase, type ResolvedWikiWorkspace, type WikiWorkspaceWikiConfig } from "./workspace.js";
+import { loadWikiWorkspace, resolveWorkspaceCatalogs, type ResolvedWikiWorkspace, type WikiWorkspaceWikiConfig } from "./workspace.js";
 import {
   assertReviewPass,
   formatIssue,
@@ -24,7 +24,7 @@ import { runWikiSession, type RunWikiSessionOptions } from "./pi/session.js";
 import { createSubagentRuntime, createSubagentTool, type SubagentTask, type SubagentTaskUpdate } from "./subagent.js";
 import { createBoardStore, emptyBoard, replaceBoard, type WikiBoard, type WikiBoardStore } from "./board.js";
 import { createOpenGaussCatalog } from "./opengauss.js";
-import type { WikiCatalog } from "./catalog.js";
+import type { WikiCatalogRegistry } from "./catalog.js";
 import {
   WikiRunResultError,
   type WikiAgentView,
@@ -59,7 +59,7 @@ export interface WikiLeadContext {
   language: "zh" | "en";
   resume: boolean;
   board: WikiBoardStore;
-  catalog?: WikiCatalog;
+  catalogs: WikiCatalogRegistry;
   templates: WikiTemplatePack;
   signal: AbortSignal;
   publish(): Promise<{ ok: boolean; message: string }>;
@@ -101,7 +101,7 @@ interface RunReviewReceipt {
 }
 
 interface RunRecord {
-  schemaVersion: 4;
+  schemaVersion: 5;
   id: string;
   cwd: string;
   status: WikiRunStatus;
@@ -133,7 +133,7 @@ interface LiveRun {
   result?: WikiProducerResult;
   board?: WikiBoard;
   templates?: WikiTemplatePack;
-  catalogAvailable?: boolean;
+  catalogs?: ReadonlySet<string>;
   candidateRevision?: { digest: string; files: string[] };
   checkpointText?: string;
   recordUpdates: Promise<void>;
@@ -166,7 +166,7 @@ export function createProductionWikiProducer(options: WikiProducerOptions = {}):
         await ensureDirectory(candidateRoot);
         const now = new Date().toISOString();
         const record: RunRecord = {
-          schemaVersion: 4,
+          schemaVersion: 5,
           id,
           cwd: workspace.root,
           status: "running",
@@ -226,10 +226,9 @@ function startLive(
       const board = watchBoard(stored, live);
       if (!flags.resume) await board.write(initial);
       else live.board = await board.read();
-      const catalog = workspace.database
-        ? createOpenGaussCatalog(await resolveWorkspaceDatabase(workspace.database, workspace.root))
-        : undefined;
-      live.catalogAvailable = Boolean(catalog);
+      const catalogs = new Map([...await resolveWorkspaceCatalogs(plan.catalogs, plan.workspaceRoot)]
+        .map(([name, config]) => [name, createOpenGaussCatalog(config)]));
+      live.catalogs = new Set(catalogs.keys());
       const templates = await resolveWikiTemplatePack(
         workspace.root,
         workspace.wiki.templates,
@@ -255,7 +254,7 @@ function startLive(
         resume: flags.resume,
         board,
         templates,
-        ...(catalog ? { catalog } : {}),
+        catalogs,
         signal: controller.signal,
         async publish() {
           return await publishCandidate(live);
@@ -340,7 +339,7 @@ function defaultRunLead(
       session,
       options.agentsDirectory,
       (update) => context.record(update),
-      context.catalog,
+      context.catalogs,
       {
         maxConcurrency: config.maxConcurrentAgents - 1,
         maxWorkerRepairRounds: config.maxWorkerRepairRounds,
@@ -490,7 +489,7 @@ async function validateAndRecordCandidate(live: LiveRun): Promise<WikiValidation
   await verifyPinnedSourcePlan(live.plan);
   if (!live.templates) return undefined;
   const validation = await validateWikiTree(live.record.candidateRoot, pinsFromPlan(live.plan), live.templates, {
-    catalogAvailable: live.catalogAvailable,
+    catalogs: live.catalogs,
   });
   live.candidateRevision = await candidateRevision(live.record.candidateRoot);
   live.record.check = {
@@ -1042,7 +1041,7 @@ async function readRecord(cwd: string): Promise<RunRecord | undefined> {
 function normalizeRunRecord(value: unknown, cwd: string): RunRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Run record must be an object");
   const raw = value as Record<string, unknown>;
-  if (raw.schemaVersion !== 4) {
+  if (raw.schemaVersion !== 5) {
     throw new Error(`Unsupported Run record schema version: ${String(raw.schemaVersion)}`);
   }
   const root = path.resolve(cwd);
@@ -1078,6 +1077,7 @@ function isPinnedPlan(value: unknown): value is WikiPinnedSourcePlan {
     && typeof raw.fingerprint === "string"
     && typeof raw.defaultSourceIgnores === "boolean"
     && Array.isArray(raw.excludes) && raw.excludes.every((entry) => typeof entry === "string")
+    && isPinnedCatalogs(raw.catalogs)
     && Array.isArray(raw.sources)
     && raw.sources.every((source) => {
       if (!source || typeof source !== "object" || Array.isArray(source)) return false;
@@ -1090,8 +1090,21 @@ function isPinnedPlan(value: unknown): value is WikiPinnedSourcePlan {
         && typeof entry.repositoryIdentity === "string"
         && typeof entry.head === "string"
         && typeof entry.dirtyFingerprint === "string"
+        && (entry.catalog === undefined || (typeof entry.catalog === "string" && Object.hasOwn(raw.catalogs as object, entry.catalog)))
         && isSourceOrigin(entry.origin);
     });
+}
+
+function isPinnedCatalogs(value: unknown): value is Record<string, { url: string; schema: string; tables: string[] }> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return Object.values(value).every((catalog) => {
+    if (!catalog || typeof catalog !== "object" || Array.isArray(catalog)) return false;
+    const raw = catalog as Record<string, unknown>;
+    return typeof raw.url === "string"
+      && typeof raw.schema === "string"
+      && Array.isArray(raw.tables)
+      && raw.tables.every((table) => typeof table === "string");
+  });
 }
 
 function isSourceOrigin(value: unknown): boolean {

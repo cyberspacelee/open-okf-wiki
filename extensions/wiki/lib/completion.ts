@@ -34,7 +34,7 @@ export function createWriterCompletionGate(
     onTouched?: (location: string) => void;
     todo?: ReturnType<typeof createWriterTodoTracker>;
     templates?: WikiTemplatePack;
-    catalogAvailable?: boolean;
+    catalogs?: readonly string[];
   } = {},
 ): WorkerCompletionGate {
   const maxRepairRounds = options.maxRepairRounds ?? 6;
@@ -59,7 +59,7 @@ export function createWriterCompletionGate(
       const receipts = (await Promise.all(reads)).filter((entry): entry is EvidenceReceipt => entry !== undefined);
       const issues = [
         ...await validateWriterEvidence(guard, touched, receipts),
-        ...await validateWriterAssignment(guard, options.todo, options.templates, Boolean(options.catalogAvailable)),
+        ...await validateWriterAssignment(guard, options.todo, options.templates, options.catalogs ?? []),
       ];
       return repair(issues);
     },
@@ -163,7 +163,7 @@ async function validateWriterAssignment(
   guard: WikiWriteGuard,
   todo: ReturnType<typeof createWriterTodoTracker> | undefined,
   templates: WikiTemplatePack | undefined,
-  catalogAvailable: boolean,
+  catalogs: readonly string[],
 ): Promise<CompletionIssue[]> {
   if (!todo && !templates) return [];
   if (!guard.writeTarget) throw new Error("Writer completion requires a write target");
@@ -183,7 +183,7 @@ async function validateWriterAssignment(
       guard.writeTarget,
       guard.sources,
       templates,
-      { catalogAvailable },
+      { catalogs: new Set(catalogs) },
     );
     issues.push(...validation.issues.map((issue) => ({
       message: `[${issue.code}] ${formatIssue(issue)}`,

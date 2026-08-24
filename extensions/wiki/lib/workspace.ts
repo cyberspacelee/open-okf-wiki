@@ -6,7 +6,7 @@ import { renamePath, withExclusiveLock, writeFileDurable } from "./files.js";
 import { git, repositoryRoot, type GitResult } from "./git.js";
 import { errorMessage } from "./failures.js";
 import { isWikiSourceDirectoryName } from "./path.js";
-import { parseDatabaseConfig, type WikiDatabaseConfig } from "./catalog.js";
+import { parseCatalogConfig, type WikiCatalogConfig } from "./catalog.js";
 import { packagedTemplatesRoot } from "./templates.js";
 
 const WORKSPACE_FILE = "workspace.yaml";
@@ -22,6 +22,8 @@ const WINDOWS_RESERVED_SOURCE_NAMES = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:
 export interface WikiWorkspaceSource {
   /** The actual top-level directory name, never a separate alias. */
   path: string;
+  /** Optional named Catalog shared by one or more Sources. */
+  catalog?: string;
   origin: { type: "link"; localPath: string } | { type: "clone"; remoteUrl: string; ref?: string };
 }
 
@@ -50,7 +52,7 @@ export const DEFAULT_WORKSPACE_WIKI_CONFIG: WikiWorkspaceWikiConfig = {
   sessionTimeoutSeconds: 1_200,
 };
 
-export interface WikiWorkspaceDatabase {
+export interface WikiWorkspaceCatalog {
   url: string;
   schema: string;
   tables: string[];
@@ -63,7 +65,7 @@ export interface WikiWorkspace {
   language: "zh" | "en";
   defaultSourceIgnores: boolean;
   wiki: WikiWorkspaceWikiConfig;
-  database?: WikiWorkspaceDatabase;
+  catalogs: Record<string, WikiWorkspaceCatalog>;
   sources: WikiWorkspaceSource[];
 }
 
@@ -91,6 +93,7 @@ export interface AddLinkedWikiSourceRequest {
   workspace?: string;
   localPath: string;
   name?: string;
+  catalog?: string;
 }
 
 export interface AddClonedWikiSourceRequest {
@@ -99,6 +102,7 @@ export interface AddClonedWikiSourceRequest {
   remoteUrl: string;
   ref?: string;
   name?: string;
+  catalog?: string;
 }
 
 export interface WikiWorkspaceManagement {
@@ -146,6 +150,7 @@ export function createWikiWorkspaceManagement(
           language,
           defaultSourceIgnores: request.defaultSourceIgnores ?? true,
           wiki: { ...structuredClone(DEFAULT_WORKSPACE_WIKI_CONFIG), exclude, templates: WORKSPACE_TEMPLATES_DIRECTORY },
+          catalogs: {},
           sources: [],
         }, true);
       } catch (error) {
@@ -167,6 +172,7 @@ export function createWikiWorkspaceManagement(
           throw new Error("Source cannot be the workspace itself or its ancestor");
         }
         const name = sourceName(request.name ?? path.basename(localPath), platform);
+        const catalog = sourceCatalog(request.catalog, workspace.catalogs);
         assertAvailableSource(workspace, name, platform);
         assertPhysicalSourceAvailable(workspace, localPath);
         const location = path.join(workspace.root, name);
@@ -176,7 +182,11 @@ export function createWikiWorkspaceManagement(
         try {
           await createDirectoryLink(localPath, location, type);
           created = true;
-          await persistAddedSource(workspace, { path: name, origin: { type: "link", localPath } }, writeConfig);
+          await persistAddedSource(workspace, {
+            path: name,
+            ...(catalog ? { catalog } : {}),
+            origin: { type: "link", localPath },
+          }, writeConfig);
         } catch (error) {
           if (created) await rm(location, { recursive: true, force: true });
           throw error;
@@ -190,6 +200,7 @@ export function createWikiWorkspaceManagement(
       const ref = request.ref === undefined ? undefined : nonEmpty(request.ref, "ref");
       const initial = await explicitWorkspace(request.cwd, request.workspace);
       const name = sourceName(request.name ?? repositoryName(remoteUrl), platform);
+      sourceCatalog(request.catalog, initial.catalogs);
       const staging = path.join(initial.root, `.okf-wiki-clone-${process.pid}-${Math.random().toString(16).slice(2)}`);
       try {
         await successfulGit(initial.root, ["clone", "--", remoteUrl, staging], runGit);
@@ -197,20 +208,25 @@ export function createWikiWorkspaceManagement(
         await assertGitRepositoryRoot(staging, runGit);
         return await withWorkspaceLock(initial.root, async () => {
           const workspace = await loadWikiWorkspace(initial.root);
-        assertAvailableSource(workspace, name, platform);
-        const location = path.join(workspace.root, name);
-        await assertDestinationAvailable(location, name);
-        let installed = false;
-        try {
-          await renamePath(staging, location);
-          installed = true;
-          await persistAddedSource(workspace, { path: name, origin: { type: "clone", remoteUrl, ...(ref ? { ref } : {}) } }, writeConfig);
-        } catch (error) {
-          await rm(staging, { recursive: true, force: true });
-          if (installed) await rm(location, { recursive: true, force: true });
-          throw error;
-        }
-        return await loadWikiWorkspace(workspace.root);
+          const catalog = sourceCatalog(request.catalog, workspace.catalogs);
+          assertAvailableSource(workspace, name, platform);
+          const location = path.join(workspace.root, name);
+          await assertDestinationAvailable(location, name);
+          let installed = false;
+          try {
+            await renamePath(staging, location);
+            installed = true;
+            await persistAddedSource(workspace, {
+              path: name,
+              ...(catalog ? { catalog } : {}),
+              origin: { type: "clone", remoteUrl, ...(ref ? { ref } : {}) },
+            }, writeConfig);
+          } catch (error) {
+            await rm(staging, { recursive: true, force: true });
+            if (installed) await rm(location, { recursive: true, force: true });
+            throw error;
+          }
+          return await loadWikiWorkspace(workspace.root);
         });
       } finally {
         await rm(staging, { recursive: true, force: true });
@@ -250,7 +266,8 @@ async function implicitSelfWorkspace(cwd: string): Promise<ResolvedWikiWorkspace
     realPath: repository,
     repositoryRoot: repository,
   };
-  const database = await readImplicitDatabaseConfig(repository);
+  const catalog = await readImplicitCatalogConfig(repository);
+  if (catalog) source.catalog = "self";
   return {
     version: 1,
     root: repository,
@@ -258,13 +275,13 @@ async function implicitSelfWorkspace(cwd: string): Promise<ResolvedWikiWorkspace
     language: "zh",
     defaultSourceIgnores: true,
     wiki: structuredClone(DEFAULT_WORKSPACE_WIKI_CONFIG),
-    ...(database ? { database } : {}),
+    catalogs: catalog ? { self: catalog } : {},
     sources: [source],
   };
 }
 
 /** Implicit Workspaces declare a Catalog in `.okf-wiki/database.yaml` (a lone `database:` block). */
-async function readImplicitDatabaseConfig(root: string): Promise<WikiWorkspaceDatabase | undefined> {
+async function readImplicitCatalogConfig(root: string): Promise<WikiWorkspaceCatalog | undefined> {
   const configPath = path.join(root, IMPLICIT_DATABASE_FILE);
   let text: string;
   try {
@@ -285,7 +302,7 @@ async function readImplicitDatabaseConfig(root: string): Promise<WikiWorkspaceDa
   if (document.database === undefined) {
     throw new Error(`${IMPLICIT_DATABASE_FILE} must contain a database block`);
   }
-  return parseWorkspaceDatabase(document.database, await workspaceEnvironment(root));
+  return parseWorkspaceCatalog(document.database, "database", await workspaceEnvironment(root));
 }
 
 async function findWorkspaceConfig(cwd: string): Promise<string | undefined> {
@@ -303,7 +320,7 @@ async function findWorkspaceConfig(cwd: string): Promise<string | undefined> {
   }
 }
 
-async function readWorkspaceConfig(configPath: string, root: string, required: boolean): Promise<WikiWorkspace | undefined> {
+async function readWorkspaceConfig(configPath: string, rootPath: string, required: boolean): Promise<WikiWorkspace | undefined> {
   let text: string;
   try {
     text = await readFile(configPath, "utf8");
@@ -318,34 +335,60 @@ async function readWorkspaceConfig(configPath: string, root: string, required: b
     throw new Error(`Invalid workspace.yaml at ${configPath}: ${errorMessage(error)}`);
   }
   if (!isRecord(document)) throw new Error(`Invalid workspace.yaml at ${configPath}: expected a mapping with numeric version 1`);
-  if (document.version !== 1) {
-    const received = JSON.stringify(document.version) ?? String(document.version);
-    throw new Error(`Invalid workspace.yaml at ${configPath}: expected numeric version 1, received ${received} (${typeof document.version})`);
+  const root = strictObject(document, "root", [
+    "version", "language", "defaultSourceIgnores", "wiki", "catalogs", "sources",
+  ]);
+  if (root.version !== 1) {
+    const received = JSON.stringify(root.version) ?? String(root.version);
+    throw new Error(`Invalid workspace.yaml at ${configPath}: expected numeric version 1, received ${received} (${typeof root.version})`);
   }
-  if (document.language !== "zh" && document.language !== "en") throw new Error("workspace.yaml language must be zh or en");
-  if (typeof document.defaultSourceIgnores !== "boolean") throw new Error("workspace.yaml defaultSourceIgnores must be true or false");
-  const wiki = document.wiki === undefined ? structuredClone(DEFAULT_WORKSPACE_WIKI_CONFIG) : parseWikiConfig(document.wiki);
-  const database = document.database === undefined
-    ? undefined
-    : parseWorkspaceDatabase(document.database, await workspaceEnvironment(root));
-  if (!Array.isArray(document.sources)) throw new Error("workspace.yaml sources must be an array");
+  if (root.language !== "zh" && root.language !== "en") throw new Error("workspace.yaml language must be zh or en");
+  if (typeof root.defaultSourceIgnores !== "boolean") throw new Error("workspace.yaml defaultSourceIgnores must be true or false");
+  const wiki = root.wiki === undefined ? structuredClone(DEFAULT_WORKSPACE_WIKI_CONFIG) : parseWikiConfig(root.wiki);
+  const catalogs = root.catalogs === undefined
+    ? {}
+    : parseWorkspaceCatalogs(root.catalogs, await workspaceEnvironment(rootPath));
+  if (!Array.isArray(root.sources)) throw new Error("workspace.yaml sources must be an array");
   const seen = new Set<string>();
-  const sources = document.sources.map((value) => parseSource(value, seen));
+  const sources = root.sources.map((value) => parseSource(value, seen, catalogs));
   return {
-    version: 1, root, configPath, language: document.language, defaultSourceIgnores: document.defaultSourceIgnores, wiki,
-    ...(database ? { database } : {}),
+    version: 1, root: rootPath, configPath, language: root.language, defaultSourceIgnores: root.defaultSourceIgnores, wiki,
+    catalogs,
     sources,
   };
 }
 
-export async function resolveWorkspaceDatabase(database: WikiWorkspaceDatabase, root: string): Promise<WikiDatabaseConfig> {
-  return parseDatabaseConfig(database, "database", await workspaceEnvironment(root));
+export async function resolveWorkspaceCatalogs(
+  catalogs: Readonly<Record<string, WikiWorkspaceCatalog>>,
+  root: string,
+): Promise<Map<string, WikiCatalogConfig>> {
+  if (!Object.keys(catalogs).length) return new Map();
+  const env = await workspaceEnvironment(root);
+  return new Map(Object.entries(catalogs).map(([name, database]) => [
+    name,
+    parseCatalogConfig(database, `catalogs.${name}`, env),
+  ]));
 }
 
-function parseWorkspaceDatabase(value: unknown, env: Readonly<Record<string, string | undefined>>): WikiWorkspaceDatabase {
-  const parsed = parseDatabaseConfig(value, "database", env);
+function parseWorkspaceCatalog(
+  value: unknown,
+  field: string,
+  env: Readonly<Record<string, string | undefined>>,
+): WikiWorkspaceCatalog {
+  const parsed = parseCatalogConfig(value, field, env);
   const raw = isRecord(value) && typeof value.url === "string" ? value.url.trim() : parsed.url;
   return { url: raw, schema: parsed.schema, tables: parsed.tables };
+}
+
+function parseWorkspaceCatalogs(
+  value: unknown,
+  env: Readonly<Record<string, string | undefined>>,
+): Record<string, WikiWorkspaceCatalog> {
+  if (!isRecord(value)) throw new Error("workspace.yaml catalogs must be an object");
+  return Object.fromEntries(Object.entries(value).map(([name, database]) => {
+    if (!isWikiSourceDirectoryName(name)) throw new Error(`workspace.yaml Catalog name is invalid: ${name}`);
+    return [name, parseWorkspaceCatalog(database, `catalogs.${name}`, env)];
+  }));
 }
 
 function parseWikiConfig(value: unknown): WikiWorkspaceWikiConfig {
@@ -418,20 +461,42 @@ function parseInteger(value: unknown, field: string, fallback: number, minimum: 
   return value as number;
 }
 
-function parseSource(value: unknown, seen: Set<string>): WikiWorkspaceSource {
-  if (!isRecord(value) || typeof value.path !== "string" || !isWikiSourceDirectoryName(value.path) || RESERVED_WORKSPACE_DIRECTORIES.has(value.path) || seen.has(value.path)) {
+function parseSource(
+  value: unknown,
+  seen: Set<string>,
+  catalogs: Readonly<Record<string, WikiWorkspaceCatalog>>,
+): WikiWorkspaceSource {
+  const source = strictObject(value, "source", ["path", "catalog", "origin"]);
+  if (typeof source.path !== "string" || !isWikiSourceDirectoryName(source.path) || RESERVED_WORKSPACE_DIRECTORIES.has(source.path) || seen.has(source.path)) {
     throw new Error("workspace.yaml source paths must be unique project directory names");
   }
-  seen.add(value.path);
-  if (!isRecord(value.origin) || typeof value.origin.type !== "string") throw new Error(`Invalid source origin for ${value.path}`);
-  if (value.origin.type === "link" && typeof value.origin.localPath === "string") {
-    return { path: value.path, origin: { type: "link", localPath: value.origin.localPath } };
+  seen.add(source.path);
+  const catalog = sourceCatalog(source.catalog, catalogs, `workspace.yaml source ${source.path}`);
+  if (!isRecord(source.origin) || typeof source.origin.type !== "string") throw new Error(`Invalid source origin for ${source.path}`);
+  if (source.origin.type === "link" && typeof source.origin.localPath === "string") {
+    return { path: source.path, ...(catalog ? { catalog } : {}), origin: { type: "link", localPath: source.origin.localPath } };
   }
-  if (value.origin.type === "clone" && typeof value.origin.remoteUrl === "string") {
-    if (value.origin.ref !== undefined && typeof value.origin.ref !== "string") throw new Error(`Invalid clone ref for ${value.path}`);
-    return { path: value.path, origin: { type: "clone", remoteUrl: value.origin.remoteUrl, ref: value.origin.ref as string | undefined } };
+  if (source.origin.type === "clone" && typeof source.origin.remoteUrl === "string") {
+    if (source.origin.ref !== undefined && typeof source.origin.ref !== "string") throw new Error(`Invalid clone ref for ${source.path}`);
+    return {
+      path: source.path,
+      ...(catalog ? { catalog } : {}),
+      origin: { type: "clone", remoteUrl: source.origin.remoteUrl, ref: source.origin.ref as string | undefined },
+    };
   }
-  throw new Error(`Invalid source origin for ${value.path}`);
+  throw new Error(`Invalid source origin for ${source.path}`);
+}
+
+function sourceCatalog(
+  value: unknown,
+  catalogs: Readonly<Record<string, WikiWorkspaceCatalog>>,
+  field = "catalog",
+): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${field} must be a non-empty Catalog name`);
+  const name = value.trim();
+  if (!Object.hasOwn(catalogs, name)) throw new Error(`${field} references unknown Catalog: ${name}`);
+  return name;
 }
 
 function sourceName(value: string, platform: NodeJS.Platform): string {
@@ -514,7 +579,7 @@ async function writeWorkspaceConfig(configPath: string, workspace: WikiWorkspace
     language: workspace.language,
     defaultSourceIgnores: workspace.defaultSourceIgnores,
     wiki: workspace.wiki,
-    ...(workspace.database ? { database: workspace.database } : {}),
+    ...(Object.keys(workspace.catalogs).length ? { catalogs: workspace.catalogs } : {}),
     sources: workspace.sources,
   });
   await writeAtomic(configPath, content, exclusive);

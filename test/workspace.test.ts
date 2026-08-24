@@ -7,7 +7,7 @@ import test from "node:test";
 import {
   createWikiWorkspaceManagement,
   loadWikiWorkspace,
-  resolveWorkspaceDatabase,
+  resolveWorkspaceCatalogs,
   wikiWorkspaceManagement,
 } from "../extensions/wiki/lib/workspace.js";
 
@@ -73,7 +73,7 @@ test("initializes explicit workspace defaults and normalized Wiki excludes", asy
   await assert.rejects(wikiWorkspaceManagement.init({ cwd: parent, workspace: "docs" }), /already exists/);
 });
 
-test("an implicit Workspace loads a Catalog from .okf-wiki/database.yaml", async () => {
+test("an implicit Workspace binds its self Source to the Catalog from .okf-wiki/database.yaml", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-implicit-db-"));
   temporaryDirectories.push(parent);
   const root = await repository(parent, "self");
@@ -90,8 +90,9 @@ test("an implicit Workspace loads a Catalog from .okf-wiki/database.yaml", async
   ].join("\n"));
   const loaded = await loadWikiWorkspace(root);
   assert.equal(loaded.configPath, path.join(root, "workspace.yaml"));
-  assert.deepEqual(loaded.database, { url: `\${${variable}}`, schema: "billing", tables: ["orders"] });
-  assert.equal((await resolveWorkspaceDatabase(loaded.database!, loaded.root)).url, "postgresql://wiki:secret@localhost:5432/app");
+  assert.equal(loaded.sources[0].catalog, "self");
+  assert.deepEqual(loaded.catalogs.self, { url: `\${${variable}}`, schema: "billing", tables: ["orders"] });
+  assert.equal((await resolveWorkspaceCatalogs(loaded.catalogs, loaded.root)).get("self")?.url, "postgresql://wiki:secret@localhost:5432/app");
 
   await writeFile(path.join(root, ".okf-wiki", "database.yaml"), "database:\n  url: mysql://localhost/app\n");
   await assert.rejects(loadWikiWorkspace(root), /postgresql:\/\//);
@@ -100,7 +101,7 @@ test("an implicit Workspace loads a Catalog from .okf-wiki/database.yaml", async
   await assert.rejects(loadWikiWorkspace(root), /unknown field: databose/);
 });
 
-test("loads an optional openGauss Catalog and keeps the raw URL", async () => {
+test("loads multiple named Catalogs and keeps raw URLs", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-database-"));
   temporaryDirectories.push(parent);
   const root = await repository(parent, "configured");
@@ -113,18 +114,26 @@ test("loads an optional openGauss Catalog and keeps the raw URL", async () => {
       "defaultSourceIgnores: true",
       "wiki:",
       "  exclude: []",
-      "database:",
-      "  url: ${WIKI_TEST_OPENGAUSS}",
-      "  schema: billing",
-      "  tables: [user*, payment]",
+      "catalogs:",
+      "  billing:",
+      "    url: ${WIKI_TEST_OPENGAUSS}",
+      "    schema: billing",
+      "    tables: [user*, payment]",
+      "  audit:",
+      "    url: postgresql://audit@localhost/audit",
       "sources: []",
       "",
     ].join("\n"));
     const loaded = await loadWikiWorkspace(root);
-    assert.deepEqual(loaded.database, {
+    assert.deepEqual(loaded.catalogs.billing, {
       url: "${WIKI_TEST_OPENGAUSS}",
       schema: "billing",
       tables: ["user*", "payment"],
+    });
+    assert.deepEqual(loaded.catalogs.audit, {
+      url: "postgresql://audit@localhost/audit",
+      schema: "public",
+      tables: [],
     });
   } finally {
     if (previous === undefined) delete process.env.WIKI_TEST_OPENGAUSS;
@@ -133,7 +142,7 @@ test("loads an optional openGauss Catalog and keeps the raw URL", async () => {
 
   await writeFile(path.join(root, "workspace.yaml"), [
     "version: 1", "language: zh", "defaultSourceIgnores: true", "wiki:",
-    "  exclude: []", "database:", "  url: mysql://localhost/app", "sources: []", "",
+    "  exclude: []", "catalogs:", "  app:", "    url: mysql://localhost/app", "sources: []", "",
   ].join("\n"));
   await assert.rejects(loadWikiWorkspace(root), /postgresql:\/\//);
 });
@@ -147,22 +156,22 @@ test("loads an openGauss URL from the Workspace .env without overriding the proc
   await writeFile(path.join(root, ".env"), `${variable}=postgresql://file:secret@localhost:5432/app\n`);
   await writeFile(path.join(root, "workspace.yaml"), [
     "version: 1", "language: zh", "defaultSourceIgnores: true", "wiki:",
-    "  exclude: []", "database:", `  url: \${${variable}}`, "sources: []", "",
+    "  exclude: []", "catalogs:", "  app:", `    url: \${${variable}}`, "sources: []", "",
   ].join("\n"));
   try {
     const loaded = await loadWikiWorkspace(root);
-    assert.equal(loaded.database?.url, `\${${variable}}`);
+    assert.equal(loaded.catalogs.app?.url, `\${${variable}}`);
     assert.equal(process.env[variable], undefined);
-    assert.equal((await resolveWorkspaceDatabase(loaded.database, loaded.root)).url, "postgresql://file:secret@localhost:5432/app");
+    assert.equal((await resolveWorkspaceCatalogs(loaded.catalogs, loaded.root)).get("app")?.url, "postgresql://file:secret@localhost:5432/app");
 
     process.env[variable] = "postgresql://process:secret@localhost:5432/app";
-    assert.equal((await resolveWorkspaceDatabase(loaded.database, loaded.root)).url, "postgresql://process:secret@localhost:5432/app");
+    assert.equal((await resolveWorkspaceCatalogs(loaded.catalogs, loaded.root)).get("app")?.url, "postgresql://process:secret@localhost:5432/app");
   } finally {
     delete process.env[variable];
   }
 });
 
-test("ignores an invalid Workspace .env when no database is configured", async () => {
+test("ignores an invalid Workspace .env when no Catalog is configured", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-unused-env-"));
   temporaryDirectories.push(parent);
   const root = await repository(parent, "configured");
@@ -172,7 +181,40 @@ test("ignores an invalid Workspace .env when no database is configured", async (
     "  exclude: []", "sources: []", "",
   ].join("\n"));
   const loaded = await loadWikiWorkspace(root);
-  assert.equal(loaded.database, undefined);
+  assert.deepEqual(loaded.catalogs, {});
+});
+
+test("multiple Sources may share one Catalog and unknown Catalog bindings are rejected", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-shared-catalog-"));
+  temporaryDirectories.push(parent);
+  const first = await repository(parent, "first-source");
+  const second = await repository(parent, "second-source");
+  const workspace = await wikiWorkspaceManagement.init({ cwd: parent, workspace: "workspace" });
+  const config = await readFile(workspace.configPath, "utf8");
+  await writeFile(workspace.configPath, config.replace("sources: []", [
+    "catalogs:",
+    "  shared:",
+    "    url: postgresql://wiki@localhost/app",
+    "sources: []",
+  ].join("\n")));
+  await wikiWorkspaceManagement.addLink({ cwd: workspace.root, localPath: first, name: "first", catalog: "shared" });
+  const loaded = await wikiWorkspaceManagement.addLink({ cwd: workspace.root, localPath: second, name: "second", catalog: "shared" });
+  assert.deepEqual(loaded.sources.map((source) => source.catalog), ["shared", "shared"]);
+  await assert.rejects(
+    wikiWorkspaceManagement.addLink({ cwd: workspace.root, localPath: first, name: "third", catalog: "missing" }),
+    /unknown Catalog: missing/,
+  );
+});
+
+test("explicit Workspaces reject the removed singular database field", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-removed-database-"));
+  temporaryDirectories.push(parent);
+  const root = await repository(parent, "configured");
+  await writeFile(path.join(root, "workspace.yaml"), [
+    "version: 1", "language: zh", "defaultSourceIgnores: true", "wiki:",
+    "  exclude: []", "database:", "  url: postgresql://wiki@localhost/app", "sources: []", "",
+  ].join("\n"));
+  await assert.rejects(loadWikiWorkspace(root), /unknown field: database/);
 });
 
 test("wiki config accepts runtime controls and rejects removed controls", async () => {

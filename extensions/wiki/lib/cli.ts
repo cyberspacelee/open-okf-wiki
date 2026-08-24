@@ -13,8 +13,8 @@ function formatLocalDateTime(value: string): string {
 export type WikiCliCommand =
   | { action: "run"; focus?: string }
   | { action: "init"; workspace?: string; language: "zh" | "en"; exclude: string[]; defaultSourceIgnores: boolean }
-  | { action: "source-add"; kind: "link"; localPath: string; name?: string; workspace?: string }
-  | { action: "source-add"; kind: "clone"; url: string; ref?: string; name?: string; workspace?: string }
+  | { action: "source-add"; kind: "link"; localPath: string; name?: string; workspace?: string; catalog?: string }
+  | { action: "source-add"; kind: "clone"; url: string; ref?: string; name?: string; workspace?: string; catalog?: string }
   | { action: "status" }
   | { action: "pause" }
   | { action: "resume" }
@@ -88,6 +88,7 @@ function parseSource(values: string[]): Extract<WikiCliCommand, { action: "sourc
   let name: string | undefined;
   let workspace: string | undefined;
   let ref: string | undefined;
+  let catalog: string | undefined;
   const positional: string[] = [];
   for (let index = 0; index < rest.length; index += 1) {
     const value = rest[index]!;
@@ -107,12 +108,24 @@ function parseSource(values: string[]): Extract<WikiCliCommand, { action: "sourc
       if (!ref) throw new Error("--ref requires a value");
       continue;
     }
+    if (value === "--catalog") {
+      catalog = rest[++index];
+      if (!catalog) throw new Error("--catalog requires a value");
+      continue;
+    }
     if (value.startsWith("-")) throw new Error(`Unknown flag: ${value}`);
     positional.push(value);
   }
   if (kind === "link") {
     if (positional.length !== 1) throw new Error("Usage: /wiki source add link <local-path>");
-    return { action: "source-add", kind: "link", localPath: positional[0]!, ...(name ? { name } : {}), ...(workspace ? { workspace } : {}) };
+    return {
+      action: "source-add",
+      kind: "link",
+      localPath: positional[0]!,
+      ...(name ? { name } : {}),
+      ...(workspace ? { workspace } : {}),
+      ...(catalog ? { catalog } : {}),
+    };
   }
   if (positional.length !== 1) throw new Error("Usage: /wiki source add clone <url>");
   return {
@@ -122,6 +135,7 @@ function parseSource(values: string[]): Extract<WikiCliCommand, { action: "sourc
     ...(ref ? { ref } : {}),
     ...(name ? { name } : {}),
     ...(workspace ? { workspace } : {}),
+    ...(catalog ? { catalog } : {}),
   };
 }
 
@@ -267,8 +281,8 @@ export function wikiCliHelp(): string {
     "Usage:",
     "  /wiki [focus]",
     "  /wiki init [workspace] [--lang zh|en] [--exclude <glob>]... [--no-default-ignores]",
-    "  /wiki source add link <local-path> [--name <name>] [--workspace <dir>]",
-    "  /wiki source add clone <url> [--ref <ref>] [--name <name>] [--workspace <dir>]",
+    "  /wiki source add link <local-path> [--name <name>] [--catalog <name>] [--workspace <dir>]",
+    "  /wiki source add clone <url> [--ref <ref>] [--name <name>] [--catalog <name>] [--workspace <dir>]",
     "  /wiki status",
     "  /wiki pause",
     "  /wiki resume",

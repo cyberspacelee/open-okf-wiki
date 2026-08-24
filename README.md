@@ -13,7 +13,7 @@ inside the quoted command:
 
 ```bash
 pi -e ./extensions/wiki/index.ts -p --mode json -a "/wiki init --lang zh"
-pi -e ./extensions/wiki/index.ts -p --mode json -a "/wiki source add link /path/to/repo --name repo"
+pi -e ./extensions/wiki/index.ts -p --mode json -a "/wiki source add link /path/to/repo --name repo --catalog app"
 pi -e ./extensions/wiki/index.ts -p --mode json -a "/wiki"
 ```
 
@@ -37,8 +37,8 @@ The host skill is declared in `package.json` (`pi.skills`) and loaded by
 ```text
 /wiki [focus]
 /wiki init [workspace] [--lang zh|en] [--exclude <glob>]... [--no-default-ignores]
-/wiki source add link <local-path> [--name <name>] [--workspace <dir>]
-/wiki source add clone <url> [--ref <ref>] [--name <name>] [--workspace <dir>]
+/wiki source add link <local-path> [--name <name>] [--catalog <name>] [--workspace <dir>]
+/wiki source add clone <url> [--ref <ref>] [--name <name>] [--catalog <name>] [--workspace <dir>]
 /wiki status
 /wiki pause
 /wiki resume
@@ -51,7 +51,8 @@ Use `init` only for an explicit workspace, then add one or more sources.
 
 `source add link` requires a local Git repository root (symlink on
 Linux/macOS, junction on Windows). `source add clone` clones a URL;
-`--ref` checks out a branch, tag, or commit.
+`--ref` checks out a branch, tag, or commit. `--catalog` binds the new Source
+to an existing named Catalog.
 
 A Workspace keeps at most one current Run under `.okf-wiki/run/`. After pause
 or failure, `/wiki resume` continues its Candidate, Board, and Lead session.
@@ -81,15 +82,30 @@ wiki:
   baseRetryDelayMs: 1000
   sessionTimeoutSeconds: 1200
   templates: wiki-templates
-database:
-  url: ${DATABASE_URL}   # postgresql://USER:PASSWORD@HOST:PORT/DB
-  schema: public
-  tables: [user*, order%]
+catalogs:
+  app:
+    url: ${APP_DATABASE_URL}   # postgresql://USER:PASSWORD@HOST:PORT/DB
+    schema: public
+    tables: [user*, order%]
+  audit:
+    url: ${AUDIT_DATABASE_URL}
+    schema: audit
 sources:
   - path: backend
+    catalog: app
     origin:
       type: link
       localPath: /abs/path/to/backend
+  - path: worker
+    catalog: app
+    origin:
+      type: clone
+      remoteUrl: https://example.test/worker.git
+  - path: audit-reader
+    catalog: audit
+    origin:
+      type: link
+      localPath: /abs/path/to/audit-reader
 ```
 
 All `wiki` fields are optional. Explicit Workspaces fill omitted fields with
@@ -145,31 +161,36 @@ URL (`postgresql://USER:PASSWORD@HOST:PORT/DB`), not as separate yaml fields:
 
 ```dotenv
 # <workspace>/.env (keep this file out of Git)
-DATABASE_URL=postgresql://wiki:secret@127.0.0.1:5432/app
+APP_DATABASE_URL=postgresql://wiki:secret@127.0.0.1:5432/app
+AUDIT_DATABASE_URL=postgresql://wiki:secret@127.0.0.1:5432/audit
 ```
 
 The `.env` file must sit beside `workspace.yaml`. It is read only when the
-Workspace declares `database`; loading one Workspace does not mutate
+Workspace declares at least one `catalogs` entry; loading one Workspace does not mutate
 `process.env` or leak values into another Workspace. Resolution order is:
 an already exported process variable, then the Workspace `.env`. An unresolved
 variable fails Workspace loading with its variable name.
 
-`database.url` must resolve to an openGauss `postgres://` or `postgresql://`
+Each `catalogs.<name>.url` must resolve to an openGauss `postgres://` or `postgresql://`
 connection string and may use `${ENV}` or `$ENV`.
 URL-encode special characters in the password. `schema` defaults to `public`.
 Omit `tables` to allow every table in that schema; otherwise names are
 fuzzy-matched (`user` → `users`, `user_account`; `order%` → `orders`). Agents
-may call `db_tables` and `db_describe` on demand; the host never dumps the
-schema into the Lead prompt. The schema is only the Catalog query scope: Agent tools expose
-table names without it, and generated pages cite tables as `catalog:orders`.
+pass a Catalog name to `db_tables` and `db_describe` on demand; the host never
+dumps schemas into the Lead prompt. A Source has zero or one `catalog`; multiple
+Sources may reference the same Catalog. Survey and Source-owned writer sessions
+receive only that Catalog, while synthesis, review, and Wiki-root aggregation
+may use all bound Catalogs. Generated pages cite tables as
+`catalog:app/orders`, so same-named tables in different Catalogs remain distinct.
 Connections and transactions are read-only. Connection and SQL
 statement deadlines remain fixed host safety limits, not Workspace tuning
 parameters. Do not commit the expanded URL or `.env`.
 
 A Catalog needs an explicit `workspace.yaml`, or in an implicit single-source
 workspace, a `.okf-wiki/database.yaml` beside the repository root containing
-one `database:` block (same fields, same `.env` resolution from the
-repository root).
+one `database:` block. The implicit Source binds that Catalog as `self` and cites
+tables as `catalog:self/orders`. Explicit Workspaces use only `catalogs` plus
+`sources[].catalog`; the removed singular `database` field is rejected.
 
 ### Templates
 
@@ -217,7 +238,7 @@ Contract fields stay on the template file. Generated pages carry only `type`,
 `title`, `description`, and `sources`. Claims use `[^id]` references keyed to
 `sources[].id` and matching `[^id]: source title` footnote definitions.
 `sources[].resource` is either a POSIX path from the Workspace root or a
-Catalog table (`catalog:<table>`). Describe Catalog tables on demand when a
+Catalog table (`catalog:<catalog>/<table>`). Describe Catalog tables on demand when a
 page needs columns, keys, or constraints. A file path may
 optionally end in `#Lx` or `#Lx-Ly`: for example `api/src/main.ts#L12` in an
 explicit Workspace and `src/main.ts` in an implicit Workspace. A supplied range

@@ -48,5 +48,5 @@ A durable work item on a Board. Status and notes survive compaction and pause.
 _Avoid_: Todo, checklist item, agent note
 
 **Catalog**:
-A declared openGauss schema whose table definitions are admissible evidence for a Run.
+A named openGauss schema whose table definitions are admissible evidence for a Run. A Catalog may belong to multiple Sources; a Source belongs to at most one Catalog.
 _Avoid_: Database dump, live query result, data source

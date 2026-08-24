@@ -29,6 +29,7 @@ export interface WikiPin {
   scopeId: string;
   logicalPath: string;
   realPath: string;
+  catalog?: string;
 }
 
 export interface WikiValidationIssue {
@@ -44,8 +45,8 @@ export interface WikiValidation {
 }
 
 export interface WikiValidationOptions {
-  /** Whether the Workspace provides a Catalog; its schema remains internal to the Adapter. */
-  catalogAvailable?: boolean;
+  /** Named Catalogs available to this validation scope; schemas remain inside their Adapters. */
+  catalogs?: ReadonlySet<string>;
 }
 
 export function wikiPinsImplicit(pins: readonly WikiPin[]): boolean {
@@ -136,6 +137,7 @@ export async function validateWikiTree(
     if (pack) issues.push(...templatePlacementIssues(page.relative, template, pins));
     issues.push(...pageContractIssues(page.relative, page.filename, page.parsed, template, pack, pins, options));
     issues.push(...repositorySourceOwnershipIssues(page.relative, page.parsed, pins));
+    issues.push(...catalogOwnershipIssues(page.relative, page.parsed, pins, options.catalogs));
     if (pack && pins.length > 1 && template === altitudeTemplate(pack, "wiki") && !page.relative.includes("/")) {
       issues.push(...workspaceArchitectureCoverageIssues(page.relative, page.parsed, pins));
     }
@@ -211,6 +213,28 @@ function repositorySourceOwnershipIssues(
     : [];
 }
 
+function catalogOwnershipIssues(
+  relative: string,
+  parsed: { frontmatter: Record<string, unknown>; body: string },
+  pins: readonly WikiPin[],
+  catalogs: ReadonlySet<string> | undefined,
+): WikiValidationIssue[] {
+  const owner = wikiPinsImplicit(pins)
+    ? pins[0]
+    : pins.find((pin) => relative.startsWith(`${pin.scopeId}/`));
+  if (!owner) return [];
+  const foreign = [...new Set(extractOkfSources(parsed.frontmatter, parsed.body).citations
+    .filter((citation) => citation.catalog && catalogs?.has(citation.catalog) && citation.catalog !== owner.catalog)
+    .map((citation) => citation.catalog!))];
+  return foreign.length
+    ? [{
+      code: "citation-owner",
+      page: relative,
+      message: `Source ${owner.scopeId} pages may cite only Catalog ${owner.catalog ?? "(none)"}; found ${foreign.join(", ")}`,
+    }]
+    : [];
+}
+
 function workspaceArchitectureCoverageIssues(
   relative: string,
   parsed: { frontmatter: Record<string, unknown>; body: string },
@@ -266,11 +290,11 @@ function pageContractIssues(
   }
   for (const citation of citations.citations) {
     if (!citation.catalogTable) continue;
-    if (!options.catalogAvailable) {
+    if (!citation.catalog || !options.catalogs?.has(citation.catalog)) {
       issues.push({
         code: "citation",
         page: relative,
-        message: `${citation.path} cites the Catalog but this Workspace declares no database`,
+        message: `${citation.path} cites an unavailable Catalog`,
       });
     }
   }

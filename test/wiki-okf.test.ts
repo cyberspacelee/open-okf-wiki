@@ -217,18 +217,23 @@ test("validation accepts file citations and checks optional line ranges against 
   assert.ok(outsideFile.issues.some((issue) => issue.code === "citation" && issue.message.includes("main.ts#L3")));
 });
 
-test("catalog citations require a configured Workspace database", async (t) => {
+test("Catalog citations require an available Catalog and respect Source ownership", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-catalog-citation-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));
   const source = await sourceTree(t, "self", true);
+  const pins = source.pins.map((pin) => ({ ...pin, catalog: "billing" }));
   const templates = packOf();
-  await writeCore(root, "catalog:orders", templates, source.pins);
-  const withoutCatalog = await validateWikiTree(root, source.pins, templates);
+  await writeCore(root, "catalog:billing/orders", templates, pins);
+  const withoutCatalog = await validateWikiTree(root, pins, templates);
   assert.ok(withoutCatalog.issues.some((issue) =>
-    issue.code === "citation" && issue.message.includes("declares no database")));
+    issue.code === "citation" && issue.message.includes("unavailable Catalog")));
 
-  const withCatalog = await validateWikiTree(root, source.pins, templates, { catalogAvailable: true });
+  const withCatalog = await validateWikiTree(root, pins, templates, { catalogs: new Set(["billing"]) });
   assert.equal(withCatalog.ok, true, withCatalog.issues.map((issue) => issue.message).join("\n"));
+
+  await writeCore(root, "catalog:audit/orders", templates, pins);
+  const foreign = await validateWikiTree(root, pins, templates, { catalogs: new Set(["billing", "audit"]) });
+  assert.ok(foreign.issues.some((issue) => issue.code === "citation-owner" && issue.message.includes("audit")));
 });
 
 test("validate requires mermaid kind from the template pack", async (t) => {

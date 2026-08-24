@@ -29,18 +29,20 @@ test("parseSourceResource reads a Workspace-relative path with an optional line 
 });
 
 test("parseSourceResource reads a Catalog table locator", () => {
-  assert.deepEqual(parseSourceResource("catalog:orders"), {
-    path: "catalog:orders",
+  assert.deepEqual(parseSourceResource("catalog:billing/orders"), {
+    path: "catalog:billing/orders",
+    catalog: "billing",
     catalogTable: "orders",
   });
-  assert.equal(parseSourceResource("catalog:public.orders"), undefined);
-  assert.equal(parseSourceResource("catalog:orders#L1"), undefined);
+  assert.equal(parseSourceResource("catalog:orders"), undefined);
+  assert.equal(parseSourceResource("catalog:billing/public.orders"), undefined);
+  assert.equal(parseSourceResource("catalog:billing/orders#L1"), undefined);
   assert.equal(parseSourceResource("catalog:"), undefined);
 });
 
 test("resolveSourceCitation never maps Catalog locators to a pinned Source", () => {
   assert.equal(
-    resolveSourceCitation({ path: "catalog:orders" }, [{ scopeId: "self", logicalPath: "." }]),
+    resolveSourceCitation({ path: "catalog:billing/orders" }, [{ scopeId: "self", logicalPath: "." }]),
     undefined,
   );
 });
@@ -70,20 +72,22 @@ test("resolveSourceCitation maps Workspace paths to pinned Sources", () => {
 });
 
 test("writer citation contract covers optional line ranges and the current evidence roots", () => {
-  const implicit = formatWriterCitationContract([{ scopeId: "self", logicalPath: "." }], false);
+  const implicit = formatWriterCitationContract([{ scopeId: "self", logicalPath: "." }], []);
   assert.match(implicit, /line suffix is optional/i);
   assert.match(implicit, /`path`, `path#L12`, and `path#L12-L18`/);
   assert.match(implicit, /without a `self\/` prefix/);
   assert.match(implicit, /\[\^source-id\]: Human-readable source/);
-  assert.doesNotMatch(implicit, /catalog:orders/);
+  assert.doesNotMatch(implicit, /catalog:<catalog>/);
 
   const explicit = formatWriterCitationContract([
     { scopeId: "api", logicalPath: "services/api" },
     { scopeId: "web", logicalPath: "web" },
-  ], true);
+  ], ["billing", "audit"]);
   assert.match(explicit, /`services\/api\/`/);
   assert.match(explicit, /`web\/`/);
-  assert.match(explicit, /`catalog:orders`/);
+  assert.match(explicit, /`billing`/);
+  assert.match(explicit, /`audit`/);
+  assert.match(explicit, /`catalog:billing\/orders`/);
 });
 
 test("extractOkfSources requires sources ids and matching footnotes", () => {

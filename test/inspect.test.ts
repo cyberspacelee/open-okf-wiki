@@ -61,6 +61,30 @@ test("exclude list changes the pin fingerprint on a clean tree", async (t) => {
   assert.deepEqual(second.excludes, ["generated/**"]);
 });
 
+test("bound Catalog definitions and Source bindings are pinned into the Run fingerprint", async (t) => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-inspect-catalog-"));
+  t.after(async () => await rm(parent, { recursive: true, force: true }));
+  const workspace = await wikiWorkspaceManagement.init({ cwd: parent, workspace: "workspace" });
+  const source = await gitRepo(t, "api-catalog");
+  const document = YAML.parse(await readFile(workspace.configPath, "utf8"));
+  document.catalogs = {
+    shared: { url: "postgresql://wiki@localhost/app", schema: "public" },
+    unused: { url: "postgresql://wiki@localhost/unused", schema: "public" },
+  };
+  await writeFile(workspace.configPath, YAML.stringify(document));
+  await wikiWorkspaceManagement.addLink({ cwd: workspace.root, localPath: source, name: "api", catalog: "shared" });
+  const first = await inspectWiki(workspace.root);
+  assert.equal(first.sources[0].catalog, "shared");
+  assert.equal(first.catalogs.shared?.schema, "public");
+  assert.equal(first.catalogs.unused, undefined);
+
+  const changed = YAML.parse(await readFile(workspace.configPath, "utf8"));
+  changed.catalogs.shared.schema = "billing";
+  await writeFile(workspace.configPath, YAML.stringify(changed));
+  const second = await inspectWiki(workspace.root);
+  assert.notEqual(second.fingerprint, first.fingerprint);
+});
+
 test("verifyPinnedSourcePlan uses the pinned ignore set", async (t) => {
   const root = await gitRepo(t);
   const plan = await inspectWiki(root);

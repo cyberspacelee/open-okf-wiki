@@ -143,6 +143,7 @@ async function dispatchWorkspace(
       workspace: command.workspace,
       localPath: command.localPath,
       name: command.name,
+      catalog: command.catalog,
     })
     : await wikiWorkspaceManagement.addClone({
       cwd: context.cwd,
@@ -150,13 +151,14 @@ async function dispatchWorkspace(
       remoteUrl: command.url,
       ref: command.ref,
       name: command.name,
+      catalog: command.catalog,
     });
   output(pi, context, formatWorkspace("Added Wiki source", workspace));
 }
 
 function formatWorkspace(title: string, workspace: ResolvedWikiWorkspace): string {
   const sources = workspace.sources.length
-    ? workspace.sources.map((source) => `  ${source.path}`).join("\n")
+    ? workspace.sources.map((source) => `  ${source.path}${source.catalog ? ` -> catalog:${source.catalog}` : ""}`).join("\n")
     : "  (none — /wiki source add)";
   return `${title}: ${workspace.root}\n${sources}`;
 }

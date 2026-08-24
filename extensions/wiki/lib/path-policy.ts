@@ -24,7 +24,12 @@ export function writeGuardFromPlan(plan: WikiPinnedSourcePlan, candidateRoot: st
     candidateRoot: resolvedCandidate,
     publishedWikiRoot: path.join(workspaceRoot, "wiki"),
     handoffsRoot: path.join(path.dirname(resolvedCandidate), "handoffs"),
-    sources: plan.sources.map(({ scopeId, logicalPath, realPath }) => ({ scopeId, logicalPath, realPath })),
+    sources: plan.sources.map(({ scopeId, logicalPath, realPath, catalog }) => ({
+      scopeId,
+      logicalPath,
+      realPath,
+      ...(catalog ? { catalog } : {}),
+    })),
     defaultSourceIgnores: plan.defaultSourceIgnores,
     excludes: [...plan.excludes],
   };

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { git } from "./git.js";
-import { loadWikiWorkspace, type ResolvedWikiSource } from "./workspace.js";
+import { loadWikiWorkspace, type ResolvedWikiSource, type WikiWorkspaceCatalog } from "./workspace.js";
 import { IMPLICIT_SOURCE_SCOPE_ID, isImplicitPinPath } from "./path.js";
 
 const DEFAULT_SOURCE_IGNORES = [
@@ -21,6 +21,7 @@ export interface WikiPinnedSource {
   repositoryRoot: string;
   repositoryIdentity: string;
   origin: { type: "link"; localPath: string } | { type: "clone"; remoteUrl: string; ref?: string };
+  catalog?: string;
   head: string;
   dirtyFingerprint: string;
 }
@@ -31,6 +32,7 @@ export interface WikiPinnedSourcePlan {
   configPath: string;
   defaultSourceIgnores: boolean;
   excludes: string[];
+  catalogs: Record<string, WikiWorkspaceCatalog>;
   sources: WikiPinnedSource[];
   fingerprint: string;
 }
@@ -142,11 +144,12 @@ function isPrivateDotenvName(name: string): boolean {
   return name.startsWith(".env.") && name !== ".env.example" && name !== ".env.sample";
 }
 
-export function pinsFromPlan(plan: WikiPinnedSourcePlan): Array<{ scopeId: string; logicalPath: string; realPath: string }> {
+export function pinsFromPlan(plan: WikiPinnedSourcePlan): Array<{ scopeId: string; logicalPath: string; realPath: string; catalog?: string }> {
   return plan.sources.map((source) => ({
     scopeId: source.scopeId,
     logicalPath: source.logicalPath,
     realPath: source.realPath,
+    ...(source.catalog ? { catalog: source.catalog } : {}),
   }));
 }
 
@@ -175,12 +178,19 @@ function matchesIgnorePattern(relativePath: string, pattern: string): boolean {
   return false;
 }
 
-function planFingerprint(sources: readonly WikiPinnedSource[], defaultSourceIgnores: boolean, excludes: readonly string[]): string {
+function planFingerprint(
+  sources: readonly WikiPinnedSource[],
+  defaultSourceIgnores: boolean,
+  excludes: readonly string[],
+  catalogs: Readonly<Record<string, WikiWorkspaceCatalog>>,
+): string {
   return createHash("sha256").update([
     defaultSourceIgnores ? "1" : "0",
     ...[...excludes].sort(),
+    ...Object.entries(catalogs).sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, catalog]) => `${name}\0${JSON.stringify(catalog)}`),
     ...sources
-      .map((source) => `${source.scopeId}\0${JSON.stringify(source.origin)}\0${source.realPath}\0${source.repositoryIdentity}\0${source.dirtyFingerprint}`)
+      .map((source) => `${source.scopeId}\0${source.catalog ?? ""}\0${JSON.stringify(source.origin)}\0${source.realPath}\0${source.repositoryIdentity}\0${source.dirtyFingerprint}`)
       .sort(),
   ].join("\0")).digest("hex");
 }
@@ -198,6 +208,7 @@ async function pinnedSource(
     repositoryRoot: await realpath(source.repositoryRoot),
     repositoryIdentity: await repositoryIdentity(source.repositoryRoot),
     origin: structuredClone(source.origin),
+    ...(source.catalog ? { catalog: source.catalog } : {}),
     head,
     dirtyFingerprint,
   };
@@ -209,13 +220,18 @@ export async function inspectWiki(cwd: string): Promise<WikiPinnedSourcePlan> {
   if (workspace.sources.length === 0) throw new Error("workspace.yaml has no sources. Run /wiki source add first.");
   const states = await Promise.all(workspace.sources.map((source) => sourceState(source, workspace.defaultSourceIgnores, workspace.wiki.exclude)));
   const sources = await Promise.all(states.map(({ source, head, fingerprint }) => pinnedSource(source, head, fingerprint)));
-  const sourceFingerprint = planFingerprint(sources, workspace.defaultSourceIgnores, workspace.wiki.exclude);
+  const boundCatalogs = new Set(sources.flatMap((source) => source.catalog ? [source.catalog] : []));
+  const catalogs = Object.fromEntries(Object.entries(workspace.catalogs)
+    .filter(([name]) => boundCatalogs.has(name))
+    .map(([name, catalog]) => [name, structuredClone(catalog)]));
+  const sourceFingerprint = planFingerprint(sources, workspace.defaultSourceIgnores, workspace.wiki.exclude, catalogs);
   return {
     workspaceRoot: path.resolve(workspace.root),
     workspaceRealPath: await realpath(workspace.root),
     configPath: path.resolve(workspace.configPath),
     defaultSourceIgnores: workspace.defaultSourceIgnores,
     excludes: [...workspace.wiki.exclude],
+    catalogs,
     sources: sources.sort((left, right) => left.scopeId.localeCompare(right.scopeId)),
     fingerprint: sourceFingerprint,
   };
@@ -235,6 +251,7 @@ export async function verifyPinnedSourcePlan(plan: WikiPinnedSourcePlan): Promis
     const source: ResolvedWikiSource = {
       path: expected.logicalPath,
       origin: structuredClone(expected.origin),
+      ...(expected.catalog ? { catalog: expected.catalog } : {}),
       absolutePath: expected.absolutePath,
       realPath: expected.realPath,
       repositoryRoot: expected.repositoryRoot,
@@ -249,6 +266,6 @@ export async function verifyPinnedSourcePlan(plan: WikiPinnedSourcePlan): Promis
       throw new Error("Repository sources changed while the Wiki run was active; start a new Wiki run");
     }
   }
-  const fingerprint = planFingerprint(current, plan.defaultSourceIgnores, plan.excludes);
+  const fingerprint = planFingerprint(current, plan.defaultSourceIgnores, plan.excludes, plan.catalogs);
   if (fingerprint !== plan.fingerprint) throw new Error("Pinned Wiki source fingerprint changed");
 }
