@@ -14,6 +14,7 @@ import type { WikiCatalog } from "./catalog.js";
 import type { WikiToolView } from "./producer-types.js";
 import { formatWikiTemplateCatalog, formatWikiTemplatesForPrompt, templatesForPartition, type WikiTemplatePack } from "./templates.js";
 import { createWriterEvidenceGate } from "./evidence.js";
+import { formatWriterCitationContract } from "./citations.js";
 import { candidatePartitionRevision, candidateRevision, fileRevision } from "./revisions.js";
 import type { WikiAgentUsage } from "./producer-types.js";
 
@@ -236,10 +237,13 @@ async function runOne(
         ? formatWikiTemplatesForPrompt(templates, new Set(scoped.map((template) => template.id)), task.partition)
         : formatWikiTemplateCatalog(templates)}`
       : "";
+    const citations = task.agent === "write"
+      ? `\n\n${formatWriterCitationContract(guard.sources, Boolean(catalog))}`
+      : "";
     const result = await runWikiSession(
       guard.workspaceRoot,
       tools,
-      `${definition.prompt}${pack}\n\n# Task\n\n${task.task}`,
+      `${definition.prompt}${pack}${citations}\n\n# Task\n\n${task.task}`,
       signal,
       {
         ...session,

@@ -18,8 +18,8 @@ The assignment is complete when:
   directory in the partition;
 - every evidence-selected contract is included exactly when reopened evidence
   satisfies `Applies when`, with separate pages for distinct `many` topics;
-- every semantic obligation is answered by inspected source evidence, with
-  important claims attributed to matching `sources[]` footnotes;
+- every semantic obligation is answered by inspected source evidence and every
+  important claim follows the injected Citation contract;
 - each description states what knowledge the page owns and when a later agent
   should open it;
 - related knowledge has one owning page and other pages link to it; and
@@ -34,8 +34,8 @@ evidence; do not report the assignment complete.
 1. Read every named handoff. For repair work, read the affected Candidate pages
    and diagnostics first.
 2. Build a coverage list from required contracts, contract hints, and evidence
-   briefs. Reopen every load-bearing source locator. A line-range citation
-   requires a successful read covering that range; grep is discovery only.
+   briefs. Reopen every load-bearing source locator as required by the injected
+   Citation contract; grep is discovery only.
 3. Select evidence-backed contracts. Reopen a hinted locator before rejecting
    it. Distributed state updates count as state-machine evidence; cross-Concept
    handlers count as flow evidence.

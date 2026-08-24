@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   extractOkfSources,
+  formatWriterCitationContract,
   parseSourceResource,
   resolveSourceCitation,
   wikiLinkTargets,
@@ -68,6 +69,24 @@ test("resolveSourceCitation maps Workspace paths to pinned Sources", () => {
   );
 });
 
+test("writer citation contract covers optional line ranges and the current evidence roots", () => {
+  const implicit = formatWriterCitationContract([{ scopeId: "self", logicalPath: "." }], false);
+  assert.match(implicit, /line suffix is optional/i);
+  assert.match(implicit, /`path`, `path#L12`, and `path#L12-L18`/);
+  assert.match(implicit, /without a `self\/` prefix/);
+  assert.match(implicit, /\[\^source-id\]: Human-readable source/);
+  assert.doesNotMatch(implicit, /catalog:orders/);
+
+  const explicit = formatWriterCitationContract([
+    { scopeId: "api", logicalPath: "services/api" },
+    { scopeId: "web", logicalPath: "web" },
+  ], true);
+  assert.match(explicit, /`services\/api\/`/);
+  assert.match(explicit, /`web\/`/);
+  assert.match(explicit, /`catalog:orders`/);
+  assert.match(explicit, /db_describe/);
+});
+
 test("extractOkfSources requires sources ids and matching footnotes", () => {
   const ok = extractOkfSources({
     sources: [{ id: "main", resource: "api/src/main.ts#L1", title: "main" }],
@@ -79,6 +98,11 @@ test("extractOkfSources requires sources ids and matching footnotes", () => {
     sources: [{ id: "main", resource: "api/src/main.ts#L1" }],
   }, "Claim. [^other]\n");
   assert.ok(missing.invalid.some((issue) => issue.includes("[^other]")));
+
+  const missingDefinition = extractOkfSources({
+    sources: [{ id: "main", resource: "api/src/main.ts" }],
+  }, "Claim. [^main]\n");
+  assert.ok(missingDefinition.invalid.some((issue) => issue.includes("missing definition")));
 
   const legacy = extractOkfSources({
     sources: [{ id: "main", resource: "api/src/main.ts#L1" }],

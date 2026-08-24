@@ -66,6 +66,9 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 - Template packs define required page placement, H1/H2 structure, evidence,
   and Mermaid requirements. Host-generated `index.md` and `log.md` are included
   in the frozen Candidate before review.
+- Writers receive one runtime citation contract with the current Source roots,
+  optional line ranges, Catalog syntax, and complete footnote shape. Validation
+  rejects an inline `[^id]` reference without its `[^id]: ...` definition.
 - Optional openGauss Catalog evidence remains on-demand and read-only through
   `db_tables` and `db_describe`; pages cite described tables as `catalog:table`.
 

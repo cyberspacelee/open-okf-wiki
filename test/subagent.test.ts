@@ -488,6 +488,7 @@ test("writer read ledger resolves linked Source citations from the Workspace roo
   await writeFile(path.join(sourceRoot, "main.ts"), "export const ready = true;\n");
   await symlink(sourceRoot, path.join(workspaceRoot, "api"), "dir");
   let listener = () => {};
+  let writerPrompt = "";
   const runtime = await createSubagentRuntime({
     workspaceRoot,
     workspaceRealPath: workspaceRoot,
@@ -512,7 +513,8 @@ test("writer read ledger resolves linked Source citations from the Workspace roo
         session: {
           sessionFile: undefined,
           subscribe(next) { listener = next; return () => {}; },
-          async prompt() {
+          async prompt(value) {
+            writerPrompt = value;
             await writeFile(path.join(candidateRoot, "overview.md"), [
               "---",
               "type: Overview",
@@ -551,6 +553,7 @@ test("writer read ledger resolves linked Source citations from the Workspace roo
     { agent: "write", task: "Write overview", boardTaskId: "write", partition: "wiki-root" },
   ], new AbortController().signal);
   assert.equal(result.error, undefined);
+  assert.match(writerPrompt, /## Citation contract/);
 });
 
 test("writer repairs every unread citation in one session for more than two rounds", async (t) => {

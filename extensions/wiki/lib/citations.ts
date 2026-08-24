@@ -5,10 +5,11 @@ import path from "node:path";
 const SOURCE_RESOURCE = /^([^#]+?)(?:#L([1-9]\d*)(?:-L([1-9]\d*))?)?$/;
 const CATALOG_RESOURCE = /^catalog:([A-Za-z_][A-Za-z0-9_$]*)$/;
 const MARKDOWN_LINK = /(?<!!)\[[^\]\n]*\]\([ \t]*(?:<([^>\n]+)>|([^\s)]+))(?:[ \t]+(?:"[^"]*"|'[^']*'|\([^)]*\)))?[ \t]*\)/g;
-const FOOTNOTE = /\[\^([^\]]+)\]/g;
+const FOOTNOTE_REFERENCE = /\[\^([^\]]+)\](?!:)/g;
+const FOOTNOTE_DEFINITION = /^ {0,3}\[\^([^\]]+)\]:/gm;
 const LEGACY_BODY_CITATION = /#L[1-9]\d*/;
 
-export const SOURCE_RESOURCE_GRAMMAR = "Workspace-relative path, path#Lx[-Ly], or catalog:table";
+const SOURCE_RESOURCE_GRAMMAR = "Workspace-relative path optionally followed by #Lx[-Ly], or catalog:table";
 
 export interface SourceCitation {
   id: string;
@@ -21,6 +22,47 @@ export interface SourceCitation {
 export interface CitationSource {
   scopeId: string;
   logicalPath: string;
+}
+
+export function formatWriterCitationContract(
+  sources: readonly CitationSource[],
+  catalogAvailable: boolean,
+): string {
+  const roots = sources.map((source) => source.logicalPath.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, ""));
+  const implicit = roots.length === 1 && (!roots[0] || roots[0] === ".");
+  const sourceScope = implicit
+    ? "The pinned Source is the Workspace root: use its path directly, such as `src/main.ts`, without a `self/` prefix."
+    : roots.length
+      ? `Pinned Source roots are ${roots.map((root) => `\`${root}/\``).join(", ")}; a file resource includes the matching root prefix.`
+      : "Copy each file resource from an opened Workspace-relative source locator.";
+  return [
+    "## Citation contract",
+    "",
+    "Use this shape on every Candidate page:",
+    "",
+    "```yaml",
+    "sources:",
+    "  - id: source-id",
+    "    resource: path/from/workspace/root",
+    "    title: Human-readable source",
+    "```",
+    "",
+    "```markdown",
+    "A claim supported by that source.[^source-id]",
+    "",
+    "[^source-id]: Human-readable source",
+    "```",
+    "",
+    "Each `sources` entry requires a unique stable `id` and a `resource`; `title` is optional. Every body `[^id]` has the same `sources[].id` and a later `[^id]: ...` footnote definition. Put source evidence in `sources`, and use ordinary Markdown links only for Wiki pages.",
+    "A file `resource` is a POSIX Workspace-relative path. Its line suffix is optional: `path`, `path#L12`, and `path#L12-L18` are valid forms. Every cited file must be read successfully; when a range is supplied, the read must cover the complete range.",
+    sourceScope,
+    "Use paths without a leading slash, `./`, `../`, empty segments, or backslashes.",
+    ...(catalogAvailable
+      ? ["A described Catalog table may use `catalog:table`, for example `catalog:orders`, only after `db_describe` succeeds for that table in this session. Prefer it for columns, keys, and constraints."]
+      : []),
+    "Every non-diagram H2 contains at least one inline source footnote.",
+    "",
+  ].join("\n");
 }
 
 export function parseSourceResource(value: string): Omit<SourceCitation, "id"> | undefined {
@@ -86,8 +128,13 @@ export function extractOkfSources(
       }
     }
   }
-  for (const id of footnoteIds(body)) {
+  const references = footnoteIds(body, FOOTNOTE_REFERENCE);
+  const definitions = footnoteIds(body, FOOTNOTE_DEFINITION);
+  for (const id of new Set([...references, ...definitions])) {
     if (!byId.has(id)) invalid.push(`footnote [^${id}] has no sources[].id`);
+  }
+  for (const id of references) {
+    if (!definitions.has(id)) invalid.push(`footnote [^${id}] is missing definition [^${id}]: ...`);
   }
   MARKDOWN_LINK.lastIndex = 0;
   for (const match of body.matchAll(MARKDOWN_LINK)) {
@@ -133,10 +180,10 @@ function parseSourceEntry(
   return { citation: { id, ...locator } };
 }
 
-function footnoteIds(body: string): Set<string> {
+function footnoteIds(body: string, pattern: RegExp): Set<string> {
   const ids = new Set<string>();
-  FOOTNOTE.lastIndex = 0;
-  for (const match of body.matchAll(FOOTNOTE)) {
+  pattern.lastIndex = 0;
+  for (const match of body.matchAll(pattern)) {
     if (match[1]) ids.add(match[1]);
   }
   return ids;

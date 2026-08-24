@@ -206,13 +206,14 @@ Frontmatter has no defaults:
 | `diagram` | `{ section, kinds }` Mermaid requirement | optional |
 
 Contract fields stay on the template file. Generated pages carry only `type`,
-`title`, `description`, and
-`sources`. Claims use `[^id]` footnotes keyed to `sources[].id`.
-`sources[].resource` is always a POSIX path from the Workspace root, optionally
-followed by `#Lx` or `#Lx-Ly`: for example `api/src/main.ts#L12` in an explicit
-Workspace and `src/main.ts` in an implicit Workspace. A supplied range must
-exist in the pinned file and must have been read by the writer. It is never
-relative to the page or Source root, and implicit Workspaces never add
+`title`, `description`, and `sources`. Claims use `[^id]` references keyed to
+`sources[].id` and matching `[^id]: source title` footnote definitions.
+`sources[].resource` is either a POSIX path from the Workspace root or a
+successfully described Catalog table (`catalog:<table>`). A file path may
+optionally end in `#Lx` or `#Lx-Ly`: for example `api/src/main.ts#L12` in an
+explicit Workspace and `src/main.ts` in an implicit Workspace. A supplied range
+must exist in the pinned file and must have been read by the writer. Paths are
+never relative to the page or Source root, and implicit Workspaces never add
 `self/`.
 
 The contract body contains unique H2 semantic obligations. Each H2 body tells

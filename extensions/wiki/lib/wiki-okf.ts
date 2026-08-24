@@ -636,7 +636,7 @@ export function formatIssue(issue: WikiValidationIssue): string {
 
 function issueSuggestion(code: string): string {
   switch (code) {
-    case "citation": return "Correct sources[].resource or its matching footnote; use a Workspace-relative pinned file path with an optional valid #Lx[-Ly] range.";
+    case "citation": return "Correct sources[].resource or its matching [^id] reference and definition; use a Workspace-relative pinned file path with an optional valid #Lx[-Ly] range.";
     case "citation-owner": return "Replace foreign repository evidence with the owning Source, or move the cross-repository claim to a Workspace-root page.";
     case "cross-source": return "Add evidence from every pinned Source to the Workspace architecture after reading the synthesis handoff and cited files.";
     case "frontmatter": return "Repair the YAML frontmatter so the page can be parsed, preserving only fields allowed by its template.";

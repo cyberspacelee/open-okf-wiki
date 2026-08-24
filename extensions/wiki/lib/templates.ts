@@ -257,7 +257,7 @@ export function formatWikiTemplatesForPrompt(
     "",
     placement,
     "A required singleton must exist at every applicable directory. `Identity` marks the page used by that directory's generated index. An evidence-selected contract is written only when inspected evidence satisfies `Applies when`; a `many` contract may produce multiple pages by replacing `{slug}` with a specific topic slug.",
-    "Candidate frontmatter contains only `type`, `title`, `description`, and `sources`. The H1 equals `title`; the first paragraph equals the routing-quality `description`; H2 headings follow the contract exactly. Every non-diagram H2 contains a matching `[^id]` source footnote. Replace every placeholder and use source identifiers in Mermaid nodes.",
+    "Candidate frontmatter contains only `type`, `title`, `description`, and `sources`. The H1 equals `title`; the first paragraph equals the routing-quality `description`; H2 headings follow the contract exactly. Replace every placeholder and use source identifiers in Mermaid nodes. Follow the injected Citation contract for provenance.",
   ];
   for (const template of selected) lines.push("", ...formatTemplate(template, true));
   return `${lines.join("\n")}\n`;

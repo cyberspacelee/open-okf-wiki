@@ -121,7 +121,7 @@ Attested Computation（§10）是「数是不是按指定算法算的」，对�
 | `type` 形态 | `Architecture`、`Playbook`、描述性 Title Case | 模板是 `arch`、`overview`、`concept`（文件名腔） |
 | `description` | index / snippet 用 | 不要求；index 只用 `title` 或文件名（`wiki-okf.ts` `renderIndex`） |
 | 架构页文件名 | kebab `architecture.md` | 模板文件 `arch.md` → 生成 `arch.md` |
-| 出处 | `sources:` + `[^id]` 脚注 | `sources[].resource` 使用 Workspace 根相对路径和行号，正文用同 id 脚注 |
+| 出处 | `sources:` + `[^id]` 脚注 | `sources[].resource` 使用 Workspace 根相对路径，可选精确行号；正文用同 id 脚注 |
 | Wiki 内链 | 推荐 `/source/domain/concept.md` | 未规定；易写成相对或源码 citation |
 | `verified` | 对照证据的确认 | publish 给**每页**盖 `process:open-okf-wiki`（`stampPublication`），无独立 review 也是 machine-confirmed |
 | 正文结构 | `# Schema` / `# Examples` / 表 / 列表 | 模板几乎只有一段说明 + mermaid；没有给消费 agent 的固定标题 |
@@ -166,7 +166,7 @@ flowchart TD
 
 `# 消费注意` / `# Notes for consumers` 对齐样本 `orders.md`：专门写给下一个 agent 的陷阱，不写散文综述。
 
-5. **出处**：只使用 OKF `sources` + 脚注。`resource` 写成从 Workspace 根开始的 POSIX 路径并追加 `#Lx` 或 `#Lx-Ly`；正文脚注 id 与 `sources[].id` 一致。显式 Workspace 路径包含 Source 目录，隐式 Workspace 不添加 `self/`。
+5. **出处**：只使用 OKF `sources` + 脚注。`resource` 写成从 Workspace 根开始的 POSIX 路径，可选追加 `#Lx` 或 `#Lx-Ly`；正文脚注 id 与 `sources[].id` 一致。显式 Workspace 路径包含 Source 目录，隐式 Workspace 不添加 `self/`。
 
 ### 4.2 工作流
 
