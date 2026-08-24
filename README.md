@@ -180,6 +180,8 @@ required singleton contract spans Wiki and repository altitudes. Other
 contracts are evidence-selected and may produce one page or multiple topic
 pages. Headings and obligation guidance follow the pack language; `type` stays
 English Title Case and Mermaid node IDs stay source identifiers.
+The Run language is also injected directly into writers, including when the
+Workspace supplies a custom template pack.
 Consuming agents start at `wiki/index.md`.
 
 ```yaml

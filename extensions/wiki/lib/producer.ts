@@ -343,6 +343,7 @@ function defaultRunLead(
         maxConcurrency: config.maxConcurrentAgents - 1,
         maxEvidenceRepairRounds: config.maxEvidenceRepairRounds,
         templates: context.templates,
+        language: context.language,
         assertDispatch: context.assertDispatch,
       },
     );

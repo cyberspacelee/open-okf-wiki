@@ -69,6 +69,8 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 - Writers receive one runtime citation contract with the current Source roots,
   optional line ranges, Catalog syntax, and complete footnote shape. Validation
   rejects an inline `[^id]` reference without its `[^id]: ...` definition.
+- Writers receive the Run language explicitly instead of inferring it from the
+  selected template pack.
 - Optional openGauss Catalog evidence remains on-demand and read-only through
   `db_tables` and `db_describe`; pages cite described tables as `catalog:table`.
 

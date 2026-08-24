@@ -63,6 +63,7 @@ export async function createSubagentRuntime(
     maxConcurrency?: number;
     maxEvidenceRepairRounds?: number;
     templates?: WikiTemplatePack;
+    language?: "zh" | "en";
     assertDispatch?: (tasks: readonly SubagentTask[]) => void;
   } = {},
 ): Promise<SubagentRuntime> {
@@ -104,7 +105,7 @@ export async function createSubagentRuntime(
               if (scoped.kind === "tool") applyChildTool(live.get(task.id)!.tools, scoped);
               void report();
             },
-          }, signal, catalog, options.templates, options.maxEvidenceRepairRounds);
+          }, signal, catalog, options.templates, options.maxEvidenceRepairRounds, options.language);
           const status = result.error ? "failed" : "complete";
           const entry = live.get(result.id)!;
           entry.status = status;
@@ -200,6 +201,7 @@ async function runOne(
   catalog?: WikiCatalog,
   templates?: WikiTemplatePack,
   maxEvidenceRepairRounds?: number,
+  language?: "zh" | "en",
 ): Promise<SubagentResult> {
   const definition = byName.get(task.agent);
   if (!definition) {
@@ -240,10 +242,13 @@ async function runOne(
     const citations = task.agent === "write"
       ? `\n\n${formatWriterCitationContract(guard.sources, Boolean(catalog))}`
       : "";
+    const languageContract = task.agent === "write" && language
+      ? `\n\n## Output language\n\nThe Run language is \`${language}\` (\`zh\` = Simplified Chinese; \`en\` = English). Write titles, descriptions, prose, table labels, footnote definitions, and human-readable Mermaid labels in that language. Preserve source identifiers, code symbols, paths, commands, configuration keys, frontmatter \`type\`, \`sources[].id\`, and Mermaid node IDs verbatim. Copy the injected contract headings exactly.\n`
+      : "";
     const result = await runWikiSession(
       guard.workspaceRoot,
       tools,
-      `${definition.prompt}${pack}${citations}\n\n# Task\n\n${task.task}`,
+      `${definition.prompt}${pack}${citations}${languageContract}\n\n# Task\n\n${task.task}`,
       signal,
       {
         ...session,
