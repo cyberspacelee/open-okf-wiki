@@ -23,7 +23,9 @@ both sides. Otherwise record it as a gap.
 
 # Output
 
-Return Markdown only:
+Return Markdown only. The H2 headings below are machine schema tokens: copy
+them exactly even when the Run language is not English. Write all descriptive
+content, including negative results, in the Run language.
 
 ## Workspace
 

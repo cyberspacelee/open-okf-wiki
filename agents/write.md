@@ -58,7 +58,10 @@ named by their slug. Link across these levels instead of repeating explanations.
 
 # Output
 
-Return a compact Markdown receipt:
+Return a compact Markdown receipt. The H2 headings and the `complete`, `blocked`,
+and `none` values below are machine schema tokens: copy them exactly even when
+the Run language is not English. Write all descriptive content in the Run
+language; Candidate page headings still follow their injected page contracts.
 
 ## Status
 

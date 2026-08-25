@@ -53,6 +53,32 @@ test("session forwards tool start, update, and end to onActivity", async (t) => 
   ]);
 });
 
+test("session activity keeps model-facing tool args when execution mutates params", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-session-args-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  const events = [];
+  const args = { path: "src/a.ts" };
+  await runWikiSession(root, [], "unused", new AbortController().signal, {
+    sessionDir: path.join(root, "sessions"),
+    async createSession() {
+      return {
+        session: {
+          ...fakeSession([]),
+          subscribe(listener) {
+            listener({ type: "tool_execution_start", toolCallId: "call-1", toolName: "read", args });
+            args.path = path.join(root, "src", "a.ts");
+            listener({ type: "tool_execution_end", toolCallId: "call-1", toolName: "read", result: {}, isError: false });
+            return () => {};
+          },
+        },
+        modelFallbackMessage: undefined,
+      };
+    },
+    onActivity(event) { events.push(event); },
+  });
+  assert.deepEqual(events.map((event) => event.args), [{ path: "src/a.ts" }, { path: "src/a.ts" }]);
+});
+
 test("session forwards input and streaming assistant output as semantic activity", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-session-messages-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));

@@ -50,6 +50,14 @@ test("worker handoffs reject empty required sections", () => {
   assert.ok(workerOutputIssues("write", "## Status\n\nblocked").length > 0);
 });
 
+test("worker handoffs allow Run-language prose while keeping stable schema headings", () => {
+  const synthesis = [
+    "## Workspace", "这是工作区边界。", "## Relationships", "暂无已确认关系。",
+    "## End-to-end flows", "暂无。", "## Shared contracts", "暂无。", "## Gaps", "没有缺口。", "",
+  ].join("\n\n");
+  assert.deepEqual(workerOutputIssues("synthesize", synthesis), []);
+});
+
 test("review output requires one complete repair record per failed page", () => {
   const pages = ["wiki/one.md", "wiki/two.md"];
   const incomplete = [

@@ -22,6 +22,11 @@ or:
 verdict: changes_requested
 ```
 
+The verdict, receipt H2 headings, coverage row keys and values, repair field
+names, and `none` below are machine schema tokens: copy them exactly even when
+the Run language is not English. Write all findings and other descriptive
+content in the Run language.
+
 # Rubric
 
 Evaluate every page and every applicable contract on five dimensions:

@@ -122,6 +122,12 @@ test("read access is limited to pinned Sources, the Candidate, and current hando
   await assert.rejects(() => assertReadableEntry(guard, "backend/escape.txt"), /resolves outside/);
 
   const tools = candidateTools(guard);
+  const read = tools.find((tool) => tool.name === "read")!;
+  const readParams = { path: "backend/main.ts" };
+  const readResult = await read.execute("read-relative", readParams, new AbortController().signal, undefined, undefined);
+  assert.equal(readResult.isError, undefined);
+  assert.deepEqual(readParams, { path: "backend/main.ts" });
+
   const grep = tools.find((tool) => tool.name === "grep")!;
   const missingRoot = await grep.execute("grep-default", { pattern: "private" }, new AbortController().signal, undefined, undefined);
   assert.equal(missingRoot.isError, true);

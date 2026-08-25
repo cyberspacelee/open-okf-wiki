@@ -264,9 +264,9 @@ async function runOne(
         requiredReads,
       })
       : task.agent === "review"
-        ? createReviewerCompletionGate(candidatePages, maxWorkerRepairRounds, requiredReads)
+        ? createReviewerCompletionGate(taskGuard, candidatePages, maxWorkerRepairRounds, requiredReads)
         : task.agent === "survey" || task.agent === "synthesize"
-          ? createWorkerOutputGate(task.agent, maxWorkerRepairRounds, requiredReads)
+          ? createWorkerOutputGate(taskGuard, task.agent, maxWorkerRepairRounds, requiredReads)
           : undefined;
     const tools = [
       ...candidateTools(taskGuard, definition.tools),
@@ -286,8 +286,8 @@ async function runOne(
     const citations = task.agent === "write"
       ? `\n\n${formatWriterCitationContract(guard.sources, [...catalogs.keys()])}`
       : "";
-    const languageContract = task.agent === "write" && language
-      ? `\n\n## Output language\n\nThe Run language is \`${language}\` (\`zh\` = Simplified Chinese; \`en\` = English). Write titles, descriptions, prose, table labels, footnote definitions, and human-readable Mermaid labels in that language. Preserve source identifiers, code symbols, paths, commands, configuration keys, frontmatter \`type\`, \`sources[].id\`, and Mermaid node IDs verbatim. Copy the injected contract headings exactly.\n`
+    const languageContract = language
+      ? `\n\n## Output language\n\nThe Run language is \`${language}\` (\`zh\` = Simplified Chinese; \`en\` = English). Write all human-readable titles, descriptions, prose, table labels, footnote definitions, and Mermaid labels in that language. Preserve source identifiers, code symbols, paths, commands, configuration keys, frontmatter \`type\`, \`sources[].id\`, and Mermaid node IDs verbatim. Output receipt H2 headings, verdicts, status values, row keys, and repair field names shown by this agent prompt are machine schema tokens; copy them exactly even when the Run language is not English. Copy injected page-contract headings exactly.\n`
       : "";
     const handoffs = handoffManifest
       ? `# Required handoffs\n\nRead the manifest at \`${handoffManifest}\`, then read every handoff path it lists before completing this task.\n\n`

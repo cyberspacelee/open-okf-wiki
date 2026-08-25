@@ -63,8 +63,9 @@ is deleted with the Run after success or cancel.
 Run timestamps remain UTC ISO strings in persisted state. User-facing absolute
 times are formatted in the user's system-default locale and time zone.
 
-`language: zh` or `language: en` controls generated titles and body text.
-Code identifiers and source citations stay unchanged.
+`language: zh` or `language: en` controls published Wiki titles and body text,
+plus human-readable worker findings. Code identifiers, source citations, and
+the stable machine tokens in internal worker receipts stay unchanged.
 
 ## Workspace
 
@@ -207,8 +208,9 @@ required singleton contract spans Wiki and repository altitudes. Other
 contracts are evidence-selected and may produce one page or multiple topic
 pages. Headings and obligation guidance follow the pack language; `type` stays
 English Title Case and Mermaid node IDs stay source identifiers.
-The Run language is also injected directly into writers, including when the
-Workspace supplies a custom template pack.
+The Run language is injected directly into every worker. Writers receive it
+alongside the active page contracts, including when the Workspace supplies a
+custom template pack.
 Consuming agents start at `wiki/index.md`.
 
 ```yaml

@@ -151,14 +151,16 @@ export async function runWikiSession(
         assistant = undefined;
       }
       if (onActivity && event.type === "tool_execution_start") {
-        argsById.set(event.toolCallId, event.args);
+        const args = structuredClone(event.args);
+        argsById.set(event.toolCallId, args);
         const stats = usage();
-        onActivity({ kind: "tool", id: event.toolCallId, at: new Date().toISOString(), tool: event.toolName, args: event.args, status: "running", ...(stats ? { usage: stats } : {}) });
+        onActivity({ kind: "tool", id: event.toolCallId, at: new Date().toISOString(), tool: event.toolName, args, status: "running", ...(stats ? { usage: stats } : {}) });
       }
       if (onActivity && event.type === "tool_execution_update") {
-        argsById.set(event.toolCallId, event.args);
+        const args = structuredClone(event.args);
+        argsById.set(event.toolCallId, args);
         const stats = usage();
-        onActivity({ kind: "tool", id: event.toolCallId, at: new Date().toISOString(), tool: event.toolName, args: event.args, status: "running", ...(stats ? { usage: stats } : {}) });
+        onActivity({ kind: "tool", id: event.toolCallId, at: new Date().toISOString(), tool: event.toolName, args, status: "running", ...(stats ? { usage: stats } : {}) });
       }
       if (onActivity && event.type === "tool_execution_end") {
         const args = argsById.get(event.toolCallId) ?? {};

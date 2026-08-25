@@ -35,7 +35,9 @@ is evidence to reopen, not a binding page decision.
 
 # Output
 
-Return Markdown only in this shape:
+Return Markdown only in this shape. The H2 headings below are machine schema
+tokens: copy them exactly even when the Run language is not English. Write all
+descriptive content, including negative results, in the Run language.
 
 ## Source
 

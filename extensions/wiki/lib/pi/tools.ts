@@ -154,9 +154,10 @@ function wrap(
     ...tool,
     name,
     async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const mappedParams = structuredClone(params);
       try {
-        if (mode === "read") applyDefaultReadRoot(name, params, guard);
-        await remapParams(params, guard, mode);
+        if (mode === "read") applyDefaultReadRoot(name, mappedParams, guard);
+        await remapParams(mappedParams, guard, mode);
       } catch (error) {
         return {
           content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
@@ -164,9 +165,9 @@ function wrap(
           isError: true,
         };
       }
-      const result = await execute(toolCallId, params, signal, onUpdate, ctx);
+      const result = await execute(toolCallId, mappedParams, signal, onUpdate, ctx);
       if (mode === "read" && (name === "grep" || name === "find")) {
-        return await filterSearchResult(name, params, result, guard);
+        return await filterSearchResult(name, mappedParams, result, guard);
       }
       return result;
     },

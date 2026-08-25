@@ -48,7 +48,7 @@ export function createWriterCompletionGate(
   );
   return {
     observe(event) {
-      recordSuccessfulRead(readPaths, event);
+      recordSuccessfulRead(guard, readPaths, event);
       if (!isRecord(event.args) || typeof event.args.path !== "string") return;
       if (event.tool === "read" && event.status === "complete") {
         reads.push(captureEvidenceRead(guard, event.args, event.result));
@@ -62,7 +62,7 @@ export function createWriterCompletionGate(
       const receipts = (await Promise.all(reads)).filter((entry): entry is EvidenceReceipt => entry !== undefined);
       const issues = [
         ...workerOutputIssues("write", output).map((message) => ({ message: `[write-output] ${message}` })),
-        ...missingReadIssues(options.requiredReads ?? [], readPaths),
+        ...missingReadIssues(guard, options.requiredReads ?? [], readPaths),
         ...await validateWriterEvidence(guard, touched, receipts),
         ...await validateWriterAssignment(guard, options.todo, options.templates, options.catalogs ?? []),
       ];
@@ -72,6 +72,7 @@ export function createWriterCompletionGate(
 }
 
 export function createWorkerOutputGate(
+  guard: WikiWriteGuard,
   agent: "survey" | "synthesize",
   maxRepairRounds = 6,
   requiredReads: readonly string[] = [],
@@ -82,17 +83,18 @@ export function createWorkerOutputGate(
     "Continue in this same session. Return the complete handoff again with every required section populated.",
   );
   return {
-    observe(event) { recordSuccessfulRead(readPaths, event); },
+    observe(event) { recordSuccessfulRead(guard, readPaths, event); },
     async nextPrompt(output) {
       return repair([
         ...workerOutputIssues(agent, output).map((message) => ({ message: `[${agent}-output] ${message}` })),
-        ...missingReadIssues(requiredReads, readPaths),
+        ...missingReadIssues(guard, requiredReads, readPaths),
       ]);
     },
   };
 }
 
 export function createReviewerCompletionGate(
+  guard: WikiWriteGuard,
   candidatePages: readonly string[],
   maxRepairRounds = 6,
   requiredReads: readonly string[] = [],
@@ -103,33 +105,54 @@ export function createReviewerCompletionGate(
     "Continue in this same read-only session. Return the complete review again with the required verdict as its first nonblank line.",
   );
   return {
-    observe(event) { recordSuccessfulRead(readPaths, event); },
+    observe(event) { recordSuccessfulRead(guard, readPaths, event); },
     async nextPrompt(output) {
       return repair([
         ...workerOutputIssues("review", output, candidatePages)
           .map((message) => ({ message: `[review-output] ${message}` })),
-        ...missingReadIssues([...candidatePages, ...requiredReads], readPaths),
+        ...missingReadIssues(guard, [...candidatePages, ...requiredReads], readPaths),
       ]);
     },
   };
 }
 
 function recordSuccessfulRead(
+  guard: WikiWriteGuard,
   reads: Set<string>,
   event: { tool: string; args: unknown; status: string },
 ): void {
   if (event.tool !== "read" || event.status !== "complete" || !isRecord(event.args) || typeof event.args.path !== "string") return;
-  reads.add(normalizeToolPath(event.args.path));
+  const location = normalizeToolPath(guard, event.args.path);
+  if (location) reads.add(location);
 }
 
-function missingReadIssues(required: readonly string[], reads: ReadonlySet<string>): CompletionIssue[] {
-  return [...new Set(required.map(normalizeToolPath))]
-    .filter((location) => !reads.has(location))
-    .map((location) => ({ message: `[required-read] Read ${location} before completing this task` }));
+function missingReadIssues(
+  guard: WikiWriteGuard,
+  required: readonly string[],
+  reads: ReadonlySet<string>,
+): CompletionIssue[] {
+  return [...new Map(required.map((location) => [requiredReadKey(guard, location), location])).entries()]
+    .filter(([location]) => !reads.has(location))
+    .map(([, display]) => ({ message: `[required-read] Read ${display} before completing this task` }));
 }
 
-function normalizeToolPath(location: string): string {
-  return path.posix.normalize(location.replaceAll("\\", "/")).replace(/^\.\//, "");
+function requiredReadKey(guard: WikiWriteGuard, location: string): string {
+  const normalized = normalizeToolPath(guard, location);
+  if (!normalized) throw new Error(`Required read path is outside the Wiki workspace: ${location}`);
+  return normalized;
+}
+
+function normalizeToolPath(guard: WikiWriteGuard, location: string): string | undefined {
+  let absolute: string;
+  try {
+    absolute = assertReadable(guard, location);
+  } catch {
+    return undefined;
+  }
+  const relative = path.relative(guard.workspaceRoot, absolute);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return undefined;
+  const normalized = relative.replaceAll("\\", "/");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
 async function captureEvidenceRead(

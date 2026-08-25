@@ -15,6 +15,19 @@ const WRITE_RECEIPT = "## Status\n\ncomplete\n\n## Written\n\nwiki/overview.md\n
 const REVIEW_PASS = "verdict: pass\n\n## Coverage\n\n- page: wiki/overview.md | result: pass | evidence: main.ts#L1 reopened\n\n## Repairs\n\nnone\n";
 const SYNTHESIS_RECEIPT = "## Workspace\n\nself\n\n## Relationships\n\nnone\n\n## End-to-end flows\n\nnone\n\n## Shared contracts\n\nnone\n\n## Gaps\n\nnone\n";
 
+function completionGuard(): WikiWriteGuard {
+  const workspaceRoot = path.join(os.tmpdir(), "okf-wiki-completion-gate");
+  return {
+    workspaceRoot,
+    candidateRoot: path.join(workspaceRoot, ".okf-wiki", "run", "candidate"),
+    publishedWikiRoot: path.join(workspaceRoot, "wiki"),
+    handoffsRoot: path.join(workspaceRoot, ".okf-wiki", "run", "handoffs"),
+    sources: [{ scopeId: "self", logicalPath: ".", realPath: workspaceRoot }],
+    defaultSourceIgnores: true,
+    excludes: [],
+  };
+}
+
 async function fixture(t, resource: string, options: Parameters<typeof createWriterCompletionGate>[1] = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-evidence-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));
@@ -87,21 +100,37 @@ test("writer completion reports evidence and assignment issues in one repair bat
 });
 
 test("reviewer repairs an invalid verdict in the same session", async () => {
-  const gate = createReviewerCompletionGate(["wiki/overview.md"]);
+  const gate = createReviewerCompletionGate(completionGuard(), ["wiki/overview.md"]);
   gate.observe({ tool: "read", args: { path: "wiki/overview.md" }, status: "complete" });
   assert.match(await gate.nextPrompt("Looks good.") ?? "", /verdict: pass/);
   assert.equal(await gate.nextPrompt(REVIEW_PASS), undefined);
 });
 
 test("reviewer rejects partial frozen-page coverage", async () => {
-  const gate = createReviewerCompletionGate(["wiki/overview.md", "wiki/setup.md"]);
+  const gate = createReviewerCompletionGate(completionGuard(), ["wiki/overview.md", "wiki/setup.md"]);
   gate.observe({ tool: "read", args: { path: "wiki/overview.md" }, status: "complete" });
   assert.match(await gate.nextPrompt(REVIEW_PASS) ?? "", /wiki\/setup\.md/);
 });
 
 test("worker completion requires every host-supplied input to be read", async () => {
-  const gate = createWorkerOutputGate("synthesize", 6, [".okf-wiki/run/handoffs/one.md"]);
+  const guard = completionGuard();
+  const gate = createWorkerOutputGate(guard, "synthesize", 6, [".okf-wiki/run/handoffs/one.md"]);
   assert.match(await gate.nextPrompt(SYNTHESIS_RECEIPT) ?? "", /required-read/);
-  gate.observe({ tool: "read", args: { path: "./.okf-wiki/run/handoffs/one.md" }, status: "complete" });
+  gate.observe({
+    tool: "read",
+    args: { path: path.join(guard.workspaceRoot, ".okf-wiki", "run", "handoffs", "one.md") },
+    status: "complete",
+  });
   assert.equal(await gate.nextPrompt(SYNTHESIS_RECEIPT), undefined);
+});
+
+test("reviewer matches a Candidate absolute path to its model-facing wiki path", async () => {
+  const guard = completionGuard();
+  const gate = createReviewerCompletionGate(guard, ["wiki/overview.md"]);
+  gate.observe({
+    tool: "read",
+    args: { path: path.join(guard.candidateRoot, "overview.md") },
+    status: "complete",
+  });
+  assert.equal(await gate.nextPrompt(REVIEW_PASS), undefined);
 });
