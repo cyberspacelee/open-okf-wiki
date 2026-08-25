@@ -5,10 +5,15 @@ import path from "node:path";
 import test from "node:test";
 import {
   createReviewerCompletionGate,
+  createWorkerOutputGate,
   createWriterCompletionGate,
 } from "../extensions/wiki/lib/completion.js";
 import type { WikiWriteGuard } from "../extensions/wiki/lib/path-policy.js";
 import { createWriterTodoTracker } from "../extensions/wiki/lib/writer-todo.js";
+
+const WRITE_RECEIPT = "## Status\n\ncomplete\n\n## Written\n\nwiki/overview.md\n\n## Rejected hints\n\nnone\n\n## Evidence gaps\n\nnone\n";
+const REVIEW_PASS = "verdict: pass\n\n## Coverage\n\n- page: wiki/overview.md | result: pass | evidence: main.ts#L1 reopened\n\n## Repairs\n\nnone\n";
+const SYNTHESIS_RECEIPT = "## Workspace\n\nself\n\n## Relationships\n\nnone\n\n## End-to-end flows\n\nnone\n\n## Shared contracts\n\nnone\n\n## Gaps\n\nnone\n";
 
 async function fixture(t, resource: string, options: Parameters<typeof createWriterCompletionGate>[1] = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-evidence-"));
@@ -44,17 +49,17 @@ test("evidence receipts cover only lines returned by a truncated read", async (t
     status: "complete",
     result: { details: { truncation: { truncated: true, outputLines: 2 } } },
   });
-  assert.match(await gate.nextPrompt("") ?? "", /offset=3, limit=1/);
+  assert.match(await gate.nextPrompt(WRITE_RECEIPT) ?? "", /offset=3, limit=1/);
 
   gate.observe({ tool: "read", args: { path: "main.ts", offset: 3, limit: 1 }, status: "complete", result: {} });
-  assert.equal(await gate.nextPrompt(""), undefined);
+  assert.equal(await gate.nextPrompt(WRITE_RECEIPT), undefined);
 });
 
 test("a path-only citation requires a successful read but not a full-file span", async (t) => {
   const gate = await fixture(t, "main.ts");
-  assert.match(await gate.nextPrompt("") ?? "", /main\.ts/);
+  assert.match(await gate.nextPrompt(WRITE_RECEIPT) ?? "", /main\.ts/);
   gate.observe({ tool: "read", args: { path: "main.ts", offset: 2, limit: 1 }, status: "complete", result: {} });
-  assert.equal(await gate.nextPrompt(""), undefined);
+  assert.equal(await gate.nextPrompt(WRITE_RECEIPT), undefined);
 });
 
 test("the configured worker repair limit bounds a writer session", async (t) => {
@@ -82,7 +87,21 @@ test("writer completion reports evidence and assignment issues in one repair bat
 });
 
 test("reviewer repairs an invalid verdict in the same session", async () => {
-  const gate = createReviewerCompletionGate();
+  const gate = createReviewerCompletionGate(["wiki/overview.md"]);
+  gate.observe({ tool: "read", args: { path: "wiki/overview.md" }, status: "complete" });
   assert.match(await gate.nextPrompt("Looks good.") ?? "", /verdict: pass/);
-  assert.equal(await gate.nextPrompt("verdict: pass\n\nEvidence checked."), undefined);
+  assert.equal(await gate.nextPrompt(REVIEW_PASS), undefined);
+});
+
+test("reviewer rejects partial frozen-page coverage", async () => {
+  const gate = createReviewerCompletionGate(["wiki/overview.md", "wiki/setup.md"]);
+  gate.observe({ tool: "read", args: { path: "wiki/overview.md" }, status: "complete" });
+  assert.match(await gate.nextPrompt(REVIEW_PASS) ?? "", /wiki\/setup\.md/);
+});
+
+test("worker completion requires every host-supplied input to be read", async () => {
+  const gate = createWorkerOutputGate("synthesize", 6, [".okf-wiki/run/handoffs/one.md"]);
+  assert.match(await gate.nextPrompt(SYNTHESIS_RECEIPT) ?? "", /required-read/);
+  gate.observe({ tool: "read", args: { path: "./.okf-wiki/run/handoffs/one.md" }, status: "complete" });
+  assert.equal(await gate.nextPrompt(SYNTHESIS_RECEIPT), undefined);
 });

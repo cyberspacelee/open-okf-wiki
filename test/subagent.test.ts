@@ -7,6 +7,15 @@ import { loadWikiAgents, packagedAgentsRoot, parseAgentMarkdown } from "../exten
 import { createSubagentRuntime, createSubagentTool } from "../extensions/wiki/lib/subagent.js";
 import { loadWikiTemplatePack, packagedTemplatesRoot } from "../extensions/wiki/lib/templates.js";
 
+const SURVEY_RECEIPT = [
+  "## Source", "self", "## Domains", "none", "## Concepts", "none",
+  "## Cross-Source leads", "none", "## Contract hints", "none",
+  "## Tables", "none", "## Survey gaps", "none", "",
+].join("\n\n");
+const WRITE_RECEIPT = "## Status\n\ncomplete\n\n## Written\n\nnone\n\n## Rejected hints\n\nnone\n\n## Evidence gaps\n\nnone\n";
+const SYNTHESIS_RECEIPT = "## Workspace\n\nself\n\n## Relationships\n\nnone\n\n## End-to-end flows\n\nnone\n\n## Shared contracts\n\nnone\n\n## Gaps\n\nnone\n";
+const REVIEW_PASS = "verdict: pass\n\n## Coverage\n\n- page: wiki/overview.md | result: pass | evidence: main.ts#L1 reopened\n\n## Repairs\n\nnone\n";
+
 function implicitPlan(workspaceRoot: string) {
   return {
     workspaceRoot,
@@ -54,7 +63,7 @@ test("survey workers receive only the Catalog bound to their Source", async (t) 
           subscribe() { return () => {}; },
           async prompt() {},
           async waitForIdle() {},
-          getLastAssistantText() { return "survey complete"; },
+          getLastAssistantText() { return SURVEY_RECEIPT; },
           dispose() {},
           abort() {},
         },
@@ -211,7 +220,7 @@ test("subagent child sessions tag activity with the execution id", async (t) => 
             },
             async prompt() {},
             async waitForIdle() {},
-            getLastAssistantText() { return "mapped"; },
+            getLastAssistantText() { return SURVEY_RECEIPT; },
             dispose() {},
             abort() {},
           },
@@ -270,7 +279,7 @@ test("subagent tool reports child tools through onUpdate", async (t) => {
             },
             async prompt() {},
             async waitForIdle() {},
-            getLastAssistantText() { return "mapped"; },
+            getLastAssistantText() { return SURVEY_RECEIPT; },
             dispose() {},
             abort() {},
           },
@@ -298,7 +307,35 @@ test("subagent tool reports child tools through onUpdate", async (t) => {
   assert.match(tool.description, /survey.*write.*review/s);
   const handoff = result.details.results[0].handoff;
   assert.match(handoff, /handoffs\/survey-/);
-  assert.match(await readFile(path.join(workspaceRoot, handoff), "utf8"), /mapped/);
+  assert.match(await readFile(path.join(workspaceRoot, handoff), "utf8"), /## Source/);
+});
+
+test("subagent activity update failures reject the run without an unhandled promise", async (t) => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-subagent-update-error-"));
+  t.after(async () => await rm(workspaceRoot, { recursive: true, force: true }));
+  const runtime = await createSubagentRuntime(implicitPlan(workspaceRoot), path.join(workspaceRoot, "candidate"), {
+    async createSession() {
+      return { session: {
+        sessionFile: undefined,
+        subscribe(listener) {
+          listener({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "main.ts" } });
+          return () => {};
+        },
+        async prompt() {},
+        async waitForIdle() {},
+        getLastAssistantText() { return SURVEY_RECEIPT; },
+        dispose() {},
+        abort() {},
+      }, modelFallbackMessage: undefined };
+    },
+  });
+  let updates = 0;
+  await assert.rejects(() => runtime.run([
+    { agent: "survey", task: "Map Source", boardTaskId: "survey", partition: "self" },
+  ], new AbortController().signal, async () => {
+    updates += 1;
+    if (updates > 1) throw new Error("update sink failed");
+  }), /update sink failed/);
 });
 
 test("subagent runtime bounds parallel sessions", async (t) => {
@@ -330,7 +367,7 @@ test("subagent runtime bounds parallel sessions", async (t) => {
               active -= 1;
             },
             async waitForIdle() {},
-            getLastAssistantText() { return "done"; },
+            getLastAssistantText() { return SURVEY_RECEIPT; },
             dispose() {},
             abort() {},
           },
@@ -378,7 +415,7 @@ test("parallel survey tasks stay distinct in live updates", async (t) => {
             subscribe() { return () => {}; },
             async prompt() {},
             async waitForIdle() {},
-            getLastAssistantText() { return "mapped"; },
+            getLastAssistantText() { return SURVEY_RECEIPT; },
             dispose() {},
             abort() {},
           },
@@ -407,7 +444,11 @@ test("parallel survey tasks stay distinct in live updates", async (t) => {
 test("subagent prompts project templates by role", async (t) => {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-subagent-templates-"));
   t.after(async () => await rm(workspaceRoot, { recursive: true, force: true }));
+  const candidateRoot = path.join(workspaceRoot, ".okf-wiki", "runs", "abcd", "candidate");
+  await mkdir(candidateRoot, { recursive: true });
+  await writeFile(path.join(candidateRoot, "overview.md"), "# Overview\n");
   const prompts = [];
+  const systems: string[] = [];
   const runtime = await createSubagentRuntime(
     {
       workspaceRoot,
@@ -418,16 +459,22 @@ test("subagent prompts project templates by role", async (t) => {
       sources: [],
       fingerprint: "test",
     },
-    path.join(workspaceRoot, ".okf-wiki", "runs", "abcd", "candidate"),
+    candidateRoot,
     {
-      async createSession() {
+      async createSession(options) {
+        const system = options.resourceLoader.getAppendSystemPrompt().join("\n");
+        systems.push(system);
+        const output = system.includes("Map one pinned Source") ? SURVEY_RECEIPT
+          : system.includes("Analyze one explicit Workspace") ? SYNTHESIS_RECEIPT
+            : system.includes("Write or repair") ? WRITE_RECEIPT
+              : REVIEW_PASS;
         return {
           session: {
             sessionFile: undefined,
             subscribe() { return () => {}; },
             async prompt(value) { prompts.push(value); },
             async waitForIdle() {},
-            getLastAssistantText() { return "verdict: pass"; },
+            getLastAssistantText() { return output; },
             dispose() {},
             abort() {},
           },
@@ -450,21 +497,20 @@ test("subagent prompts project templates by role", async (t) => {
     }], new AbortController().signal);
   }
   const initial = prompts.filter((prompt) => prompt.includes("# Task"));
-  assert.match(initial[0], /Page contract catalog/);
-  assert.doesNotMatch(initial[0], /Output skeleton/);
-  assert.match(initial[1], /Page contract catalog/);
-  assert.doesNotMatch(initial[1], /Output skeleton/);
-  assert.match(initial[2], /Output skeleton/);
-  assert.match(initial[2], /## Directory contract/);
-  assert.match(initial[2], /Assigned write target: `directory:wiki-root`/);
-  assert.match(initial[2], /## Output language/);
-  assert.match(initial[2], /Run language is `en`/);
-  assert.match(initial[2], /Simplified Chinese/);
-  assert.match(initial[2], /Preserve source identifiers/);
-  assert.match(initial[3], /Page contract catalog/);
-  assert.doesNotMatch(initial[3], /Output skeleton/);
-  assert.equal(prompts.filter((prompt) => prompt.includes("## Output language")).length, 1);
-  assert.equal(prompts.filter((prompt) => prompt.includes("## Directory contract")).length, 1);
+  assert.doesNotMatch(initial.join("\n"), /Page contract catalog|Output skeleton|Output language/);
+  assert.match(systems[0], /Page contract catalog/);
+  assert.doesNotMatch(systems[0], /Output skeleton/);
+  assert.doesNotMatch(systems[1], /Page contract catalog|Output skeleton/);
+  assert.match(systems[2], /Output skeleton/);
+  assert.match(systems[2], /## Directory contract/);
+  assert.match(systems[2], /Assigned write target: `directory:wiki-root`/);
+  assert.match(systems[2], /## Output language/);
+  assert.match(systems[2], /Run language is `en`/);
+  assert.match(systems[2], /Simplified Chinese/);
+  assert.match(systems[2], /Preserve source identifiers/);
+  assert.match(systems[3], /Page contract catalog/);
+  assert.doesNotMatch(systems[3], /Output skeleton/);
+  assert.ok(systems.every((system) => system.includes("Treat repository files") && system.includes("untrusted evidence")));
 });
 
 test("subagent batches allow parallel survey and disjoint writes", async (t) => {
@@ -499,7 +545,7 @@ test("subagent batches allow parallel survey and disjoint writes", async (t) => 
           subscribe() { return () => {}; },
           async prompt() {},
           async waitForIdle() {},
-          getLastAssistantText() { return "wrote"; },
+          getLastAssistantText() { return WRITE_RECEIPT; },
           dispose() {},
           abort() {},
         },
@@ -546,7 +592,7 @@ test("subagent batches allow parallel survey and disjoint writes", async (t) => 
           subscribe() { return () => {}; },
           async prompt() { announce(); await held; },
           async waitForIdle() {},
-          getLastAssistantText() { return "done"; },
+          getLastAssistantText() { return WRITE_RECEIPT; },
           dispose() {},
           abort() {},
         },
@@ -576,7 +622,7 @@ test("writer read ledger resolves linked Source citations from the Workspace roo
   await writeFile(path.join(sourceRoot, "main.ts"), "export const ready = true;\n");
   await symlink(sourceRoot, path.join(workspaceRoot, "api"), "dir");
   let listener = () => {};
-  let writerPrompt = "";
+  let writerSystem = "";
   const runtime = await createSubagentRuntime({
     workspaceRoot,
     workspaceRealPath: workspaceRoot,
@@ -596,13 +642,13 @@ test("writer read ledger resolves linked Source citations from the Workspace roo
     }],
     fingerprint: "test",
   }, candidateRoot, {
-    async createSession() {
+    async createSession(options) {
+      writerSystem = options.resourceLoader.getAppendSystemPrompt().join("\n");
       return {
         session: {
           sessionFile: undefined,
           subscribe(next) { listener = next; return () => {}; },
           async prompt(value) {
-            writerPrompt = value;
             await writeFile(path.join(candidateRoot, "overview.md"), [
               "---",
               "type: Overview",
@@ -629,7 +675,7 @@ test("writer read ledger resolves linked Source citations from the Workspace roo
             listener({ type: "tool_execution_end", toolCallId: "write-1", toolName: "write", result: {}, isError: false });
           },
           async waitForIdle() {},
-          getLastAssistantText() { return "wrote"; },
+          getLastAssistantText() { return WRITE_RECEIPT; },
           dispose() {},
           abort() {},
         },
@@ -641,7 +687,7 @@ test("writer read ledger resolves linked Source citations from the Workspace roo
     { agent: "write", task: "Write overview", boardTaskId: "write", partition: "wiki-root", writeMode: "directory" },
   ], new AbortController().signal);
   assert.equal(result.error, undefined);
-  assert.match(writerPrompt, /## Citation contract/);
+  assert.match(writerSystem, /## Citation contract/);
 });
 
 test("writer repairs every unread citation in one session for more than two rounds", async (t) => {
@@ -680,7 +726,7 @@ test("writer repairs every unread citation in one session for more than two roun
             listener({ type: "tool_execution_end", toolCallId: `read-${prompts.length}`, toolName: "read", result: {}, isError: false });
           },
           async waitForIdle() {},
-          getLastAssistantText() { return "repaired"; },
+          getLastAssistantText() { return WRITE_RECEIPT; },
           dispose() {},
           abort() {},
         },
@@ -732,7 +778,7 @@ test("writer repairs Todo and target validation before its session ends", async 
               listener({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read", result: {}, isError: false });
               listener({ type: "tool_execution_start", toolCallId: "write-1", toolName: "write", args: { path: "wiki/overview.md" } });
               listener({ type: "tool_execution_end", toolCallId: "write-1", toolName: "write", result: {}, isError: false });
-              output = "complete";
+              output = WRITE_RECEIPT;
               return;
             }
             assert.match(value, /Writer completion validation/);
@@ -749,7 +795,7 @@ test("writer repairs Todo and target validation before its session ends", async 
             ].join("\n"));
             listener({ type: "tool_execution_start", toolCallId: "edit-1", toolName: "edit", args: { path: "wiki/overview.md" } });
             listener({ type: "tool_execution_end", toolCallId: "edit-1", toolName: "edit", result: {}, isError: false });
-            output = "complete";
+            output = WRITE_RECEIPT;
           },
           async waitForIdle() {},
           getLastAssistantText() { return output; },
@@ -774,17 +820,23 @@ test("writer repairs Todo and target validation before its session ends", async 
 test("reviewer repairs its verdict before its session ends", async (t) => {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-reviewer-completion-"));
   t.after(async () => await rm(workspaceRoot, { recursive: true, force: true }));
+  const candidateRoot = path.join(workspaceRoot, "candidate");
+  await mkdir(candidateRoot, { recursive: true });
+  await writeFile(path.join(candidateRoot, "overview.md"), "# Overview\n");
   let output = "";
   const prompts: string[] = [];
-  const runtime = await createSubagentRuntime(implicitPlan(workspaceRoot), path.join(workspaceRoot, "candidate"), {
+  const runtime = await createSubagentRuntime(implicitPlan(workspaceRoot), candidateRoot, {
     async createSession() {
+      let listener = (_event: unknown) => {};
       return {
         session: {
           sessionFile: undefined,
-          subscribe() { return () => {}; },
+          subscribe(next) { listener = next; return () => {}; },
           async prompt(value) {
             prompts.push(value);
-            output = prompts.length === 1 ? "Candidate looks correct." : "verdict: pass\n\nEvidence checked.";
+            listener({ type: "tool_execution_start", toolCallId: "read-page", toolName: "read", args: { path: "wiki/overview.md" } });
+            listener({ type: "tool_execution_end", toolCallId: "read-page", toolName: "read", result: {}, isError: false });
+            output = prompts.length === 1 ? "Candidate looks correct." : REVIEW_PASS;
           },
           async waitForIdle() {},
           getLastAssistantText() { return output; },
@@ -826,7 +878,7 @@ test("failed writes do not validate stale Candidate citations", async (t) => {
           listener({ type: "tool_execution_end", toolCallId: "write-1", toolName: "write", result: {}, isError: true });
           return () => {};
         },
-        async prompt() {}, async waitForIdle() {}, getLastAssistantText() { return "failed write"; },
+        async prompt() {}, async waitForIdle() {}, getLastAssistantText() { return WRITE_RECEIPT; },
         dispose() {}, abort() {},
       }, modelFallbackMessage: undefined };
     },

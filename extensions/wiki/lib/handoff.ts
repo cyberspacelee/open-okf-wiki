@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeText } from "./files.js";
+import { markdownStructure, sectionHasContent } from "./markdown-structure.js";
 import type { WikiWriteMode } from "./write-target.js";
 
 const BODY_MARKER = "<!-- wiki-handoff-body -->";
@@ -48,6 +49,122 @@ export function parseReviewVerdict(text: string): "pass" | "changes_requested" |
   return match ? match[1] as "pass" | "changes_requested" : undefined;
 }
 
+const REQUIRED_OUTPUT_SECTIONS: Readonly<Record<string, readonly string[]>> = {
+  survey: ["Source", "Domains", "Concepts", "Cross-Source leads", "Contract hints", "Tables", "Survey gaps"],
+  synthesize: ["Workspace", "Relationships", "End-to-end flows", "Shared contracts", "Gaps"],
+  write: ["Status", "Written", "Rejected hints", "Evidence gaps"],
+};
+
+export function reviewCandidatePages(files: readonly string[]): string[] {
+  return files
+    .filter((file) => file.endsWith(".md"))
+    .map((file) => `wiki/${file}`)
+    .sort();
+}
+
+export function workerOutputIssues(agent: string, text: string, candidatePages: readonly string[] = []): string[] {
+  if (agent === "review") return reviewOutputIssues(text, candidatePages);
+  const required = REQUIRED_OUTPUT_SECTIONS[agent];
+  if (!required) return [`Unsupported Wiki agent output contract: ${agent}`];
+  const sections = markdownStructure(text).sections;
+  const issues: string[] = [];
+  const actual = sections.map((section) => section.title);
+  if (actual.length !== required.length || actual.some((title, index) => title !== required[index])) {
+    issues.push(`H2 sections must be exactly: ${required.join(" | ")}`);
+  }
+  for (const title of required) {
+    const matches = sections.filter((section) => section.title === title);
+    if (matches.length !== 1) issues.push(`Expected exactly one \`## ${title}\` section`);
+    else if (!sectionHasContent(matches[0]!)) issues.push(`\`## ${title}\` must contain a result`);
+  }
+  if (agent === "write") {
+    const status = sectionText(sections, "Status").toLowerCase();
+    if (status !== "complete") issues.push("`## Status` must be exactly `complete`");
+    const gaps = sectionText(sections, "Evidence gaps").toLowerCase().replace(/[.]+$/, "");
+    if (gaps !== "none") issues.push("`## Evidence gaps` must be exactly `none` before completion");
+  }
+  return issues;
+}
+
+function reviewOutputIssues(text: string, candidatePages: readonly string[]): string[] {
+  const verdict = parseReviewVerdict(text);
+  const issues: string[] = [];
+  if (!verdict) issues.push("The first nonblank line must be exactly `verdict: pass` or `verdict: changes_requested`");
+  if (!candidatePages.length) issues.push("Review requires a non-empty frozen Candidate page manifest");
+  const sections = markdownStructure(text).sections;
+  const required = ["Coverage", "Repairs"];
+  const actual = sections.map((section) => section.title);
+  if (actual.length !== required.length || actual.some((title, index) => title !== required[index])) {
+    issues.push(`H2 sections must be exactly: ${required.join(" | ")}`);
+  }
+  for (const title of required) {
+    const matches = sections.filter((section) => section.title === title);
+    if (matches.length !== 1) issues.push(`Expected exactly one \`## ${title}\` section`);
+    else if (!sectionHasContent(matches[0]!)) issues.push(`\`## ${title}\` must contain a result`);
+  }
+  const expected = new Set(candidatePages);
+  const seen = new Map<string, "pass" | "changes_requested">();
+  const coveragePattern = /^- page: (wiki\/[A-Za-z0-9._/-]+\.md) \| result: (pass|changes_requested) \| evidence: (.+)$/;
+  for (const line of sectionText(sections, "Coverage").split(/\r?\n/).filter((entry) => entry.trim())) {
+    const match = coveragePattern.exec(line);
+    if (!match) {
+      issues.push(`Invalid review coverage row: ${line}`);
+      continue;
+    }
+    const page = match[1]!;
+    const result = match[2]! as "pass" | "changes_requested";
+    const evidence = match[3]!.trim();
+    if (seen.has(page)) issues.push(`Duplicate review coverage for ${page}`);
+    else seen.set(page, result);
+    if (!evidence || /^none\.?$/i.test(evidence)) issues.push(`Review coverage for ${page} requires reopened evidence or a concrete gap`);
+  }
+  for (const page of candidatePages) if (!seen.has(page)) issues.push(`Missing review coverage for ${page}`);
+  for (const page of seen.keys()) if (!expected.has(page)) issues.push(`Review coverage names unknown Candidate page ${page}`);
+  const failed = [...seen].filter(([, result]) => result === "changes_requested").map(([page]) => page);
+  if (verdict === "pass") {
+    if (failed.length) issues.push("A pass verdict cannot contain changes_requested page results");
+    if (sectionText(sections, "Repairs").toLowerCase().replace(/[.]+$/, "") !== "none") {
+      issues.push("A pass verdict requires `## Repairs` to be exactly `none`");
+    }
+  }
+  if (verdict === "changes_requested") {
+    if (!failed.length) issues.push("A changes_requested verdict requires at least one changes_requested page result");
+    const repaired = repairRecordPages(sectionText(sections, "Repairs"), issues);
+    for (const page of failed) if (!repaired.has(page)) issues.push(`Missing repair record for ${page}`);
+    for (const page of repaired) if (!failed.includes(page)) issues.push(`Repair record names a page that did not fail coverage: ${page}`);
+  }
+  return issues;
+}
+
+function repairRecordPages(text: string, issues: string[]): Set<string> {
+  const pages = new Set<string>();
+  const fields = ["partition", "page", "obligation", "defect", "evidence", "acceptance"];
+  for (const block of text.trim().split(/\r?\n\s*\r?\n/).filter(Boolean)) {
+    const lines = block.split(/\r?\n/);
+    const values = new Map<string, string>();
+    for (const line of lines) {
+      const match = /^([a-z]+):\s*(\S.*)$/.exec(line);
+      if (!match || !fields.includes(match[1]!)) {
+        issues.push(`Invalid review repair field: ${line}`);
+        continue;
+      }
+      if (values.has(match[1]!)) issues.push(`Duplicate \`${match[1]}:\` field in one repair record`);
+      values.set(match[1]!, match[2]!);
+    }
+    for (const field of fields) if (!values.has(field)) issues.push(`Review repair record requires a \`${field}:\` field`);
+    const page = values.get("page");
+    if (page) {
+      if (pages.has(page)) issues.push(`Duplicate repair record for ${page}`);
+      pages.add(page);
+    }
+  }
+  return pages;
+}
+
+function sectionText(sections: ReturnType<typeof markdownStructure>["sections"], title: string): string {
+  return sections.find((section) => section.title === title)?.lines.join("\n").trim() ?? "";
+}
+
 export async function writeHandoff(input: {
   workspaceRoot: string;
   handoffsRoot: string;
@@ -85,6 +202,7 @@ export async function verifyHandoff(
     agent: string;
     taskDigest: string;
     candidateRevision?: string;
+    candidatePages?: readonly string[];
   },
 ): Promise<{ envelope: HandoffEnvelope; body: string; sha256: string; verdict?: "pass" | "changes_requested" } | undefined> {
   let bytes: Buffer;
@@ -110,6 +228,7 @@ export async function verifyHandoff(
     }
   }
   const sha256 = createHash("sha256").update(bytes).digest("hex");
+  if (workerOutputIssues(expected.agent, body, expected.candidatePages).length) return undefined;
   if (expected.agent === "review") {
     if (envelope.baseCandidateRevision !== expected.candidateRevision) return undefined;
     const verdict = parseReviewVerdict(body);

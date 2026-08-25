@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { git } from "../extensions/wiki/lib/git.js";
 import { exists, writeText } from "../extensions/wiki/lib/files.js";
-import { writeHandoff, taskDigest } from "../extensions/wiki/lib/handoff.js";
+import { reviewCandidatePages, writeHandoff, taskDigest } from "../extensions/wiki/lib/handoff.js";
 import { createProductionWikiProducer } from "../extensions/wiki/lib/producer.js";
 import type { WikiLeadContext } from "../extensions/wiki/lib/producer.js";
 import { installWikiPublication } from "../extensions/wiki/lib/publication.js";
@@ -17,6 +17,13 @@ import { RunActivity } from "../extensions/wiki/lib/run-activity.js";
 import { wikiWorkspaceManagement } from "../extensions/wiki/lib/workspace.js";
 
 const ACTIVITY_AT = "2026-08-22T00:00:00.000Z";
+const SURVEY_RECEIPT = [
+  "## Source", "self", "## Domains", "none", "## Concepts", "none",
+  "## Cross-Source leads", "none", "## Contract hints", "none",
+  "## Tables", "none", "## Survey gaps", "none", "",
+].join("\n\n");
+const SYNTHESIS_RECEIPT = "## Workspace\n\nworkspace\n\n## Relationships\n\nnone\n\n## End-to-end flows\n\nnone\n\n## Shared contracts\n\nnone\n\n## Gaps\n\nnone\n";
+const WRITE_RECEIPT = "## Status\n\ncomplete\n\n## Written\n\nnone\n\n## Rejected hints\n\nnone\n\n## Evidence gaps\n\nnone\n";
 
 function toolEvent(id, tool, args, status, scope) {
   return { kind: "tool", id, at: ACTIVITY_AT, tool, args, status, ...(scope ? { scope } : {}) };
@@ -24,6 +31,11 @@ function toolEvent(id, tool, args, status, scope) {
 
 function toolActivity(agent) {
   return agent.activity.filter((entry) => entry.kind === "tool");
+}
+
+async function waitForAbort(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return;
+  await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
 }
 
 function mermaidStub(kind: string): string {
@@ -127,7 +139,9 @@ async function writeReviewPass(context: WikiLeadContext) {
     partition: "candidate",
   };
   await context.record({ ...assignment, status: "running" });
-  const attested = await attestHandoff(context, assignment, "verdict: pass\n");
+  const pages = reviewCandidatePages((await candidateRevision(context.candidateRoot)).files);
+  const coverage = pages.map((page) => `- page: ${page} | result: pass | evidence: main.ts#L1 reopened`).join("\n");
+  const attested = await attestHandoff(context, assignment, `verdict: pass\n\n## Coverage\n\n${coverage}\n\n## Repairs\n\nnone\n`);
   await context.record({ ...assignment, status: "complete", ...attested });
 }
 
@@ -286,7 +300,7 @@ test("resume adopts an exact handoff written before the terminal receipt", async
           partition: "self",
         };
         await context.record({ ...assignment, status: "running" });
-        await attestHandoff(context, assignment, "complete\n");
+        await attestHandoff(context, assignment, SURVEY_RECEIPT);
         return;
       }
       assert.equal((await context.board.read()).tasks[0]?.status, "completed");
@@ -328,7 +342,7 @@ test("resume adopts a target-bound writer handoff after a sibling target changes
         await context.record({ ...assignment, status: "running" });
         await mkdir(path.join(context.candidateRoot, "billing"), { recursive: true });
         await writeText(path.join(context.candidateRoot, "billing", "domain.md"), "billing\n");
-        await attestHandoff(context, assignment, "complete\n");
+        await attestHandoff(context, assignment, WRITE_RECEIPT);
         await mkdir(path.join(context.candidateRoot, "checkout"), { recursive: true });
         await writeText(path.join(context.candidateRoot, "checkout", "domain.md"), "checkout\n");
         return;
@@ -440,7 +454,7 @@ test("concurrent starts admit only one current Run", async (t) => {
   const root = await gitRepo(t);
   const producer = createProductionWikiProducer({
     async runLead(context) {
-      await new Promise((resolve) => context.signal.addEventListener("abort", resolve, { once: true }));
+      await waitForAbort(context.signal);
     },
   });
   const attempts = await Promise.allSettled([
@@ -504,7 +518,7 @@ test("resume waits for the paused Lead generation to finish", async (t) => {
       calls += 1;
       if (calls === 1) {
         announce();
-        await new Promise((resolve) => context.signal.addEventListener("abort", resolve, { once: true }));
+        await waitForAbort(context.signal);
         await new Promise((resolve) => setTimeout(resolve, 30));
         oldFinished = true;
         return;
@@ -592,7 +606,7 @@ test("Run exposes only Catalogs bound by pinned Sources", async (t) => {
     async runLead(context) {
       assert.deepEqual([...context.catalogs.keys()], ["shared"]);
       ready();
-      await new Promise((resolve) => context.signal.addEventListener("abort", resolve, { once: true }));
+      await waitForAbort(context.signal);
     },
   });
   const handle = await producer.start({ cwd: workspace.root });
@@ -622,8 +636,10 @@ test("multi-Source checks require survey fan-in followed by synthesis", async (t
         context.plan,
         context.candidateRoot,
         {
-          async createSession() {
+          async createSession(options) {
             let listener = (_event: unknown) => {};
+            const system = options.resourceLoader.getAppendSystemPrompt().join("\n");
+            const output = system.includes("Analyze one explicit Workspace") ? SYNTHESIS_RECEIPT : SURVEY_RECEIPT;
             return {
               session: {
                 sessionFile: undefined,
@@ -631,11 +647,17 @@ test("multi-Source checks require survey fan-in followed by synthesis", async (t
                 async prompt(value) {
                   if (value.includes("# Required handoffs")) {
                     synthesisPrompt = value;
+                    const manifest = /manifest at `([^`]+)`/.exec(value)?.[1];
+                    assert.ok(manifest);
+                    for (const location of [manifest, ...surveyHandoffs]) {
+                      listener({ type: "tool_execution_start", toolCallId: `read-${location}`, toolName: "read", args: { path: location } });
+                      listener({ type: "tool_execution_end", toolCallId: `read-${location}`, toolName: "read", result: {}, isError: false });
+                    }
                     listener({ type: "compaction_end", aborted: false, result: {} });
                   }
                 },
                 async waitForIdle() {},
-                getLastAssistantText() { return "survey complete"; },
+                getLastAssistantText() { return output; },
                 async sendCustomMessage(message) { synthesisCheckpoint = message.content; },
                 dispose() {},
                 abort() {},
@@ -650,7 +672,7 @@ test("multi-Source checks require survey fan-in followed by synthesis", async (t
         {
           templates: context.templates,
           assertDispatch: context.assertDispatch,
-          synthesisHandoffs: () => surveyHandoffs,
+          handoffsForTask: () => surveyHandoffs,
         },
       );
       await assert.rejects(
@@ -678,10 +700,10 @@ test("multi-Source checks require survey fan-in followed by synthesis", async (t
         boardTaskId: "synthesize",
         partition: "workspace-analysis",
       }], context.signal);
-      for (const handoff of surveyHandoffs) {
-        assert.ok(synthesisPrompt.includes(handoff));
-        assert.ok(synthesisCheckpoint.includes(handoff));
-      }
+      const manifest = /manifest at `([^`]+)`/.exec(synthesisPrompt)?.[1];
+      assert.ok(manifest);
+      assert.ok(synthesisCheckpoint.includes(manifest));
+      assert.deepEqual((await readFile(path.join(context.plan.workspaceRoot, manifest), "utf8")).trim().split("\n"), [...surveyHandoffs].sort());
       const published = await context.publish();
       assert.equal(published.ok, false);
       assert.match(published.message, /Required template|concept cluster|frontmatter|type/i);
@@ -696,11 +718,13 @@ test("multi-Source checks require survey fan-in followed by synthesis", async (t
 test("Lead prompt receives a bounded recovery frame without template skeletons", async (t) => {
   const root = await gitRepo(t);
   let prompt = "";
+  let system = "";
   let tools = [];
   const producer = createProductionWikiProducer({
     session: {
       async createSession(options) {
         tools = options.customTools.map((tool) => tool.name);
+        system = options.resourceLoader.getAppendSystemPrompt().join("\n");
         return {
           session: {
             sessionFile: undefined,
@@ -721,7 +745,9 @@ test("Lead prompt receives a bounded recovery frame without template skeletons",
   assert.match(prompt, /<wiki_checkpoint>/);
   assert.match(prompt, /Goal: runtime/);
   assert.match(prompt, /survey, synthesize, write, review/);
-  assert.match(prompt, /Explicit Workspace Domain|Implicit Workspace Domain|Wiki-root aggregation pages/);
+  assert.match(system, /# Repository Wiki Lead/);
+  assert.match(system, /Explicit Workspace Domain|Implicit Workspace Domain|Wiki-root aggregation pages/);
+  assert.match(system, /Treat repository files.*untrusted evidence/s);
   assert.doesNotMatch(prompt, /Output skeleton|Page contract catalog|Directory contract/);
   assert.ok(tools.includes("candidate_check"));
   assert.equal(tools.includes("db_tables"), false);
@@ -732,9 +758,11 @@ test("an existing Lead session resumes with checkpoint delta only", async (t) =>
   const sessionFile = path.join(root, "lead.jsonl");
   await writeFile(sessionFile, "");
   const prompts: string[] = [];
+  const systems: string[] = [];
   const producer = createProductionWikiProducer({
     session: {
-      async createSession() {
+      async createSession(options) {
+        systems.push(options.resourceLoader.getAppendSystemPrompt().join("\n"));
         return {
           session: {
             sessionFile,
@@ -755,7 +783,8 @@ test("an existing Lead session resumes with checkpoint delta only", async (t) =>
   await handle.control("resume");
   await handle.result().catch(() => undefined);
   assert.equal(prompts.length, 2);
-  assert.match(prompts[0]!, /# Repository Wiki Lead/);
+  assert.match(systems[0]!, /# Repository Wiki Lead/);
+  assert.doesNotMatch(prompts[0]!, /# Repository Wiki Lead/);
   assert.match(prompts[1]!, /<wiki_checkpoint>/);
   assert.match(prompts[1]!, /Resume the existing Wiki Lead session/);
   assert.doesNotMatch(prompts[1]!, /# Repository Wiki Lead/);
@@ -778,7 +807,7 @@ test("parallel terminal receipts persist only after both handoffs are attested",
       }));
       for (const assignment of assignments) await context.record({ ...assignment, status: "running" });
       await Promise.all(assignments.map(async (assignment) => {
-        const attested = await attestHandoff(context, assignment, `${assignment.partition}\n`);
+        const attested = await attestHandoff(context, assignment, SURVEY_RECEIPT);
         await context.record({ ...assignment, status: "complete", ...attested });
       }));
       const record = JSON.parse(await readFile(path.join(path.dirname(context.candidateRoot), "run.json"), "utf8"));
@@ -815,7 +844,7 @@ test("parallel disjoint write receipts are not invalidated by sibling writes", a
       await writeText(path.join(context.candidateRoot, "checkout", "domain.md"), "checkout\n");
 
       for (const assignment of assignments) {
-        const attested = await attestHandoff(context, assignment, `${assignment.partition} complete\n`);
+        const attested = await attestHandoff(context, assignment, WRITE_RECEIPT);
         await context.record({ ...assignment, status: "complete", ...attested });
       }
       const record = JSON.parse(await readFile(path.join(path.dirname(context.candidateRoot), "run.json"), "utf8"));
@@ -984,7 +1013,7 @@ test("starting the current layout ignores legacy Run history", async (t) => {
   }, null, 2)}\n`);
   const producer = createProductionWikiProducer({
     async runLead(context) {
-      await new Promise((resolve) => context.signal.addEventListener("abort", resolve, { once: true }));
+      await waitForAbort(context.signal);
     },
   });
   const handle = await producer.start({ cwd: root });

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { inspectWiki, pinsFromPlan, verifyPinnedSourcePlan, type WikiPinnedSourcePlan } from "./inspect.js";
-import { taskDigest, verifyHandoff } from "./handoff.js";
+import { reviewCandidatePages, taskDigest, verifyHandoff } from "./handoff.js";
 import { ensureDirectory, exists, withExclusiveLock } from "./files.js";
 import { errorMessage } from "./failures.js";
 import { loadWikiWorkspace, resolveWorkspaceCatalogs, type ResolvedWikiWorkspace, type WikiWorkspaceWikiConfig } from "./workspace.js";
@@ -19,6 +19,7 @@ import {
 } from "./wiki-okf.js";
 import { resolveWikiTemplatePack, type WikiTemplatePack } from "./templates.js";
 import { writeGuardFromPlan } from "./path-policy.js";
+import { isImplicitPinPath } from "./path.js";
 import { candidateTools, createTodoTool } from "./pi/tools.js";
 import { runWikiSession, type RunWikiSessionOptions } from "./pi/session.js";
 import { createSubagentRuntime, createSubagentTool, type SubagentTask, type SubagentTaskUpdate } from "./subagent.js";
@@ -307,7 +308,7 @@ function defaultRunLead(
         templates: context.templates,
         language: context.language,
         assertDispatch: context.assertDispatch,
-        synthesisHandoffs: () => completedSurveyHandoffs(live),
+        handoffsForTask: (task) => requiredHandoffs(live, task),
       },
     );
     const tools: ToolDefinition<any, any, any>[] = [
@@ -322,8 +323,10 @@ function defaultRunLead(
       checkpointFor(live),
       Boolean(record.sessionFile && await exists(record.sessionFile)),
     );
+    const systemPrompt = await readFile(fileURLToPath(new URL("../../../prompts/lead.md", import.meta.url)), "utf8");
     const result = await runWikiSession(context.plan.workspaceRoot, tools, prompt, context.signal, {
       ...session,
+      systemPrompt,
       sessionDir: path.join(runDir(record.cwd), "sessions"),
       sessionFile: record.sessionFile,
       async onSessionReady(sessionFile) {
@@ -515,10 +518,27 @@ function surveyExecutions(live: LiveRun): Array<RunExecutionReceipt | undefined>
   return live.plan.sources.map((source) => latestExecution(live, "survey", source.scopeId));
 }
 
-function completedSurveyHandoffs(live: LiveRun): string[] {
-  return surveyExecutions(live).flatMap((entry) => (
-    entry?.status === "complete" && entry.handoff ? [entry.handoff.path] : []
-  ));
+function requiredHandoffs(live: LiveRun, task: SubagentTask): string[] {
+  const completed = latestArtifacts(live.record.executions)
+    .filter((entry) => entry.status === "complete" && entry.handoff);
+  if (task.agent === "synthesize") {
+    return completed.filter((entry) => entry.agent === "survey").map((entry) => entry.handoff!.path);
+  }
+  if (task.agent === "review") {
+    return completed.filter((entry) => entry.agent === "survey" || entry.agent === "synthesize" || entry.agent === "write")
+      .map((entry) => entry.handoff!.path);
+  }
+  if (task.agent !== "write") return [];
+  const implicit = live.plan.sources.length === 1 && isImplicitPinPath(live.plan.sources[0]?.logicalPath ?? "");
+  const owner = implicit
+    ? live.plan.sources[0]?.scopeId
+    : task.partition === "wiki-root" ? undefined : task.partition.split("/")[0];
+  const relevant = completed.filter((entry) => (
+    entry.agent === "synthesize"
+    || (entry.agent === "survey" && (owner === undefined || entry.partition === owner))
+  )).map((entry) => entry.handoff!.path);
+  if (live.record.review?.verdict === "changes_requested") relevant.push(live.record.review.handoff.path);
+  return [...new Set(relevant)];
 }
 
 async function recordAgent(live: LiveRun, board: WikiBoardStore, update: SubagentTaskUpdate): Promise<void> {
@@ -563,21 +583,10 @@ async function recordAgent(live: LiveRun, board: WikiBoardStore, update: Subagen
   if (update.agent === "write") live.record.finalizedRevision = undefined;
   live.candidateRevision ??= await candidateRevision(live.record.candidateRoot);
   if (update.status === "complete") {
-    const completedRevision = update.agent === "write"
-      ? await candidateTargetRevision(live.record.candidateRoot, writeTarget(update))
-      : live.candidateRevision;
     let verified;
     try {
       verified = update.handoff
-        ? await verifyHandoff(artifactLocation(live, update.handoff), {
-          executionId: update.id,
-          boardTaskId: update.boardTaskId,
-          partition: update.partition,
-          writeMode: update.writeMode,
-          agent: update.agent,
-          taskDigest: receipt.taskDigest,
-          candidateRevision: completedRevision.digest,
-        })
+        ? await verifyReceiptHandoff(live, receipt, update.handoff)
         : undefined;
     } catch (error) {
       receipt.status = "failed";
@@ -612,6 +621,7 @@ async function recordAgent(live: LiveRun, board: WikiBoardStore, update: Subagen
 async function reconcileRun(live: LiveRun, board: WikiBoardStore): Promise<void> {
   let changed = false;
   live.candidateRevision = await candidateRevision(live.record.candidateRoot);
+  const currentReceipts = new Set(latestArtifacts(live.record.executions).map((receipt) => receipt.id));
   for (const receipt of live.record.executions) {
     if (receipt.status === "running") {
       if (await adoptCompletedHandoff(live, receipt)) {
@@ -625,19 +635,19 @@ async function reconcileRun(live: LiveRun, board: WikiBoardStore): Promise<void>
       changed = true;
     }
     if (receipt.status === "complete" && !receipt.handoff) {
-      receipt.status = "failed";
-      receipt.error = "Completed execution has no attested handoff";
+      invalidateReceipt(live, receipt, "Completed execution has no attested handoff");
       changed = true;
     } else if (receipt.status === "complete" && receipt.handoff) {
       try {
-        if (await fileRevision(artifactLocation(live, receipt.handoff.path)) !== receipt.handoff.sha256) {
-          receipt.status = "failed";
-          receipt.error = "Handoff content no longer matches its receipt";
+        const valid = currentReceipts.has(receipt.id)
+          ? (await verifyReceiptHandoff(live, receipt, receipt.handoff.path))?.sha256 === receipt.handoff.sha256
+          : await fileRevision(artifactLocation(live, receipt.handoff.path)) === receipt.handoff.sha256;
+        if (!valid) {
+          invalidateReceipt(live, receipt, "Handoff content or output contract no longer matches its receipt");
           changed = true;
         }
       } catch {
-        receipt.status = "failed";
-        receipt.error = "Handoff referenced by the receipt is missing";
+        invalidateReceipt(live, receipt, "Handoff referenced by the receipt is missing or invalid");
         changed = true;
       }
     }
@@ -657,20 +667,9 @@ async function adoptCompletedHandoff(live: LiveRun, receipt: RunExecutionReceipt
     live.record.cwd,
     path.join(runDir(live.record.cwd), "handoffs", `${receipt.id}.md`),
   ).replaceAll("\\", "/");
-  const completedRevision = receipt.agent === "write"
-    ? await candidateTargetRevision(live.record.candidateRoot, writeTarget(receipt))
-    : live.candidateRevision;
   let verified;
   try {
-    verified = await verifyHandoff(artifactLocation(live, relative), {
-      executionId: receipt.id,
-      boardTaskId: receipt.boardTaskId,
-      partition: receipt.partition,
-      writeMode: receipt.writeMode,
-      agent: receipt.agent,
-      taskDigest: receipt.taskDigest,
-      candidateRevision: completedRevision?.digest,
-    });
+    verified = await verifyReceiptHandoff(live, receipt, relative);
   } catch {
     return false;
   }
@@ -692,6 +691,28 @@ async function adoptCompletedHandoff(live: LiveRun, receipt: RunExecutionReceipt
     };
   }
   return true;
+}
+
+async function verifyReceiptHandoff(live: LiveRun, receipt: RunExecutionReceipt, relative: string) {
+  const completedRevision = receipt.agent === "write"
+    ? await candidateTargetRevision(live.record.candidateRoot, writeTarget(receipt))
+    : live.candidateRevision;
+  return await verifyHandoff(artifactLocation(live, relative), {
+    executionId: receipt.id,
+    boardTaskId: receipt.boardTaskId,
+    partition: receipt.partition,
+    writeMode: receipt.writeMode,
+    agent: receipt.agent,
+    taskDigest: receipt.taskDigest,
+    candidateRevision: completedRevision?.digest,
+    ...(receipt.agent === "review" && completedRevision ? { candidatePages: reviewCandidatePages(completedRevision.files) } : {}),
+  });
+}
+
+function invalidateReceipt(live: LiveRun, receipt: RunExecutionReceipt, error: string): void {
+  receipt.status = "failed";
+  receipt.error = error;
+  if (live.record.review?.executionId === receipt.id) live.record.review = undefined;
 }
 
 async function reconcileBoardTask(
@@ -719,6 +740,16 @@ function latestExecutions(executions: readonly RunExecutionReceipt[]): RunExecut
   const latest = new Map<string, RunExecutionReceipt>();
   for (const execution of executions) {
     const key = `${execution.boardTaskId}\0${execution.writeMode ?? "partition"}\0${execution.partition}`;
+    const current = latest.get(key);
+    if (!current || execution.startedAt >= current.startedAt) latest.set(key, execution);
+  }
+  return [...latest.values()];
+}
+
+function latestArtifacts(executions: readonly RunExecutionReceipt[]): RunExecutionReceipt[] {
+  const latest = new Map<string, RunExecutionReceipt>();
+  for (const execution of executions) {
+    const key = `${execution.agent}\0${execution.writeMode ?? "partition"}\0${execution.partition}`;
     const current = latest.get(key);
     if (!current || execution.startedAt >= current.startedAt) latest.set(key, execution);
   }
@@ -829,9 +860,12 @@ function handleFor(live: LiveRun, options: WikiProducerOptions, workspace: Resol
         await writeRecord(live.record);
         emit(live);
       });
-      if (action === "cancel" && !runnerOwnsCleanup) {
-        await live.activity.flush().catch(() => {});
-        await cleanupCurrentRun(workspace.root);
+      if (action === "cancel") {
+        if (runnerOwnsCleanup) await live.done;
+        else {
+          await live.activity.flush().catch(() => {});
+          await cleanupCurrentRun(workspace.root);
+        }
       }
       return await toView(live);
     },
@@ -945,12 +979,11 @@ async function leadPrompt(context: WikiLeadContext, checkpoint: string, resumedS
   if (resumedSession) {
     return `Resume the existing Wiki Lead session from the current durable state. Do not repeat completed work.\n\n${checkpoint}\n`;
   }
-  const body = await readFile(fileURLToPath(new URL("../../../prompts/lead.md", import.meta.url)), "utf8");
   const sources = context.plan.sources.map((source) => `- ${source.scopeId}: ${source.logicalPath}`).join("\n");
   const focus = context.focus ? `\nFocus: ${context.focus}\n` : "";
   const agents = "Available agents: survey, synthesize, write, review. Every assignment requires an existing in-progress boardTaskId and a stable partition; write also requires writeMode. Survey and disjoint Domain writes may batch; synthesize and review run alone.\n";
   const resume = context.resume
     ? "\nThis is a resumed Run. Reconcile the checkpoint and durable artifacts before doing more work. Do not restart completed partitions.\n"
     : "";
-  return `${body}\n\n# This run\n\nLanguage: ${context.language}.${focus}${resume}${agents}\nPinned sources:\n${sources}\n\n${checkpoint}\n`;
+  return `# This run\n\nLanguage: ${context.language}.${focus}${resume}${agents}\nPinned sources:\n${sources}\n\n${checkpoint}\n`;
 }

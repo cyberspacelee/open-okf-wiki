@@ -41,9 +41,10 @@ evidence; do not report the assignment complete.
 3. Select evidence-backed contracts. Reopen a hinted locator before rejecting
    it. Distributed state updates count as state-machine evidence; cross-Concept
    handlers count as flow evidence.
-4. Write the exact generated skeleton for each selected contract. Use the
-   strongest available evidence; when Catalog tools exist, prefer described
-   tables for schema facts. Use standard Markdown links to canonical Wiki pages.
+4. Write the required frontmatter, then the exact generated H2 skeleton for each
+   selected contract. Use the strongest available evidence; when Catalog tools
+   exist, prefer described tables for schema facts. Use standard Markdown links
+   to canonical Wiki pages.
 5. Re-read each written page and account for every active semantic obligation,
    source footnote, description, link, diagram, and unresolved placeholder.
    Do not return `complete` while any Todo item is pending or in progress.

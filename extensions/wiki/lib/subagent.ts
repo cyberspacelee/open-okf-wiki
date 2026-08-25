@@ -4,7 +4,8 @@ import path from "node:path";
 import { Type } from "typebox";
 import type { AgentToolUpdateCallback, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { loadWikiAgents, type WikiAgentDefinition } from "./agents.js";
-import { writeHandoff } from "./handoff.js";
+import { reviewCandidatePages, writeHandoff } from "./handoff.js";
+import { writeText } from "./files.js";
 import { assertAgentPartition, writeGuardFromPlan, writeTargetsOverlap, type WikiWriteGuard } from "./path-policy.js";
 import type { WikiPinnedSourcePlan } from "./inspect.js";
 import { isImplicitPinPath } from "./path.js";
@@ -15,6 +16,7 @@ import type { WikiToolView } from "./producer-types.js";
 import { formatWikiTemplateCatalog, formatWikiTemplatesForPrompt, templatesForTarget, type WikiTemplatePack } from "./templates.js";
 import {
   createReviewerCompletionGate,
+  createWorkerOutputGate,
   createWriterCompletionGate,
 } from "./completion.js";
 import { formatWriterCitationContract } from "./citations.js";
@@ -71,7 +73,7 @@ export async function createSubagentRuntime(
     templates?: WikiTemplatePack;
     language?: "zh" | "en";
     assertDispatch?: (tasks: readonly SubagentTask[]) => void;
-    synthesisHandoffs?: () => readonly string[];
+    handoffsForTask?: (task: SubagentTask) => readonly string[];
   } = {},
 ): Promise<SubagentRuntime> {
   const agents = await loadWikiAgents(agentsDirectory);
@@ -86,7 +88,6 @@ export async function createSubagentRuntime(
       assertSafeBatch(tasks);
       for (const task of tasks) assertAgentPartition(task.agent, task.partition, plan, task.writeMode);
       options.assertDispatch?.(tasks);
-      const synthesisHandoffs = tasks[0]?.agent === "synthesize" ? options.synthesisHandoffs?.() ?? [] : [];
       const release = acquireBatch(tasks);
       try {
         const maxConcurrency = options.maxConcurrency ?? tasks.length;
@@ -96,11 +97,28 @@ export async function createSubagentRuntime(
         const jobs = tasks.map((task) => ({ ...task, id: executionId(task.agent) }));
         const live = new Map(jobs.map((task) => [task.id, { ...task, status: "running" as SubagentTaskStatus, tools: [] as WikiToolView[] }]));
         const report = async () => {
-          const snapshot = [...live.values()];
+          const snapshot = [...live.values()].map((task) => ({ ...task, tools: task.tools.map((tool) => ({ ...tool })) }));
           await onUpdate?.({
             content: [{ type: "text", text: snapshot.map((task) => `${task.status} ${task.agent}`).join("\n") }],
             details: { tasks: snapshot },
           });
+        };
+        let reportQueue = Promise.resolve();
+        let reportQueued = false;
+        let reportError: unknown;
+        const scheduleReport = () => {
+          if (reportQueued) return;
+          reportQueued = true;
+          const scheduled = reportQueue.then(async () => {
+            reportQueued = false;
+            await report();
+          });
+          reportQueue = scheduled.catch((error) => { reportError ??= error; });
+        };
+        const flushReport = async () => {
+          scheduleReport();
+          await reportQueue;
+          if (reportError) throw reportError;
         };
         for (const task of jobs) await onTask?.({ ...task, status: "running" });
         await report();
@@ -111,14 +129,15 @@ export async function createSubagentRuntime(
               const scoped = { ...event, scope: task.id };
               session.onActivity?.(scoped);
               if (scoped.kind === "tool") applyChildTool(live.get(task.id)!.tools, scoped);
-              void report();
+              scheduleReport();
             },
-          }, signal, catalogsForTask(task, plan, catalogs), options.templates, options.maxWorkerRepairRounds, options.language, synthesisHandoffs);
+          }, signal, catalogsForTask(task, plan, catalogs), options.templates, options.maxWorkerRepairRounds, options.language,
+          options.handoffsForTask?.(task) ?? []);
           const status = result.error ? "failed" : "complete";
           const entry = live.get(result.id)!;
           entry.status = status;
           await onTask?.({ ...result, status });
-          await report();
+          await flushReport();
           return result;
         });
       } finally {
@@ -227,6 +246,9 @@ async function runOne(
     const base = task.agent === "survey"
       ? { digest: "not-applicable" }
       : await outputRevision();
+    const candidatePages = task.agent === "review" && "files" in base ? reviewCandidatePages(base.files) : [];
+    const handoffManifest = await writeRequiredHandoffManifest(guard, task.id, requiredHandoffs);
+    const requiredReads = [...requiredHandoffs, ...(handoffManifest ? [handoffManifest] : [])];
     const touched = new Set<string>();
     const extra = createCatalogTools(catalogs);
     const allowed = definition.tools ? new Set(definition.tools) : undefined;
@@ -239,10 +261,13 @@ async function runOne(
         todo,
         templates,
         catalogs: [...catalogs.keys()],
+        requiredReads,
       })
       : task.agent === "review"
-        ? createReviewerCompletionGate(maxWorkerRepairRounds)
-        : undefined;
+        ? createReviewerCompletionGate(candidatePages, maxWorkerRepairRounds, requiredReads)
+        : task.agent === "survey" || task.agent === "synthesize"
+          ? createWorkerOutputGate(task.agent, maxWorkerRepairRounds, requiredReads)
+          : undefined;
     const tools = [
       ...candidateTools(taskGuard, definition.tools),
       ...(todo ? [todo.tool] : []),
@@ -253,7 +278,7 @@ async function runOne(
     const scoped = templates && writeTarget
       ? templatesForTarget(templates, writeTarget, implicit)
       : templates?.templates ?? [];
-    const pack = templates
+    const pack = templates && task.agent !== "synthesize"
       ? `\n\n${task.agent === "write"
         ? formatWikiTemplatesForPrompt(templates, new Set(scoped.map((template) => template.id)), { target: writeTarget, implicit })
         : formatWikiTemplateCatalog(templates)}`
@@ -264,16 +289,20 @@ async function runOne(
     const languageContract = task.agent === "write" && language
       ? `\n\n## Output language\n\nThe Run language is \`${language}\` (\`zh\` = Simplified Chinese; \`en\` = English). Write titles, descriptions, prose, table labels, footnote definitions, and human-readable Mermaid labels in that language. Preserve source identifiers, code symbols, paths, commands, configuration keys, frontmatter \`type\`, \`sources[].id\`, and Mermaid node IDs verbatim. Copy the injected contract headings exactly.\n`
       : "";
-    const handoffs = requiredHandoffs.length
-      ? `\n\n# Required handoffs\n\n${requiredHandoffs.map((location) => `- ${location}`).join("\n")}`
+    const handoffs = handoffManifest
+      ? `# Required handoffs\n\nRead the manifest at \`${handoffManifest}\`, then read every handoff path it lists before completing this task.\n\n`
+      : "";
+    const reviewPages = candidatePages.length
+      ? `# Frozen Candidate pages\n\nCover each path exactly once in the review receipt:\n${candidatePages.map((page) => `- ${page}`).join("\n")}\n\n`
       : "";
     const result = await runWikiSession(
       guard.workspaceRoot,
       tools,
-      `${definition.prompt}${pack}${citations}${languageContract}${handoffs}\n\n# Task\n\n${task.task}`,
+      `${handoffs}${reviewPages}# Task\n\n${task.task}`,
       signal,
       {
         ...session,
+        systemPrompt: `${definition.prompt}${pack}${citations}${languageContract}`,
         onActivity(event) {
           session.onActivity?.(event);
           if (event.kind === "tool") completionGate?.observe(event);
@@ -283,7 +312,7 @@ async function runOne(
           sourceFingerprint,
           base.digest,
           touched,
-          requiredHandoffs,
+          handoffManifest ? [handoffManifest] : [],
           todo?.snapshot(),
         ),
         nextPrompt: completionGate?.nextPrompt,
@@ -309,6 +338,17 @@ async function runOne(
   } catch (error) {
     return { ...task, text: "", error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+async function writeRequiredHandoffManifest(
+  guard: WikiWriteGuard,
+  executionId: string,
+  handoffs: readonly string[],
+): Promise<string | undefined> {
+  if (!handoffs.length) return undefined;
+  const location = path.join(guard.handoffsRoot, `${executionId}.inputs`);
+  await writeText(location, `${[...new Set(handoffs)].sort().join("\n")}\n`);
+  return path.relative(guard.workspaceRoot, location).replaceAll("\\", "/");
 }
 
 function catalogsForTask(

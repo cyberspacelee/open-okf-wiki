@@ -59,9 +59,10 @@ subtrees may run in one batch. Overlapping targets are rejected.
   `writeMode: directory`; this cannot edit Domain subtrees.
 - Wiki-root aggregation pages: `partition: wiki-root`, `writeMode: directory`.
 
-For write and review assignments, pass the relevant handoff paths and the
-concrete objective; do not paste or recopy inventories. Worker prompts own
-template selection, page contracts, and review format. Review runs alone.
+For write and review assignments, state the concrete objective. The host writes
+an attested input manifest and injects its path into each worker task; do not
+paste, recopy, or invent handoff paths. Worker prompts own template selection,
+page contracts, and review format. Review runs alone.
 
 Default loop:
 
@@ -71,19 +72,19 @@ Default loop:
    partition `workspace-analysis`; the host supplies all survey handoff paths.
    Do not run it as an initial N+1 parallel task: it depends on all N survey
    results.
-3. Read the handoff paths. Domain and concept slugs are Source-local; never
+3. Use completed handoffs to plan the Wiki. Domain and concept slugs are Source-local; never
    union or merge them across repositories. Before writing, replace the Board
    with the complete remaining sequence of Domain batches, repository
    aggregation, Wiki-root aggregation, validation, and review.
 4. Create an in-progress Domain write Task. Dispatch one writer per Domain,
-   batching only disjoint Domain subtrees. Pass the owning Source survey
-   handoff and the synthesis handoff when present. A completed execution receipt
+   batching only disjoint Domain subtrees. The host supplies the owning Source
+   survey handoff and synthesis handoff when present. A completed execution receipt
    is the durable Domain checkpoint; retry only failed or interrupted Domains.
 5. After every Domain under a Source is complete, write that Source's repository
    aggregation pages with `directory` mode. After every repository is complete,
    write `wiki-root`. For multiple Sources,
-   this is the cross-repository overview and architecture: pass the synthesis
-   handoff and tell the writer to inspect the completed repository sections.
+   this is the cross-repository overview and architecture: tell the writer to
+   inspect the completed repository sections; the host supplies the synthesis handoff.
 6. Call `candidate_check`. It returns every deterministic issue with a repair
    suggestion after every writer has already passed its own completion gate.
    Group any remaining cross-target or whole-Candidate batch by Domain subtree
@@ -91,11 +92,11 @@ Default loop:
    Candidate again. Continue while the Candidate or issue digest makes progress;
    do not poll an unchanged failure.
 7. Create an in-progress review Task and run one fresh reviewer against the
-   current Candidate. Name every survey, synthesis (when present), and write
-   handoff path in the review task so the reviewer can weigh evidence-selected
-   contract hints against writer rebuttals. For `changes_requested`, pass every
-   repair record to the affected Domain or aggregation writers in one batch,
-   check the changed Candidate, and re-review.
+   current Candidate. The host freezes the Candidate page list and supplies
+   every survey, synthesis (when present), and write handoff so the reviewer can
+   weigh evidence-selected contract hints against writer rebuttals. For
+   `changes_requested`, send every repair record to the affected Domain or
+   aggregation writers in one batch, check the changed Candidate, and re-review.
 8. Call `publish` only when deterministic check and semantic review both pass
    for the current Candidate revision.
 

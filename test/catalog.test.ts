@@ -115,6 +115,24 @@ test("formatTableDefinition stays compact", () => {
   assert.match(text, /id bigint not null/);
 });
 
+test("Catalog metadata queries are serialized for a single connection", async () => {
+  let active = 0;
+  let peak = 0;
+  const catalog = createCatalog(
+    { url: "postgresql://wiki@localhost/app", schema: "public", tables: [] },
+    async (sql) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      active -= 1;
+      if (sql.includes("FROM pg_class c")) return [{ name: "users", kind: "r", comment: null }];
+      return [];
+    },
+  );
+  await catalog.describeTables(["users"]);
+  assert.equal(peak, 1);
+});
+
 test("Catalog tools route by assigned Catalog name and reject unassigned names", async () => {
   const calls: string[] = [];
   const catalog = (name: string) => ({

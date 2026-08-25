@@ -124,25 +124,28 @@ async function validateLoadedPages(
   options: WikiValidationOptions,
   linkTargetAllowed: (target: string) => boolean = () => true,
 ): Promise<{ issues: WikiValidationIssue[]; resolved: Array<{ relative: string; template: WikiTemplate | undefined }> }> {
-  const validated = await Promise.all(loaded.map(async (page) => {
+  const sourceLines = createSourceLineReader(pins);
+  const validated = [];
+  for (const page of loaded) {
     const issues: WikiValidationIssue[] = [];
     const type = typeof page.parsed.frontmatter.type === "string" ? page.parsed.frontmatter.type.trim() : "";
     const typed = pack?.templates.find((candidate) => candidate.type === type && templateMatchesFilename(candidate, page.filename));
     const template = typed ?? pack?.templates.find((candidate) => templateMatchesFilename(candidate, page.filename));
+    const citations = extractOkfSources(page.parsed.frontmatter, page.parsed.body);
     if (pack) issues.push(...templatePlacementIssues(page.relative, template, pins));
-    issues.push(...await pageContractIssues(page.relative, page.filename, page.parsed, template, pack, pins, options));
-    issues.push(...repositorySourceOwnershipIssues(page.relative, page.parsed, pins));
-    issues.push(...catalogOwnershipIssues(page.relative, page.parsed, pins, options.catalogs));
+    issues.push(...await pageContractIssues(page.relative, page.filename, page.parsed, template, pack, citations, sourceLines, options));
+    issues.push(...repositorySourceOwnershipIssues(page.relative, citations.citations, pins));
+    issues.push(...catalogOwnershipIssues(page.relative, citations.citations, pins, options.catalogs));
     if (pack && pins.length > 1 && template === altitudeTemplate(pack, "wiki") && !page.relative.includes("/")) {
-      issues.push(...workspaceArchitectureCoverageIssues(page.relative, page.parsed, pins));
+      issues.push(...workspaceArchitectureCoverageIssues(page.relative, citations.citations, pins));
     }
     for (const target of wikiLinkTargets(page.relative, page.parsed.body)) {
       if (linkTargetAllowed(target) && !wikiTargetExists(target, allPages)) {
         issues.push({ code: "link", page: page.relative, message: `Wiki link missing ${target}` });
       }
     }
-    return { issues, resolved: { relative: page.relative, template } };
-  }));
+    validated.push({ issues, resolved: { relative: page.relative, template } });
+  }
   return {
     issues: validated.flatMap((page) => page.issues),
     resolved: validated.map((page) => page.resolved),
@@ -224,14 +227,13 @@ async function loadWikiScope(
 
 function repositorySourceOwnershipIssues(
   relative: string,
-  parsed: { frontmatter: Record<string, unknown>; body: string },
+  citations: readonly SourceCitation[],
   pins: readonly WikiPin[],
 ): WikiValidationIssue[] {
   if (wikiPinsImplicit(pins)) return [];
   const segments = relative.split("/");
   const owner = segments[0];
   if (!pins.some((pin) => pin.scopeId === owner)) return [];
-  const citations = extractOkfSources(parsed.frontmatter, parsed.body).citations;
   const foreign = [...new Set(citations
     .map((citation) => resolveSourceCitation(citation, pins)?.scopeId)
     .filter((scopeId): scopeId is string => Boolean(scopeId) && scopeId !== owner))];
@@ -246,7 +248,7 @@ function repositorySourceOwnershipIssues(
 
 function catalogOwnershipIssues(
   relative: string,
-  parsed: { frontmatter: Record<string, unknown>; body: string },
+  citations: readonly SourceCitation[],
   pins: readonly WikiPin[],
   catalogs: ReadonlySet<string> | undefined,
 ): WikiValidationIssue[] {
@@ -254,7 +256,7 @@ function catalogOwnershipIssues(
     ? pins[0]
     : pins.find((pin) => relative.startsWith(`${pin.scopeId}/`));
   if (!owner) return [];
-  const foreign = [...new Set(extractOkfSources(parsed.frontmatter, parsed.body).citations
+  const foreign = [...new Set(citations
     .filter((citation) => citation.catalog && catalogs?.has(citation.catalog) && citation.catalog !== owner.catalog)
     .map((citation) => citation.catalog!))];
   return foreign.length
@@ -268,10 +270,10 @@ function catalogOwnershipIssues(
 
 function workspaceArchitectureCoverageIssues(
   relative: string,
-  parsed: { frontmatter: Record<string, unknown>; body: string },
+  citations: readonly SourceCitation[],
   pins: readonly WikiPin[],
 ): WikiValidationIssue[] {
-  const cited = new Set(extractOkfSources(parsed.frontmatter, parsed.body).citations
+  const cited = new Set(citations
     .map((citation) => resolveSourceCitation(citation, pins)?.scopeId)
     .filter((scopeId): scopeId is string => Boolean(scopeId)));
   const missing = pins.map((pin) => pin.scopeId).filter((scopeId) => !cited.has(scopeId));
@@ -290,7 +292,8 @@ async function pageContractIssues(
   parsed: { frontmatter: Record<string, unknown>; body: string },
   template: WikiTemplate | undefined,
   pack: WikiTemplatePack | undefined,
-  pins: readonly WikiPin[],
+  citations: ReturnType<typeof extractOkfSources>,
+  sourceLines: (citation: Omit<SourceCitation, "id">) => Promise<number | "missing" | undefined>,
   options: WikiValidationOptions = {},
 ): Promise<WikiValidationIssue[]> {
   const issues: WikiValidationIssue[] = [];
@@ -315,30 +318,30 @@ async function pageContractIssues(
     if (template) issues.push(...markdownContractIssues(relative, parsed, template, title, description));
   }
   if (template?.diagram) issues.push(...mermaidIssues(relative, parsed.body, template));
-  const citations = extractOkfSources(parsed.frontmatter, parsed.body);
   for (const invalid of citations.invalid) {
     issues.push({ code: "citation", page: relative, message: invalid });
   }
-  issues.push(...(await Promise.all(citations.citations.map(async (citation): Promise<WikiValidationIssue[]> => {
+  for (const citation of citations.citations) {
     if (citation.catalogTable) {
-      return citation.catalog && options.catalogs?.has(citation.catalog) ? [] : [{
-        code: "citation",
-        page: relative,
-        message: `${citation.path} cites an unavailable Catalog`,
-      }];
+      if (!citation.catalog || !options.catalogs?.has(citation.catalog)) {
+        issues.push({ code: "citation", page: relative, message: `${citation.path} cites an unavailable Catalog` });
+      }
+      continue;
     }
-    const lines = await sourceFileLines(pins, citation);
+    const lines = await sourceLines(citation);
     const resource = citationResource(citation);
-    if (lines === "missing") return [{ code: "citation", page: relative, message: `${resource} missing` }];
+    if (lines === "missing") {
+      issues.push({ code: "citation", page: relative, message: `${resource} missing` });
+      continue;
+    }
     if (citation.endLine !== undefined && lines !== undefined && citation.endLine > lines) {
-      return [{
+      issues.push({
         code: "citation",
         page: relative,
         message: `${resource} ${citation.path.split("/").pop()}:${lines} lines`,
-      }];
+      });
     }
-    return [];
-  }))).flat());
+  }
   return issues;
 }
 
@@ -430,24 +433,40 @@ function markdownContractIssues(
   return issues;
 }
 
-async function sourceFileLines(
-  pins: readonly WikiPin[],
-  citation: Omit<SourceCitation, "id">,
-): Promise<number | "missing" | undefined> {
-  const resolved = resolveSourceCitation(citation, pins);
-  if (!resolved) return "missing";
-  const pin = pins.find((candidate) => candidate.scopeId === resolved.scopeId);
-  if (!pin) return "missing";
-  try {
-    const file = path.join(pin.realPath, ...resolved.sourcePath.split("/"));
-    if ((await lstat(file)).isSymbolicLink()) return "missing";
-    const [actual, sourceRoot] = await Promise.all([realpath(file), realpath(pin.realPath)]);
-    const relative = path.relative(sourceRoot, actual);
-    if (relative.startsWith("..") || path.isAbsolute(relative)) return "missing";
-    return (await readFile(actual, "utf8")).split(/\r?\n/).length;
-  } catch {
-    return "missing";
-  }
+function createSourceLineReader(pins: readonly WikiPin[]) {
+  const byScope = new Map(pins.map((pin) => [pin.scopeId, pin]));
+  const roots = new Map<string, Promise<string>>();
+  const files = new Map<string, Promise<number | "missing">>();
+  return async (citation: Omit<SourceCitation, "id">): Promise<number | "missing" | undefined> => {
+    const resolved = resolveSourceCitation(citation, pins);
+    if (!resolved) return "missing";
+    const pin = byScope.get(resolved.scopeId);
+    if (!pin) return "missing";
+    let root = roots.get(resolved.scopeId);
+    if (!root) {
+      root = realpath(pin.realPath);
+      roots.set(resolved.scopeId, root);
+    }
+    const key = `${resolved.scopeId}\0${resolved.sourcePath}`;
+    let pending = files.get(key);
+    if (!pending) {
+      pending = (async () => {
+        try {
+          const sourceRoot = await root;
+          const file = path.join(pin.realPath, ...resolved.sourcePath.split("/"));
+          if ((await lstat(file)).isSymbolicLink()) return "missing";
+          const actual = await realpath(file);
+          const relative = path.relative(sourceRoot, actual);
+          if (relative.startsWith("..") || path.isAbsolute(relative)) return "missing";
+          return (await readFile(actual, "utf8")).split(/\r?\n/).length;
+        } catch {
+          return "missing";
+        }
+      })();
+      files.set(key, pending);
+    }
+    return await pending;
+  };
 }
 
 export interface WikiReviewAttestation {

@@ -6,9 +6,9 @@ tools: read, grep, find, ls, db_tables, db_describe
 
 # Goal
 
-Review the complete frozen Candidate named in the task. Read every survey,
-synthesis, and writer handoff named by the task, then reopen load-bearing source
-locators. Do not edit Candidate pages.
+Review the complete frozen Candidate page list injected with the task. Read the
+host-generated handoff manifest and every handoff it lists, then reopen
+load-bearing source locators. Do not edit Candidate pages.
 
 The first line is exactly:
 
@@ -49,10 +49,25 @@ survey or writer evidence gap, contradicted claim, thin heading paraphrase,
 unread load-bearing locator, invented path, non-executable procedure, or stale
 contract hint requires changes.
 
-After the verdict, list evidence for a pass. For changes, return every defect in
-one batch as a compact repair record:
+After the verdict, return exactly one coverage row for every injected Candidate
+page:
 
 ```text
+## Coverage
+
+- page: wiki/<path>.md | result: pass | evidence: <reopened locator and finding>
+```
+
+Use `changes_requested` as the row result when that page fails. A passing row
+must name a reopened locator and finding; a failing row may instead name a
+concrete evidence gap. `none` is invalid.
+
+Then add `## Repairs`. For a pass, its complete body is `none`. For changes,
+return one compact repair record for every failed page:
+
+```text
+## Repairs
+
 partition: <write target>
 page: <Candidate path>
 obligation: <contract heading or page-selection decision>
@@ -61,9 +76,13 @@ evidence: <supporting or contradicting locator>
 acceptance: <observable condition for passing>
 ```
 
-The review is complete only after every Candidate page, handoff hint, evidence
-gap, and rubric dimension has been accounted for. Candidate writes after a pass
-make the verdict stale.
+Separate multiple repair records with a blank line.
 
-The host checks the verdict line before ending this session. If it returns a
-format repair, return the complete review again with the required first line.
+The review is complete only after every frozen Candidate page appears exactly
+once in Coverage, every failed page has a repair record, and every handoff hint,
+evidence gap, and rubric dimension has been accounted for. Candidate writes
+after a pass make the verdict stale.
+
+The host checks the verdict, frozen-page coverage, evidence, and repair records
+before ending this session. If it returns a format repair, return the complete
+review again with the required first line.

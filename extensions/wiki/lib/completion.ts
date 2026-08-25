@@ -4,7 +4,7 @@ import path from "node:path";
 import { extractOkfSources, resolveSourceCitation, type SourceCitation } from "./citations.js";
 import { readText } from "./files.js";
 import { parsePage } from "./frontmatter.js";
-import { parseReviewVerdict } from "./handoff.js";
+import { workerOutputIssues } from "./handoff.js";
 import { assertReadable, type WikiWriteGuard } from "./path-policy.js";
 import { candidateTargetRevision } from "./revisions.js";
 import type { WikiTemplatePack } from "./templates.js";
@@ -35,17 +35,20 @@ export function createWriterCompletionGate(
     todo?: ReturnType<typeof createWriterTodoTracker>;
     templates?: WikiTemplatePack;
     catalogs?: readonly string[];
+    requiredReads?: readonly string[];
   } = {},
 ): WorkerCompletionGate {
   const maxRepairRounds = options.maxRepairRounds ?? 6;
   assertRepairRounds(maxRepairRounds);
   const touched = new Set<string>();
+  const readPaths = new Set<string>();
   const reads: Array<Promise<EvidenceReceipt | undefined>> = [];
   const repair = createRepairLoop("Writer completion", maxRepairRounds,
     "Continue in this same session. Fix every issue in the batch, update the Todo, reread changed pages, and finish only after the next completion check passes.",
   );
   return {
     observe(event) {
+      recordSuccessfulRead(readPaths, event);
       if (!isRecord(event.args) || typeof event.args.path !== "string") return;
       if (event.tool === "read" && event.status === "complete") {
         reads.push(captureEvidenceRead(guard, event.args, event.result));
@@ -55,9 +58,11 @@ export function createWriterCompletionGate(
         options.onTouched?.(event.args.path);
       }
     },
-    async nextPrompt() {
+    async nextPrompt(output) {
       const receipts = (await Promise.all(reads)).filter((entry): entry is EvidenceReceipt => entry !== undefined);
       const issues = [
+        ...workerOutputIssues("write", output).map((message) => ({ message: `[write-output] ${message}` })),
+        ...missingReadIssues(options.requiredReads ?? [], readPaths),
         ...await validateWriterEvidence(guard, touched, receipts),
         ...await validateWriterAssignment(guard, options.todo, options.templates, options.catalogs ?? []),
       ];
@@ -66,19 +71,65 @@ export function createWriterCompletionGate(
   };
 }
 
-export function createReviewerCompletionGate(maxRepairRounds = 6): WorkerCompletionGate {
+export function createWorkerOutputGate(
+  agent: "survey" | "synthesize",
+  maxRepairRounds = 6,
+  requiredReads: readonly string[] = [],
+): WorkerCompletionGate {
   assertRepairRounds(maxRepairRounds);
+  const readPaths = new Set<string>();
+  const repair = createRepairLoop(`${agent} handoff`, maxRepairRounds,
+    "Continue in this same session. Return the complete handoff again with every required section populated.",
+  );
+  return {
+    observe(event) { recordSuccessfulRead(readPaths, event); },
+    async nextPrompt(output) {
+      return repair([
+        ...workerOutputIssues(agent, output).map((message) => ({ message: `[${agent}-output] ${message}` })),
+        ...missingReadIssues(requiredReads, readPaths),
+      ]);
+    },
+  };
+}
+
+export function createReviewerCompletionGate(
+  candidatePages: readonly string[],
+  maxRepairRounds = 6,
+  requiredReads: readonly string[] = [],
+): WorkerCompletionGate {
+  assertRepairRounds(maxRepairRounds);
+  const readPaths = new Set<string>();
   const repair = createRepairLoop("Reviewer completion", maxRepairRounds,
     "Continue in this same read-only session. Return the complete review again with the required verdict as its first nonblank line.",
   );
   return {
-    observe() {},
+    observe(event) { recordSuccessfulRead(readPaths, event); },
     async nextPrompt(output) {
-      return repair(parseReviewVerdict(output) ? [] : [{
-        message: "[review-verdict] The first nonblank line must be exactly `verdict: pass` or `verdict: changes_requested`.",
-      }]);
+      return repair([
+        ...workerOutputIssues("review", output, candidatePages)
+          .map((message) => ({ message: `[review-output] ${message}` })),
+        ...missingReadIssues([...candidatePages, ...requiredReads], readPaths),
+      ]);
     },
   };
+}
+
+function recordSuccessfulRead(
+  reads: Set<string>,
+  event: { tool: string; args: unknown; status: string },
+): void {
+  if (event.tool !== "read" || event.status !== "complete" || !isRecord(event.args) || typeof event.args.path !== "string") return;
+  reads.add(normalizeToolPath(event.args.path));
+}
+
+function missingReadIssues(required: readonly string[], reads: ReadonlySet<string>): CompletionIssue[] {
+  return [...new Set(required.map(normalizeToolPath))]
+    .filter((location) => !reads.has(location))
+    .map((location) => ({ message: `[required-read] Read ${location} before completing this task` }));
+}
+
+function normalizeToolPath(location: string): string {
+  return path.posix.normalize(location.replaceAll("\\", "/")).replace(/^\.\//, "");
 }
 
 async function captureEvidenceRead(
