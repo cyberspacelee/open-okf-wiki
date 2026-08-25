@@ -7,6 +7,7 @@ import {
   resolveSourceCitation,
   wikiLinkTargets,
 } from "../extensions/wiki/lib/citations.js";
+import { markdownStructure } from "../extensions/wiki/lib/markdown-structure.js";
 
 test("parseSourceResource reads a Workspace-relative path with an optional line range", () => {
   assert.deepEqual(parseSourceResource("api/src/main.ts#L4-L8"), {
@@ -124,4 +125,17 @@ test("wikiLinkTargets resolves bundle-root and relative links", () => {
     ["api/billing/invoice/flows.md", "api/billing/domain.md"],
   );
   assert.deepEqual(wikiLinkTargets("api/overview.md", "See [architecture](architecture.md)."), ["api/architecture.md"]);
+});
+
+test("Markdown evidence scans ignore fenced examples", () => {
+  const body = [
+    "```md",
+    "[^ghost]",
+    "[missing](missing.md)",
+    "{{placeholder}}",
+    "```",
+  ].join("\n");
+  assert.deepEqual(extractOkfSources({}, body), { citations: [], invalid: [] });
+  assert.deepEqual(wikiLinkTargets("overview.md", body), []);
+  assert.deepEqual(markdownStructure(body).placeholders, []);
 });

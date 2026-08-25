@@ -3,7 +3,6 @@ import { appendText, readText } from "./files.js";
 import type {
   WikiActivityView,
   WikiAgentStatus,
-  WikiAgentUsage,
   WikiAgentView,
   WikiSessionActivity,
 } from "./producer-types.js";

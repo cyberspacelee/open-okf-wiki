@@ -965,7 +965,7 @@ test("unsubscribe stops live view delivery", async (t) => {
   await handle.result();
 });
 
-test("starting the current layout discards legacy Run history without migration", async (t) => {
+test("starting the current layout ignores legacy Run history", async (t) => {
   const root = await gitRepo(t);
   const directory = path.join(root, ".okf-wiki", "runs", "oldrun01");
   await mkdir(path.join(directory, "candidate"), { recursive: true });
@@ -988,7 +988,7 @@ test("starting the current layout discards legacy Run history without migration"
     },
   });
   const handle = await producer.start({ cwd: root });
-  assert.equal(await exists(path.join(root, ".okf-wiki", "runs")), false);
+  assert.equal(await exists(path.join(root, ".okf-wiki", "runs")), true);
   await handle.control("cancel");
 });
 

@@ -1,4 +1,5 @@
 import path from "node:path";
+import { markdownOutsideCodeFences } from "./markdown-structure.js";
 
 /** OKF provenance: `sources[].resource` is a Workspace-relative path with an optional line range, or a Catalog table. */
 
@@ -104,7 +105,6 @@ export function resolveSourceCitation(
 export function extractOkfSources(
   frontmatter: Record<string, unknown>,
   body: string,
-  fileLines?: (citation: Omit<SourceCitation, "id">) => number | "missing" | undefined,
 ): { citations: SourceCitation[]; invalid: string[] } {
   const citations: SourceCitation[] = [];
   const invalid: string[] = [];
@@ -115,7 +115,7 @@ export function extractOkfSources(
       invalid.push("sources must be a non-empty list");
     } else {
       for (const entry of sources) {
-        const parsed = parseSourceEntry(entry, fileLines);
+        const parsed = parseSourceEntry(entry);
         if ("error" in parsed) {
           invalid.push(parsed.error);
           continue;
@@ -129,8 +129,9 @@ export function extractOkfSources(
       }
     }
   }
-  const references = footnoteIds(body, FOOTNOTE_REFERENCE);
-  const definitions = footnoteIds(body, FOOTNOTE_DEFINITION);
+  const visibleBody = markdownOutsideCodeFences(body);
+  const references = footnoteIds(visibleBody, FOOTNOTE_REFERENCE);
+  const definitions = footnoteIds(visibleBody, FOOTNOTE_DEFINITION);
   for (const id of new Set([...references, ...definitions])) {
     if (!byId.has(id)) invalid.push(`footnote [^${id}] has no sources[].id`);
   }
@@ -138,7 +139,7 @@ export function extractOkfSources(
     if (!definitions.has(id)) invalid.push(`footnote [^${id}] is missing definition [^${id}]: ...`);
   }
   MARKDOWN_LINK.lastIndex = 0;
-  for (const match of body.matchAll(MARKDOWN_LINK)) {
+  for (const match of visibleBody.matchAll(MARKDOWN_LINK)) {
     const href = (match[1] ?? match[2] ?? "").trim();
     if (sourceBodyHref(href)) {
       invalid.push(`${href} belongs in sources[].resource, not a body link`);
@@ -151,7 +152,7 @@ export function wikiLinkTargets(page: string, body: string): string[] {
   const directory = path.posix.dirname(page);
   const targets: string[] = [];
   MARKDOWN_LINK.lastIndex = 0;
-  for (const match of body.matchAll(MARKDOWN_LINK)) {
+  for (const match of markdownOutsideCodeFences(body).matchAll(MARKDOWN_LINK)) {
     const href = stripTrailingPunctuation((match[1] ?? match[2] ?? "").trim());
     if (!href || skipWikiHref(href)) continue;
     const resolved = resolveWikiHref(directory === "." ? "" : directory, href);
@@ -160,10 +161,7 @@ export function wikiLinkTargets(page: string, body: string): string[] {
   return targets;
 }
 
-function parseSourceEntry(
-  entry: unknown,
-  fileLines?: (citation: Omit<SourceCitation, "id">) => number | "missing" | undefined,
-): { citation: SourceCitation } | { error: string } {
+function parseSourceEntry(entry: unknown): { citation: SourceCitation } | { error: string } {
   if (!isRecord(entry)) return { error: "sources entries must be mappings" };
   const id = typeof entry.id === "string" ? entry.id.trim() : "";
   const resource = typeof entry.resource === "string" ? entry.resource.trim() : "";
@@ -173,11 +171,6 @@ function parseSourceEntry(
   if (!locator) return { error: `${resource} need ${SOURCE_RESOURCE_GRAMMAR}` };
   if (locator.startLine !== undefined && locator.endLine! < locator.startLine) return { error: `${resource} end<start` };
   if (locator.catalogTable) return { citation: { id, ...locator } };
-  const file = fileLines?.(locator);
-  if (file === "missing") return { error: `${resource} missing` };
-  if (typeof file === "number" && locator.endLine !== undefined && locator.endLine > file) {
-    return { error: `${resource} ${locator.path.split("/").pop()}:${file} lines` };
-  }
   return { citation: { id, ...locator } };
 }
 

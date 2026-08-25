@@ -1,5 +1,4 @@
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
-import { mkdir, readdir } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { extractOkfSources, resolveSourceCitation, wikiLinkTargets, type SourceCitation } from "./citations.js";
 import { HOST_PAGE_KEYS } from "./templates.js";
@@ -47,6 +46,12 @@ export interface WikiValidation {
 export interface WikiValidationOptions {
   /** Named Catalogs available to this validation scope; schemas remain inside their Adapters. */
   catalogs?: ReadonlySet<string>;
+}
+
+interface LoadedWikiPage {
+  relative: string;
+  filename: string;
+  parsed: { frontmatter: Record<string, unknown>; body: string };
 }
 
 export function wikiPinsImplicit(pins: readonly WikiPin[]): boolean {
@@ -104,51 +109,44 @@ export async function validateWikiTree(
   pack?: WikiTemplatePack,
   options: WikiValidationOptions = {},
 ): Promise<WikiValidation> {
-  const issues: WikiValidationIssue[] = [];
-  let tree;
-  try {
-    tree = await scanWikiTree(wikiRoot);
-  } catch (error) {
-    throw new WikiValidationInfrastructureError(errorMessage(error), { cause: error });
-  }
-  issues.push(...tree.issues);
-  const pages: string[] = [];
-  const loaded: Array<{ relative: string; filename: string; parsed: { frontmatter: Record<string, unknown>; body: string } }> = [];
-  const resolved: Array<{ relative: string; template: WikiTemplate | undefined }> = [];
-  for (const relative of tree.markdown) {
-    const filename = relative.split("/").at(-1) ?? "";
-    if (isReservedWikiPagePath(relative)) continue;
-    if (!isSafeWikiPagePath(relative)) {
-      issues.push({ code: "path", page: relative, message: `Illegal Wiki page path: ${relative}` });
-      continue;
-    }
-    pages.push(relative);
-    try {
-      loaded.push({ relative, filename, parsed: parsePage(await readText(safeWikiPath(wikiRoot, relative))) });
-    } catch (error) {
-      issues.push({ code: "frontmatter", page: relative, message: errorMessage(error) });
-    }
-  }
-  for (const page of loaded) {
+  const scope = await loadWikiScope(wikiRoot, () => true);
+  const validated = await validateLoadedPages(scope.loaded, scope.allPages, pins, pack, options);
+  const issues = [...scope.issues, ...validated.issues];
+  if (pack) issues.push(...topologyIssues(scope.pages, validated.resolved, pins, pack));
+  return { ok: issues.length === 0, issues, pages: scope.pages };
+}
+
+async function validateLoadedPages(
+  loaded: readonly LoadedWikiPage[],
+  allPages: readonly string[],
+  pins: readonly WikiPin[],
+  pack: WikiTemplatePack | undefined,
+  options: WikiValidationOptions,
+  linkTargetAllowed: (target: string) => boolean = () => true,
+): Promise<{ issues: WikiValidationIssue[]; resolved: Array<{ relative: string; template: WikiTemplate | undefined }> }> {
+  const validated = await Promise.all(loaded.map(async (page) => {
+    const issues: WikiValidationIssue[] = [];
     const type = typeof page.parsed.frontmatter.type === "string" ? page.parsed.frontmatter.type.trim() : "";
     const typed = pack?.templates.find((candidate) => candidate.type === type && templateMatchesFilename(candidate, page.filename));
     const template = typed ?? pack?.templates.find((candidate) => templateMatchesFilename(candidate, page.filename));
-    resolved.push({ relative: page.relative, template });
     if (pack) issues.push(...templatePlacementIssues(page.relative, template, pins));
-    issues.push(...pageContractIssues(page.relative, page.filename, page.parsed, template, pack, pins, options));
+    issues.push(...await pageContractIssues(page.relative, page.filename, page.parsed, template, pack, pins, options));
     issues.push(...repositorySourceOwnershipIssues(page.relative, page.parsed, pins));
     issues.push(...catalogOwnershipIssues(page.relative, page.parsed, pins, options.catalogs));
     if (pack && pins.length > 1 && template === altitudeTemplate(pack, "wiki") && !page.relative.includes("/")) {
       issues.push(...workspaceArchitectureCoverageIssues(page.relative, page.parsed, pins));
     }
     for (const target of wikiLinkTargets(page.relative, page.parsed.body)) {
-      if (!wikiTargetExists(target, pages)) {
+      if (linkTargetAllowed(target) && !wikiTargetExists(target, allPages)) {
         issues.push({ code: "link", page: page.relative, message: `Wiki link missing ${target}` });
       }
     }
-  }
-  if (pack) issues.push(...topologyIssues(pages, resolved, pins, pack));
-  return { ok: issues.length === 0, issues, pages: pages.sort() };
+    return { issues, resolved: { relative: page.relative, template } };
+  }));
+  return {
+    issues: validated.flatMap((page) => page.issues),
+    resolved: validated.map((page) => page.resolved),
+  };
 }
 
 export async function validateWikiTarget(
@@ -158,14 +156,11 @@ export async function validateWikiTarget(
   pack: WikiTemplatePack,
   options: WikiValidationOptions = {},
 ): Promise<WikiValidation> {
-  const full = await validateWikiTree(wikiRoot, pins, pack, options);
-  const pages = full.pages.filter((page) => writeTargetAllows(target, page));
-  const issues = full.issues.filter((issue) => {
-    if (!issue.page || !writeTargetAllows(target, issue.page)) return false;
-    if (issue.code !== "link") return true;
-    const missing = /^Wiki link missing (.+)$/.exec(issue.message)?.[1];
-    return Boolean(missing && writeTargetAllows(target, missing));
-  });
+  const allows = (page: string) => writeTargetAllows(target, page);
+  const scope = await loadWikiScope(wikiRoot, allows);
+  const validated = await validateLoadedPages(scope.loaded, scope.allPages, pins, pack, options, allows);
+  const pages = scope.pages;
+  const issues = [...scope.issues, ...validated.issues];
   const root = target.path === "wiki-root" ? "" : target.path;
   const directories = target.mode === "directory"
     ? [root]
@@ -189,6 +184,42 @@ export async function validateWikiTarget(
     }
   }
   return { ok: issues.length === 0, issues, pages };
+}
+
+async function loadWikiScope(
+  wikiRoot: string,
+  include: (relative: string) => boolean,
+): Promise<{ allPages: string[]; pages: string[]; loaded: LoadedWikiPage[]; issues: WikiValidationIssue[] }> {
+  let tree;
+  try {
+    tree = await scanWikiTree(wikiRoot);
+  } catch (error) {
+    throw new WikiValidationInfrastructureError(errorMessage(error), { cause: error });
+  }
+  const issues = tree.issues.filter((issue) => !issue.page || include(issue.page));
+  const allPages: string[] = [];
+  const pages: string[] = [];
+  const loaded: LoadedWikiPage[] = [];
+  for (const relative of tree.markdown) {
+    if (isReservedWikiPagePath(relative)) continue;
+    if (!isSafeWikiPagePath(relative)) {
+      if (include(relative)) issues.push({ code: "path", page: relative, message: `Illegal Wiki page path: ${relative}` });
+      continue;
+    }
+    allPages.push(relative);
+    if (!include(relative)) continue;
+    pages.push(relative);
+    try {
+      loaded.push({
+        relative,
+        filename: relative.split("/").at(-1) ?? "",
+        parsed: parsePage(await readText(safeWikiPath(wikiRoot, relative))),
+      });
+    } catch (error) {
+      issues.push({ code: "frontmatter", page: relative, message: errorMessage(error) });
+    }
+  }
+  return { allPages, pages, loaded, issues };
 }
 
 function repositorySourceOwnershipIssues(
@@ -253,7 +284,7 @@ function workspaceArchitectureCoverageIssues(
     : [];
 }
 
-function pageContractIssues(
+async function pageContractIssues(
   relative: string,
   filename: string,
   parsed: { frontmatter: Record<string, unknown>; body: string },
@@ -261,7 +292,7 @@ function pageContractIssues(
   pack: WikiTemplatePack | undefined,
   pins: readonly WikiPin[],
   options: WikiValidationOptions = {},
-): WikiValidationIssue[] {
+): Promise<WikiValidationIssue[]> {
   const issues: WikiValidationIssue[] = [];
   const type = typeof parsed.frontmatter.type === "string" ? parsed.frontmatter.type.trim() : "";
   if (!type) issues.push({ code: "okf", page: relative, message: "OKF documents require a non-empty type" });
@@ -284,21 +315,36 @@ function pageContractIssues(
     if (template) issues.push(...markdownContractIssues(relative, parsed, template, title, description));
   }
   if (template?.diagram) issues.push(...mermaidIssues(relative, parsed.body, template));
-  const citations = extractOkfSources(parsed.frontmatter, parsed.body, (citation) => sourceFileLines(pins, citation));
+  const citations = extractOkfSources(parsed.frontmatter, parsed.body);
   for (const invalid of citations.invalid) {
     issues.push({ code: "citation", page: relative, message: invalid });
   }
-  for (const citation of citations.citations) {
-    if (!citation.catalogTable) continue;
-    if (!citation.catalog || !options.catalogs?.has(citation.catalog)) {
-      issues.push({
+  issues.push(...(await Promise.all(citations.citations.map(async (citation): Promise<WikiValidationIssue[]> => {
+    if (citation.catalogTable) {
+      return citation.catalog && options.catalogs?.has(citation.catalog) ? [] : [{
         code: "citation",
         page: relative,
         message: `${citation.path} cites an unavailable Catalog`,
-      });
+      }];
     }
-  }
+    const lines = await sourceFileLines(pins, citation);
+    const resource = citationResource(citation);
+    if (lines === "missing") return [{ code: "citation", page: relative, message: `${resource} missing` }];
+    if (citation.endLine !== undefined && lines !== undefined && citation.endLine > lines) {
+      return [{
+        code: "citation",
+        page: relative,
+        message: `${resource} ${citation.path.split("/").pop()}:${lines} lines`,
+      }];
+    }
+    return [];
+  }))).flat());
   return issues;
+}
+
+function citationResource(citation: SourceCitation): string {
+  if (citation.startLine === undefined) return citation.path;
+  return `${citation.path}#L${citation.startLine}${citation.endLine === citation.startLine ? "" : `-L${citation.endLine}`}`;
 }
 
 function templatePlacementIssues(
@@ -384,21 +430,21 @@ function markdownContractIssues(
   return issues;
 }
 
-function sourceFileLines(
+async function sourceFileLines(
   pins: readonly WikiPin[],
   citation: Omit<SourceCitation, "id">,
-): number | "missing" | undefined {
+): Promise<number | "missing" | undefined> {
   const resolved = resolveSourceCitation(citation, pins);
   if (!resolved) return "missing";
   const pin = pins.find((candidate) => candidate.scopeId === resolved.scopeId);
   if (!pin) return "missing";
   try {
     const file = path.join(pin.realPath, ...resolved.sourcePath.split("/"));
-    if (lstatSync(file).isSymbolicLink()) return "missing";
-    const actual = realpathSync(file);
-    const relative = path.relative(realpathSync(pin.realPath), actual);
+    if ((await lstat(file)).isSymbolicLink()) return "missing";
+    const [actual, sourceRoot] = await Promise.all([realpath(file), realpath(pin.realPath)]);
+    const relative = path.relative(sourceRoot, actual);
     if (relative.startsWith("..") || path.isAbsolute(relative)) return "missing";
-    return readFileSync(actual, "utf8").split(/\r?\n/).length;
+    return (await readFile(actual, "utf8")).split(/\r?\n/).length;
   } catch {
     return "missing";
   }

@@ -23,20 +23,11 @@ const PLACEHOLDER = /\{\{[^{}\n]+\}\}/g;
 
 export function markdownStructure(body: string): MarkdownStructure {
   const lines = body.split(/\r?\n/);
+  const visibleBody = markdownOutsideCodeFences(body);
+  const visibleLines = visibleBody.split(/\r?\n/);
   const headings: MarkdownHeading[] = [];
-  let fence: { marker: "`" | "~"; length: number } | undefined;
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index] ?? "";
-    if (fence) {
-      const close = new RegExp(`^ {0,3}${fence.marker === "`" ? "`" : "~"}{${fence.length},}\\s*$`);
-      if (close.test(line)) fence = undefined;
-      continue;
-    }
-    const opening = FENCE_OPEN.exec(line);
-    if (opening?.[1]) {
-      fence = { marker: opening[1][0] as "`" | "~", length: opening[1].length };
-      continue;
-    }
+  for (let index = 0; index < visibleLines.length; index += 1) {
+    const line = visibleLines[index] ?? "";
     const heading = ATX_HEADING.exec(line);
     if (!heading?.[1] || !heading[2]) continue;
     headings.push({
@@ -61,8 +52,24 @@ export function markdownStructure(body: string): MarkdownStructure {
     headings,
     summary: paragraph(summaryLines),
     sections,
-    placeholders: [...new Set(body.match(PLACEHOLDER) ?? [])],
+    placeholders: [...new Set(visibleBody.match(PLACEHOLDER) ?? [])],
   };
+}
+
+export function markdownOutsideCodeFences(body: string): string {
+  const lines = body.split(/\r?\n/);
+  let fence: { marker: "`" | "~"; length: number } | undefined;
+  return lines.map((line) => {
+    if (fence) {
+      const close = new RegExp(`^ {0,3}${fence.marker}{${fence.length},}\\s*$`);
+      if (close.test(line)) fence = undefined;
+      return "";
+    }
+    const opening = FENCE_OPEN.exec(line)?.[1];
+    if (!opening) return line;
+    fence = { marker: opening[0] as "`" | "~", length: opening.length };
+    return "";
+  }).join("\n");
 }
 
 export function sectionHasContent(section: MarkdownSection): boolean {

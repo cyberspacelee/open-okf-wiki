@@ -1,4 +1,4 @@
-import { cp, link, lstat, mkdir, open, readFile, realpath, rm, rmdir, symlink, writeFile } from "node:fs/promises";
+import { cp, link, lstat, mkdir, open, readFile, realpath, rm, rmdir, symlink } from "node:fs/promises";
 import path from "node:path";
 import { parseEnv } from "node:util";
 import YAML from "yaml";

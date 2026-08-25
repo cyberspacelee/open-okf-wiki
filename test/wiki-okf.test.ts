@@ -177,6 +177,7 @@ test("Domain validation requires its own contracts without requiring unfinished 
   const source = await sourceTree(t, "self", true);
   const templates = packOf();
   const byId = Object.fromEntries(templates.templates.map((template) => [template.id, template]));
+  await writeFile(path.join(root, "overview.md"), "# malformed outside target\n");
   await mkdir(path.join(root, "billing"), { recursive: true });
   await writeFile(path.join(root, "billing", "domain.md"), fill(byId.domain, "Billing", source.resource));
 

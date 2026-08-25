@@ -101,6 +101,7 @@ test("catalog lists and describes only matching tables", async () => {
   assert.equal(sql.match(/\)::text\[\] AS columns/g)?.length, 2);
   assert.deepEqual(sqlParameters[0], ["public", ["r", "v", "m"]]);
   assert.match((await catalog.describeTables(["orders"])).text, /No Catalog tables matched/);
+  assert.equal(sqlStatements.filter((statement) => statement.includes("FROM pg_class c")).length, 3);
 });
 
 test("formatTableDefinition stays compact", () => {

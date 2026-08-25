@@ -17,7 +17,7 @@ function isWikiRepositoryDirectoryName(value: string): boolean {
 }
 
 /** Markdown files owned by the Wiki lifecycle rather than the concept manifest. */
-export function isReservedWikiPagePath(value: unknown): value is string {
+export function isReservedWikiPagePath(value: unknown): boolean {
   return typeof value === "string" && RESERVED_WIKI_PAGE_NAMES.has(value.split("/").at(-1) ?? "");
 }
 
@@ -52,7 +52,7 @@ export function wikiPathKind(
  * Implicit Workspace knowledge lives at `<domain>/<concept>/`. Explicit
  * Workspace knowledge lives at `<scopeId>/<domain>/<concept>/`.
  */
-export function isSafeWikiPagePath(value: unknown): value is string {
+export function isSafeWikiPagePath(value: unknown): boolean {
   if (typeof value !== "string" || value.includes("\\") || value.startsWith("/")) return false;
   const segments = value.split("/");
   if (segments.some((segment) => !segment)) return false;

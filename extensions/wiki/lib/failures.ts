@@ -17,10 +17,6 @@ export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function isWikiBudgetExhaustedError(error: unknown): error is WikiBudgetExhaustedError {
-  return error instanceof WikiBudgetExhaustedError;
-}
-
 export class WikiValidationInfrastructureError extends Error {
   readonly code = "validator_infrastructure" as const;
 

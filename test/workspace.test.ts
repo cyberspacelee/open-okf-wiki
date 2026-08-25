@@ -147,6 +147,13 @@ test("loads multiple named Catalogs and keeps raw URLs", async () => {
   await assert.rejects(loadWikiWorkspace(root), /postgresql:\/\//);
 });
 
+test("packaged producer skill documents the explicit Catalog contract", async () => {
+  const skill = await readFile(new URL("../skills/repository-wiki-producer/SKILL.md", import.meta.url), "utf8");
+  assert.match(skill, /^catalogs:/m);
+  assert.match(skill, /^    catalog: app$/m);
+  assert.doesNotMatch(skill, /^database:/m);
+});
+
 test("loads an openGauss URL from the Workspace .env without overriding the process environment", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-workspace-env-"));
   temporaryDirectories.push(parent);

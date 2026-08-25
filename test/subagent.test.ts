@@ -136,6 +136,17 @@ test("unknown agent names are reported in parseable agent files", () => {
   assert.match(parsed.prompt, /Body/);
 });
 
+test("agent definitions reject malformed YAML instead of silently skipping it", () => {
+  assert.throws(
+    () => parseAgentMarkdown("---\nname: [survey\ndescription: broken\n---\nBody\n", "broken.md"),
+    /broken\.md/,
+  );
+  assert.throws(
+    () => parseAgentMarkdown("---\nname: survey\ndescription: Map\ntools: [read]\n---\nBody\n", "broken.md"),
+    /tools must be a comma-separated string/,
+  );
+});
+
 test("unknown subagent names return Unknown agent and list packaged agents", async () => {
   const packaged = packagedAgentsRoot();
   const files = (await readdir(packaged)).filter((name) => name.endsWith(".md")).sort();

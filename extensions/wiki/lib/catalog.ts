@@ -133,7 +133,11 @@ export function createCatalog(config: WikiCatalogConfig, query: CatalogQuery): W
           tables: [],
         };
       }
-      const definitions = await loadTableDefinitions(query, config.schema, matched);
+      const definitions = await loadTableDefinitions(
+        query,
+        config.schema,
+        refs.filter((ref) => matched.includes(ref.name)),
+      );
       return {
         text: definitions.map(formatTableDefinition).join("\n\n"),
         tables: definitions.map(({ ref }) => ref.name),
@@ -208,10 +212,10 @@ async function loadTableRefs(query: CatalogQuery, schema: string): Promise<WikiT
 async function loadTableDefinitions(
   query: CatalogQuery,
   schema: string,
-  names: readonly string[],
+  refs: readonly WikiTableRef[],
 ): Promise<WikiTableDefinition[]> {
-  const refs = (await loadTableRefs(query, schema)).filter((ref) => names.includes(ref.name));
-  const columns = await query(
+  const names = refs.map((ref) => ref.name);
+  const [columns, constraints, indexes] = await Promise.all([query(
     `SELECT c.relname AS table_name, a.attname AS name,
             format_type(a.atttypid, a.atttypmod) AS type, NOT a.attnotnull AS nullable,
             pg_get_expr(ad.adbin, ad.adrelid) AS default_value,
@@ -223,8 +227,7 @@ async function loadTableDefinitions(
      WHERE n.nspname = $1 AND c.relname = ANY($2) AND a.attnum > 0 AND NOT a.attisdropped
      ORDER BY c.relname, a.attnum`,
     [schema, [...names]],
-  );
-  const constraints = await query(
+  ), query(
     `SELECT rel.relname AS table_name, con.conname AS name, con.contype AS type,
             ARRAY(SELECT att.attname FROM generate_subscripts(con.conkey, 1) AS cols(ord)
                   JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = con.conkey[cols.ord]
@@ -244,8 +247,7 @@ async function loadTableDefinitions(
      WHERE n.nspname = $1 AND rel.relname = ANY($2)
      ORDER BY rel.relname, con.conname`,
     [schema, [...names]],
-  );
-  const indexes = await query(
+  ), query(
     `SELECT rel.relname AS table_name, idx.relname AS name, i.indisunique AS unique,
             ARRAY(SELECT att.attname FROM generate_subscripts(i.indkey::smallint[], 1) AS cols(ord)
                   JOIN pg_attribute att ON att.attrelid = rel.oid AND att.attnum = (i.indkey::smallint[])[cols.ord]
@@ -257,7 +259,7 @@ async function loadTableDefinitions(
      WHERE n.nspname = $1 AND rel.relname = ANY($2)
      ORDER BY rel.relname, idx.relname`,
     [schema, [...names]],
-  );
+  )]);
   return refs.map((ref) => ({
     ref,
     columns: columns.filter((row) => row.table_name === ref.name).map((row) => ({

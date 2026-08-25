@@ -41,14 +41,18 @@ Optional openGauss evidence in `workspace.yaml`. Username and password go in
 the URL:
 
 ```yaml
-database:
-  url: ${DATABASE_URL}   # postgresql://USER:PASSWORD@HOST:PORT/DB
-  schema: public
-  tables: [user*, order%]
+catalogs:
+  app:
+    url: ${APP_DATABASE_URL}   # postgresql://USER:PASSWORD@HOST:PORT/DB
+    schema: public
+    tables: [user*, order%]
+sources:
+  - path: backend
+    catalog: app
 ```
 
 ```bash
-export DATABASE_URL='postgresql://wiki:secret@127.0.0.1:5432/app'
+export APP_DATABASE_URL='postgresql://wiki:secret@127.0.0.1:5432/app'
 ```
 
 `url` is an openGauss `postgres://` or `postgresql://` connection string (or `${ENV}` / `$ENV`).
@@ -59,9 +63,9 @@ Agents list then describe matching tables. They do not dump the whole
 schema. Connections are read-only. Expand the URL in the environment; do
 not commit the expanded string.
 
-A Catalog uses `database` in an explicit `workspace.yaml`. An implicit
-single-source Workspace may instead use `.okf-wiki/database.yaml` with the
-same database block.
+An explicit `workspace.yaml` declares named Catalogs under `catalogs` and
+binds each Source through `sources[].catalog`. An implicit single-source
+Workspace may instead use `.okf-wiki/database.yaml` with one `database` block.
 
 ## Templates
 
