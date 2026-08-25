@@ -29,7 +29,8 @@ configured schema stays inside its Catalog Adapter.
 
 SOP is `prompts/lead.md`. Named workers are `agents/*.md`. Multi-Source Runs
 fan in all Source survey handoffs through one read-only synthesize worker before
-writing begins. Page kinds come
+writing begins; the host injects the durable handoff references instead of
+requiring the Lead to repeat them. Page kinds come
 from `wiki-templates/` after init (or packaged `templates/zh` /
 `templates/en`). A page contract owns placement, cardinality, filename pattern,
 selection condition, purpose, semantic obligations, and diagram requirements.

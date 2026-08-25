@@ -28,7 +28,7 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
   `.okf-wiki/runs/` tree; there is no state migration or incremental refresh.
 - Pause and failure retain the current Candidate, Board, handoffs, receipts,
   and Lead session for `/wiki resume`. Success and cancel remove them.
-- Run records use schema 3 and are accepted only when their Workspace and
+- Run records use schema 1 and are accepted only when their Workspace and
   Candidate paths match the current layout. Malformed or foreign records fail
   closed instead of being normalized as legacy state.
 - Workspace transition and owner files prevent concurrent starts and reject
@@ -77,6 +77,10 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
   the original writer session; reviewer verdict formatting does the same.
 - `maxWorkerRepairRounds` replaces `maxEvidenceRepairRounds` and bounds all
   locally repairable worker completion follow-ups.
+- The host injects completed survey handoffs into cross-Source synthesis, so the
+  Lead no longer repeats durable paths in its assignment. Existing Lead sessions
+  resume with only the current checkpoint, and unchanged repair issues stop
+  after two unsuccessful rounds.
 - Workspaces may declare multiple named openGauss Catalogs. Each Source binds at
   most one Catalog and multiple Sources may share it; bound definitions and
   Source bindings are pinned into the Run, and worker tools are scoped by assignment.

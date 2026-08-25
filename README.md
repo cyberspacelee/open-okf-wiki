@@ -300,7 +300,8 @@ const result = await handle.result();
 
 SOP is `prompts/lead.md`. Named workers are `agents/*.md`. The host requires a
 completed survey for every Source and one subsequent synthesize receipt before
-publishing a multi-Source Run; the Lead owns the remaining stage orchestration.
+publishing a multi-Source Run, and injects those survey handoffs into the
+synthesize worker; the Lead owns the remaining stage orchestration.
 
 See [CONTEXT.md](CONTEXT.md) for terms and [ARCHITECTURE.md](ARCHITECTURE.md)
 for the host shape.

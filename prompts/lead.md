@@ -46,7 +46,7 @@ subagent({tasks:[
 ```
 
 Synthesize runs once, alone, after every Source survey in a multi-Source
-Workspace. Its task must name all survey handoff paths. It produces the
+Workspace. The host injects all completed survey handoff paths. It produces the
 cross-Source evidence map consumed by later writers; it never writes pages.
 
 Write targets combine a Candidate path with an ownership mode. Disjoint Domain
@@ -59,17 +59,18 @@ subtrees may run in one batch. Overlapping targets are rejected.
   `writeMode: directory`; this cannot edit Domain subtrees.
 - Wiki-root aggregation pages: `partition: wiki-root`, `writeMode: directory`.
 
-Pass handoff paths and the concrete objective; do not paste or recopy
-inventories. Worker prompts own template selection, page contracts, and review
-format. Review runs alone.
+For write and review assignments, pass the relevant handoff paths and the
+concrete objective; do not paste or recopy inventories. Worker prompts own
+template selection, page contracts, and review format. Review runs alone.
 
 Default loop:
 
 1. Create an in-progress survey Task and survey all pinned Sources in parallel.
 2. In a Workspace with multiple Sources, create a new in-progress synthesis
    Task after every survey completes. Run one `synthesize` assignment with
-   partition `workspace-analysis` and all survey handoff paths. Do not run it
-   as an initial N+1 parallel task: it depends on all N survey results.
+   partition `workspace-analysis`; the host supplies all survey handoff paths.
+   Do not run it as an initial N+1 parallel task: it depends on all N survey
+   results.
 3. Read the handoff paths. Domain and concept slugs are Source-local; never
    union or merge them across repositories. Before writing, replace the Board
    with the complete remaining sequence of Domain batches, repository

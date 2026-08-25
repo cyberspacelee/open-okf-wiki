@@ -58,11 +58,16 @@ test("a path-only citation requires a successful read but not a full-file span",
 });
 
 test("the configured worker repair limit bounds a writer session", async (t) => {
-  const gate = await fixture(t, "main.ts", { maxRepairRounds: 3 });
-  for (let round = 1; round <= 3; round += 1) {
-    assert.match(await gate.nextPrompt("") ?? "", new RegExp(`round ${round} of 3`, "i"));
-  }
-  await assert.rejects(() => gate.nextPrompt(""), /after 3 rounds/);
+  const gate = await fixture(t, "main.ts", { maxRepairRounds: 1 });
+  assert.match(await gate.nextPrompt("") ?? "", /round 1 of 1/i);
+  await assert.rejects(() => gate.nextPrompt(""), /after 1 rounds/);
+});
+
+test("writer repair stops after two rounds with the same issues", async (t) => {
+  const gate = await fixture(t, "main.ts");
+  assert.match(await gate.nextPrompt("") ?? "", /round 1 of 6/i);
+  assert.match(await gate.nextPrompt("") ?? "", /round 2 of 6/i);
+  await assert.rejects(() => gate.nextPrompt(""), /made no progress after 2 rounds/);
 });
 
 test("writer completion reports evidence and assignment issues in one repair batch", async (t) => {

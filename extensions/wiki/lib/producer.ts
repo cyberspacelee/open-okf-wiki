@@ -346,6 +346,7 @@ function defaultRunLead(
         templates: context.templates,
         language: context.language,
         assertDispatch: context.assertDispatch,
+        synthesisHandoffs: () => completedSurveyHandoffs(live),
       },
     );
     const tools: ToolDefinition<any, any, any>[] = [
@@ -355,7 +356,11 @@ function defaultRunLead(
       createCandidateCheckTool(() => context.check()),
       createPublishTool(() => context.publish()),
     ];
-    const prompt = await leadPrompt(context, checkpointFor(live));
+    const prompt = await leadPrompt(
+      context,
+      checkpointFor(live),
+      Boolean(record.sessionFile && await exists(record.sessionFile)),
+    );
     const result = await runWikiSession(context.plan.workspaceRoot, tools, prompt, context.signal, {
       ...session,
       sessionDir: path.join(runDir(record.cwd), "sessions"),
@@ -507,43 +512,23 @@ async function validateAndRecordCandidate(live: LiveRun): Promise<WikiValidation
 
 function fanInIssue(live: LiveRun, incoming?: readonly SubagentTask[]): string | undefined {
   if (live.plan.sources.length <= 1) return undefined;
-  const latest = (agent: string, partition: string) => live.record.executions
-    .filter((entry) => entry.agent === agent && entry.partition === partition)
-    .reduce<RunExecutionReceipt | undefined>((current, entry) => (
-      !current || entry.startedAt >= current.startedAt ? entry : current
-    ), undefined);
-  const surveys = live.plan.sources.map((source) => latest("survey", source.scopeId));
+  const surveys = surveyExecutions(live);
   const missing = live.plan.sources
     .filter((_source, index) => (
       surveys[index]?.status !== "complete" || !surveys[index]?.handoff || !surveys[index]?.completedAt
     ))
     .map((source) => source.scopeId);
-  const synthesis = latest("synthesize", "workspace-analysis");
+  const synthesis = latestExecution(live, "synthesize", "workspace-analysis");
   const agents = incoming ? new Set(incoming.map((task) => task.agent)) : undefined;
   if (agents?.has("survey")) return undefined;
   if (agents?.has("synthesize") || !agents) {
     if (missing.length) return `Cross-Source analysis requires completed surveys for: ${missing.join(", ")}`;
   }
-  if (agents?.has("synthesize")) {
-    const task = incoming!.map((entry) => entry.task).join("\n");
-    const omittedHandoffs = surveys
-      .filter((entry) => entry?.handoff && !task.includes(entry.handoff.path))
-      .map((entry) => entry!.partition);
-    if (omittedHandoffs.length) {
-      return `Cross-Source synthesis task must name every survey handoff; missing ${omittedHandoffs.join(", ")}`;
-    }
-    return undefined;
-  }
+  if (agents?.has("synthesize")) return undefined;
   if (synthesis?.status !== "complete" || !synthesis.handoff || !synthesis.completedAt) {
     return "Multi-Source Workspace requires one completed synthesize execution for partition workspace-analysis";
   }
   if (agents?.has("write")) return undefined;
-  const omittedHandoffs = surveys
-    .filter((entry) => entry?.handoff && !synthesis.task.includes(entry.handoff.path))
-    .map((entry) => entry!.partition);
-  if (omittedHandoffs.length) {
-    return `Cross-Source synthesis task must name every survey handoff; missing ${omittedHandoffs.join(", ")}`;
-  }
   const lastSurvey = surveys.reduce((latestAt, entry) => {
     const completedAt = entry?.completedAt ?? "";
     return completedAt > latestAt ? completedAt : latestAt;
@@ -554,6 +539,24 @@ function fanInIssue(live: LiveRun, incoming?: readonly SubagentTask[]): string |
   const earlyWrite = live.record.executions.find((entry) => entry.agent === "write" && entry.startedAt < (synthesis.completedAt ?? ""));
   if (earlyWrite) return `Write target ${earlyWrite.partition} started before cross-Source synthesis completed`;
   return undefined;
+}
+
+function latestExecution(live: LiveRun, agent: string, partition: string): RunExecutionReceipt | undefined {
+  return live.record.executions
+    .filter((entry) => entry.agent === agent && entry.partition === partition)
+    .reduce<RunExecutionReceipt | undefined>((current, entry) => (
+      !current || entry.startedAt >= current.startedAt ? entry : current
+    ), undefined);
+}
+
+function surveyExecutions(live: LiveRun): Array<RunExecutionReceipt | undefined> {
+  return live.plan.sources.map((source) => latestExecution(live, "survey", source.scopeId));
+}
+
+function completedSurveyHandoffs(live: LiveRun): string[] {
+  return surveyExecutions(live).flatMap((entry) => (
+    entry?.status === "complete" && entry.handoff ? [entry.handoff.path] : []
+  ));
 }
 
 async function recordAgent(live: LiveRun, board: WikiBoardStore, update: SubagentTaskUpdate): Promise<void> {
@@ -1272,7 +1275,10 @@ function processIsAlive(pid: number): boolean {
   catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 }
 
-async function leadPrompt(context: WikiLeadContext, checkpoint: string): Promise<string> {
+async function leadPrompt(context: WikiLeadContext, checkpoint: string, resumedSession: boolean): Promise<string> {
+  if (resumedSession) {
+    return `Resume the existing Wiki Lead session from the current durable state. Do not repeat completed work.\n\n${checkpoint}\n`;
+  }
   const body = await readFile(fileURLToPath(new URL("../../../prompts/lead.md", import.meta.url)), "utf8");
   const sources = context.plan.sources.map((source) => `- ${source.scopeId}: ${source.logicalPath}`).join("\n");
   const focus = context.focus ? `\nFocus: ${context.focus}\n` : "";

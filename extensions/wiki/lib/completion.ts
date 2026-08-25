@@ -248,12 +248,20 @@ function createRepairLoop(
   instruction: string,
 ): (issues: readonly CompletionIssue[]) => string | undefined {
   let repairRounds = 0;
+  let previousIssues: string | undefined;
+  let unchangedRounds = 0;
   return (issues) => {
     if (!issues.length) return undefined;
     const report = [
       `${label} validation found ${issues.length} issue${issues.length === 1 ? "" : "s"}. Fix all issues in this batch before finishing:`,
       ...issues.map((issue) => `- ${issue.message.replaceAll("\n", "\n  ")}`),
     ].join("\n");
+    const issueSet = issues.map((issue) => issue.message).sort().join("\0");
+    unchangedRounds = issueSet === previousIssues ? unchangedRounds + 1 : 0;
+    previousIssues = issueSet;
+    if (unchangedRounds >= 2) {
+      throw new Error(`${label} repair made no progress after ${repairRounds} rounds.\n${report}`);
+    }
     if (repairRounds >= maxRepairRounds) {
       throw new Error(`${label} repair did not converge after ${repairRounds} rounds.\n${report}`);
     }

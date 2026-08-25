@@ -71,6 +71,7 @@ export async function createSubagentRuntime(
     templates?: WikiTemplatePack;
     language?: "zh" | "en";
     assertDispatch?: (tasks: readonly SubagentTask[]) => void;
+    synthesisHandoffs?: () => readonly string[];
   } = {},
 ): Promise<SubagentRuntime> {
   const agents = await loadWikiAgents(agentsDirectory);
@@ -85,6 +86,7 @@ export async function createSubagentRuntime(
       assertSafeBatch(tasks);
       for (const task of tasks) assertAgentPartition(task.agent, task.partition, plan, task.writeMode);
       options.assertDispatch?.(tasks);
+      const synthesisHandoffs = tasks[0]?.agent === "synthesize" ? options.synthesisHandoffs?.() ?? [] : [];
       const release = acquireBatch(tasks);
       try {
         const maxConcurrency = options.maxConcurrency ?? tasks.length;
@@ -111,7 +113,7 @@ export async function createSubagentRuntime(
               if (scoped.kind === "tool") applyChildTool(live.get(task.id)!.tools, scoped);
               void report();
             },
-          }, signal, catalogsForTask(task, plan, catalogs), options.templates, options.maxWorkerRepairRounds, options.language);
+          }, signal, catalogsForTask(task, plan, catalogs), options.templates, options.maxWorkerRepairRounds, options.language, synthesisHandoffs);
           const status = result.error ? "failed" : "complete";
           const entry = live.get(result.id)!;
           entry.status = status;
@@ -210,6 +212,7 @@ async function runOne(
   templates?: WikiTemplatePack,
   maxWorkerRepairRounds?: number,
   language?: "zh" | "en",
+  requiredHandoffs: readonly string[] = [],
 ): Promise<SubagentResult> {
   const definition = byName.get(task.agent);
   if (!definition) {
@@ -261,10 +264,13 @@ async function runOne(
     const languageContract = task.agent === "write" && language
       ? `\n\n## Output language\n\nThe Run language is \`${language}\` (\`zh\` = Simplified Chinese; \`en\` = English). Write titles, descriptions, prose, table labels, footnote definitions, and human-readable Mermaid labels in that language. Preserve source identifiers, code symbols, paths, commands, configuration keys, frontmatter \`type\`, \`sources[].id\`, and Mermaid node IDs verbatim. Copy the injected contract headings exactly.\n`
       : "";
+    const handoffs = requiredHandoffs.length
+      ? `\n\n# Required handoffs\n\n${requiredHandoffs.map((location) => `- ${location}`).join("\n")}`
+      : "";
     const result = await runWikiSession(
       guard.workspaceRoot,
       tools,
-      `${definition.prompt}${pack}${citations}${languageContract}\n\n# Task\n\n${task.task}`,
+      `${definition.prompt}${pack}${citations}${languageContract}${handoffs}\n\n# Task\n\n${task.task}`,
       signal,
       {
         ...session,
@@ -277,6 +283,7 @@ async function runOne(
           sourceFingerprint,
           base.digest,
           touched,
+          requiredHandoffs,
           todo?.snapshot(),
         ),
         nextPrompt: completionGate?.nextPrompt,
@@ -382,6 +389,7 @@ function formatWorkerCheckpoint(
   sourceFingerprint: string,
   baseCandidateRevision: string,
   touched: ReadonlySet<string>,
+  requiredHandoffs: readonly string[] = [],
   todo: readonly WriterTodoItem[] = [],
 ): string {
   const instruction = task.agent === "survey"
@@ -401,6 +409,7 @@ function formatWorkerCheckpoint(
     `Source fingerprint: ${sourceFingerprint}`,
     `Base target Candidate: ${baseCandidateRevision}`,
     `Assignment: ${task.task}`,
+    ...(requiredHandoffs.length ? ["Required handoffs:", ...requiredHandoffs.map((location) => `- ${location}`)] : []),
   ];
   if (estimateTokens([...lines, instruction, "</wiki_checkpoint>"].join("\n")) > 4_096) {
     throw new Error("context_checkpoint_too_large: worker assignment exceeds 4096 estimated tokens");

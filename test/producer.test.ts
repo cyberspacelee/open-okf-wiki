@@ -609,6 +609,9 @@ test("multi-Source checks require survey fan-in followed by synthesis", async (t
   await wikiWorkspaceManagement.addLink({ cwd: workspace.root, localPath: api, name: "api" });
   await wikiWorkspaceManagement.addLink({ cwd: workspace.root, localPath: web, name: "web" });
   let checked = false;
+  let synthesisPrompt = "";
+  let synthesisCheckpoint = "";
+  let surveyHandoffs: string[] = [];
   const producer = createProductionWikiProducer({
     async runLead(context) {
       await context.board.write({
@@ -620,13 +623,20 @@ test("multi-Source checks require survey fan-in followed by synthesis", async (t
         context.candidateRoot,
         {
           async createSession() {
+            let listener = (_event: unknown) => {};
             return {
               session: {
                 sessionFile: undefined,
-                subscribe() { return () => {}; },
-                async prompt() {},
+                subscribe(next) { listener = next; return () => {}; },
+                async prompt(value) {
+                  if (value.includes("# Required handoffs")) {
+                    synthesisPrompt = value;
+                    listener({ type: "compaction_end", aborted: false, result: {} });
+                  }
+                },
                 async waitForIdle() {},
                 getLastAssistantText() { return "survey complete"; },
+                async sendCustomMessage(message) { synthesisCheckpoint = message.content; },
                 dispose() {},
                 abort() {},
               },
@@ -640,6 +650,7 @@ test("multi-Source checks require survey fan-in followed by synthesis", async (t
         {
           templates: context.templates,
           assertDispatch: context.assertDispatch,
+          synthesisHandoffs: () => surveyHandoffs,
         },
       );
       await assert.rejects(
@@ -650,6 +661,7 @@ test("multi-Source checks require survey fan-in followed by synthesis", async (t
         { agent: "survey", task: "Survey api", boardTaskId: "survey", partition: "api" },
         { agent: "survey", task: "Survey web", boardTaskId: "survey", partition: "web" },
       ], context.signal);
+      surveyHandoffs = surveyResults.map((entry) => entry.handoff!);
       const checkedBefore = await context.check();
       assert.equal(checkedBefore.ok, false);
       assert.doesNotMatch(checkedBefore.message, /synthesize execution|completed surveys/);
@@ -662,10 +674,14 @@ test("multi-Source checks require survey fan-in followed by synthesis", async (t
       });
       await runtime.run([{
         agent: "synthesize",
-        task: `Read both survey handoffs and analyze the Workspace: ${surveyResults.map((entry) => entry.handoff).join(", ")}`,
+        task: "Analyze the Workspace across all completed surveys",
         boardTaskId: "synthesize",
         partition: "workspace-analysis",
       }], context.signal);
+      for (const handoff of surveyHandoffs) {
+        assert.ok(synthesisPrompt.includes(handoff));
+        assert.ok(synthesisCheckpoint.includes(handoff));
+      }
       const published = await context.publish();
       assert.equal(published.ok, false);
       assert.match(published.message, /Required template|concept cluster|frontmatter|type/i);
@@ -709,6 +725,40 @@ test("Lead prompt receives a bounded recovery frame without template skeletons",
   assert.doesNotMatch(prompt, /Output skeleton|Page contract catalog|Directory contract/);
   assert.ok(tools.includes("candidate_check"));
   assert.equal(tools.includes("db_tables"), false);
+});
+
+test("an existing Lead session resumes with checkpoint delta only", async (t) => {
+  const root = await gitRepo(t);
+  const sessionFile = path.join(root, "lead.jsonl");
+  await writeFile(sessionFile, "");
+  const prompts: string[] = [];
+  const producer = createProductionWikiProducer({
+    session: {
+      async createSession() {
+        return {
+          session: {
+            sessionFile,
+            subscribe() { return () => {}; },
+            async prompt(value) { prompts.push(value); },
+            async waitForIdle() {},
+            getLastAssistantText() { return ""; },
+            dispose() {},
+            abort() {},
+          },
+          modelFallbackMessage: undefined,
+        };
+      },
+    },
+  });
+  const handle = await producer.start({ cwd: root, focus: "runtime" });
+  await handle.result().catch(() => undefined);
+  await handle.control("resume");
+  await handle.result().catch(() => undefined);
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[0]!, /# Repository Wiki Lead/);
+  assert.match(prompts[1]!, /<wiki_checkpoint>/);
+  assert.match(prompts[1]!, /Resume the existing Wiki Lead session/);
+  assert.doesNotMatch(prompts[1]!, /# Repository Wiki Lead/);
 });
 
 test("parallel terminal receipts persist only after both handoffs are attested", async (t) => {
