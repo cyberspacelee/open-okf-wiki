@@ -312,7 +312,10 @@ function defaultRunLead(
       },
     );
     const tools: ToolDefinition<any, any, any>[] = [
-      ...candidateTools(writeGuardFromPlan(context.plan, context.candidateRoot), LEAD_CANDIDATE_TOOLS),
+      ...candidateTools({
+        ...writeGuardFromPlan(context.plan, context.candidateRoot),
+        sources: [],
+      }, LEAD_CANDIDATE_TOOLS),
       createTodoTool(context.board),
       createSubagentTool(runtime),
       createCandidateCheckTool(() => context.check()),

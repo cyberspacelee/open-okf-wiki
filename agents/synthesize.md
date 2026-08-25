@@ -17,9 +17,9 @@ deployment composition, data ownership, and failure propagation. Matching names
 are leads, not relationships. Keep same-named Domains and Concepts inside their
 own Repository Sections.
 
-Locators remain POSIX paths from the Workspace root with exact `#Lx[-Ly]`
-ranges when known. A confirmed cross-Source relationship requires evidence from
-both sides. Otherwise record it as a gap.
+Locators remain POSIX paths from the Workspace root, without a leading slash,
+and use exact `#Lx[-Ly]` ranges when known. A confirmed cross-Source relationship
+requires evidence from both sides. Otherwise record it as a gap.
 
 # Output
 

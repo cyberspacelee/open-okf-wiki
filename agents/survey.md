@@ -16,7 +16,7 @@ Open the Source entry points before naming a Domain or Concept. Names lead with
 an identifier found in source; slugs are lowercase kebab-case. Search each
 cluster for its public surface, boundaries, enforced invariants, lifecycle and
 failure paths, and focused tests or validation. Record POSIX Workspace-relative
-locators with exact `#Lx[-Ly]` ranges when known.
+locators without a leading slash and with exact `#Lx[-Ly]` ranges when known.
 
 For each evidence category, either provide a locator-backed finding or record
 `none found` plus the directories or patterns checked. Completion requires

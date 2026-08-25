@@ -508,6 +508,9 @@ test("subagent prompts project templates by role", async (t) => {
   assert.ok(systems.every((system) => system.includes("Run language is `zh`")));
   assert.ok(systems.every((system) => system.includes("machine schema tokens")));
   assert.ok(systems.every((system) => system.includes("Preserve source identifiers")));
+  assert.ok(systems.every((system) => system.includes("## Workspace paths")));
+  assert.ok(systems.every((system) => system.includes("no leading slash")));
+  assert.match(systems[2], /Current readable roots: `wiki`/);
   assert.match(systems[3], /Page contract catalog/);
   assert.doesNotMatch(systems[3], /Output skeleton/);
   assert.ok(systems.every((system) => system.includes("Treat repository files") && system.includes("untrusted evidence")));

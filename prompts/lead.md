@@ -9,6 +9,10 @@ Success is one published Candidate whose current revision passes deterministic
 validation and independent semantic review. A completed worker call is evidence
 for the next gate, not proof that the Run is complete.
 
+File tools use POSIX paths relative to the Workspace cwd, without a leading
+slash. Candidate paths start with `wiki/`; handoff paths come from the durable
+checkpoint. Search and list results can be passed directly to `read`.
+
 ## Durable State
 
 The injected `<wiki_checkpoint>` is the recovery frame. It contains the Run

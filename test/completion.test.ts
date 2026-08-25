@@ -20,9 +20,10 @@ function completionGuard(): WikiWriteGuard {
   return {
     workspaceRoot,
     candidateRoot: path.join(workspaceRoot, ".okf-wiki", "run", "candidate"),
-    publishedWikiRoot: path.join(workspaceRoot, "wiki"),
     handoffsRoot: path.join(workspaceRoot, ".okf-wiki", "run", "handoffs"),
     sources: [{ scopeId: "self", logicalPath: ".", realPath: workspaceRoot }],
+    readCandidate: true,
+    readableHandoffs: "all",
     defaultSourceIgnores: true,
     excludes: [],
   };
@@ -42,9 +43,10 @@ async function fixture(t, resource: string, options: Parameters<typeof createWri
   const guard: WikiWriteGuard = {
     workspaceRoot: root,
     candidateRoot,
-    publishedWikiRoot: path.join(root, "wiki"),
     handoffsRoot: path.join(root, ".okf-wiki", "runs", "run", "handoffs"),
     sources: [{ scopeId: "self", logicalPath: ".", realPath: root }],
+    readCandidate: true,
+    readableHandoffs: "all",
     defaultSourceIgnores: true,
     excludes: [],
     writeTarget: { path: "wiki-root", mode: "directory" },
@@ -118,18 +120,18 @@ test("worker completion requires every host-supplied input to be read", async ()
   assert.match(await gate.nextPrompt(SYNTHESIS_RECEIPT) ?? "", /required-read/);
   gate.observe({
     tool: "read",
-    args: { path: path.join(guard.workspaceRoot, ".okf-wiki", "run", "handoffs", "one.md") },
+    args: { path: ".okf-wiki/run/handoffs/one.md" },
     status: "complete",
   });
   assert.equal(await gate.nextPrompt(SYNTHESIS_RECEIPT), undefined);
 });
 
-test("reviewer matches a Candidate absolute path to its model-facing wiki path", async () => {
+test("reviewer records the canonical Candidate path", async () => {
   const guard = completionGuard();
   const gate = createReviewerCompletionGate(guard, ["wiki/overview.md"]);
   gate.observe({
     tool: "read",
-    args: { path: path.join(guard.candidateRoot, "overview.md") },
+    args: { path: "wiki/overview.md" },
     status: "complete",
   });
   assert.equal(await gate.nextPrompt(REVIEW_PASS), undefined);

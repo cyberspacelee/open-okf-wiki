@@ -6,7 +6,7 @@ import type { AgentToolUpdateCallback, ToolDefinition } from "@earendil-works/pi
 import { loadWikiAgents, type WikiAgentDefinition } from "./agents.js";
 import { reviewCandidatePages, writeHandoff } from "./handoff.js";
 import { writeText } from "./files.js";
-import { assertAgentPartition, writeGuardFromPlan, writeTargetsOverlap, type WikiWriteGuard } from "./path-policy.js";
+import { assertAgentPartition, guardForWorker, writeGuardFromPlan, writeTargetsOverlap, type WikiWriteGuard } from "./path-policy.js";
 import type { WikiPinnedSourcePlan } from "./inspect.js";
 import { isImplicitPinPath } from "./path.js";
 import { candidateTools, createCatalogTools } from "./pi/tools.js";
@@ -252,7 +252,8 @@ async function runOne(
     const touched = new Set<string>();
     const extra = createCatalogTools(catalogs);
     const allowed = definition.tools ? new Set(definition.tools) : undefined;
-    const taskGuard = writeTarget ? { ...guard, writeTarget } : guard;
+    const scopedGuard = guardForWorker(guard, task.agent, task.partition, requiredReads);
+    const taskGuard = writeTarget ? { ...scopedGuard, writeTarget } : scopedGuard;
     const todo = writeTarget && templates ? createWriterTodoTracker(writeTarget) : undefined;
     const completionGate = writeTarget
       ? createWriterCompletionGate(taskGuard, {
@@ -284,11 +285,16 @@ async function runOne(
         : formatWikiTemplateCatalog(templates)}`
       : "";
     const citations = task.agent === "write"
-      ? `\n\n${formatWriterCitationContract(guard.sources, [...catalogs.keys()])}`
+      ? `\n\n${formatWriterCitationContract(taskGuard.sources, [...catalogs.keys()])}`
       : "";
     const languageContract = language
       ? `\n\n## Output language\n\nThe Run language is \`${language}\` (\`zh\` = Simplified Chinese; \`en\` = English). Write all human-readable titles, descriptions, prose, table labels, footnote definitions, and Mermaid labels in that language. Preserve source identifiers, code symbols, paths, commands, configuration keys, frontmatter \`type\`, \`sources[].id\`, and Mermaid node IDs verbatim. Output receipt H2 headings, verdicts, status values, row keys, and repair field names shown by this agent prompt are machine schema tokens; copy them exactly even when the Run language is not English. Copy injected page-contract headings exactly.\n`
       : "";
+    const readableRoots = [
+      ...taskGuard.sources.map((source) => source.logicalPath),
+      ...(taskGuard.readCandidate ? ["wiki"] : []),
+    ];
+    const pathContract = `\n\n## Workspace paths\n\nThe session cwd is the Workspace root. Pass only POSIX Workspace-relative paths to file tools and locators: no leading slash, drive, UNC prefix, backslash, \`./\`, \`../\`, or empty segment. Current readable roots: ${readableRoots.map((root) => `\`${root}\``).join(", ") || "none"}. Use only the required handoff paths injected with this task. Search and list results already use this same coordinate system and can be passed directly to \`read\`.\n`;
     const handoffs = handoffManifest
       ? `# Required handoffs\n\nRead the manifest at \`${handoffManifest}\`, then read every handoff path it lists before completing this task.\n\n`
       : "";
@@ -302,7 +308,7 @@ async function runOne(
       signal,
       {
         ...session,
-        systemPrompt: `${definition.prompt}${pack}${citations}${languageContract}`,
+        systemPrompt: `${definition.prompt}${pack}${citations}${languageContract}${pathContract}`,
         onActivity(event) {
           session.onActivity?.(event);
           if (event.kind === "tool") completionGate?.observe(event);

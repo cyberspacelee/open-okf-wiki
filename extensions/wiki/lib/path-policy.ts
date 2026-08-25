@@ -8,9 +8,10 @@ import { writeTargetAllows, writeTargetsOverlap, type WikiWriteTarget } from "./
 export interface WikiWriteGuard {
   workspaceRoot: string;
   candidateRoot: string;
-  publishedWikiRoot: string;
   handoffsRoot: string;
   sources: Array<CitationSource & { realPath: string }>;
+  readCandidate: boolean;
+  readableHandoffs: "all" | readonly string[];
   defaultSourceIgnores: boolean;
   excludes: string[];
   writeTarget?: WikiWriteTarget;
@@ -22,7 +23,6 @@ export function writeGuardFromPlan(plan: WikiPinnedSourcePlan, candidateRoot: st
   return {
     workspaceRoot,
     candidateRoot: resolvedCandidate,
-    publishedWikiRoot: path.join(workspaceRoot, "wiki"),
     handoffsRoot: path.join(path.dirname(resolvedCandidate), "handoffs"),
     sources: plan.sources.map(({ scopeId, logicalPath, realPath, catalog }) => ({
       scopeId,
@@ -30,24 +30,26 @@ export function writeGuardFromPlan(plan: WikiPinnedSourcePlan, candidateRoot: st
       realPath,
       ...(catalog ? { catalog } : {}),
     })),
+    readCandidate: true,
+    readableHandoffs: "all",
     defaultSourceIgnores: plan.defaultSourceIgnores,
     excludes: [...plan.excludes],
   };
 }
 
-/** Map a model-facing `wiki/...` path onto the unpublished Candidate. */
+/** Map a canonical Workspace-relative path onto the host filesystem. */
 export function resolveToolPath(guard: WikiWriteGuard, input: string): string {
-  const absolute = path.resolve(guard.workspaceRoot, input);
-  const published = path.resolve(guard.publishedWikiRoot);
-  const relative = path.relative(published, absolute);
-  if (relative && !relative.startsWith("..") && !path.isAbsolute(relative)) {
-    return path.resolve(guard.candidateRoot, relative);
-  }
-  return absolute;
+  const segments = workspacePathSegments(input);
+  return segments[0] === "wiki"
+    ? path.join(guard.candidateRoot, ...segments.slice(1))
+    : path.join(guard.workspaceRoot, ...segments);
 }
 
 export function assertReadable(guard: WikiWriteGuard, input: string): string {
   const resolved = resolveToolPath(guard, input);
+  if (contained(guard.candidateRoot, resolved) && input !== "wiki" && !input.startsWith("wiki/")) {
+    throw new Error(`Use the Candidate's Workspace-relative wiki/... path: ${input}`);
+  }
   const relative = path.relative(guard.workspaceRoot, resolved);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new Error(`Path escapes the Wiki workspace: ${input}`);
@@ -64,6 +66,19 @@ export function assertReadable(guard: WikiWriteGuard, input: string): string {
 /** Verify filesystem resolution as well as lexical containment before a tool reads an entry. */
 export async function assertReadableEntry(guard: WikiWriteGuard, input: string): Promise<string> {
   const resolved = assertReadable(guard, input);
+  await assertReadableNativeEntry(guard, resolved, input);
+  return resolved;
+}
+
+/** Validate a path already mapped by the host without accepting host paths from the model. */
+export async function assertReadableNativeEntry(
+  guard: WikiWriteGuard,
+  resolved: string,
+  display = workspaceRelativePath(guard, resolved) ?? "requested path",
+): Promise<string> {
+  if (!path.isAbsolute(resolved)) throw new Error("Internal Wiki tool path must be absolute");
+  const root = readRoot(guard, resolved);
+  if (!root) throw new Error(`Path is outside the current Run evidence view: ${display}`);
   let actual: string;
   try {
     actual = await realpath(resolved);
@@ -71,13 +86,32 @@ export async function assertReadableEntry(guard: WikiWriteGuard, input: string):
     if (error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT") return resolved;
     throw error;
   }
-  const root = readRoot(guard, resolved);
-  if (!root) throw new Error(`Path is outside the current Run evidence view: ${input}`);
   const actualRoot = await realpath(root);
   if (!contained(actualRoot, actual)) {
-    throw new Error(`Path resolves outside the current Run evidence view: ${input}`);
+    throw new Error(`Path resolves outside the current Run evidence view: ${display}`);
   }
   return resolved;
+}
+
+/** Convert an authorized native path back to the one model-facing coordinate system. */
+export function workspaceRelativePath(guard: WikiWriteGuard, absolutePath: string): string | undefined {
+  const resolved = path.resolve(absolutePath);
+  const candidate = relativeInside(guard.candidateRoot, resolved);
+  if (candidate !== undefined) return joinPosix("wiki", candidate);
+  const handoff = relativeInside(guard.handoffsRoot, resolved);
+  if (handoff !== undefined) {
+    const root = path.relative(guard.workspaceRoot, guard.handoffsRoot).replaceAll("\\", "/");
+    return joinPosix(root, handoff);
+  }
+  for (const source of guard.sources) {
+    const logicalRoot = path.join(guard.workspaceRoot, ...source.logicalPath.split("/"));
+    const logical = relativeInside(logicalRoot, resolved);
+    if (logical !== undefined) return joinPosix(source.logicalPath, logical);
+    const physical = relativeInside(source.realPath, resolved);
+    if (physical !== undefined) return joinPosix(source.logicalPath, physical);
+  }
+  const workspace = relativeInside(guard.workspaceRoot, resolved);
+  return workspace === undefined ? undefined : workspace || ".";
 }
 
 export function pathIsIgnored(guard: WikiWriteGuard, absolutePath: string): boolean {
@@ -98,13 +132,49 @@ export function pathIsIgnored(guard: WikiWriteGuard, absolutePath: string): bool
 }
 
 function readRoot(guard: WikiWriteGuard, resolved: string): string | undefined {
-  if (contained(guard.candidateRoot, resolved)) return guard.candidateRoot;
-  if (contained(guard.handoffsRoot, resolved)) return guard.handoffsRoot;
+  if (guard.readCandidate && contained(guard.candidateRoot, resolved)) return guard.candidateRoot;
+  if (contained(guard.handoffsRoot, resolved) && handoffIsReadable(guard, resolved)) return guard.handoffsRoot;
   for (const source of guard.sources) {
-    const logicalRoot = path.resolve(guard.workspaceRoot, source.logicalPath);
-    if (contained(logicalRoot, resolved)) return source.realPath;
+    const logicalRoot = path.join(guard.workspaceRoot, ...source.logicalPath.split("/"));
+    if (contained(logicalRoot, resolved) || contained(source.realPath, resolved)) return source.realPath;
   }
   return undefined;
+}
+
+function handoffIsReadable(guard: WikiWriteGuard, resolved: string): boolean {
+  if (guard.readableHandoffs === "all") return true;
+  return guard.readableHandoffs.some((location) => resolveToolPath(guard, location) === resolved);
+}
+
+function workspacePathSegments(input: string): string[] {
+  if (input === ".") return [];
+  if (
+    !input
+    || input.includes("\\")
+    || input.includes("\0")
+    || input.startsWith("/")
+    || /^[A-Za-z]:/.test(input)
+  ) throw invalidWorkspacePath(input);
+  const segments = input.split("/");
+  if (segments.some((segment) => !segment || segment === "." || segment === "..")) {
+    throw invalidWorkspacePath(input);
+  }
+  return segments;
+}
+
+function invalidWorkspacePath(input: string): Error {
+  return new Error(`Use a POSIX Workspace-relative path without a leading slash: ${input || "(empty)"}`);
+}
+
+function relativeInside(root: string, candidate: string): string | undefined {
+  const relative = path.relative(path.resolve(root), candidate);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) return undefined;
+  return relative.replaceAll("\\", "/");
+}
+
+function joinPosix(root: string, suffix: string): string {
+  if (!root || root === ".") return suffix || ".";
+  return suffix ? `${root}/${suffix}` : root;
 }
 
 function contained(root: string, candidate: string): boolean {
@@ -147,6 +217,27 @@ export function assertAgentPartition(
   if (writeMode === "directory" && segments.length === 1 && scopeIds.has(partition)) return;
   if (writeMode === "subtree" && segments.length === 2 && scopeIds.has(segments[0]!) && isWikiTaxonomySlug(segments[1]!)) return;
   throw new Error(`explicit write target must be one Repository directory or Domain subtree: ${writeMode}:${partition}`);
+}
+
+export function guardForWorker(
+  guard: WikiWriteGuard,
+  agent: string,
+  partition: string,
+  handoffs: readonly string[],
+): WikiWriteGuard {
+  const implicit = guard.sources.length === 1 && guard.sources[0]?.logicalPath === ".";
+  const owner = implicit
+    ? guard.sources[0]
+    : guard.sources.find((source) => partition === source.scopeId || partition.startsWith(`${source.scopeId}/`));
+  const sources = agent === "synthesize" || agent === "review" || (agent === "write" && partition === "wiki-root")
+    ? guard.sources
+    : owner ? [owner] : [];
+  return {
+    ...guard,
+    sources,
+    readCandidate: agent === "write" || agent === "review",
+    readableHandoffs: agent === "survey" ? [] : [...handoffs],
+  };
 }
 
 export { writeTargetAllows, writeTargetsOverlap };

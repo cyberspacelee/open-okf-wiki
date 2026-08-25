@@ -11,7 +11,14 @@ import {
   createWriteToolDefinition,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { assertReadableEntry, assertWritable, pathIsIgnored, type WikiWriteGuard } from "../path-policy.js";
+import {
+  assertReadableEntry,
+  assertReadableNativeEntry,
+  assertWritable,
+  pathIsIgnored,
+  workspaceRelativePath,
+  type WikiWriteGuard,
+} from "../path-policy.js";
 import {
   formatBoard,
   replaceBoard,
@@ -153,6 +160,8 @@ function wrap(
   return {
     ...tool,
     name,
+    description: toolDescription(name, tool.description),
+    parameters: workspacePathParameters(tool.parameters),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const mappedParams = structuredClone(params);
       try {
@@ -165,11 +174,19 @@ function wrap(
           isError: true,
         };
       }
-      const result = await execute(toolCallId, mappedParams, signal, onUpdate, ctx);
-      if (mode === "read" && (name === "grep" || name === "find")) {
-        return await filterSearchResult(name, mappedParams, result, guard);
+      try {
+        const result = await execute(toolCallId, mappedParams, signal, onUpdate, ctx);
+        if (mode === "read" && (name === "grep" || name === "find" || name === "ls")) {
+          return await normalizePathResult(name, mappedParams, result, guard);
+        }
+        return mode === "write" ? restoreModelPaths(result, mappedParams, params) : result;
+      } catch (error) {
+        return {
+          content: [{ type: "text", text: toolError(name, params, mappedParams, error, guard) }],
+          details: {},
+          isError: true,
+        };
       }
-      return result;
     },
   } as ToolDefinition<any, any, any>;
 }
@@ -183,7 +200,7 @@ function applyDefaultReadRoot(name: string, params: unknown, guard: WikiWriteGua
   if (hasPath) return;
   const implicit = guard.sources.length === 1 && guard.sources[0]?.logicalPath === ".";
   if (!implicit) throw new Error(`${name} requires an explicit path in a multi-Source Workspace`);
-  record.path = guard.workspaceRoot;
+  record.path = ".";
 }
 
 function lsOperations(guard: WikiWriteGuard) {
@@ -197,8 +214,8 @@ function lsOperations(guard: WikiWriteGuard) {
   };
 }
 
-async function filterSearchResult(
-  name: "grep" | "find",
+async function normalizePathResult(
+  name: "grep" | "find" | "ls",
   params: unknown,
   result: { content?: Array<{ type: string; text?: string }>; details?: unknown; isError?: boolean },
   guard: WikiWriteGuard,
@@ -208,7 +225,7 @@ async function filterSearchResult(
   if (!Array.isArray(content) || result.isError) return result;
   const next = await Promise.all(content.map(async (part) => {
     if (part.type !== "text" || typeof part.text !== "string") return part;
-    const text = await filterSearchText(name, part.text, searchRoot, guard);
+    const text = await normalizePathText(name, part.text, searchRoot, guard);
     return { ...part, text };
   }));
   return { ...result, content: next };
@@ -220,17 +237,27 @@ function searchRootOf(params: unknown): string | undefined {
   return typeof record.path === "string" ? record.path : undefined;
 }
 
-async function filterSearchText(kind: "grep" | "find", text: string, searchRoot: string, guard: WikiWriteGuard): Promise<string> {
+async function normalizePathText(
+  kind: "grep" | "find" | "ls",
+  text: string,
+  searchRoot: string,
+  guard: WikiWriteGuard,
+): Promise<string> {
   const kept: string[] = [];
+  const searchIsDirectory = kind !== "grep" || await stat(searchRoot).then((entry) => entry.isDirectory(), () => false);
   for (const line of text.split("\n")) {
-    const relative = kind === "find" ? findPath(line) : grepPath(line);
-    if (!relative) {
+    const parsed = resultPath(kind, line);
+    if (!parsed) {
       kept.push(line);
       continue;
     }
     try {
-      await assertReadableEntry(guard, path.resolve(searchRoot, relative));
-      kept.push(line);
+      const absolute = kind === "grep" && !searchIsDirectory
+        ? searchRoot
+        : path.resolve(searchRoot, parsed.path);
+      await assertReadableNativeEntry(guard, absolute);
+      const canonical = workspaceRelativePath(guard, absolute);
+      if (canonical) kept.push(`${canonical}${parsed.suffix}`);
     } catch {
       // Search output is untrusted until each result resolves inside the evidence view.
     }
@@ -238,15 +265,114 @@ async function filterSearchText(kind: "grep" | "find", text: string, searchRoot:
   return kept.join("\n");
 }
 
-function findPath(line: string): string | undefined {
+function resultPath(kind: "grep" | "find" | "ls", line: string): { path: string; suffix: string } | undefined {
+  if (kind === "grep") {
+    const match = /^(.*?)(:\d+:|-\d+-)(.*)$/.exec(line);
+    return match?.[1] ? { path: match[1], suffix: `${match[2]}${match[3]}` } : undefined;
+  }
   const trimmed = line.trim();
-  if (!trimmed || trimmed.startsWith("[") || trimmed.startsWith("No files")) return undefined;
-  return trimmed;
+  if (
+    !trimmed
+    || trimmed === "No files found matching pattern"
+    || /^\[(?:\d+ (?:results|entries) limit reached|[^\]]+ limit reached)(?:\.|\])/.test(trimmed)
+    || trimmed === "(empty directory)"
+  ) return undefined;
+  return { path: trimmed.replace(/\/$/, ""), suffix: "" };
 }
 
-function grepPath(line: string): string | undefined {
-  const match = /^(.*?)(?::\d+:|-\d+-)/.exec(line);
-  return match?.[1] || undefined;
+function restoreModelPaths(
+  result: { content?: Array<{ type: string; text?: string }>; details?: unknown; isError?: boolean },
+  mappedParams: unknown,
+  modelParams: unknown,
+): typeof result {
+  if (!isRecord(mappedParams) || !isRecord(modelParams) || !Array.isArray(result.content)) return result;
+  const replacements: Array<[string, string]> = [];
+  for (const key of PATH_KEYS) {
+    if (typeof mappedParams[key] === "string" && typeof modelParams[key] === "string") {
+      replacements.push([mappedParams[key], modelParams[key]]);
+    }
+  }
+  if (!replacements.length) return result;
+  return {
+    ...result,
+    content: result.content.map((part) => part.type === "text" && typeof part.text === "string"
+      ? { ...part, text: replacements.reduce((text, [native, model]) => text.replaceAll(native, model), part.text) }
+      : part),
+  };
+}
+
+function toolError(
+  name: string,
+  params: unknown,
+  mappedParams: unknown,
+  error: unknown,
+  guard: WikiWriteGuard,
+): string {
+  const location = isRecord(params)
+    ? PATH_KEYS.map((key) => params[key]).find((value): value is string => typeof value === "string")
+    : undefined;
+  const code = error && typeof error === "object" && "code" in error && typeof error.code === "string"
+    ? ` (${error.code})`
+    : "";
+  const message = error instanceof Error ? sanitizeError(error.message, guard, mappedParams, params) : "";
+  return `${name} failed${location ? ` for ${location}` : ""}${code}${message ? `: ${message}` : ""}`;
+}
+
+function sanitizeError(error: string, guard: WikiWriteGuard, mappedParams: unknown, modelParams: unknown): string {
+  const replacements: Array<[string, string]> = [
+    [guard.candidateRoot, "wiki"],
+    [guard.handoffsRoot, path.relative(guard.workspaceRoot, guard.handoffsRoot).replaceAll("\\", "/")],
+    ...guard.sources.flatMap((source): Array<[string, string]> => [
+      [source.realPath, source.logicalPath],
+      [path.join(guard.workspaceRoot, ...source.logicalPath.split("/")), source.logicalPath],
+    ]),
+    [guard.workspaceRoot, "."],
+  ];
+  if (isRecord(mappedParams) && isRecord(modelParams)) {
+    for (const key of PATH_KEYS) {
+      if (typeof mappedParams[key] === "string" && typeof modelParams[key] === "string") {
+        replacements.push([mappedParams[key], modelParams[key]]);
+      }
+    }
+  }
+  return replacements
+    .sort(([left], [right]) => right.length - left.length)
+    .reduce((text, [native, model]) => {
+      const posix = native.replaceAll("\\", "/");
+      return text.replaceAll(native, model).replaceAll(posix, model);
+    }, error);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object";
+}
+
+function toolDescription(name: string, description: string): string {
+  const output = name === "find"
+    ? " Results are full paths from the Workspace root."
+    : name === "ls"
+      ? " Results are full paths from the Workspace root; directory paths have no trailing slash."
+      : name === "grep"
+        ? " Result file paths are full paths from the Workspace root."
+        : "";
+  const corrected = name === "find"
+    ? description.replace(" Returns matching file paths relative to the search directory.", "")
+    : name === "ls"
+      ? description.replace(" Returns entries sorted alphabetically, with '/' suffix for directories.", " Returns entries sorted alphabetically.")
+      : description;
+  return `${corrected}${output} Paths must be POSIX Workspace-relative with no leading slash (for example, repo-name/src/main.ts).`;
+}
+
+function workspacePathParameters(parameters: unknown): unknown {
+  const copy = structuredClone(parameters);
+  if (!isRecord(copy) || !isRecord(copy.properties)) return copy;
+  for (const key of PATH_KEYS) {
+    const property = copy.properties[key];
+    if (isRecord(property)) {
+      property.description = "POSIX Workspace-relative path with no leading slash (for example, repo-name/src/main.ts)";
+    }
+  }
+  return copy;
 }
 
 async function remapParams(params: unknown, guard: WikiWriteGuard, mode: "read" | "write"): Promise<void> {
