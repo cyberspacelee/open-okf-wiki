@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { git } from "../extensions/wiki/lib/git.js";
 import { exists, writeText } from "../extensions/wiki/lib/files.js";
-import { reviewCandidatePages, writeHandoff, taskDigest } from "../extensions/wiki/lib/handoff.js";
+import { reviewCandidatePages, sealHandoff, taskDigest } from "../extensions/wiki/lib/handoff.js";
 import { createProductionWikiProducer } from "../extensions/wiki/lib/producer.js";
 import type { WikiLeadContext } from "../extensions/wiki/lib/producer.js";
 import { installWikiPublication } from "../extensions/wiki/lib/publication.js";
@@ -105,7 +105,7 @@ async function attestHandoff(context: WikiLeadContext, assignment: {
   const completed = assignment.agent === "write"
     ? (await candidateTargetRevision(context.candidateRoot, { path: assignment.partition, mode: assignment.writeMode })).digest
     : assignment.agent === "survey" ? undefined : whole;
-  const relative = await writeHandoff({
+  const relative = await sealHandoff({
     workspaceRoot: context.plan.workspaceRoot,
     handoffsRoot: path.join(path.dirname(context.candidateRoot), "handoffs"),
     task: assignment,
@@ -422,6 +422,9 @@ test("a reopened process-crash Run reconciles persisted running receipts", async
   activity.observe({ kind: "output", id: "output-crash", at: ACTIVITY_AT, text: "The Source contains one module.", status: "complete", scope: "survey-crash" });
   activity.observe(toolEvent("tool-crash", "read", { path: "main.ts" }, "complete", "survey-crash"));
   await activity.flush();
+  await mkdir(path.join(directory, "handoffs"), { recursive: true });
+  await writeText(path.join(directory, "handoffs", "survey-crash.draft.md"), SURVEY_RECEIPT);
+  await writeText(path.join(directory, "handoffs", "survey-crash.state.json"), "{\"observedPaths\":[\"main.ts\"]}\n");
   const producer = createProductionWikiProducer({
     async runLead(context) {
       assert.equal((await context.board.read()).tasks[0]?.status, "pending");
@@ -439,6 +442,10 @@ test("a reopened process-crash Run reconciles persisted running receipts", async
   assert.equal(restored.tasks?.[0]?.status, "pending");
   const recoveredRecord = JSON.parse(await readFile(path.join(directory, "run.json"), "utf8"));
   assert.equal(recoveredRecord.executions[0].status, "interrupted");
+  assert.match(recoveredRecord.executions[0].draft.path, /survey-crash\.draft\.md$/);
+  assert.match(recoveredRecord.executions[0].progress.path, /survey-crash\.state\.json$/);
+  const diagnostic = JSON.parse(await readFile(path.join(root, ...recoveredRecord.executions[0].diagnostic.path.split("/")), "utf8"));
+  assert.equal(diagnostic.draft.path, recoveredRecord.executions[0].draft.path);
   const restoredSurvey = restored.agents.find((agent) => agent.id === "survey-crash");
   assert.ok(restoredSurvey);
   assert.deepEqual(restoredSurvey.activity.map((entry) => entry.kind), ["input", "output", "tool"]);
@@ -661,6 +668,8 @@ test("multi-Source checks require survey fan-in followed by synthesis", async (t
             let listener = (_event: unknown) => {};
             const system = options.resourceLoader.getAppendSystemPrompt().join("\n");
             const output = system.includes("Analyze one explicit Workspace") ? SYNTHESIS_RECEIPT : SURVEY_RECEIPT;
+            const handoff = options.customTools.find((tool) => tool.name === "handoff");
+            assert.ok(handoff);
             return {
               session: {
                 sessionFile: undefined,
@@ -676,6 +685,8 @@ test("multi-Source checks require survey fan-in followed by synthesis", async (t
                     }
                     listener({ type: "compaction_end", aborted: false, result: {} });
                   }
+                  await handoff.execute("replace", { action: "replace", text: output }, undefined, undefined, undefined);
+                  await handoff.execute("submit", { action: "submit" }, undefined, undefined, undefined);
                 },
                 async waitForIdle() {},
                 getLastAssistantText() { return output; },

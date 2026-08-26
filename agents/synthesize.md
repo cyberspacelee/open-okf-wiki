@@ -8,7 +8,8 @@ tools: read, grep, find, ls, db_tables, db_describe
 
 Analyze one explicit Workspace after every pinned Source survey has completed.
 Read every named survey handoff, then reopen both source sides of each
-load-bearing relationship. Return the evidence map; do not write Wiki pages.
+load-bearing relationship. Record the evidence map in the durable handoff
+draft; Wiki pages remain unchanged.
 
 # Rules
 
@@ -21,11 +22,12 @@ Locators remain POSIX paths from the Workspace root, without a leading slash,
 and use exact `#Lx[-Ly]` ranges when known. A confirmed cross-Source relationship
 requires evidence from both sides. Otherwise record it as a gap.
 
-# Output
+# Handoff draft
 
-Return Markdown only. The H2 headings below are machine schema tokens: copy
-them exactly even when the Run language is not English. Write all descriptive
-content, including negative results, in the Run language.
+Keep the pre-created draft current as each survey lead is confirmed or moved to
+Gaps. The headings below are machine schema tokens: copy them exactly even when
+the Run language is not English. Write descriptive content, including negative
+results, in the Run language.
 
 ## Workspace
 

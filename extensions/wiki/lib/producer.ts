@@ -592,7 +592,13 @@ function previousDiagnostics(live: LiveRun, task: SubagentTask & { id: string })
       !current || entry.queuedAt >= current.queuedAt ? entry : current
     ), undefined);
   if (!previous || previous.status === "queued" || previous.status === "running") return [];
-  return [previous.diagnostic?.path, previous.status === "blocked" ? previous.handoff?.path : undefined]
+  const recoverable = previous.status === "failed" || previous.status === "interrupted" || previous.status === "blocked";
+  return [
+    previous.diagnostic?.path,
+    recoverable ? previous.draft?.path : undefined,
+    recoverable ? previous.progress?.path : undefined,
+    previous.status === "blocked" ? previous.handoff?.path : undefined,
+  ]
     .filter((location): location is string => Boolean(location));
 }
 
@@ -609,6 +615,8 @@ async function writeExecutionDiagnostic(live: LiveRun, receipt: RunExecutionRece
     terminalReason: receipt.terminalReason ?? "worker_error",
     error: (receipt.error ?? "Unknown worker failure").slice(0, 16_384),
     candidateRevision: live.candidateRevision?.digest,
+    draft: receipt.draft,
+    progress: receipt.progress,
     completedAt: receipt.completedAt,
   }, null, 2)}\n`);
   return { path: relative, sha256: await fileRevision(location) };
@@ -661,6 +669,8 @@ async function recordAgent(live: LiveRun, board: WikiBoardStore, update: Subagen
   receipt.error = update.error;
   receipt.terminalReason = update.terminalReason ?? (update.error ? "worker_error" : update.status);
   receipt.usage = update.usage;
+  receipt.draft = update.draft;
+  receipt.progress = update.progress;
   if (update.agent !== "survey") {
     live.candidateRevision = await candidateRevision(live.record.candidateRoot);
   }
@@ -709,15 +719,18 @@ async function reconcileRun(live: LiveRun, board: WikiBoardStore): Promise<void>
   live.candidateRevision = await candidateRevision(live.record.candidateRoot);
   const currentReceipts = new Set(latestArtifacts(live.record.executions).map((receipt) => receipt.id));
   for (const receipt of live.record.executions) {
+    if ((receipt.status === "queued" || receipt.status === "running" || receipt.status === "failed" || receipt.status === "interrupted")
+      && await adoptCompletedHandoff(live, receipt)) {
+      changed = true;
+      continue;
+    }
     if (receipt.status === "queued" || receipt.status === "running") {
-      if (await adoptCompletedHandoff(live, receipt)) {
-        changed = true;
-        continue;
-      }
       receipt.status = "interrupted";
       receipt.completedAt = new Date().toISOString();
       receipt.error = "Execution was interrupted before a terminal receipt was persisted";
       receipt.terminalReason = "owner_exit";
+      receipt.draft = await workerArtifactRef(live, receipt.id, "draft.md");
+      receipt.progress = await workerArtifactRef(live, receipt.id, "state.json");
       live.activity.noteAgent(receipt.id, receipt.agent, receipt.task, "interrupted");
       changed = true;
     }
@@ -743,7 +756,7 @@ async function reconcileRun(live: LiveRun, board: WikiBoardStore): Promise<void>
     await reconcileBoardTask(live, board, taskId, true);
   }
   for (const receipt of live.record.executions) {
-    if (receipt.status === "failed" && !receipt.diagnostic) {
+    if ((receipt.status === "failed" || receipt.status === "interrupted") && !receipt.diagnostic) {
       receipt.diagnostic = await writeExecutionDiagnostic(live, receipt);
       changed = true;
     }
@@ -753,6 +766,17 @@ async function reconcileRun(live: LiveRun, board: WikiBoardStore): Promise<void>
     await writeRecord(live.record);
   }
   await refreshCheckpoint(live, await board.read());
+}
+
+async function workerArtifactRef(
+  live: LiveRun,
+  executionId: string,
+  suffix: "draft.md" | "state.json",
+) {
+  const relative = path.join(".okf-wiki", "run", "handoffs", `${executionId}.${suffix}`).replaceAll("\\", "/");
+  const location = artifactLocation(live, relative);
+  if (!await exists(location)) return undefined;
+  return { path: relative, sha256: await fileRevision(location) };
 }
 
 async function adoptCompletedHandoff(live: LiveRun, receipt: RunExecutionReceipt): Promise<boolean> {
@@ -774,6 +798,7 @@ async function adoptCompletedHandoff(live: LiveRun, receipt: RunExecutionReceipt
   receipt.completedAt = now;
   receipt.handoff = { path: relative, sha256: verified.sha256 };
   receipt.error = undefined;
+  receipt.diagnostic = undefined;
   receipt.terminalReason = status;
   if (receipt.agent === "review") {
     if (!verified.verdict || !live.candidateRevision) return false;

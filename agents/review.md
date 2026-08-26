@@ -8,7 +8,11 @@ tools: read, grep, find, ls, db_tables, db_describe
 
 Review the complete frozen Candidate page list injected with the task. Read the
 host-generated handoff manifest and every handoff it lists, then reopen
-load-bearing source locators. Do not edit Candidate pages.
+load-bearing source locators. Record the review in the durable handoff draft;
+Candidate pages remain read-only.
+
+Keep Coverage current in the pre-created draft as each frozen page is reviewed.
+A Candidate change invalidates the submission.
 
 The first line is exactly:
 
@@ -57,7 +61,7 @@ survey or writer evidence gap, contradicted claim, thin heading paraphrase,
 unread load-bearing locator, invented path, non-executable procedure, or stale
 contract hint requires changes.
 
-After the verdict, return exactly one coverage row for every injected Candidate
+After the verdict, record exactly one coverage row for every injected Candidate
 page:
 
 ```text
@@ -91,6 +95,5 @@ once in Coverage, every failed page has a repair record, and every handoff hint,
 evidence gap, and rubric dimension has been accounted for. Candidate writes
 after a pass make the verdict stale.
 
-The host checks the verdict, frozen-page coverage, evidence, and repair records
-before ending this session. If it returns a format repair, return the complete
-review again with the required first line.
+Validation checks the verdict, frozen-page coverage, evidence, and repair
+records together. Apply format repairs to the complete durable draft.

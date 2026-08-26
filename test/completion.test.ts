@@ -64,30 +64,30 @@ test("evidence receipts cover only lines returned by a truncated read", async (t
     status: "complete",
     result: { details: { truncation: { truncated: true, outputLines: 2 } } },
   });
-  assert.match(await gate.nextPrompt(WRITE_RECEIPT) ?? "", /offset=3, limit=1/);
+  assert.match(await gate.validate(WRITE_RECEIPT) ?? "", /offset=3, limit=1/);
 
   gate.observe({ tool: "read", args: { path: "main.ts", offset: 3, limit: 1 }, status: "complete", result: {} });
-  assert.equal(await gate.nextPrompt(WRITE_RECEIPT), undefined);
+  assert.equal(await gate.validate(WRITE_RECEIPT), undefined);
 });
 
 test("a path-only citation requires a successful read but not a full-file span", async (t) => {
   const gate = await fixture(t, "main.ts");
-  assert.match(await gate.nextPrompt(WRITE_RECEIPT) ?? "", /main\.ts/);
+  assert.match(await gate.validate(WRITE_RECEIPT) ?? "", /main\.ts/);
   gate.observe({ tool: "read", args: { path: "main.ts", offset: 2, limit: 1 }, status: "complete", result: {} });
-  assert.equal(await gate.nextPrompt(WRITE_RECEIPT), undefined);
+  assert.equal(await gate.validate(WRITE_RECEIPT), undefined);
 });
 
 test("the configured worker repair limit bounds a writer session", async (t) => {
   const gate = await fixture(t, "main.ts", { maxRepairRounds: 1 });
-  assert.match(await gate.nextPrompt("") ?? "", /round 1 of 1/i);
-  await assert.rejects(() => gate.nextPrompt(""), /after 1 rounds/);
+  assert.match(await gate.validate("") ?? "", /round 1 of 1/i);
+  await assert.rejects(() => gate.validate(""), /after 1 rounds/);
 });
 
 test("writer repair stops after two rounds with the same issues", async (t) => {
   const gate = await fixture(t, "main.ts");
-  assert.match(await gate.nextPrompt("") ?? "", /round 1 of 6/i);
-  assert.match(await gate.nextPrompt("") ?? "", /round 2 of 6/i);
-  await assert.rejects(() => gate.nextPrompt(""), /made no progress after 2 rounds/);
+  assert.match(await gate.validate("") ?? "", /round 1 of 6/i);
+  assert.match(await gate.validate("") ?? "", /round 2 of 6/i);
+  await assert.rejects(() => gate.validate(""), /made no progress after 2 rounds/);
 });
 
 test("writer completion reports evidence and assignment issues in one repair batch", async (t) => {
@@ -95,7 +95,7 @@ test("writer completion reports evidence and assignment issues in one repair bat
   const gate = await fixture(t, "main.ts", {
     todo,
   });
-  const prompt = await gate.nextPrompt("") ?? "";
+  const prompt = await gate.validate("") ?? "";
   assert.match(prompt, /citation-unread/);
   assert.match(prompt, /writer-todo/);
   assert.match(prompt, /one exhaustive completion check/);
@@ -104,26 +104,26 @@ test("writer completion reports evidence and assignment issues in one repair bat
 test("reviewer repairs an invalid verdict in the same session", async () => {
   const gate = createReviewerCompletionGate(completionGuard(), ["wiki/overview.md"]);
   gate.observe({ tool: "read", args: { path: "wiki/overview.md" }, status: "complete" });
-  assert.match(await gate.nextPrompt("Looks good.") ?? "", /verdict: pass/);
-  assert.equal(await gate.nextPrompt(REVIEW_PASS), undefined);
+  assert.match(await gate.validate("Looks good.") ?? "", /verdict: pass/);
+  assert.equal(await gate.validate(REVIEW_PASS), undefined);
 });
 
 test("reviewer rejects partial frozen-page coverage", async () => {
   const gate = createReviewerCompletionGate(completionGuard(), ["wiki/overview.md", "wiki/setup.md"]);
   gate.observe({ tool: "read", args: { path: "wiki/overview.md" }, status: "complete" });
-  assert.match(await gate.nextPrompt(REVIEW_PASS) ?? "", /wiki\/setup\.md/);
+  assert.match(await gate.validate(REVIEW_PASS) ?? "", /wiki\/setup\.md/);
 });
 
 test("worker completion requires every host-supplied input to be read", async () => {
   const guard = completionGuard();
   const gate = createWorkerOutputGate(guard, "synthesize", 6, [".okf-wiki/run/handoffs/one.md"]);
-  assert.match(await gate.nextPrompt(SYNTHESIS_RECEIPT) ?? "", /required-read/);
+  assert.match(await gate.validate(SYNTHESIS_RECEIPT) ?? "", /required-read/);
   gate.observe({
     tool: "read",
     args: { path: ".okf-wiki/run/handoffs/one.md" },
     status: "complete",
   });
-  assert.equal(await gate.nextPrompt(SYNTHESIS_RECEIPT), undefined);
+  assert.equal(await gate.validate(SYNTHESIS_RECEIPT), undefined);
 });
 
 test("reviewer records the canonical Candidate path", async () => {
@@ -134,5 +134,5 @@ test("reviewer records the canonical Candidate path", async () => {
     args: { path: "wiki/overview.md" },
     status: "complete",
   });
-  assert.equal(await gate.nextPrompt(REVIEW_PASS), undefined);
+  assert.equal(await gate.validate(REVIEW_PASS), undefined);
 });

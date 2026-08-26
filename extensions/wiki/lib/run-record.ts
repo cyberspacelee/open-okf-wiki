@@ -75,6 +75,8 @@ const ExecutionSchema = Type.Object({
     Type.Literal("interrupted"),
   ]),
   handoff: Type.Optional(ArtifactSchema),
+  draft: Type.Optional(ArtifactSchema),
+  progress: Type.Optional(ArtifactSchema),
   diagnostic: Type.Optional(ArtifactSchema),
   queuedAt: Type.String(),
   startedAt: Type.Optional(Type.String()),

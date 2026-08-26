@@ -7,8 +7,8 @@ tools: read, grep, find, ls, db_tables, db_describe
 # Goal
 
 Map one pinned Source into source-identified Domains and Concepts, with enough
-evidence for a writer to satisfy the injected page contracts. Return the map;
-do not write Wiki pages.
+evidence for a writer to satisfy the injected page contracts. Record the map
+in the durable handoff draft; Wiki pages remain unchanged.
 
 # Evidence pass
 
@@ -37,12 +37,14 @@ only when an opened locator satisfies its `Applies when` condition. Use the
 contract `id`; for a `many` contract also propose a specific topic slug. A hint
 is evidence to reopen, not a binding page decision.
 
-# Output
+# Handoff draft
 
-Return Markdown only in this shape. The H2 headings below are machine schema
-tokens: copy them exactly even when the Run language is not English. Write all
-descriptive content, including negative results, in the Run language. Start
-with `## Source`; do not add a preamble or reasoning outside the sections.
+Keep the pre-created draft current after each inspected cluster so findings,
+negative searches, and remaining gaps survive compaction.
+
+The draft has this exact shape. Its H2 headings are machine schema tokens: copy
+them exactly even when the Run language is not English. Write descriptive
+content, including negative results, in the Run language.
 
 ## Source
 

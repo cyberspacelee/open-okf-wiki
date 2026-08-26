@@ -236,7 +236,7 @@ export function guardForWorker(
     ...guard,
     sources,
     readCandidate: agent === "write" || agent === "review",
-    readableHandoffs: agent === "survey" ? [] : [...handoffs],
+    readableHandoffs: [...handoffs],
   };
 }
 

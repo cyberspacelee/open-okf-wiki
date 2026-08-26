@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { parseHandoff, parseReviewVerdict, verifyHandoff, workerOutputIssues, writeHandoff } from "../extensions/wiki/lib/handoff.js";
+import { parseHandoff, parseReviewVerdict, sealHandoff, verifyHandoff, workerOutputIssues } from "../extensions/wiki/lib/handoff.js";
 
 const SURVEY_RECEIPT = [
   "## Source", "self", "## Domains", "none", "## Concepts", "none",
@@ -11,7 +11,7 @@ const SURVEY_RECEIPT = [
   "## Tables", "none", "## Survey gaps", "none", "",
 ].join("\n\n");
 
-test("writeHandoff round-trips through parse and verify", async (t) => {
+test("sealHandoff round-trips through parse and verify", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-handoff-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));
   const task = {
@@ -21,7 +21,7 @@ test("writeHandoff round-trips through parse and verify", async (t) => {
     boardTaskId: "survey",
     partition: "self",
   };
-  const relative = await writeHandoff({
+  const relative = await sealHandoff({
     workspaceRoot: root,
     handoffsRoot: path.join(root, "handoffs"),
     task,

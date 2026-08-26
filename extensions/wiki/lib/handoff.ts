@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { writeText } from "./files.js";
+import { claimText } from "./files.js";
 import { markdownOutsideCodeFences, markdownStructure, sectionHasContent } from "./markdown-structure.js";
 import type { WikiWriteMode } from "./write-target.js";
 
@@ -59,6 +59,13 @@ const REQUIRED_OUTPUT_SECTIONS: Readonly<Record<string, readonly string[]>> = {
   synthesize: ["Workspace", "Relationships", "End-to-end flows", "Shared contracts", "Gaps"],
   write: ["Status", "Written", "Rejected hints", "Evidence gaps"],
 };
+
+export function workerOutputSkeleton(agent: string): string {
+  if (agent === "review") return "verdict: pending\n\n## Coverage\n\npending\n\n## Repairs\n\npending\n";
+  const sections = REQUIRED_OUTPUT_SECTIONS[agent];
+  if (!sections) throw new Error(`Unsupported Wiki agent output contract: ${agent}`);
+  return `${sections.map((title) => `## ${title}\n\npending`).join("\n\n")}\n`;
+}
 
 export function reviewCandidatePages(files: readonly string[]): string[] {
   return files
@@ -180,7 +187,7 @@ function sectionText(sections: ReturnType<typeof markdownStructure>["sections"],
   return sections.find((section) => section.title === title)?.lines.join("\n").trim() ?? "";
 }
 
-export async function writeHandoff(input: {
+export async function sealHandoff(input: {
   workspaceRoot: string;
   handoffsRoot: string;
   task: { id: string; boardTaskId: string; partition: string; writeMode?: WikiWriteMode; agent: string; task: string };
@@ -200,7 +207,7 @@ export async function writeHandoff(input: {
     baseCandidateRevision: input.baseCandidateRevision,
     ...(input.completedCandidateRevision ? { completedCandidateRevision: input.completedCandidateRevision } : {}),
   };
-  await writeText(
+  await claimText(
     location,
     `${JSON.stringify(envelope)}\n# ${input.task.agent} handoff\n\nTask: ${input.task.task}\n\n${BODY_MARKER}\n${input.text.trim()}\n`,
   );

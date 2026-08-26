@@ -181,18 +181,17 @@ test("session stops before a follow-up exceeds turn or input budgets", async (t)
       async createSession() { return { session, modelFallbackMessage: undefined }; },
       maxTurns: 1,
       maxInputTokens: 100,
-      async nextPrompt() { checks += 1; return checks === 1 ? "repair" : undefined; },
+      async onIdle() { checks += 1; return checks === 1 ? "repair" : undefined; },
     }),
     (error) => error?.code === "session_input_tokens_exhausted",
   );
   assert.equal(prompts, 1);
 });
 
-test("session validates the latest assistant output before ending", async (t) => {
+test("session completion follows host-owned state instead of assistant text", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-session-completion-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));
   const prompts = [];
-  const checked = [];
   let output = "";
   const result = await runWikiSession(root, [], "initial", new AbortController().signal, {
     async createSession() {
@@ -212,13 +211,11 @@ test("session validates the latest assistant output before ending", async (t) =>
         modelFallbackMessage: undefined,
       };
     },
-    async nextPrompt(latest) {
-      checked.push(latest);
-      return latest === "invalid" ? "repair" : undefined;
+    async onIdle() {
+      return prompts.length === 1 ? "repair" : undefined;
     },
   });
   assert.deepEqual(prompts, ["initial", "repair"]);
-  assert.deepEqual(checked, ["invalid", "valid"]);
   assert.equal(result.text, "valid");
 });
 

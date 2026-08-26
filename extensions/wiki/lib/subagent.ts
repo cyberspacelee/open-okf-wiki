@@ -4,7 +4,7 @@ import path from "node:path";
 import { Type } from "typebox";
 import type { AgentToolUpdateCallback, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { loadWikiAgents, type WikiAgentDefinition } from "./agents.js";
-import { parseWriteStatus, reviewCandidatePages, writeHandoff } from "./handoff.js";
+import { parseWriteStatus, reviewCandidatePages } from "./handoff.js";
 import { writeText } from "./files.js";
 import { failureCode } from "./failures.js";
 import { assertAgentPartition, guardForWorker, writeGuardFromPlan, writeTargetsOverlap, type WikiWriteGuard } from "./path-policy.js";
@@ -21,10 +21,11 @@ import {
   createWriterCompletionGate,
 } from "./completion.js";
 import { formatWriterCitationContract } from "./citations.js";
-import { candidateTargetRevision, candidateRevision, fileRevision } from "./revisions.js";
+import { candidateTargetRevision, candidateRevision } from "./revisions.js";
 import type { WikiAgentUsage } from "./producer-types.js";
-import { createWriterTodoTracker, type WriterTodoItem } from "./writer-todo.js";
+import { createWriterTodoTracker } from "./writer-todo.js";
 import type { WikiWriteMode, WikiWriteTarget } from "./write-target.js";
+import { createWorkerArtifact, type WorkerArtifactRef } from "./worker-artifact.js";
 
 export interface SubagentTask {
   agent: string;
@@ -36,10 +37,9 @@ export interface SubagentTask {
 
 export interface SubagentResult extends SubagentTask {
   id: string;
-  text: string;
   handoff?: string;
-  handoffRevision?: string;
-  candidateRevision?: string;
+  draft?: WorkerArtifactRef;
+  progress?: WorkerArtifactRef;
   usage?: WikiAgentUsage;
   error?: string;
   terminalReason?: string;
@@ -55,10 +55,9 @@ export interface SubagentTaskUpdate extends SubagentTask {
   id: string;
   status: SubagentTaskStatus;
   handoff?: string;
-  handoffRevision?: string;
-  candidateRevision?: string;
   usage?: WikiAgentUsage;
-  text?: string;
+  draft?: WorkerArtifactRef;
+  progress?: WorkerArtifactRef;
   error?: string;
   terminalReason?: string;
 }
@@ -243,8 +242,9 @@ async function runOne(
   const definition = byName.get(task.agent);
   if (!definition) {
     const available = [...byName.keys()].join(", ") || "(none)";
-    return { ...task, text: "", error: `Unknown agent "${task.agent}". Available: ${available}` };
+    return { ...task, error: `Unknown agent "${task.agent}". Available: ${available}` };
   }
+  let artifact: Awaited<ReturnType<typeof createWorkerArtifact>> | undefined;
   try {
     const writeTarget = task.agent === "write" ? targetFromTask(task) : undefined;
     const outputRevision = async () => writeTarget
@@ -256,7 +256,6 @@ async function runOne(
     const candidatePages = task.agent === "review" && "files" in base ? reviewCandidatePages(base.files) : [];
     const handoffManifest = await writeRequiredHandoffManifest(guard, task.id, requiredHandoffs);
     const requiredReads = [...requiredHandoffs, ...(handoffManifest ? [handoffManifest] : [])];
-    const touched = new Set<string>();
     const extra = createCatalogTools(catalogs);
     const allowed = definition.tools ? new Set(definition.tools) : undefined;
     const scopedGuard = guardForWorker(guard, task.agent, task.partition, requiredReads);
@@ -269,7 +268,6 @@ async function runOne(
     const completionGate = writeTarget
       ? createWriterCompletionGate(taskGuard, {
         maxRepairRounds: maxWorkerRepairRounds,
-        onTouched: (location) => touched.add(location),
         todo,
         templates,
         catalogs: [...catalogs.keys()],
@@ -280,9 +278,22 @@ async function runOne(
         : task.agent === "survey" || task.agent === "synthesize"
           ? createWorkerOutputGate(taskGuard, task.agent, maxWorkerRepairRounds, requiredReads)
           : undefined;
+    if (!completionGate) throw new Error(`Unsupported Wiki agent: ${task.agent}`);
+    artifact = await createWorkerArtifact({
+      workspaceRoot: guard.workspaceRoot,
+      handoffsRoot: guard.handoffsRoot,
+      task,
+      sourceFingerprint,
+      baseCandidateRevision: base.digest,
+      completion: completionGate,
+      requiredHandoffs: requiredReads,
+      ...(task.agent === "survey" ? {} : { currentCandidateRevision: async () => (await outputRevision()).digest }),
+      ...(todo ? { todo: todo.snapshot } : {}),
+    });
     const tools = [
       ...candidateTools(taskGuard, definition.tools),
       ...(todo ? [todo.tool] : []),
+      artifact.tool,
       ...extra.filter((tool) => !allowed || allowed.has(tool.name)),
     ];
     const scoped = templates && writeTarget
@@ -310,51 +321,37 @@ async function runOne(
     const reviewPages = candidatePages.length
       ? `# Frozen Candidate pages\n\nCover each path exactly once in the review receipt:\n${candidatePages.map((page) => `- ${page}`).join("\n")}\n\n`
       : "";
+    const durableHandoff = "# Durable handoff\n\nUse the `handoff` tool to read and update the pre-created draft as findings emerge. The draft survives compaction. `submit` it only after the assignment and validation are complete; assistant prose is not a receipt.\n\n";
     const result = await runWikiSession(
       guard.workspaceRoot,
       tools,
-      `${handoffs}${reviewPages}# Task\n\n${task.task}`,
+      `${durableHandoff}${handoffs}${reviewPages}# Task\n\n${task.task}`,
       signal,
       {
         ...session,
         systemPrompt: `${definition.prompt}${pack}${citations}${languageContract}${pathContract}`,
         onActivity(event) {
           session.onActivity?.(event);
-          if (event.kind === "tool") completionGate?.observe(event);
+          if (event.kind === "tool") artifact?.observe(event);
         },
-        onCompaction: () => formatWorkerCheckpoint(
-          task,
-          sourceFingerprint,
-          base.digest,
-          touched,
-          handoffManifest ? [handoffManifest] : [],
-          todo?.snapshot(),
-        ),
-        nextPrompt: completionGate?.nextPrompt,
+        onCompaction: artifact.checkpoint,
+        onIdle: artifact.onIdle,
       },
     );
-    const completed = task.agent === "survey" ? undefined : await outputRevision();
-    const handoff = await writeHandoff({
-      workspaceRoot: guard.workspaceRoot,
-      handoffsRoot: guard.handoffsRoot,
-      task,
-      text: result.text,
-      baseCandidateRevision: base.digest,
-      completedCandidateRevision: completed?.digest,
-    });
+    const sealed = await artifact.seal();
+    const references = await artifact.references();
     return {
       ...task,
-      text: result.text,
-      handoff,
-      handoffRevision: await fileRevision(path.join(guard.workspaceRoot, ...handoff.split("/"))),
-      ...(completed ? { candidateRevision: completed.digest } : {}),
+      handoff: sealed.path,
+      ...references,
       ...(result.usage ? { usage: result.usage } : {}),
-      ...(task.agent === "write" ? { status: parseWriteStatus(result.text) ?? "complete" } : { status: "complete" as const }),
+      ...(task.agent === "write" ? { status: parseWriteStatus(sealed.body) ?? "complete" } : { status: "complete" as const }),
     };
   } catch (error) {
+    const references = artifact ? await artifact.references().catch(() => undefined) : undefined;
     return {
       ...task,
-      text: "",
+      ...references,
       error: error instanceof Error ? error.message : String(error),
       terminalReason: failureCode(error),
     };
@@ -400,7 +397,7 @@ function formatResult(result: SubagentResult): string {
       "Read that file for the full result. Do not treat this message as the evidence.",
     ].join("\n");
   }
-  return `## ${result.agent}\n${result.text}`.trim();
+  return `## ${result.agent}\nNo handoff was produced.`;
 }
 
 function executionId(agent: string): string {
@@ -443,63 +440,6 @@ function assertSafeBatch(tasks: readonly SubagentTask[]): void {
     }
   }
   if (roles.size > 1) throw new Error("subagent batches must contain one agent role");
-}
-
-function formatWorkerCheckpoint(
-  task: SubagentTask & { id: string },
-  sourceFingerprint: string,
-  baseCandidateRevision: string,
-  touched: ReadonlySet<string>,
-  requiredHandoffs: readonly string[] = [],
-  todo: readonly WriterTodoItem[] = [],
-): string {
-  const instruction = task.agent === "survey"
-    ? "Continue this exact Source survey. Reopen load-bearing Source locators before finalizing the handoff."
-    : task.agent === "synthesize"
-      ? "Continue this exact cross-Source analysis. Read every survey handoff and reopen both sides of each claimed relationship before finalizing the handoff."
-    : task.agent === "review"
-      ? "Continue read-only review of the frozen Candidate revision. Reopen load-bearing Source locators before the verdict."
-      : "Continue this exact write assignment. Reopen each cited pin file before writing. Inspect current Candidate files and referenced handoffs before changing them.";
-  const lines = [
-    "<wiki_checkpoint>",
-    `Execution: ${task.id}`,
-    `Role: ${task.agent}`,
-    `Board Task: ${task.boardTaskId}`,
-    `Partition: ${task.partition}`,
-    ...(task.writeMode ? [`Write mode: ${task.writeMode}`] : []),
-    `Source fingerprint: ${sourceFingerprint}`,
-    `Base target Candidate: ${baseCandidateRevision}`,
-    `Assignment: ${task.task}`,
-    ...(requiredHandoffs.length ? ["Required handoffs:", ...requiredHandoffs.map((location) => `- ${location}`)] : []),
-  ];
-  if (estimateTokens([...lines, instruction, "</wiki_checkpoint>"].join("\n")) > 4_096) {
-    throw new Error("context_checkpoint_too_large: worker assignment exceeds 4096 estimated tokens");
-  }
-  const changed = [...touched].sort();
-  if (changed.length) {
-    lines.push("Touched Candidate paths:");
-    let included = 0;
-    for (const location of changed) {
-      const next = `- ${location}`;
-      if (estimateTokens([...lines, next, instruction, "</wiki_checkpoint>"].join("\n")) > 4_096) break;
-      lines.push(next);
-      included += 1;
-    }
-    if (included < changed.length) lines.push(`- ${changed.length - included} older paths omitted from this bounded frame`);
-  }
-  if (task.agent === "write") {
-    lines.push("Writer Todo:");
-    if (!todo.length) lines.push("- not planned");
-    else {
-      for (const item of todo) {
-        const next = `- ${item.status}: ${item.path}`;
-        if (estimateTokens([...lines, next, instruction, "</wiki_checkpoint>"].join("\n")) > 4_096) break;
-        lines.push(next);
-      }
-    }
-  }
-  lines.push(instruction, "</wiki_checkpoint>");
-  return lines.join("\n");
 }
 
 function targetFromTask(task: SubagentTask): WikiWriteTarget {

@@ -16,6 +16,30 @@ const WRITE_RECEIPT = "## Status\n\ncomplete\n\n## Written\n\nnone\n\n## Rejecte
 const SYNTHESIS_RECEIPT = "## Workspace\n\nself\n\n## Relationships\n\nnone\n\n## End-to-end flows\n\nnone\n\n## Shared contracts\n\nnone\n\n## Gaps\n\nnone\n";
 const REVIEW_PASS = "verdict: pass\n\n## Coverage\n\n- page: wiki/overview.md | result: pass | evidence: main.ts#L1 reopened\n\n## Repairs\n\nnone\n";
 
+function submittingSession(options, receipt: string, hooks: {
+  subscribe?: (listener: (event: unknown) => void) => void;
+  prompt?: (value: string) => void | Promise<void>;
+} = {}) {
+  const handoff = options.customTools.find((tool) => tool.name === "handoff");
+  assert.ok(handoff);
+  return {
+    session: {
+      sessionFile: undefined,
+      subscribe(listener) { hooks.subscribe?.(listener); return () => {}; },
+      async prompt(value) {
+        await hooks.prompt?.(value);
+        await handoff.execute("replace", { action: "replace", text: receipt }, undefined, undefined, undefined);
+        await handoff.execute("submit", { action: "submit" }, undefined, undefined, undefined);
+      },
+      async waitForIdle() {},
+      getLastAssistantText() { return "ordinary assistant prose"; },
+      dispose() {},
+      abort() {},
+    },
+    modelFallbackMessage: undefined,
+  };
+}
+
 function implicitPlan(workspaceRoot: string) {
   return {
     workspaceRoot,
@@ -57,18 +81,7 @@ test("survey workers receive only the Catalog bound to their Source", async (t) 
   const runtime = await createSubagentRuntime(plan, path.join(workspaceRoot, "candidate"), {
     async createSession(options) {
       dbTables = options.customTools.find((tool) => tool.name === "db_tables");
-      return {
-        session: {
-          sessionFile: undefined,
-          subscribe() { return () => {}; },
-          async prompt() {},
-          async waitForIdle() {},
-          getLastAssistantText() { return SURVEY_RECEIPT; },
-          dispose() {},
-          abort() {},
-        },
-        modelFallbackMessage: undefined,
-      };
+      return submittingSession(options, SURVEY_RECEIPT);
     },
   }, undefined, undefined, new Map([
     ["shared", catalog("shared")],
@@ -205,27 +218,17 @@ test("subagent child sessions tag activity with the execution id", async (t) => 
     path.join(workspaceRoot, ".okf-wiki", "runs", "abcd", "candidate"),
     {
       sessionDir: path.join(workspaceRoot, "sessions"),
-      async createSession() {
-        return {
-          session: {
-            sessionFile: undefined,
-            subscribe(listener) {
-              listener({
+      async createSession(options) {
+        return submittingSession(options, SURVEY_RECEIPT, {
+          subscribe(listener) {
+            listener({
                 type: "tool_execution_start",
                 toolCallId: "call-1",
                 toolName: "grep",
                 args: { pattern: "Order", path: "src" },
-              });
-              return () => {};
-            },
-            async prompt() {},
-            async waitForIdle() {},
-            getLastAssistantText() { return SURVEY_RECEIPT; },
-            dispose() {},
-            abort() {},
+            });
           },
-          modelFallbackMessage: undefined,
-        };
+        });
       },
       onActivity(event) {
         events.push(event);
@@ -257,11 +260,9 @@ test("subagent tool reports child tools through onUpdate", async (t) => {
     path.join(workspaceRoot, ".okf-wiki", "runs", "abcd", "candidate"),
     {
       sessionDir: path.join(workspaceRoot, "sessions"),
-      async createSession() {
-        return {
-          session: {
-            sessionFile: undefined,
-            subscribe(listener) {
+      async createSession(options) {
+        return submittingSession(options, SURVEY_RECEIPT, {
+          subscribe(listener) {
               listener({
                 type: "tool_execution_start",
                 toolCallId: "call-1",
@@ -275,16 +276,8 @@ test("subagent tool reports child tools through onUpdate", async (t) => {
                 result: {},
                 isError: false,
               });
-              return () => {};
-            },
-            async prompt() {},
-            async waitForIdle() {},
-            getLastAssistantText() { return SURVEY_RECEIPT; },
-            dispose() {},
-            abort() {},
           },
-          modelFallbackMessage: undefined,
-        };
+        });
       },
     },
   );
@@ -355,24 +348,15 @@ test("subagent runtime bounds parallel sessions", async (t) => {
     },
     path.join(workspaceRoot, ".okf-wiki", "runs", "abcd", "candidate"),
     {
-      async createSession() {
-        return {
-          session: {
-            sessionFile: undefined,
-            subscribe() { return () => {}; },
-            async prompt() {
+      async createSession(options) {
+        return submittingSession(options, SURVEY_RECEIPT, {
+          async prompt() {
               active += 1;
               peak = Math.max(peak, active);
               await new Promise((resolve) => setTimeout(resolve, 10));
               active -= 1;
-            },
-            async waitForIdle() {},
-            getLastAssistantText() { return SURVEY_RECEIPT; },
-            dispose() {},
-            abort() {},
           },
-          modelFallbackMessage: undefined,
-        };
+        });
       },
     },
     undefined,
@@ -403,16 +387,10 @@ test("subagent runtime records queued work before a worker acquires a slot", asy
     implicitPlan(workspaceRoot),
     path.join(workspaceRoot, "candidate"),
     {
-      async createSession() {
-        return { session: {
-          sessionFile: undefined,
-          subscribe() { return () => {}; },
+      async createSession(options) {
+        return submittingSession(options, WRITE_RECEIPT, {
           async prompt() { active += 1; await hold; active -= 1; },
-          async waitForIdle() {},
-          getLastAssistantText() { return WRITE_RECEIPT; },
-          dispose() {},
-          abort() {},
-        }, modelFallbackMessage: undefined };
+        });
       },
     },
     undefined,
@@ -448,16 +426,8 @@ test("writer returns a durable blocked result without validating a partial targe
     implicitPlan(workspaceRoot),
     path.join(workspaceRoot, "candidate"),
     {
-      async createSession() {
-        return { session: {
-          sessionFile: undefined,
-          subscribe() { return () => {}; },
-          async prompt() {},
-          async waitForIdle() {},
-          getLastAssistantText() { return blocked; },
-          dispose() {},
-          abort() {},
-        }, modelFallbackMessage: undefined };
+      async createSession(options) {
+        return submittingSession(options, blocked);
       },
     },
     undefined,
@@ -492,19 +462,8 @@ test("parallel survey tasks stay distinct in live updates", async (t) => {
     },
     path.join(workspaceRoot, ".okf-wiki", "runs", "abcd", "candidate"),
     {
-      async createSession() {
-        return {
-          session: {
-            sessionFile: undefined,
-            subscribe() { return () => {}; },
-            async prompt() {},
-            async waitForIdle() {},
-            getLastAssistantText() { return SURVEY_RECEIPT; },
-            dispose() {},
-            abort() {},
-          },
-          modelFallbackMessage: undefined,
-        };
+      async createSession(options) {
+        return submittingSession(options, SURVEY_RECEIPT);
       },
     },
   );
@@ -550,20 +509,16 @@ test("subagent prompts project templates by role", async (t) => {
         systems.push(system);
         const output = system.includes("Map one pinned Source") ? SURVEY_RECEIPT
           : system.includes("Analyze one explicit Workspace") ? SYNTHESIS_RECEIPT
-            : system.includes("Write or repair") ? WRITE_RECEIPT
+            : system.includes("Write or repair") ? WRITE_RECEIPT.replace("complete", "blocked").replace("## Evidence gaps\n\nnone", "## Evidence gaps\n\nNo Source evidence was assigned")
               : REVIEW_PASS;
-        return {
-          session: {
-            sessionFile: undefined,
-            subscribe() { return () => {}; },
-            async prompt(value) { prompts.push(value); },
-            async waitForIdle() {},
-            getLastAssistantText() { return output; },
-            dispose() {},
-            abort() {},
+        return submittingSession(options, output, {
+          subscribe(listener) {
+            if (!system.includes("Critique")) return;
+            listener({ type: "tool_execution_start", toolCallId: "read-page", toolName: "read", args: { path: "wiki/overview.md" } });
+            listener({ type: "tool_execution_end", toolCallId: "read-page", toolName: "read", result: {}, isError: false });
           },
-          modelFallbackMessage: undefined,
-        };
+          prompt(value) { prompts.push(value); },
+        });
       },
     },
     undefined,
@@ -625,19 +580,8 @@ test("subagent batches allow parallel survey and disjoint writes", async (t) => 
     sources: [],
     fingerprint: "test",
   }, path.join(workspaceRoot, "parallel-candidate"), {
-    async createSession() {
-      return {
-        session: {
-          sessionFile: undefined,
-          subscribe() { return () => {}; },
-          async prompt() {},
-          async waitForIdle() {},
-          getLastAssistantText() { return WRITE_RECEIPT; },
-          dispose() {},
-          abort() {},
-        },
-        modelFallbackMessage: undefined,
-      };
+    async createSession(options) {
+      return submittingSession(options, WRITE_RECEIPT);
     },
   });
   const writes = await parallelWrite.run([
@@ -672,19 +616,10 @@ test("subagent batches allow parallel survey and disjoint writes", async (t) => 
     sources: [],
     fingerprint: "test",
   }, path.join(workspaceRoot, "exclusive-candidate"), {
-    async createSession() {
-      return {
-        session: {
-          sessionFile: undefined,
-          subscribe() { return () => {}; },
-          async prompt() { announce(); await held; },
-          async waitForIdle() {},
-          getLastAssistantText() { return WRITE_RECEIPT; },
-          dispose() {},
-          abort() {},
-        },
-        modelFallbackMessage: undefined,
-      };
+    async createSession(options) {
+      return submittingSession(options, WRITE_RECEIPT, {
+        async prompt() { announce(); await held; },
+      });
     },
   });
   const writer = exclusive.run([
@@ -731,6 +666,8 @@ test("writer read ledger resolves linked Source citations from the Workspace roo
   }, candidateRoot, {
     async createSession(options) {
       writerSystem = options.resourceLoader.getAppendSystemPrompt().join("\n");
+      const handoff = options.customTools.find((tool) => tool.name === "handoff");
+      assert.ok(handoff);
       return {
         session: {
           sessionFile: undefined,
@@ -760,6 +697,8 @@ test("writer read ledger resolves linked Source citations from the Workspace roo
             listener({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read", result: {}, isError: false });
             listener({ type: "tool_execution_start", toolCallId: "write-1", toolName: "write", args: { path: "wiki/overview.md" } });
             listener({ type: "tool_execution_end", toolCallId: "write-1", toolName: "write", result: {}, isError: false });
+            await handoff.execute("replace", { action: "replace", text: WRITE_RECEIPT }, undefined, undefined, undefined);
+            await handoff.execute("submit", { action: "submit" }, undefined, undefined, undefined);
           },
           async waitForIdle() {},
           getLastAssistantText() { return WRITE_RECEIPT; },
@@ -788,7 +727,9 @@ test("writer repairs every unread citation in one session for more than two roun
   let listener = () => {};
   const prompts: string[] = [];
   const runtime = await createSubagentRuntime(implicitPlan(workspaceRoot), candidateRoot, {
-    async createSession() {
+    async createSession(options) {
+      const handoff = options.customTools.find((tool) => tool.name === "handoff");
+      assert.ok(handoff);
       return {
         session: {
           sessionFile: undefined,
@@ -806,11 +747,13 @@ test("writer repairs every unread citation in one session for more than two roun
               ].join("\n"));
               listener({ type: "tool_execution_start", toolCallId: "write-1", toolName: "write", args: { path: "wiki/overview.md" } });
               listener({ type: "tool_execution_end", toolCallId: "write-1", toolName: "write", result: {}, isError: false });
-              return;
+            } else {
+              const resource = ["a.ts", "b.ts", "c.ts"][prompts.length - 2];
+              listener({ type: "tool_execution_start", toolCallId: `read-${prompts.length}`, toolName: "read", args: { path: resource } });
+              listener({ type: "tool_execution_end", toolCallId: `read-${prompts.length}`, toolName: "read", result: {}, isError: false });
             }
-            const resource = ["a.ts", "b.ts", "c.ts"][prompts.length - 2];
-            listener({ type: "tool_execution_start", toolCallId: `read-${prompts.length}`, toolName: "read", args: { path: resource } });
-            listener({ type: "tool_execution_end", toolCallId: `read-${prompts.length}`, toolName: "read", result: {}, isError: false });
+            await handoff.execute("replace", { action: "replace", text: WRITE_RECEIPT }, undefined, undefined, undefined);
+            await handoff.execute("submit", { action: "submit" }, undefined, undefined, undefined);
           },
           async waitForIdle() {},
           getLastAssistantText() { return WRITE_RECEIPT; },
@@ -844,7 +787,9 @@ test("writer repairs Todo and target validation before its session ends", async 
   const runtime = await createSubagentRuntime(implicitPlan(workspaceRoot), candidateRoot, {
     async createSession(options) {
       const todo = options.customTools.find((tool) => tool.name === "todo");
+      const handoff = options.customTools.find((tool) => tool.name === "handoff");
       assert.ok(todo);
+      assert.ok(handoff);
       return {
         session: {
           sessionFile: undefined,
@@ -865,24 +810,24 @@ test("writer repairs Todo and target validation before its session ends", async 
               listener({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read", result: {}, isError: false });
               listener({ type: "tool_execution_start", toolCallId: "write-1", toolName: "write", args: { path: "wiki/overview.md" } });
               listener({ type: "tool_execution_end", toolCallId: "write-1", toolName: "write", result: {}, isError: false });
-              output = WRITE_RECEIPT;
-              return;
+            } else {
+              assert.match(value, /Writer completion validation/);
+              assert.match(value, /writer-todo/);
+              assert.match(value, /description/);
+              await todo.execute("todo-2", {
+                action: "write",
+                items: [{ path: "wiki/overview.md", status: "completed" }],
+              }, new AbortController().signal, undefined, undefined);
+              await writeFile(path.join(candidateRoot, "overview.md"), [
+                "---", "type: Overview", "title: Overview", "description: Overview.", "sources:",
+                "  - id: main", "    resource: main.ts#L1", "---", "# Overview", "", "Overview.",
+                "", "## Details", "", "Grounded. [^main]", "", "[^main]: main", "",
+              ].join("\n"));
+              listener({ type: "tool_execution_start", toolCallId: "edit-1", toolName: "edit", args: { path: "wiki/overview.md" } });
+              listener({ type: "tool_execution_end", toolCallId: "edit-1", toolName: "edit", result: {}, isError: false });
             }
-            assert.match(value, /Writer completion validation/);
-            assert.match(value, /writer-todo/);
-            assert.match(value, /description/);
-            await todo.execute("todo-2", {
-              action: "write",
-              items: [{ path: "wiki/overview.md", status: "completed" }],
-            }, new AbortController().signal, undefined, undefined);
-            await writeFile(path.join(candidateRoot, "overview.md"), [
-              "---", "type: Overview", "title: Overview", "description: Overview.", "sources:",
-              "  - id: main", "    resource: main.ts#L1", "---", "# Overview", "", "Overview.",
-              "", "## Details", "", "Grounded. [^main]", "", "[^main]: main", "",
-            ].join("\n"));
-            listener({ type: "tool_execution_start", toolCallId: "edit-1", toolName: "edit", args: { path: "wiki/overview.md" } });
-            listener({ type: "tool_execution_end", toolCallId: "edit-1", toolName: "edit", result: {}, isError: false });
-            output = WRITE_RECEIPT;
+            await handoff.execute("replace", { action: "replace", text: WRITE_RECEIPT }, undefined, undefined, undefined);
+            await handoff.execute("submit", { action: "submit" }, undefined, undefined, undefined);
           },
           async waitForIdle() {},
           getLastAssistantText() { return output; },
@@ -913,7 +858,9 @@ test("reviewer repairs its verdict before its session ends", async (t) => {
   let output = "";
   const prompts: string[] = [];
   const runtime = await createSubagentRuntime(implicitPlan(workspaceRoot), candidateRoot, {
-    async createSession() {
+    async createSession(options) {
+      const handoff = options.customTools.find((tool) => tool.name === "handoff");
+      assert.ok(handoff);
       let listener = (_event: unknown) => {};
       return {
         session: {
@@ -924,6 +871,8 @@ test("reviewer repairs its verdict before its session ends", async (t) => {
             listener({ type: "tool_execution_start", toolCallId: "read-page", toolName: "read", args: { path: "wiki/overview.md" } });
             listener({ type: "tool_execution_end", toolCallId: "read-page", toolName: "read", result: {}, isError: false });
             output = prompts.length === 1 ? "Candidate looks correct." : REVIEW_PASS;
+            await handoff.execute("replace", { action: "replace", text: output }, undefined, undefined, undefined);
+            await handoff.execute("submit", { action: "submit" }, undefined, undefined, undefined);
           },
           async waitForIdle() {},
           getLastAssistantText() { return output; },
@@ -957,17 +906,13 @@ test("failed writes do not validate stale Candidate citations", async (t) => {
     "Old. [^main]", "", "[^main]: main", "",
   ].join("\n"));
   const runtime = await createSubagentRuntime(implicitPlan(workspaceRoot), candidateRoot, {
-    async createSession() {
-      return { session: {
-        sessionFile: undefined,
+    async createSession(options) {
+      return submittingSession(options, WRITE_RECEIPT, {
         subscribe(listener) {
           listener({ type: "tool_execution_start", toolCallId: "write-1", toolName: "write", args: { path: "wiki/overview.md" } });
           listener({ type: "tool_execution_end", toolCallId: "write-1", toolName: "write", result: {}, isError: true });
-          return () => {};
         },
-        async prompt() {}, async waitForIdle() {}, getLastAssistantText() { return WRITE_RECEIPT; },
-        dispose() {}, abort() {},
-      }, modelFallbackMessage: undefined };
+      });
     },
   });
   const [result] = await runtime.run([

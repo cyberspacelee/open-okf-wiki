@@ -23,9 +23,9 @@ interface CompletionIssue {
   message: string;
 }
 
-interface WorkerCompletionGate {
+export interface WorkerCompletionGate {
   observe(event: { tool: string; args: unknown; status: string; result?: unknown }): void;
-  nextPrompt(output: string): Promise<string | undefined>;
+  validate(draft: string): Promise<string | undefined>;
 }
 
 export function createWriterCompletionGate(
@@ -59,7 +59,7 @@ export function createWriterCompletionGate(
         options.onTouched?.(event.args.path);
       }
     },
-    async nextPrompt(output) {
+    async validate(output) {
       const outputIssues = workerOutputIssues("write", output).map((message) => ({ message: `[write-output] ${message}` }));
       if (parseWriteStatus(output) === "blocked" && outputIssues.length === 0) {
         return repair(missingReadIssues(guard, options.requiredReads ?? [], readPaths));
@@ -89,7 +89,7 @@ export function createWorkerOutputGate(
   );
   return {
     observe(event) { recordSuccessfulRead(guard, readPaths, event); },
-    async nextPrompt(output) {
+    async validate(output) {
       return repair([
         ...workerOutputIssues(agent, output).map((message) => ({ message: `[${agent}-output] ${message}` })),
         ...missingReadIssues(guard, requiredReads, readPaths),
@@ -111,7 +111,7 @@ export function createReviewerCompletionGate(
   );
   return {
     observe(event) { recordSuccessfulRead(guard, readPaths, event); },
-    async nextPrompt(output) {
+    async validate(output) {
       return repair([
         ...workerOutputIssues("review", output, candidatePages)
           .map((message) => ({ message: `[review-output] ${message}` })),
@@ -330,7 +330,11 @@ function createRepairLoop(
   let previousIssues: string | undefined;
   let unchangedRounds = 0;
   return (issues) => {
-    if (!issues.length) return undefined;
+    if (!issues.length) {
+      previousIssues = undefined;
+      unchangedRounds = 0;
+      return undefined;
+    }
     const report = [
       `${label} validation found ${issues.length} issue${issues.length === 1 ? "" : "s"}. Fix all issues in this batch before finishing:`,
       ...issues.map((issue) => `- ${issue.message.replaceAll("\n", "\n  ")}`),
