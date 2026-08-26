@@ -201,6 +201,7 @@ def validate_target(workspace, phase: str, target: str) -> list[dict]:
             text = fpath.read_text(encoding="utf-8")
             lines = text.splitlines()
             stack = []
+            paired = 0
             for lineno, line in enumerate(lines, 1):
                 if begin_re.search(line):
                     stack.append(lineno)
@@ -210,6 +211,7 @@ def validate_target(workspace, phase: str, target: str) -> list[dict]:
                                              "Unmatched okf-wiki:end marker"))
                     else:
                         begin_line = stack.pop()
+                        paired += 1
                         content_lines = [l for l in lines[begin_line:lineno - 1] if l.strip()]
                         if len(content_lines) > 15:
                             issues.append(_issue("error", "missing-target", str(fpath), begin_line,
@@ -217,6 +219,10 @@ def validate_target(workspace, phase: str, target: str) -> list[dict]:
             for leftover in stack:
                 issues.append(_issue("error", "missing-target", str(fpath), leftover,
                                      "Unmatched okf-wiki:begin marker"))
+            if paired == 0 and not stack:
+                issues.append(_issue("error", "managed-block-missing", str(fpath), None,
+                                     "No okf-wiki:begin/end managed block found",
+                                     "Wrap the proposal content in the managed-block markers"))
         return issues
 
     candidate_path = root / ".okf-wiki" / "candidate" / target

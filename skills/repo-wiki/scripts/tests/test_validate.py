@@ -670,3 +670,21 @@ def test_unreachable_skipped_without_index(tmp_path):
     ws = make_ws(tmp_path)
     issues = validate_candidate(ws)
     assert not any(i["code"] == "unreachable" for i in issues)
+
+
+def test_validate_target_derive_no_markers_rejected(tmp_path):
+    ws = make_ws(tmp_path)
+    props = tmp_path / ".okf-wiki" / "proposals"
+    props.mkdir(parents=True)
+    (props / "agents-block-api.md").write_text("no markers here\n")
+    issues = validate_target(ws, "derive", "proposals")
+    assert any(i["code"] == "managed-block-missing" for i in issues)
+
+
+def test_validate_target_derive_with_markers_ok(tmp_path):
+    ws = make_ws(tmp_path)
+    props = tmp_path / ".okf-wiki" / "proposals"
+    props.mkdir(parents=True)
+    (props / "agents-block-api.md").write_text(
+        "<!-- okf-wiki:begin run=r-x -->\n- pointer\n<!-- okf-wiki:end -->\n")
+    assert validate_target(ws, "derive", "proposals") == []
