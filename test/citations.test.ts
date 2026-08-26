@@ -72,10 +72,9 @@ test("resolveSourceCitation maps Workspace paths to pinned Sources", () => {
   );
 });
 
-test("writer citation contract covers optional line ranges and the current evidence roots", () => {
+test("writer citation contract requires line ranges for body claims", () => {
   const implicit = formatWriterCitationContract([{ scopeId: "self", logicalPath: "." }], []);
-  assert.match(implicit, /line suffix is optional/i);
-  assert.match(implicit, /`path`, `path#L12`, and `path#L12-L18`/);
+  assert.match(implicit, /body footnote requires `path#L12` or `path#L12-L18`/i);
   assert.match(implicit, /without a `self\/` prefix/);
   assert.match(implicit, /\[\^source-id\]: Human-readable source/);
   assert.doesNotMatch(implicit, /catalog:<catalog>/);
@@ -108,13 +107,18 @@ test("extractOkfSources requires sources ids and matching footnotes", () => {
   }, "Claim. [^main]\n");
   assert.ok(missingDefinition.invalid.some((issue) => issue.includes("missing definition")));
 
+  const missingRange = extractOkfSources({
+    sources: [{ id: "main", resource: "api/src/main.ts" }],
+  }, "Claim. [^main]\n\n[^main]: main\n");
+  assert.ok(missingRange.invalid.some((issue) => issue.includes("line-ranged")));
+
   const legacy = extractOkfSources({
     sources: [{ id: "main", resource: "api/src/main.ts#L1" }],
   }, "See [main](api/src/main.ts#L1).\n\n[^main]: main\n");
   assert.ok(legacy.invalid.some((issue) => issue.includes("body link")));
 
   const wikiLink = extractOkfSources({
-    sources: [{ id: "main", resource: "api/src/main.ts" }],
+    sources: [{ id: "main", resource: "api/src/main.ts#L1" }],
   }, "See [architecture](architecture.md). [^main]\n\n[^main]: main\n");
   assert.deepEqual(wikiLink.invalid, []);
 });

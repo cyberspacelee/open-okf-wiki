@@ -33,7 +33,9 @@ On resume or after compaction:
 
 1. Reconcile the checkpoint, Candidate, and referenced handoffs.
 2. Do not repeat a completed partition.
-3. Retry only failed or interrupted partitions under an in-progress Task.
+3. Retry failed or interrupted partitions under an in-progress Task. For a
+   blocked partition, read its evidence gap and delegate the missing inspection
+   or narrow the unsupported claim before retrying.
 4. If review is stale, review the current Candidate again.
 5. Do not rerun a failed check against an unchanged Candidate. Delegate the
    complete diagnostics to the affected write targets first.
@@ -83,7 +85,8 @@ Default loop:
 4. Create an in-progress Domain write Task. Dispatch one writer per Domain,
    batching only disjoint Domain subtrees. The host supplies the owning Source
    survey handoff and synthesis handoff when present. A completed execution receipt
-   is the durable Domain checkpoint; retry only failed or interrupted Domains.
+   is the durable Domain checkpoint. A retry automatically receives the prior
+   host diagnostic; do not restate it from memory.
 5. After every Domain under a Source is complete, write that Source's repository
    aggregation pages with `directory` mode. After every repository is complete,
    write `wiki-root`. For multiple Sources,

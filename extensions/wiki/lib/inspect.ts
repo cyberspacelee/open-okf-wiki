@@ -10,7 +10,6 @@ const DEFAULT_SOURCE_IGNORES = [
   "__pycache__", ".mypy_cache", ".pytest_cache", ".tox", ".coverage", "coverage", ".nyc_output",
   ".idea", ".vscode", ".gradle", ".mvn", ".DS_Store", "Thumbs.db",
   "*.pyc", "*.pyo", "*.pyd", "*.class", "*.log", "*.o", "*.so", "*.dylib", "*.dll",
-  "src/test/**", "**/src/test/**", "**/*Test.java", "**/*Tests.java", "**/*IT.java", "**/*ITCase.java",
 ];
 
 export interface WikiPinnedSource {

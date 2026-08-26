@@ -18,7 +18,7 @@ Identify the initiating event or call, required preconditions, intended outcome,
 
 ## Participants and main path
 
-Name source identifiers for each participant and trace the ordered calls, state changes, data movement, and ownership transfers on the successful path.
+Use an ordered list and source identifiers for each participant to trace calls, state changes, data movement, and ownership transfers. Do not put Mermaid here.
 
 ## Branches, failures, and side effects
 
@@ -30,4 +30,4 @@ Give focused tests, commands, logs, metrics, or state observations that distingu
 
 ## Diagram
 
-Visualize the ordered scenario with source identifiers and explicit branch or failure edges.
+Use the page's only Mermaid diagram here. Visualize the ordered scenario with source identifiers and explicit branch or failure edges; use `<br/>` for label line breaks.

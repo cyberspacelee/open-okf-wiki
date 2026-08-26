@@ -3,8 +3,9 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { extractOkfSources, resolveSourceCitation, type SourceCitation } from "./citations.js";
 import { readText } from "./files.js";
+import { WikiCompletionError } from "./failures.js";
 import { parsePage } from "./frontmatter.js";
-import { workerOutputIssues } from "./handoff.js";
+import { parseWriteStatus, workerOutputIssues } from "./handoff.js";
 import { assertReadable, type WikiWriteGuard } from "./path-policy.js";
 import { candidateTargetRevision } from "./revisions.js";
 import type { WikiTemplatePack } from "./templates.js";
@@ -59,9 +60,13 @@ export function createWriterCompletionGate(
       }
     },
     async nextPrompt(output) {
+      const outputIssues = workerOutputIssues("write", output).map((message) => ({ message: `[write-output] ${message}` }));
+      if (parseWriteStatus(output) === "blocked" && outputIssues.length === 0) {
+        return repair(missingReadIssues(guard, options.requiredReads ?? [], readPaths));
+      }
       const receipts = (await Promise.all(reads)).filter((entry): entry is EvidenceReceipt => entry !== undefined);
       const issues = [
-        ...workerOutputIssues("write", output).map((message) => ({ message: `[write-output] ${message}` })),
+        ...outputIssues,
         ...missingReadIssues(guard, options.requiredReads ?? [], readPaths),
         ...await validateWriterEvidence(guard, touched, receipts),
         ...await validateWriterAssignment(guard, options.todo, options.templates, options.catalogs ?? []),
@@ -334,10 +339,16 @@ function createRepairLoop(
     unchangedRounds = issueSet === previousIssues ? unchangedRounds + 1 : 0;
     previousIssues = issueSet;
     if (unchangedRounds >= 2) {
-      throw new Error(`${label} repair made no progress after ${repairRounds} rounds.\n${report}`);
+      throw new WikiCompletionError(
+        `${label} repair made no progress after ${repairRounds} rounds.\n${report}`,
+        "completion_no_progress",
+      );
     }
     if (repairRounds >= maxRepairRounds) {
-      throw new Error(`${label} repair did not converge after ${repairRounds} rounds.\n${report}`);
+      throw new WikiCompletionError(
+        `${label} repair did not converge after ${repairRounds} rounds.\n${report}`,
+        "completion_repair_exhausted",
+      );
     }
     repairRounds += 1;
     return [

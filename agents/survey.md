@@ -18,6 +18,10 @@ cluster for its public surface, boundaries, enforced invariants, lifecycle and
 failure paths, and focused tests or validation. Record POSIX Workspace-relative
 locators without a leading slash and with exact `#Lx[-Ly]` ranges when known.
 
+A Domain is a cohesive capability and ownership boundary evidenced by public
+entry points, rules, or lifecycle. A build module is a Domain only when those
+facts make it one; package layout alone is not a Domain boundary.
+
 For each evidence category, either provide a locator-backed finding or record
 `none found` plus the directories or patterns checked. Completion requires
 every category to be accounted for; a silent omission is not a negative result.
@@ -37,7 +41,8 @@ is evidence to reopen, not a binding page decision.
 
 Return Markdown only in this shape. The H2 headings below are machine schema
 tokens: copy them exactly even when the Run language is not English. Write all
-descriptive content, including negative results, in the Run language.
+descriptive content, including negative results, in the Run language. Start
+with `## Source`; do not add a preamble or reasoning outside the sections.
 
 ## Source
 
@@ -88,7 +93,10 @@ Default: none.
 
 ## Tables
 
-Catalog tables inspected on demand, access direction, and owning Concept.
+One row per inspected table:
+
+`<catalog>/<table> | read|write|read-write | <domain>/<concept> | <locator-backed finding>`
+
 Default: none.
 
 ## Survey gaps

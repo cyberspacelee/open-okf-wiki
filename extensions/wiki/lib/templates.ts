@@ -21,6 +21,7 @@ export const HOST_PAGE_KEYS = [
   "purpose",
   "applies_when",
   "diagram",
+  "table",
 ] as const;
 const TEMPLATE_FIELDS = new Set(["type", ...HOST_PAGE_KEYS]);
 const SCOPE_SET = new Set<string>(WIKI_TEMPLATE_SCOPES);
@@ -39,6 +40,11 @@ export interface WikiTemplateDiagram {
   kinds: string[];
 }
 
+export interface WikiTemplateTable {
+  section: string;
+  columns: string[];
+}
+
 export interface WikiTemplate {
   sourceFile: string;
   id: string;
@@ -52,6 +58,7 @@ export interface WikiTemplate {
   purpose: string;
   appliesWhen?: string;
   diagram?: WikiTemplateDiagram;
+  table?: WikiTemplateTable;
   sections: WikiTemplateSection[];
 }
 
@@ -85,6 +92,9 @@ export function templateOutputSkeleton(template: WikiTemplate): string {
     lines.push("", `## ${section.title}`);
     if (template.diagram?.section === section.title) {
       lines.push("", "```mermaid", template.diagram.kinds[0]!, "  {{diagram}}", "```");
+    }
+    if (template.table?.section === section.title) {
+      lines.push("", `| ${template.table.columns.join(" | ")} |`, `| ${template.table.columns.map(() => "---").join(" | ")} |`);
     }
   }
   return `${lines.join("\n")}\n`;
@@ -200,6 +210,7 @@ export function parseWikiTemplate(sourceFile: string, text: string): WikiTemplat
     throw new Error(`${sourceFile} every H2 obligation needs guidance`);
   }
   const diagram = parseDiagram(sourceFile, parsed.frontmatter.diagram, sections.map((section) => section.title));
+  const table = parseTable(sourceFile, parsed.frontmatter.table, sections.map((section) => section.title));
   return {
     sourceFile,
     id,
@@ -213,6 +224,7 @@ export function parseWikiTemplate(sourceFile: string, text: string): WikiTemplat
     purpose,
     ...(!required ? { appliesWhen: String(appliesWhen).trim() } : {}),
     ...(diagram ? { diagram } : {}),
+    ...(table ? { table } : {}),
     sections,
   };
 }
@@ -307,6 +319,7 @@ function formatTemplate(template: WikiTemplate, skeleton: boolean): string[] {
     ...template.sections.map((section) => `  - **${section.title}**: ${section.guidance.replace(/\s+/g, " ")}`),
   ];
   if (template.diagram) lines.push(`- Diagram: ${template.diagram.section}; Mermaid ${template.diagram.kinds.join(" | ")}`);
+  if (template.table) lines.push(`- Table: ${template.table.section}; ${template.table.columns.join(" | ")}`);
   if (skeleton) lines.push("", "Output skeleton:", "", "```markdown", templateOutputSkeleton(template).trimEnd(), "```");
   return lines;
 }
@@ -358,6 +371,25 @@ function parseDiagram(sourceFile: string, value: unknown, sections: readonly str
     throw new Error(`${sourceFile} diagram.kinds must be Mermaid kinds`);
   }
   return { section, kinds: [...new Set(values.map((entry) => String(entry).trim()))] };
+}
+
+function parseTable(sourceFile: string, value: unknown, sections: readonly string[]): WikiTemplateTable | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${sourceFile} table must contain section and columns`);
+  }
+  const record = value as Record<string, unknown>;
+  const unknown = Object.keys(record).filter((key) => key !== "section" && key !== "columns");
+  if (unknown.length) throw new Error(`${sourceFile} table has unknown field: ${unknown[0]}`);
+  const section = requiredString(sourceFile, "table.section", record.section);
+  if (!sections.includes(section)) throw new Error(`${sourceFile} table.section must name an H2 obligation`);
+  const columns = Array.isArray(record.columns) ? record.columns : [];
+  if (columns.length < 2 || columns.some((entry) => typeof entry !== "string" || !entry.trim() || entry.includes("|"))) {
+    throw new Error(`${sourceFile} table.columns must contain at least two plain column names`);
+  }
+  const normalized = columns.map((entry) => String(entry).trim());
+  if (new Set(normalized).size !== normalized.length) throw new Error(`${sourceFile} table.columns must be unique`);
+  return { section, columns: normalized };
 }
 
 function assertUniqueTypes(templates: readonly WikiTemplate[]): void {

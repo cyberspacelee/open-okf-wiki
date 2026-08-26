@@ -92,6 +92,25 @@ test("repeatable contracts accept only concrete safe topic filenames", () => {
   assert.match(templateOutputSkeleton(flow), /## Details/);
 });
 
+test("table contracts add an exact table header to the output skeleton", () => {
+  const concept = parseWikiTemplate("concept.md", contractText("concept", "concept").replace(
+    "purpose: Explain concept.",
+    "purpose: Explain concept.\ntable:\n  section: Details\n  columns: [Invariant, Enforced at, Violation signal, Verify]",
+  ));
+  assert.deepEqual(concept.table, {
+    section: "Details",
+    columns: ["Invariant", "Enforced at", "Violation signal", "Verify"],
+  });
+  assert.match(templateOutputSkeleton(concept), /\| Invariant \| Enforced at \| Violation signal \| Verify \|/);
+  assert.throws(
+    () => parseWikiTemplate("concept.md", contractText("concept", "concept").replace(
+      "purpose: Explain concept.",
+      "purpose: Explain concept.\ntable:\n  section: Missing\n  columns: [A, B]",
+    )),
+    /must name an H2 obligation/,
+  );
+});
+
 test("legacy and incomplete template contracts are rejected", () => {
   assert.throws(() => parseWikiTemplate("architecture.md", "---\nscope: concept\ninstructions: Fill.\n---\n"), /unknown field: instructions/);
   assert.throws(() => parseWikiTemplate("architecture.md", architectureText().replace("purpose: Explain architecture.\n", "")), /purpose/);

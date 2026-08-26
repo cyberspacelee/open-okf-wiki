@@ -298,7 +298,7 @@ test("subagent tool reports child tools through onUpdate", async (t) => {
     updates.push(partial);
   });
   assert.ok(updates.length >= 2);
-  assert.match(String(updates[0].content[0].text), /running survey/);
+  assert.match(String(updates.find((update) => /running survey/.test(String(update.content[0].text)))?.content[0].text), /running survey/);
   const withTool = updates.find((update) => update.details?.tasks?.[0]?.tools?.length);
   assert.equal(withTool.details.tasks[0].tools[0].tool, "grep");
   assert.match(result.content[0].text, /## survey/);
@@ -390,6 +390,90 @@ test("subagent runtime bounds parallel sessions", async (t) => {
     new AbortController().signal,
   );
   assert.equal(peak, 2);
+});
+
+test("subagent runtime records queued work before a worker acquires a slot", async (t) => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-subagent-queue-"));
+  t.after(async () => await rm(workspaceRoot, { recursive: true, force: true }));
+  let active = 0;
+  let release!: () => void;
+  const hold = new Promise<void>((resolve) => { release = resolve; });
+  const updates = [];
+  const runtime = await createSubagentRuntime(
+    implicitPlan(workspaceRoot),
+    path.join(workspaceRoot, "candidate"),
+    {
+      async createSession() {
+        return { session: {
+          sessionFile: undefined,
+          subscribe() { return () => {}; },
+          async prompt() { active += 1; await hold; active -= 1; },
+          async waitForIdle() {},
+          getLastAssistantText() { return WRITE_RECEIPT; },
+          dispose() {},
+          abort() {},
+        }, modelFallbackMessage: undefined };
+      },
+    },
+    undefined,
+    (update) => { updates.push(update); },
+    undefined,
+    { maxConcurrency: 2 },
+  );
+  const running = runtime.run(Array.from({ length: 3 }, (_, index) => ({
+    agent: "write",
+    task: `write domain ${index}`,
+    boardTaskId: "write",
+    partition: `domain-${index}`,
+    writeMode: "subtree" as const,
+  })), new AbortController().signal);
+  while (active < 2) await new Promise((resolve) => setImmediate(resolve));
+
+  const initial = updates.slice(0, 3).map((update) => update.status);
+  const latest = new Map(updates.map((update) => [update.id, update.status]));
+  release();
+  await running;
+  assert.deepEqual(initial, ["queued", "queued", "queued"]);
+  assert.deepEqual([...latest.values()].sort(), ["queued", "running", "running"]);
+});
+
+test("writer returns a durable blocked result without validating a partial target", async (t) => {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-subagent-blocked-"));
+  t.after(async () => await rm(workspaceRoot, { recursive: true, force: true }));
+  const blocked = WRITE_RECEIPT
+    .replace("complete", "blocked")
+    .replace("## Evidence gaps\n\nnone", "## Evidence gaps\n\nsrc/order.ts#L10-L20 lacks an enforcement point");
+  const statuses = [];
+  const runtime = await createSubagentRuntime(
+    implicitPlan(workspaceRoot),
+    path.join(workspaceRoot, "candidate"),
+    {
+      async createSession() {
+        return { session: {
+          sessionFile: undefined,
+          subscribe() { return () => {}; },
+          async prompt() {},
+          async waitForIdle() {},
+          getLastAssistantText() { return blocked; },
+          dispose() {},
+          abort() {},
+        }, modelFallbackMessage: undefined };
+      },
+    },
+    undefined,
+    (update) => { statuses.push(update.status); },
+  );
+  const [result] = await runtime.run([{
+    agent: "write",
+    task: "write billing",
+    boardTaskId: "write",
+    partition: "billing",
+    writeMode: "subtree",
+  }], new AbortController().signal);
+  assert.equal(result.status, "blocked");
+  assert.equal(result.error, undefined);
+  assert.deepEqual(statuses, ["queued", "running", "blocked"]);
+  assert.ok(result.handoff);
 });
 
 test("parallel survey tasks stay distinct in live updates", async (t) => {

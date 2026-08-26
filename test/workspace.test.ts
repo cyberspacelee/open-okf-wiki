@@ -12,6 +12,16 @@ import {
 } from "../extensions/wiki/lib/workspace.js";
 
 const temporaryDirectories = [];
+const DEFAULT_SESSION_BUDGETS = {
+  leadSessionTimeoutSeconds: 14_400,
+  workerSessionTimeoutSeconds: 1_200,
+  maxLeadTurns: 240,
+  maxWorkerTurns: 80,
+  maxLeadToolCalls: 128,
+  maxWorkerToolCalls: 256,
+  maxLeadInputTokens: 4_000_000,
+  maxWorkerInputTokens: 1_000_000,
+};
 
 function git(root, ...args) {
   return execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
@@ -45,7 +55,7 @@ test("loads a Git repository without workspace.yaml as an implicit self source",
   assert.equal(loaded.sources[0].realPath, root);
   assert.deepEqual(loaded.wiki, {
     exclude: [], maxConcurrentAgents: 3, maxWorkerRepairRounds: 6, transientRetries: 1,
-    baseRetryDelayMs: 1_000, sessionTimeoutSeconds: 1_200,
+    baseRetryDelayMs: 1_000, ...DEFAULT_SESSION_BUDGETS,
   });
   await assert.rejects(lstat(path.join(root, "workspace.yaml")), { code: "ENOENT" });
 });
@@ -63,7 +73,7 @@ test("initializes explicit workspace defaults and normalized Wiki excludes", asy
   assert.equal(workspace.defaultSourceIgnores, true);
   assert.deepEqual(workspace.wiki, {
     exclude: ["generated/**", "private/**"], maxConcurrentAgents: 3, maxWorkerRepairRounds: 6, transientRetries: 1,
-    baseRetryDelayMs: 1_000, sessionTimeoutSeconds: 1_200, templates: "wiki-templates",
+    baseRetryDelayMs: 1_000, ...DEFAULT_SESSION_BUDGETS, templates: "wiki-templates",
   });
   assert.deepEqual(workspace.sources, []);
   const config = await readFile(workspace.configPath, "utf8");
@@ -239,7 +249,14 @@ test("wiki config accepts runtime controls and rejects removed controls", async 
     "  maxWorkerRepairRounds: 9",
     "  transientRetries: 4",
     "  baseRetryDelayMs: 2500",
-    "  sessionTimeoutSeconds: 900",
+    "  leadSessionTimeoutSeconds: 7200",
+    "  workerSessionTimeoutSeconds: 900",
+    "  maxLeadTurns: 300",
+    "  maxWorkerTurns: 90",
+    "  maxLeadToolCalls: 150",
+    "  maxWorkerToolCalls: 220",
+    "  maxLeadInputTokens: 3000000",
+    "  maxWorkerInputTokens: 800000",
     "sources: []",
     "",
   ].join("\n");
@@ -247,7 +264,10 @@ test("wiki config accepts runtime controls and rejects removed controls", async 
   const loaded = await loadWikiWorkspace(root);
   assert.deepEqual(loaded.wiki, {
     exclude: ["generated/**"], maxConcurrentAgents: 6, maxWorkerRepairRounds: 9, transientRetries: 4,
-    baseRetryDelayMs: 2_500, sessionTimeoutSeconds: 900,
+    baseRetryDelayMs: 2_500,
+    leadSessionTimeoutSeconds: 7_200, workerSessionTimeoutSeconds: 900,
+    maxLeadTurns: 300, maxWorkerTurns: 90, maxLeadToolCalls: 150, maxWorkerToolCalls: 220,
+    maxLeadInputTokens: 3_000_000, maxWorkerInputTokens: 800_000,
   });
 
   await writeFile(configPath, validConfig.replace("  maxConcurrentAgents: 6", "  maxConcurrentAgents: 1"));

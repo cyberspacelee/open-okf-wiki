@@ -3,8 +3,10 @@ import { appendText, readText } from "./files.js";
 import type {
   WikiActivityView,
   WikiAgentStatus,
+  WikiAgentUsage,
   WikiAgentView,
   WikiSessionActivity,
+  WikiToolStatus,
 } from "./producer-types.js";
 
 type ActivityRecord = {
@@ -12,6 +14,7 @@ type ActivityRecord = {
   type: "activity";
   agentId: string;
   activity: WikiActivityView;
+  usage?: WikiAgentUsage;
 };
 
 type AgentRecord = {
@@ -89,7 +92,7 @@ export class RunActivity {
 
     const final = activity.kind === "input" || activity.status !== "running";
     if (!previous || final) {
-      this.#enqueue({ version: 1, type: "activity", agentId, activity });
+      this.#enqueue({ version: 1, type: "activity", agentId, activity, ...(usage ? { usage } : {}) });
     }
   }
 
@@ -137,7 +140,11 @@ export class RunActivity {
     const activity = current.activity.slice();
     if (index >= 0) activity[index] = record.activity;
     else activity.push(record.activity);
-    this.#agents.set(record.agentId, { ...current, activity });
+    this.#agents.set(record.agentId, {
+      ...current,
+      activity,
+      ...(record.usage ? { usage: record.usage } : {}),
+    });
   }
 }
 
@@ -157,7 +164,8 @@ function parseRecord(line: string): LogRecord {
     if (raw.task !== undefined && typeof raw.task !== "string") throw new Error("Run activity agent task is invalid");
     return raw as AgentRecord;
   }
-  if (raw.type === "activity" && typeof raw.agentId === "string" && isActivity(raw.activity)) {
+  if (raw.type === "activity" && typeof raw.agentId === "string" && isActivity(raw.activity)
+    && (raw.usage === undefined || isUsage(raw.usage))) {
     return raw as ActivityRecord;
   }
   throw new Error("Run activity record is invalid");
@@ -168,15 +176,26 @@ function isActivity(value: unknown): value is WikiActivityView {
   const raw = value as Record<string, unknown>;
   if (typeof raw.id !== "string" || !isTimestamp(raw.at)) return false;
   if (raw.kind === "input") return typeof raw.text === "string";
-  if (raw.kind === "output") return typeof raw.text === "string" && isAgentStatus(raw.status);
+  if (raw.kind === "output") return typeof raw.text === "string" && isToolStatus(raw.status);
   return raw.kind === "tool"
     && typeof raw.tool === "string"
-    && isAgentStatus(raw.status)
+    && isToolStatus(raw.status)
     && (raw.result === undefined || typeof raw.result === "string");
 }
 
 function isAgentStatus(value: unknown): value is WikiAgentStatus {
+  return value === "queued" || value === "running" || value === "complete" || value === "failed"
+    || value === "blocked" || value === "interrupted";
+}
+
+function isToolStatus(value: unknown): value is WikiToolStatus {
   return value === "running" || value === "complete" || value === "failed";
+}
+
+function isUsage(value: unknown): value is WikiAgentUsage {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const raw = value as Record<string, unknown>;
+  return [raw.input, raw.output, raw.total].every((entry) => typeof entry === "number" && entry >= 0);
 }
 
 function isTimestamp(value: unknown): value is string {

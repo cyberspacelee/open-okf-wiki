@@ -57,7 +57,7 @@ export function formatWriterCitationContract(
     "```",
     "",
     "Each `sources` entry requires a unique stable `id` and a `resource`; `title` is optional. Every body `[^id]` has the same `sources[].id` and a later `[^id]: ...` footnote definition. Put source evidence in `sources`, and use ordinary Markdown links only for Wiki pages.",
-    "A file `resource` is a POSIX Workspace-relative path. Its line suffix is optional: `path`, `path#L12`, and `path#L12-L18` are valid forms. Every cited file must be read successfully; when a range is supplied, the read must cover the complete range.",
+    "A file `resource` is a POSIX Workspace-relative path. A frontmatter-only inventory entry may use `path`; every entry referenced by a body footnote requires `path#L12` or `path#L12-L18`. Every cited file and complete claimed range must be read successfully.",
     sourceScope,
     "Use paths without a leading slash, `./`, `../`, empty segments, or backslashes.",
     ...(catalogs.length
@@ -137,6 +137,10 @@ export function extractOkfSources(
   }
   for (const id of references) {
     if (!definitions.has(id)) invalid.push(`footnote [^${id}] is missing definition [^${id}]: ...`);
+    const citation = byId.get(id);
+    if (citation && !citation.catalog && citation.startLine === undefined) {
+      invalid.push(`footnote [^${id}] requires a line-ranged sources[].resource`);
+    }
   }
   MARKDOWN_LINK.lastIndex = 0;
   for (const match of visibleBody.matchAll(MARKDOWN_LINK)) {

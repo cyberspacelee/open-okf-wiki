@@ -4,8 +4,9 @@ import path from "node:path";
 import { Type } from "typebox";
 import type { AgentToolUpdateCallback, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { loadWikiAgents, type WikiAgentDefinition } from "./agents.js";
-import { reviewCandidatePages, writeHandoff } from "./handoff.js";
+import { parseWriteStatus, reviewCandidatePages, writeHandoff } from "./handoff.js";
 import { writeText } from "./files.js";
+import { failureCode } from "./failures.js";
 import { assertAgentPartition, guardForWorker, writeGuardFromPlan, writeTargetsOverlap, type WikiWriteGuard } from "./path-policy.js";
 import type { WikiPinnedSourcePlan } from "./inspect.js";
 import { isImplicitPinPath } from "./path.js";
@@ -41,13 +42,15 @@ export interface SubagentResult extends SubagentTask {
   candidateRevision?: string;
   usage?: WikiAgentUsage;
   error?: string;
+  terminalReason?: string;
+  status?: "complete" | "blocked";
 }
 
 export interface SubagentRuntime {
   run(tasks: SubagentTask[], signal: AbortSignal, onUpdate?: AgentToolUpdateCallback): Promise<SubagentResult[]>;
 }
 
-export type SubagentTaskStatus = "running" | "complete" | "failed";
+export type SubagentTaskStatus = "queued" | "running" | "complete" | "failed" | "blocked";
 export interface SubagentTaskUpdate extends SubagentTask {
   id: string;
   status: SubagentTaskStatus;
@@ -57,6 +60,7 @@ export interface SubagentTaskUpdate extends SubagentTask {
   usage?: WikiAgentUsage;
   text?: string;
   error?: string;
+  terminalReason?: string;
 }
 export type SubagentTaskListener = (update: SubagentTaskUpdate) => void | Promise<void>;
 
@@ -73,7 +77,7 @@ export async function createSubagentRuntime(
     templates?: WikiTemplatePack;
     language?: "zh" | "en";
     assertDispatch?: (tasks: readonly SubagentTask[]) => void;
-    handoffsForTask?: (task: SubagentTask) => readonly string[];
+    handoffsForTask?: (task: SubagentTask & { id: string }) => readonly string[];
   } = {},
 ): Promise<SubagentRuntime> {
   const agents = await loadWikiAgents(agentsDirectory);
@@ -95,7 +99,7 @@ export async function createSubagentRuntime(
           throw new Error("subagent maxConcurrency must be a positive integer");
         }
         const jobs = tasks.map((task) => ({ ...task, id: executionId(task.agent) }));
-        const live = new Map(jobs.map((task) => [task.id, { ...task, status: "running" as SubagentTaskStatus, tools: [] as WikiToolView[] }]));
+        const live = new Map(jobs.map((task) => [task.id, { ...task, status: "queued" as SubagentTaskStatus, tools: [] as WikiToolView[] }]));
         const report = async () => {
           const snapshot = [...live.values()].map((task) => ({ ...task, tools: task.tools.map((tool) => ({ ...tool })) }));
           await onUpdate?.({
@@ -120,9 +124,13 @@ export async function createSubagentRuntime(
           await reportQueue;
           if (reportError) throw reportError;
         };
-        for (const task of jobs) await onTask?.({ ...task, status: "running" });
+        for (const task of jobs) await onTask?.({ ...task, status: "queued" });
         await report();
         return await mapWithConcurrency(jobs, maxConcurrency, async (task) => {
+          const entry = live.get(task.id)!;
+          entry.status = "running";
+          await onTask?.({ ...task, status: "running" });
+          await flushReport();
           const result = await runOne(task, byName, guard, plan.fingerprint, {
             ...session,
             onActivity(event) {
@@ -133,8 +141,7 @@ export async function createSubagentRuntime(
             },
           }, signal, catalogsForTask(task, plan, catalogs), options.templates, options.maxWorkerRepairRounds, options.language,
           options.handoffsForTask?.(task) ?? []);
-          const status = result.error ? "failed" : "complete";
-          const entry = live.get(result.id)!;
+          const status = result.error ? "failed" : result.status ?? "complete";
           entry.status = status;
           await onTask?.({ ...result, status });
           await flushReport();
@@ -254,7 +261,11 @@ async function runOne(
     const allowed = definition.tools ? new Set(definition.tools) : undefined;
     const scopedGuard = guardForWorker(guard, task.agent, task.partition, requiredReads);
     const taskGuard = writeTarget ? { ...scopedGuard, writeTarget } : scopedGuard;
-    const todo = writeTarget && templates ? createWriterTodoTracker(writeTarget) : undefined;
+    const logical = guard.sources.map((source) => source.logicalPath);
+    const implicit = logical.length === 1 && isImplicitPinPath(logical[0] ?? "");
+    const todo = writeTarget && templates
+      ? createWriterTodoTracker(writeTarget, { templates, implicit })
+      : undefined;
     const completionGate = writeTarget
       ? createWriterCompletionGate(taskGuard, {
         maxRepairRounds: maxWorkerRepairRounds,
@@ -274,8 +285,6 @@ async function runOne(
       ...(todo ? [todo.tool] : []),
       ...extra.filter((tool) => !allowed || allowed.has(tool.name)),
     ];
-    const logical = guard.sources.map((source) => source.logicalPath);
-    const implicit = logical.length === 1 && isImplicitPinPath(logical[0] ?? "");
     const scoped = templates && writeTarget
       ? templatesForTarget(templates, writeTarget, implicit)
       : templates?.templates ?? [];
@@ -340,9 +349,15 @@ async function runOne(
       handoffRevision: await fileRevision(path.join(guard.workspaceRoot, ...handoff.split("/"))),
       ...(completed ? { candidateRevision: completed.digest } : {}),
       ...(result.usage ? { usage: result.usage } : {}),
+      ...(task.agent === "write" ? { status: parseWriteStatus(result.text) ?? "complete" } : { status: "complete" as const }),
     };
   } catch (error) {
-    return { ...task, text: "", error: error instanceof Error ? error.message : String(error) };
+    return {
+      ...task,
+      text: "",
+      error: error instanceof Error ? error.message : String(error),
+      terminalReason: failureCode(error),
+    };
   }
 }
 

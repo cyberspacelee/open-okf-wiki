@@ -7,6 +7,9 @@ filename: concept.md
 cardinality: one
 required: true
 purpose: Give a developer the observable contract and exact edit-and-verify path for one source-identified Concept.
+table:
+  section: Invariants and constraints
+  columns: [Invariant, Enforced at, Violation signal, Verify]
 ---
 
 ## Purpose and public surface

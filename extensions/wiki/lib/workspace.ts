@@ -37,8 +37,14 @@ export interface WikiWorkspaceWikiConfig {
   transientRetries: number;
   /** Base delay for Pi's exponential retry backoff. */
   baseRetryDelayMs: number;
-  /** Wall-clock deadline for each Lead or delegated Agent session. */
-  sessionTimeoutSeconds: number;
+  leadSessionTimeoutSeconds: number;
+  workerSessionTimeoutSeconds: number;
+  maxLeadTurns: number;
+  maxWorkerTurns: number;
+  maxLeadToolCalls: number;
+  maxWorkerToolCalls: number;
+  maxLeadInputTokens: number;
+  maxWorkerInputTokens: number;
   /** Workspace-relative directory that replaces the packaged template pack. */
   templates?: string;
 }
@@ -49,7 +55,14 @@ export const DEFAULT_WORKSPACE_WIKI_CONFIG: WikiWorkspaceWikiConfig = {
   maxWorkerRepairRounds: 6,
   transientRetries: 1,
   baseRetryDelayMs: 1_000,
-  sessionTimeoutSeconds: 1_200,
+  leadSessionTimeoutSeconds: 14_400,
+  workerSessionTimeoutSeconds: 1_200,
+  maxLeadTurns: 240,
+  maxWorkerTurns: 80,
+  maxLeadToolCalls: 128,
+  maxWorkerToolCalls: 256,
+  maxLeadInputTokens: 4_000_000,
+  maxWorkerInputTokens: 1_000_000,
 };
 
 export interface WikiWorkspaceCatalog {
@@ -393,7 +406,9 @@ function parseWorkspaceCatalogs(
 
 function parseWikiConfig(value: unknown): WikiWorkspaceWikiConfig {
   const wiki = strictObject(value, "wiki", [
-    "exclude", "maxConcurrentAgents", "maxWorkerRepairRounds", "transientRetries", "baseRetryDelayMs", "sessionTimeoutSeconds", "templates",
+    "exclude", "maxConcurrentAgents", "maxWorkerRepairRounds", "transientRetries", "baseRetryDelayMs",
+    "leadSessionTimeoutSeconds", "workerSessionTimeoutSeconds", "maxLeadTurns", "maxWorkerTurns",
+    "maxLeadToolCalls", "maxWorkerToolCalls", "maxLeadInputTokens", "maxWorkerInputTokens", "templates",
   ]);
   const templates = parseTemplatesPath(wiki.templates);
   return {
@@ -402,7 +417,14 @@ function parseWikiConfig(value: unknown): WikiWorkspaceWikiConfig {
     maxWorkerRepairRounds: parseInteger(wiki.maxWorkerRepairRounds, "wiki.maxWorkerRepairRounds", DEFAULT_WORKSPACE_WIKI_CONFIG.maxWorkerRepairRounds, 1, 64),
     transientRetries: parseInteger(wiki.transientRetries, "wiki.transientRetries", DEFAULT_WORKSPACE_WIKI_CONFIG.transientRetries, 0, 10),
     baseRetryDelayMs: parseInteger(wiki.baseRetryDelayMs, "wiki.baseRetryDelayMs", DEFAULT_WORKSPACE_WIKI_CONFIG.baseRetryDelayMs, 0, 300_000),
-    sessionTimeoutSeconds: parseInteger(wiki.sessionTimeoutSeconds, "wiki.sessionTimeoutSeconds", DEFAULT_WORKSPACE_WIKI_CONFIG.sessionTimeoutSeconds, 1, 2_147_483),
+    leadSessionTimeoutSeconds: parseInteger(wiki.leadSessionTimeoutSeconds, "wiki.leadSessionTimeoutSeconds", DEFAULT_WORKSPACE_WIKI_CONFIG.leadSessionTimeoutSeconds, 1, 2_147_483),
+    workerSessionTimeoutSeconds: parseInteger(wiki.workerSessionTimeoutSeconds, "wiki.workerSessionTimeoutSeconds", DEFAULT_WORKSPACE_WIKI_CONFIG.workerSessionTimeoutSeconds, 1, 2_147_483),
+    maxLeadTurns: parseInteger(wiki.maxLeadTurns, "wiki.maxLeadTurns", DEFAULT_WORKSPACE_WIKI_CONFIG.maxLeadTurns, 1, 100_000),
+    maxWorkerTurns: parseInteger(wiki.maxWorkerTurns, "wiki.maxWorkerTurns", DEFAULT_WORKSPACE_WIKI_CONFIG.maxWorkerTurns, 1, 100_000),
+    maxLeadToolCalls: parseInteger(wiki.maxLeadToolCalls, "wiki.maxLeadToolCalls", DEFAULT_WORKSPACE_WIKI_CONFIG.maxLeadToolCalls, 1, 1_000_000),
+    maxWorkerToolCalls: parseInteger(wiki.maxWorkerToolCalls, "wiki.maxWorkerToolCalls", DEFAULT_WORKSPACE_WIKI_CONFIG.maxWorkerToolCalls, 1, 1_000_000),
+    maxLeadInputTokens: parseInteger(wiki.maxLeadInputTokens, "wiki.maxLeadInputTokens", DEFAULT_WORKSPACE_WIKI_CONFIG.maxLeadInputTokens, 1, Number.MAX_SAFE_INTEGER),
+    maxWorkerInputTokens: parseInteger(wiki.maxWorkerInputTokens, "wiki.maxWorkerInputTokens", DEFAULT_WORKSPACE_WIKI_CONFIG.maxWorkerInputTokens, 1, Number.MAX_SAFE_INTEGER),
     ...(templates ? { templates } : {}),
   };
 }

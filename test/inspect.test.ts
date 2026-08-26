@@ -22,7 +22,7 @@ async function gitRepo(t, name = "repo") {
   return root;
 }
 
-test("sourceIsIgnored covers implicit layout, Java tests, and default noise", () => {
+test("sourceIsIgnored keeps tests visible while excluding generated and secret noise", () => {
   const source = { path: "." };
   assert.equal(sourceIsIgnored(source, ".okf-wiki/runs/a/run.json", true), true);
   assert.equal(sourceIsIgnored(source, ".env", false), true);
@@ -30,8 +30,8 @@ test("sourceIsIgnored covers implicit layout, Java tests, and default noise", ()
   assert.equal(sourceIsIgnored(source, ".env.example", false), false);
   assert.equal(sourceIsIgnored(source, "wiki/overview.md", true), true);
   assert.equal(sourceIsIgnored(source, "src/index.ts", true), false);
-  assert.equal(sourceIsIgnored(source, "src/test/java/com/acme/OrderServiceTest.java", true), true);
-  assert.equal(sourceIsIgnored(source, "module-a/src/test/java/FooTest.java", true), true);
+  assert.equal(sourceIsIgnored(source, "src/test/java/com/acme/OrderServiceTest.java", true), false);
+  assert.equal(sourceIsIgnored(source, "module-a/src/test/java/FooTest.java", true), false);
   assert.equal(sourceIsIgnored(source, "src/main/java/com/acme/OrderService.java", true), false);
   assert.equal(sourceIsIgnored(source, "src/test/java/com/acme/OrderServiceTest.java", false), false);
 });

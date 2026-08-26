@@ -40,3 +40,34 @@ test("Writer Todo enforces target ownership and complete Candidate coverage", as
     /does not cover target pages/,
   );
 });
+
+test("Writer Todo rejects a page contract at the wrong scope before authoring", async () => {
+  const templates = { templates: [
+    {
+      sourceFile: "domain.md", id: "domain", type: "Domain", scope: "domain" as const,
+      identities: ["domain" as const], filename: "domain.md", cardinality: "one" as const,
+      required: true, purpose: "Own a domain.", sections: [{ title: "Details", guidance: "Describe it." }],
+    },
+    {
+      sourceFile: "concept.md", id: "concept", type: "Concept", scope: "concept" as const,
+      identities: ["concept" as const], filename: "concept.md", cardinality: "one" as const,
+      required: true, purpose: "Own a concept.", sections: [{ title: "Details", guidance: "Describe it." }],
+    },
+  ] };
+  const tracker = createWriterTodoTracker({ path: "billing", mode: "subtree" }, { templates, implicit: true });
+  const invalid = await tracker.tool.execute("todo", {
+    action: "write",
+    items: [{ path: "wiki/billing/concept.md", status: "pending" }],
+  }, signal, undefined, undefined);
+  assert.equal(invalid.isError, true);
+  assert.match(invalid.content[0].text, /concept.*not allowed.*wiki\/billing\/concept\.md/i);
+
+  const valid = await tracker.tool.execute("todo", {
+    action: "write",
+    items: [
+      { path: "wiki/billing/domain.md", status: "pending" },
+      { path: "wiki/billing/invoice/concept.md", status: "pending" },
+    ],
+  }, signal, undefined, undefined);
+  assert.notEqual(valid.isError, true);
+});

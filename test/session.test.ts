@@ -163,6 +163,31 @@ test("session applies workspace retry controls to Pi settings", async (t) => {
   assert.equal(provider.maxRetries, 5);
 });
 
+test("session stops before a follow-up exceeds turn or input budgets", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-session-budget-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  let prompts = 0;
+  const session = fakeSession([]);
+  session.prompt = async () => { prompts += 1; };
+  session.getSessionStats = () => ({
+    tokens: { input: 101, output: 1, cacheRead: 0, cacheWrite: 0, total: 102 },
+    assistantMessages: 1,
+    toolCalls: 0,
+    cost: 0,
+  });
+  let checks = 0;
+  await assert.rejects(
+    () => runWikiSession(root, [], "initial", new AbortController().signal, {
+      async createSession() { return { session, modelFallbackMessage: undefined }; },
+      maxTurns: 1,
+      maxInputTokens: 100,
+      async nextPrompt() { checks += 1; return checks === 1 ? "repair" : undefined; },
+    }),
+    (error) => error?.code === "session_input_tokens_exhausted",
+  );
+  assert.equal(prompts, 1);
+});
+
 test("session validates the latest assistant output before ending", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-session-completion-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));

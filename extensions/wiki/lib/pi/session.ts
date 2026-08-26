@@ -11,7 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { WikiBudgetExhaustedError } from "../failures.js";
+import { WikiBudgetExhaustedError, WikiSessionTimeoutError } from "../failures.js";
 import { exists } from "../files.js";
 import type { WikiAgentUsage, WikiSessionActivity } from "../producer-types.js";
 
@@ -24,7 +24,9 @@ export interface RunWikiSessionOptions {
   sessionTimeoutMs?: number;
   sessionDir?: string;
   sessionFile?: string;
+  maxTurns?: number;
   maxToolCalls?: number;
+  maxInputTokens?: number;
   systemPrompt?: string;
   transientRetries?: number;
   baseRetryDelayMs?: number;
@@ -208,7 +210,7 @@ export async function runWikiSession(
     const deadline = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
         void session?.abort();
-        reject(new Error(`Wiki agent session timed out after ${timeoutMs}ms`));
+        reject(new WikiSessionTimeoutError(timeoutMs));
       }, timeoutMs);
     });
     let currentPrompt: string | undefined = prompt;
@@ -218,6 +220,7 @@ export async function runWikiSession(
       await compactionDelivery;
       if (compactionDeliveryError) throw compactionDeliveryError;
       currentPrompt = await options.nextPrompt?.(session.getLastAssistantText() ?? "");
+      assertSessionBudget(readSessionUsage(session), options, currentPrompt !== undefined);
     }
     const usage = readSessionUsage(session, compactions);
     return {
@@ -228,6 +231,32 @@ export async function runWikiSession(
     if (timer) clearTimeout(timer);
     signal.removeEventListener("abort", abort);
     session.dispose();
+  }
+}
+
+function assertSessionBudget(
+  usage: WikiAgentUsage | undefined,
+  options: Pick<RunWikiSessionOptions, "maxTurns" | "maxInputTokens">,
+  needsAnotherTurn: boolean,
+): void {
+  if (!usage) return;
+  if (options.maxInputTokens !== undefined && usage.input > options.maxInputTokens) {
+    throw new WikiBudgetExhaustedError(
+      `Wiki session input-token budget exhausted (${usage.input}/${options.maxInputTokens})`,
+      "session_input_tokens_exhausted",
+    );
+  }
+  if (options.maxTurns !== undefined && (usage.turns ?? 0) > options.maxTurns) {
+    throw new WikiBudgetExhaustedError(
+      `Wiki session turn budget exhausted (${usage.turns}/${options.maxTurns})`,
+      "session_turns_exhausted",
+    );
+  }
+  if (needsAnotherTurn && options.maxTurns !== undefined && (usage.turns ?? 0) >= options.maxTurns) {
+    throw new WikiBudgetExhaustedError(
+      `Wiki session needs another turn after reaching its ${options.maxTurns}-turn budget`,
+      "session_turns_exhausted",
+    );
   }
 }
 

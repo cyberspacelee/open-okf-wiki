@@ -60,6 +60,10 @@ Success and cancel remove the Run state; the next `/wiki` starts from an empty
 Candidate. Legacy `.okf-wiki/runs/` history is deleted when a new Run starts.
 Current-Run Process activity is retained across pause, failure, and resume, and
 is deleted with the Run after success or cancel.
+Delegated work is persisted as `queued` before it acquires a worker slot, then
+as `running`, `complete`, `blocked`, `failed`, or `interrupted`. Process usage
+is appended to `activity.jsonl`; failed executions write a bounded diagnostic
+artifact that is injected into the next attempt for the same target.
 Run timestamps remain UTC ISO strings in persisted state. User-facing absolute
 times are formatted in the user's system-default locale and time zone.
 
@@ -81,7 +85,14 @@ wiki:
   maxWorkerRepairRounds: 6
   transientRetries: 1
   baseRetryDelayMs: 1000
-  sessionTimeoutSeconds: 1200
+  leadSessionTimeoutSeconds: 14400
+  workerSessionTimeoutSeconds: 1200
+  maxLeadTurns: 240
+  maxWorkerTurns: 80
+  maxLeadToolCalls: 128
+  maxWorkerToolCalls: 256
+  maxLeadInputTokens: 4000000
+  maxWorkerInputTokens: 1000000
   templates: wiki-templates
 catalogs:
   app:
@@ -119,12 +130,19 @@ the defaults below; implicit single-source Workspaces use the same defaults.
 | `maxWorkerRepairRounds` | `6` | `1..64` | Maximum same-session follow-ups for writer completion and reviewer verdict repairs. |
 | `transientRetries` | `1` | `0..10` | Retries after a transient model failure, in addition to the initial attempt. |
 | `baseRetryDelayMs` | `1000` | `0..300000` | Base delay used by Pi's retry backoff. |
-| `sessionTimeoutSeconds` | `1200` | `1..2147483` | Wall-clock deadline for each Lead or delegated-agent session. |
+| `leadSessionTimeoutSeconds` | `14400` | `1..2147483` | Wall-clock deadline for the Lead orchestration session. |
+| `workerSessionTimeoutSeconds` | `1200` | `1..2147483` | Wall-clock deadline for each delegated-agent session. |
+| `maxLeadTurns` | `240` | `1..100000` | Maximum Lead assistant turns, including completion follow-ups. |
+| `maxWorkerTurns` | `80` | `1..100000` | Maximum turns per delegated-agent session. |
+| `maxLeadToolCalls` | `128` | `1..1000000` | Maximum tool calls in the Lead session. |
+| `maxWorkerToolCalls` | `256` | `1..1000000` | Maximum tool calls per delegated-agent session. |
+| `maxLeadInputTokens` | `4000000` | positive integer | Maximum cumulative Lead input tokens. |
+| `maxWorkerInputTokens` | `1000000` | positive integer | Maximum cumulative input tokens per delegated-agent session. |
 | `templates` | `wiki-templates` after `/wiki init` | relative directory | Whole-pack replacement. Init copies the packaged pack for `language` here. Unset uses packaged `templates/zh` or `templates/en`. |
 
-`defaultSourceIgnores: true` (the default) hides dependency, build, and Java
-test trees (`src/test/**`, `*Test.java`, and the usual `node_modules` /
-`target` noise) from inspect and from agent `read` / `grep` / `find` / `ls`.
+`defaultSourceIgnores: true` (the default) hides dependency and build trees
+(including the usual `node_modules` / `target` noise) from inspect and from
+agent `read` / `grep` / `find` / `ls`. Source tests remain readable evidence.
 Add more with `wiki.exclude`. `/wiki init --no-default-ignores` turns the
 built-in list off.
 Runtime dotenv files are always excluded from agent evidence, even when default
@@ -235,18 +253,19 @@ Frontmatter has no defaults:
 | `applies_when` | evidence condition for a non-required contract | required when `required: false` |
 | `purpose` | routing-quality ownership statement | required |
 | `diagram` | `{ section, kinds }` Mermaid requirement | optional |
+| `table` | `{ section, columns }` exact Markdown table header requirement | optional |
 
 Contract fields stay on the template file. Generated pages carry only `type`,
 `title`, `description`, and `sources`. Claims use `[^id]` references keyed to
 `sources[].id` and matching `[^id]: source title` footnote definitions.
 `sources[].resource` is either a POSIX path from the Workspace root or a
 Catalog table (`catalog:<catalog>/<table>`). Describe Catalog tables on demand when a
-page needs columns, keys, or constraints. A file path may
-optionally end in `#Lx` or `#Lx-Ly`: for example `api/src/main.ts#L12` in an
-explicit Workspace and `src/main.ts` in an implicit Workspace. A supplied range
-must exist in the pinned file and must have been read by the writer. Paths are
-never relative to the page or Source root, and implicit Workspaces never add
-`self/`.
+page needs columns, keys, or constraints. A frontmatter-only source inventory
+may cite a bare file path. Every source referenced by a body footnote uses
+`#Lx` or `#Lx-Ly`, for example `api/src/main.ts#L12` in an explicit Workspace.
+The range must exist in the pinned file and must have been read by the writer.
+Paths are never relative to the page or Source root, and implicit Workspaces
+never add `self/`.
 
 The contract body contains unique H2 semantic obligations. Each H2 body tells
 survey, writer, and reviewer what question must be answered. The host derives
@@ -256,7 +275,7 @@ no `{{placeholder}}`. H3 subsections remain available.
 
 Publication fails on an undeclared page, wrong placement, missing architecture
 or concept cluster, heading drift, an empty section, an unresolved placeholder,
-invalid diagram, missing source evidence,
+invalid diagram or required table, missing source evidence,
 a write that never read its cited files, a broken Wiki link, or stale review.
 
 ## Published layout

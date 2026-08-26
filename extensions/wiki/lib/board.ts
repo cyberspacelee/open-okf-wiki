@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeText } from "./files.js";
 
-const WIKI_TASK_STATUSES = ["pending", "in_progress", "completed", "failed"] as const;
+const WIKI_TASK_STATUSES = ["pending", "in_progress", "completed", "failed", "blocked"] as const;
 
 export type WikiTaskStatus = (typeof WIKI_TASK_STATUSES)[number];
 
@@ -95,7 +95,7 @@ export function formatBoard(board: WikiBoard): string {
     lines.push("Tasks: none. Write the Board before surveying or writing pages.");
     return lines.join("\n");
   }
-  const remaining = board.tasks.filter((task) => task.status === "pending" || task.status === "in_progress");
+  const remaining = board.tasks.filter((task) => task.status === "pending" || task.status === "in_progress" || task.status === "blocked");
   const done = board.tasks.filter((task) => task.status === "completed").length;
   lines.push(`Tasks: ${done}/${board.tasks.length} completed; ${remaining.length} remaining.`);
   for (const task of board.tasks) {
@@ -130,6 +130,7 @@ function statusMark(status: WikiTaskStatus): string {
   if (status === "completed") return "x";
   if (status === "in_progress") return ">";
   if (status === "failed") return "!";
+  if (status === "blocked") return "?";
   return " ";
 }
 

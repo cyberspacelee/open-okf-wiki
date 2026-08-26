@@ -318,6 +318,7 @@ async function pageContractIssues(
     if (template) issues.push(...markdownContractIssues(relative, parsed, template, title, description));
   }
   if (template?.diagram) issues.push(...mermaidIssues(relative, parsed.body, template));
+  if (template?.table) issues.push(...tableIssues(relative, parsed.body, template));
   for (const invalid of citations.invalid) {
     issues.push({ code: "citation", page: relative, message: invalid });
   }
@@ -510,6 +511,10 @@ function mermaidIssues(page: string, body: string, template: WikiTemplate): Wiki
   const sectionName = template.diagram!.section;
   const section = markdownStructure(body).sections.find((candidate) => candidate.title === sectionName);
   const sectionBody = section?.lines.join("\n") ?? "";
+  const fences = body.match(new RegExp(MERMAID_FENCE.source, "g")) ?? [];
+  if (fences.length !== 1) {
+    return [{ code: "mermaid", page, message: `${template.id} requires exactly one Mermaid fence under ${sectionName}` }];
+  }
   const match = MERMAID_KIND.exec(sectionBody);
   if (!match) {
     return [{ code: "mermaid", page, message: `${template.id} requires a Mermaid diagram under ${sectionName}` }];
@@ -523,6 +528,9 @@ function mermaidIssues(page: string, body: string, template: WikiTemplate): Wiki
     }];
   }
   const inner = MERMAID_FENCE.exec(sectionBody)?.[1] ?? "";
+  if (inner.includes("\\n")) {
+    return [{ code: "mermaid", page, message: `${template.id} mermaid labels must use <br/> instead of literal \\n` }];
+  }
   const content = inner.split(/\r?\n/).some((line) => {
     const trimmed = line.trim();
     return Boolean(trimmed) && !trimmed.startsWith("%%");
@@ -531,6 +539,30 @@ function mermaidIssues(page: string, body: string, template: WikiTemplate): Wiki
     return [{ code: "mermaid", page, message: `${template.id} mermaid fence is empty` }];
   }
   return [];
+}
+
+function tableIssues(page: string, body: string, template: WikiTemplate): WikiValidationIssue[] {
+  const contract = template.table;
+  if (!contract) return [];
+  const section = markdownStructure(body).sections.find((candidate) => candidate.title === contract.section);
+  const lines = section?.lines.map((line) => line.trim()).filter(Boolean) ?? [];
+  const headerIndex = lines.findIndex((line) => line.startsWith("|") && line.endsWith("|"));
+  const columns = headerIndex >= 0 ? tableCells(lines[headerIndex]!) : [];
+  const separator = headerIndex >= 0 ? tableCells(lines[headerIndex + 1] ?? "") : [];
+  if (columns.length !== contract.columns.length || columns.some((column, index) => column !== contract.columns[index])
+    || separator.length !== contract.columns.length || separator.some((cell) => !/^:?-{3,}:?$/.test(cell))) {
+    return [{
+      code: "table",
+      page,
+      message: `${template.id} requires table ${contract.columns.join(" | ")} under ${contract.section}`,
+    }];
+  }
+  return [];
+}
+
+function tableCells(line: string): string[] {
+  if (!line.startsWith("|") || !line.endsWith("|")) return [];
+  return line.slice(1, -1).split("|").map((cell) => cell.trim());
 }
 
 function topologyIssues(

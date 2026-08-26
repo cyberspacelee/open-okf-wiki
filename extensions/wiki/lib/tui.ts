@@ -657,13 +657,16 @@ function navigationWindow(lines: NavigationLine[], rows: number, theme: ThemeLik
 
 function marker(status: WikiAgentView["status"], theme: ThemeLike): string {
   if (status === "complete") return paint(theme, "success", "✓");
-  if (status === "failed") return paint(theme, "error", "✗");
+  if (status === "failed" || status === "interrupted") return paint(theme, "error", "✗");
+  if (status === "blocked") return paint(theme, "error", "?");
+  if (status === "queued") return paint(theme, "dim", "·");
   return paint(theme, "accent", "◆");
 }
 
 function taskMarker(status: string, theme: ThemeLike): string {
   if (status === "completed") return paint(theme, "success", "✓");
   if (status === "failed") return paint(theme, "error", "✗");
+  if (status === "blocked") return paint(theme, "error", "?");
   if (status === "in_progress") return paint(theme, "accent", ">");
   return paint(theme, "dim", "·");
 }

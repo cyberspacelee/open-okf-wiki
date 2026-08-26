@@ -1,6 +1,7 @@
 import { Type } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { isSafeWikiPagePath } from "./path.js";
+import { templateMatchesFilename, type WikiTemplate, type WikiTemplatePack } from "./templates.js";
 import { writeTargetAllows, type WikiWriteTarget } from "./write-target.js";
 
 const STATUSES = ["pending", "in_progress", "completed"] as const;
@@ -11,7 +12,10 @@ export interface WriterTodoItem {
   status: WriterTodoStatus;
 }
 
-export function createWriterTodoTracker(target: WikiWriteTarget) {
+export function createWriterTodoTracker(
+  target: WikiWriteTarget,
+  options: { templates?: WikiTemplatePack; implicit?: boolean } = {},
+) {
   let items: WriterTodoItem[] | undefined;
   const tool = {
     name: "todo",
@@ -27,7 +31,7 @@ export function createWriterTodoTracker(target: WikiWriteTarget) {
     async execute(_id, params) {
       try {
         const input = params as { action?: "list" | "write"; items?: WriterTodoItem[] };
-        if (input.action === "write") items = parseItems(input.items, target);
+        if (input.action === "write") items = parseItems(input.items, target, options);
         return {
           content: [{ type: "text", text: formatItems(items) }],
           details: { items: items ?? [] },
@@ -57,7 +61,11 @@ export function createWriterTodoTracker(target: WikiWriteTarget) {
   };
 }
 
-function parseItems(value: WriterTodoItem[] | undefined, target: WikiWriteTarget): WriterTodoItem[] {
+function parseItems(
+  value: WriterTodoItem[] | undefined,
+  target: WikiWriteTarget,
+  options: { templates?: WikiTemplatePack; implicit?: boolean },
+): WriterTodoItem[] {
   if (!Array.isArray(value) || !value.length) throw new Error("Writer Todo requires at least one page");
   const seen = new Set<string>();
   let active = 0;
@@ -72,6 +80,7 @@ function parseItems(value: WriterTodoItem[] | undefined, target: WikiWriteTarget
     if (!writeTargetAllows(target, page.slice("wiki/".length))) {
       throw new Error(`Writer Todo path is outside ${target.mode}:${target.path}: ${page}`);
     }
+    if (options.templates) assertTemplatePlacement(page, target, options.templates, options.implicit ?? false);
     if (seen.has(page)) throw new Error(`Writer Todo path is duplicated: ${page}`);
     seen.add(page);
     if (item.status === "in_progress") active += 1;
@@ -79,6 +88,41 @@ function parseItems(value: WriterTodoItem[] | undefined, target: WikiWriteTarget
   });
   if (active > 1) throw new Error("Writer Todo may have at most one in_progress page");
   return parsed;
+}
+
+function assertTemplatePlacement(
+  page: string,
+  target: WikiWriteTarget,
+  pack: WikiTemplatePack,
+  implicit: boolean,
+): void {
+  const relative = page.slice("wiki/".length);
+  const filename = relative.split("/").at(-1)!;
+  const contracts = pack.templates.filter((template) => templateMatchesFilename(template, filename));
+  if (!contracts.length) throw new Error(`No active page contract matches Writer Todo path: ${page}`);
+  const allowed = placementAt(relative, target, implicit);
+  if (contracts.some((template) => templatePlacement(template).some((scope) => allowed.has(scope)))) return;
+  const contract = contracts[0]!;
+  throw new Error(`${contract.id} is not allowed at ${page}; expected ${expectedPath(contract, target)}`);
+}
+
+function placementAt(relative: string, target: WikiWriteTarget, implicit: boolean): Set<string> {
+  if (target.path === "wiki-root") return new Set(implicit ? ["wiki", "repo"] : ["wiki"]);
+  const prefix = `${target.path}/`;
+  const local = relative.startsWith(prefix) ? relative.slice(prefix.length) : "";
+  const depth = local.split("/").length;
+  if (target.mode === "directory") return new Set(["repo"]);
+  return new Set(depth === 1 ? ["domain"] : depth === 2 ? ["concept"] : []);
+}
+
+function templatePlacement(template: WikiTemplate): string[] {
+  return template.altitudes ?? (template.scope ? [template.scope] : []);
+}
+
+function expectedPath(template: WikiTemplate, target: WikiWriteTarget): string {
+  const filename = template.filename.replace("{slug}", "<topic>");
+  if (template.scope === "concept") return `wiki/${target.path}/<concept>/${filename}`;
+  return target.path === "wiki-root" ? `wiki/${filename}` : `wiki/${target.path}/${filename}`;
 }
 
 function formatItems(items: readonly WriterTodoItem[] | undefined): string {

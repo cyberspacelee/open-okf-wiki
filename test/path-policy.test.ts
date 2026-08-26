@@ -45,13 +45,13 @@ test("default ignores reject Java tests and keep production sources readable", (
     }],
   }, candidateRoot);
 
-  assert.throws(
-    () => assertReadable(guard, "backend/src/test/java/com/acme/OrderServiceTest.java"),
-    /ignore rules/,
+  assert.equal(
+    assertReadable(guard, "backend/src/test/java/com/acme/OrderServiceTest.java"),
+    path.join(sourceRoot, "src/test/java/com/acme/OrderServiceTest.java"),
   );
-  assert.throws(
-    () => assertReadable(guard, "backend/module-a/src/test/java/FooTest.java"),
-    /ignore rules/,
+  assert.equal(
+    assertReadable(guard, "backend/module-a/src/test/java/FooTest.java"),
+    path.join(sourceRoot, "module-a/src/test/java/FooTest.java"),
   );
   assert.equal(
     assertReadable(guard, "backend/src/main/java/com/acme/OrderService.java"),

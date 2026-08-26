@@ -10,7 +10,7 @@ export interface CheckpointExecution {
   partition: string;
   writeMode?: WikiWriteMode;
   agent: string;
-  status: "running" | "complete" | "failed" | "interrupted";
+  status: "queued" | "running" | "complete" | "failed" | "blocked" | "interrupted";
   handoff?: { path: string; sha256: string };
   error?: string;
 }

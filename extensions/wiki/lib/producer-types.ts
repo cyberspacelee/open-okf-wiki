@@ -4,9 +4,9 @@ export type WikiRunStatus = "running" | "paused" | "succeeded" | "failed" | "can
 
 export type WikiRunControl = "pause" | "resume" | "cancel";
 
-export type WikiAgentStatus = "running" | "complete" | "failed";
+export type WikiAgentStatus = "queued" | "running" | "complete" | "failed" | "blocked" | "interrupted";
 
-export type WikiToolStatus = WikiAgentStatus;
+export type WikiToolStatus = "running" | "complete" | "failed";
 
 export interface WikiProducerRequest {
   cwd: string;
@@ -48,7 +48,7 @@ export interface WikiInputActivityView extends WikiActivityBase {
 export interface WikiOutputActivityView extends WikiActivityBase {
   kind: "output";
   text: string;
-  status: WikiAgentStatus;
+  status: WikiToolStatus;
 }
 
 export interface WikiToolActivityView extends WikiActivityBase, WikiToolView {

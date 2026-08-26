@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeText } from "./files.js";
-import { markdownStructure, sectionHasContent } from "./markdown-structure.js";
+import { markdownOutsideCodeFences, markdownStructure, sectionHasContent } from "./markdown-structure.js";
 import type { WikiWriteMode } from "./write-target.js";
 
 const BODY_MARKER = "<!-- wiki-handoff-body -->";
@@ -49,6 +49,11 @@ export function parseReviewVerdict(text: string): "pass" | "changes_requested" |
   return match ? match[1] as "pass" | "changes_requested" : undefined;
 }
 
+export function parseWriteStatus(text: string): "complete" | "blocked" | undefined {
+  const status = sectionText(markdownStructure(text).sections, "Status").toLowerCase();
+  return status === "complete" || status === "blocked" ? status : undefined;
+}
+
 const REQUIRED_OUTPUT_SECTIONS: Readonly<Record<string, readonly string[]>> = {
   survey: ["Source", "Domains", "Concepts", "Cross-Source leads", "Contract hints", "Tables", "Survey gaps"],
   synthesize: ["Workspace", "Relationships", "End-to-end flows", "Shared contracts", "Gaps"],
@@ -68,6 +73,11 @@ export function workerOutputIssues(agent: string, text: string, candidatePages: 
   if (!required) return [`Unsupported Wiki agent output contract: ${agent}`];
   const sections = markdownStructure(text).sections;
   const issues: string[] = [];
+  const visible = markdownOutsideCodeFences(text);
+  const firstH2 = visible.search(/^ {0,3}##[ \t]+/m);
+  if (firstH2 > 0 && visible.slice(0, firstH2).trim()) {
+    issues.push("Receipt must start with its first required H2; preamble text is not allowed");
+  }
   const actual = sections.map((section) => section.title);
   if (actual.length !== required.length || actual.some((title, index) => title !== required[index])) {
     issues.push(`H2 sections must be exactly: ${required.join(" | ")}`);
@@ -78,10 +88,15 @@ export function workerOutputIssues(agent: string, text: string, candidatePages: 
     else if (!sectionHasContent(matches[0]!)) issues.push(`\`## ${title}\` must contain a result`);
   }
   if (agent === "write") {
-    const status = sectionText(sections, "Status").toLowerCase();
-    if (status !== "complete") issues.push("`## Status` must be exactly `complete`");
+    const status = parseWriteStatus(text);
+    if (!status) issues.push("`## Status` must be exactly `complete` or `blocked`");
     const gaps = sectionText(sections, "Evidence gaps").toLowerCase().replace(/[.]+$/, "");
-    if (gaps !== "none") issues.push("`## Evidence gaps` must be exactly `none` before completion");
+    if (status === "complete" && gaps !== "none") {
+      issues.push("`## Evidence gaps` must be exactly `none` before completion");
+    }
+    if (status === "blocked" && gaps === "none") {
+      issues.push("`blocked` requires a concrete `## Evidence gaps` result");
+    }
   }
   return issues;
 }

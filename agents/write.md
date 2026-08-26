@@ -36,8 +36,10 @@ evidence; do not report the assignment complete.
 2. Build the complete page list from required contracts, contract hints, and
    evidence briefs. Write it to `todo` before authoring. Update the full list
    after each page is reread; `completed` means that page satisfies every active
-   contract obligation. Reopen every load-bearing source locator as required by
-   the injected Citation contract; grep is discovery only.
+   contract obligation. Todo validates each filename and contract placement
+   immediately; correct every rejected path before authoring. Reopen every
+   load-bearing source locator as required by the injected Citation contract;
+   grep is discovery only.
 3. Select evidence-backed contracts. Reopen a hinted locator before rejecting
    it. Distributed state updates count as state-machine evidence; cross-Concept
    handlers count as flow evidence.
@@ -62,6 +64,7 @@ Return a compact Markdown receipt. The H2 headings and the `complete`, `blocked`
 and `none` values below are machine schema tokens: copy them exactly even when
 the Run language is not English. Write all descriptive content in the Run
 language; Candidate page headings still follow their injected page contracts.
+Start with `## Status`; do not add a preamble or reasoning outside the sections.
 
 ## Status
 
@@ -69,7 +72,7 @@ language; Candidate page headings still follow their injected page contracts.
 
 ## Written
 
-Every written or repaired Candidate path.
+One bare Workspace-relative `wiki/...` path per written or repaired page.
 
 ## Rejected hints
 
@@ -81,7 +84,7 @@ Default: none.
 Page, semantic obligation, searches performed, and missing evidence. Default:
 none. `complete` requires this section to be `none`.
 
-The host runs exhaustive completion checks in this session for cited-file
-reads, Todo coverage, and the assigned write target. Repair each full batch and
-continue until the completion check passes; do not claim that the whole
-Candidate passed global validation.
+The host returns one exhaustive, coded completion batch in this session for
+cited-file reads, Todo coverage, page placement, active contracts, and the
+assigned target. Repair that batch and continue while the issue set changes.
+Do not claim that the whole Candidate passed global validation.

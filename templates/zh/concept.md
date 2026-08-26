@@ -7,6 +7,9 @@ filename: concept.md
 cardinality: one
 required: true
 purpose: 为一个以源码标识符命名的 Concept 提供可观察契约和准确的修改验证路径。
+table:
+  section: 不变量与约束
+  columns: [不变量, 强制位置, 违规信号, 验证方式]
 ---
 
 ## 目的与公开面

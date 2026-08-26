@@ -13,7 +13,14 @@ test("RunActivity retains complete semantic history and replays finalized output
   timeline.noteAgent("lead", "lead", undefined, "running");
   timeline.observe({ kind: "input", id: "input-1", at, text: "Generate the Wiki" });
   timeline.observe({ kind: "output", id: "output-1", at, text: "I will", status: "running" });
-  timeline.observe({ kind: "output", id: "output-1", at: "2026-08-22T00:00:01.000Z", text: "I will inspect the Source.", status: "complete" });
+  timeline.observe({
+    kind: "output",
+    id: "output-1",
+    at: "2026-08-22T00:00:01.000Z",
+    text: "I will inspect the Source.",
+    status: "complete",
+    usage: { input: 100, output: 20, total: 120, turns: 2, toolCalls: 20 },
+  });
   for (let index = 0; index < 20; index += 1) {
     timeline.observe({
       kind: "tool",
@@ -31,6 +38,8 @@ test("RunActivity retains complete semantic history and replays finalized output
   const lead = reopened.agents()[0];
   assert.equal(lead.agent, "lead");
   assert.equal(lead.activity.length, 22);
+  assert.equal(lead.usage?.input, 100);
+  assert.equal(lead.usage?.toolCalls, 20);
   assert.equal(lead.activity[1].at, at);
   assert.deepEqual(lead.activity.filter((entry) => entry.kind === "output").map((entry) => entry.text), ["I will inspect the Source."]);
   assert.ok(lead.activity.some((entry) => entry.id === "tool-0"));

@@ -41,7 +41,7 @@ function presentAgents(record: RunRecord, live: WikiAgentView[]): WikiAgentView[
       id: execution.id,
       agent: execution.agent,
       task: execution.task,
-      status: execution.status === "interrupted" ? "failed" as const : execution.status,
+      status: execution.status,
       ...(execution.usage ? { usage: execution.usage } : {}),
       activity: [],
     };

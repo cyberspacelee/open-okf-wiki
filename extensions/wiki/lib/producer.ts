@@ -5,8 +5,8 @@ import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { inspectWiki, pinsFromPlan, verifyPinnedSourcePlan, type WikiPinnedSourcePlan } from "./inspect.js";
-import { reviewCandidatePages, taskDigest, verifyHandoff } from "./handoff.js";
-import { ensureDirectory, exists, withExclusiveLock } from "./files.js";
+import { parseWriteStatus, reviewCandidatePages, taskDigest, verifyHandoff } from "./handoff.js";
+import { ensureDirectory, exists, withExclusiveLock, writeText } from "./files.js";
 import { errorMessage } from "./failures.js";
 import { loadWikiWorkspace, resolveWorkspaceCatalogs, type ResolvedWikiWorkspace, type WikiWorkspaceWikiConfig } from "./workspace.js";
 import {
@@ -48,6 +48,7 @@ import {
   readRunRecord as readRecord,
   reconcileRecoveredRun as reconcileRecoveredPublication,
   releaseRunOwner,
+  runOwnerIsAlive,
   runDirectory as runDir,
   runTransitionLock as transitionLock,
   writeRunRecord as writeRecord,
@@ -75,7 +76,7 @@ export interface WikiLeadContext {
   signal: AbortSignal;
   publish(): Promise<{ ok: boolean; message: string }>;
   check(): Promise<{ ok: boolean; message: string }>;
-  note(id: string, agent: string, task: string, status: "running" | "complete" | "failed"): void;
+  note(id: string, agent: string, task: string, status: WikiAgentView["status"]): void;
   record(update: SubagentTaskUpdate): Promise<void>;
   observe(event: WikiSessionActivity): void;
   assertDispatch(tasks: readonly SubagentTask[]): void;
@@ -117,6 +118,9 @@ export function createProductionWikiProducer(options: WikiProducerOptions = {}):
         let current: RunRecord | undefined;
         try { current = await readRecord(workspace.root); }
         catch { await cleanupCurrentRun(workspace.root); }
+        if (current?.status === "running" && !await runOwnerIsAlive(current.cwd)) {
+          current = (await recoverAbandonedRun(current)).record;
+        }
         if (current?.status === "running" || current?.status === "paused") throw blockingRunError(current);
         await cleanupCurrentRun(workspace.root);
         const plan = await inspectWiki(workspace.root);
@@ -160,10 +164,34 @@ export function createProductionWikiProducer(options: WikiProducerOptions = {}):
         return undefined;
       }
       if (!record) return undefined;
+      if (record.status === "running" && !await runOwnerIsAlive(record.cwd)) {
+        return await withExclusiveLock(transitionLock(workspace.root), async () => {
+          if (await runOwnerIsAlive(record.cwd)) {
+            const activity = await RunActivity.open(runDir(record.cwd));
+            return handleFor(emptyLive(record, record.plan, activity), options, workspace);
+          }
+          return handleFor(await recoverAbandonedRun(record), options, workspace);
+        });
+      }
       const activity = await RunActivity.open(runDir(record.cwd));
       return handleFor(emptyLive(record, record.plan, activity), options, workspace);
     },
   };
+}
+
+async function recoverAbandonedRun(record: RunRecord): Promise<LiveRun> {
+  const activity = await RunActivity.open(runDir(record.cwd));
+  const restored = emptyLive(record, record.plan, activity);
+  const board = createBoardStore(runDir(record.cwd));
+  restored.board = await board.read();
+  await reconcileRun(restored, board);
+  restored.board = await board.read();
+  record.status = "paused";
+  record.error = "Run owner exited before persisting terminal execution state";
+  record.updatedAt = new Date().toISOString();
+  await writeRecord(record);
+  await activity.flush();
+  return restored;
 }
 
 function startLive(
@@ -286,19 +314,25 @@ function defaultRunLead(
 ): (context: WikiLeadContext) => Promise<void> {
   return async (context) => {
     const record = live.record;
-    const session: RunWikiSessionOptions = {
+    const commonSession: RunWikiSessionOptions = {
       ...options.session,
       transientRetries: config.transientRetries,
       baseRetryDelayMs: config.baseRetryDelayMs,
-      sessionTimeoutMs: config.sessionTimeoutSeconds * 1_000,
       onActivity(event) {
         context.observe(event);
       },
     };
+    const workerSession: RunWikiSessionOptions = {
+      ...commonSession,
+      sessionTimeoutMs: config.workerSessionTimeoutSeconds * 1_000,
+      maxTurns: config.maxWorkerTurns,
+      maxToolCalls: config.maxWorkerToolCalls,
+      maxInputTokens: config.maxWorkerInputTokens,
+    };
     const runtime = await createSubagentRuntime(
       context.plan,
       context.candidateRoot,
-      session,
+      workerSession,
       options.agentsDirectory,
       (update) => context.record(update),
       context.catalogs,
@@ -328,7 +362,11 @@ function defaultRunLead(
     );
     const systemPrompt = await readFile(fileURLToPath(new URL("../../../prompts/lead.md", import.meta.url)), "utf8");
     const result = await runWikiSession(context.plan.workspaceRoot, tools, prompt, context.signal, {
-      ...session,
+      ...commonSession,
+      sessionTimeoutMs: config.leadSessionTimeoutSeconds * 1_000,
+      maxTurns: config.maxLeadTurns,
+      maxToolCalls: config.maxLeadToolCalls,
+      maxInputTokens: config.maxLeadInputTokens,
       systemPrompt,
       sessionDir: path.join(runDir(record.cwd), "sessions"),
       sessionFile: record.sessionFile,
@@ -501,10 +539,12 @@ function fanInIssue(live: LiveRun, incoming?: readonly SubagentTask[]): string |
     const completedAt = entry?.completedAt ?? "";
     return completedAt > latestAt ? completedAt : latestAt;
   }, "");
-  if (synthesis.startedAt < lastSurvey) {
+  if (!synthesis.startedAt || synthesis.startedAt < lastSurvey) {
     return "Cross-Source synthesis must start after every Source survey completes";
   }
-  const earlyWrite = live.record.executions.find((entry) => entry.agent === "write" && entry.startedAt < (synthesis.completedAt ?? ""));
+  const earlyWrite = live.record.executions.find((entry) => (
+    entry.agent === "write" && entry.startedAt !== undefined && entry.startedAt < (synthesis.completedAt ?? "")
+  ));
   if (earlyWrite) return `Write target ${earlyWrite.partition} started before cross-Source synthesis completed`;
   return undefined;
 }
@@ -513,7 +553,7 @@ function latestExecution(live: LiveRun, agent: string, partition: string): RunEx
   return live.record.executions
     .filter((entry) => entry.agent === agent && entry.partition === partition)
     .reduce<RunExecutionReceipt | undefined>((current, entry) => (
-      !current || entry.startedAt >= current.startedAt ? entry : current
+      !current || entry.queuedAt >= current.queuedAt ? entry : current
     ), undefined);
 }
 
@@ -521,7 +561,7 @@ function surveyExecutions(live: LiveRun): Array<RunExecutionReceipt | undefined>
   return live.plan.sources.map((source) => latestExecution(live, "survey", source.scopeId));
 }
 
-function requiredHandoffs(live: LiveRun, task: SubagentTask): string[] {
+function requiredHandoffs(live: LiveRun, task: SubagentTask & { id: string }): string[] {
   const completed = latestArtifacts(live.record.executions)
     .filter((entry) => entry.status === "complete" && entry.handoff);
   if (task.agent === "synthesize") {
@@ -531,7 +571,7 @@ function requiredHandoffs(live: LiveRun, task: SubagentTask): string[] {
     return completed.filter((entry) => entry.agent === "survey" || entry.agent === "synthesize" || entry.agent === "write")
       .map((entry) => entry.handoff!.path);
   }
-  if (task.agent !== "write") return [];
+  if (task.agent !== "write") return previousDiagnostics(live, task);
   const implicit = live.plan.sources.length === 1 && isImplicitPinPath(live.plan.sources[0]?.logicalPath ?? "");
   const owner = implicit
     ? live.plan.sources[0]?.scopeId
@@ -541,12 +581,42 @@ function requiredHandoffs(live: LiveRun, task: SubagentTask): string[] {
     || (entry.agent === "survey" && (owner === undefined || entry.partition === owner))
   )).map((entry) => entry.handoff!.path);
   if (live.record.review?.verdict === "changes_requested") relevant.push(live.record.review.handoff.path);
+  relevant.push(...previousDiagnostics(live, task));
   return [...new Set(relevant)];
+}
+
+function previousDiagnostics(live: LiveRun, task: SubagentTask & { id: string }): string[] {
+  const previous = live.record.executions
+    .filter((entry) => entry.id !== task.id && entry.agent === task.agent && entry.partition === task.partition)
+    .reduce<RunExecutionReceipt | undefined>((current, entry) => (
+      !current || entry.queuedAt >= current.queuedAt ? entry : current
+    ), undefined);
+  if (!previous || previous.status === "queued" || previous.status === "running") return [];
+  return [previous.diagnostic?.path, previous.status === "blocked" ? previous.handoff?.path : undefined]
+    .filter((location): location is string => Boolean(location));
+}
+
+async function writeExecutionDiagnostic(live: LiveRun, receipt: RunExecutionReceipt) {
+  const relative = path.join(".okf-wiki", "run", "handoffs", `${receipt.id}.diagnostic.json`).replaceAll("\\", "/");
+  const location = artifactLocation(live, relative);
+  await ensureDirectory(path.dirname(location));
+  await writeText(location, `${JSON.stringify({
+    version: 1,
+    executionId: receipt.id,
+    boardTaskId: receipt.boardTaskId,
+    agent: receipt.agent,
+    partition: receipt.partition,
+    terminalReason: receipt.terminalReason ?? "worker_error",
+    error: (receipt.error ?? "Unknown worker failure").slice(0, 16_384),
+    candidateRevision: live.candidateRevision?.digest,
+    completedAt: receipt.completedAt,
+  }, null, 2)}\n`);
+  return { path: relative, sha256: await fileRevision(location) };
 }
 
 async function recordAgent(live: LiveRun, board: WikiBoardStore, update: SubagentTaskUpdate): Promise<void> {
   const now = new Date().toISOString();
-  if (update.status === "running") {
+  if (update.status === "queued") {
     const currentBoard = await board.read();
     const task = currentBoard.tasks.find((entry) => entry.id === update.boardTaskId);
     if (!task || task.status !== "in_progress") {
@@ -563,29 +633,40 @@ async function recordAgent(live: LiveRun, board: WikiBoardStore, update: Subagen
       agent: update.agent,
       task: update.task,
       taskDigest: taskDigest(update.task),
-      status: "running",
-      startedAt: now,
+      status: "queued",
+      queuedAt: now,
     });
     if (update.agent === "review") live.record.review = undefined;
     live.record.updatedAt = now;
     await writeRecord(live.record);
     await refreshCheckpoint(live, currentBoard);
-    noteAgent(live, update.id, update.agent, update.task, "running");
+    noteAgent(live, update.id, update.agent, update.task, "queued");
     return;
   }
 
   const receipt = live.record.executions.find((entry) => entry.id === update.id);
-  if (!receipt) throw new Error(`Missing running receipt for subagent execution ${update.id}`);
+  if (!receipt) throw new Error(`Missing queued receipt for subagent execution ${update.id}`);
+  if (update.status === "running") {
+    if (receipt.status !== "queued") throw new Error(`Subagent execution ${update.id} cannot start from ${receipt.status}`);
+    receipt.status = "running";
+    receipt.startedAt = now;
+    live.record.updatedAt = now;
+    await writeRecord(live.record);
+    noteAgent(live, update.id, update.agent, update.task, "running");
+    return;
+  }
+  if (receipt.status !== "running") throw new Error(`Subagent execution ${update.id} cannot finish from ${receipt.status}`);
   receipt.status = update.status;
   receipt.completedAt = now;
   receipt.error = update.error;
+  receipt.terminalReason = update.terminalReason ?? (update.error ? "worker_error" : update.status);
   receipt.usage = update.usage;
   if (update.agent !== "survey") {
     live.candidateRevision = await candidateRevision(live.record.candidateRoot);
   }
   if (update.agent === "write") live.record.finalizedRevision = undefined;
   live.candidateRevision ??= await candidateRevision(live.record.candidateRoot);
-  if (update.status === "complete") {
+  if (update.status === "complete" || update.status === "blocked") {
     let verified;
     try {
       verified = update.handoff
@@ -596,9 +677,10 @@ async function recordAgent(live: LiveRun, board: WikiBoardStore, update: Subagen
       receipt.error = errorMessage(error);
       verified = undefined;
     }
-    if (receipt.status === "complete" && !verified) {
+    if ((receipt.status === "complete" || receipt.status === "blocked") && !verified) {
       receipt.status = "failed";
       receipt.error = "Handoff is missing or does not match the execution receipt";
+      receipt.terminalReason = "invalid_handoff";
     } else if (verified && update.handoff) {
       receipt.handoff = { path: update.handoff, sha256: verified.sha256 };
       if (update.agent === "review") {
@@ -613,6 +695,7 @@ async function recordAgent(live: LiveRun, board: WikiBoardStore, update: Subagen
       }
     }
   }
+  if (receipt.status === "failed") receipt.diagnostic = await writeExecutionDiagnostic(live, receipt);
   live.record.updatedAt = now;
   await writeRecord(live.record);
   await reconcileBoardTask(live, board, update.boardTaskId);
@@ -626,7 +709,7 @@ async function reconcileRun(live: LiveRun, board: WikiBoardStore): Promise<void>
   live.candidateRevision = await candidateRevision(live.record.candidateRoot);
   const currentReceipts = new Set(latestArtifacts(live.record.executions).map((receipt) => receipt.id));
   for (const receipt of live.record.executions) {
-    if (receipt.status === "running") {
+    if (receipt.status === "queued" || receipt.status === "running") {
       if (await adoptCompletedHandoff(live, receipt)) {
         changed = true;
         continue;
@@ -634,13 +717,14 @@ async function reconcileRun(live: LiveRun, board: WikiBoardStore): Promise<void>
       receipt.status = "interrupted";
       receipt.completedAt = new Date().toISOString();
       receipt.error = "Execution was interrupted before a terminal receipt was persisted";
-      live.activity.noteAgent(receipt.id, receipt.agent, receipt.task, "failed");
+      receipt.terminalReason = "owner_exit";
+      live.activity.noteAgent(receipt.id, receipt.agent, receipt.task, "interrupted");
       changed = true;
     }
-    if (receipt.status === "complete" && !receipt.handoff) {
-      invalidateReceipt(live, receipt, "Completed execution has no attested handoff");
+    if ((receipt.status === "complete" || receipt.status === "blocked") && !receipt.handoff) {
+      invalidateReceipt(live, receipt, `${receipt.status} execution has no attested handoff`);
       changed = true;
-    } else if (receipt.status === "complete" && receipt.handoff) {
+    } else if ((receipt.status === "complete" || receipt.status === "blocked") && receipt.handoff) {
       try {
         const valid = currentReceipts.has(receipt.id)
           ? (await verifyReceiptHandoff(live, receipt, receipt.handoff.path))?.sha256 === receipt.handoff.sha256
@@ -657,6 +741,12 @@ async function reconcileRun(live: LiveRun, board: WikiBoardStore): Promise<void>
   }
   for (const taskId of new Set(live.record.executions.map((entry) => entry.boardTaskId))) {
     await reconcileBoardTask(live, board, taskId, true);
+  }
+  for (const receipt of live.record.executions) {
+    if (receipt.status === "failed" && !receipt.diagnostic) {
+      receipt.diagnostic = await writeExecutionDiagnostic(live, receipt);
+      changed = true;
+    }
   }
   if (changed) {
     live.record.updatedAt = new Date().toISOString();
@@ -678,10 +768,13 @@ async function adoptCompletedHandoff(live: LiveRun, receipt: RunExecutionReceipt
   }
   if (!verified) return false;
   const now = new Date().toISOString();
-  receipt.status = "complete";
+  const status = receipt.agent === "write" ? parseWriteStatus(verified.body) : "complete";
+  if (!status) return false;
+  receipt.status = status;
   receipt.completedAt = now;
   receipt.handoff = { path: relative, sha256: verified.sha256 };
   receipt.error = undefined;
+  receipt.terminalReason = status;
   if (receipt.agent === "review") {
     if (!verified.verdict || !live.candidateRevision) return false;
     live.record.review = {
@@ -715,6 +808,7 @@ async function verifyReceiptHandoff(live: LiveRun, receipt: RunExecutionReceipt,
 function invalidateReceipt(live: LiveRun, receipt: RunExecutionReceipt, error: string): void {
   receipt.status = "failed";
   receipt.error = error;
+  receipt.terminalReason = "invalid_handoff";
   if (live.record.review?.executionId === receipt.id) live.record.review = undefined;
 }
 
@@ -728,10 +822,11 @@ async function reconcileBoardTask(
   const target = current.tasks.find((task) => task.id === taskId);
   if (!target) return;
   const attempts = latestExecutions(live.record.executions.filter((entry) => entry.boardTaskId === taskId));
-  if (!attempts.length || attempts.some((entry) => entry.status === "running")) return;
+  if (!attempts.length || attempts.some((entry) => entry.status === "queued" || entry.status === "running")) return;
   const complete = attempts.every((entry) => entry.status === "complete");
-  const failures = attempts.filter((entry) => entry.status === "failed" || entry.status === "interrupted");
-  const status: WikiBoard["tasks"][number]["status"] = complete ? "completed" : resume ? "pending" : "failed";
+  const blocked = attempts.some((entry) => entry.status === "blocked");
+  const failures = attempts.filter((entry) => entry.status === "failed" || entry.status === "interrupted" || entry.status === "blocked");
+  const status: WikiBoard["tasks"][number]["status"] = complete ? "completed" : resume ? "pending" : blocked ? "blocked" : "failed";
   const note = complete
     ? "execution receipts complete"
     : failures.map((entry) => `${entry.partition}: ${entry.error ?? entry.status}`).join("; ");
@@ -744,7 +839,7 @@ function latestExecutions(executions: readonly RunExecutionReceipt[]): RunExecut
   for (const execution of executions) {
     const key = `${execution.boardTaskId}\0${execution.writeMode ?? "partition"}\0${execution.partition}`;
     const current = latest.get(key);
-    if (!current || execution.startedAt >= current.startedAt) latest.set(key, execution);
+    if (!current || execution.queuedAt >= current.queuedAt) latest.set(key, execution);
   }
   return [...latest.values()];
 }
@@ -754,7 +849,7 @@ function latestArtifacts(executions: readonly RunExecutionReceipt[]): RunExecuti
   for (const execution of executions) {
     const key = `${execution.agent}\0${execution.writeMode ?? "partition"}\0${execution.partition}`;
     const current = latest.get(key);
-    if (!current || execution.startedAt >= current.startedAt) latest.set(key, execution);
+    if (!current || execution.queuedAt >= current.queuedAt) latest.set(key, execution);
   }
   return [...latest.values()];
 }

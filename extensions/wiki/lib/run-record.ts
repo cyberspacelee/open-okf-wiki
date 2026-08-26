@@ -67,14 +67,19 @@ const ExecutionSchema = Type.Object({
   task: Type.String(),
   taskDigest: Type.String(),
   status: Type.Union([
+    Type.Literal("queued"),
     Type.Literal("running"),
     Type.Literal("complete"),
     Type.Literal("failed"),
+    Type.Literal("blocked"),
     Type.Literal("interrupted"),
   ]),
   handoff: Type.Optional(ArtifactSchema),
-  startedAt: Type.String(),
+  diagnostic: Type.Optional(ArtifactSchema),
+  queuedAt: Type.String(),
+  startedAt: Type.Optional(Type.String()),
   completedAt: Type.Optional(Type.String()),
+  terminalReason: Type.Optional(Type.String()),
   error: Type.Optional(Type.String()),
   usage: Type.Optional(UsageSchema),
 }, strict);
@@ -188,6 +193,11 @@ export async function assertRunOwnerAvailable(cwd: string, runId: string, token?
   await removePath(ownerFile(cwd), { force: true });
 }
 
+export async function runOwnerIsAlive(cwd: string): Promise<boolean> {
+  const owner = await readRunOwner(cwd);
+  return Boolean(owner && processIsAlive(owner.pid));
+}
+
 export async function releaseRunOwner(cwd: string, token?: string): Promise<void> {
   if (!token) return;
   const owner = await readRunOwner(cwd);
@@ -206,7 +216,9 @@ function normalizeRunRecord(value: unknown, cwd: string): RunRecord {
   if (record.plan.sources.some((source) => source.catalog && !Object.hasOwn(record.plan.catalogs, source.catalog))) {
     throw new Error("Run record Source Catalog is invalid");
   }
-  if (![record.createdAt, record.updatedAt, ...record.executions.flatMap((execution) => [execution.startedAt, execution.completedAt]),
+  if (![record.createdAt, record.updatedAt, ...record.executions.flatMap((execution) => [
+    execution.queuedAt, execution.startedAt, execution.completedAt,
+  ]),
     record.review?.completedAt, record.check?.completedAt, ...record.leadAttempts.map((attempt) => attempt.completedAt)]
     .filter((timestamp): timestamp is string => timestamp !== undefined)
     .every((timestamp) => Number.isFinite(Date.parse(timestamp)))) {
@@ -216,6 +228,13 @@ function normalizeRunRecord(value: unknown, cwd: string): RunRecord {
     ? execution.writeMode === undefined
     : execution.writeMode !== undefined)) {
     throw new Error("Run record execution writeMode is invalid");
+  }
+  if (record.executions.some((execution) => (
+    (execution.status === "queued" && (execution.startedAt !== undefined || execution.completedAt !== undefined))
+    || (execution.status === "running" && (execution.startedAt === undefined || execution.completedAt !== undefined))
+    || (!["queued", "running"].includes(execution.status) && execution.completedAt === undefined)
+  ))) {
+    throw new Error("Run record execution lifecycle is invalid");
   }
   if (record.sessionFile) {
     const sessions = path.join(runDirectory(root), "sessions");

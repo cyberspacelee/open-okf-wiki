@@ -48,6 +48,21 @@ test("writeHandoff round-trips through parse and verify", async (t) => {
 test("worker handoffs reject empty required sections", () => {
   assert.ok(workerOutputIssues("survey", "").length > 0);
   assert.ok(workerOutputIssues("write", "## Status\n\nblocked").length > 0);
+  assert.match(workerOutputIssues("survey", `I have enough evidence.\n\n${SURVEY_RECEIPT}`)[0] ?? "", /preamble/);
+});
+
+test("writer handoffs distinguish completed work from an evidence block", () => {
+  const receipt = (status: string, gaps: string) => [
+    "## Status", status,
+    "## Written", "none",
+    "## Rejected hints", "none",
+    "## Evidence gaps", gaps,
+    "",
+  ].join("\n\n");
+  assert.deepEqual(workerOutputIssues("write", receipt("complete", "none")), []);
+  assert.deepEqual(workerOutputIssues("write", receipt("blocked", "src/order.ts#L10-L20 lacks an enforcement point")), []);
+  assert.match(workerOutputIssues("write", receipt("complete", "missing evidence"))[0] ?? "", /Evidence gaps/);
+  assert.match(workerOutputIssues("write", receipt("blocked", "none"))[0] ?? "", /blocked/);
 });
 
 test("worker handoffs allow Run-language prose while keeping stable schema headings", () => {

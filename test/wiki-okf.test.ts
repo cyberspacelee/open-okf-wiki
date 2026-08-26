@@ -41,6 +41,7 @@ function packOf(...templates: TestTemplate[]): WikiTemplatePack {
         ...(template.altitudes ? { altitudes: template.altitudes } : {}),
         ...(template.identities ? { identities: template.identities } : {}),
         ...(template.diagram ? { diagram: template.diagram } : {}),
+        ...(template.table ? { table: template.table } : {}),
         sections: template.sections ?? sections("Details"),
       })),
   };
@@ -57,6 +58,10 @@ function fill(template: WikiTemplate | undefined, title: string, resource: strin
     if (template.diagram?.section === title || title === "Diagram" || title === "图") {
       const kind = template.diagram?.kinds[0] ?? "flowchart";
       return `## ${title}\n\n${extra || mermaid(kind, "  Invoice --> Ledger")}`;
+    }
+    if (template.table?.section === title) {
+      const columns = template.table.columns;
+      return `## ${title}\n\n| ${columns.join(" | ")} |\n| ${columns.map(() => "---").join(" | ")} |\n| Claim [^main] | ${columns.slice(1).map(() => "Evidence").join(" | ")} |`;
     }
     return `## ${title}\n\nClaim. [^main]`;
   }).join("\n\n");
@@ -204,14 +209,14 @@ test("implicit Workspace citations are relative to the Workspace root", async (t
   assert.equal(result.ok, true, result.issues.map((issue) => issue.message).join("\n"));
 });
 
-test("validation accepts file citations and checks optional line ranges against the pinned file", async (t) => {
+test("validation requires claim line ranges and checks them against the pinned file", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-citation-range-"));
   t.after(async () => await rm(root, { recursive: true, force: true }));
   const source = await sourceTree(t, "self", true);
   const templates = packOf();
   await writeCore(root, "main.ts", templates, source.pins);
   const withoutLines = await validateWikiTree(root, source.pins, templates);
-  assert.equal(withoutLines.ok, true, withoutLines.issues.map((issue) => issue.message).join("\n"));
+  assert.ok(withoutLines.issues.some((issue) => issue.code === "citation" && issue.message.includes("line-ranged")));
 
   await writeCore(root, "main.ts#L3", templates, source.pins);
   const outsideFile = await validateWikiTree(root, source.pins, templates);
@@ -272,6 +277,51 @@ test("validate requires mermaid kind from the template pack", async (t) => {
   ));
   const present = await validateWikiTree(root, src.pins, templates);
   assert.equal(present.ok, true);
+
+  await writeFile(path.join(domain, "flow-checkout.md"), fill(
+    templates.templates.find((template) => template.id === "flow"),
+    "Billing flows",
+    src.resource,
+    `${mermaid("sequenceDiagram", "  Invoice->>Ledger: post")}\n${mermaid("flowchart", "  A --> B")}`,
+  ));
+  const duplicate = await validateWikiTree(root, src.pins, templates);
+  assert.ok(duplicate.issues.some((issue) => issue.code === "mermaid" && issue.message.includes("exactly one")));
+
+  await writeFile(path.join(domain, "flow-checkout.md"), fill(
+    templates.templates.find((template) => template.id === "flow"),
+    "Billing flows",
+    src.resource,
+    mermaid("sequenceDiagram", "  Invoice->>Ledger: post\\nfailed"),
+  ));
+  const escapedNewline = await validateWikiTree(root, src.pins, templates);
+  assert.ok(escapedNewline.issues.some((issue) => issue.code === "mermaid" && issue.message.includes("<br/>")));
+});
+
+test("validate requires the template table columns", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-okf-table-"));
+  t.after(async () => await rm(root, { recursive: true, force: true }));
+  const src = await sourceTree(t);
+  const templates = packOf({
+    id: "concept",
+    filename: "concept.md",
+    scope: "concept",
+    identities: ["concept"],
+    type: "Concept",
+    table: { section: "Details", columns: ["Invariant", "Enforced at", "Violation signal", "Verify"] },
+  });
+  await writeCore(root, src.resource, templates, src.pins);
+  const concept = path.join(root, "billing", "invoice", "concept.md");
+  const valid = await readFile(concept, "utf8");
+  await writeFile(concept, valid.replace(
+    "| Invariant | Enforced at | Violation signal | Verify |",
+    "| Invariant | Verify |",
+  ).replace("| --- | --- | --- | --- |", "| --- | --- |"));
+  const invalid = await validateWikiTree(root, src.pins, templates);
+  assert.ok(invalid.issues.some((issue) => issue.code === "table" && issue.page === "billing/invoice/concept.md"));
+
+  await writeFile(concept, valid);
+  const accepted = await validateWikiTree(root, src.pins, templates);
+  assert.equal(accepted.ok, true, accepted.issues.map((issue) => issue.message).join("\n"));
 });
 
 test("validate uses the template pack as the page contract", async (t) => {

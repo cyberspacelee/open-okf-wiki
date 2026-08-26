@@ -55,7 +55,9 @@ async function writeValidCandidate(candidateRoot: string, sourceResource = "main
     const sections = template.sections.map(({ title: section }) => {
       const content = template.diagram?.section === section
         ? mermaidStub(template.diagram.kinds[0] ?? "flowchart")
-        : `${section} is grounded here. [^main]\n`;
+        : template.table?.section === section
+          ? `| ${template.table.columns.join(" | ")} |\n| ${template.table.columns.map(() => "---").join(" | ")} |\n| ${section} [^main] | ${template.table.columns.slice(1).map(() => "Evidence").join(" | ")} |\n`
+          : `${section} is grounded here. [^main]\n`;
       return `## ${section}\n\n${content}`;
     }).join("\n");
     await writeText(absolute, [
@@ -138,11 +140,16 @@ async function writeReviewPass(context: WikiLeadContext) {
     boardTaskId: "review-test",
     partition: "candidate",
   };
-  await context.record({ ...assignment, status: "running" });
+  await startExecution(context, assignment);
   const pages = reviewCandidatePages((await candidateRevision(context.candidateRoot)).files);
   const coverage = pages.map((page) => `- page: ${page} | result: pass | evidence: main.ts#L1 reopened`).join("\n");
   const attested = await attestHandoff(context, assignment, `verdict: pass\n\n## Coverage\n\n${coverage}\n\n## Repairs\n\nnone\n`);
   await context.record({ ...assignment, status: "complete", ...attested });
+}
+
+async function startExecution(context: WikiLeadContext, assignment) {
+  await context.record({ ...assignment, status: "queued" });
+  await context.record({ ...assignment, status: "running" });
 }
 
 async function gitRepo(t) {
@@ -254,14 +261,14 @@ test("resume turns an unacknowledged execution into retryable durable state", as
           goal: "Recover survey",
           tasks: [{ id: "survey", content: "Survey source", status: "in_progress" }],
         });
-        await context.record({
+        const assignment = {
           id: "survey-lost",
           agent: "survey",
           task: "Survey source",
           boardTaskId: "survey",
           partition: "self",
-          status: "running",
-        });
+        };
+        await startExecution(context, assignment);
         return;
       }
       const board = await context.board.read();
@@ -299,7 +306,7 @@ test("resume adopts an exact handoff written before the terminal receipt", async
           boardTaskId: "survey",
           partition: "self",
         };
-        await context.record({ ...assignment, status: "running" });
+        await startExecution(context, assignment);
         await attestHandoff(context, assignment, SURVEY_RECEIPT);
         return;
       }
@@ -319,7 +326,7 @@ test("resume adopts an exact handoff written before the terminal receipt", async
   assert.equal(leads, 2);
 });
 
-test("resume adopts a target-bound writer handoff after a sibling target changes", async (t) => {
+test("resume adopts complete and blocked writer handoffs after sibling targets change", async (t) => {
   const root = await gitRepo(t);
   let leads = 0;
   let handle;
@@ -339,17 +346,26 @@ test("resume adopts a target-bound writer handoff after a sibling target changes
           partition: "billing",
           writeMode: "subtree",
         };
-        await context.record({ ...assignment, status: "running" });
+        await startExecution(context, assignment);
         await mkdir(path.join(context.candidateRoot, "billing"), { recursive: true });
         await writeText(path.join(context.candidateRoot, "billing", "domain.md"), "billing\n");
         await attestHandoff(context, assignment, WRITE_RECEIPT);
+        const blocked = {
+          ...assignment,
+          id: "write-blocked",
+          task: "Write orders",
+          partition: "orders",
+        };
+        await startExecution(context, blocked);
+        await attestHandoff(context, blocked, "## Status\n\nblocked\n\n## Written\n\nnone\n\n## Rejected hints\n\nnone\n\n## Evidence gaps\n\norders has no source evidence\n");
         await mkdir(path.join(context.candidateRoot, "checkout"), { recursive: true });
         await writeText(path.join(context.candidateRoot, "checkout", "domain.md"), "checkout\n");
         return;
       }
-      assert.equal((await context.board.read()).tasks[0]?.status, "completed");
+      assert.equal((await context.board.read()).tasks[0]?.status, "pending");
       const record = JSON.parse(await readFile(path.join(root, ".okf-wiki", "run", "run.json"), "utf8"));
       assert.equal(record.executions[0].status, "complete");
+      assert.equal(record.executions[1].status, "blocked");
       await rm(context.candidateRoot, { recursive: true, force: true });
       await mkdir(context.candidateRoot, { recursive: true });
       await writeValidCandidate(context.candidateRoot);
@@ -396,6 +412,7 @@ test("a reopened process-crash Run reconciles persisted running receipts", async
       task: "Survey source",
       taskDigest: taskDigest("Survey source"),
       status: "running",
+      queuedAt: now,
       startedAt: now,
     }],
   }, null, 2)}\n`);
@@ -418,6 +435,10 @@ test("a reopened process-crash Run reconciles persisted running receipts", async
   const handle = await producer.current(root);
   assert.ok(handle);
   const restored = await handle.view();
+  assert.equal(restored.status, "paused");
+  assert.equal(restored.tasks?.[0]?.status, "pending");
+  const recoveredRecord = JSON.parse(await readFile(path.join(directory, "run.json"), "utf8"));
+  assert.equal(recoveredRecord.executions[0].status, "interrupted");
   const restoredSurvey = restored.agents.find((agent) => agent.id === "survey-crash");
   assert.ok(restoredSurvey);
   assert.deepEqual(restoredSurvey.activity.map((entry) => entry.kind), ["input", "output", "tool"]);
@@ -805,7 +826,7 @@ test("parallel terminal receipts persist only after both handoffs are attested",
         boardTaskId: "survey",
         partition,
       }));
-      for (const assignment of assignments) await context.record({ ...assignment, status: "running" });
+      for (const assignment of assignments) await startExecution(context, assignment);
       await Promise.all(assignments.map(async (assignment) => {
         const attested = await attestHandoff(context, assignment, SURVEY_RECEIPT);
         await context.record({ ...assignment, status: "complete", ...attested });
@@ -818,6 +839,62 @@ test("parallel terminal receipts persist only after both handoffs are attested",
     },
   });
   await (await producer.start({ cwd: root })).result();
+});
+
+test("failed executions persist a typed diagnostic artifact", async (t) => {
+  const root = await gitRepo(t);
+  const producer = createProductionWikiProducer({
+    async runLead(context) {
+      await context.board.write({
+        goal: "Record worker failure",
+        tasks: [{ id: "write", content: "Write billing", status: "in_progress" }],
+      });
+      const assignment = {
+        id: "write-failed",
+        agent: "write",
+        task: "Write billing",
+        boardTaskId: "write",
+        partition: "billing",
+        writeMode: "subtree",
+      };
+      await startExecution(context, assignment);
+      await context.record({
+        ...assignment,
+        status: "failed",
+        error: "Writer completion repair made no progress",
+        terminalReason: "completion_no_progress",
+      });
+      await context.board.write({
+        goal: "Record worker failure",
+        tasks: [
+          { id: "write", content: "Write billing", status: "failed" },
+          { id: "write-invalid", content: "Write invalid handoff", status: "in_progress" },
+        ],
+      });
+      const invalid = {
+        id: "write-invalid",
+        agent: "write",
+        task: "Write invalid handoff",
+        boardTaskId: "write-invalid",
+        partition: "orders",
+        writeMode: "subtree" as const,
+      };
+      await startExecution(context, invalid);
+      await context.record({ ...invalid, status: "complete" });
+    },
+  });
+  const handle = await producer.start({ cwd: root });
+  await assert.rejects(() => handle.result());
+  const record = JSON.parse(await readFile(path.join(root, ".okf-wiki", "run", "run.json"), "utf8"));
+  const [receipt, invalid] = record.executions;
+  assert.equal(receipt.terminalReason, "completion_no_progress");
+  assert.match(receipt.diagnostic.path, /write-failed\.diagnostic\.json$/);
+  const diagnostic = JSON.parse(await readFile(path.join(root, ...receipt.diagnostic.path.split("/")), "utf8"));
+  assert.equal(diagnostic.terminalReason, "completion_no_progress");
+  assert.match(diagnostic.error, /no progress/);
+  assert.equal(invalid.status, "failed");
+  assert.equal(invalid.terminalReason, "invalid_handoff");
+  assert.match(invalid.diagnostic.path, /write-invalid\.diagnostic\.json$/);
 });
 
 test("parallel disjoint write receipts are not invalidated by sibling writes", async (t) => {
@@ -836,7 +913,7 @@ test("parallel disjoint write receipts are not invalidated by sibling writes", a
         partition,
         writeMode: "subtree",
       }));
-      for (const assignment of assignments) await context.record({ ...assignment, status: "running" });
+      for (const assignment of assignments) await startExecution(context, assignment);
 
       await mkdir(path.join(context.candidateRoot, "billing"), { recursive: true });
       await writeText(path.join(context.candidateRoot, "billing", "domain.md"), "billing\n");
@@ -1059,14 +1136,14 @@ test("resume does not adopt a handoff without an envelope", async (t) => {
           goal: "Reject bare handoff",
           tasks: [{ id: "survey", content: "Survey source", status: "in_progress" }],
         });
-        await context.record({
+        const assignment = {
           id: "survey-bare",
           agent: "survey",
           task: "Survey source",
           boardTaskId: "survey",
           partition: "self",
-          status: "running",
-        });
+        };
+        await startExecution(context, assignment);
         const location = path.join(path.dirname(context.candidateRoot), "handoffs", "survey-bare.md");
         await mkdir(path.dirname(location), { recursive: true });
         await writeText(location, "complete without envelope\n");
