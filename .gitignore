@@ -6,3 +6,4 @@ node_modules/
 .claude/
 refs/
 skills-lock.json
+__pycache__/
