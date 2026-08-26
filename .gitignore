@@ -1,0 +1,4 @@
+node_modules/
+.okf-wiki/
+.pi/
+.env
