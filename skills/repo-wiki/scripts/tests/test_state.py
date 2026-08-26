@@ -109,7 +109,8 @@ def test_start_target_past_phase_raises(monkeypatch, tmp_path):
     _state.init_run(tmp_path)
     _state.start_target(tmp_path, "inspect", "x")
     _state.complete_target(tmp_path, "inspect", "x")
-    # now on survey; trying inspect again should fail
+    _state.start_target(tmp_path, "survey", "a")  # advances current to survey
+    # inspect is now past; a new inspect target must be rejected
     with pytest.raises(StateError):
         _state.start_target(tmp_path, "inspect", "y")
 
@@ -135,6 +136,12 @@ def test_complete_target_advances_phase(monkeypatch, tmp_path):
     _state.init_run(tmp_path)
     _state.start_target(tmp_path, "inspect", "x")
     _state.complete_target(tmp_path, "inspect", "x")
+    # phase marked complete but current stays until the next phase opens:
+    # late targets may still join the batch
+    raw = json.loads(state_path(tmp_path).read_text())
+    assert raw["phase"] == "inspect"
+    assert raw["phases"]["inspect"]["status"] == "complete"
+    _state.start_target(tmp_path, "survey", "a")
     raw = json.loads(state_path(tmp_path).read_text())
     assert raw["phase"] == "survey"
 

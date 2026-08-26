@@ -166,6 +166,9 @@ def start_target(root: pathlib.Path, phase: str, target: str) -> dict:
         current = phase
 
     pd = state["phases"].setdefault(phase, {"status": "pending"})
+    # Reopen a phase marked complete: a new target joins the batch.
+    if phase_idx == current_idx and pd.get("status") == "complete":
+        pd["status"] = "in_progress"
 
     # Validate synthesize gate
     if phase == "synthesize":
@@ -227,16 +230,12 @@ def complete_target(root: pathlib.Path, phase: str, target: str) -> dict:
     t["status"] = "complete"
     t["last_error"] = None
 
-    # Advance phase if all targets complete and this is the current phase
-    current = state["phase"]
-    if phase == current and _all_targets_complete(pd):
+    # Mark the phase complete when its known targets all pass, but never
+    # advance the run phase here: more targets may still be registered.
+    # Advancement happens when start_target opens the next phase and its
+    # gate re-checks completeness.
+    if _all_targets_complete(pd):
         pd["status"] = "complete"
-        current_idx = phases.index(current)
-        if current_idx + 1 < len(phases):
-            next_phase = phases[current_idx + 1]
-            state["phase"] = next_phase
-            state["phases"].setdefault(next_phase, {"status": "pending"})
-
     _write(root, state)
     return {"ok": True, "state": state}
 

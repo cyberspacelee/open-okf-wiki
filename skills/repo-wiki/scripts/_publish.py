@@ -34,7 +34,15 @@ def generate_index(root: pathlib.Path) -> pathlib.Path:
     if not mds:
         raise PublishError("candidate is empty")
 
-    lines: list[str] = []
+    lines: list[str] = [
+        "---",
+        "type: Index",
+        "title: Wiki Index",
+        "description: Entry point — every page listed with its routing description",
+        "coverage: full",
+        "sources: []",
+        "---",
+    ]
     current_dir: pathlib.Path | None = None
     for p in mds:
         rel = p.relative_to(candidate)

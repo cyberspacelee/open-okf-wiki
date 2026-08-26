@@ -27,7 +27,8 @@ anything else:
 
 Disk state overrides your memory, always. If status reports no workspace, run
 `uv run <skill>/scripts/okf.py init` (add `--lang zh` for Chinese output) from
-the workspace root and begin at inspect.
+the workspace root, register sources if needed, then `okf.py state init` to
+open the run and begin at inspect.
 
 ## Workspace and sources
 
