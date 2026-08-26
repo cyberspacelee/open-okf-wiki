@@ -8,3 +8,8 @@ refs/
 skills-lock.json
 __pycache__/
 tmp/
+!.claude/
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/repo-wiki
