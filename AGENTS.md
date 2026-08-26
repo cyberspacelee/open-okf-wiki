@@ -30,6 +30,8 @@ wiki/                                  # the Published Thin Wiki
   of AGENTS.md is machine-writable.
 - On any task, first run `state status`; resume the earliest incomplete phase,
   never redo a completed one.
+- Phase order is inspect → survey → (synthesize, multi-source) → write →
+  derive → review → publish; synthesize waits for every survey.
 
 ## Verify
 

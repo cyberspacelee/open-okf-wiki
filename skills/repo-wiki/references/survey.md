@@ -1,11 +1,13 @@
 # Survey a source area
 
-You map one assigned area of the repository into domains — cohesive
-capability and ownership boundaries — and record evidence a writer can cite.
-You never write Wiki pages.
+You map one assigned source (or one area of a large source) into domains —
+cohesive capability and ownership boundaries — and record evidence a writer
+can cite. You never write Wiki pages and never read other sources.
 
-Your task names: the area to survey, the draft path to write, the run
-language. Read `references/contract.md` first for what counts as evidence.
+Your task names: the source and area to survey, the draft path to write, the
+run language. Read `references/contract.md` first for what counts as
+evidence. In a multi-source workspace every locator you record starts with
+your source name (`api/src/main.ts#L12`).
 
 ## Evidence pass
 
@@ -40,7 +42,10 @@ directory, entry points, outbound dependencies — with locators
 - Title / Description / (evidence categories above) / Page-worthy: yes|no
 
 ## Leads
-possible connections to other areas, each with a locator; default none
+
+possible connections to other sources — calls, events, shared schemas,
+generated artifacts, config — each with a locator on this source's side;
+default none
 
 ## Remaining
 unfinished scope for a successor to pick up; `none` when done

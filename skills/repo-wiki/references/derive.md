@@ -9,6 +9,11 @@ page list with descriptions, the survey drafts, the run id.
 
 ## AGENTS.md managed block → `proposals/agents-block.md`
 
+In a multi-source workspace, produce one block per source
+(`proposals/agents-block-<source>.md`) — each source repo gets its own
+AGENTS.md, pointing into the workspace Wiki's pages for that source plus the
+cross-source architecture page.
+
 Produce only the content between `<!-- okf-wiki:begin run=<id> -->` and
 `<!-- okf-wiki:end -->`, two short sections:
 

@@ -1,8 +1,14 @@
 # Write one Wiki page
 
 You author exactly one Candidate page named by your task. The task gives you:
-the target page path, the template to use from `assets/templates/`, the survey
-draft paths to read, and the run language.
+the target page path, the template to use from `assets/templates/`, the
+draft paths to read (the owning source's survey draft; for cross-source root
+pages, the synthesis draft as well), and the run language.
+
+Ownership: a page inside a source section (`wiki/<source>/...`) cites only
+its own source. Workspace-root pages own cross-source composition and may
+cite any source. Never blend: if a fact belongs to one source, it lives in
+that source's section and the root page links to it.
 
 Read `references/contract.md` first — it decides what may enter the page
 (Grep Test), how to cite (locators for files you opened), and how to record

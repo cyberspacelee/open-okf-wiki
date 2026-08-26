@@ -25,9 +25,26 @@ anything else:
 3. Continue from the earliest incomplete target. A `complete` target is never
    redone.
 
-Disk state overrides your memory, always. If status reports no run, run
-`uv run <skill>/scripts/okf.py init` (add `--lang zh` for Chinese output) and
-begin at inspect.
+Disk state overrides your memory, always. If status reports no workspace, run
+`uv run <skill>/scripts/okf.py init` (add `--lang zh` for Chinese output) from
+the workspace root and begin at inspect.
+
+## Workspace and sources
+
+A workspace owns one Wiki and one or more sources. Running inside a single
+Git repository with no workspace config is an implicit workspace: that repo is
+the only source, named `self`, and citations carry no prefix. For multiple
+repositories, register each one:
+
+```
+uv run <skill>/scripts/okf.py source add /abs/path/to/repo --name api
+uv run <skill>/scripts/okf.py source add https://host/web.git --name web
+```
+
+Local paths are linked; URLs are cloned under `.okf-wiki/sources/`. In a
+multi-source workspace every citation and draft locator starts with the
+source name (`api/src/main.ts#L12`). Domain slugs are source-local — never
+merge same-named domains across sources.
 
 ## Your context budget
 
@@ -41,10 +58,11 @@ themselves.
 
 | Phase | Who | How |
 | --- | --- | --- |
-| inspect | you | Cheap repo-shape pass: top-level layout, build files, language. Feed results to `init` config. No source reading beyond directory listings and manifests. |
-| survey | one subagent per top-level area | Dispatch with `references/survey.md`. Parallel when the host supports it. |
-| write | one subagent per page | Dispatch with `references/write.md`. Pages come from survey drafts + `assets/templates/`. |
-| derive | one subagent | Dispatch with `references/derive.md`. Produces proposals only. |
+| inspect | you | Cheap shape pass per source: top-level layout, build files, language. Feed results to `init` config. No source reading beyond directory listings and manifests. |
+| survey | one subagent per source (large sources: per top-level area) | Dispatch with `references/survey.md`. Parallel when the host supports it. |
+| synthesize | one subagent, multi-source only | Dispatch with `references/synthesize.md` after every survey completes — it depends on all of them; never run it alongside surveys. Skipped in a single-source workspace. |
+| write | one subagent per page | Dispatch with `references/write.md`. Source-owned pages come from that source's survey draft; cross-source root pages additionally read the synthesis draft. Write source sections before workspace-root pages. |
+| derive | one subagent | Dispatch with `references/derive.md`. Produces proposals only — one AGENTS block per source in a multi-source workspace. |
 | review | one fresh subagent | Dispatch with `references/review.md`. It sees `wiki/` and the contract — never the writing history. |
 | publish | you | `uv run <skill>/scripts/okf.py publish`. Re-validates everything, swaps `wiki/` transactionally. |
 
@@ -65,6 +83,6 @@ fresh session — everything needed to continue lives on disk.
 
 ## Commands
 
-`init | state | validate | db | publish`, all via
+`init | source | state | validate | db | publish`, all via
 `uv run <skill>/scripts/okf.py <command>`. Use `--json` when you need to parse
 the output. `state abandon` discards the current run.

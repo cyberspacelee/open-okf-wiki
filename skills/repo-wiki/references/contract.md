@@ -23,7 +23,9 @@ first — see `scripts/_state.py`".
   `sources` frontmatter entry, with a matching `[^id]: title` definition.
 - A locator is a workspace-relative POSIX path plus anchor:
   `scripts/_state.py#L42-L60` or `scripts/_state.py::complete_target`.
-  Prefer the symbol form; line ranges must exist in the file as read.
+  In a multi-source workspace the path starts with the source name
+  (`api/src/main.ts#L12`); an implicit single-source workspace uses no
+  prefix. Prefer the symbol form; line ranges must exist in the file as read.
 - Cite only files you actually opened in this task. Grep hits are discovery,
   not evidence.
 
@@ -45,6 +47,11 @@ routing text shown in indexes. Body H2 skeleton comes from the template in
 `assets/templates/`; fill every section or record a gap. Wiki-internal links
 are standard relative markdown; every page must be reachable from
 `wiki/index.md` in at most 3 hops.
+
+Layout: single-source — `wiki/overview.md`, `wiki/architecture.md`,
+`wiki/<domain>.md`. Multi-source — root `overview.md` and `architecture.md`
+own cross-source composition; each source gets `wiki/<source>/` with its own
+architecture and domain pages, citing only that source.
 
 ## Proposals (derive phase)
 

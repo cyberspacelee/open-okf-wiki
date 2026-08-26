@@ -11,12 +11,16 @@ The coding agent (Claude Code, Amp, Codex, …) that executes the skill SOP and 
 _Avoid_: Lead, orchestrator, runner
 
 **Workspace**:
-The repository root that owns Wiki state, proposals, and one Published Wiki.
+The directory that owns Wiki config, sources, run state, and one Published Wiki. A lone Git repository without workspace config is an implicit workspace with itself as the only source.
 _Avoid_: Project, working directory
 
 **Source**:
-A Git repository whose content is admissible evidence for a Run.
+A registered Git repository (linked local path or clone) whose content is admissible evidence for a Run. In a multi-source workspace its name prefixes every locator.
 _Avoid_: Codebase, input repo
+
+**Synthesis**:
+The single post-survey pass in a multi-source workspace that verifies cross-source connections from both ends and maps workspace topology for root-page writers.
+_Avoid_: Merge, aggregation survey
 
 **Run**:
 One resumable Wiki generation attempt, tracked phase-by-phase in durable state until publish or abandonment.

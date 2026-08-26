@@ -17,6 +17,9 @@ scripts cannot:
 - **Invented rationale**: causal language with no written-rationale locator.
 - **Padded gaps**: sections filled with generic prose where a
   `coverage: partial` gap was the honest answer.
+- **Ownership bleed** (multi-source): a source-section page citing another
+  source, or a cross-source claim whose connection is not evidenced from both
+  ends in the synthesis draft.
 - **Routing failures**: descriptions that do not say when to open the page;
   knowledge owned by two pages; pages unreachable in 3 hops from
   `wiki/index.md`.
