@@ -2,3 +2,7 @@ node_modules/
 .okf-wiki/
 .pi/
 .env
+.agents/
+.claude/
+refs/
+skills-lock.json
