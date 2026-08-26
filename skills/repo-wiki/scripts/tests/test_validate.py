@@ -279,6 +279,28 @@ def test_section_empty_not_triggered(tmp_path):
     assert not any(i["code"] == "section-empty" for i in issues)
 
 
+def test_section_empty_h2_leading_h3_is_ok(tmp_path):
+    content = (
+        "---\ntype: x\ntitle: t\ndescription: d\ncoverage: full\nsources:\n---\n\n"
+        "## Concepts\n\n### encoder\n\ndetail here\n"
+    )
+    p = write_page(tmp_path, "page.md", content)
+    ws = make_ws(tmp_path)
+    issues = validate_page(ws, p)
+    assert not any(i["code"] == "section-empty" for i in issues)
+
+
+def test_section_empty_h2_then_empty_h2_still_triggers(tmp_path):
+    content = (
+        "---\ntype: x\ntitle: t\ndescription: d\ncoverage: full\nsources:\n---\n\n"
+        "## Empty\n\n## Filled\n\ntext\n"
+    )
+    p = write_page(tmp_path, "page.md", content)
+    ws = make_ws(tmp_path)
+    issues = validate_page(ws, p)
+    assert any(i["code"] == "section-empty" for i in issues)
+
+
 # ===== gaps-missing =====
 
 def test_gaps_missing_trigger(tmp_path):
@@ -345,9 +367,27 @@ def test_validate_target_missing(tmp_path):
     assert any(i["code"] == "missing-target" for i in issues)
 
 
-def test_validate_target_review_returns_empty(tmp_path):
+def test_validate_target_review_missing_report(tmp_path):
     ws = make_ws(tmp_path)
-    assert validate_target(ws, "review", "anything") == []
+    issues = validate_target(ws, "review", "candidate")
+    assert any(i["code"] == "missing-target" for i in issues)
+
+
+def test_validate_target_review_verdict_missing(tmp_path):
+    ws = make_ws(tmp_path)
+    report = tmp_path / ".okf-wiki" / "drafts" / "review" / "candidate.md"
+    report.parent.mkdir(parents=True)
+    report.write_text("looks good overall\n")
+    issues = validate_target(ws, "review", "candidate")
+    assert any(i["code"] == "review-verdict-missing" for i in issues)
+
+
+def test_validate_target_review_verdict_ok(tmp_path):
+    ws = make_ws(tmp_path)
+    report = tmp_path / ".okf-wiki" / "drafts" / "review" / "candidate.md"
+    report.parent.mkdir(parents=True)
+    report.write_text("approved\n\nno issues found\n")
+    assert validate_target(ws, "review", "candidate") == []
 
 
 def test_validate_target_inspect_returns_empty(tmp_path):

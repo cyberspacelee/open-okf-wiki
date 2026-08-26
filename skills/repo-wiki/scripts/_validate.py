@@ -108,14 +108,19 @@ def validate_page(workspace, page_path: pathlib.Path) -> list[dict]:
         issues.append(_issue("error", "placeholder-remaining", path_str, lineno,
                              f"Unreplaced placeholder: {ph}"))
 
-    for sec in struct.sections:
-        if sec.level == 2 and not sec.content.strip():
-            if coverage == "full":
-                issues.append(_issue("error", "section-empty", path_str, sec.start_line,
-                                     f"Section '## {sec.title}' is empty"))
-            elif coverage == "partial":
-                issues.append(_issue("warning", "section-empty", path_str, sec.start_line,
-                                     f"Section '## {sec.title}' is empty"))
+    for idx, sec in enumerate(struct.sections):
+        if sec.level != 2 or sec.content.strip():
+            continue
+        # An H2 that directly leads H3 subsections is structurally non-empty.
+        nxt = struct.sections[idx + 1] if idx + 1 < len(struct.sections) else None
+        if nxt is not None and nxt.level == 3:
+            continue
+        if coverage == "full":
+            issues.append(_issue("error", "section-empty", path_str, sec.start_line,
+                                 f"Section '## {sec.title}' is empty"))
+        elif coverage == "partial":
+            issues.append(_issue("warning", "section-empty", path_str, sec.start_line,
+                                 f"Section '## {sec.title}' is empty"))
 
     if coverage == "partial":
         gaps_sections = [s for s in struct.sections if s.level == 2 and s.title == "Gaps"]
@@ -138,7 +143,21 @@ def validate_page(workspace, page_path: pathlib.Path) -> list[dict]:
 def validate_target(workspace, phase: str, target: str) -> list[dict]:
     root = workspace.root
 
-    if phase in ("review", "inspect", "publish"):
+    if phase in ("inspect", "publish"):
+        return []
+
+    if phase == "review":
+        report = root / ".okf-wiki" / "drafts" / "review" / f"{target}.md"
+        if not report.exists():
+            return [_issue("error", "missing-target", str(report), None,
+                           f"Review report not found: {report}",
+                           "Write the review report before completing the target")]
+        text = report.read_text(encoding="utf-8")
+        first_line = text.strip().splitlines()[0].strip().lower() if text.strip() else ""
+        if first_line not in ("approved", "changes_requested"):
+            return [_issue("error", "review-verdict-missing", str(report), 1,
+                           "Review report must start with 'approved' or 'changes_requested'",
+                           "Put the verdict alone on the first line")]
         return []
 
     if phase in ("survey", "synthesize"):

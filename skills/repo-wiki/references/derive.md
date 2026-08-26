@@ -20,8 +20,13 @@ Produce only the content between `<!-- okf-wiki:begin run=<id> -->` and
 1. **Pointers**: one line per domain — "working on X? read `wiki/<...>.md`
    first" — built from page descriptions. Plus one line for the architecture
    map. Nothing that duplicates what the pages themselves say.
-2. **Verify**: commands proven to work in this run (you ran them; record the
-   command and its purpose). A command you did not run does not go in.
+2. **Verify**: the smallest real verification entry point for this source's
+   build system — look it up in pom.xml / build.gradle / package.json / CI
+   config (`mvn -q test`, `pnpm test`, …) and run it once to confirm it
+   works. If it cannot run in this environment, record the command with a
+   note saying why it was not executed. A generic command unrelated to the
+   source's build (e.g. a bare git check) is worse than an honest note —
+   agents will trust whatever stands here.
 
 Keep the whole block under 15 lines. Every line must pass: "would an agent
 without this line make a worse first move?"

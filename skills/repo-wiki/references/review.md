@@ -26,8 +26,10 @@ scripts cannot:
 
 ## Verdict
 
-Write the full report to the path named in your task. Return at most 10
-lines: `approved` or `changes_requested`, issue count by category, report
-path. For `changes_requested`, each report entry names the page, the exact
-claim or section, and what evidence would resolve it — a writer must be able
-to act on it without asking you anything.
+Write the full report to `.okf-wiki/drafts/review/<target>.md` (target as
+named in your task). The first line of the report is the verdict alone:
+`approved` or `changes_requested` — the validator checks this. Return at most
+10 lines: the verdict, issue count by category, report path. For
+`changes_requested`, each report entry names the page, the exact claim or
+section, and what evidence would resolve it — a writer must be able to act on
+it without asking you anything.

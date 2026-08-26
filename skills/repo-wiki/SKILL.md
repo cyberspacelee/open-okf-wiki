@@ -59,13 +59,13 @@ themselves.
 
 | Phase | Who | How |
 | --- | --- | --- |
-| inspect | you | Cheap shape pass per source: top-level layout, build files, language. Feed results to `init` config. No source reading beyond directory listings and manifests. |
+| inspect | you | Follow `references/inspect.md`: shape pass per source, then decide survey partitioning. |
 | survey | one subagent per source (large sources: per top-level area) | Dispatch with `references/survey.md`. Parallel when the host supports it. |
 | synthesize | one subagent, multi-source only | Dispatch with `references/synthesize.md` after every survey completes — it depends on all of them; never run it alongside surveys. Skipped in a single-source workspace. |
 | write | one subagent per page | Dispatch with `references/write.md`. Source-owned pages come from that source's survey draft; cross-source root pages additionally read the synthesis draft. Write source sections before workspace-root pages. |
 | derive | one subagent | Dispatch with `references/derive.md`. Produces proposals only — one AGENTS block per source in a multi-source workspace. |
-| review | one fresh subagent | Dispatch with `references/review.md`. It sees `wiki/` and the contract — never the writing history. |
-| publish | you | `uv run <skill>/scripts/okf.py publish`. Re-validates everything, swaps `wiki/` transactionally. |
+| review | one fresh subagent | Dispatch with `references/review.md`. It sees `wiki/` and the contract — never the writing history. Its report goes to `.okf-wiki/drafts/review/<target>.md`. |
+| publish | you | Follow `references/publish.md`: start target, run `okf.py publish`, complete target. |
 
 Every subagent task must be self-contained: paths to read, instruction file to
 follow, output path to write. It must make sense with zero conversation
@@ -85,5 +85,14 @@ fresh session — everything needed to continue lives on disk.
 ## Commands
 
 `init | source | state | validate | db | publish`, all via
-`uv run <skill>/scripts/okf.py <command>`. Use `--json` when you need to parse
-the output. `state abandon` discards the current run.
+`uv run <skill>/scripts/okf.py <command>`. `state` actions take named flags,
+not positional phase/target:
+
+```
+uv run <skill>/scripts/okf.py state start --phase survey --target api
+uv run <skill>/scripts/okf.py state complete --phase write --target overview.md
+uv run <skill>/scripts/okf.py state status --json
+```
+
+Use `--json` when you need to parse the output. `state abandon` discards the
+current run.

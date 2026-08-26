@@ -144,6 +144,8 @@ def test_complete_target_advances_phase(monkeypatch, tmp_path):
     _state.start_target(tmp_path, "survey", "a")
     raw = json.loads(state_path(tmp_path).read_text())
     assert raw["phase"] == "survey"
+    assert raw["phases"]["inspect"]["completed_at"]
+    assert raw["phases"]["survey"]["started_at"]
 
 
 def test_complete_target_blocked_by_error(monkeypatch, tmp_path):
