@@ -7,3 +7,4 @@ node_modules/
 refs/
 skills-lock.json
 __pycache__/
+tmp/
