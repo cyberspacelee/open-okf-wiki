@@ -1,71 +1,75 @@
-# Repository Wiki Skill Harness
-
-This context produces a thin, evidence-anchored repository Wiki plus agent
-onboarding files (AGENTS.md block, CONTEXT.md draft), driven by any host coding
-agent through a skill, with deterministic guarantees enforced by scripts.
+# Repository Wiki Producer
 
 ## Language
 
-**Host Agent**:
-The coding agent (Claude Code, Amp, Codex, …) that executes the skill SOP and owns sessions, context, and parallelism.
-_Avoid_: Lead, orchestrator, runner
-
 **Workspace**:
-The directory that owns Wiki config, sources, run state, and one Published Wiki. A lone Git repository without workspace config is an implicit workspace with itself as the only source.
-_Avoid_: Project, working directory
+The directory that owns source registration, Runs and one current Publication.
+_Avoid_: Source, worktree
 
 **Source**:
-A registered Git repository (linked local path or clone) whose content is admissible evidence for a Run. In a multi-source workspace its name prefixes every locator.
-_Avoid_: Codebase, input repo
+A registered clean Git repository or selected PostgreSQL catalog used as Run
+evidence.
+_Avoid_: Workspace, live input
 
-**Synthesis**:
-The single post-survey pass in a multi-source workspace that verifies cross-source connections from both ends and maps workspace topology for root-page writers.
-_Avoid_: Merge, aggregation survey
+**Snapshot**:
+An immutable content-addressed copy of one Source captured at Run start. Git
+Snapshots bind a commit and per-file hashes; database Snapshots contain only
+selected tables.
+_Avoid_: Clone, cache
 
 **Run**:
-One resumable Wiki generation attempt, tracked phase-by-phase in durable state until publish or abandonment.
-_Avoid_: Session, job
+One resumable generation attempt under '.okf-wiki/runs/<id>', owned by a
+producer session until approval, publication or abandonment.
+_Avoid_: Conversation, Publication
 
-**Phase**:
-One ordered stage of a Run: inspect, survey, write, derive, validate, publish.
-_Avoid_: Step, task
+**Target**:
+One validated unit of phase work with a fixed artifact path and retry state.
+_Avoid_: Page (unless it is a write Target)
 
 **State Gate**:
-The state script as the only writer of Run state; completing a phase target requires its validation to pass first.
-_Avoid_: Status file, checkpoint injection
+The CLI-owned transition boundary that validates a Target artifact before
+completion and phase advancement.
+_Avoid_: Self-reported completion
+
+**Candidate**:
+The exact concept page tree produced by one Run before reserved files and
+publication metadata are generated.
+_Avoid_: wiki export, Publication
+
+**Publication**:
+An immutable content-addressed OKF bundle under publication/generations,
+selected by the atomic current.json pointer.
+_Avoid_: wiki directory
+
+**Export**:
+A recoverable physical copy of the current Publication, normally wiki/, for
+source control or tools that cannot follow the generation pointer.
+_Avoid_: Atomic publication
 
 **Thin Wiki**:
-The published routing layer: pages that compress knowledge expensive to rebuild by search, never content cheaply derivable from code.
-_Avoid_: Documentation site, source mirror, API reference
-
-**Grep Test**:
-The admission criterion for Wiki content: if a host agent can rebuild a fact with search plus reading a few files, the Wiki must not carry it.
-_Avoid_: Coverage requirement
+A routing layer for knowledge expensive to reconstruct, bounded by the Grep
+Test rather than file or directory coverage.
+_Avoid_: Source mirror, API reference
 
 **Locator**:
-A workspace-relative path with symbol or line anchor that ties a claim to read evidence.
-_Avoid_: Link, reference (unqualified)
+A claim anchor to frozen evidence. Concepts use
+'okf-source://source/commit/path#Lx-Ly'.
+_Avoid_: Live path
 
-**Coverage**:
-A page-level marker, `full` or `partial`, declaring whether every obligation is evidence-backed or gaps were explicitly recorded.
-_Avoid_: Quality score, completeness percentage
+**Page Plan**:
+The complete mapping from findings and connections to portable concept paths,
+owners and exclusions. It is the boundary for page-level incremental reuse.
+_Avoid_: Suggested outline
 
-**Contract**:
-The single shared writing contract (CONTRACT.md) that both the skill SOP and any future pipeline consume: admission rules, citation rules, managed-block format, ratification boundaries.
-_Avoid_: Template pack, style guide
+**Machine-confirmed**:
+Verification recorded by an independent agent review session.
+_Avoid_: Human-reviewed
 
-**Draft**:
-A phase work product under `.okf-wiki/drafts/` that survives interruption and feeds later phases.
-_Avoid_: Handoff, receipt, scratch file
+**Human-reviewed**:
+Verification explicitly added by a named human to selected published concepts.
+_Avoid_: Agent approval
 
 **Proposal**:
-A machine-generated file under `.okf-wiki/proposals/` awaiting human review before it may touch a Source: AGENTS.md block, CONTEXT.md draft, ADR stub.
-_Avoid_: Auto-generated doc, output
-
-**Managed Block**:
-The delimited, version-stamped region of AGENTS.md that machines may replace; everything outside it is human-owned and untouchable.
-_Avoid_: Generated section (unmarked), whole-file overwrite
-
-**Ratification**:
-The human act of canonizing a term, decision, or proposal. Machines detect drift and draft candidates; they never ratify.
-_Avoid_: Auto-approval, apply-all
+A Run artifact for a source-facing AGENTS managed block, CONTEXT terms or ADR
+stub that requires human ratification.
+_Avoid_: Applied change

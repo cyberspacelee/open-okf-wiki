@@ -3,6 +3,8 @@ type: Overview
 title: "{title}"
 description: "{routing: what this wiki covers, first stop for any task}"
 coverage: full
+resource: "{optional workspace URI}"
+tags: [overview]
 sources: []
 ---
 

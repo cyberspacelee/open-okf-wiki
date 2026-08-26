@@ -1,6 +1,8 @@
+from types import SimpleNamespace
+
+import _db
 import pytest
-from pathlib import Path
-from _db import DbError, load_env, resolve_url, tables, describe
+from _db import DbError, describe, load_env, resolve_url, tables
 
 
 class TestLoadEnv:
@@ -101,7 +103,9 @@ class TestResolveUrl:
     def test_invalid_scheme(self, tmp_path):
         env_file = tmp_path / ".env"
         env_file.write_text("DB_URL=mysql://localhost/testdb\n")
-        with pytest.raises(DbError, match="URL must start with postgres:// or postgresql://"):
+        with pytest.raises(
+            DbError, match="URL must start with postgres:// or postgresql://"
+        ):
             resolve_url(tmp_path, "DB_URL")
 
 
@@ -127,3 +131,34 @@ class TestDescribeImportError:
         monkeypatch.setattr("builtins.__import__", mock_import)
         with pytest.raises(DbError, match="db 功能需要 psycopg,其余功能不受影响"):
             describe("postgresql://localhost/testdb", "test_table")
+
+
+def test_snapshot_selected_table_has_safe_slug_and_credential_free_resource(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("DB_URL", "postgresql://secret:token@db.example:5432/app")
+    monkeypatch.setattr(_db, "tables", lambda url, schema: [{"name": "Order Items"}])
+    monkeypatch.setattr(
+        _db,
+        "describe",
+        lambda url, table, schema: {
+            "name": table,
+            "columns": [],
+            "primary_key": [],
+            "foreign_keys": [],
+        },
+    )
+    snapshot = _db.snapshot_source(
+        tmp_path,
+        SimpleNamespace(
+            name="appdb",
+            url_env="DB_URL",
+            schema="Public Data",
+            tables=("Order Items",),
+        ),
+    )
+    table = snapshot["tables"][0]
+    assert "secret" not in snapshot["resource"] and "token" not in snapshot["resource"]
+    assert snapshot["resource"].endswith("/Public%20Data")
+    assert table["page_slug"].startswith("order-items-")
+    assert table["resource"].endswith("/Order%20Items")

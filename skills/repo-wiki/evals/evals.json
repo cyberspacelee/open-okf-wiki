@@ -5,24 +5,25 @@
       "id": 1,
       "name": "cli-contract-e2e",
       "tier": 1,
-      "prompt": "(no LLM) run_cli_e2e.sh exercises init/source/state/validate/publish gates deterministically",
-      "expected_output": "all gate checks behave per contract; exit 0"
+      "prompt": "(no LLM) run_cli_e2e.py exercises frozen multi-source lifecycle, independent review, OKF publication, human verification and incremental reuse",
+      "expected_output": "passed true; exit 0 on Windows, Linux and macOS"
     },
     {
       "id": 2,
       "name": "java-multi-source",
       "tier": 2,
       "prompt": "You are the host agent for the repo-wiki skill. Workspace: {WS}. Skill: {SKILL_DIR}. Read SKILL.md first, then follow it strictly to publish the wiki. You have no subagents: take the serial path. Never bypass a rejected state complete; fix and retry.",
-      "fixture": "setup_java_ws.sh (feign + spring-cloud-openfeign)",
+      "fixture": "setup_java_ws.py (feign + spring-cloud-openfeign)",
       "expected_output": "published thin wiki, 4-12 pages, 0 validation errors, honest citations, AGENTS proposals per source",
       "assertions": [
-        "run reached publish and every target is complete",
+        "run reached published and every target is complete",
         "published page count within 4..12 (thin-wiki budget)",
-        "re-running okf.py validate on the workspace reports 0 errors",
+        "re-running okf.py validate --published reports 0 errors",
         "sampled cited line ranges exist in the pinned sources (anti-fabrication)",
         "one agents-block proposal per source with paired managed-block markers and <=15 content lines",
         "every page description is non-empty (routing text)",
-        "phase timestamps present (observability)"
+        "independent approved review is bound to the candidate digest",
+        "OKF reserved files and lifecycle trust fields conform"
       ]
     }
   ]

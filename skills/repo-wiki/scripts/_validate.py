@@ -1,279 +1,958 @@
+import json
 import pathlib
 import re
+from datetime import datetime, timedelta, timezone
+from urllib.parse import unquote, urlparse
 
-from _frontmatter import parse_page, parse_file
+from _files import directory_digest
+from _frontmatter import parse_file, render
 from _markdown import extract
-
-
-_CAUSAL = re.compile(
-    r"\b(?:because|so that|in order to)\b|为了|以便|因此|由于", re.IGNORECASE
+from _models import (
+    ConceptFrontmatter,
+    Inspection,
+    PagePlan,
+    Survey,
+    Synthesis,
+    model_errors,
 )
-_FNREF_INLINE = re.compile(r"\[\^([^\]]+)\](?!:)")
-_LINE_ANCHOR = re.compile(r"#L(\d+)(?:-L(\d+))?$")
+from pydantic import ValidationError
 
-_REQUIRED_FIELDS = ("type", "title", "description", "coverage", "sources")
+_LINE_ANCHOR = re.compile(r"#L([1-9][0-9]*)(?:-L([1-9][0-9]*))?$")
+_CAUSAL = re.compile(r"\b(because|in order to|so that)\b|为了|以便", re.IGNORECASE)
+_INLINE_REF = re.compile(r"\[\^[^\]]+\]")
+_LFS_PREFIX = b"version https://git-lfs.github.com/spec/v1"
 
-_SURVEY_SECTIONS = {"Area", "Domains", "Leads", "Remaining", "Gaps"}
-_SYNTHESIZE_SECTIONS = {"Topology", "Connections", "Unverified leads", "Remaining", "Gaps"}
 
-
-def _issue(severity, code, path, line, message, suggestion=""):
+def issue(
+    severity: str, code: str, path: str, message: str, line: int | None = None
+) -> dict:
     return {
         "severity": severity,
         "code": code,
-        "path": str(path),
+        "path": path,
         "line": line,
         "message": message,
-        "suggestion": suggestion,
     }
 
 
-def validate_page(workspace, page_path: pathlib.Path) -> list[dict]:
-    issues = []
-    path_str = str(page_path)
+def _snapshot(state: dict, name: str) -> dict | None:
+    return next((item for item in state["snapshots"] if item["name"] == name), None)
 
+
+def parse_resource(resource: str) -> tuple[str, str, str, int, int] | None:
+    parsed = urlparse(resource)
+    if parsed.scheme != "okf-source" or not parsed.netloc:
+        return None
+    parts = unquote(parsed.path).lstrip("/").split("/", 1)
+    if len(parts) != 2:
+        return None
+    match = _LINE_ANCHOR.search("#" + parsed.fragment)
+    if not match:
+        return None
+    lo = int(match.group(1))
+    hi = int(match.group(2) or lo)
+    return parsed.netloc, parts[0], parts[1], lo, hi
+
+
+def _resolve_resource(
+    root: pathlib.Path, state: dict, resource: str
+) -> tuple[pathlib.Path, int, int] | None:
+    import _workspace
+
+    parsed = parse_resource(resource)
+    if parsed is None:
+        return None
+    source, commit, rel, lo, hi = parsed
+    snapshot = _snapshot(state, source)
+    if snapshot is None or snapshot.get("commit") != commit:
+        return None
+    path = _workspace.resolve_snapshot_file(root, snapshot, rel)
+    return (path, lo, hi) if path is not None else None
+
+
+def _catalog_resource(state: dict, resource: str) -> bool:
+    allowed = set()
+    for snapshot in state["snapshots"]:
+        if snapshot["kind"] == "postgres":
+            allowed.add(snapshot["resource"])
+            allowed.update(table["resource"] for table in snapshot["tables"])
+    return resource in allowed
+
+
+def _draft_locator(
+    root: pathlib.Path, state: dict, locator: str
+) -> tuple[pathlib.Path, int, int] | None:
+    match = _LINE_ANCHOR.search(locator)
+    if not match:
+        return None
+    raw = locator[: match.start()]
+    source, sep, rel = raw.partition("/")
+    if not sep:
+        return None
+    snapshot = _snapshot(state, source)
+    if snapshot is None or snapshot["kind"] != "git":
+        return None
+    import _workspace
+
+    path = _workspace.resolve_snapshot_file(root, snapshot, rel)
+    if path is None:
+        return None
+    return path, int(match.group(1)), int(match.group(2) or match.group(1))
+
+
+def _check_range(path: pathlib.Path, lo: int, hi: int, label: str) -> list[dict]:
+    if lo > hi:
+        return [
+            issue(
+                "error", "line-range-invalid", label, f"start L{lo} exceeds end L{hi}"
+            )
+        ]
+    content = path.read_bytes()
+    if content.startswith(_LFS_PREFIX):
+        return [
+            issue(
+                "error",
+                "lfs-pointer",
+                label,
+                "unmaterialized Git LFS pointers cannot be evidence",
+            )
+        ]
     try:
-        parsed = parse_file(page_path)
-    except Exception as exc:
-        return [_issue("error", "frontmatter-error", path_str, None, str(exc))]
-
-    if parsed.errors:
-        if "No frontmatter found" in parsed.errors[0]:
-            issues.append(_issue("error", "frontmatter-missing", path_str, None,
-                                 "No frontmatter block found"))
-        else:
-            for e in parsed.errors:
-                issues.append(_issue("error", "frontmatter-error", path_str, None, e))
-        return issues
-
-    meta = parsed.meta
-    body = parsed.body
-    struct = extract(body)
-
-    for field in _REQUIRED_FIELDS:
-        if field not in meta:
-            issues.append(_issue("error", "field-missing", path_str, None,
-                                 f"Required field '{field}' missing from frontmatter"))
-
-    coverage = meta.get("coverage", "")
-    if coverage and coverage not in ("full", "partial"):
-        issues.append(_issue("error", "coverage-invalid", path_str, None,
-                             f"coverage must be 'full' or 'partial', got '{coverage}'"))
-
-    sources_list = meta.get("sources", []) if isinstance(meta.get("sources"), list) else []
-    source_ids = {s.get("id") for s in sources_list if isinstance(s, dict) and "id" in s}
-
-    ref_ids = {ref_id for ref_id, _ in struct.footnote_refs}
-    def_ids = set(struct.footnote_defs.keys())
-
-    for ref_id, lineno in struct.footnote_refs:
-        if ref_id not in def_ids:
-            issues.append(_issue("error", "footnote-unmatched", path_str, lineno,
-                                 f"Footnote ref [^{ref_id}] has no definition"))
-
-    for src in sources_list:
-        if not isinstance(src, dict):
-            continue
-        sid = src.get("id")
-        if sid and sid not in ref_ids:
-            issues.append(_issue("warning", "source-unused", path_str, None,
-                                 f"Source '{sid}' is defined but never cited in body"))
-
-    for src in sources_list:
-        if not isinstance(src, dict):
-            continue
-        resource = src.get("resource", "")
-        if not resource or resource.startswith("catalog:"):
-            continue
-        resolved = workspace.resolve_locator(resource)
-        if resolved is None or not resolved.exists():
-            issues.append(_issue("error", "locator-unresolved", path_str, None,
-                                 f"Cannot resolve locator '{resource}'"))
-            continue
-        m = _LINE_ANCHOR.search(resource)
-        if m:
-            line_x = int(m.group(1))
-            line_y = int(m.group(2)) if m.group(2) else line_x
-            if line_x > line_y:
-                issues.append(_issue("error", "line-range-invalid", path_str, None,
-                                     f"Line range {line_x}-{line_y} is invalid (start > end)"))
-                continue
-            if resolved.exists():
-                total = len(resolved.read_text(encoding="utf-8").splitlines())
-                if line_x > total or line_y > total:
-                    issues.append(_issue("error", "line-range-invalid", path_str, None,
-                                         f"Line range L{line_x}-L{line_y} exceeds file length {total}"))
-
-    for ph, lineno in struct.placeholders:
-        issues.append(_issue("error", "placeholder-remaining", path_str, lineno,
-                             f"Unreplaced placeholder: {ph}"))
-
-    for idx, sec in enumerate(struct.sections):
-        if sec.level != 2 or sec.content.strip():
-            continue
-        # An H2 that directly leads H3 subsections is structurally non-empty.
-        nxt = struct.sections[idx + 1] if idx + 1 < len(struct.sections) else None
-        if nxt is not None and nxt.level == 3:
-            continue
-        if coverage == "full":
-            issues.append(_issue("error", "section-empty", path_str, sec.start_line,
-                                 f"Section '## {sec.title}' is empty"))
-        elif coverage == "partial":
-            issues.append(_issue("warning", "section-empty", path_str, sec.start_line,
-                                 f"Section '## {sec.title}' is empty"))
-
-    if coverage == "partial":
-        gaps_sections = [s for s in struct.sections if s.level == 2 and s.title == "Gaps"]
-        if not gaps_sections or not gaps_sections[0].content.strip():
-            issues.append(_issue("error", "gaps-missing", path_str, None,
-                                 "coverage=partial requires a non-empty '## Gaps' section"))
-
-    body_lines = body.splitlines()
-    for lineno, raw in enumerate(body_lines, 1):
-        if not _CAUSAL.search(raw):
-            continue
-        if _FNREF_INLINE.search(raw):
-            continue
-        issues.append(_issue("warning", "causal-unanchored", path_str, lineno,
-                             "Causal claim without footnote citation"))
-
-    return issues
-
-
-def validate_target(workspace, phase: str, target: str) -> list[dict]:
-    root = workspace.root
-
-    if phase in ("inspect", "publish"):
-        return []
-
-    if phase == "review":
-        report = root / ".okf-wiki" / "drafts" / "review" / f"{target}.md"
-        if not report.exists():
-            return [_issue("error", "missing-target", str(report), None,
-                           f"Review report not found: {report}",
-                           "Write the review report before completing the target")]
-        text = report.read_text(encoding="utf-8")
-        first_line = text.strip().splitlines()[0].strip().lower() if text.strip() else ""
-        if first_line not in ("approved", "changes_requested"):
-            return [_issue("error", "review-verdict-missing", str(report), 1,
-                           "Review report must start with 'approved' or 'changes_requested'",
-                           "Put the verdict alone on the first line")]
-        return []
-
-    if phase in ("survey", "synthesize"):
-        draft_path = root / ".okf-wiki" / "drafts" / phase / f"{target}.md"
-        if not draft_path.exists():
-            return [_issue("error", "missing-target", str(draft_path), None,
-                           f"Draft file not found: {draft_path}")]
-        text = draft_path.read_text(encoding="utf-8")
-        struct = extract(text)
-        section_titles = {s.title for s in struct.sections if s.level == 2}
-        required = _SURVEY_SECTIONS if phase == "survey" else _SYNTHESIZE_SECTIONS
-        issues = []
-        for title in required:
-            if title not in section_titles:
-                issues.append(_issue("error", "draft-section-missing", str(draft_path), None,
-                                     f"Required section '## {title}' missing from {phase} draft"))
-        for sec in struct.sections:
-            if sec.level == 2 and sec.title == "Remaining":
-                if sec.content.strip().lower() != "none":
-                    issues.append(_issue("error", "draft-incomplete", str(draft_path), sec.start_line,
-                                         "'## Remaining' must be 'none' to pass the complete gate"))
-        return issues
-
-    if phase == "write":
-        candidate_path = root / ".okf-wiki" / "candidate" / target
-        if not candidate_path.exists():
-            return [_issue("error", "missing-target", str(candidate_path), None,
-                           f"Candidate file not found: {candidate_path}")]
-        return validate_page(workspace, candidate_path)
-
-    if phase == "derive":
-        proposals_dir = root / ".okf-wiki" / "proposals"
-        pattern = list(proposals_dir.glob("agents-block*.md")) if proposals_dir.exists() else []
-        issues = []
-        if not pattern:
-            return [_issue("error", "missing-target", str(proposals_dir), None,
-                           "No agents-block*.md files found in proposals/")]
-        begin_re = re.compile(r"<!--\s*okf-wiki:begin\b[^>]*-->")
-        end_re = re.compile(r"<!--\s*okf-wiki:end\s*-->")
-        for fpath in pattern:
-            text = fpath.read_text(encoding="utf-8")
-            lines = text.splitlines()
-            stack = []
-            paired = 0
-            for lineno, line in enumerate(lines, 1):
-                if begin_re.search(line):
-                    stack.append(lineno)
-                elif end_re.search(line):
-                    if not stack:
-                        issues.append(_issue("error", "missing-target", str(fpath), lineno,
-                                             "Unmatched okf-wiki:end marker"))
-                    else:
-                        begin_line = stack.pop()
-                        paired += 1
-                        content_lines = [l for l in lines[begin_line:lineno - 1] if l.strip()]
-                        if len(content_lines) > 15:
-                            issues.append(_issue("error", "missing-target", str(fpath), begin_line,
-                                                 f"Block content exceeds 15 lines ({len(content_lines)})"))
-            for leftover in stack:
-                issues.append(_issue("error", "missing-target", str(fpath), leftover,
-                                     "Unmatched okf-wiki:begin marker"))
-            if paired == 0 and not stack:
-                issues.append(_issue("error", "managed-block-missing", str(fpath), None,
-                                     "No okf-wiki:begin/end managed block found",
-                                     "Wrap the proposal content in the managed-block markers"))
-        return issues
-
-    candidate_path = root / ".okf-wiki" / "candidate" / target
-    if not candidate_path.exists():
-        return [_issue("error", "missing-target", str(candidate_path), None,
-                       f"Unknown phase '{phase}', target file not found")]
+        total = len(content.decode("utf-8").splitlines())
+    except UnicodeDecodeError:
+        return [
+            issue(
+                "error",
+                "evidence-binary",
+                label,
+                "binary files cannot be line evidence",
+            )
+        ]
+    if hi > total:
+        return [
+            issue(
+                "error",
+                "line-range-invalid",
+                label,
+                f"L{lo}-L{hi} exceeds {total} lines",
+            )
+        ]
     return []
 
 
-def validate_candidate(workspace) -> list[dict]:
-    root = workspace.root
-    candidate_dir = root / ".okf-wiki" / "candidate"
+def _model_issues(
+    path: pathlib.Path, model, raw: str
+) -> tuple[object | None, list[dict]]:
+    try:
+        return model.model_validate_json(raw, strict=True), []
+    except ValidationError as exc:
+        return None, [
+            issue("error", "schema-invalid", str(path), message)
+            for message in model_errors(exc)
+        ]
+
+
+def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[dict]:
+    base = root / ".okf-wiki" / "runs" / state["run_id"]
+    path = base / task["artifact"]
+    if not path.exists():
+        return [
+            issue(
+                "error", "artifact-missing", str(path), "target artifact does not exist"
+            )
+        ]
+    phase = task["phase"]
+    if phase == "inspect":
+        value, issues = _model_issues(
+            path, Inspection, path.read_text(encoding="utf-8")
+        )
+        if value and value.source != task["spec"]["source"]:
+            issues.append(
+                issue(
+                    "error",
+                    "source-mismatch",
+                    str(path),
+                    "inspection source does not match target",
+                )
+            )
+        return issues
+    if phase == "survey":
+        value, issues = _model_issues(path, Survey, path.read_text(encoding="utf-8"))
+        if value:
+            if value.source != task["spec"]["source"] or value.target != task["name"]:
+                issues.append(
+                    issue(
+                        "error",
+                        "survey-mismatch",
+                        str(path),
+                        "survey identity does not match target",
+                    )
+                )
+            snapshot = _snapshot(state, value.source)
+            if snapshot is None or value.snapshot != snapshot["content_hash"]:
+                issues.append(
+                    issue(
+                        "error",
+                        "snapshot-mismatch",
+                        str(path),
+                        "survey does not name the frozen snapshot",
+                    )
+                )
+            if value.remaining:
+                issues.append(
+                    issue(
+                        "error",
+                        "survey-incomplete",
+                        str(path),
+                        "remaining must be empty",
+                    )
+                )
+            for finding in value.findings:
+                for locator in finding.evidence:
+                    resolved = _draft_locator(root, state, locator)
+                    if resolved is None:
+                        issues.append(
+                            issue("error", "locator-unresolved", str(path), locator)
+                        )
+                    else:
+                        issues.extend(_check_range(*resolved, locator))
+        return issues
+    if phase == "synthesize":
+        value, issues = _model_issues(path, Synthesis, path.read_text(encoding="utf-8"))
+        if value:
+            known = {
+                item["name"] for item in state["snapshots"] if item["kind"] == "git"
+            }
+            for connection in value.connections:
+                if (
+                    connection.source_a == connection.source_b
+                    or {connection.source_a, connection.source_b} - known
+                ):
+                    issues.append(
+                        issue(
+                            "error",
+                            "connection-source-invalid",
+                            str(path),
+                            connection.id,
+                        )
+                    )
+                for locator in connection.evidence_a:
+                    resolved = _draft_locator(root, state, locator)
+                    if resolved is None or not locator.startswith(
+                        connection.source_a + "/"
+                    ):
+                        issues.append(
+                            issue(
+                                "error",
+                                "connection-evidence-invalid",
+                                str(path),
+                                locator,
+                            )
+                        )
+                    elif resolved:
+                        issues.extend(_check_range(*resolved, locator))
+                for locator in connection.evidence_b:
+                    resolved = _draft_locator(root, state, locator)
+                    if resolved is None or not locator.startswith(
+                        connection.source_b + "/"
+                    ):
+                        issues.append(
+                            issue(
+                                "error",
+                                "connection-evidence-invalid",
+                                str(path),
+                                locator,
+                            )
+                        )
+                    elif resolved:
+                        issues.extend(_check_range(*resolved, locator))
+        return issues
+    if phase == "plan":
+        value, issues = _model_issues(path, PagePlan, path.read_text(encoding="utf-8"))
+        if value:
+            paths = {page.path for page in value.pages}
+            page_by_path = {page.path: page for page in value.pages}
+            required = {"overview.md", "architecture.md"}
+            known_owners = {"workspace", *(item["name"] for item in state["snapshots"])}
+            unknown_owners = sorted(
+                {page.owner for page in value.pages if page.owner not in known_owners}
+            )
+            if unknown_owners:
+                issues.append(
+                    issue(
+                        "error",
+                        "page-owner-invalid",
+                        str(path),
+                        f"unknown page owners: {unknown_owners}",
+                    )
+                )
+            for core_path, core_type in (
+                ("overview.md", "Overview"),
+                ("architecture.md", "Architecture"),
+            ):
+                entry = page_by_path.get(core_path)
+                if entry and (entry.owner != "workspace" or entry.type != core_type):
+                    issues.append(
+                        issue(
+                            "error",
+                            "core-page-invalid",
+                            str(path),
+                            f"{core_path} must be a workspace-owned {core_type}",
+                        )
+                    )
+            for source in (
+                item["name"] for item in state["snapshots"] if item["kind"] == "git"
+            ):
+                if (
+                    len([item for item in state["snapshots"] if item["kind"] == "git"])
+                    > 1
+                ):
+                    required.add(f"{source}/architecture.md")
+                    entry = page_by_path.get(f"{source}/architecture.md")
+                    if entry and (
+                        entry.owner != source or entry.type != "Architecture"
+                    ):
+                        issues.append(
+                            issue(
+                                "error",
+                                "source-architecture-invalid",
+                                str(path),
+                                f"{source}/architecture.md must be owned by {source}",
+                            )
+                        )
+            database_sources = [
+                item for item in state["snapshots"] if item["kind"] == "postgres"
+            ]
+            if database_sources:
+                required.add("data-model.md")
+            for snapshot in database_sources:
+                for table in snapshot["tables"]:
+                    required.add(f"data/{snapshot['name']}/{table['page_slug']}.md")
+            missing = required - paths
+            if missing:
+                issues.append(
+                    issue(
+                        "error",
+                        "page-plan-incomplete",
+                        str(path),
+                        f"missing required pages: {sorted(missing)}",
+                    )
+                )
+            if database_sources:
+                data_model = page_by_path.get("data-model.md")
+                if data_model and (
+                    data_model.type != "DataModel" or data_model.owner != "workspace"
+                ):
+                    issues.append(
+                        issue(
+                            "error",
+                            "data-page-invalid",
+                            str(path),
+                            "data-model.md must be a workspace-owned DataModel",
+                        )
+                    )
+            for snapshot in database_sources:
+                for table in snapshot["tables"]:
+                    table_path = f"data/{snapshot['name']}/{table['page_slug']}.md"
+                    entry = page_by_path.get(table_path)
+                    if entry and (
+                        entry.type != "Table" or entry.owner != snapshot["name"]
+                    ):
+                        issues.append(
+                            issue(
+                                "error",
+                                "data-page-invalid",
+                                str(path),
+                                f"{table_path} must be a Table owned by {snapshot['name']}",
+                            )
+                        )
+            finding_list = _finding_id_list(base)
+            finding_ids = set(finding_list)
+            if len(finding_list) != len(finding_ids):
+                issues.append(
+                    issue(
+                        "error",
+                        "finding-id-duplicate",
+                        str(path),
+                        "finding ids must be globally unique",
+                    )
+                )
+            assigned_list = [fid for page in value.pages for fid in page.finding_ids]
+            excluded_list = [item.finding_id for item in value.exclusions]
+            assigned = set(assigned_list)
+            excluded = set(excluded_list)
+            if (
+                finding_ids != assigned | excluded
+                or assigned & excluded
+                or len(assigned_list) != len(assigned)
+                or len(excluded_list) != len(excluded)
+            ):
+                issues.append(
+                    issue(
+                        "error",
+                        "finding-coverage-invalid",
+                        str(path),
+                        "every finding must be assigned once or explicitly excluded",
+                    )
+                )
+            connection_ids = _connection_ids(base)
+            connection_list = [
+                cid for page in value.pages for cid in page.connection_ids
+            ]
+            assigned_connections = set(connection_list)
+            if connection_ids != assigned_connections or len(connection_list) != len(
+                assigned_connections
+            ):
+                issues.append(
+                    issue(
+                        "error",
+                        "connection-coverage-invalid",
+                        str(path),
+                        "every synthesized connection must be assigned to a page",
+                    )
+                )
+        return issues
+    if phase == "write":
+        issues = validate_page(
+            root, state, path, owner=task["spec"]["owner"], published=False
+        )
+        if task["spec"]["type"] == "Table":
+            parsed = parse_file(path)
+            expected = next(
+                (
+                    table["resource"]
+                    for snapshot in state["snapshots"]
+                    if snapshot["kind"] == "postgres"
+                    for table in snapshot["tables"]
+                    if f"data/{snapshot['name']}/{table['page_slug']}.md"
+                    == task["name"]
+                ),
+                None,
+            )
+            if expected is None or parsed.meta.get("resource") != expected:
+                issues.append(
+                    issue(
+                        "error",
+                        "table-resource-invalid",
+                        str(path),
+                        f"Table resource must be {expected}",
+                    )
+                )
+        return issues
+    if phase == "derive":
+        return _validate_proposals(root, state, path)
+    return [issue("error", "phase-unknown", str(path), f"unknown phase {phase}")]
+
+
+def _finding_id_list(base: pathlib.Path) -> list[str]:
+    result = []
+    for path in (base / "drafts" / "survey").glob("*.json"):
+        survey = Survey.model_validate_json(
+            path.read_text(encoding="utf-8"), strict=True
+        )
+        result.extend(item.id for item in survey.findings)
+    return result
+
+
+def _connection_ids(base: pathlib.Path) -> set[str]:
+    path = base / "drafts" / "synthesize.json"
+    if not path.exists():
+        return set()
+    synthesis = Synthesis.model_validate_json(
+        path.read_text(encoding="utf-8"), strict=True
+    )
+    return {item.id for item in synthesis.connections}
+
+
+def stamp_generated_page(
+    root: pathlib.Path, state: dict, task: dict, path: pathlib.Path
+) -> None:
+    import _workspace
+
+    parsed = parse_file(path)
+    if parsed.errors:
+        return
+    meta = dict(parsed.meta)
+    spec = task["spec"]
+    meta.update(
+        {
+            "type": spec["type"],
+            "title": spec["title"],
+            "description": spec["description"],
+            "tags": spec["tags"],
+            "language": state["language"],
+            "status": "draft",
+            "generated": {"by": state["producer"], "at": datetime.now(timezone.utc)},
+        }
+    )
+    meta.pop("verified", None)
+    meta.pop("stale_after", None)
+    meta.setdefault("coverage", "full")
+    workspace = _workspace.load(root)
+    enriched = []
+    for source in meta.get("sources", []):
+        if not isinstance(source, dict):
+            enriched.append(source)
+            continue
+        resource = source.get("resource", "")
+        parsed_resource = (
+            parse_resource(resource) if isinstance(resource, str) else None
+        )
+        if parsed_resource:
+            source_name, _, rel, _, _ = parsed_resource
+            snapshot = _snapshot(state, source_name)
+            if snapshot:
+                signals = _workspace.git_file_metadata(workspace, snapshot, rel)
+                source = dict(source)
+                source.update({key: value for key, value in signals.items() if value})
+        enriched.append(source)
+    meta["sources"] = enriched
+    path.write_text(render(meta, parsed.body), encoding="utf-8", newline="\n")
+
+
+def stamp_approved_pages(root: pathlib.Path, state: dict, actor: str) -> None:
+    now = datetime.now(timezone.utc)
+    stale = now.date() + timedelta(days=state["freshness_days"])
+    for path in sorted(
+        (root / ".okf-wiki" / "runs" / state["run_id"] / "candidate").rglob("*.md")
+    ):
+        parsed = parse_file(path)
+        if parsed.errors:
+            continue
+        meta = dict(parsed.meta)
+        verified = meta.get("verified") or []
+        if isinstance(verified, dict):
+            verified = [verified]
+        meta["verified"] = [*verified, {"by": actor, "at": now}]
+        meta["status"] = "stable"
+        meta["stale_after"] = stale
+        path.write_text(render(meta, parsed.body), encoding="utf-8", newline="\n")
+
+
+def validate_page(
+    root: pathlib.Path,
+    state: dict,
+    path: pathlib.Path,
+    *,
+    owner: str | None = None,
+    published: bool = False,
+) -> list[dict]:
+    parsed = parse_file(path)
+    if parsed.errors:
+        return [
+            issue("error", "frontmatter-invalid", str(path), message)
+            for message in parsed.errors
+        ]
+    try:
+        frontmatter = ConceptFrontmatter.model_validate(parsed.meta, strict=True)
+    except ValidationError as exc:
+        return [
+            issue("error", "frontmatter-invalid", str(path), message)
+            for message in model_errors(exc)
+        ]
     issues = []
+    for field in ("title", "description", "coverage", "language", "generated"):
+        if getattr(frontmatter, field) is None:
+            issues.append(
+                issue(
+                    "error", "field-missing", str(path), f"repo-wiki requires {field}"
+                )
+            )
+    if published and (
+        frontmatter.status != "stable"
+        or not frontmatter.verified
+        or not frontmatter.stale_after
+    ):
+        issues.append(
+            issue(
+                "error",
+                "trust-incomplete",
+                str(path),
+                "published concepts must be stable, verified and have stale_after",
+            )
+        )
+    structure = extract(parsed.body)
+    refs = {ref for ref, _ in structure.footnote_refs}
+    defs = set(structure.footnote_defs)
+    source_ids = [source.id for source in frontmatter.sources]
+    if any(source_id is None for source_id in source_ids) or len(source_ids) != len(
+        set(source_ids)
+    ):
+        issues.append(
+            issue(
+                "error",
+                "source-id-invalid",
+                str(path),
+                "source ids are required and unique",
+            )
+        )
+    if refs != set(source_ids) or refs != defs:
+        issues.append(
+            issue(
+                "error",
+                "citation-join-invalid",
+                str(path),
+                "footnote refs, definitions and source ids must match exactly",
+            )
+        )
+    for source in frontmatter.sources:
+        if _catalog_resource(state, source.resource):
+            continue
+        resolved = _resolve_resource(root, state, source.resource)
+        if resolved is None:
+            issues.append(
+                issue("error", "locator-unresolved", str(path), source.resource)
+            )
+            continue
+        parsed_resource = parse_resource(source.resource)
+        if (
+            owner
+            and owner != "workspace"
+            and parsed_resource
+            and parsed_resource[0] != owner
+        ):
+            issues.append(issue("error", "ownership-bleed", str(path), source.resource))
+        issues.extend(_check_range(*resolved, source.resource))
+    for placeholder, line in structure.placeholders:
+        issues.append(
+            issue("error", "placeholder-remaining", str(path), placeholder, line)
+        )
+    if frontmatter.coverage == "partial":
+        gaps = [section for section in structure.sections if section.title == "Gaps"]
+        if not gaps or not gaps[0].content:
+            issues.append(
+                issue(
+                    "error",
+                    "gaps-missing",
+                    str(path),
+                    "partial coverage requires a non-empty Gaps section",
+                )
+            )
+    for line, raw in enumerate(parsed.body.splitlines(), 1):
+        if _CAUSAL.search(raw) and not _INLINE_REF.search(raw):
+            issues.append(
+                issue(
+                    "warning",
+                    "causal-unanchored",
+                    str(path),
+                    "causal claim has no citation",
+                    line,
+                )
+            )
+    return issues
 
-    pages = list(candidate_dir.rglob("*.md")) if candidate_dir.exists() else []
-    page_set = {p.resolve() for p in pages}
 
-    for page in pages:
-        issues.extend(validate_page(workspace, page))
+def validate_candidate(
+    root: pathlib.Path, state: dict, *, published: bool
+) -> list[dict]:
+    candidate = root / ".okf-wiki" / "runs" / state["run_id"] / "candidate"
+    pages = sorted(candidate.rglob("*.md")) if candidate.exists() else []
+    if not pages:
+        return [
+            issue(
+                "error",
+                "candidate-empty",
+                str(candidate),
+                "candidate has no concept pages",
+            )
+        ]
+    issues = []
+    page_set = {path.relative_to(candidate).as_posix() for path in pages}
+    task_by_path = {
+        task["name"]: task
+        for task in state["tasks"].values()
+        if task["phase"] == "write"
+    }
+    if page_set != set(task_by_path):
+        issues.append(
+            issue(
+                "error",
+                "page-set-mismatch",
+                str(candidate),
+                "candidate pages must exactly match the page plan",
+            )
+        )
+    for path in pages:
+        rel = path.relative_to(candidate).as_posix()
+        owner = task_by_path.get(rel, {}).get("spec", {}).get("owner")
+        issues.extend(
+            validate_page(root, state, path, owner=owner, published=published)
+        )
+    issues.extend(_link_issues(candidate, pages, page_set))
+    return issues
 
-    # cross-page: broken internal links
-    for page in pages:
-        struct = extract(page.read_text(encoding="utf-8"))
-        for target, lineno in struct.links:
-            link_target = target.split("#")[0]
-            if not link_target:
+
+def _link_issues(
+    base: pathlib.Path, pages: list[pathlib.Path], allowed: set[str]
+) -> list[dict]:
+    issues = []
+    for path in pages:
+        rel = path.relative_to(base).as_posix()
+        parsed = parse_file(path, reserved=path.name in ("index.md", "log.md"))
+        structure = extract(parsed.body)
+        for target, line in structure.links:
+            clean = unquote(target.split("#", 1)[0].split("?", 1)[0])
+            if not clean or urlparse(clean).scheme or clean.startswith("mailto:"):
                 continue
-            resolved = (page.parent / link_target).resolve()
-            if resolved not in page_set:
-                issues.append(_issue("error", "broken-link", str(page), lineno,
-                                     f"Broken internal link: '{target}'"))
+            if clean.startswith("/"):
+                rel_target = pathlib.PurePosixPath(clean.lstrip("/"))
+            else:
+                rel_target = pathlib.PurePosixPath(rel).parent / clean
+            normalized = pathlib.PurePosixPath(rel_target)
+            if ".." in normalized.parts or normalized.as_posix() not in allowed:
+                issues.append(issue("error", "broken-link", str(path), target, line))
+    return issues
 
-    # BFS reachability from index.md
-    index = candidate_dir / "index.md"
-    if index.exists() and index.resolve() in page_set:
-        visited = {index.resolve()}
-        queue = [index]
-        while queue:
-            current = queue.pop(0)
-            struct = extract(current.read_text(encoding="utf-8"))
-            for target, _ in struct.links:
-                link_target = target.split("#")[0]
-                if not link_target:
-                    continue
-                resolved = (current.parent / link_target).resolve()
-                if resolved in page_set and resolved not in visited:
-                    visited.add(resolved)
-                    queue.append(resolved)
-        for page in pages:
-            if page.resolve() not in visited:
-                issues.append(_issue("warning", "unreachable", str(page), None,
-                                     f"Page not reachable from index.md"))
 
+def validate_bundle(path: pathlib.Path) -> list[dict]:
+    issues = []
+    for page in sorted(path.rglob("*.md")):
+        rel = page.relative_to(path).as_posix()
+        if page.name == "index.md":
+            parsed = parse_file(page, reserved=True)
+            if rel == "index.md":
+                if parsed.errors or parsed.meta != {"okf_version": "0.2"}:
+                    issues.append(
+                        issue(
+                            "error",
+                            "index-frontmatter",
+                            str(page),
+                            "root index may contain only okf_version: 0.2",
+                        )
+                    )
+            elif parsed.meta or parsed.errors:
+                issues.append(
+                    issue(
+                        "error",
+                        "index-frontmatter",
+                        str(page),
+                        "nested index must not have frontmatter",
+                    )
+                )
+            for line_no, line in enumerate(parsed.body.splitlines(), 1):
+                if line.startswith("##"):
+                    issues.append(
+                        issue(
+                            "error",
+                            "index-heading",
+                            str(page),
+                            "index groups must use H1 headings",
+                            line_no,
+                        )
+                    )
+        elif page.name == "log.md":
+            parsed = parse_file(page, reserved=True)
+            if parsed.meta or parsed.errors:
+                issues.append(
+                    issue(
+                        "error",
+                        "log-frontmatter",
+                        str(page),
+                        "log must not have frontmatter",
+                    )
+                )
+            for line_no, line in enumerate(parsed.body.splitlines(), 1):
+                if line.startswith("## ") and not re.fullmatch(
+                    r"## \d{4}-\d{2}-\d{2}", line
+                ):
+                    issues.append(
+                        issue(
+                            "error",
+                            "log-date",
+                            str(page),
+                            "log date headings must be YYYY-MM-DD",
+                            line_no,
+                        )
+                    )
+        else:
+            parsed = parse_file(page)
+            if parsed.errors:
+                issues.extend(
+                    issue("error", "frontmatter-invalid", str(page), message)
+                    for message in parsed.errors
+                )
+            else:
+                try:
+                    concept = ConceptFrontmatter.model_validate(
+                        parsed.meta, strict=True
+                    )
+                    if (
+                        concept.status != "stable"
+                        or not concept.verified
+                        or not concept.stale_after
+                    ):
+                        issues.append(
+                            issue(
+                                "error",
+                                "trust-incomplete",
+                                str(page),
+                                "published concepts must be stable, verified and have stale_after",
+                            )
+                        )
+                except ValidationError as exc:
+                    issues.extend(
+                        issue("error", "frontmatter-invalid", str(page), message)
+                        for message in model_errors(exc)
+                    )
+    return issues
+
+
+def validate_publication(root: pathlib.Path, path: pathlib.Path) -> list[dict]:
+    issues = validate_bundle(path)
+    manifest_path = path / ".okf-manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        issues.append(issue("error", "manifest-invalid", str(manifest_path), str(exc)))
+        return issues
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("sources"), list):
+        issues.append(
+            issue(
+                "error",
+                "manifest-invalid",
+                str(manifest_path),
+                "manifest fields are invalid",
+            )
+        )
+        return issues
+    if manifest.get("digest") != directory_digest(
+        path, exclude_names={".okf-manifest.json"}
+    ):
+        issues.append(
+            issue(
+                "error", "manifest-digest", str(manifest_path), "bundle digest mismatch"
+            )
+        )
+
+    snapshots = []
+    for entry in manifest.get("sources", []):
+        if not isinstance(entry, dict):
+            issues.append(
+                issue(
+                    "error",
+                    "snapshot-invalid",
+                    str(manifest_path),
+                    "source must be an object",
+                )
+            )
+            continue
+        content_hash = entry.get("content_hash", "")
+        if not isinstance(content_hash, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", content_hash
+        ):
+            issues.append(
+                issue(
+                    "error",
+                    "snapshot-invalid",
+                    str(manifest_path),
+                    "invalid content hash",
+                )
+            )
+            continue
+        filename = "manifest.json" if entry.get("kind") == "git" else "catalog.json"
+        snapshot_path = root / ".okf-wiki" / "snapshots" / content_hash / filename
+        try:
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            issues.append(
+                issue(
+                    "error",
+                    "snapshot-missing",
+                    str(snapshot_path),
+                    f"publication source {entry.get('name')} is unavailable",
+                )
+            )
+            continue
+        snapshot["content_hash"] = content_hash
+        snapshots.append(snapshot)
+
+    state = {"snapshots": snapshots}
+    concepts = sorted(
+        page for page in path.rglob("*.md") if page.name not in ("index.md", "log.md")
+    )
+    for page in concepts:
+        issues.extend(validate_page(root, state, page, published=True))
+    linked_pages = sorted(page for page in path.rglob("*.md") if page.name != "log.md")
+    allowed = {page.relative_to(path).as_posix() for page in path.rglob("*.md")}
+    issues.extend(_link_issues(path, linked_pages, allowed))
+    return issues
+
+
+def _validate_proposals(
+    root: pathlib.Path, state: dict, path: pathlib.Path
+) -> list[dict]:
+    issues = []
+    expected = {
+        f"agents-block-{item['name']}.md"
+        for item in state["snapshots"]
+        if item["kind"] == "git"
+    }
+    actual = (
+        {item.name for item in path.glob("agents-block-*.md")}
+        if path.exists()
+        else set()
+    )
+    if expected != actual:
+        issues.append(
+            issue(
+                "error",
+                "proposal-set-invalid",
+                str(path),
+                f"expected {sorted(expected)}, got {sorted(actual)}",
+            )
+        )
+    begin = re.compile(r"<!--\s*okf-wiki:begin\b[^>]*-->")
+    end = re.compile(r"<!--\s*okf-wiki:end\s*-->")
+    for proposal in path.glob("agents-block-*.md"):
+        text = proposal.read_text(encoding="utf-8")
+        if len(begin.findall(text)) != 1 or len(end.findall(text)) != 1:
+            issues.append(
+                issue(
+                    "error",
+                    "managed-block-invalid",
+                    str(proposal),
+                    "exactly one managed block is required",
+                )
+            )
+        inside = text.split("-->", 1)[-1].rsplit("<!--", 1)[0]
+        if len([line for line in inside.splitlines() if line.strip()]) > 15:
+            issues.append(
+                issue(
+                    "error",
+                    "managed-block-long",
+                    str(proposal),
+                    "managed block exceeds 15 non-empty lines",
+                )
+            )
+        source_name = proposal.stem.removeprefix("agents-block-")
+        for receipt_id in re.findall(r"receipt:\s*([a-zA-Z0-9_-]+)", inside):
+            receipt_path = (
+                root
+                / ".okf-wiki"
+                / "runs"
+                / state["run_id"]
+                / "receipts"
+                / f"{receipt_id}.json"
+            )
+            try:
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                issues.append(
+                    issue(
+                        "error",
+                        "receipt-invalid",
+                        str(proposal),
+                        f"missing receipt {receipt_id}",
+                    )
+                )
+                continue
+            if receipt.get("source") != source_name or receipt.get("exit_code") != 0:
+                issues.append(
+                    issue(
+                        "error",
+                        "receipt-invalid",
+                        str(proposal),
+                        f"receipt {receipt_id} is not a successful run for {source_name}",
+                    )
+                )
     return issues

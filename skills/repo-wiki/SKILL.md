@@ -1,98 +1,93 @@
 ---
 name: repo-wiki
-description: Generate and maintain a thin, evidence-anchored repository Wiki plus AGENTS.md / CONTEXT.md proposals, with durable resumable state. Use whenever the user asks to generate or update a repo wiki, codebase documentation, an architecture map, onboarding docs, an AGENTS.md, a CONTEXT.md glossary draft, or to resume, continue, or check a previous wiki run — even if they never say the word "wiki".
+description: Generate or incrementally refresh a thin, evidence-anchored repository Wiki and human-reviewed onboarding proposals. Use for codebase Wiki, architecture map, onboarding documentation, AGENTS.md or CONTEXT.md proposals, and resuming an existing Wiki run.
 ---
 
 # Repo Wiki
 
-Produce a thin Wiki under `wiki/` that routes agents to knowledge expensive to
-rebuild by search, plus human-reviewed proposals (AGENTS.md managed block,
-CONTEXT.md draft, ADR stubs) under `.okf-wiki/proposals/`. Deterministic
-guarantees live in `scripts/okf.py`; you orchestrate and never bypass it.
+Produce an OKF v0.2 Wiki from immutable source snapshots. The host agent
+orchestrates; `scripts/okf.py` owns source freezing, state transitions,
+validation, review binding, publication and rollback. Never edit state JSON.
 
-Requires `uv` on PATH (`command -v uv`; if missing, point the user to
-https://docs.astral.sh/uv/ and stop). Run every command from the workspace
-root. `<skill>` below means this skill's directory.
+Requires Git, Python 3.12+ and `uv` on PATH. Commands below work from Bash,
+PowerShell and cmd when run from the workspace root. `<skill>` is this
+directory.
 
 ## Re-anchor first
 
-Whenever you are unsure of progress — session start, after context compaction,
-resuming, or several turns since your last state call — do this before
-anything else:
+On entry, resume, or uncertainty:
 
-1. `uv run <skill>/scripts/okf.py state status --json`
-2. Read `<skill>/references/<current-phase>.md`
-3. Continue from the earliest incomplete target. A `complete` target is never
-   redone.
+1. Run `uv run <skill>/scripts/okf.py run status --json`.
+2. If a run exists, read `references/<current_phase>.md` and perform only its
+   listed `next_actions`.
+3. If no workspace exists, run `workspace init`; if no run exists, run
+   `run start --producer repo-wiki/<model> --session <unique-session>`.
 
-Disk state overrides your memory, always. If status reports no workspace, run
-`uv run <skill>/scripts/okf.py init` (add `--lang zh` for Chinese output) from
-the workspace root, register sources if needed, then `okf.py state init` to
-open the run and begin at inspect.
+Completed targets are immutable unless review reopens them. Disk state wins
+over conversation memory.
 
-## Workspace and sources
+## Sources
 
-A workspace owns one Wiki and one or more sources. Running inside a single
-Git repository with no workspace config is an implicit workspace: that repo is
-the only source, named `self`, and citations carry no prefix. For multiple
-repositories, register each one:
+`workspace init --lang en|zh --freshness-days 90` adds the current Git repo as
+`self`. Add more sources explicitly:
 
-```
-uv run <skill>/scripts/okf.py source add /abs/path/to/repo --name api
-uv run <skill>/scripts/okf.py source add https://host/web.git --name web
+```text
+uv run <skill>/scripts/okf.py source add --kind git --name api C:\src\api
+uv run <skill>/scripts/okf.py source add --kind git --name web https://host/web.git
+uv run <skill>/scripts/okf.py source add --kind postgres --name appdb --url-env DATABASE_URL --schema public --table orders --table customers
 ```
 
-Local paths are linked; URLs are cloned under `.okf-wiki/sources/`. In a
-multi-source workspace every citation and draft locator starts with the
-source name (`api/src/main.ts#L12`). Domain slugs are source-local — never
-merge same-named domains across sources.
-
-## Your context budget
-
-You are the coordinator. Subagents read source; you do not read source files
-or wiki page bodies yourself. You consume exactly three inputs: state status
-output, subagent receipts (≤10 lines each), and validator issue lists. Hand
-subagents file paths, never pasted contents — they read the latest version
-themselves.
+Formal runs reject dirty/untracked Git sources, submodules and paths that
+cannot be represented on Windows. Each run reads a content-addressed snapshot,
+never the live worktree. PostgreSQL sources are read-only and include only
+explicitly selected tables; credentials never enter state or citations.
 
 ## Phases
 
-| Phase | Who | How |
-| --- | --- | --- |
-| inspect | you | Follow `references/inspect.md`: shape pass per source, then decide survey partitioning. |
-| survey | one subagent per source (large sources: per top-level area) | Dispatch with `references/survey.md`. Parallel when the host supports it. |
-| synthesize | one subagent, multi-source only | Dispatch with `references/synthesize.md` after every survey completes — it depends on all of them; never run it alongside surveys. Skipped in a single-source workspace. |
-| write | one subagent per page | Dispatch with `references/write.md`. Source-owned pages come from that source's survey draft; cross-source root pages additionally read the synthesis draft. Write source sections before workspace-root pages. |
-| derive | one subagent | Dispatch with `references/derive.md`. Produces proposals only — one AGENTS block per source in a multi-source workspace. |
-| review | one fresh subagent | Dispatch with `references/review.md`. It sees `wiki/` and the contract — never the writing history. Its report goes to `.okf-wiki/drafts/review/<target>.md`. |
-| publish | you | Follow `references/publish.md`: start target, run `okf.py publish`, complete target. |
+The fixed order is inspect -> survey -> synthesize (multi-Git only) -> plan ->
+write -> derive -> review -> publish. Read the matching reference before work.
 
-Every subagent task must be self-contained: paths to read, instruction file to
-follow, output path to write. It must make sense with zero conversation
-history, so any session can re-dispatch it.
+For every target:
 
-A subagent reporting "complete" is a claim, not a fact. On receipt, run
-`uv run <skill>/scripts/okf.py state complete <phase> --target <t>` — it
-validates first and refuses to advance on failure. Relay refusal issues back
-to the same target as a repair task.
-
-## Without subagents
-
-Work serially: one target at a time, `state complete` after each. At phase
-boundaries, tell the user this is a safe point to clear context or start a
-fresh session — everything needed to continue lives on disk.
-
-## Commands
-
-`init | source | state | validate | db | publish`, all via
-`uv run <skill>/scripts/okf.py <command>`. `state` actions take named flags,
-not positional phase/target:
-
-```
-uv run <skill>/scripts/okf.py state start --phase survey --target api
-uv run <skill>/scripts/okf.py state complete --phase write --target overview.md
-uv run <skill>/scripts/okf.py state status --json
+```text
+uv run <skill>/scripts/okf.py task start <phase>:<name>
+# write exactly the artifact path reported by run status
+uv run <skill>/scripts/okf.py task complete <phase>:<name>
 ```
 
-Use `--json` when you need to parse the output. `state abandon` discards the
-current run.
+Completion validates the artifact and advances only on success. Give workers
+the target spec, frozen snapshot path, reference path and exact output path.
+Workers return short receipts; artifact content stays on disk. Without worker
+sessions, execute targets serially.
+
+The plan phase is mandatory. It assigns every finding once, bounds page count,
+and enables page-level reuse. A page is reused only when its plan entry is
+identical, all cited file hashes are unchanged, and `stale_after` has not
+passed. Changed evidence reopens only affected work; no heuristic source read
+tracking is used.
+
+## Review and publish
+
+Review must run in a session different from the producer:
+
+```text
+uv run <skill>/scripts/okf.py review start --actor repo-wiki/<reviewer> --session <new-session>
+uv run <skill>/scripts/okf.py review submit --report <review.json>
+uv run <skill>/scripts/okf.py publication publish
+uv run <skill>/scripts/okf.py publication export --to wiki
+```
+
+`publish` installs an immutable generation and atomically replaces the small
+`current.json` pointer. `wiki/` is an explicit, recoverable export for Git; it
+is not the live publication boundary. Use `publication rollback` to switch to
+the previous generation.
+
+The review stamp is `machine-confirmed`. After explicit human inspection,
+upgrade selected pages in a new generation:
+
+```text
+uv run <skill>/scripts/okf.py verify --actor human:<identity> --page overview.md
+```
+
+Reserved `index.md` and `log.md` are generated only by publish. Never author
+them in Candidate.

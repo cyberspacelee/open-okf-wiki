@@ -1,6 +1,4 @@
-import pytest
-from _frontmatter import parse_page, ParsedPage
-
+from _frontmatter import parse_page
 
 NORMAL_PAGE = """\
 ---
@@ -104,4 +102,4 @@ def test_body_preserved():
 def test_sources_empty_list():
     page = "---\ntitle: T\nsources:\n---\nBody.\n"
     r = parse_page(page)
-    assert r.meta.get("sources", []) == [] or isinstance(r.meta.get("sources"), list)
+    assert r.meta["sources"] is None

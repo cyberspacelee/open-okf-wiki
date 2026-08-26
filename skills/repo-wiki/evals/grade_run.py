@@ -2,134 +2,177 @@
 # /// script
 # requires-python = ">=3.12"
 # ///
-"""Deterministic grader for a finished repo-wiki run.
+"""Outcome-based grader for a published v3 repo-wiki run."""
 
-Checks environment state, not transcripts (outcome-based verification).
-Usage: grade_run.py <workspace> [--json]
-Exit 0 = all assertions pass.
-"""
-
+import argparse
 import json
 import pathlib
 import random
 import re
 import subprocess
-import sys
 
 SKILL = pathlib.Path(__file__).resolve().parent.parent
-CITE_RE = re.compile(r"([\w./-]+\.\w+)#L(\d+)(?:-L?(\d+))?")
-PAGE_BUDGET = (4, 12)
-SAMPLED_CITATIONS = 12
+CITE = re.compile(
+    r"okf-source://([a-z0-9-]+)/([0-9a-f]{40,64})/([^\s#]+)#L([1-9][0-9]*)(?:-L([1-9][0-9]*))?"
+)
+
+
+def load(path: pathlib.Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def grade(ws: pathlib.Path) -> list[dict]:
     results = []
 
-    def check(name: str, passed: bool, evidence: str):
+    def check(name: str, passed: bool, evidence: str) -> None:
         results.append({"text": name, "passed": bool(passed), "evidence": evidence})
 
-    state_file = ws / ".okf-wiki" / "state.json"
-    state = json.loads(state_file.read_text()) if state_file.exists() else {}
-    phases = state.get("phases", {})
-    all_targets = [(ph, t, v) for ph, pd in phases.items()
-                   for t, v in pd.get("targets", {}).items()]
-    incomplete = [(ph, t) for ph, t, v in all_targets if v["status"] != "complete"]
-    check("run reached publish with every target complete",
-          state.get("phase") == "publish" and all_targets and not incomplete,
-          f"phase={state.get('phase')}, incomplete={incomplete[:5]}")
+    pointer = load(ws / ".okf-wiki/publication/current.json")
+    bundle = ws / ".okf-wiki/publication/generations" / pointer["generation"]
+    manifest = load(bundle / ".okf-manifest.json")
+    run_id = manifest["producer_run_id"]
+    run_dir = ws / ".okf-wiki/runs" / run_id
+    state = load(run_dir / "state.json")
+    incomplete = [
+        key for key, value in state["tasks"].items() if value["status"] != "complete"
+    ]
+    check(
+        "run published with all targets complete",
+        state["status"] == "published" and not incomplete,
+        f"status={state['status']}, incomplete={incomplete[:5]}",
+    )
+    attempts = state.get("review_attempts", [])
+    check(
+        "independent approved review recorded",
+        bool(attempts)
+        and attempts[-1]["verdict"] == "approved"
+        and attempts[-1]["session"] != state["producer_session"],
+        f"attempts={len(attempts)}",
+    )
 
-    check("phase timestamps recorded",
-          all("started_at" in pd for pd in phases.values() if pd.get("targets")),
-          "started_at on all active phases")
-
-    wiki = ws / "wiki"
-    pages = sorted(p for p in wiki.rglob("*.md")) if wiki.exists() else []
-    content_pages = [p for p in pages if p.name != "index.md"]
-    check(f"published page count within {PAGE_BUDGET} (thin-wiki budget)",
-          PAGE_BUDGET[0] <= len(content_pages) <= PAGE_BUDGET[1],
-          f"{len(content_pages)} content pages: {[str(p.relative_to(wiki)) for p in content_pages]}")
-
-    proc = subprocess.run(
-        ["uv", "run", str(SKILL / "scripts" / "okf.py"), "validate", "--json"],
-        cwd=ws, capture_output=True, text=True)
+    pages = sorted(
+        path for path in bundle.rglob("*.md") if path.name not in ("index.md", "log.md")
+    )
+    check(
+        "thin concept page budget 4..12",
+        4 <= len(pages) <= 12,
+        f"{len(pages)} pages",
+    )
+    validation = subprocess.run(
+        [
+            "uv",
+            "run",
+            str(SKILL / "scripts/okf.py"),
+            "validate",
+            "--published",
+            "--json",
+        ],
+        cwd=ws,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     try:
-        vjson = json.loads(proc.stdout)
-        errors = vjson.get("errors", -1)
-    except json.JSONDecodeError:
+        errors = json.loads(validation.stdout)["errors"]
+    except (json.JSONDecodeError, KeyError):
         errors = -1
-    check("validate reports 0 errors on published candidate",
-          errors == 0, f"errors={errors}")
+    check("published validation has zero errors", errors == 0, f"errors={errors}")
 
-    # Anti-fabrication: sampled cited line ranges must exist in pinned sources.
-    # Resolve source-name prefixes through workspace.json (link sources live
-    # outside the workspace directory).
-    ws_cfg = json.loads((ws / ".okf-wiki" / "workspace.json").read_text())
-    source_roots = {s["name"]: pathlib.Path(s["target"]) for s in ws_cfg["sources"]}
-
-    def resolve(res: str) -> pathlib.Path:
-        head, _, rest = res.partition("/")
-        if head in source_roots:
-            return source_roots[head] / rest
-        return ws / res
-
+    snapshots = {item["name"]: item for item in state["snapshots"]}
     citations = []
-    for p in content_pages:
-        for m in CITE_RE.finditer(p.read_text(encoding="utf-8")):
-            citations.append((p, m.group(1), int(m.group(2)), int(m.group(3) or m.group(2))))
-    random.seed(0)
-    sample = random.sample(citations, min(SAMPLED_CITATIONS, len(citations)))
+    for page in pages:
+        citations.extend(
+            (page, match) for match in CITE.finditer(page.read_text(encoding="utf-8"))
+        )
+    random.Random(0).shuffle(citations)
     bad = []
-    for page, res, lo, hi in sample:
-        f = resolve(res)
-        if not f.exists():
-            bad.append(f"{res} missing (cited in {page.name})")
+    for page, match in citations[:12]:
+        source, commit, rel, lo, hi = match.groups()
+        snapshot = snapshots.get(source)
+        path = (
+            ws
+            / ".okf-wiki/snapshots"
+            / (snapshot or {}).get("content_hash", "")
+            / "tree"
+            / rel
+        )
+        upper = int(hi or lo)
+        if not snapshot or snapshot.get("commit") != commit or not path.is_file():
+            bad.append(f"{page.name}: unresolved {match.group(0)}")
             continue
-        n = len(f.read_text(encoding="utf-8", errors="replace").splitlines())
-        if not (1 <= lo <= hi <= n):
-            bad.append(f"{res}#L{lo}-{hi} out of range (file has {n} lines)")
-    check(f"sampled citations resolve ({len(sample)}/{len(citations)} checked)",
-          bool(citations) and not bad, "; ".join(bad) or "all sampled ranges exist")
+        count = len(path.read_text(encoding="utf-8", errors="strict").splitlines())
+        if upper > count:
+            bad.append(f"{page.name}: L{upper} exceeds {count}")
+    check(
+        "sampled frozen citations resolve",
+        bool(citations) and not bad,
+        "; ".join(bad) or f"{min(12, len(citations))}/{len(citations)} checked",
+    )
 
-    props = sorted((ws / ".okf-wiki" / "proposals").glob("agents-block*.md"))
-    n_sources = len(json.loads((ws / ".okf-wiki" / "workspace.json").read_text())["sources"])
-    block_ok = []
-    for p in props:
-        text = p.read_text(encoding="utf-8")
-        inner = re.search(r"<!-- okf-wiki:begin[^>]*-->\n(.*?)<!-- okf-wiki:end -->",
-                          text, re.DOTALL)
-        lines = len([l for l in inner.group(1).splitlines() if l.strip()]) if inner else 99
-        block_ok.append(inner is not None and lines <= 15)
-    check("one AGENTS proposal per source, markers paired, <=15 lines",
-          len(props) == n_sources and all(block_ok),
-          f"{len(props)} proposals for {n_sources} sources")
-
-    missing_desc = []
-    for p in content_pages:
-        head = p.read_text(encoding="utf-8")[:800]
-        m = re.search(r'^description:\s*"?(.+?)"?\s*$', head, re.MULTILINE)
-        if not m or not m.group(1).strip():
-            missing_desc.append(p.name)
-    check("every page has non-empty routing description",
-          content_pages and not missing_desc, ", ".join(missing_desc) or "all present")
-
+    proposals = sorted((run_dir / "proposals").glob("agents-block-*.md"))
+    git_sources = [item for item in state["snapshots"] if item["kind"] == "git"]
+    proposal_ok = all(
+        text.count("<!-- okf-wiki:begin") == 1
+        and text.count("<!-- okf-wiki:end -->") == 1
+        for text in (path.read_text(encoding="utf-8") for path in proposals)
+    )
+    check(
+        "one valid AGENTS proposal per Git source",
+        len(proposals) == len(git_sources) and proposal_ok,
+        f"{len(proposals)} proposals for {len(git_sources)} sources",
+    )
+    root_index = (bundle / "index.md").read_text(encoding="utf-8")
+    log = (bundle / "log.md").read_text(encoding="utf-8")
+    check(
+        "OKF reserved files conform",
+        root_index.startswith('---\nokf_version: "0.2"\n---\n')
+        and "type: Index" not in root_index
+        and re.search(r"^## \d{4}-\d{2}-\d{2}$", log, re.MULTILINE),
+        "root index and log inspected",
+    )
+    trust_missing = [
+        path.name
+        for path in pages
+        if not all(
+            token in path.read_text(encoding="utf-8")
+            for token in (
+                "generated:",
+                "verified:",
+                "status: stable",
+                "stale_after:",
+            )
+        )
+    ]
+    check(
+        "published concepts carry lifecycle trust fields",
+        not trust_missing,
+        ", ".join(trust_missing) or "all concepts stamped",
+    )
     return results
 
 
 def main() -> int:
-    ws = pathlib.Path(sys.argv[1]).resolve()
-    results = grade(ws)
-    as_json = "--json" in sys.argv
-    if as_json:
-        print(json.dumps({"passed": all(r["passed"] for r in results),
-                          "expectations": results}, ensure_ascii=False, indent=2))
+    parser = argparse.ArgumentParser()
+    parser.add_argument("workspace", type=pathlib.Path)
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+    results = grade(args.workspace.resolve())
+    passed = all(item["passed"] for item in results)
+    if args.json:
+        print(
+            json.dumps(
+                {"passed": passed, "expectations": results},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
     else:
-        for r in results:
-            mark = "PASS" if r["passed"] else "FAIL"
-            print(f"[{mark}] {r['text']}\n       {r['evidence']}")
-        n_pass = sum(r["passed"] for r in results)
-        print(f"{n_pass}/{len(results)} assertions passed")
-    return 0 if all(r["passed"] for r in results) else 1
+        for item in results:
+            print(
+                f"[{'PASS' if item['passed'] else 'FAIL'}] {item['text']}: {item['evidence']}"
+            )
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

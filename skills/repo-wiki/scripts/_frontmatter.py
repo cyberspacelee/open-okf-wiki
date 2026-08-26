@@ -1,121 +1,99 @@
 import dataclasses
 import pathlib
-import re
+from typing import Any
+
+import yaml
 
 
 @dataclasses.dataclass
 class ParsedPage:
-    meta: dict
+    meta: dict[str, Any]
     body: str
     errors: list[str]
 
 
-def _strip_quotes(value: str) -> str:
-    value = value.strip()
-    if (value.startswith('"') and value.endswith('"')) or (
-        value.startswith("'") and value.endswith("'")
-    ):
-        return value[1:-1]
-    return value
+FRONTMATTER_MAX_BYTES = 128 * 1024
+FRONTMATTER_MAX_DEPTH = 32
 
 
-def _parse_frontmatter(lines: list[str]) -> tuple[dict, list[str]]:
-    meta: dict = {}
-    errors: list[str] = []
-    seen: set[str] = set()
-    i = 0
-    in_sources = False
-    current_source: dict | None = None
-
-    while i < len(lines):
-        raw = lines[i]
-        line = raw.rstrip("\n")
-
-        # sources list item
-        if in_sources:
-            stripped = line.lstrip()
-            indent = len(line) - len(stripped)
-            if indent >= 2 and stripped.startswith("- "):
-                if current_source is not None:
-                    meta.setdefault("sources", []).append(current_source)
-                current_source = {}
-                kv = stripped[2:].strip()
-                if ":" in kv:
-                    k, _, v = kv.partition(":")
-                    current_source[k.strip()] = _strip_quotes(v)
-                i += 1
-                continue
-            if indent >= 4 and ":" in stripped and not stripped.startswith("- "):
-                if current_source is not None:
-                    k, _, v = stripped.partition(":")
-                    current_source[k.strip()] = _strip_quotes(v)
-                i += 1
-                continue
-            # left sources block
-            if current_source is not None:
-                meta.setdefault("sources", []).append(current_source)
-                current_source = None
-            in_sources = False
-            # fall through to normal parsing
-
-        if ":" not in line:
-            if line.strip():
-                errors.append(f"Unrecognised line in frontmatter: {line!r}")
-            i += 1
-            continue
-
-        key, _, value = line.partition(":")
-        key = key.strip()
-        value = value.strip()
-
-        if not key or " " in key:
-            errors.append(f"Unrecognised line in frontmatter: {line!r}")
-            i += 1
-            continue
-
-        if key in seen:
-            errors.append(f"Duplicate key: {key!r}")
-        seen.add(key)
-
-        if key == "sources" and value == "":
-            in_sources = True
-            meta.setdefault("sources", [])
-            i += 1
-            continue
-
-        if value == "":
-            errors.append(f"Unsupported nested value for key {key!r}")
-            i += 1
-            continue
-
-        meta[key] = _strip_quotes(value)
-        i += 1
-
-    if in_sources and current_source is not None:
-        meta.setdefault("sources", []).append(current_source)
-
-    return meta, errors
+class FrontmatterError(ValueError):
+    pass
 
 
-def parse_page(text: str) -> ParsedPage:
+class _Loader(yaml.SafeLoader):
+    pass
+
+
+def _mapping(loader: _Loader, node: yaml.MappingNode, deep: bool = False):
+    result: dict[Any, Any] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in result:
+            raise FrontmatterError(f"Duplicate key: {key!r}")
+        result[key] = loader.construct_object(value_node, deep=deep)
+    return result
+
+
+_Loader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping)
+
+
+def _depth(value: Any) -> int:
+    if isinstance(value, dict):
+        return 1 + max(
+            (max(_depth(key), _depth(child)) for key, child in value.items()), default=0
+        )
+    if isinstance(value, list):
+        return 1 + max((_depth(child) for child in value), default=0)
+    return 0
+
+
+def parse_page(text: str, *, reserved: bool = False) -> ParsedPage:
     lines = text.splitlines(keepends=True)
-    if not lines or lines[0].rstrip() != "---":
+    if not lines or lines[0].strip() != "---":
+        if reserved:
+            return ParsedPage(meta={}, body=text, errors=[])
         return ParsedPage(meta={}, body=text, errors=["No frontmatter found"])
 
     end = None
     for idx in range(1, len(lines)):
-        if lines[idx].rstrip() == "---":
+        if lines[idx].strip() == "---":
             end = idx
             break
 
     if end is None:
-        return ParsedPage(meta={}, body=text, errors=["Frontmatter closing '---' not found"])
+        return ParsedPage(
+            meta={}, body=text, errors=["Frontmatter closing '---' not found"]
+        )
 
-    fm_lines = lines[1:end]
-    body = "".join(lines[end + 1 :])
-    meta, errors = _parse_frontmatter(fm_lines)
-    return ParsedPage(meta=meta, body=body, errors=errors)
+    raw = "".join(lines[1:end])
+    if len(raw.encode("utf-8")) > FRONTMATTER_MAX_BYTES:
+        return ParsedPage(meta={}, body=text, errors=["Frontmatter exceeds 128 KiB"])
+    try:
+        for token in yaml.scan(raw):
+            if isinstance(token, (yaml.tokens.AnchorToken, yaml.tokens.AliasToken)):
+                raise FrontmatterError("YAML aliases are not allowed")
+        meta = yaml.load(raw, Loader=_Loader) or {}
+    except (yaml.YAMLError, FrontmatterError) as exc:
+        return ParsedPage(meta={}, body=text, errors=[f"Invalid YAML: {exc}"])
+    if not isinstance(meta, dict):
+        return ParsedPage(
+            meta={}, body=text, errors=["Frontmatter must be a YAML mapping"]
+        )
+    if not all(isinstance(key, str) for key in meta):
+        return ParsedPage(
+            meta={}, body=text, errors=["Frontmatter keys must be strings"]
+        )
+    if _depth(meta) > FRONTMATTER_MAX_DEPTH:
+        return ParsedPage(
+            meta={}, body=text, errors=["Frontmatter exceeds maximum depth 32"]
+        )
+    return ParsedPage(meta=meta, body="".join(lines[end + 1 :]), errors=[])
 
 
-def parse_file(path: pathlib.Path) -> ParsedPage:
-    return parse_page(path.read_text(encoding="utf-8"))
+def parse_file(path: pathlib.Path, *, reserved: bool = False) -> ParsedPage:
+    return parse_page(path.read_text(encoding="utf-8"), reserved=reserved)
+
+
+def render(meta: dict[str, Any], body: str) -> str:
+    raw = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True).rstrip()
+    return f"---\n{raw}\n---\n\n{body.lstrip()}"

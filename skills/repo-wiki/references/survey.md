@@ -1,61 +1,25 @@
-# Survey a source area
+# Survey
 
-You map one assigned source (or one area of a large source) into domains —
-cohesive capability and ownership boundaries — and record evidence a writer
-can cite. You never write Wiki pages and never read other sources.
+Read contract.md, the target scope and only its frozen Git snapshot. Map
+capability boundaries from entry points, enforced rules, lifecycle, failure
+paths and focused tests. Package layout alone is not a domain.
 
-Your task names: the source and area to survey, the draft path to write, the
-run language. Read `references/contract.md` first for what counts as
-evidence. In a multi-source workspace every locator you record starts with
-your source name (`api/src/main.ts#L12`).
+Write JSON:
 
-## Evidence pass
+    {
+      "source": "api",
+      "target": "api-core",
+      "snapshot": "<content_hash from state>",
+      "findings": [{
+        "id": "api-request-lifecycle",
+        "claim": "decision-relevant finding",
+        "evidence": ["api/src/request.py#L20-L48"],
+        "domain": "requests"
+      }],
+      "gaps": ["optional explicit gap"],
+      "remaining": []
+    }
 
-Open the area's entry points before naming any domain. A domain is evidenced
-by public entry points, enforced rules, or lifecycle — package layout alone is
-not a boundary. For each domain record, with locators
-(`path#Lx-Ly` or `path::symbol`, files you actually opened):
-
-- entry points and public surface
-- responsibilities and boundaries
-- invariants and constraints
-- lifecycle and failure paths
-- focused tests or validation
-
-For each category: a locator-backed finding, or `none found` plus what you
-searched. A silent omission is not a negative result. Also record whether the
-domain deserves its own page or one paragraph in a parent page — page-worthy
-means its knowledge fails the Grep Test on its own.
-
-## Draft
-
-Write the draft to the given path, updating it after each inspected cluster so
-findings survive interruption. H2 headings below are machine tokens — copy
-them exactly; write descriptive content in the run language.
-
-```markdown
-## Area
-directory, entry points, outbound dependencies — with locators
-
-## Domains
-### <domain-slug>
-- Title / Description / (evidence categories above) / Page-worthy: yes|no
-
-## Leads
-
-possible connections to other sources — calls, events, shared schemas,
-generated artifacts, config — each with a locator on this source's side;
-default none
-
-## Remaining
-unfinished scope for a successor to pick up; `none` when done
-
-## Gaps
-evidence categories left unaccounted for; default none
-```
-
-## Receipt
-
-Return at most 10 lines: status (`complete` or `blocked`), draft path, domain
-slugs with page-worthy verdicts, gap count. Details belong in the draft, not
-the receipt. `complete` requires `## Remaining` to be `none`.
+Every finding has at least one valid line locator. remaining must be empty to
+complete. Record connection leads as findings; synthesize verifies both ends.
+Return only artifact path, finding ids and gap count.

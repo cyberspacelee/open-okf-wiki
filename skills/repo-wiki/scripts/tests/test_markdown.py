@@ -1,6 +1,4 @@
-import pytest
-from _markdown import extract, Section
-
+from _markdown import extract
 
 NORMAL_BODY = """\
 ## Introduction
@@ -140,7 +138,7 @@ def test_placeholders():
 def test_mermaid_blocks():
     s = extract(MERMAID_BODY)
     assert len(s.mermaid_blocks) == 1
-    start, content = s.mermaid_blocks[0]
+    _, content = s.mermaid_blocks[0]
     assert "graph TD" in content
     assert "A --> B" in content
 

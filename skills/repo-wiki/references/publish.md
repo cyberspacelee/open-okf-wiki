@@ -1,17 +1,22 @@
 # Publish
 
-You (the coordinator) run this yourself. The script is the gate; your job is
-just the order of operations:
+An approved run is immutable. Publish with:
 
-1. `state start --phase publish --target wiki`
-2. `uv run <skill>/scripts/okf.py publish` — regenerates the index,
-   re-validates every page, computes the digest, and swaps `wiki/`
-   transactionally. If it reports errors, route each one back to the owning
-   write target as a repair task (start → fix → complete), then run publish
-   again. Do not edit candidate pages yourself.
-3. `state complete --phase publish --target wiki`
-4. Report to the user: page count, digest, proposal paths awaiting human
-   review under `.okf-wiki/proposals/`.
+    uv run <skill>/scripts/okf.py publication publish
 
-The previous Wiki, if any, is kept at `.okf-wiki/publication/previous/` until
-the next publish.
+The command revalidates trust and citations, generates conforming index.md and
+log.md, writes a content manifest, installs a content-addressed generation,
+then atomically replaces current.json. A lock prevents concurrent publishers.
+The previous pointer supports publication rollback.
+
+Consumers should read the generation returned by 'publication current'.
+To place a Git-managed copy at wiki/, run:
+
+    uv run <skill>/scripts/okf.py publication export --to wiki
+
+Export refuses to replace an unmanaged directory and restores the old export
+if replacement fails. Directory replacement itself is intentionally not
+claimed atomic on Windows. Run 'publication gc' only after deciding that
+generations beyond current and previous are no longer needed.
+
+Report generation digest, page count, log events and pending proposal paths.

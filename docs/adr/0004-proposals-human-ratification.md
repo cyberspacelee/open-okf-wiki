@@ -2,7 +2,7 @@
 
 Everything that would touch a Source repository (AGENTS.md content, CONTEXT.md
 terms, ADR records) is generated only as a Proposal under
-`.okf-wiki/proposals/` and applied through explicit human review. AGENTS.md is
+the active Run's `proposals/` directory and applied through explicit human review. AGENTS.md is
 writable solely inside a version-stamped Managed Block; human text outside it
 is never touched. CONTEXT.md is never auto-ratified: machines detect drift and
 draft candidates with synonym clusters marked "pending ratification", and a
