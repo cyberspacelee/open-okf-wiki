@@ -17,10 +17,9 @@ bounded YAML and rejects aliases/duplicate keys; Pydantic validates external
 models; psycopg provides read-only catalog access.
 
 Multi-source workspaces are first-class: sources register via
-`okf.py source add` (link or clone), locators carry a source-name prefix, and
-a single synthesize pass fans in all survey drafts before root pages are
-written — the v1 fan-in gate kept, its host machinery replaced by one phase
-in the state sequence.
+`okf.py source add` (link or clone), locators carry a source-name prefix.
+Cross-source fan-in is a CLI Compose Gate after sharded connect and plan
+tasks (ADR 0009), not a single synthesize worker.
 
 Considered: conversation-checkpoint injection (v1) — rejected as
 host-specific; JS for kernel porting — rejected once the v1 kernel measured

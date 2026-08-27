@@ -1,5 +1,6 @@
 import concurrent.futures
 import json
+import os
 import pathlib
 import shutil
 import subprocess
@@ -88,9 +89,16 @@ def test_full_lifecycle_publish_export_verify_and_incremental_reuse(tmp_path):
     complete(root, "survey:src", run / "drafts/survey/src.json", survey)
     write(run / "drafts/survey/src.json", survey + "\n")
     with pytest.raises(_state.StateError, match="completed artifact changed"):
-        _state.task_start(root, "plan:wiki")
+        _state.task_start(root, "plan:src")
     write(run / "drafts/survey/src.json", survey)
+    complete(
+        root,
+        "plan:src",
+        run / "drafts/plan/src.json",
+        json.dumps({"source": "src", "pages": [], "exclusions": []}),
+    )
     valid_plan = {
+        "source": None,
         "pages": [
             {
                 "path": "overview.md",
@@ -114,11 +122,12 @@ def test_full_lifecycle_publish_export_verify_and_incremental_reuse(tmp_path):
     }
     invalid_plan = json.loads(json.dumps(valid_plan))
     invalid_plan["pages"][1]["finding_ids"] = ["answer"]
-    _state.task_start(root, "plan:wiki")
-    write(run / "drafts/plan.json", json.dumps(invalid_plan))
-    assert not _state.task_complete(root, "plan:wiki")["ok"]
-    write(run / "drafts/plan.json", json.dumps(valid_plan))
-    assert _state.task_complete(root, "plan:wiki")["ok"]
+    _state.task_start(root, "plan:workspace")
+    write(run / "drafts/plan/workspace.json", json.dumps(invalid_plan))
+    with pytest.raises(_state.StateError, match="composed page plan"):
+        _state.task_complete(root, "plan:workspace")
+    write(run / "drafts/plan/workspace.json", json.dumps(valid_plan))
+    assert _state.task_complete(root, "plan:workspace")["ok"]
     complete(
         root,
         "write:overview.md",
@@ -131,28 +140,24 @@ def test_full_lifecycle_publish_export_verify_and_incremental_reuse(tmp_path):
         run / "candidate/architecture.md",
         concept("ignored", "[Overview](/overview.md)"),
     )
-    complete(
-        root,
-        "derive:proposals",
-        run / "proposals/agents-block-src.md",
-        "<!-- okf-wiki:begin run=test -->\n- Read the Wiki before changes.\n<!-- okf-wiki:end -->\n",
-    )
     packet = _state.review_start(root, "repo-wiki/reviewer", "reviewer-2")
     assert pathlib.Path(packet["reference"]).name == "review.md"
     assert pathlib.Path(packet["candidate"]) == run / "candidate"
-    assert packet["sources"] == {"src": str(source.resolve())}
-    report = pathlib.Path(packet["report"])
-    write(
-        report,
+    pin = root / ".okf-wiki" / "pins" / packet["run_id"] / "src"
+    assert packet["sources"] == {"src": str(pin)}
+    complete(
+        root,
+        "review:workspace",
+        run / "drafts/review/workspace.json",
         json.dumps(
             {
+                "batch": "workspace",
                 "candidate_digest": packet["candidate_digest"],
                 "verdict": "approved",
                 "issues": [],
             }
         ),
     )
-    _state.review_submit(root, report)
 
     published = _publish.publish(root)
     generation = pathlib.Path(published["path"])
@@ -180,7 +185,7 @@ def test_full_lifecycle_publish_export_verify_and_incremental_reuse(tmp_path):
     assert verified["generation"] != published["generation"]
 
     second = _state.start_run(root, "repo-wiki/test", "writer-3")
-    assert second["current_phase"] == "derive"
+    assert second["status"] == "awaiting_review"
 
 
 def test_dirty_source_and_windows_incompatible_paths_are_rejected(tmp_path):
@@ -194,8 +199,7 @@ def test_dirty_source_and_windows_incompatible_paths_are_rejected(tmp_path):
     subprocess.run(["git", "-C", str(source), "commit", "-qm", "unicode"], check=True)
     assert _workspace.capture_git_revision(root, registered)["commit"]
     write(source / "dirty.txt", "not committed")
-    with pytest.raises(_workspace.WorkspaceError, match="uncommitted"):
-        _state.start_run(root, "repo-wiki/test", "writer")
+    _state.start_run(root, "repo-wiki/test", "writer")
     with pytest.raises(_workspace.WorkspaceError, match="Windows reserved"):
         _workspace._portable_path("docs/CON.md", {})
 
@@ -210,15 +214,15 @@ def test_workspace_init_requires_explicit_git_sources(tmp_path):
 
     link = _workspace.add_git_link(root, str(linked), "LinkedAPI")
     clone = _workspace.add_git_clone(root, linked.as_uri(), "RemoteWEB", "HEAD")
-    assert link.path == linked.resolve()
+    assert link.path == pathlib.Path(os.path.abspath(root / "LinkedAPI"))
     assert clone.remote == linked.as_uri() and clone.ref == "HEAD"
-    assert clone.path != linked.resolve()
+    assert clone.path == pathlib.Path(os.path.abspath(root / "RemoteWEB"))
     with pytest.raises(_workspace.WorkspaceError, match="already exists"):
         _workspace.add_git_link(root, str(linked), "linkedapi")
     with pytest.raises(_workspace.WorkspaceError, match="reserved on Windows"):
         _workspace.add_git_link(root, str(linked), "CON")
     mounted = _workspace.add_git_link(root, str(outside), "Outside")
-    mount_point = root / ".okf-wiki" / "sources" / "Outside"
+    mount_point = root / "Outside"
     assert mounted.path == mount_point
     assert (mount_point / "app.py").is_file()
     assert _workspace.capture_git_revision(root, mounted)["commit"]
@@ -236,7 +240,7 @@ def test_run_uses_workspace_git_revision_without_snapshot(tmp_path):
 
     registered = _workspace.add_git_link(root, str(source), "SourceA")
     assert registered.path == source.resolve()
-    config = json.loads((root / ".okf-wiki/workspace.json").read_text())
+    config = json.loads((root / "workspace.json").read_text())
     assert config["sources"][0]["path"] == "SourceA"
 
     _state.start_run(root, "repo-wiki/test", "writer")
@@ -251,6 +255,7 @@ def test_run_uses_workspace_git_revision_without_snapshot(tmp_path):
                 text=True,
             ).stdout.strip(),
             "origin": "SourceA",
+            "kind": "git",
         }
     ]
     assert "snapshots" not in state
@@ -279,8 +284,8 @@ def test_status_is_compact_and_source_drift_blocks_task_start(tmp_path):
     write(source / "app.py", "def answer():\n    return 43\n")
     subprocess.run(["git", "-C", str(source), "add", "app.py"], check=True)
     subprocess.run(["git", "-C", str(source), "commit", "-qm", "change"], check=True)
-    with pytest.raises(_workspace.WorkspaceError, match="changed during the run"):
-        _state.task_start(root, "survey:sourcea")
+    packet = _state.task_start(root, "survey:sourcea")
+    assert pathlib.Path(packet["sources"]["SourceA"]).is_dir()
 
 
 def test_task_start_returns_path_only_worker_dispatch(tmp_path):
@@ -309,7 +314,8 @@ def test_task_start_returns_path_only_worker_dispatch(tmp_path):
     }
     assert pathlib.Path(packet["reference"]).name == "survey.md"
     assert pathlib.Path(packet["artifact"]).name == "sourcea.json"
-    assert packet["sources"] == {"SourceA": str(source.resolve())}
+    pin = root / ".okf-wiki" / "pins" / packet["run_id"] / "SourceA"
+    assert packet["sources"] == {"SourceA": str(pin)}
     assert packet["inputs"] == []
     assert packet["complete_command"].endswith("task complete survey:sourcea --json")
     assert packet["workdir"] == str(root)
@@ -379,11 +385,34 @@ def test_survey_artifact_byte_budget_is_enforced(tmp_path):
                 "gaps": [],
             }
         )
-        + " " * (24 * 1024),
+        + " " * (64 * 1024),
     )
     result = _state.task_complete(root, "survey:sourcea")
     assert not result["ok"]
     assert {item["code"] for item in result["issues"]} == {"survey-too-large"}
+
+
+def test_files_source_and_refresh_keep_the_run_alive(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    source = git_source(root / "SourceA")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    write(contracts / "openapi.yaml", "openapi: 3.0.0\n")
+    _workspace.init(root)
+    _workspace.add_git_link(root, str(source), "SourceA")
+    _workspace.add_files_source(root, str(contracts), "contracts")
+    first = _state.start_run(root, "repo-wiki/test", "writer")
+    write(source / "app.py", "def answer():\n    return 43\n")
+    subprocess.run(["git", "-C", str(source), "add", "app.py"], check=True)
+    subprocess.run(["git", "-C", str(source), "commit", "-qm", "move"], check=True)
+    _state.task_start(root, "survey:sourcea")
+    refreshed = _state.refresh_source(root, "SourceA")
+    assert refreshed["status"] == "active"
+    assert any(
+        item["id"].startswith("survey:sourcea") and item["status"] == "pending"
+        for item in refreshed["tasks"]
+    )
 
 
 def test_git_revision_evidence_does_not_depend_on_current_worktree(tmp_path):
@@ -434,13 +463,13 @@ def test_publication_lock_is_process_scoped_not_stale_file_scoped(tmp_path):
 def test_corrupt_pointers_and_windows_reserved_page_are_rejected(tmp_path):
     write(
         tmp_path / ".okf-wiki/publication/current.json",
-        json.dumps({"version": 4, "generation": "../../outside", "run_id": "bad"}),
+        json.dumps({"version": 99, "generation": "../../outside", "run_id": "bad"}),
     )
     with pytest.raises(_publish.PublishError, match="invalid current"):
         _publish.current(tmp_path)
     write(
         tmp_path / ".okf-wiki/current-run.json",
-        json.dumps({"version": 4, "run_id": "../../outside"}),
+        json.dumps({"version": 99, "run_id": "../../outside"}),
     )
     with pytest.raises(_state.StateError, match="corrupt current-run"):
         _state.status(tmp_path)

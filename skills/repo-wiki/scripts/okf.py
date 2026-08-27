@@ -7,15 +7,18 @@
 #   "psycopg[binary]>=3.2,<4",
 # ]
 # ///
-"""Deterministic kernel for the repo-wiki v4 skill."""
+"""Deterministic kernel for the repo-wiki skill."""
 
 import argparse
 import json
 import pathlib
 import sys
 
-ROOT = pathlib.Path.cwd()
 MAX_ISSUES = 50
+
+
+def workspace_root() -> pathlib.Path:
+    return pathlib.Path.cwd()
 
 
 def emit(data, as_json: bool) -> None:
@@ -54,7 +57,7 @@ def cmd_workspace(args) -> int:
     import _workspace
 
     if args.action == "init":
-        workspace = _workspace.init(ROOT, args.lang, args.freshness_days)
+        workspace = _workspace.init(workspace_root(), args.lang, args.freshness_days)
         emit(
             {
                 "workspace": str(workspace.root),
@@ -65,10 +68,10 @@ def cmd_workspace(args) -> int:
             args.json,
         )
     else:
-        workspace = _workspace.load(ROOT)
+        workspace = _workspace.load(workspace_root())
         emit(
             {
-                "version": 4,
+                "version": _workspace.VERSION,
                 "language": workspace.language,
                 "freshness_days": workspace.freshness_days,
                 "sources": {
@@ -84,19 +87,27 @@ def cmd_source(args) -> int:
     import _workspace
 
     if args.action == "list":
-        workspace = _workspace.load(ROOT)
+        workspace = _workspace.load(workspace_root())
         emit(
             {name: source.__dict__ for name, source in workspace.sources.items()},
             args.json,
         )
         return 0
+    root = workspace_root()
+    if args.action == "refresh":
+        import _state
+
+        emit(_state.refresh_source(root, args.name), args.json)
+        return 0
     if args.kind == "link":
-        source = _workspace.add_git_link(ROOT, args.target, args.name)
+        source = _workspace.add_git_link(root, args.target, args.name)
     elif args.kind == "clone":
-        source = _workspace.add_git_clone(ROOT, args.target, args.name, args.ref)
+        source = _workspace.add_git_clone(root, args.target, args.name, args.ref)
+    elif args.kind == "files":
+        source = _workspace.add_files_source(root, args.target, args.name)
     else:
         source = _workspace.add_postgres_source(
-            ROOT,
+            root,
             args.name,
             args.url_env,
             args.schema,
@@ -109,12 +120,17 @@ def cmd_source(args) -> int:
 def cmd_run(args) -> int:
     import _state
 
+    root = workspace_root()
     if args.action == "start":
-        result = _state.start_run(ROOT, args.producer, args.session)
+        result = _state.start_run(root, args.producer, args.session)
     elif args.action == "status":
-        result = _state.status(ROOT)
+        result = _state.status(root)
+    elif args.action == "pause":
+        result = _state.pause(root)
+    elif args.action == "resume":
+        result = _state.resume(root)
     else:
-        result = _state.abandon(ROOT)
+        result = _state.abandon(root)
     emit(result, args.json)
     return 0
 
@@ -122,14 +138,15 @@ def cmd_run(args) -> int:
 def cmd_task(args) -> int:
     import _state
 
+    root = workspace_root()
     if args.action == "start":
-        result = _state.task_start(ROOT, args.target)
+        result = _state.task_start(root, args.target)
     elif args.action == "complete":
-        result = _state.task_complete(ROOT, args.target)
+        result = _state.task_complete(root, args.target)
         if not result.get("ok"):
             return emit_issues(result["issues"], args.json)
     else:
-        result = _state.task_fail(ROOT, args.target, args.reason or "")
+        result = _state.task_fail(root, args.target, args.reason or "")
     emit(result, args.json)
     return 0
 
@@ -138,9 +155,9 @@ def cmd_review(args) -> int:
     import _state
 
     if args.action == "start":
-        result = _state.review_start(ROOT, args.actor, args.session)
+        result = _state.review_start(workspace_root(), args.actor, args.session)
     else:
-        result = _state.review_submit(ROOT, pathlib.Path(args.report).resolve())
+        raise SystemExit("review submit is now: task complete review:<batch>")
     emit(result, args.json)
     return 0
 
@@ -148,16 +165,19 @@ def cmd_review(args) -> int:
 def cmd_publication(args) -> int:
     import _publish
 
+    root = workspace_root()
     if args.action == "publish":
-        result = _publish.publish(ROOT)
+        result = _publish.publish(root)
     elif args.action == "current":
-        result = _publish.current(ROOT) or {"publication": None}
+        result = _publish.current(root) or {"publication": None}
     elif args.action == "rollback":
-        result = _publish.rollback(ROOT)
+        result = _publish.rollback(root)
     elif args.action == "verify":
-        result = _publish.verify(ROOT, args.actor, args.page)
-    elif args.action == "export":
-        result = _publish.export(ROOT, ROOT / args.to)
+        result = _publish.verify(root, args.actor, args.page)
+    elif args.action == "prune":
+        result = _publish.prune(root, args.keep)
+    else:
+        result = _publish.export(root, root / args.to)
     emit(result, args.json)
     return 0
 
@@ -167,17 +187,18 @@ def cmd_validate(args) -> int:
     import _state
     import _validate
 
+    root = workspace_root()
     if args.published:
-        current = _publish.current(ROOT)
+        current = _publish.current(root)
         if current is None:
             raise _publish.PublishError("nothing has been published")
-        issues = _validate.validate_publication(ROOT, pathlib.Path(current["path"]))
+        issues = _validate.validate_publication(root, pathlib.Path(current["path"]))
     else:
-        state = _state.read(ROOT)
+        state = _state.read(root)
         if state is None:
             raise _state.StateError("no run")
         issues = _validate.validate_candidate(
-            ROOT, state, published=state["status"] in ("approved", "published")
+            root, state, published=state["status"] in ("approved", "published")
         )
     return emit_issues(issues, args.json)
 
@@ -185,7 +206,7 @@ def cmd_validate(args) -> int:
 def cmd_db(args) -> int:
     import _db
 
-    url = _db.resolve_url(ROOT, args.url_env)
+    url = _db.resolve_url(workspace_root(), args.url_env)
     result = (
         _db.tables(url, args.schema)
         if args.action == "tables"
@@ -195,6 +216,20 @@ def cmd_db(args) -> int:
             args.schema,
         )
     )
+    emit(result, args.json)
+    return 0
+
+
+def cmd_propose(args) -> int:
+    import _state
+
+    root = workspace_root()
+    if args.action == "start":
+        result = _state.propose_start(root)
+    else:
+        result = _state.propose_complete(root)
+        if not result.get("ok"):
+            return emit_issues(result["issues"], args.json)
     emit(result, args.json)
     return 0
 
@@ -244,15 +279,14 @@ def build_parser() -> argparse.ArgumentParser:
     link = leaf(
         source_kinds.add_parser(
             "link",
-            help="register a local Git worktree (external paths are mounted "
-            "under .okf-wiki/sources)",
+            help="register a local Git worktree (external paths mount at <name>/)",
         )
     )
     link.add_argument("target", help="path to the Git worktree")
     link.add_argument("--name", required=True, help="unique source name")
     clone = leaf(
         source_kinds.add_parser(
-            "clone", help="clone a Git URL into .okf-wiki/sources/<name>"
+            "clone", help="clone a Git URL into <workspace>/<name>"
         )
     )
     clone.add_argument("target", help="Git URL to clone")
@@ -273,7 +307,20 @@ def build_parser() -> argparse.ArgumentParser:
     postgres.add_argument(
         "--table", action="append", help="table to include (repeatable)"
     )
+    files = leaf(
+        source_kinds.add_parser(
+            "files", help="register a local directory of contract or document files"
+        )
+    )
+    files.add_argument("target", help="path to the directory")
+    files.add_argument("--name", required=True, help="unique source name")
     leaf(source_actions.add_parser("list", help="list registered sources"))
+    refresh = leaf(
+        source_actions.add_parser(
+            "refresh", help="repin one source at its current HEAD and invalidate its tasks"
+        )
+    )
+    refresh.add_argument("--name", required=True, help="source name")
 
     run = commands.add_parser("run", help="start, resume or abandon a generation run")
     run_actions = run.add_subparsers(dest="action", required=True)
@@ -293,6 +340,8 @@ def build_parser() -> argparse.ArgumentParser:
             "status", help="show current phase, tasks and next actions"
         )
     )
+    leaf(run_actions.add_parser("pause", help="pause the current run"))
+    leaf(run_actions.add_parser("resume", help="resume a paused run"))
     leaf(run_actions.add_parser("abandon", help="abandon the current run"))
 
     task = commands.add_parser(
@@ -332,12 +381,6 @@ def build_parser() -> argparse.ArgumentParser:
     review_start.add_argument(
         "--session", required=True, help="session id distinct from the producer"
     )
-    review_submit = leaf(
-        review_actions.add_parser("submit", help="submit the reviewer's report")
-    )
-    review_submit.add_argument(
-        "--report", required=True, help="path to the review report JSON"
-    )
 
     publication = commands.add_parser(
         "publication", help="publish, export, verify or roll back generations"
@@ -375,6 +418,12 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument(
         "--page", action="append", required=True, help="page path (repeatable)"
     )
+    prune = leaf(
+        publication_actions.add_parser(
+            "prune", help="delete old generations; keeps current, previous and --keep newest"
+        )
+    )
+    prune.add_argument("--keep", type=int, default=5, help="generations to retain")
 
     validate = leaf(
         commands.add_parser(
@@ -403,6 +452,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--url-env", default="DATABASE_URL", help="env var with the connection URL"
     )
     describe.add_argument("--schema", default="public", help="schema of the table")
+
+    propose = commands.add_parser(
+        "propose", help="optional post-publish AGENTS/CONTEXT/ADR proposals"
+    )
+    propose_actions = propose.add_subparsers(dest="action", required=True)
+    leaf(propose_actions.add_parser("start", help="dispatch the propose worker packet"))
+    leaf(
+        propose_actions.add_parser(
+            "complete", help="validate proposal files; zero files is allowed"
+        )
+    )
     return parser
 
 
@@ -417,16 +477,25 @@ def main() -> int:
         "publication": cmd_publication,
         "validate": cmd_validate,
         "db": cmd_db,
+        "propose": cmd_propose,
     }
     try:
         return handlers[args.command](args)
     except Exception as exc:
-        if type(exc).__name__ in {
-            "WorkspaceError",
-            "StateError",
-            "PublishError",
-            "DbError",
-        }:
+        import _db
+        import _publish
+        import _state
+        import _workspace
+
+        if isinstance(
+            exc,
+            (
+                _workspace.WorkspaceError,
+                _state.StateError,
+                _publish.PublishError,
+                _db.DbError,
+            ),
+        ):
             print(f"error: {exc}", file=sys.stderr)
             return 1
         raise

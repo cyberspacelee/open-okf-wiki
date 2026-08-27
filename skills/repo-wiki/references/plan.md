@@ -1,14 +1,32 @@
 # Plan
 
-Convert findings and connections into the smallest useful page set. Every
-finding is assigned once or explicitly excluded; every connection is
-assigned. Use one source owner for source pages and workspace for root
-composition.
+Convert findings and connections into the smallest useful page set for this
+shard. `plan:<source>` owns pages whose owner is that source.
+`plan:workspace` owns workspace pages and assigns every connection. The CLI
+Compose Gate unions shards and checks global finding/connection coverage.
 
 Write the artifact yourself to the packet's `artifact` path — never return
-its content in your reply:
+its content in your reply. Source shard:
 
     {
+      "source": "API",
+      "pages": [{
+        "path": "api/architecture.md",
+        "type": "Architecture",
+        "owner": "API",
+        "title": "API architecture",
+        "description": "Open before API changes.",
+        "tags": ["architecture"],
+        "finding_ids": ["api-request-lifecycle"],
+        "connection_ids": []
+      }],
+      "exclusions": []
+    }
+
+Workspace shard:
+
+    {
+      "source": null,
       "pages": [{
         "path": "overview.md",
         "type": "Overview",
@@ -16,7 +34,7 @@ its content in your reply:
         "title": "Workspace overview",
         "description": "Open first to route a task.",
         "tags": ["overview"],
-        "finding_ids": ["api-request-lifecycle"],
+        "finding_ids": [],
         "connection_ids": []
       }, {
         "path": "architecture.md",

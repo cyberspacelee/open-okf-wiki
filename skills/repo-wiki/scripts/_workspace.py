@@ -8,10 +8,11 @@ import subprocess
 from datetime import datetime
 from urllib.parse import urlsplit, urlunsplit
 
-from _files import atomic_json
+from _files import atomic_json, directory_digest
 
-VERSION = 4
+VERSION = 1
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*$")
+_RESERVED_NAMES = {"wiki"}
 _WINDOWS_RESERVED = {
     "CON",
     "PRN",
@@ -33,6 +34,7 @@ class Source:
     kind: str
     path: pathlib.Path | None = None
     remote: str | None = None
+    origin: str | None = None
     ref: str | None = None
     url_env: str | None = None
     schema: str | None = None
@@ -48,7 +50,7 @@ class Workspace:
 
 
 def _config_path(root: pathlib.Path) -> pathlib.Path:
-    return root / ".okf-wiki" / "workspace.json"
+    return root / "workspace.json"
 
 
 def _git(
@@ -89,6 +91,9 @@ def init(
             "sources": [],
         },
     )
+    gitignore = root / ".gitignore"
+    if not gitignore.exists():
+        gitignore.write_text(".okf-wiki/\n.env\n", encoding="utf-8")
     return load(root)
 
 
@@ -104,7 +109,7 @@ def _read(root: pathlib.Path) -> dict:
         raise WorkspaceError("workspace config must be an object")
     if data.get("version") != VERSION:
         raise WorkspaceError(
-            f"unsupported workspace version {data.get('version')!r}; recreate it with v4"
+            f"unsupported workspace version {data.get('version')!r}; this kernel is v{VERSION}"
         )
     return data
 
@@ -129,7 +134,7 @@ def load(root: pathlib.Path) -> Workspace:
             raise WorkspaceError(f"invalid source name: {name!r}")
         if any(existing.casefold() == name.casefold() for existing in sources):
             raise WorkspaceError(f"duplicate source: {name}")
-        if kind not in ("git", "postgres"):
+        if kind not in ("git", "postgres", "files"):
             raise WorkspaceError(f"invalid source '{name}'")
         tables = entry.get("tables", [])
         if not isinstance(tables, list) or any(
@@ -139,19 +144,17 @@ def load(root: pathlib.Path) -> Workspace:
         ref = entry.get("ref")
         stored_path = entry.get("path")
         source_path = None
-        if kind == "git" and (
-            not isinstance(stored_path, str)
-            or (ref is not None and not isinstance(ref, str))
-        ):
-            raise WorkspaceError(f"invalid Git source '{name}'")
-        if kind == "git":
+        if kind in ("git", "files"):
+            if not isinstance(stored_path, str) or (
+                ref is not None and not isinstance(ref, str)
+            ):
+                raise WorkspaceError(f"invalid {kind} source '{name}'")
             pure = pathlib.PurePosixPath(stored_path)
-            if pure.is_absolute() or ".." in pure.parts:
-                raise WorkspaceError(f"source '{name}' path must be inside workspace")
-            # abspath, not resolve(): mounted links must keep their in-workspace path
-            source_path = pathlib.Path(
-                os.path.abspath(root / pathlib.Path(*pure.parts))
-            )
+            if pure.is_absolute() or ".." in pure.parts or stored_path in (".", ""):
+                raise WorkspaceError(
+                    f"source '{name}' path must be a named child of the workspace"
+                )
+            source_path = pathlib.Path(os.path.abspath(root / pathlib.Path(*pure.parts)))
         if kind == "postgres" and (
             not isinstance(entry.get("url_env"), str)
             or not isinstance(entry.get("schema"), str)
@@ -164,6 +167,7 @@ def load(root: pathlib.Path) -> Workspace:
             kind=kind,
             path=source_path,
             remote=entry.get("remote"),
+            origin=entry.get("origin"),
             ref=ref,
             url_env=entry.get("url_env"),
             schema=entry.get("schema"),
@@ -186,13 +190,19 @@ def _active_run(root: pathlib.Path) -> bool:
         if not isinstance(run_id, str) or not re.fullmatch(
             r"r-\d{8}-[0-9a-f]{6}", run_id
         ):
-            return True
+            raise WorkspaceError(
+                "corrupt current-run pointer; delete .okf-wiki/current-run.json or restore it"
+            )
         state = json.loads(
             (root / ".okf-wiki" / "runs" / run_id / "state.json").read_text()
         )
         return state.get("status") not in ("published", "abandoned")
-    except (KeyError, OSError, json.JSONDecodeError):
-        return True
+    except WorkspaceError:
+        raise
+    except (KeyError, OSError, json.JSONDecodeError) as exc:
+        raise WorkspaceError(
+            f"corrupt current-run pointer; delete .okf-wiki/current-run.json or restore it ({exc})"
+        ) from exc
 
 
 def _mount_link(target: pathlib.Path, mount: pathlib.Path) -> None:
@@ -206,16 +216,39 @@ def _mount_link(target: pathlib.Path, mount: pathlib.Path) -> None:
         mount.symlink_to(target, target_is_directory=True)
 
 
+def _child_path(root: pathlib.Path, name: str) -> pathlib.Path:
+    return root / name
+
+
 def add_git_link(root: pathlib.Path, target: str, name: str) -> Source:
     data = _read(root)
     _check_add(root, data, name)
     resolved = pathlib.Path(target).resolve()
     if not resolved.is_dir() or not _is_git_repo(resolved):
         raise WorkspaceError(f"target is not a Git worktree: {resolved}")
+    if resolved == root.resolve():
+        raise WorkspaceError(
+            "workspace is a hub; register each repository with --name, not '.'"
+        )
     try:
-        relative = resolved.relative_to(root.resolve()).as_posix() or "."
+        relative = resolved.relative_to(root.resolve()).as_posix()
     except ValueError:
-        mount = root / ".okf-wiki" / "sources" / name
+        relative = None
+    if relative is not None:
+        if "/" in relative or relative != name:
+            if relative != name:
+                mount = _child_path(root, name)
+                if mount.exists() or mount.is_symlink():
+                    raise WorkspaceError(f"mount destination exists: {mount}")
+                _mount_link(resolved, mount)
+                relative = name
+                origin = str(resolved)
+            else:
+                origin = relative
+        else:
+            origin = relative
+    else:
+        mount = _child_path(root, name)
         if mount.exists() or mount.is_symlink():
             raise WorkspaceError(f"mount destination exists: {mount}")
         try:
@@ -224,15 +257,18 @@ def add_git_link(root: pathlib.Path, target: str, name: str) -> Source:
             raise WorkspaceError(
                 f"cannot mount '{resolved}' at {mount}: {exc}"
             ) from exc
-        relative = mount.relative_to(root).as_posix()
+        relative = name
+        origin = str(resolved)
     data["sources"].append(
         {
             "name": name,
             "kind": "git",
             "path": relative,
+            "origin": origin,
         }
     )
     atomic_json(_config_path(root), data)
+    _ignore_source(root, name)
     return load(root).sources[name]
 
 
@@ -245,10 +281,9 @@ def add_git_clone(
         raise WorkspaceError("clone requires a Git URL")
     if ref is not None and not ref.strip():
         raise WorkspaceError("clone ref must not be empty")
-    dest = root / ".okf-wiki" / "sources" / name
-    if dest.exists():
+    dest = _child_path(root, name)
+    if dest.exists() or dest.is_symlink():
         raise WorkspaceError(f"clone destination exists: {dest}")
-    dest.parent.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(
         ["git", "clone", "--", target, str(dest)],
         capture_output=True,
@@ -263,12 +298,14 @@ def add_git_clone(
         shutil.rmtree(dest, ignore_errors=True)
         message = result.stderr.strip().replace(target, _safe_origin(target))
         raise WorkspaceError(f"git {operation} failed: {message}")
+    origin = _safe_origin(target)
     data["sources"].append(
         {
             "name": name,
             "kind": "git",
-            "path": dest.relative_to(root).as_posix(),
-            "remote": _safe_origin(target),
+            "path": name,
+            "remote": origin,
+            "origin": origin,
             **({"ref": ref} if ref else {}),
         }
     )
@@ -277,6 +314,46 @@ def add_git_clone(
     except BaseException:
         shutil.rmtree(dest, ignore_errors=True)
         raise
+    _ignore_source(root, name)
+    return load(root).sources[name]
+
+
+def add_files_source(root: pathlib.Path, target: str, name: str) -> Source:
+    data = _read(root)
+    _check_add(root, data, name)
+    resolved = pathlib.Path(target).resolve()
+    if not resolved.is_dir():
+        raise WorkspaceError(f"files source is not a directory: {resolved}")
+    if resolved == root.resolve():
+        raise WorkspaceError("workspace root cannot be a files source")
+    try:
+        relative = resolved.relative_to(root.resolve()).as_posix()
+    except ValueError:
+        relative = None
+    if relative == name:
+        origin = relative
+    else:
+        mount = _child_path(root, name)
+        if mount.exists() or mount.is_symlink():
+            raise WorkspaceError(f"mount destination exists: {mount}")
+        try:
+            _mount_link(resolved, mount)
+        except OSError as exc:
+            raise WorkspaceError(
+                f"cannot mount '{resolved}' at {mount}: {exc}"
+            ) from exc
+        relative = name
+        origin = str(resolved)
+    data["sources"].append(
+        {
+            "name": name,
+            "kind": "files",
+            "path": relative,
+            "origin": origin,
+        }
+    )
+    atomic_json(_config_path(root), data)
+    _ignore_source(root, name)
     return load(root).sources[name]
 
 
@@ -308,11 +385,26 @@ def add_postgres_source(
     return load(root).sources[name]
 
 
+def _ignore_source(root: pathlib.Path, name: str) -> None:
+    gitignore = root / ".gitignore"
+    marker = f"/{name}/"
+    existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+    if marker not in existing.splitlines():
+        gitignore.write_text(
+            existing.rstrip() + ("\n" if existing and not existing.endswith("\n") else "")
+            + marker
+            + "\n",
+            encoding="utf-8",
+        )
+
+
 def _check_add(root: pathlib.Path, data: dict, name: str) -> None:
     if _active_run(root):
         raise WorkspaceError("sources cannot change during an active run")
     if not _NAME_RE.fullmatch(name):
         raise WorkspaceError("source name must match [A-Za-z0-9][A-Za-z0-9-]*")
+    if name.casefold() in {item.casefold() for item in _RESERVED_NAMES}:
+        raise WorkspaceError(f"source name is reserved: {name}")
     if name.upper() in _WINDOWS_RESERVED:
         raise WorkspaceError(f"source name is reserved on Windows: {name}")
     if any(
@@ -340,14 +432,6 @@ def _portable_path(path: str, seen: dict[str, str]) -> None:
 
 def capture_git_revision(root: pathlib.Path, source: Source) -> dict:
     assert source.path is not None
-    args = ["status", "--porcelain", "--untracked-files=all"]
-    if source.path.resolve() == root.resolve():
-        args.extend(["--", ".", ":(exclude).okf-wiki"])
-    dirty = _git(source.path, *args).stdout
-    if dirty.strip():
-        raise WorkspaceError(
-            f"source '{source.name}' has uncommitted or untracked files"
-        )
     if _git(source.path, "ls-files", "--", ".okf-wiki").stdout.strip():
         raise WorkspaceError(
             f"source '{source.name}' tracks .okf-wiki; runtime metadata cannot be evidence"
@@ -358,20 +442,94 @@ def capture_git_revision(root: pathlib.Path, source: Source) -> dict:
         raise WorkspaceError(
             f"source '{source.name}' contains submodules; register each submodule as a source"
         )
+    origin = source.origin or source.remote or source.name
+    return {"name": source.name, "commit": head, "origin": origin, "kind": "git"}
 
-    seen: dict[str, str] = {}
-    for path in _git(
-        source.path, "ls-tree", "-rz", "--name-only", head
-    ).stdout.split("\0"):
-        if path:
-            _portable_path(path, seen)
+
+def capture_files_revision(root: pathlib.Path, source: Source) -> dict:
+    assert source.path is not None
+    digest = directory_digest(source.path)
     return {
         "name": source.name,
-        "commit": head,
-        "origin": source.remote
-        or source.path.relative_to(root.resolve()).as_posix()
-        or ".",
+        "content_hash": digest,
+        "origin": source.origin or source.name,
+        "kind": "files",
     }
+
+
+def pin_dir(root: pathlib.Path, run_id: str, name: str) -> pathlib.Path:
+    return root / ".okf-wiki" / "pins" / run_id / name
+
+
+def materialize_pin(
+    root: pathlib.Path, run_id: str, source: Source, record: dict
+) -> pathlib.Path:
+    dest = pin_dir(root, run_id, source.name)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists() or dest.is_symlink():
+        remove_pin(root, run_id, source)
+    if source.kind == "git":
+        assert source.path is not None
+        commit = record["commit"]
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(source.path),
+                "worktree",
+                "add",
+                "--detach",
+                str(dest),
+                commit,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode:
+            raise WorkspaceError(
+                f"cannot pin '{source.name}' at {commit}: {result.stderr.strip()}"
+            )
+    elif source.kind == "files":
+        assert source.path is not None
+        shutil.copytree(source.path, dest, dirs_exist_ok=False)
+    else:
+        raise WorkspaceError(f"cannot pin source kind {source.kind}")
+    return dest
+
+
+def remove_pin(root: pathlib.Path, run_id: str, source: Source) -> None:
+    dest = pin_dir(root, run_id, source.name)
+    if source.kind == "git" and source.path is not None and dest.exists():
+        _git(source.path, "worktree", "remove", "--force", str(dest), check=False)
+    if dest.exists() or dest.is_symlink():
+        shutil.rmtree(dest, ignore_errors=True)
+
+
+def remove_run_pins(root: pathlib.Path, run_id: str, sources: dict[str, Source]) -> None:
+    for source in sources.values():
+        if source.kind in ("git", "files"):
+            remove_pin(root, run_id, source)
+    pins = root / ".okf-wiki" / "pins" / run_id
+    shutil.rmtree(pins, ignore_errors=True)
+
+
+def assert_pin_current(root: pathlib.Path, run_id: str, source: Source, record: dict) -> None:
+    dest = pin_dir(root, run_id, source.name)
+    if not dest.is_dir():
+        raise WorkspaceError(f"pin missing for source '{source.name}'")
+    if source.kind == "git":
+        head = _git(dest, "rev-parse", "HEAD").stdout.strip()
+        if head != record.get("commit"):
+            raise WorkspaceError(f"pin for '{source.name}' drifted from the recorded commit")
+    elif source.kind == "files":
+        if directory_digest(dest) != record.get("content_hash"):
+            raise WorkspaceError(f"pin for '{source.name}' drifted from the recorded tree")
+
+
+def live_git_head(source: Source) -> str:
+    assert source.path is not None
+    return _git(source.path, "rev-parse", "HEAD").stdout.strip()
 
 
 def _safe_origin(origin: str) -> str:
@@ -396,12 +554,6 @@ def resolve_source_file(source: Source, rel: str) -> pathlib.Path | None:
     except ValueError:
         return None
     return path if path.is_file() else None
-
-
-def assert_git_revision(root: pathlib.Path, source: Source, revision: dict) -> None:
-    current = capture_git_revision(root, source)
-    if current["commit"] != revision.get("commit"):
-        raise WorkspaceError(f"source '{source.name}' changed during the run")
 
 
 def git_top_level(source: Source, commit: str) -> list[str]:
@@ -442,6 +594,11 @@ def git_blob(source: Source, commit: str, rel: str) -> bytes | None:
     return result.stdout if result.returncode == 0 else None
 
 
+def files_blob(source: Source, rel: str) -> bytes | None:
+    path = resolve_source_file(source, rel)
+    return path.read_bytes() if path is not None else None
+
+
 def git_blob_oid(source: Source, commit: str, rel: str) -> str | None:
     pure = pathlib.PurePosixPath(rel)
     if (
@@ -459,7 +616,7 @@ def git_blob_oid(source: Source, commit: str, rel: str) -> str | None:
 
 def git_file_metadata(workspace: Workspace, revision: dict, rel: str) -> dict:
     source = workspace.sources.get(revision["name"])
-    if source is None or source.path is None:
+    if source is None or source.path is None or source.kind != "git":
         return {}
     result = _git(
         source.path,

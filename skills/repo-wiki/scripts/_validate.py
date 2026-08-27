@@ -1,3 +1,4 @@
+import dataclasses
 import hashlib
 import json
 import pathlib
@@ -10,9 +11,10 @@ from _frontmatter import parse_file, render
 from _markdown import extract
 from _models import (
     ConceptFrontmatter,
+    Connect,
     PagePlan,
+    ReviewReport,
     Survey,
-    Synthesis,
     model_errors,
 )
 from pydantic import ValidationError
@@ -21,8 +23,8 @@ _LINE_ANCHOR = re.compile(r"#L([1-9][0-9]*)(?:-L([1-9][0-9]*))?$")
 _CAUSAL = re.compile(r"\b(because|in order to|so that)\b|为了|以便", re.IGNORECASE)
 _INLINE_REF = re.compile(r"\[\^[^\]]+\]")
 _LFS_PREFIX = b"version https://git-lfs.github.com/spec/v1"
-SURVEY_MAX_BYTES = 24 * 1024
-SURVEY_TOTAL_MAX_BYTES = 128 * 1024
+SURVEY_MAX_BYTES = 64 * 1024
+SURVEY_TOTAL_MAX_BYTES = 512 * 1024
 
 
 def issue(
@@ -73,9 +75,14 @@ def _resolve_resource(
     if revision is None:
         return None
     registered = _workspace.load(root).sources.get(source)
-    content = (
-        _workspace.git_blob(registered, revision["commit"], rel) if registered else None
-    )
+    if registered is None:
+        return None
+    if registered.kind == "files" or revision.get("kind") == "files":
+        pin = _workspace.pin_dir(root, state["run_id"], source)
+        pinned = dataclasses.replace(registered, path=pin) if pin.is_dir() else registered
+        content = _workspace.files_blob(pinned, rel)
+    else:
+        content = _workspace.git_blob(registered, revision["commit"], rel)
     return (content, lo, hi) if content is not None else None
 
 
@@ -89,20 +96,8 @@ def _catalog_resource(state: dict, resource: str) -> bool:
 
 def _draft_locator(
     root: pathlib.Path, state: dict, locator: str
-) -> tuple[pathlib.Path, int | None, int | None] | None:
-    import _workspace
-
-    parsed = parse_resource(locator)
-    if parsed is None:
-        return None
-    source, rel, lo, hi = parsed
-    if _revision(state, source) is None:
-        return None
-    registered = _workspace.load(root).sources.get(source)
-    path = _workspace.resolve_source_file(registered, rel) if registered else None
-    if path is None:
-        return None
-    return path, lo, hi
+) -> tuple[bytes, int | None, int | None] | None:
+    return _resolve_resource(root, state, locator)
 
 
 def _check_range(
@@ -170,8 +165,11 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[dict]:
         ]
     phase = task["phase"]
     if phase == "survey":
+        survey_root = base / "drafts" / "survey"
         survey_total = sum(
-            item.stat().st_size for item in path.parent.glob("*.json") if item.is_file()
+            item.stat().st_size
+            for item in survey_root.rglob("*.json")
+            if item.is_file()
         )
         if path.stat().st_size > SURVEY_MAX_BYTES:
             return [
@@ -212,15 +210,22 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[dict]:
                     else:
                         issues.extend(_check_range(*resolved, locator))
         return issues
-    if phase == "synthesize":
-        value, issues = _model_issues(path, Synthesis, path.read_text(encoding="utf-8"))
+    if phase == "connect":
+        value, issues = _model_issues(path, Connect, path.read_text(encoding="utf-8"))
         if value:
+            if value.source != task["spec"]["source"]:
+                issues.append(
+                    issue(
+                        "error",
+                        "connect-mismatch",
+                        str(path),
+                        "connect source does not match target",
+                    )
+                )
             known = {item["name"] for item in state["revisions"]}
             for connection in value.connections:
-                if (
-                    connection.source_a == connection.source_b
-                    or {connection.source_a, connection.source_b} - known
-                ):
+                names = {item.source for item in connection.participants}
+                if names - known:
                     issues.append(
                         issue(
                             "error",
@@ -229,11 +234,34 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[dict]:
                             connection.id,
                         )
                     )
-                for locator in connection.evidence_a:
+                if value.source not in names:
+                    issues.append(
+                        issue(
+                            "error",
+                            "connection-source-invalid",
+                            str(path),
+                            f"{connection.id} must include {value.source}",
+                        )
+                    )
+                for participant in connection.participants:
+                    for locator in participant.evidence:
+                        resolved = _draft_locator(root, state, locator)
+                        if resolved is None or not locator.startswith(
+                            participant.source + "/"
+                        ):
+                            issues.append(
+                                issue(
+                                    "error",
+                                    "connection-evidence-invalid",
+                                    str(path),
+                                    locator,
+                                )
+                            )
+                        elif resolved:
+                            issues.extend(_check_range(*resolved, locator))
+                for locator in connection.contract_evidence:
                     resolved = _draft_locator(root, state, locator)
-                    if resolved is None or not locator.startswith(
-                        connection.source_a + "/"
-                    ):
+                    if resolved is None:
                         issues.append(
                             issue(
                                 "error",
@@ -242,168 +270,74 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[dict]:
                                 locator,
                             )
                         )
-                    elif resolved:
-                        issues.extend(_check_range(*resolved, locator))
-                for locator in connection.evidence_b:
-                    resolved = _draft_locator(root, state, locator)
-                    if resolved is None or not locator.startswith(
-                        connection.source_b + "/"
-                    ):
-                        issues.append(
-                            issue(
-                                "error",
-                                "connection-evidence-invalid",
-                                str(path),
-                                locator,
-                            )
-                        )
-                    elif resolved:
+                    else:
                         issues.extend(_check_range(*resolved, locator))
         return issues
     if phase == "plan":
         value, issues = _model_issues(path, PagePlan, path.read_text(encoding="utf-8"))
         if value:
-            paths = {page.path for page in value.pages}
-            page_by_path = {page.path: page for page in value.pages}
-            required = {"overview.md", "architecture.md"}
-            known_owners = {
-                "workspace",
-                *(item["name"] for item in state["revisions"]),
-                *(item["name"] for item in state["catalogs"]),
-            }
-            unknown_owners = sorted(
-                {page.owner for page in value.pages if page.owner not in known_owners}
-            )
-            if unknown_owners:
+            expected_source = task["spec"].get("source")
+            if value.source != expected_source:
                 issues.append(
                     issue(
                         "error",
-                        "page-owner-invalid",
+                        "plan-source-mismatch",
                         str(path),
-                        f"unknown page owners: {unknown_owners}",
+                        "plan shard source does not match target",
                     )
                 )
-            for core_path, core_type in (
-                ("overview.md", "Overview"),
-                ("architecture.md", "Architecture"),
-            ):
-                entry = page_by_path.get(core_path)
-                if entry and (entry.owner != "workspace" or entry.type != core_type):
+            owner = expected_source or "workspace"
+            known_findings = set(_finding_id_list(base))
+            known_connections = _connection_ids(base)
+            for page in value.pages:
+                if page.owner != owner:
                     issues.append(
                         issue(
                             "error",
-                            "core-page-invalid",
+                            "page-owner-invalid",
                             str(path),
-                            f"{core_path} must be a workspace-owned {core_type}",
+                            f"{page.path} owner must be {owner}",
                         )
                     )
-            for source in (item["name"] for item in state["revisions"]):
-                if len(state["revisions"]) > 1:
-                    source_path = source.lower()
-                    required.add(f"{source_path}/architecture.md")
-                    entry = page_by_path.get(f"{source_path}/architecture.md")
-                    if entry and (
-                        entry.owner != source or entry.type != "Architecture"
-                    ):
-                        issues.append(
-                            issue(
-                                "error",
-                                "source-architecture-invalid",
-                                str(path),
-                                f"{source_path}/architecture.md must be owned by {source}",
-                            )
-                        )
-            database_sources = state["catalogs"]
-            if database_sources:
-                required.add("data-model.md")
-            for catalog in database_sources:
-                source_path = catalog["name"].lower()
-                for table in catalog["tables"]:
-                    required.add(f"data/{source_path}/{table['page_slug']}.md")
-            missing = required - paths
-            if missing:
-                issues.append(
-                    issue(
-                        "error",
-                        "page-plan-incomplete",
-                        str(path),
-                        f"missing required pages: {sorted(missing)}",
-                    )
-                )
-            if database_sources:
-                data_model = page_by_path.get("data-model.md")
-                if data_model and (
-                    data_model.type != "DataModel" or data_model.owner != "workspace"
-                ):
+                unknown = [fid for fid in page.finding_ids if fid not in known_findings]
+                if unknown:
                     issues.append(
                         issue(
                             "error",
-                            "data-page-invalid",
+                            "finding-unknown",
                             str(path),
-                            "data-model.md must be a workspace-owned DataModel",
+                            f"{page.path} cites unknown findings {unknown}",
                         )
                     )
-            for catalog in database_sources:
-                source_path = catalog["name"].lower()
-                for table in catalog["tables"]:
-                    table_path = f"data/{source_path}/{table['page_slug']}.md"
-                    entry = page_by_path.get(table_path)
-                    if entry and (
-                        entry.type != "Table" or entry.owner != catalog["name"]
-                    ):
-                        issues.append(
-                            issue(
-                                "error",
-                                "data-page-invalid",
-                                str(path),
-                                f"{table_path} must be a Table owned by {catalog['name']}",
-                            )
+                unknown_c = [
+                    cid for cid in page.connection_ids if cid not in known_connections
+                ]
+                if unknown_c:
+                    issues.append(
+                        issue(
+                            "error",
+                            "connection-unknown",
+                            str(path),
+                            f"{page.path} cites unknown connections {unknown_c}",
                         )
-            finding_list = _finding_id_list(base)
-            finding_ids = set(finding_list)
-            if len(finding_list) != len(finding_ids):
-                issues.append(
-                    issue(
-                        "error",
-                        "finding-id-duplicate",
-                        str(path),
-                        "finding ids must be globally unique",
                     )
-                )
-            assigned_list = [fid for page in value.pages for fid in page.finding_ids]
-            excluded_list = [item.finding_id for item in value.exclusions]
-            assigned = set(assigned_list)
-            excluded = set(excluded_list)
-            if (
-                finding_ids != assigned | excluded
-                or assigned & excluded
-                or len(assigned_list) != len(assigned)
-                or len(excluded_list) != len(excluded)
-            ):
-                issues.append(
-                    issue(
-                        "error",
-                        "finding-coverage-invalid",
-                        str(path),
-                        "every finding must be assigned once or explicitly excluded",
+        return issues
+    if phase == "review":
+        value, issues = _model_issues(
+            path, ReviewReport, path.read_text(encoding="utf-8")
+        )
+        if value:
+            allowed = set(task["spec"].get("pages", []))
+            for item in value.issues:
+                if item.reopen == "page" and item.target not in allowed:
+                    issues.append(
+                        issue(
+                            "error",
+                            "review-target-invalid",
+                            str(path),
+                            item.target,
+                        )
                     )
-                )
-            connection_ids = _connection_ids(base)
-            connection_list = [
-                cid for page in value.pages for cid in page.connection_ids
-            ]
-            assigned_connections = set(connection_list)
-            if connection_ids != assigned_connections or len(connection_list) != len(
-                assigned_connections
-            ):
-                issues.append(
-                    issue(
-                        "error",
-                        "connection-coverage-invalid",
-                        str(path),
-                        "every synthesized connection must be assigned to a page",
-                    )
-                )
         return issues
     if phase == "write":
         issues = validate_page(
@@ -431,14 +365,15 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[dict]:
                     )
                 )
         return issues
-    if phase == "derive":
-        return _validate_proposals(root, state, path)
     return [issue("error", "phase-unknown", str(path), f"unknown phase {phase}")]
 
 
 def _finding_id_list(base: pathlib.Path) -> list[str]:
     result = []
-    for path in (base / "drafts" / "survey").glob("*.json"):
+    survey_dir = base / "drafts" / "survey"
+    if not survey_dir.is_dir():
+        return result
+    for path in sorted(survey_dir.rglob("*.json")):
         survey = Survey.model_validate_json(
             path.read_text(encoding="utf-8"), strict=True
         )
@@ -446,14 +381,206 @@ def _finding_id_list(base: pathlib.Path) -> list[str]:
     return result
 
 
+def _connection_id_list(base: pathlib.Path) -> list[str]:
+    result = []
+    connect_dir = base / "drafts" / "connect"
+    if not connect_dir.is_dir():
+        return result
+    for path in sorted(connect_dir.glob("*.json")):
+        connect = Connect.model_validate_json(
+            path.read_text(encoding="utf-8"), strict=True
+        )
+        result.extend(item.id for item in connect.connections)
+    return result
+
+
 def _connection_ids(base: pathlib.Path) -> set[str]:
-    path = base / "drafts" / "synthesize.json"
-    if not path.exists():
-        return set()
-    synthesis = Synthesis.model_validate_json(
-        path.read_text(encoding="utf-8"), strict=True
+    return set(_connection_id_list(base))
+
+
+def validate_composed_plan(root: pathlib.Path, state: dict) -> list[dict]:
+    base = root / ".okf-wiki" / "runs" / state["run_id"]
+    plan_dir = base / "drafts" / "plan"
+    pages = []
+    exclusions = []
+    issues = []
+    for path in sorted(plan_dir.glob("*.json")):
+        value, local = _model_issues(path, PagePlan, path.read_text(encoding="utf-8"))
+        issues.extend(local)
+        if value:
+            pages.extend(value.pages)
+            exclusions.extend(value.exclusions)
+    if issues:
+        return issues
+    paths = {page.path for page in pages}
+    page_by_path = {page.path: page for page in pages}
+    if len(paths) != len(pages):
+        issues.append(
+            issue(
+                "error",
+                "page-path-duplicate",
+                str(plan_dir),
+                "page paths must be unique across plan shards",
+            )
+        )
+    required = {"overview.md", "architecture.md"}
+    known_owners = {
+        "workspace",
+        *(item["name"] for item in state["revisions"]),
+        *(item["name"] for item in state["catalogs"]),
+    }
+    unknown_owners = sorted(
+        {page.owner for page in pages if page.owner not in known_owners}
     )
-    return {item.id for item in synthesis.connections}
+    if unknown_owners:
+        issues.append(
+            issue(
+                "error",
+                "page-owner-invalid",
+                str(plan_dir),
+                f"unknown page owners: {unknown_owners}",
+            )
+        )
+    for core_path, core_type in (
+        ("overview.md", "Overview"),
+        ("architecture.md", "Architecture"),
+    ):
+        entry = page_by_path.get(core_path)
+        if entry is None or entry.owner != "workspace" or entry.type != core_type:
+            issues.append(
+                issue(
+                    "error",
+                    "core-page-invalid",
+                    str(plan_dir),
+                    f"{core_path} must be a workspace-owned {core_type}",
+                )
+            )
+    git_or_files = [
+        item["name"]
+        for item in state["revisions"]
+        if item.get("kind") in ("git", "files", None)
+    ]
+    if len(git_or_files) > 1:
+        for source in git_or_files:
+            source_path = source.lower()
+            required.add(f"{source_path}/architecture.md")
+            entry = page_by_path.get(f"{source_path}/architecture.md")
+            if entry and (entry.owner != source or entry.type != "Architecture"):
+                issues.append(
+                    issue(
+                        "error",
+                        "source-architecture-invalid",
+                        str(plan_dir),
+                        f"{source_path}/architecture.md must be owned by {source}",
+                    )
+                )
+    database_sources = state["catalogs"]
+    if database_sources:
+        required.add("data-model.md")
+    for catalog in database_sources:
+        source_path = catalog["name"].lower()
+        for table in catalog["tables"]:
+            required.add(f"data/{source_path}/{table['page_slug']}.md")
+    missing = required - paths
+    if missing:
+        issues.append(
+            issue(
+                "error",
+                "page-plan-incomplete",
+                str(plan_dir),
+                f"missing required pages: {sorted(missing)}",
+            )
+        )
+    if database_sources:
+        data_model = page_by_path.get("data-model.md")
+        if data_model and (
+            data_model.type != "DataModel" or data_model.owner != "workspace"
+        ):
+            issues.append(
+                issue(
+                    "error",
+                    "data-page-invalid",
+                    str(plan_dir),
+                    "data-model.md must be a workspace-owned DataModel",
+                )
+            )
+    for catalog in database_sources:
+        source_path = catalog["name"].lower()
+        for table in catalog["tables"]:
+            table_path = f"data/{source_path}/{table['page_slug']}.md"
+            entry = page_by_path.get(table_path)
+            if entry and (entry.type != "Table" or entry.owner != catalog["name"]):
+                issues.append(
+                    issue(
+                        "error",
+                        "data-page-invalid",
+                        str(plan_dir),
+                        f"{table_path} must be a Table owned by {catalog['name']}",
+                    )
+                )
+    finding_list = _finding_id_list(base)
+    finding_ids = set(finding_list)
+    if len(finding_list) != len(finding_ids):
+        issues.append(
+            issue(
+                "error",
+                "finding-id-duplicate",
+                str(plan_dir),
+                "finding ids must be globally unique",
+            )
+        )
+    assigned_list = [fid for page in pages for fid in page.finding_ids]
+    excluded_list = [item.finding_id for item in exclusions]
+    assigned = set(assigned_list)
+    excluded = set(excluded_list)
+    if (
+        finding_ids != assigned | excluded
+        or assigned & excluded
+        or len(assigned_list) != len(assigned)
+        or len(excluded_list) != len(excluded)
+    ):
+        issues.append(
+            issue(
+                "error",
+                "finding-coverage-invalid",
+                str(plan_dir),
+                "every finding must be assigned once or explicitly excluded",
+            )
+        )
+    connection_list_all = _connection_id_list(base)
+    connection_ids = set(connection_list_all)
+    if len(connection_list_all) != len(connection_ids):
+        issues.append(
+            issue(
+                "error",
+                "connection-id-duplicate",
+                str(plan_dir),
+                "connection ids must be unique across connect tasks",
+            )
+        )
+    connection_list = [cid for page in pages for cid in page.connection_ids]
+    assigned_connections = set(connection_list)
+    if connection_ids != assigned_connections or len(connection_list) != len(
+        assigned_connections
+    ):
+        issues.append(
+            issue(
+                "error",
+                "connection-coverage-invalid",
+                str(plan_dir),
+                "every connection must be assigned to a page",
+            )
+        )
+    if len(pages) < 2:
+        issues.append(
+            issue(
+                "error",
+                "page-plan-incomplete",
+                str(plan_dir),
+                "composed plan must contain at least two pages",
+            )
+        )
+    return issues
 
 
 def stamp_generated_page(
@@ -479,7 +606,6 @@ def stamp_generated_page(
     )
     meta.pop("verified", None)
     meta.pop("stale_after", None)
-    meta.setdefault("coverage", "full")
     workspace = _workspace.load(root)
     enriched = []
     for source in meta.get("sources", []):
@@ -896,26 +1022,40 @@ def validate_publication(root: pathlib.Path, path: pathlib.Path) -> list[dict]:
     return issues
 
 
-def _validate_proposals(
-    root: pathlib.Path, state: dict, path: pathlib.Path
+def validate_proposals(
+    root: pathlib.Path,
+    state: dict,
+    path: pathlib.Path,
+    *,
+    required: bool = False,
 ) -> list[dict]:
     issues = []
     expected = {
         f"agents-block-{item['name']}.md"
         for item in state["revisions"]
+        if item.get("kind") != "files"
     }
     actual = (
         {item.name for item in path.glob("agents-block-*.md")}
         if path.exists()
         else set()
     )
-    if expected != actual:
+    if required and expected != actual:
         issues.append(
             issue(
                 "error",
                 "proposal-set-invalid",
                 str(path),
                 f"expected {sorted(expected)}, got {sorted(actual)}",
+            )
+        )
+    elif actual - expected:
+        issues.append(
+            issue(
+                "error",
+                "proposal-set-invalid",
+                str(path),
+                f"unexpected proposal files: {sorted(actual - expected)}",
             )
         )
     begin = re.compile(r"<!--\s*okf-wiki:begin\b[^>]*-->")

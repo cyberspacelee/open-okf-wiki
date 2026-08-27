@@ -9,10 +9,12 @@ Judge: Grep Test violations, unsupported claims, invented rationale, padded
 gaps, ownership bleed, missing connection links, routing overlap, coverage
 honesty, output language.
 
-Write the report yourself to the packet's `report` path — never return its
-content in your reply:
+This task covers one owner batch (`pages` in the packet). Write the report
+yourself to the packet's `artifact` path — never return its content in your
+reply:
 
     {
+      "batch": "API",
       "candidate_digest": "<packet digest>",
       "verdict": "changes_requested",
       "issues": [{
@@ -24,11 +26,11 @@ content in your reply:
       }]
     }
 
-Use `"reopen": "plan"` when ownership, routing or page boundaries must
-change. An approved report has verdict `approved` and an empty issues list;
-approval stamps machine-confirmed verification — it is not human review.
+Use `"reopen": "plan"` with `target` set to the source name or `workspace`
+when ownership, routing or page boundaries must change. An approved report
+has verdict `approved` and an empty issues list; approval stamps
+machine-confirmed verification — it is not human review.
 
-Then run the packet's `submit_command` from its `workdir` to submit the
-report.
+Then run the packet's `complete_command` from its `workdir`.
 
 Handoff: report path, verdict, issue count.

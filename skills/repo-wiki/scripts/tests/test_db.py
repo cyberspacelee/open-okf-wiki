@@ -111,25 +111,37 @@ class TestResolveUrl:
 
 class TestTablesImportError:
     def test_psycopg_import_error(self, tmp_path, monkeypatch):
+        import builtins
+
+        real_import = builtins.__import__
+
         def mock_import(name, *args, **kwargs):
             if name == "psycopg":
                 raise ImportError("psycopg not found")
-            return __import__(name, *args, **kwargs)
+            return real_import(name, *args, **kwargs)
 
         monkeypatch.setattr("builtins.__import__", mock_import)
-        with pytest.raises(DbError, match="db 功能需要 psycopg,其余功能不受影响"):
+        with pytest.raises(
+            DbError, match="db commands require psycopg; other commands are unaffected"
+        ):
             tables("postgresql://localhost/testdb")
 
 
 class TestDescribeImportError:
     def test_psycopg_import_error(self, tmp_path, monkeypatch):
+        import builtins
+
+        real_import = builtins.__import__
+
         def mock_import(name, *args, **kwargs):
             if name == "psycopg":
                 raise ImportError("psycopg not found")
-            return __import__(name, *args, **kwargs)
+            return real_import(name, *args, **kwargs)
 
         monkeypatch.setattr("builtins.__import__", mock_import)
-        with pytest.raises(DbError, match="db 功能需要 psycopg,其余功能不受影响"):
+        with pytest.raises(
+            DbError, match="db commands require psycopg; other commands are unaffected"
+        ):
             describe("postgresql://localhost/testdb", "test_table")
 
 

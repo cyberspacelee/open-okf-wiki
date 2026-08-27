@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.12"
 # ///
-"""Outcome-based grader for a published v4 repo-wiki run."""
+"""Outcome-based grader for a published v1 repo-wiki run."""
 
 import argparse
 import json
@@ -81,7 +81,7 @@ def grade(ws: pathlib.Path) -> list[dict]:
     check("published validation has zero errors", errors == 0, f"errors={errors}")
 
     revisions = {item["name"]: item for item in state["revisions"]}
-    workspace = load(ws / ".okf-wiki/workspace.json")
+    workspace = load(ws / "workspace.json")
     source_paths = {
         item["name"]: ws.joinpath(*pathlib.PurePosixPath(item["path"]).parts)
         for item in workspace["sources"]
@@ -122,16 +122,15 @@ def grade(ws: pathlib.Path) -> list[dict]:
     )
 
     proposals = sorted((run_dir / "proposals").glob("agents-block-*.md"))
-    git_sources = state["revisions"]
     proposal_ok = all(
         text.count("<!-- okf-wiki:begin") == 1
         and text.count("<!-- okf-wiki:end -->") == 1
         for text in (path.read_text(encoding="utf-8") for path in proposals)
     )
     check(
-        "one valid AGENTS proposal per Git source",
-        len(proposals) == len(git_sources) and proposal_ok,
-        f"{len(proposals)} proposals for {len(git_sources)} sources",
+        "proposals are well-formed when present",
+        proposal_ok,
+        f"{len(proposals)} optional proposal files",
     )
     root_index = (bundle / "index.md").read_text(encoding="utf-8")
     log = (bundle / "log.md").read_text(encoding="utf-8")

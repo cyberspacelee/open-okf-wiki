@@ -20,7 +20,7 @@ class Structure:
     mermaid_blocks: list[tuple[int, str]]
 
 
-_HEADING = re.compile(r"^(#{2,3}) (.+)$")
+_HEADING = re.compile(r"^(#{1,3}) (.+)$")
 _LINK = re.compile(r"\[(?:[^\]]*)\]\(([^)]+)\)")
 _FNREF = re.compile(r"\[\^([^\]]+)\](?!:)")
 _FNDEF = re.compile(r"^\[\^([^\]]+)\]:\s*(.+)$")

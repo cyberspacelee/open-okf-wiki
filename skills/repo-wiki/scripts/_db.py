@@ -15,8 +15,8 @@ def load_env(root: pathlib.Path) -> dict[str, str]:
     if not env_file.exists():
         return result
 
-    with open(env_file) as f:
-        for line in f:
+    with env_file.open(encoding="utf-8") as handle:
+        for line in handle:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
@@ -25,12 +25,7 @@ def load_env(root: pathlib.Path) -> dict[str, str]:
             key, _, value = line.partition("=")
             key = key.strip()
             value = value.strip()
-            if (
-                value.startswith('"')
-                and value.endswith('"')
-                or value.startswith("'")
-                and value.endswith("'")
-            ):
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
                 value = value[1:-1]
             result[key] = value
 
@@ -63,7 +58,7 @@ def _connect(url: str):
     try:
         import psycopg
     except ImportError:
-        raise DbError("db 功能需要 psycopg,其余功能不受影响")
+        raise DbError("db commands require psycopg; other commands are unaffected")
 
     try:
         return psycopg.connect(

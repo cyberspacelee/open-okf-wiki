@@ -17,4 +17,7 @@ Git-managed copy at wiki/:
 Export refuses to replace an unmanaged directory and restores the old export
 if replacement fails (directory replacement is not atomic on Windows).
 
-Report generation digest, page count, log events and pending proposal paths.
+`publication prune --keep 5` deletes older generations; publish also prunes.
+Proposals are `okf propose` after publish, not part of this command.
+
+Report generation digest, page count and log events.

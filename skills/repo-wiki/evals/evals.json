@@ -14,13 +14,13 @@
       "tier": 2,
       "prompt": "You are the coordinator for the repo-wiki skill. Workspace: {WS}. Skill: {SKILL_DIR}. Read SKILL.md first. Delegate every content target from its task-start dispatch packet, consume path-only handoffs, and never bypass a rejected completion.",
       "fixture": "setup_java_ws.py (feign + spring-cloud-openfeign)",
-      "expected_output": "published thin wiki, 0 validation errors, honest citations, AGENTS proposals per source",
+      "expected_output": "published thin wiki, 0 validation errors, honest citations",
       "assertions": [
         "run reached published and every target is complete",
         "required overview and architecture routing concepts exist",
         "re-running okf.py validate --published reports 0 errors",
         "sampled cited line ranges exist in the pinned sources (anti-fabrication)",
-        "one agents-block proposal per source with paired managed-block markers and <=15 content lines",
+        "proposal files are well-formed when present; zero files is allowed",
         "every page description is non-empty (routing text)",
         "independent approved review is bound to the candidate digest",
         "OKF reserved files and lifecycle trust fields conform"

@@ -11,7 +11,8 @@ from urllib.parse import quote
 from _files import atomic_json, directory_digest
 from _frontmatter import parse_file
 
-VERSION = 4
+VERSION = 1
+KEEP_GENERATIONS = 5
 
 
 class PublishError(Exception):
@@ -169,23 +170,24 @@ def generate_log(
     if events:
         date = datetime.now(timezone.utc).date().isoformat()
         heading = f"## {date}"
-        if prior.startswith("# Wiki Update Log"):
-            existing = prior[len("# Wiki Update Log") :].lstrip()
-            if existing.startswith(heading + "\n"):
-                text = (
-                    "# Wiki Update Log\n\n"
-                    + heading
-                    + "\n"
-                    + "\n".join(events)
-                    + "\n"
-                    + existing[len(heading) + 1 :]
-                )
-            else:
-                text = "# Wiki Update Log\n\n" + heading + "\n" + "\n".join(events)
-            if existing and not existing.startswith(heading + "\n"):
-                text += "\n\n" + existing
+        existing = prior
+        if existing.startswith("# Wiki Update Log"):
+            existing = existing[len("# Wiki Update Log") :].lstrip()
+        else:
+            existing = "## Previous log\n\n" + existing
+        if existing.startswith(heading + "\n"):
+            text = (
+                "# Wiki Update Log\n\n"
+                + heading
+                + "\n"
+                + "\n".join(events)
+                + "\n"
+                + existing[len(heading) + 1 :]
+            )
         else:
             text = "# Wiki Update Log\n\n" + heading + "\n" + "\n".join(events)
+            if existing:
+                text += "\n\n" + existing
     else:
         text = prior
     (bundle / "log.md").write_text(text.rstrip() + "\n", encoding="utf-8", newline="\n")
@@ -212,11 +214,16 @@ def _page_manifest(root: pathlib.Path, candidate: pathlib.Path, state: dict) -> 
                 source_name, rel, _, _ = item
                 revision = revisions.get(source_name)
                 registered = workspace.sources.get(source_name)
-                blob = (
-                    _workspace.git_blob_oid(registered, revision["commit"], rel)
-                    if revision and registered
-                    else None
-                )
+                blob = None
+                if revision and registered and registered.kind == "git":
+                    blob = _workspace.git_blob_oid(
+                        registered, revision["commit"], rel
+                    )
+                elif registered and registered.kind == "files":
+                    content = _workspace.files_blob(registered, rel)
+                    blob = (
+                        hashlib.sha256(content).hexdigest() if content else None
+                    )
                 if blob:
                     source_blobs[f"{source_name}/{rel}"] = blob
         result[task["name"]] = {
@@ -282,6 +289,41 @@ def _commit_generation(
     return generation, pointer
 
 
+def prune(root: pathlib.Path, keep: int = KEEP_GENERATIONS) -> dict:
+    generations = _publication(root) / "generations"
+    if not generations.is_dir():
+        return {"kept": []}
+    protected: set[str] = set()
+    try:
+        selected = current(root)
+    except PublishError:
+        selected = None
+    if selected:
+        protected.add(selected["generation"])
+    previous = _publication(root) / "previous.json"
+    if previous.is_file():
+        try:
+            protected.add(json.loads(previous.read_text(encoding="utf-8"))["generation"])
+        except (OSError, json.JSONDecodeError, KeyError):
+            pass
+    dirs = sorted(
+        (
+            item
+            for item in generations.iterdir()
+            if item.is_dir() and not item.name.startswith(".")
+        ),
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )
+    kept = []
+    for item in dirs:
+        if item.name in protected or len(kept) < keep:
+            kept.append(item.name)
+            continue
+        shutil.rmtree(item, ignore_errors=True)
+    return {"kept": kept}
+
+
 def publish(root: pathlib.Path) -> dict:
     import _state
     import _validate
@@ -328,6 +370,7 @@ def publish(root: pathlib.Path) -> dict:
             "pages": _page_manifest(root, candidate, state),
         }
         generation, pointer = _commit_generation(root, partial, manifest, old)
+        prune(root)
         partial = None
         result = {
             **pointer,

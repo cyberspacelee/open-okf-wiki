@@ -117,17 +117,24 @@ def evaluate(base: pathlib.Path) -> dict:
         )
     complete(
         ws,
-        "synthesize:workspace",
-        run_dir / "drafts/synthesize.json",
+        "connect:api",
+        run_dir / "drafts/connect/api.json",
         json.dumps(
             {
+                "source": "API",
                 "connections": [
                     {
                         "id": "web-api",
-                        "source_a": "WebUI",
-                        "source_b": "API",
-                        "evidence_a": ["WebUI/app.py#L1-L2"],
-                        "evidence_b": ["API/app.py#L1-L2"],
+                        "participants": [
+                            {
+                                "source": "API",
+                                "evidence": ["API/app.py#L1-L2"],
+                            },
+                            {
+                                "source": "WebUI",
+                                "evidence": ["WebUI/app.py#L1-L2"],
+                            },
+                        ],
                         "contract": "fixture boundary",
                         "failure_propagation": "web receives API failure",
                     }
@@ -136,47 +143,86 @@ def evaluate(base: pathlib.Path) -> dict:
             }
         ),
     )
-    plan = {
-        "pages": [
+    complete(
+        ws,
+        "connect:webui",
+        run_dir / "drafts/connect/webui.json",
+        json.dumps({"source": "WebUI", "connections": [], "gaps": []}),
+    )
+    complete(
+        ws,
+        "plan:api",
+        run_dir / "drafts/plan/api.json",
+        json.dumps(
             {
-                "path": "overview.md",
-                "type": "Overview",
-                "owner": "workspace",
-                "title": "Overview",
-                "description": "Open first to route work.",
-                "tags": ["overview"],
-            },
+                "source": "API",
+                "pages": [
+                    {
+                        "path": "api/architecture.md",
+                        "type": "Architecture",
+                        "owner": "API",
+                        "title": "API architecture",
+                        "description": "Open before API changes.",
+                        "tags": ["architecture"],
+                        "finding_ids": ["api-entry"],
+                    }
+                ],
+                "exclusions": [],
+            }
+        ),
+    )
+    complete(
+        ws,
+        "plan:webui",
+        run_dir / "drafts/plan/webui.json",
+        json.dumps(
             {
-                "path": "architecture.md",
-                "type": "Architecture",
-                "owner": "workspace",
-                "title": "Architecture",
-                "description": "Open before cross-source changes.",
-                "tags": ["architecture"],
-                "connection_ids": ["web-api"],
-            },
+                "source": "WebUI",
+                "pages": [
+                    {
+                        "path": "webui/architecture.md",
+                        "type": "Architecture",
+                        "owner": "WebUI",
+                        "title": "Web architecture",
+                        "description": "Open before web changes.",
+                        "tags": ["architecture"],
+                        "finding_ids": ["webui-entry"],
+                    }
+                ],
+                "exclusions": [],
+            }
+        ),
+    )
+    complete(
+        ws,
+        "plan:workspace",
+        run_dir / "drafts/plan/workspace.json",
+        json.dumps(
             {
-                "path": "api/architecture.md",
-                "type": "Architecture",
-                "owner": "API",
-                "title": "API architecture",
-                "description": "Open before API changes.",
-                "tags": ["architecture"],
-                "finding_ids": ["api-entry"],
-            },
-            {
-                "path": "webui/architecture.md",
-                "type": "Architecture",
-                "owner": "WebUI",
-                "title": "Web architecture",
-                "description": "Open before web changes.",
-                "tags": ["architecture"],
-                "finding_ids": ["webui-entry"],
-            },
-        ],
-        "exclusions": [],
-    }
-    complete(ws, "plan:wiki", run_dir / "drafts/plan.json", json.dumps(plan))
+                "source": None,
+                "pages": [
+                    {
+                        "path": "overview.md",
+                        "type": "Overview",
+                        "owner": "workspace",
+                        "title": "Overview",
+                        "description": "Open first to route work.",
+                        "tags": ["overview"],
+                    },
+                    {
+                        "path": "architecture.md",
+                        "type": "Architecture",
+                        "owner": "workspace",
+                        "title": "Architecture",
+                        "description": "Open before cross-source changes.",
+                        "tags": ["architecture"],
+                        "connection_ids": ["web-api"],
+                    },
+                ],
+                "exclusions": [],
+            }
+        ),
+    )
 
     resources = {
         slug: f"{name}/app.py#L1-L2" for slug, name in source_names.items()
@@ -203,14 +249,6 @@ def evaluate(base: pathlib.Path) -> dict:
     }
     for relative, content in pages.items():
         complete(ws, f"write:{relative}", run_dir / "candidate" / relative, content)
-    for name in source_names.values():
-        write(
-            run_dir / f"proposals/agents-block-{name}.md",
-            "<!-- okf-wiki:begin run=e2e -->\n- Read the Wiki first.\n<!-- okf-wiki:end -->\n",
-        )
-    run(ws, "task", "start", "derive:proposals")
-    run(ws, "task", "complete", "derive:proposals")
-
     packet = run(
         ws,
         "review",
@@ -221,18 +259,20 @@ def evaluate(base: pathlib.Path) -> dict:
         "reviewer-2",
         json_output=True,
     )
-    report = pathlib.Path(packet["report"])
-    write(
-        report,
-        json.dumps(
-            {
-                "candidate_digest": packet["candidate_digest"],
-                "verdict": "approved",
-                "issues": [],
-            }
-        ),
-    )
-    run(ws, "review", "submit", "--report", str(report))
+    for batch in packet["batches"]:
+        complete(
+            ws,
+            batch["id"],
+            run_dir / "drafts" / "review" / f"{batch['id'].split(':', 1)[1]}.json",
+            json.dumps(
+                {
+                    "batch": batch["owner"],
+                    "candidate_digest": packet["candidate_digest"],
+                    "verdict": "approved",
+                    "issues": [],
+                }
+            ),
+        )
     published = run(ws, "publication", "publish", json_output=True)
     run(ws, "publication", "export", "--to", "wiki")
     validation = run(ws, "validate", "--published", json_output=True)
@@ -264,8 +304,8 @@ def evaluate(base: pathlib.Path) -> dict:
         "writer-3",
         json_output=True,
     )
-    if second["current_phase"] != "derive":
-        raise RuntimeError(f"incremental reuse stopped at {second['current_phase']}")
+    if second["status"] != "awaiting_review":
+        raise RuntimeError(f"incremental reuse stopped at {second['status']}")
     return {
         "workspace": str(ws),
         "published_generation": published["generation"],

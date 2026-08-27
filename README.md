@@ -1,4 +1,4 @@
-# Open OKF Wiki v4
+# Open OKF Wiki v1
 
 A skill-driven producer for thin, evidence-anchored repository Wikis. Agents
 follow skills/repo-wiki/SKILL.md; deterministic Python gates bind Git revisions,
@@ -28,9 +28,10 @@ Windows. The Codex command above installs to `.agents/skills/repo-wiki`; replace
 that path in the examples below if your agent uses another project skill
 directory.
 
-Formal Runs reject dirty, untracked or revision-drifted Git sources. Commit the
-installed skill and lock file, or keep local agent files out of the source. A typical
-local-only `.gitignore` section is:
+A Run pins each Git Source at its HEAD commit. Live worktrees may be dirty or
+move afterwards; workers read the Pin. Commit the installed skill and lock
+file, or keep local agent files out of the source. A typical local-only
+`.gitignore` section is:
 
 ```gitignore
 .agents/
@@ -54,8 +55,9 @@ uv run .agents/skills/repo-wiki/scripts/okf.py workspace show --json
 
 Register every clean Git Source explicitly. `link` registers a local
 worktree — paths outside the Workspace are mounted automatically under
-`.okf-wiki/sources/<name>` (symlink on POSIX, junction on Windows); `clone`
-materializes a Git URL in the same place.
+`<workspace>/<name>/` (symlink on POSIX, junction on Windows); `clone`
+materializes a Git URL in the same place. `workspace.json` lives at the hub
+root.
 Source names preserve letter case, while names that differ only by case are
 rejected for Windows portability. Link `.` when the Workspace directory itself
 is the intended repository:
@@ -67,9 +69,9 @@ uv run .agents/skills/repo-wiki/scripts/okf.py source add clone https://github.c
 uv run .agents/skills/repo-wiki/scripts/okf.py source list --json
 ```
 
-The producer never copies a source into a private snapshot: linked sources
-are read through their mount, and evidence always resolves from the recorded
-Git commit.
+The producer never copies a Git source into a private snapshot: linked
+sources are read through their hub mount, workers read a Pin at the recorded
+commit, and citations resolve from Git's object database.
 
 PostgreSQL is optional. Store the URL in the operating-system environment or
 in a workspace-root `.env`; the operating-system value wins. Configuration and
@@ -95,8 +97,7 @@ The host agent remains a coordinator: `run status` gives a compact phase/task
 view, and `task start --json` gives one complete path-only worker dispatch.
 Workers read the mounted source and write artifacts to the declared paths;
 they return only bounded handoffs. Start and complete every Target through the
-CLI. Each State Gate rejects a dirty worktree or a commit different from the
-Run's recorded revision.
+CLI. Each State Gate checks that the Pin still matches the recorded revision.
 
 After a distinct reviewer approves the candidate:
 
@@ -145,10 +146,12 @@ the current generation, not a legacy mutable wiki directory.
     skills/repo-wiki/references/
     skills/repo-wiki/assets/templates/
     skills/repo-wiki/scripts/okf.py
+    workspace.json
+    <source-name>/
     .okf-wiki/runs/<run-id>/
-    .okf-wiki/sources/<name>/
+    .okf-wiki/pins/<run-id>/<name>/
     .okf-wiki/catalogs/<content-hash>/
     .okf-wiki/publication/generations/<digest>/
     wiki/
 
-No historical v1/v2/v3 state or CLI compatibility is provided.
+No prior-version state or CLI compatibility is provided.

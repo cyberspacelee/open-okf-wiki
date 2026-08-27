@@ -1,18 +1,28 @@
 # Repository Wiki Producer
 
+A skill-driven producer of a thin, evidence-anchored Wiki over a hub
+Workspace whose children are registered Sources.
+
 ## Language
 
 **Workspace**:
-The directory that owns source registration, Runs and one current Publication.
-_Avoid_: Source, worktree
+The hub directory that owns `workspace.json`, registered Sources as direct
+children, Runs and one current Publication. It is not itself a Source.
+_Avoid_: Source, worktree, sidecar
 
 **Source**:
-A registered Git repository or selected PostgreSQL input used as Run evidence.
+A registered Git repository, files directory or selected PostgreSQL input
+used as Run evidence. Git and files Sources occupy `<workspace>/<name>/`.
 _Avoid_: Workspace, live input
 
 **Revision**:
 The immutable Git commit that identifies one Git Source's evidence for a Run.
-_Avoid_: Snapshot, mutable worktree state
+_Avoid_: Snapshot, mutable worktree state, live HEAD
+
+**Pin**:
+The detached Git worktree or copied files tree at a Run's recorded Revision,
+which workers read. The live Source tree may move independently.
+_Avoid_: live worktree, clone
 
 **Catalog**:
 A content-addressed description of explicitly selected PostgreSQL tables
@@ -38,6 +48,11 @@ The CLI-owned transition boundary that validates a Target artifact before
 completion and phase advancement.
 _Avoid_: Self-reported completion
 
+**Compose Gate**:
+The CLI-owned fan-in after every plan shard completes: it unions shards,
+checks global finding and connection coverage, then spawns write Targets.
+_Avoid_: compose worker, plan:wiki
+
 **Candidate**:
 The exact concept page tree produced by one Run before reserved files and
 publication metadata are generated.
@@ -59,24 +74,46 @@ Test rather than file or directory coverage.
 _Avoid_: Source mirror, API reference
 
 **Locator**:
-A claim anchor to Revision or Catalog evidence: a plain source-relative path
-with an optional line range, e.g. 'src/service/UserService.java#L42-L68'.
-_Avoid_: Live path, custom URI scheme
+A claim anchor to Revision, Pin or Catalog evidence: a plain source-relative
+path with an optional line range, e.g. 'src/service/UserService.java#L42-L68'.
+Contract files live on a files Source and use the same shape.
+_Avoid_: Live path, custom URI scheme, URL
+
+**Connection**:
+A multi-participant, evidence-backed boundary between Sources, with a contract
+summary, optional contract locators and failure propagation.
+_Avoid_: pairwise link, Finding
 
 **Page Plan**:
-The complete mapping from findings and connections to portable concept paths,
-owners and exclusions. It is the boundary for page-level incremental reuse.
-_Avoid_: Suggested outline
+The composed mapping from findings and connections to portable concept paths,
+owners and exclusions. It is assembled by the Compose Gate from plan shards.
+_Avoid_: Suggested outline, single plan.json
+
+**Plan shard**:
+One Source-owned page list (`plan:<source>`) or the workspace-owned page list
+(`plan:workspace`). Reuse and review reopen act at shard grain.
+_Avoid_: Page Plan (the composed object)
 
 **Machine-confirmed**:
-Verification recorded by an independent agent review session.
+Verification recorded by an independent agent review batch.
 _Avoid_: Human-reviewed
 
 **Human-reviewed**:
 Verification explicitly added by a named human to selected published concepts.
 _Avoid_: Agent approval
 
+**Review batch**:
+One review Target covering Candidate pages of a single owner (a Source or
+workspace).
+_Avoid_: single-session verdict
+
 **Proposal**:
-A Run artifact for a source-facing AGENTS managed block, CONTEXT terms or ADR
-stub that requires human ratification.
-_Avoid_: Applied change
+A post-publication Run artifact for a source-facing AGENTS managed block,
+CONTEXT terms or ADR stub that requires human ratification. It is not a Wiki
+phase and does not block publication.
+_Avoid_: Applied change, derive phase
+
+**Refresh**:
+Replace one Source's Pin and recorded Revision, invalidating only that
+Source's survey, connect, plan shard and dependent pages.
+_Avoid_: abandon the Run, follow branch

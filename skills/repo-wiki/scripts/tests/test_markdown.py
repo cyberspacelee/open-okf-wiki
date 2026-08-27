@@ -74,6 +74,12 @@ Second content.
 """
 
 
+def test_h1_is_a_section():
+    s = extract("# Schema\n\nTable body.\n\n## Gaps\n\nMissing indexes.\n")
+    assert [sec.title for sec in s.sections] == ["Schema", "Gaps"]
+    assert s.sections[0].level == 1
+
+
 def test_h2_h3_sections():
     s = extract(NORMAL_BODY)
     assert len(s.sections) == 3

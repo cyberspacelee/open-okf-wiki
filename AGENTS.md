@@ -44,5 +44,5 @@ uv run skills/repo-wiki/evals/run_cli_e2e.py     # deterministic lifecycle e2e
 Both must pass before merging kernel or contract changes.
 
 <!-- okf-wiki:begin -->
-<!-- Managed Block: replaced by the derive phase after each publish. -->
+<!-- Managed Block: replaced by okf propose after each publish. -->
 <!-- okf-wiki:end -->

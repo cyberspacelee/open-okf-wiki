@@ -23,9 +23,10 @@ its content in your reply:
 
 `target` is the task name from the dispatch packet. Evidence uses plain
 locators (`source/path`, optional `#Lx-Ly`); every range must exist at the
-run's recorded revision. The gate enforces at most 16 findings, 4 locators
-per finding, 8 gaps and 24 KiB — prioritize Grep-Test knowledge and record
-omitted scope as a gap rather than padding.
+run's recorded revision. The gate enforces at most 32 findings, 8 locators
+per finding, 16 gaps and 64 KiB — prioritize Grep-Test knowledge and record
+omitted scope as a gap rather than padding. Large sources are split into
+one survey task per top-level directory.
 
 Then run the packet's `complete_command` from its `workdir`. If the gate
 rejects the artifact, fix it and complete again until it passes.

@@ -11,8 +11,11 @@ from pydantic import (
 )
 
 NonEmpty = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
-ShortText = Annotated[
-    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=320)
+ShortId = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)
+]
+ClaimText = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=800)
 ]
 Locator = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1024)
@@ -69,17 +72,17 @@ class ConceptFrontmatter(BaseModel):
 
 
 class Finding(BaseModel):
-    id: ShortText
-    claim: ShortText
-    evidence: list[Locator] = Field(min_length=1, max_length=4)
-    domain: ShortText
+    id: ShortId
+    claim: ClaimText
+    evidence: list[Locator] = Field(min_length=1, max_length=8)
+    domain: ShortId
 
 
 class Survey(BaseModel):
     source: NonEmpty
     target: NonEmpty
-    findings: list[Finding] = Field(max_length=16)
-    gaps: list[ShortText] = Field(default_factory=list, max_length=8)
+    findings: list[Finding] = Field(max_length=32)
+    gaps: list[ClaimText] = Field(default_factory=list, max_length=16)
 
     @model_validator(mode="after")
     def unique_findings(self):
@@ -89,23 +92,34 @@ class Survey(BaseModel):
         return self
 
 
+class Participant(BaseModel):
+    source: NonEmpty
+    evidence: list[Locator] = Field(min_length=1, max_length=8)
+
+
 class Connection(BaseModel):
     id: NonEmpty
-    source_a: NonEmpty
-    source_b: NonEmpty
-    evidence_a: list[NonEmpty] = Field(min_length=1)
-    evidence_b: list[NonEmpty] = Field(min_length=1)
+    participants: list[Participant] = Field(min_length=2)
     contract: NonEmpty
+    contract_evidence: list[Locator] = Field(default_factory=list)
     failure_propagation: NonEmpty
 
+    @model_validator(mode="after")
+    def unique_participants(self):
+        names = [item.source for item in self.participants]
+        if len(names) != len(set(names)):
+            raise ValueError("participant sources must be unique")
+        return self
 
-class Synthesis(BaseModel):
+
+class Connect(BaseModel):
+    source: NonEmpty
     connections: list[Connection]
-    gaps: list[NonEmpty] = Field(default_factory=list)
+    gaps: list[NonEmpty] = Field(default_factory=list, max_length=16)
 
     @model_validator(mode="after")
     def unique_connections(self):
-        ids = [connection.id for connection in self.connections]
+        ids = [item.id for item in self.connections]
         if len(ids) != len(set(ids)):
             raise ValueError("connection ids must be unique")
         return self
@@ -141,7 +155,8 @@ class PageExclusion(BaseModel):
 
 
 class PagePlan(BaseModel):
-    pages: list[PagePlanEntry] = Field(min_length=2)
+    source: NonEmpty | None = None
+    pages: list[PagePlanEntry] = Field(default_factory=list)
     exclusions: list[PageExclusion] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -170,6 +185,7 @@ class ReviewIssue(BaseModel):
 
 
 class ReviewReport(BaseModel):
+    batch: NonEmpty
     candidate_digest: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
     verdict: Literal["approved", "changes_requested"]
     issues: list[ReviewIssue] = Field(default_factory=list)
