@@ -113,7 +113,8 @@ design behaves consistently on Windows, Linux and macOS without symlinks.
 ## Guarantees
 
 - Grep Test keeps the Wiki a routing layer rather than a source mirror.
-- Citations bind to source, Git commit, path and real line range.
+- Citations are plain `path#Lx-Ly` locators resolved against the Run's
+  recorded Git commit; line ranges must exist at that revision.
 - Frontmatter is parsed as bounded YAML with duplicate keys and aliases
   rejected, then validated by Pydantic.
 - generated, verified, status and stale_after make lifecycle and trust

@@ -5,102 +5,104 @@ description: Generate or incrementally refresh a thin, evidence-anchored reposit
 
 # Repo Wiki
 
-Produce an OKF v0.2 Wiki from Git revisions and selected database catalogs.
-The host is a coordinator; `scripts/okf.py` owns revisions, state transitions,
-validation, review binding, publication and rollback. Never edit state JSON.
+Produce an OKF v0.2 Wiki from frozen Git revisions and selected PostgreSQL
+catalogs. `scripts/okf.py` owns all state, validation and publication — never
+edit `.okf-wiki` JSON by hand. Requires Git, Python 3.12+ and `uv` on PATH.
 
-Requires Git, Python 3.12+ and `uv` on PATH. Commands below work from Bash,
-PowerShell and cmd when run from the workspace root. `<skill>` is this
-directory.
+Run every command from the workspace root. `<skill>` is this directory; the
+short form `okf` below always means:
 
-## Coordinator contract
+    uv run <skill>/scripts/okf.py
 
-Workers read Source, draft and Candidate bodies. The coordinator reads only
-`run status --json`, `task start <id> --json` dispatch packets, worker Handoffs
-of at most 10 lines and 2 KiB, and validator issue lists.
+`okf --help` and `okf <command> --help` document every command.
 
-Every content target runs in a worker session, including inspect. Give the
-worker the dispatch packet as paths, never pasted contents. The worker writes
-the exact artifact path and returns its path, finding ids when present, and gap
-count. A host without worker sessions stops and reports that requirement; the
-coordinator never takes over content work.
+## Start here — on entry, resume, or any uncertainty
 
-## Re-anchor
-
-On entry, resume, or uncertainty:
-
-1. Run `uv run <skill>/scripts/okf.py run status --json`.
-2. If a run exists, perform only its listed `next_actions`.
-3. If no workspace exists, run `workspace init`. If it has no Sources, add
-   them explicitly. If no run exists, run
-   `run start --producer repo-wiki/<model> --session <unique-session>`.
-
-Completed targets are immutable unless review reopens them. Disk state wins
-over conversation memory.
+1. Run `okf run status --json`.
+2. If a run exists, perform exactly its `next_actions`. Disk state wins over
+   conversation memory; completed tasks are immutable unless review reopens
+   them.
+3. If there is no workspace: `okf workspace init --lang en|zh
+   --freshness-days 90`, register every Source explicitly (next section),
+   then `okf run start --producer repo-wiki/<model> --session <unique-id>`.
 
 ## Sources
 
-`workspace init --lang en|zh --freshness-days 90` creates an empty Workspace.
-Add every Source explicitly. `link` registers a Git worktree already mounted
-inside the Workspace. `clone` creates one worktree under `.okf-wiki/sources`.
-Source names preserve ASCII letter case; case-insensitive duplicates fail:
+Add each Source explicitly before starting a run:
 
-```text
-uv run <skill>/scripts/okf.py source add link .\API --name API
-uv run <skill>/scripts/okf.py source add clone https://host/web.git --name web --ref main
-uv run <skill>/scripts/okf.py source add postgres --name appdb --url-env DATABASE_URL --schema public --table orders --table customers
-```
+    okf source add link ./API --name API
+    okf source add clone https://host/web.git --name web --ref main
+    okf source add postgres --name appdb --url-env DATABASE_URL --schema public --table orders --table customers
 
-Link targets outside the Workspace fail; mount them into the Workspace first.
-Formal runs reject dirty Git sources, submodules and non-portable paths, then
-record HEAD. Workers read the mounted worktree while gates require HEAD and
-cleanliness to remain unchanged. Citations resolve from the recorded Git
-object. PostgreSQL catalogs include only selected tables and credentials never
-enter state or citations.
+`link` registers a Git worktree already mounted inside the workspace; `clone`
+creates one under `.okf-wiki/sources/`. Use `okf db tables` / `okf db
+describe` to choose PostgreSQL tables — only selected tables become evidence,
+and credentials never enter state or citations.
 
-## Phases
+`run start` records each Git Source's clean HEAD. Dirty worktrees, submodules
+and non-portable paths are rejected, and every later gate rejects revision
+drift, so citations always resolve from the recorded commit.
 
-The fixed order is inspect -> survey -> synthesize (multi-Git only) -> plan ->
-write -> derive -> review -> publish. Read the matching reference before work.
+## The task loop
 
-For every target listed by status:
+A run is a fixed phase sequence: inspect → survey → synthesize (multi-Git
+only) → plan → write → derive → review → publish. `run status` lists the
+current phase's tasks; task ids are `<phase>:<name>` (e.g. `survey:api-core`,
+`write:overview.md`). For each task:
 
-```text
-uv run <skill>/scripts/okf.py task start <phase>:<name> --json
-# dispatch one worker with the returned packet
-uv run <skill>/scripts/okf.py task complete <phase>:<name>
-```
+    okf task start <phase>:<name> --json    # returns a dispatch packet
+    # dispatch ONE worker session with the packet (paths, never pasted content)
+    okf task complete <phase>:<name>        # validates the artifact; advances on success
 
-Completion validates the artifact and advances only on success. Relay rejected
-issues to the same worker as a repair task. Artifact content stays on disk.
+If completion is rejected, relay the issue list to the same worker as a
+repair task and complete again. Never mark work done yourself — the gate is
+the only authority.
 
-The plan phase assigns every finding once and enables page reuse. Page count
-follows the Grep Test, not a fixed quota. Reuse requires an identical plan,
-unchanged cited Git blobs and an unexpired `stale_after`.
+## Coordinator and workers
 
-## Review and publish
+The coordinator (this session) must stay small enough to steer a long run,
+so it never reads source files, drafts, candidate pages or Wiki bodies. It
+consumes only: `run status --json`, `task start` dispatch packets, worker
+handoffs, and validator issue lists. Every content task — including inspect —
+runs in a worker session. If workers are unavailable, stop the run and say
+so; the coordinator taking over content work defeats the design.
 
-Start review, dispatch its packet to a fresh worker session, then submit the
-worker's report:
+What goes where:
 
-```text
-uv run <skill>/scripts/okf.py review start --actor repo-wiki/<reviewer> --session <new-session>
-uv run <skill>/scripts/okf.py review submit --report <review.json>
-uv run <skill>/scripts/okf.py publication publish
-uv run <skill>/scripts/okf.py publication export --to wiki
-```
+- **Long-form content** (concept pages, proposals): the worker writes
+  Markdown directly to the packet's `artifact` path. It never travels
+  through JSON or chat.
+- **Structured decisions** (inspect, survey, synthesize, plan, review): small
+  JSON artifacts at the `artifact` path, shaped per the phase reference and
+  hard-capped by the gate (e.g. 16 findings, 24 KiB per survey) so no single
+  file outgrows what a model can produce reliably.
+- **Worker → coordinator handoff**: at most 10 lines / 2 KiB — the artifact
+  path, item ids when the reference asks for them, and a gap count. Never
+  artifact bodies.
 
-`publish` installs an immutable generation and atomically replaces the small
-`current.json` pointer. `wiki/` is an explicit, recoverable export for Git; it
-is not the live publication boundary. Use `publication rollback` to switch to
-the previous generation.
+Each phase reference (`references/<phase>.md`, named in the dispatch packet)
+tells the worker what to read, do, write and return. Read it before working.
 
-The review stamp is `machine-confirmed`. After explicit human inspection,
-upgrade selected pages in a new generation:
+The plan phase assigns every finding exactly once; page count follows the
+Grep Test (see `references/contract.md`), not a quota. Unchanged pages from
+the previous publication are reused automatically when their plan entry,
+cited Git blobs and `stale_after` all still hold.
 
-```text
-uv run <skill>/scripts/okf.py verify --actor human:<identity> --page overview.md
-```
+## Review, publish, verify
 
-Reserved `index.md` and `log.md` are generated only by publish. Never author
-them in Candidate.
+Review runs in a fresh session, never the producer's:
+
+    okf review start --actor repo-wiki/<reviewer> --session <new-session> --json
+    # dispatch the review packet to a fresh worker; it writes report.json
+    okf review submit --report <packet report path>
+
+Approval stamps pages `machine-confirmed`. Then:
+
+    okf publication publish            # immutable generation + atomic pointer switch
+    okf publication export --to wiki   # optional Git-managed copy
+    okf publication rollback           # switch back to the previous generation
+
+Reserved `index.md` and `log.md` are generated by publish — never author them.
+After a human actually inspects pages, record it as a new generation:
+
+    okf publication verify --actor human:<identity> --page overview.md

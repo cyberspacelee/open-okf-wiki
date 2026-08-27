@@ -59,9 +59,9 @@ Test rather than file or directory coverage.
 _Avoid_: Source mirror, API reference
 
 **Locator**:
-A claim anchor to Revision or Catalog evidence. Git concepts use
-'okf-source://source/commit/path#Lx-Ly'.
-_Avoid_: Live path
+A claim anchor to Revision or Catalog evidence: a plain source-relative path
+with an optional line range, e.g. 'src/service/UserService.java#L42-L68'.
+_Avoid_: Live path, custom URI scheme
 
 **Page Plan**:
 The complete mapping from findings and connections to portable concept paths,

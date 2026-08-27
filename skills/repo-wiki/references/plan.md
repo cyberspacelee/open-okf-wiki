@@ -35,3 +35,5 @@ Write drafts/plan.json:
 
 Paths are lowercase portable bundle-relative Markdown paths. Include required
 database pages from contract.md. Do not add tag indexes or speculative pages.
+
+Handoff: artifact path, page count, exclusion count.

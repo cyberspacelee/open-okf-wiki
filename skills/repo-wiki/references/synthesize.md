@@ -1,10 +1,11 @@
 # Synthesize
 
-Run only after every survey completes and only for multiple Git sources. Read
-all survey JSON and reopen evidence in the Source roots. Confirm each
-connection from both ends.
+Run only after every survey completes, and only for multiple Git sources.
+Read all survey JSON from the dispatch inputs, then reopen the evidence in
+the Source roots — confirm each connection from both ends. Never add a
+connection with only one evidenced end.
 
-Write drafts/synthesize.json:
+Write the artifact as JSON:
 
     {
       "connections": [{
@@ -19,4 +20,4 @@ Write drafts/synthesize.json:
       "gaps": []
     }
 
-Do not add a connection with only one evidenced end.
+Handoff: artifact path, connection ids, gap count.

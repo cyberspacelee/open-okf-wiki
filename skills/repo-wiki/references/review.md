@@ -1,14 +1,15 @@
 # Review
 
-Review runs in a session distinct from the producer. Start review to receive
-a packet bound to the exact candidate digest. Read contract.md, candidate
-pages and revision-bound evidence; do not use writer conversation history.
+Review runs in a session distinct from the producer. The review packet binds
+the exact candidate digest. Read contract.md, the candidate pages and the
+revision-bound evidence; never use writer conversation history. Reopen the
+evidence behind every decision-changing claim.
 
-Judge Grep Test violations, unsupported claims, invented rationale, padded
+Judge: Grep Test violations, unsupported claims, invented rationale, padded
 gaps, ownership bleed, missing connection links, routing overlap, coverage
-and output language. Reopen evidence behind every decision-changing claim.
+honesty, output language.
 
-Submit JSON:
+Write the report to the packet's `report` path:
 
     {
       "candidate_digest": "<packet digest>",
@@ -22,6 +23,8 @@ Submit JSON:
       }]
     }
 
-Use reopen plan when ownership, routing or page boundaries must change.
-Approved reports have an empty issues list. Approval adds a
-machine-confirmed verification stamp; it is not human review.
+Use `"reopen": "plan"` when ownership, routing or page boundaries must
+change. An approved report has verdict `approved` and an empty issues list;
+approval stamps machine-confirmed verification — it is not human review.
+
+Handoff: report path, verdict, issue count.

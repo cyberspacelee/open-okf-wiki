@@ -13,3 +13,5 @@ Optional context-draft.md records source-specific terms and synonym clusters,
 all pending human ratification. Optional ADR stubs state an evidenced
 Decision; Context and Rationale remain human-owned. No qualifying content
 means no optional file.
+
+Handoff: proposals directory path and file count.
