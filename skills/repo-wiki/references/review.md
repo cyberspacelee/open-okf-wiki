@@ -9,7 +9,8 @@ Judge: Grep Test violations, unsupported claims, invented rationale, padded
 gaps, ownership bleed, missing connection links, routing overlap, coverage
 honesty, output language.
 
-Write the report to the packet's `report` path:
+Write the report yourself to the packet's `report` path — never return its
+content in your reply:
 
     {
       "candidate_digest": "<packet digest>",

@@ -1,7 +1,8 @@
 # Derive
 
-Write proposals only to the target run proposals directory. Never edit a
-source repository.
+Write proposal files yourself, only under the run proposals directory —
+never return their content in your reply, and never edit a source
+repository.
 
 For each Git source create agents-block-source.md with one complete managed
 block and at most 15 nonempty inner lines. Include conditional Wiki pointers.

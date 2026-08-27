@@ -5,7 +5,8 @@ Read all survey JSON from the dispatch inputs, then reopen the evidence in
 the Source roots — confirm each connection from both ends. Never add a
 connection with only one evidenced end.
 
-Write the artifact as JSON:
+Write the artifact yourself to the packet's `artifact` path — never return
+its content in your reply:
 
     {
       "connections": [{

@@ -1,9 +1,10 @@
 # Write
 
-Author exactly the page named by the write target. Read contract.md, the
-page's plan entry, its assigned findings or connections, the matching
-template in assets/templates/, and the revision-bound evidence itself —
-reopen every locator you cite.
+Author exactly the page named by the write target, writing the Markdown
+yourself to the packet's `artifact` path — never return page content in your
+reply. Read contract.md, the page's plan entry, its assigned findings or
+connections, the matching template in assets/templates/, and the
+revision-bound evidence itself — reopen every locator you cite.
 
 Start frontmatter like:
 

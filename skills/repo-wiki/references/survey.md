@@ -6,7 +6,8 @@ from build manifests and the README title block first, then map capability
 boundaries from entry points, enforced rules, lifecycle, failure paths and
 focused tests. Package layout alone is not a domain.
 
-Write the artifact as JSON:
+Write the artifact yourself to the packet's `artifact` path — never return
+its content in your reply:
 
     {
       "source": "api",

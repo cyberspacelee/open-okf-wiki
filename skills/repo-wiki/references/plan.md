@@ -5,7 +5,8 @@ finding is assigned once or explicitly excluded; every connection is
 assigned. Use one source owner for source pages and workspace for root
 composition.
 
-Write drafts/plan.json:
+Write the artifact yourself to the packet's `artifact` path — never return
+its content in your reply:
 
     {
       "pages": [{

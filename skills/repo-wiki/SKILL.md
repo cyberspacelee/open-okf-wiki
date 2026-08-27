@@ -64,7 +64,9 @@ Git source with a CLI-computed scope — there is no separate inspect step.
 
 If completion is rejected, relay the issue list to the same worker as a
 repair task and complete again. Never mark work done yourself — the gate is
-the only authority.
+the only authority. If a worker returns artifact content instead of writing
+the file, treat the task as failed and redispatch; the coordinator never
+writes an artifact on a worker's behalf.
 
 ## Coordinator and workers
 
