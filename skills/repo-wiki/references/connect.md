@@ -7,8 +7,9 @@ rejects edges declared by any other participant, so every edge has exactly
 one home. For edges owned by another source, verify nothing and declare
 nothing. Connection ids must be globally unique ASCII slugs.
 
-Read survey JSON from the dispatch inputs, then reopen the evidence in the
-Pin roots from the packet. Never add a connection with only one evidenced
+Read survey JSON and the matching Evidence Caches from the dispatch inputs,
+then reopen Pin files only when a cached window is not enough to evidence
+both participants. Never add a connection with only one evidenced
 participant. Write `contract` and `failure_propagation` in the packet's
 `language`.
 

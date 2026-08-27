@@ -43,6 +43,26 @@ def complete(
     assert result["ok"], result
 
 
+def complete_triage(root: pathlib.Path) -> pathlib.Path:
+    state = _state.read(root)
+    run = _state.run_dir(root, state["run_id"])
+    for revision in state["revisions"]:
+        source = revision["name"]
+        slug = source.lower()
+        complete(
+            root,
+            f"triage:{slug}",
+            run / f"drafts/triage/{slug}.json",
+            json.dumps(
+                {
+                    "source": source,
+                    "scopes": [{"paths": ["."], "tier": "deep"}],
+                }
+            ),
+        )
+    return run
+
+
 def concept(title: str, link: str = "") -> str:
     return f"""---
 type: Overview
@@ -72,6 +92,7 @@ def test_full_lifecycle_publish_export_verify_and_incremental_reuse(tmp_path):
     _state.start_run(root, "repo-wiki/test", "writer-1")
     state = _state.read(root)
     run = _state.run_dir(root, state["run_id"])
+    complete_triage(root)
     survey = json.dumps(
         {
             "source": "src",
@@ -187,6 +208,10 @@ def test_full_lifecycle_publish_export_verify_and_incremental_reuse(tmp_path):
 
     second = _state.start_run(root, "repo-wiki/test", "writer-3")
     assert second["status"] == "awaiting_review"
+    second_state = _state.read(root)
+    second_run = _state.run_dir(root, second_state["run_id"])
+    cache = json.loads((second_run / "drafts/evidence/src.json").read_text())
+    assert cache["pin"] == second_state["revisions"][0]["commit"]
 
 
 def test_dirty_source_and_windows_incompatible_paths_are_rejected(tmp_path):
@@ -278,7 +303,8 @@ def test_status_is_compact_and_source_drift_blocks_task_start(tmp_path):
         "next_actions",
         "run_dir",
     }
-    assert status["tasks"] == [{"id": "survey:sourcea", "status": "pending"}]
+    assert status["tasks"] == [{"id": "triage:sourcea", "status": "pending"}]
+    complete_triage(root)
 
     write(source / "app.py", "def answer():\n    return 43\n")
     subprocess.run(["git", "-C", str(source), "add", "app.py"], check=True)
@@ -294,6 +320,7 @@ def test_task_start_returns_path_only_worker_dispatch(tmp_path):
     _workspace.init(root)
     _workspace.add_git_link(root, str(source), "SourceA")
     _state.start_run(root, "repo-wiki/test", "writer")
+    complete_triage(root)
 
     packet = _state.task_start(root, "survey:sourcea")
     assert set(packet) == {
@@ -304,6 +331,7 @@ def test_task_start_returns_path_only_worker_dispatch(tmp_path):
         "artifact",
         "sources",
         "inputs",
+        "index",
         "complete_command",
         "workdir",
     }
@@ -311,13 +339,22 @@ def test_task_start_returns_path_only_worker_dispatch(tmp_path):
     assert packet["task"] == {
         "id": "survey:sourcea",
         "phase": "survey",
-        "spec": {"source": "SourceA", "scope": ["app.py"]},
+        "spec": {
+            "source": "SourceA",
+            "scope": ["."],
+            "tier": "deep",
+            "orientation": None,
+            "themes": [],
+        },
     }
     assert pathlib.Path(packet["reference"]).name == "survey.md"
     assert pathlib.Path(packet["artifact"]).name == "sourcea.json"
     pin = root / ".okf-wiki" / "pins" / packet["run_id"] / "SourceA"
     assert packet["sources"] == {"SourceA": str(pin)}
     assert packet["inputs"] == []
+    assert packet["index"] == [
+        str(pathlib.Path(packet["artifact"]).parents[1] / "index/sourcea.json")
+    ]
     assert packet["complete_command"].endswith("task complete survey:sourcea --json")
     assert packet["workdir"] == str(root)
 
@@ -331,6 +368,7 @@ def test_parallel_task_starts_do_not_lose_state(tmp_path, monkeypatch):
     for name in ("SourceA", "SourceB"):
         _workspace.add_git_link(root, str(root / name), name)
     _state.start_run(root, "repo-wiki/test", "writer")
+    complete_triage(root)
 
     original = _state.atomic_json
     write_count = 0
@@ -372,6 +410,7 @@ def test_survey_artifact_byte_budget_is_enforced(tmp_path):
     _workspace.init(root)
     _workspace.add_git_link(root, str(source), "SourceA")
     _state.start_run(root, "repo-wiki/test", "writer")
+    complete_triage(root)
     state = _state.read(root)
     run = _state.run_dir(root, state["run_id"])
     _state.task_start(root, "survey:sourcea")
@@ -404,16 +443,35 @@ def test_files_source_and_refresh_keep_the_run_alive(tmp_path):
     _workspace.add_git_link(root, str(source), "SourceA")
     _workspace.add_files_source(root, str(contracts), "contracts")
     first = _state.start_run(root, "repo-wiki/test", "writer")
+    complete_triage(root)
     write(source / "app.py", "def answer():\n    return 43\n")
     subprocess.run(["git", "-C", str(source), "add", "app.py"], check=True)
     subprocess.run(["git", "-C", str(source), "commit", "-qm", "move"], check=True)
     _state.task_start(root, "survey:sourcea")
     refreshed = _state.refresh_source(root, "SourceA")
     assert refreshed["status"] == "active"
-    assert any(
-        item["id"].startswith("survey:sourcea") and item["status"] == "pending"
-        for item in refreshed["tasks"]
+    assert {item["id"]: item["status"] for item in refreshed["tasks"]} == {
+        "triage:sourcea": "pending",
+        "triage:contracts": "complete",
+    }
+    state = _state.read(root)
+    run = _state.run_dir(root, state["run_id"])
+    complete(
+        root,
+        "triage:sourcea",
+        run / "drafts/triage/sourcea.json",
+        json.dumps(
+            {
+                "source": "SourceA",
+                "scopes": [{"paths": ["."], "tier": "deep"}],
+            }
+        ),
     )
+    assert {item["id"] for item in _state.status(root)["tasks"]} == {
+        "survey:sourcea",
+        "survey:contracts",
+    }
+    _state.task_start(root, "survey:sourcea")
 
 
 def test_opengauss_catalog_is_slim_in_state_and_sharded_for_workers(

@@ -5,8 +5,8 @@ Git/files Source exists), not a single `synthesize:workspace` worker.
 Connection is multi-participant with optional contract locators on a files
 Source. Plan is sharded: `plan:<source>` plus `plan:workspace`. A CLI Compose
 Gate unions shards, enforces global finding/connection coverage and spawns
-writes. The kernel has no intra-phase dependencies, so connect completes
-before any plan shard is dispatched.
+one write Target per planned page (ADR 0014). The kernel has no intra-phase
+dependencies, so connect completes before any plan shard is dispatched.
 
 Considered: merging connections into one `plan:wiki` worker; considered
 running connect in parallel with `plan:<source>` and letting the CLI assign

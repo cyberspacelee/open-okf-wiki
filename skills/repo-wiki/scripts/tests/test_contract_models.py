@@ -1,5 +1,5 @@
 import pytest
-from _models import Connect, Connection, PagePlan, Survey
+from _models import Connect, Connection, PagePlan, Survey, Triage
 from pydantic import ValidationError
 
 
@@ -10,6 +10,33 @@ def finding(index: int) -> dict:
         "evidence": ["SourceA/app.py#L1-L2"],
         "domain": "core",
     }
+
+
+def test_triage_is_one_source_and_rejects_the_old_workspace_shape():
+    triage = Triage.model_validate(
+        {
+            "source": "SourceA",
+            "scopes": [
+                {
+                    "paths": ["src"],
+                    "tier": "inventory",
+                    "reason": "passive records",
+                    "samples": ["SourceA/src/a.py#L1"],
+                }
+            ],
+        }
+    )
+    assert triage.source == "SourceA"
+    with pytest.raises(ValidationError):
+        Triage.model_validate(
+            {
+                "source": "SourceA",
+                "scopes": [
+                    {"source": "SourceA", "paths": ["src"], "tier": "deep"}
+                ],
+                "exclude": [],
+            }
+        )
 
 
 def test_survey_allows_thirty_two_findings_and_eight_locators():

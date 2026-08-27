@@ -12,7 +12,7 @@ Decisions: `docs/adr/`. To *run* the generator, read
 ```text
 skills/repo-wiki/SKILL.md              # the skill's SOP (runtime, not dev docs)
 skills/repo-wiki/references/           # writing contract + per-phase worker instructions
-skills/repo-wiki/scripts/okf.py        # CLI entry; _state/_validate/_publish/_workspace/_db
+skills/repo-wiki/scripts/okf.py        # CLI entry; _state/_validate/_publish/_workspace/_db/_index
 skills/repo-wiki/scripts/tests/        # pytest suite for the deterministic kernel
 skills/repo-wiki/assets/templates/     # page skeletons copied into output
 skills/repo-wiki/evals/                # tier-1 deterministic e2e + tier-2 live-eval driver

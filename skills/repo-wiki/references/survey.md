@@ -1,13 +1,11 @@
 # Survey
 
 Read contract.md, the target scope and its Source root from the dispatch
-packet. The scope lists this task's directories or files, relative to the
-Source root — survey only what the scope names. Orient from build manifests
-and the README title block first, then map capability boundaries from entry
-points, enforced rules, lifecycle, failure paths and focused tests. Package
-layout alone is not a domain.
+packet. The packet already carries triage `orientation` / `themes` and the
+matching `drafts/index/<source>.json` file — orient from those, then read
+only the named scope. Package layout alone is not a domain.
 
-Write the artifact yourself to the packet's `artifact` path — never return
+Write exactly one survey JSON to the packet's `artifact` path — never return
 its content in your reply:
 
     {
@@ -22,16 +20,17 @@ its content in your reply:
       "gaps": ["optional explicit gap"]
     }
 
-`target` is the task name from the dispatch packet. Write claims, domains
-and gaps in the packet's `language`; ids stay ASCII slugs. Evidence uses
-plain locators (`source/path`, optional `#Lx-Ly`); every range must exist at
-the run's recorded revision. The gate enforces at most 32 findings, 8
-locators per finding, 16 gaps and a byte budget — prioritize Grep-Test
-knowledge and record omitted scope as a gap rather than padding. The Wiki
-carries architecture-level knowledge; class-level inventory belongs to
-search, not findings. Large sources are pre-split into scope-sized survey
-tasks; if a scope is still too dense, record the compression as a gap so a
-maintainer can steer the split via `survey.split` in workspace.json.
+`target` is the task name from the dispatch packet. Write claims,
+domains and gaps in the packet's `language`; ids stay ASCII slugs.
+Evidence uses plain locators (`source/path`, optional `#Lx-Ly`); every
+range must exist at the run's recorded revision. Write no excerpt or evidence
+pack: after the gate validates the locators, the kernel derives the Evidence
+Cache from the Pin.
+
+The gate enforces at most 32 findings, 8 locators per finding, 16 gaps and
+a byte budget — prioritize Grep-Test knowledge and record omitted scope
+as a gap rather than padding. Class-level inventory belongs to search,
+not findings.
 
 Then run the packet's `complete_command` from its `workdir`. If the gate
 rejects the artifact, fix it and complete again until it passes.

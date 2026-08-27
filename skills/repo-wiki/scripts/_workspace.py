@@ -182,6 +182,16 @@ def load(root: pathlib.Path) -> Workspace:
                 raise WorkspaceError(
                     f"survey.{key} for source '{name}' must list relative directories"
                 )
+        splits = tuple(item.strip("/") for item in survey.get("split", []))
+        excludes = tuple(item.strip("/") for item in survey.get("exclude", []))
+        if any(
+            split == excluded or split.startswith(excluded + "/")
+            for split in splits
+            for excluded in excludes
+        ):
+            raise WorkspaceError(
+                f"survey.split for source '{name}' cannot be inside survey.exclude"
+            )
         sources[name] = Source(
             name=name,
             kind=kind,
@@ -192,8 +202,8 @@ def load(root: pathlib.Path) -> Workspace:
             url_env=entry.get("url_env"),
             schema=entry.get("schema"),
             tables=tuple(tables),
-            survey_split=tuple(survey.get("split", [])),
-            survey_exclude=tuple(survey.get("exclude", [])),
+            survey_split=splits,
+            survey_exclude=excludes,
         )
     return Workspace(
         root=root,
@@ -555,10 +565,12 @@ def tracked_files(source: Source, commit: str | None) -> list[str]:
         if result.returncode:
             return []
         return sorted(item for item in result.stdout.split("\0") if item)
+    return tree_files(source.path)
+
+
+def tree_files(path: pathlib.Path) -> list[str]:
     return sorted(
-        item.relative_to(source.path).as_posix()
-        for item in source.path.rglob("*")
-        if item.is_file()
+        item.relative_to(path).as_posix() for item in path.rglob("*") if item.is_file()
     )
 
 

@@ -93,6 +93,25 @@ def evaluate(base: pathlib.Path) -> dict:
         json_output=True,
     )
     run_dir = pathlib.Path(status["run_dir"])
+    for slug, name in source_names.items():
+        complete(
+            ws,
+            f"triage:{slug}",
+            run_dir / f"drafts/triage/{slug}.json",
+            json.dumps(
+                {
+                    "source": name,
+                    "scopes": [
+                        {
+                            "paths": ["."],
+                            "tier": "deep",
+                            "orientation": f"{name} entry",
+                            "themes": ["core"],
+                        }
+                    ],
+                }
+            ),
+        )
 
     for slug, name in source_names.items():
         complete(
@@ -249,6 +268,12 @@ def evaluate(base: pathlib.Path) -> dict:
     }
     for relative, content in pages.items():
         complete(ws, f"write:{relative}", run_dir / "candidate" / relative, content)
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    write_tasks = [task for task in state["tasks"].values() if task["phase"] == "write"]
+    if len(write_tasks) != len(pages) or any("pages" in task["spec"] for task in write_tasks):
+        raise RuntimeError("write targets must map one-to-one to planned pages")
+    if not all((run_dir / f"drafts/evidence/{slug}.json").is_file() for slug in source_names):
+        raise RuntimeError("survey completion did not materialize evidence caches")
     packet = run(
         ws,
         "review",
@@ -306,6 +331,12 @@ def evaluate(base: pathlib.Path) -> dict:
     )
     if second["status"] != "awaiting_review":
         raise RuntimeError(f"incremental reuse stopped at {second['status']}")
+    second_run = pathlib.Path(second["run_dir"])
+    if not all(
+        (second_run / f"drafts/evidence/{slug}.json").is_file()
+        for slug in source_names
+    ):
+        raise RuntimeError("incremental survey reuse did not rebuild evidence caches")
     return {
         "workspace": str(ws),
         "published_generation": published["generation"],

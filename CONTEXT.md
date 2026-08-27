@@ -114,6 +114,26 @@ phase and does not block publication.
 _Avoid_: Applied change, derive phase
 
 **Refresh**:
-Replace one Source's Pin and recorded Revision, invalidating only that
-Source's survey, connect, plan shard and dependent pages.
+Replace one Source's Pin and recorded Revision, rebuild its Index and Triage,
+then rebuild all downstream derived phases.
 _Avoid_: abandon the Run, follow branch
+
+**Index**:
+A bounded CLI-authored structural summary of one Pin, consumed by its Triage
+Target. It contains no semantic importance score.
+_Avoid_: repo map, semantic index
+
+**Triage**:
+One Source-owned Target that assigns every eligible file exactly once to a
+`deep`, `standard` or `inventory` scope.
+_Avoid_: workspace triage, survey split
+
+**Coverage Ledger**:
+The inventory scopes retained in Triage as proof of structural coverage;
+they create neither Findings nor survey Targets.
+_Avoid_: inventory Finding, source mirror
+
+**Evidence Cache**:
+A disposable Pin-bound JSON projection of validated Finding locators and
+source windows, derived by the kernel after Survey completion.
+_Avoid_: Evidence pack, canonical artifact

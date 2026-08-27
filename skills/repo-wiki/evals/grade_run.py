@@ -43,6 +43,55 @@ def grade(ws: pathlib.Path) -> list[dict]:
         state["status"] == "published" and not incomplete,
         f"status={state['status']}, incomplete={incomplete[:5]}",
     )
+    revision_names = {item["name"] for item in state["revisions"]}
+    triage = [
+        task for task in state["tasks"].values() if task["phase"] == "triage"
+    ]
+    indexes = sorted((run_dir / "drafts/index").glob("*.json"))
+    check(
+        "each revision has one bounded index and triage target",
+        {task["spec"]["source"] for task in triage} == revision_names
+        and len(indexes) == len(revision_names)
+        and all(path.stat().st_size <= 64 * 1024 for path in indexes),
+        f"revisions={len(revision_names)}, indexes={len(indexes)}, triage={len(triage)}",
+    )
+    survey = [
+        task for task in state["tasks"].values() if task["phase"] == "survey"
+    ]
+    evidence_ok = True
+    for task in survey:
+        cache_path = run_dir / "drafts/evidence" / f"{task['name']}.json"
+        if not cache_path.is_file():
+            evidence_ok = False
+            break
+        cache = load(cache_path)
+        revision = next(
+            item for item in state["revisions"] if item["name"] == task["spec"]["source"]
+        )
+        evidence_ok = evidence_ok and (
+            task["spec"].get("tier") in {"standard", "deep"}
+            and cache.get("target") == task["name"]
+            and cache.get("pin") == revision.get("commit", revision.get("content_hash"))
+            and cache.get("window") == {"version": 1, "lines": 20}
+        )
+    check(
+        "survey evidence caches are kernel-derived and Pin-bound",
+        evidence_ok,
+        f"survey={len(survey)}",
+    )
+    writes = [
+        task for task in state["tasks"].values() if task["phase"] == "write"
+    ]
+    check(
+        "write targets map one-to-one to canonical page artifacts",
+        len(writes) == len(manifest.get("pages", {}))
+        and all(
+            "pages" not in task["spec"]
+            and task["artifact"] == f"candidate/{task['name']}"
+            for task in writes
+        ),
+        f"writes={len(writes)}, manifest_pages={len(manifest.get('pages', {}))}",
+    )
     attempts = state.get("review_attempts", [])
     check(
         "independent approved review recorded",

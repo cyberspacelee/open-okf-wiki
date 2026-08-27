@@ -53,21 +53,24 @@ state or citations.
 
 `run start` records each Git Source's HEAD and materializes a Pin under
 `.okf-wiki/pins/<run>/<name>`. Workers read the Pin. The live tree may
-receive new commits; `source refresh --name` updates one Pin and invalidates
-only that Source's tasks. Submodules are rejected. Citations resolve from
-the recorded commit.
+receive new commits; `source refresh --name` updates one Pin, rebuilds that
+Source's Index and Triage, then rebuilds all downstream derived phases.
+Submodules are rejected. Citations resolve from the recorded commit.
 
 ## The task loop
 
-A run is a fixed phase sequence: survey → connect (multi Git/files only) →
-plan shards → write → review batches → publish. `run start` creates survey
-tasks per Git/files source, recursively split into scope-sized tasks when a
-source is large; a `survey` block on a source entry in workspace.json
-(`"survey": {"split": ["src/core"], "exclude": ["vendor"]}`) forces or
-prunes scopes for the next run. Propose is an optional post-publish
-command, not a phase.
+A run is a fixed phase sequence: index (CLI) → triage → survey →
+connect (multi Git/files only) → plan shards → write → review
+batches → publish. `run start` writes a structural index per Git/files
+source, then one `triage:<source>` Target per source. Triage assigns exact,
+non-overlapping coverage: `inventory` stays in the Coverage Ledger while
+`standard` and `deep` each become one survey Target. A `survey` block on a
+source entry in workspace.json (`"survey": {"split": ["src/core"],
+"exclude": ["vendor"]}`) is the only exclusion policy; split paths must be
+independent scopes and cannot be inside an excluded path. Propose is an
+optional post-publish command, not a phase.
 `run status` lists the current phase's tasks; task ids are `<phase>:<name>`
-(e.g. `survey:api`, `write:overview.md`). For each task:
+(e.g. `triage:api`, `survey:api`, `write:overview.md`). For each task:
 
     okf task start <phase>:<name> --json    # returns a dispatch packet
     # dispatch ONE worker session with the packet (paths, never pasted content)
@@ -81,6 +84,12 @@ The coordinator never validates artifacts, never edits artifact JSON, and
 never runs `task complete` on a worker's behalf — its job is dispatching
 tasks and reacting to `run status`. If a worker returns artifact content
 instead of writing the file, treat the task as failed and redispatch.
+
+Targets never batch: each has one canonical artifact and completes
+independently. To amortize startup cost, the coordinator may reuse one worker
+session for a short sequence of same-source standard survey Targets or
+same-owner write Targets, starting and completing each packet in order. This
+session affinity is not persisted in Run state.
 
 ## Coordinator and workers
 
@@ -96,10 +105,13 @@ What goes where:
 - **Long-form content** (concept pages, proposals): the worker writes
   Markdown directly to the packet's `artifact` path. It never travels
   through JSON or chat.
-- **Structured decisions** (survey, connect, plan, review): small
+- **Structured decisions** (triage, survey, connect, plan, review): small
   JSON artifacts at the `artifact` path, shaped per the phase reference and
   hard-capped by the gate (e.g. 32 findings, 64 KiB per survey) so no single
-  file outgrows what a model can produce reliably.
+  file outgrows what a model can produce reliably. After survey passes, the
+  kernel derives a Pin-bound Evidence Cache under `drafts/evidence/`;
+  downstream workers may consume it, and the kernel may rebuild it at any
+  time.
 - **Worker → coordinator handoff**: at most 10 lines / 2 KiB — the artifact
   path, the gate verdict from `complete_command`, item ids when the
   reference asks for them, and a gap count. Never artifact bodies.

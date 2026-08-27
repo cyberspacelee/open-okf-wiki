@@ -78,6 +78,24 @@ class Finding(BaseModel):
     domain: ShortId
 
 
+class TriageScope(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    paths: list[NonEmpty] = Field(min_length=1, max_length=64)
+    tier: Literal["deep", "standard", "inventory"]
+    orientation: ClaimText | None = None
+    themes: list[ShortId] = Field(default_factory=list, max_length=8)
+    reason: ClaimText | None = None
+    samples: list[Locator] = Field(default_factory=list, max_length=3)
+
+
+class Triage(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    source: NonEmpty
+    scopes: list[TriageScope] = Field(max_length=256)
+
+
 class Survey(BaseModel):
     source: NonEmpty
     target: NonEmpty

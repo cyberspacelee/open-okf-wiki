@@ -14,7 +14,7 @@ from _models import PagePlan, ReviewReport, model_errors
 from pydantic import ValidationError
 
 VERSION = 1
-PHASES = ["survey", "connect", "plan", "write", "review"]
+PHASES = ["triage", "survey", "connect", "plan", "write", "review"]
 LOCK_TIMEOUT_SEC = 60
 
 
@@ -224,117 +224,82 @@ def start_run(root: pathlib.Path, producer: str, session: str) -> dict:
     if previous_run_id and (run_dir(root, previous_run_id) / "state.json").is_file():
         state["previous_run_id"] = previous_run_id
     base = run_dir(root, run_id)
-    for path in (base / "drafts", base / "candidate", base / "proposals"):
+    for path in (
+        base / "drafts",
+        base / "candidate",
+        base / "proposals",
+        base / "drafts" / "index",
+        base / "drafts" / "triage",
+        base / "drafts" / "evidence",
+        base / "drafts" / "survey",
+    ):
         path.mkdir(parents=True, exist_ok=True)
+    import _index
+
     for revision in revisions:
         source = workspace.sources[revision["name"]]
-        for name, scope in _survey_scopes(root, source, revision):
-            _add_task(
-                state,
-                _task(
-                    "survey",
-                    name,
-                    f"drafts/survey/{name}.json",
-                    source=revision["name"],
-                    scope=scope,
-                ),
-            )
-            _reuse_task(root, state, state["tasks"][f"survey:{name}"])
-    if not state["tasks"]:
+        _index.write_source_index(root, run_id, source, revision)
+    for revision in revisions:
+        slug = _slug(revision["name"])
+        task = _task(
+            "triage",
+            slug,
+            f"drafts/triage/{slug}.json",
+            source=revision["name"],
+        )
+        _add_task(state, task)
+        _reuse_task(root, state, task)
+    if not revisions:
         _add_plan_shards(root, state)
         if _phase_complete(state, "plan"):
             _advance(root, state, "plan")
-    elif _phase_complete(state, "survey"):
-        _advance(root, state, "survey")
+    elif _phase_complete(state, "triage"):
+        _advance(root, state, "triage")
     _write(root, state)
     atomic_json(_pointer(root), {"version": VERSION, "run_id": run_id})
     return status(root)
 
 
-_SURVEY_SCOPE_BUDGET = 200
-
-
-def _survey_scopes(root: pathlib.Path, source, revision: dict) -> list[tuple[str, list[str]]]:
-    import _workspace
-
-    slug = _slug(source.name)
-    files = _workspace.tracked_files(source, revision.get("commit"))
-    exclude = [item.strip("/") for item in source.survey_exclude if item.strip("/")]
-    if exclude:
-        files = [
-            item
-            for item in files
-            if not any(item == entry or item.startswith(entry + "/") for entry in exclude)
-        ]
-    if not files:
-        return [(slug, ["."])]
-    forced = {item.strip("/") for item in source.survey_split if item.strip("/")}
-    scopes = _split_scope(slug, "", files, forced)
-    seen: dict[str, int] = {}
-    result = []
-    for name, scope in scopes:
-        count = seen.get(name, 0)
-        seen[name] = count + 1
-        result.append((f"{name}-{count + 1}" if count else name, scope))
-    return result
-
-
-def _split_scope(
-    name: str, prefix: str, files: list[str], forced: set[str]
-) -> list[tuple[str, list[str]]]:
-    """Partition a subtree into disjoint scopes within the file-count budget."""
-    forced_below = any(
-        item != prefix and (not prefix or item.startswith(prefix + "/"))
-        for item in forced
-    )
-    if len(files) <= _SURVEY_SCOPE_BUDGET and not forced_below:
-        if prefix:
-            return [(name, [prefix])]
-        return [(name, sorted({item.split("/", 1)[0] for item in files}))]
-    start = len(prefix) + 1 if prefix else 0
-    groups: dict[str, list[str]] = {}
-    loose: list[str] = []
-    for item in files:
-        head, sep, _ = item[start:].partition("/")
-        if sep:
-            groups.setdefault(head, []).append(item)
-        else:
-            loose.append(item)
-    result: list[tuple[str, list[str]]] = []
-    pending: list[tuple[str, list[str], int]] = []
-    for head in sorted(groups):
-        child_prefix = f"{prefix}/{head}" if prefix else head
-        child_forced = child_prefix in forced or any(
-            item.startswith(child_prefix + "/") for item in forced
-        )
-        if len(groups[head]) > _SURVEY_SCOPE_BUDGET or child_forced:
-            result.extend(
-                _split_scope(
-                    f"{name}/{_slug(head)}", child_prefix, groups[head], forced
-                )
-            )
-        else:
-            pending.append((head, [child_prefix], len(groups[head])))
-    for item in sorted(loose):
-        pending.append((item[start:], [item], 1))
-    packed: list[str] = []
-    packed_head: str | None = None
-    packed_count = 0
-    for head, paths, count in pending:
-        if packed and packed_count + count > _SURVEY_SCOPE_BUDGET:
-            result.append((f"{name}/{_slug(packed_head)}", packed))
-            packed, packed_head, packed_count = [], None, 0
-        if packed_head is None:
-            packed_head = head
-        packed.extend(paths)
-        packed_count += count
-    if packed:
-        result.append((f"{name}/{_slug(packed_head)}", packed))
-    return result
-
-
 def _connectable(state: dict) -> list[dict]:
     return [item for item in state["revisions"] if item.get("kind") in ("git", "files")]
+
+
+def _load_triage(root: pathlib.Path, state: dict):
+    from _models import Triage
+
+    base = run_dir(root, state["run_id"]) / "drafts" / "triage"
+    return [
+        Triage.model_validate_json(path.read_text(encoding="utf-8"), strict=True)
+        for path in sorted(base.glob("*.json"))
+    ]
+
+
+def _scope_name(source: str, paths: list[str]) -> str:
+    slug = _slug(source)
+    head = pathlib.PurePosixPath(paths[0]).as_posix().strip("/")
+    stem = f"{slug}/{_slug(head.replace('/', '-'))}" if head and head != "." else slug
+    digest = hashlib.sha256(
+        json.dumps(sorted(paths), separators=(",", ":")).encode()
+    ).hexdigest()[:8]
+    return slug if head in ("", ".") else f"{stem}-{digest}"
+
+
+def _add_survey_tasks(root: pathlib.Path, state: dict) -> None:
+    for triage in _load_triage(root, state):
+        for scope in triage.scopes:
+            if scope.tier == "inventory":
+                continue
+            name = _scope_name(triage.source, list(scope.paths))
+            spec = {
+                "source": triage.source,
+                "scope": list(scope.paths),
+                "tier": scope.tier,
+                "orientation": scope.orientation,
+                "themes": list(scope.themes),
+            }
+            task = _task("survey", name, f"drafts/survey/{name}.json", **spec)
+            _add_task(state, task)
+            _reuse_task(root, state, task)
 
 
 def _add_connect_tasks(root: pathlib.Path, state: dict) -> None:
@@ -510,17 +475,23 @@ def _page_catalog_hash(state: dict, page) -> str | None:
 
 
 def _dispatch(root: pathlib.Path, state: dict, task: dict) -> dict:
+    import _index
+
     base = run_dir(root, state["run_id"])
     phase = task["phase"]
+    selected = task["spec"].get("source")
     inputs: list[pathlib.Path] = []
-    if phase in ("connect", "plan", "write"):
+    if phase == "triage":
+        inputs.append(base / "drafts" / "index" / f"{selected.lower()}.json")
+    elif phase in ("connect", "plan", "write"):
+        evidence = _index.ensure_evidence_cache(root, state)
         inputs.extend(sorted((base / "drafts" / "survey").rglob("*.json")))
         inputs.extend(sorted((base / "drafts" / "connect").glob("*.json")))
+        inputs.extend(evidence)
         if phase == "write":
             inputs.extend(sorted((base / "drafts" / "plan").glob("*.json")))
     elif phase == "review":
         inputs.append(base / "candidate")
-    selected = task["spec"].get("source")
     okf = pathlib.Path(__file__).resolve().parent / "okf.py"
     reference = "review.md" if phase == "review" else f"{phase}.md"
     packet = {
@@ -531,11 +502,25 @@ def _dispatch(root: pathlib.Path, state: dict, task: dict) -> dict:
             pathlib.Path(__file__).resolve().parent.parent / "references" / reference
         ),
         "artifact": str(_artifact(root, state, task)),
-        "sources": _pin_sources(root, state, selected if phase == "survey" else None),
+        "sources": _pin_sources(
+            root,
+            state,
+            selected if phase in ("triage", "survey") and selected else None,
+        ),
         "inputs": [str(path) for path in inputs if path.exists()],
         "complete_command": f"uv run {okf} task complete {task['id']} --json",
         "workdir": str(root),
     }
+    if phase == "survey":
+        packet["index"] = [
+            str(path)
+            for path in sorted((base / "drafts" / "index").glob("*.json"))
+            if path.exists()
+            and (
+                selected is None
+                or path.stem == selected.lower()
+            )
+        ]
     catalogs = _catalog_paths(root, state, task)
     if catalogs:
         packet["catalogs"] = catalogs
@@ -585,6 +570,7 @@ def task_complete(root: pathlib.Path, task_id: str) -> dict:
         artifact = _artifact(root, state, task)
         rendered = _validate.render_generated_page(root, state, task, artifact)
         if rendered is not None:
+            artifact.parent.mkdir(parents=True, exist_ok=True)
             artifact.write_text(rendered, encoding="utf-8", newline="\n")
     issues = _validate.validate_task(root, state, task)
     errors = [issue for issue in issues if issue.severity == "error"]
@@ -592,6 +578,10 @@ def task_complete(root: pathlib.Path, task_id: str) -> dict:
         return {"ok": False, "issues": [issue.to_dict() for issue in errors]}
     if task["phase"] == "review":
         return _finish_review_batch(root, state, task)
+    if task["phase"] == "survey":
+        import _index
+
+        _index.materialize_survey(root, state, task)
     artifact = _artifact(root, state, task)
     task["status"] = "complete"
     task["completed_at"] = _now()
@@ -626,7 +616,11 @@ def _advance(root: pathlib.Path, state: dict, phase: str) -> None:
     if not _phase_complete(state, phase):
         return
     connectable = _connectable(state)
-    if phase == "survey":
+    if phase == "triage":
+        _add_survey_tasks(root, state)
+        if not any(task["phase"] == "survey" for task in state["tasks"].values()):
+            _add_plan_shards(root, state)
+    elif phase == "survey":
         if len(connectable) > 1:
             _add_connect_tasks(root, state)
         else:
@@ -638,6 +632,11 @@ def _advance(root: pathlib.Path, state: dict, phase: str) -> None:
     elif phase == "write":
         state["status"] = "awaiting_review"
     next_phase = {
+        "triage": (
+            "survey"
+            if any(task["phase"] == "survey" for task in state["tasks"].values())
+            else "plan"
+        ),
         "survey": "connect" if len(connectable) > 1 else "plan",
         "connect": "plan",
         "plan": "write",
@@ -788,8 +787,15 @@ def _reuse_task(root: pathlib.Path, state: dict, task: dict) -> None:
     old = previous.get("tasks", {}).get(task["id"])
     if not old or old.get("status") != "complete" or old.get("spec") != task["spec"]:
         return
-    if task["phase"] == "survey":
+    if task["phase"] == "triage":
         if not _source_unchanged(state, previous, task["spec"]["source"]):
+            return
+    elif task["phase"] == "survey":
+        source = task["spec"].get("source")
+        if source:
+            if not _source_unchanged(state, previous, source):
+                return
+        elif not _all_sources_unchanged(state, previous):
             return
     elif task["phase"] == "connect":
         if not _all_sources_unchanged(state, previous):
@@ -817,6 +823,10 @@ def _reuse_task(root: pathlib.Path, state: dict, task: dict) -> None:
             "artifact_digest": _file_digest(target_path),
         }
     )
+    if task["phase"] == "survey":
+        import _index
+
+        _index.materialize_survey(root, state, task)
 
 
 def _reuse_page(root: pathlib.Path, state: dict, task: dict) -> None:
@@ -1139,6 +1149,7 @@ def resume(root: pathlib.Path) -> dict:
 
 @_locked
 def refresh_source(root: pathlib.Path, name: str) -> dict:
+    import _index
     import _workspace
 
     state = _require_run(root, {"active", "paused", "awaiting_review", "reviewing"})
@@ -1155,6 +1166,7 @@ def refresh_source(root: pathlib.Path, name: str) -> dict:
     state["revisions"] = [
         record if item["name"] == name else item for item in state["revisions"]
     ]
+    _index.write_source_index(root, state["run_id"], source, record)
     _invalidate_source(root, state, name)
     if state["status"] in ("awaiting_review", "reviewing", "approved"):
         state["status"] = "active"
@@ -1164,24 +1176,26 @@ def refresh_source(root: pathlib.Path, name: str) -> dict:
 
 def _invalidate_source(root: pathlib.Path, state: dict, name: str) -> None:
     slug = _slug(name)
-    _remove_phases(state, {"review"})
+    _remove_phases(state, {"survey", "connect", "plan", "write", "review"})
     state.pop("review", None)
-    for task in state["tasks"].values():
-        depends = False
-        if task["phase"] == "survey" and task["spec"].get("source") == name:
-            depends = True
-        elif task["phase"] == "connect":
-            depends = True
-        elif task["phase"] == "plan" and task["spec"].get("source") in {name, None}:
-            depends = True
-        elif task["phase"] == "write" and task["spec"].get("owner") in {name, "workspace"}:
-            depends = True
-        if depends and task["status"] != "pending":
-            task["status"] = "pending"
-            task.pop("artifact_digest", None)
-            artifact = _artifact(root, state, task)
-            if artifact.is_file():
-                artifact.unlink()
+    task = state["tasks"][f"triage:{slug}"]
+    task["status"] = "pending"
+    task.pop("artifact_digest", None)
+    artifact = _artifact(root, state, task)
+    if artifact.is_file():
+        artifact.unlink()
+    base = run_dir(root, state["run_id"])
+    for relative in (
+        "drafts/survey",
+        "drafts/evidence",
+        "drafts/connect",
+        "drafts/plan",
+        "candidate",
+    ):
+        path = base / relative
+        if path.exists():
+            shutil.rmtree(path)
+        path.mkdir(parents=True)
 
 
 @_locked

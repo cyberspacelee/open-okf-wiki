@@ -266,9 +266,7 @@ def _page_manifest(root: pathlib.Path, candidate: pathlib.Path, state: dict) -> 
                     )
                 elif registered and registered.kind == "files":
                     content = _workspace.files_blob(registered, rel)
-                    blob = (
-                        hashlib.sha256(content).hexdigest() if content else None
-                    )
+                    blob = hashlib.sha256(content).hexdigest() if content else None
                 if blob:
                     source_blobs[f"{source_name}/{rel}"] = blob
         result[task["name"]] = {

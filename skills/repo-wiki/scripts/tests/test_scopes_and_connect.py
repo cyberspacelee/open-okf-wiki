@@ -1,8 +1,10 @@
+import hashlib
 import json
 import pathlib
 import subprocess
 
 import _publish
+import _index
 import _state
 import _validate
 import _workspace
@@ -28,6 +30,15 @@ def git_source(path: pathlib.Path, files: dict[str, str]) -> pathlib.Path:
     return path
 
 
+def complete(
+    root: pathlib.Path, task_id: str, artifact: pathlib.Path, text: str
+) -> None:
+    _state.task_start(root, task_id)
+    write(artifact, text)
+    result = _state.task_complete(root, task_id)
+    assert result["ok"], result
+
+
 def survey_tasks(root: pathlib.Path) -> dict[str, list[str]]:
     state = _state.read(root)
     return {
@@ -37,60 +48,301 @@ def survey_tasks(root: pathlib.Path) -> dict[str, list[str]]:
     }
 
 
-def test_small_source_yields_single_scope(tmp_path):
+def test_start_creates_one_triage_target_and_bounded_index_per_source(tmp_path):
     root = tmp_path / "workspace"
     root.mkdir()
     git_source(root / "src", {"app.py": "VALUE = 1\n", "lib/util.py": "VALUE = 2\n"})
     _workspace.init(root)
     _workspace.add_git_link(root, str(root / "src"), "src")
     _state.start_run(root, "repo-wiki/test", "writer")
-    tasks = survey_tasks(root)
-    assert tasks == {"src": ["app.py", "lib"]}
+    state = _state.read(root)
+    assert _state.status(root)["tasks"] == [
+        {"id": "triage:src", "status": "pending"}
+    ]
+    task = state["tasks"]["triage:src"]
+    assert task["artifact"] == "drafts/triage/src.json"
+    assert (_state.run_dir(root, state["run_id"]) / "drafts/triage").is_dir()
+    index = json.loads(
+        (_state.run_dir(root, state["run_id"]) / "drafts/index/src.json").read_text()
+    )
+    assert index["version"] == 1
+    assert index["source"] == "src"
+    assert index["file_count"] == 2
+    assert len(json.dumps(index).encode()) <= 64 * 1024
+    forbidden = {"churn", "authors", "gzip_ratio", "name_homogeneity"}
+    assert all(not (forbidden & set(item)) for item in index["directories"])
+    assert _index.is_protected("openapi.yaml")
 
 
-def test_oversized_directory_is_recursively_split(tmp_path):
+def test_forced_splits_cannot_exceed_index_budget(tmp_path):
+    splits = tuple(f"area-{index:04d}" for index in range(1000))
+    files = [f"{split}/value.py" for split in splits]
+    with pytest.raises(ValueError, match="survey.split"):
+        _index.build_index("src", tmp_path, files, splits)
+
+
+def test_triage_requires_exact_coverage_and_configured_split(tmp_path):
     root = tmp_path / "workspace"
     root.mkdir()
-    files = {"pom.xml": "<project/>\n"}
-    for module in ("orders", "billing"):
-        for index in range(150):
-            files[f"src/main/java/com/acme/{module}/C{index}.java"] = "class C {}\n"
-    git_source(root / "big", files)
+    git_source(
+        root / "src",
+        {"app.py": "VALUE = 1\n", "core/engine.py": "VALUE = 2\n"},
+    )
     _workspace.init(root)
-    _workspace.add_git_link(root, str(root / "big"), "big")
+    _workspace.add_git_link(root, str(root / "src"), "src")
+    config = json.loads((root / "workspace.json").read_text())
+    config["sources"][0]["survey"] = {"split": ["core/"]}
+    write(root / "workspace.json", json.dumps(config))
     _state.start_run(root, "repo-wiki/test", "writer")
-    tasks = survey_tasks(root)
-    assert len(tasks) > 1
-    scopes = sorted(scope for value in tasks.values() for scope in value)
-    assert "src/main/java/com/acme/billing" in scopes
-    assert "src/main/java/com/acme/orders" in scopes
-    assert "pom.xml" in scopes
-    seen = set()
-    for value in tasks.values():
-        for scope in value:
-            assert scope not in seen
-            seen.add(scope)
+    state = _state.read(root)
+    run = _state.run_dir(root, state["run_id"])
+    _state.task_start(root, "triage:src")
+    write(
+        run / "drafts/triage/src.json",
+        json.dumps(
+            {
+                "source": "src",
+                "scopes": [
+                    {
+                        "paths": ["."],
+                        "tier": "deep",
+                        "orientation": "whole source",
+                    }
+                ],
+            }
+        ),
+    )
+    result = _state.task_complete(root, "triage:src")
+    assert not result["ok"]
+    assert "triage-split-missing" in {item["code"] for item in result["issues"]}
+
+    write(
+        run / "drafts/triage/src.json",
+        json.dumps(
+            {
+                "source": "src",
+                "scopes": [
+                    {"paths": ["app.py"], "tier": "deep"},
+                    {"paths": ["core"], "tier": "standard"},
+                ],
+            }
+        ),
+    )
+    assert _state.task_complete(root, "triage:src")["ok"]
+    assert sorted(survey_tasks(root).values()) == [["app.py"], ["core"]]
 
 
-def test_survey_split_and_exclude_steer_scopes(tmp_path):
+def test_files_triage_uses_the_captured_pin(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    write(contracts / "openapi.yaml", "openapi: 3.0.0\n")
+    _workspace.init(root)
+    _workspace.add_files_source(root, str(contracts), "contracts")
+    _state.start_run(root, "repo-wiki/test", "writer")
+    state = _state.read(root)
+    run = _state.run_dir(root, state["run_id"])
+
+    (contracts / "openapi.yaml").unlink()
+    write(contracts / "live-only.yaml", "changed: true\n")
+    complete(
+        root,
+        "triage:contracts",
+        run / "drafts/triage/contracts.json",
+        json.dumps(
+            {
+                "source": "contracts",
+                "scopes": [{"paths": ["openapi.yaml"], "tier": "deep"}],
+            }
+        ),
+    )
+
+
+def test_single_path_scopes_have_collision_proof_target_ids(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    git_source(
+        root / "src",
+        {"a-b/value.py": "A = 1\n", "a/b/value.py": "B = 2\n"},
+    )
+    _workspace.init(root)
+    _workspace.add_git_link(root, str(root / "src"), "src")
+    _state.start_run(root, "repo-wiki/test", "writer")
+    state = _state.read(root)
+    complete(
+        root,
+        "triage:src",
+        _state.run_dir(root, state["run_id"]) / "drafts/triage/src.json",
+        json.dumps(
+            {
+                "source": "src",
+                "scopes": [
+                    {"paths": ["a-b"], "tier": "deep"},
+                    {"paths": ["a/b"], "tier": "deep"},
+                ],
+            }
+        ),
+    )
+    assert len(survey_tasks(root)) == 2
+
+
+def test_inventory_scope_is_coverage_only_and_skips_survey(tmp_path):
     root = tmp_path / "workspace"
     root.mkdir()
     git_source(
         root / "src",
         {
-            "core/engine.py": "VALUE = 1\n",
-            "core/rules.py": "VALUE = 2\n",
-            "vendor/lib.js": "VALUE = 3\n",
+            "app.py": "VALUE = 1\n",
+            "models/a.py": "class A: pass\n",
+            "models/b.py": "class B: pass\n",
         },
     )
     _workspace.init(root)
     _workspace.add_git_link(root, str(root / "src"), "src")
-    config = json.loads((root / "workspace.json").read_text())
-    config["sources"][0]["survey"] = {"split": ["core"], "exclude": ["vendor"]}
-    write(root / "workspace.json", json.dumps(config))
     _state.start_run(root, "repo-wiki/test", "writer")
+    state = _state.read(root)
+    run = _state.run_dir(root, state["run_id"])
+    complete(
+        root,
+        "triage:src",
+        run / "drafts/triage/src.json",
+        json.dumps(
+            {
+                "source": "src",
+                "scopes": [
+                    {"paths": ["app.py"], "tier": "deep"},
+                    {
+                        "paths": ["models"],
+                        "tier": "inventory",
+                        "reason": "passive data shapes",
+                        "samples": ["src/models/a.py#L1"],
+                    },
+                ],
+            }
+        ),
+    )
     tasks = survey_tasks(root)
-    assert tasks == {"src/core": ["core"]}
+    assert list(tasks.values()) == [["app.py"]]
+    assert not any("inventory" in task["name"] for task in _state.read(root)["tasks"].values())
+
+
+def test_inventory_rejects_protected_paths_but_allows_generated_without_samples(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    git_source(
+        root / "src",
+        {"app.py": "VALUE = 1\n", "generated/client.py": "# generated file\n"},
+    )
+    _workspace.init(root)
+    _workspace.add_git_link(root, str(root / "src"), "src")
+    _state.start_run(root, "repo-wiki/test", "writer")
+    state = _state.read(root)
+    run = _state.run_dir(root, state["run_id"])
+    _state.task_start(root, "triage:src")
+    artifact = run / "drafts/triage/src.json"
+    write(
+        artifact,
+        json.dumps(
+            {
+                "source": "src",
+                "scopes": [
+                    {
+                        "paths": ["app.py"],
+                        "tier": "inventory",
+                        "reason": "looks small",
+                        "samples": ["src/app.py#L1"],
+                    },
+                    {
+                        "paths": ["generated"],
+                        "tier": "inventory",
+                        "reason": "generated output",
+                    },
+                ],
+            }
+        ),
+    )
+    rejected = _state.task_complete(root, "triage:src")
+    assert "inventory-protected-path" in {
+        item["code"] for item in rejected["issues"]
+    }
+
+    data = json.loads(artifact.read_text())
+    data["scopes"][0]["tier"] = "deep"
+    data["scopes"][0].pop("reason")
+    data["scopes"][0].pop("samples")
+    write(artifact, json.dumps(data))
+    assert _state.task_complete(root, "triage:src")["ok"]
+
+
+def test_survey_completion_materializes_and_rebuilds_evidence_cache(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    git_source(root / "src", {"core/answer.py": "def answer():\n    return 42\n"})
+    _workspace.init(root)
+    _workspace.add_git_link(root, str(root / "src"), "src")
+    _state.start_run(root, "repo-wiki/test", "writer")
+    state = _state.read(root)
+    run = _state.run_dir(root, state["run_id"])
+    complete(
+        root,
+        "triage:src",
+        run / "drafts/triage/src.json",
+        json.dumps(
+            {
+                "source": "src",
+                "scopes": [{"paths": ["core"], "tier": "deep"}],
+            }
+        ),
+    )
+    target = _state._scope_name("src", ["core"])
+    packet = _state.task_start(root, f"survey:{target}")
+    assert "evidence_dir" not in packet
+    write(
+        run / f"drafts/survey/{target}.json",
+        json.dumps(
+            {
+                "source": "src",
+                "target": target,
+                "findings": [
+                    {
+                        "id": "answer",
+                        "claim": "answer entry point",
+                        "evidence": ["src/core/answer.py#L1-L2"],
+                        "domain": "core",
+                    }
+                ],
+                "gaps": [],
+            }
+        ),
+    )
+    assert _state.task_complete(root, f"survey:{target}")["ok"]
+    cache = run / f"drafts/evidence/{target}.json"
+    evidence = json.loads(cache.read_text())
+    assert evidence["target"] == target
+    assert len(evidence["pin"]) == 40
+    assert evidence["window"] == {"version": 1, "lines": 20}
+    assert evidence["findings"][0]["excerpts"][0]["locator"] == "src/core/answer.py#L1-L2"
+    assert "1|def answer():" in evidence["findings"][0]["excerpts"][0]["text"]
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            _index,
+            "materialize_survey",
+            lambda *_: pytest.fail("valid cache was rebuilt"),
+        )
+        assert _index.ensure_evidence_cache(root, _state.read(root)) == [cache]
+
+    forged = json.loads(cache.read_text())
+    excerpt = forged["findings"][0]["excerpts"][0]
+    excerpt["text"] = "1|forged = True\n"
+    excerpt["digest"] = hashlib.sha256(excerpt["text"].encode()).hexdigest()
+    write(cache, json.dumps(forged))
+    plan_packet = _state.task_start(root, "plan:src")
+    assert str(cache) in plan_packet["inputs"]
+    assert "forged" not in cache.read_text()
 
 
 def test_connect_edge_belongs_to_lowest_participant(tmp_path):
@@ -104,6 +356,18 @@ def test_connect_edge_belongs_to_lowest_participant(tmp_path):
     _state.start_run(root, "repo-wiki/test", "writer")
     state = _state.read(root)
     run = _state.run_dir(root, state["run_id"])
+    for name in ("api", "web"):
+        complete(
+            root,
+            f"triage:{name}",
+            run / f"drafts/triage/{name}.json",
+            json.dumps(
+                {
+                    "source": name,
+                    "scopes": [{"paths": ["."], "tier": "deep"}],
+                }
+            ),
+        )
     for name in ("api", "web"):
         _state.task_start(root, f"survey:{name}")
         write(
@@ -250,4 +514,20 @@ def test_invalid_survey_config_is_rejected(tmp_path):
     config["sources"][0]["survey"] = {"split": ["../escape"]}
     write(root / "workspace.json", json.dumps(config))
     with pytest.raises(_workspace.WorkspaceError, match="survey.split"):
+        _workspace.load(root)
+
+
+def test_survey_split_cannot_be_inside_an_excluded_path(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    git_source(root / "src", {"core/api/app.py": "VALUE = 1\n"})
+    _workspace.init(root)
+    _workspace.add_git_link(root, str(root / "src"), "src")
+    config = json.loads((root / "workspace.json").read_text())
+    config["sources"][0]["survey"] = {
+        "split": ["core/api"],
+        "exclude": ["core"],
+    }
+    write(root / "workspace.json", json.dumps(config))
+    with pytest.raises(_workspace.WorkspaceError, match="inside survey.exclude"):
         _workspace.load(root)

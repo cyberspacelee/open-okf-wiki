@@ -16,6 +16,7 @@ from _models import (
     PagePlan,
     ReviewReport,
     Survey,
+    Triage,
     model_errors,
 )
 from pydantic import ValidationError
@@ -234,53 +235,10 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[Issue]:
             )
         ]
     phase = task["phase"]
+    if phase == "triage":
+        return _validate_triage(root, state, task, path)
     if phase == "survey":
-        max_bytes, total_max_bytes = survey_budget(state)
-        survey_root = base / "drafts" / "survey"
-        survey_total = sum(
-            item.stat().st_size
-            for item in survey_root.rglob("*.json")
-            if item.is_file()
-        )
-        if path.stat().st_size > max_bytes:
-            return [
-                issue(
-                    "error",
-                    "survey-too-large",
-                    str(path),
-                    f"survey exceeds {max_bytes} bytes; split or prioritize findings",
-                )
-            ]
-        if survey_total > total_max_bytes:
-            return [
-                issue(
-                    "error",
-                    "survey-set-too-large",
-                    str(path.parent),
-                    f"survey set exceeds {total_max_bytes} bytes",
-                )
-            ]
-        value, issues = _model_issues(path, Survey, path.read_text(encoding="utf-8"))
-        if value:
-            if value.source != task["spec"]["source"] or value.target != task["name"]:
-                issues.append(
-                    issue(
-                        "error",
-                        "survey-mismatch",
-                        str(path),
-                        "survey identity does not match target",
-                    )
-                )
-            for finding in value.findings:
-                for locator in finding.evidence:
-                    resolved = _resolve_resource(root, state, locator)
-                    if resolved is None:
-                        issues.append(
-                            issue("error", "locator-unresolved", str(path), locator)
-                        )
-                    else:
-                        issues.extend(_check_range(*resolved, locator))
-        return issues
+        return _validate_survey(root, state, task, path)
     if phase == "connect":
         value, issues = _model_issues(path, Connect, path.read_text(encoding="utf-8"))
         if value:
@@ -423,32 +381,214 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[Issue]:
                     )
         return issues
     if phase == "write":
-        issues = validate_page(
-            root, state, path, owner=task["spec"]["owner"], published=False
-        )
-        if task["spec"]["type"] == "Table":
-            parsed = parse_file(path)
-            expected = next(
-                (
-                    table["resource"]
-                    for catalog in state["catalogs"]
-                    for table in catalog["tables"]
-                    if f"data/{catalog['name'].lower()}/{table['page_slug']}.md"
-                    == task["name"]
-                ),
-                None,
-            )
-            if expected is None or parsed.meta.get("resource") != expected:
-                issues.append(
-                    issue(
-                        "error",
-                        "table-resource-invalid",
-                        str(path),
-                        f"Table resource must be {expected}",
-                    )
-                )
-        return issues
+        return _validate_write(root, state, task, path)
     return [issue("error", "phase-unknown", str(path), f"unknown phase {phase}")]
+
+
+
+def _covered_files(files: list[str], paths: list[str], exclude: list[str]) -> set[str]:
+    remaining = []
+    for item in files:
+        if any(item == entry or item.startswith(entry.rstrip("/") + "/") for entry in exclude):
+            continue
+        remaining.append(item)
+    covered = set()
+    for path in paths:
+        if path in (".", ""):
+            covered.update(remaining)
+            continue
+        for item in remaining:
+            if item == path or item.startswith(path.rstrip("/") + "/"):
+                covered.add(item)
+    return covered
+
+
+def _validate_triage(
+    root: pathlib.Path, state: dict, task: dict, path: pathlib.Path
+) -> list[Issue]:
+    import _index
+    import _workspace
+
+    value, issues = _model_issues(path, Triage, path.read_text(encoding="utf-8"))
+    if not value:
+        return issues
+    expected_source = task["spec"]["source"]
+    if value.source != expected_source:
+        return issues + [
+            issue(
+                "error",
+                "triage-source-mismatch",
+                str(path),
+                f"triage source must be {expected_source}",
+            )
+        ]
+    workspace = _workspace.load(root)
+    source = workspace.sources[expected_source]
+    revision = next(
+        item for item in state["revisions"] if item["name"] == expected_source
+    )
+    pin = _workspace.pin_dir(root, state["run_id"], expected_source)
+    files = (
+        _workspace.tree_files(pin)
+        if source.kind == "files"
+        else _workspace.tracked_files(source, revision.get("commit"))
+    )
+    expected = _covered_files(files, ["."], list(source.survey_exclude))
+    claimed: set[str] = set()
+    for scope in value.scopes:
+        covered = _covered_files(files, list(scope.paths), list(source.survey_exclude))
+        if not covered:
+            issues.append(
+                issue(
+                    "error",
+                    "triage-path-invalid",
+                    str(path),
+                    f"paths select no files: {list(scope.paths)}",
+                )
+            )
+            continue
+        overlap = claimed & covered
+        if overlap:
+            issues.append(
+                issue(
+                    "error",
+                    "triage-overlap",
+                    str(path),
+                    f"paths overlap: {sorted(overlap)[:8]}",
+                )
+            )
+        claimed.update(covered)
+        if scope.tier != "inventory":
+            continue
+        if not scope.reason:
+            issues.append(
+                issue("error", "inventory-reason-missing", str(path), str(scope.paths))
+            )
+        protected = {item for item in covered if _index.is_protected(item)}
+        if protected:
+            issues.append(
+                issue(
+                    "error",
+                    "inventory-protected-path",
+                    str(path),
+                    f"entry points require semantic survey: {sorted(protected)}",
+                )
+            )
+        generated = all(_index.is_generated(pin, item) for item in covered)
+        if not scope.samples and not generated:
+            issues.append(
+                issue("error", "inventory-sample-missing", str(path), str(scope.paths))
+            )
+        for locator in scope.samples:
+            parsed = parse_resource(locator)
+            if parsed is None or parsed[0] != expected_source or parsed[1] not in covered:
+                issues.append(
+                    issue("error", "inventory-sample-invalid", str(path), locator)
+                )
+                continue
+            resolved = _resolve_resource(root, state, locator)
+            if resolved is None:
+                issues.append(
+                    issue("error", "inventory-sample-invalid", str(path), locator)
+                )
+            else:
+                issues.extend(_check_range(*resolved, locator))
+    missing = expected - claimed
+    if missing:
+        issues.append(
+            issue(
+                "error",
+                "triage-coverage-invalid",
+                str(path),
+                f"{expected_source} leaves {len(missing)} files unscoped",
+            )
+        )
+    for split in source.survey_split:
+        if not any(list(scope.paths) == [split] for scope in value.scopes):
+            issues.append(
+                issue(
+                    "error",
+                    "triage-split-missing",
+                    str(path),
+                    f"configured split must be an independent scope: {split}",
+                )
+            )
+    return issues
+
+
+def _validate_survey(root: pathlib.Path, state: dict, task: dict, path: pathlib.Path) -> list[Issue]:
+    max_bytes, total_max_bytes = survey_budget(state)
+    base = root / ".okf-wiki" / "runs" / state["run_id"]
+    survey_root = base / "drafts" / "survey"
+    survey_total = sum(
+        item.stat().st_size for item in survey_root.rglob("*.json") if item.is_file()
+    )
+    if path.stat().st_size > max_bytes:
+        return [
+            issue(
+                "error",
+                "survey-too-large",
+                str(path),
+                f"survey exceeds {max_bytes} bytes; split or prioritize findings",
+            )
+        ]
+    value, issues = _model_issues(path, Survey, path.read_text(encoding="utf-8"))
+    if value:
+        if value.source != task["spec"]["source"] or value.target != task["name"]:
+            issues.append(
+                issue(
+                    "error",
+                    "survey-mismatch",
+                    str(path),
+                    "survey identity does not match target",
+                )
+            )
+        for finding in value.findings:
+            for locator in finding.evidence:
+                resolved = _resolve_resource(root, state, locator)
+                if resolved is None:
+                    issues.append(issue("error", "locator-unresolved", str(path), locator))
+                else:
+                    issues.extend(_check_range(*resolved, locator))
+    if survey_total > total_max_bytes:
+        issues.append(
+            issue(
+                "error",
+                "survey-set-too-large",
+                str(survey_root),
+                f"survey set exceeds {total_max_bytes} bytes",
+            )
+        )
+    return issues
+
+
+
+def _validate_write(root: pathlib.Path, state: dict, task: dict, path: pathlib.Path) -> list[Issue]:
+    issues = validate_page(
+        root, state, path, owner=task["spec"]["owner"], published=False
+    )
+    if task["spec"]["type"] == "Table":
+        parsed = parse_file(path)
+        expected = next(
+            (
+                table["resource"]
+                for catalog in state["catalogs"]
+                for table in catalog["tables"]
+                if f"data/{catalog['name'].lower()}/{table['page_slug']}.md"
+                == task["name"]
+            ),
+            None,
+        )
+        if expected is None or parsed.meta.get("resource") != expected:
+            issues.append(
+                issue(
+                    "error",
+                    "table-resource-invalid",
+                    str(path),
+                    f"Table resource must be {expected}",
+                )
+            )
+    return issues
 
 
 def _finding_id_list(base: pathlib.Path) -> list[str]:

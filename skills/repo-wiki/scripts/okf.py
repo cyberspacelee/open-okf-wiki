@@ -331,7 +331,7 @@ def build_parser() -> argparse.ArgumentParser:
     leaf(source_actions.add_parser("list", help="list registered sources"))
     refresh = leaf(
         source_actions.add_parser(
-            "refresh", help="repin one source at its current HEAD and invalidate its tasks"
+            "refresh", help="repin one source and rebuild downstream tasks"
         )
     )
     refresh.add_argument("--name", required=True, help="source name")
@@ -367,17 +367,17 @@ def build_parser() -> argparse.ArgumentParser:
             "start", help="mark a task in progress and print its dispatch packet"
         )
     )
-    start_task.add_argument("target", help="task id, e.g. survey:api-core")
+    start_task.add_argument("target", help="task id, e.g. survey:api")
     complete_task = leaf(
         task_actions.add_parser(
             "complete", help="validate the task artifact and advance on success"
         )
     )
-    complete_task.add_argument("target", help="task id, e.g. survey:api-core")
+    complete_task.add_argument("target", help="task id, e.g. survey:api")
     fail = leaf(
         task_actions.add_parser("fail", help="record a failed task for retry")
     )
-    fail.add_argument("target", help="task id, e.g. survey:api-core")
+    fail.add_argument("target", help="task id, e.g. survey:api")
     fail.add_argument("--reason", help="short failure description")
 
     review = commands.add_parser(

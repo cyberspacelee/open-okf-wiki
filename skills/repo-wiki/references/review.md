@@ -3,7 +3,8 @@
 Review runs in a session distinct from the producer. The review packet binds
 the exact candidate digest. Read contract.md, the candidate pages and the
 revision-bound evidence; never use writer conversation history. Reopen the
-evidence behind every decision-changing claim.
+Pin evidence behind every decision-changing claim — do not trust the
+producer's derived Evidence Cache.
 
 Judge: Grep Test violations, unsupported claims, invented rationale, padded
 gaps, ownership bleed, missing connection links, routing overlap, coverage

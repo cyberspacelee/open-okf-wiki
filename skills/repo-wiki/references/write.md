@@ -1,10 +1,11 @@
 # Write
 
-Author exactly the page named by the write target, writing the Markdown
-yourself to the packet's `artifact` path — never return page content in your
-reply. Read contract.md, the page's plan entry, its assigned findings or
-connections, the matching template in assets/templates/, and the
-revision-bound evidence itself — reopen every locator you cite.
+Author exactly the page named by the write Target, writing Markdown to the
+packet's `artifact` path — never return page content in your reply. Read
+contract.md, the page's plan entry, its assigned findings or connections,
+the matching template in assets/templates/, and the matching Evidence Cache.
+Reopen a Pin file only when the cached window is not enough to support a
+load-bearing claim.
 
 Start frontmatter like:
 
@@ -32,7 +33,7 @@ in the packet's `language`; frontmatter field names, locators and ids stay
 as the contract defines them. Fill template sections with evidence or
 declare a partial gap; do not cite drafts or copy cheap source facts.
 
-Database pages read the packet's `catalogs` paths — a per-table JSON for a
+Database pages read the packet's `catalogs` paths: a per-table JSON for a
 Table page, the catalog index for data-model.md. Do not open `state.json` or
 the full `catalog.json`. data-model.md routes selected tables; a table page
 has type Table, its canonical table resource and an H1 Schema table with a
