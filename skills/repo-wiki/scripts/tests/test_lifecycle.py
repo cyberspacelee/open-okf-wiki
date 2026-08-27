@@ -41,7 +41,7 @@ def complete(
     assert result["ok"], result
 
 
-def concept(title: str, commit: str, link: str = "") -> str:
+def concept(title: str, link: str = "") -> str:
     return f"""---
 type: Overview
 title: {title}
@@ -49,7 +49,7 @@ description: Open this page before changing the answer flow.
 coverage: full
 sources:
   - id: code
-    resource: okf-source://src/{commit}/app.py#L1-L2
+    resource: src/app.py#L1-L2
 ---
 
 ## Responsibility
@@ -70,8 +70,6 @@ def test_full_lifecycle_publish_export_verify_and_incremental_reuse(tmp_path):
     _state.start_run(root, "repo-wiki/test", "writer-1")
     state = _state.read(root)
     run = _state.run_dir(root, state["run_id"])
-    revision = state["revisions"][0]
-    commit = revision["commit"]
     inspection = json.dumps(
         {
             "source": "src",
@@ -98,7 +96,6 @@ def test_full_lifecycle_publish_export_verify_and_incremental_reuse(tmp_path):
             {
                 "source": "src",
                 "target": "src-core",
-                "revision": commit,
                 "findings": [
                     {
                         "id": "answer",
@@ -108,7 +105,6 @@ def test_full_lifecycle_publish_export_verify_and_incremental_reuse(tmp_path):
                     }
                 ],
                 "gaps": [],
-                "remaining": [],
             }
         ),
     )
@@ -145,13 +141,13 @@ def test_full_lifecycle_publish_export_verify_and_incremental_reuse(tmp_path):
         root,
         "write:overview.md",
         run / "candidate/overview.md",
-        concept("ignored", commit, "[Architecture](/architecture.md)"),
+        concept("ignored", "[Architecture](/architecture.md)"),
     )
     complete(
         root,
         "write:architecture.md",
         run / "candidate/architecture.md",
-        concept("ignored", commit, "[Overview](/overview.md)"),
+        concept("ignored", "[Overview](/overview.md)"),
     )
     complete(
         root,
@@ -403,10 +399,8 @@ def test_survey_artifact_byte_budget_is_enforced(tmp_path):
             {
                 "source": "SourceA",
                 "target": "source-core",
-                "revision": state["revisions"][0]["commit"],
                 "findings": [],
                 "gaps": [],
-                "remaining": [],
             }
         )
         + " " * (24 * 1024),

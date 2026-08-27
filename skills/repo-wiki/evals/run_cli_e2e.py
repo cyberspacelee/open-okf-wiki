@@ -93,8 +93,6 @@ def evaluate(base: pathlib.Path) -> dict:
         json_output=True,
     )
     run_dir = pathlib.Path(status["run_dir"])
-    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
-    revisions = {item["name"]: item for item in state["revisions"]}
 
     for slug, name in source_names.items():
         complete(
@@ -119,7 +117,6 @@ def evaluate(base: pathlib.Path) -> dict:
                 {
                     "source": name,
                     "target": f"{slug}-core",
-                    "revision": revisions[name]["commit"],
                     "findings": [
                         {
                             "id": f"{slug}-entry",
@@ -129,7 +126,6 @@ def evaluate(base: pathlib.Path) -> dict:
                         }
                     ],
                     "gaps": [],
-                    "remaining": [],
                 }
             ),
         )
@@ -197,8 +193,7 @@ def evaluate(base: pathlib.Path) -> dict:
     complete(ws, "plan:wiki", run_dir / "drafts/plan.json", json.dumps(plan))
 
     resources = {
-        slug: f"okf-source://{name}/{revisions[name]['commit']}/app.py#L1-L2"
-        for slug, name in source_names.items()
+        slug: f"{name}/app.py#L1-L2" for slug, name in source_names.items()
     }
     pages = {
         "overview.md": page(
@@ -259,6 +254,7 @@ def evaluate(base: pathlib.Path) -> dict:
         raise RuntimeError(f"published validation failed: {validation}")
     verified = run(
         ws,
+        "publication",
         "verify",
         "--actor",
         "human:e2e@example.test",

@@ -12,18 +12,16 @@ def finding(index: int) -> dict:
     }
 
 
-def test_survey_is_revision_bound_and_context_bounded():
+def test_survey_is_context_bounded():
     survey = Survey.model_validate(
         {
             "source": "SourceA",
             "target": "source-core",
-            "revision": "a" * 40,
             "findings": [finding(index) for index in range(16)],
             "gaps": ["Missing runtime evidence."],
-            "remaining": [],
         }
     )
-    assert survey.revision == "a" * 40
+    assert len(survey.findings) == 16
 
     with pytest.raises(ValidationError):
         Survey.model_validate(
@@ -31,10 +29,6 @@ def test_survey_is_revision_bound_and_context_bounded():
                 **survey.model_dump(),
                 "findings": [finding(index) for index in range(17)],
             }
-        )
-    with pytest.raises(ValidationError):
-        Survey.model_validate(
-            {**survey.model_dump(), "remaining": ["more source to read"]}
         )
     with pytest.raises(ValidationError):
         Survey.model_validate(

@@ -17,7 +17,6 @@ ShortText = Annotated[
 Locator = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1024)
 ]
-Revision = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{40,64}$")]
 _WINDOWS_RESERVED = {
     "CON",
     "PRN",
@@ -99,10 +98,8 @@ class Finding(BaseModel):
 class Survey(BaseModel):
     source: NonEmpty
     target: NonEmpty
-    revision: Revision
     findings: list[Finding] = Field(max_length=16)
     gaps: list[ShortText] = Field(default_factory=list, max_length=8)
-    remaining: list[ShortText] = Field(default_factory=list, max_length=0)
 
     @model_validator(mode="after")
     def unique_findings(self):

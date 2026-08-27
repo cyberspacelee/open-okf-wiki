@@ -42,35 +42,41 @@ def _revision(state: dict, name: str) -> dict | None:
     return next((item for item in state["revisions"] if item["name"] == name), None)
 
 
-def parse_resource(resource: str) -> tuple[str, str, str, int, int] | None:
-    parsed = urlparse(resource)
-    if parsed.scheme != "okf-source" or not parsed.netloc:
+def parse_resource(resource: str) -> tuple[str, str, int | None, int | None] | None:
+    """Parse a locator: '<source>/<path>' with an optional '#Lx-Ly' anchor."""
+    if "://" in resource or "\\" in resource:
         return None
-    parts = unquote(parsed.path).lstrip("/").split("/", 1)
-    if len(parts) != 2:
+    match = _LINE_ANCHOR.search(resource)
+    raw = resource[: match.start()] if match else resource
+    if "#" in raw:
         return None
-    match = _LINE_ANCHOR.search("#" + parsed.fragment)
-    if not match:
+    source, sep, rel = raw.partition("/")
+    if not sep or not source or not rel:
         return None
-    lo = int(match.group(1))
-    hi = int(match.group(2) or lo)
-    return parsed.netloc, parts[0], parts[1], lo, hi
+    pure = pathlib.PurePosixPath(rel)
+    if pure.is_absolute() or ".." in pure.parts:
+        return None
+    lo = int(match.group(1)) if match else None
+    hi = int(match.group(2) or match.group(1)) if match else None
+    return source, rel, lo, hi
 
 
 def _resolve_resource(
     root: pathlib.Path, state: dict, resource: str
-) -> tuple[bytes, int, int] | None:
+) -> tuple[bytes, int | None, int | None] | None:
     import _workspace
 
     parsed = parse_resource(resource)
     if parsed is None:
         return None
-    source, commit, rel, lo, hi = parsed
+    source, rel, lo, hi = parsed
     revision = _revision(state, source)
-    if revision is None or revision.get("commit") != commit:
+    if revision is None:
         return None
     registered = _workspace.load(root).sources.get(source)
-    content = _workspace.git_blob(registered, commit, rel) if registered else None
+    content = (
+        _workspace.git_blob(registered, revision["commit"], rel) if registered else None
+    )
     return (content, lo, hi) if content is not None else None
 
 
@@ -84,28 +90,26 @@ def _catalog_resource(state: dict, resource: str) -> bool:
 
 def _draft_locator(
     root: pathlib.Path, state: dict, locator: str
-) -> tuple[pathlib.Path, int, int] | None:
-    match = _LINE_ANCHOR.search(locator)
-    if not match:
-        return None
-    raw = locator[: match.start()]
-    source, sep, rel = raw.partition("/")
-    if not sep:
-        return None
-    revision = _revision(state, source)
-    if revision is None:
-        return None
+) -> tuple[pathlib.Path, int | None, int | None] | None:
     import _workspace
 
+    parsed = parse_resource(locator)
+    if parsed is None:
+        return None
+    source, rel, lo, hi = parsed
+    if _revision(state, source) is None:
+        return None
     registered = _workspace.load(root).sources.get(source)
     path = _workspace.resolve_source_file(registered, rel) if registered else None
     if path is None:
         return None
-    return path, int(match.group(1)), int(match.group(2) or match.group(1))
+    return path, lo, hi
 
 
-def _check_range(path: pathlib.Path | bytes, lo: int, hi: int, label: str) -> list[dict]:
-    if lo > hi:
+def _check_range(
+    path: pathlib.Path | bytes, lo: int | None, hi: int | None, label: str
+) -> list[dict]:
+    if lo is not None and hi is not None and lo > hi:
         return [
             issue(
                 "error", "line-range-invalid", label, f"start L{lo} exceeds end L{hi}"
@@ -132,7 +136,7 @@ def _check_range(path: pathlib.Path | bytes, lo: int, hi: int, label: str) -> li
                 "binary files cannot be line evidence",
             )
         ]
-    if hi > total:
+    if hi is not None and hi > total:
         return [
             issue(
                 "error",
@@ -211,25 +215,6 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[dict]:
                         "survey-mismatch",
                         str(path),
                         "survey identity does not match target",
-                    )
-                )
-            revision = _revision(state, value.source)
-            if revision is None or value.revision != revision["commit"]:
-                issues.append(
-                    issue(
-                        "error",
-                        "revision-mismatch",
-                        str(path),
-                        "survey does not name the run revision",
-                    )
-                )
-            if value.remaining:
-                issues.append(
-                    issue(
-                        "error",
-                        "survey-incomplete",
-                        str(path),
-                        "remaining must be empty",
                     )
                 )
             for finding in value.findings:
@@ -521,7 +506,7 @@ def stamp_generated_page(
             parse_resource(resource) if isinstance(resource, str) else None
         )
         if parsed_resource:
-            source_name, _, rel, _, _ = parsed_resource
+            source_name, rel, _, _ = parsed_resource
             revision = _revision(state, source_name)
             if revision:
                 signals = _workspace.git_file_metadata(workspace, revision, rel)

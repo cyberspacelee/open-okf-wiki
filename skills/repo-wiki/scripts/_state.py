@@ -612,15 +612,6 @@ def _reuse_page(root: pathlib.Path, state: dict, task: dict) -> None:
         or str(stale_after) < datetime.now(timezone.utc).date().isoformat()
     ):
         return
-    for source in parsed.meta.get("sources", []):
-        resource = source.get("resource", "")
-        parsed_resource = _validate.parse_resource(resource)
-        if parsed_resource and parsed_resource[0] in revisions:
-            name, _, rel, lo, hi = parsed_resource
-            source["resource"] = (
-                f"okf-source://{name}/{revisions[name]['commit']}/{rel}#L{lo}"
-                + (f"-L{hi}" if hi != lo else "")
-            )
     target_path = run_dir(root, state["run_id"]) / task["artifact"]
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_text(

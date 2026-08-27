@@ -209,7 +209,7 @@ def _page_manifest(root: pathlib.Path, candidate: pathlib.Path, state: dict) -> 
             resource = source.get("resource", "")
             item = _validate.parse_resource(resource)
             if item:
-                source_name, _, rel, _, _ = item
+                source_name, rel, _, _ = item
                 revision = revisions.get(source_name)
                 registered = workspace.sources.get(source_name)
                 blob = (

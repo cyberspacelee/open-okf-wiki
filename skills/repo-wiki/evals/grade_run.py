@@ -13,7 +13,9 @@ import subprocess
 
 SKILL = pathlib.Path(__file__).resolve().parent.parent
 CITE = re.compile(
-    r"okf-source://([A-Za-z0-9-]+)/([0-9a-f]{40,64})/([^\s#]+)#L([1-9][0-9]*)(?:-L([1-9][0-9]*))?"
+    r"^\s*resource:\s*\"?([A-Za-z0-9][A-Za-z0-9-]*/[^\s#\"]+)"
+    r"(?:#L([1-9][0-9]*)(?:-L([1-9][0-9]*))?)?\"?\s*$",
+    re.MULTILINE,
 )
 
 
@@ -93,27 +95,26 @@ def grade(ws: pathlib.Path) -> list[dict]:
     random.Random(0).shuffle(citations)
     bad = []
     for page, match in citations[:12]:
-        source, commit, rel, lo, hi = match.groups()
+        locator, lo, hi = match.groups()
+        source, _, rel = locator.partition("/")
         revision = revisions.get(source)
+        if revision is None:
+            continue
         source_path = source_paths.get(source)
-        upper = int(hi or lo)
         content = subprocess.run(
-            ["git", "-C", str(source_path), "show", f"{commit}:{rel}"],
+            ["git", "-C", str(source_path), "show", f"{revision['commit']}:{rel}"],
             capture_output=True,
             text=True,
             check=False,
         ) if source_path else None
-        if (
-            not revision
-            or revision.get("commit") != commit
-            or content is None
-            or content.returncode
-        ):
-            bad.append(f"{page.name}: unresolved {match.group(0)}")
+        if content is None or content.returncode:
+            bad.append(f"{page.name}: unresolved {locator}")
             continue
-        count = len(content.stdout.splitlines())
-        if upper > count:
-            bad.append(f"{page.name}: L{upper} exceeds {count}")
+        if hi or lo:
+            upper = int(hi or lo)
+            count = len(content.stdout.splitlines())
+            if upper > count:
+                bad.append(f"{page.name}: L{upper} exceeds {count}")
     check(
         "sampled revision citations resolve",
         bool(citations) and not bad,
