@@ -198,8 +198,10 @@ def start_run(root: pathlib.Path, producer: str, session: str) -> dict:
             record = _workspace.capture_files_revision(root, source)
             _workspace.materialize_pin(root, run_id, source, record)
             revisions.append(record)
-        else:
+        elif source.kind in ("opengauss", "postgres"):
             catalogs.append(_db.capture_catalog(root, source))
+        else:
+            raise StateError(f"unsupported source kind: {source.kind}")
 
     state = {
         "version": VERSION,
@@ -464,6 +466,49 @@ def _pin_sources(root: pathlib.Path, state: dict, selected: str | None) -> dict[
     return result
 
 
+def _catalog_paths(root: pathlib.Path, state: dict, task: dict) -> list[str]:
+    import _db
+
+    phase = task["phase"]
+    spec = task["spec"]
+    paths: list[pathlib.Path] = []
+    if phase == "plan":
+        selected = spec.get("source")
+        for catalog in state["catalogs"]:
+            if selected is None or catalog["name"] == selected:
+                paths.append(_db.catalog_index_path(root, catalog["content_hash"]))
+    elif phase == "write":
+        if spec.get("type") == "DataModel" or task["name"] == "data-model.md":
+            for catalog in state["catalogs"]:
+                paths.append(_db.catalog_index_path(root, catalog["content_hash"]))
+        elif spec.get("type") == "Table":
+            for catalog in state["catalogs"]:
+                for table in catalog["tables"]:
+                    if (
+                        f"data/{catalog['name'].lower()}/{table['page_slug']}.md"
+                        == task["name"]
+                    ):
+                        paths.append(
+                            _db.catalog_table_path(
+                                root, catalog["content_hash"], table["page_slug"]
+                            )
+                        )
+    return [str(path) for path in paths if path.exists()]
+
+
+def _page_catalog_hash(state: dict, page) -> str | None:
+    if page.type == "DataModel":
+        hashes = [item["content_hash"] for item in state["catalogs"]]
+        return ",".join(sorted(hashes)) if hashes else None
+    if page.type != "Table":
+        return None
+    for catalog in state["catalogs"]:
+        prefix = f"data/{catalog['name'].lower()}/"
+        if page.path.startswith(prefix) or page.owner == catalog["name"]:
+            return catalog["content_hash"]
+    return None
+
+
 def _dispatch(root: pathlib.Path, state: dict, task: dict) -> dict:
     base = run_dir(root, state["run_id"])
     phase = task["phase"]
@@ -491,6 +536,9 @@ def _dispatch(root: pathlib.Path, state: dict, task: dict) -> dict:
         "complete_command": f"uv run {okf} task complete {task['id']} --json",
         "workdir": str(root),
     }
+    catalogs = _catalog_paths(root, state, task)
+    if catalogs:
+        packet["catalogs"] = catalogs
     if phase == "review":
         packet["candidate"] = str(candidate_dir(root, state))
         packet["candidate_digest"] = state["review"]["candidate_digest"]
@@ -637,6 +685,9 @@ def _compose_plan(root: pathlib.Path, state: dict) -> None:
             "finding_ids": page.finding_ids,
             "connection_ids": page.connection_ids,
         }
+        catalog_hash = _page_catalog_hash(state, page)
+        if catalog_hash:
+            spec["catalog_hash"] = catalog_hash
         if task_id in state["tasks"]:
             old = state["tasks"][task_id]
             if old.get("spec") == spec and old.get("status") == "complete":

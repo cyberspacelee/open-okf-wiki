@@ -9,6 +9,10 @@ class DbError(Exception):
     pass
 
 
+_URL_SCHEMES = ("postgres://", "postgresql://", "opengauss://")
+_PSYCOPG_PREFIX = "opengauss://"
+
+
 def load_env(root: pathlib.Path) -> dict[str, str]:
     env_file = root / ".env"
     result = {}
@@ -48,9 +52,17 @@ def resolve_url(root: pathlib.Path, env_ref: str) -> str:
             raise DbError(f"Variable '{var_name}' not found")
         url = env_dict[var_name]
 
-    if not url.startswith(("postgres://", "postgresql://")):
-        raise DbError("URL must start with postgres:// or postgresql://")
+    if not url.startswith(_URL_SCHEMES):
+        raise DbError(
+            "URL must start with postgres://, postgresql:// or opengauss://"
+        )
 
+    return url
+
+
+def _psycopg_url(url: str) -> str:
+    if url.startswith(_PSYCOPG_PREFIX):
+        return "postgresql://" + url[len(_PSYCOPG_PREFIX) :]
     return url
 
 
@@ -62,7 +74,7 @@ def _connect(url: str):
 
     try:
         return psycopg.connect(
-            url,
+            _psycopg_url(url),
             connect_timeout=5,
             options="-c default_transaction_read_only=on -c statement_timeout=10000",
         )
@@ -107,10 +119,22 @@ def describe(url: str, table: str, schema: str = "public") -> dict:
 
             cur.execute(
                 """
-                SELECT column_name, data_type, is_nullable, column_default
-                FROM information_schema.columns
-                WHERE table_schema = %s AND table_name = %s
-                ORDER BY ordinal_position
+                SELECT
+                  c.column_name,
+                  c.data_type,
+                  c.is_nullable,
+                  c.column_default,
+                  d.description
+                FROM information_schema.columns c
+                JOIN pg_catalog.pg_class pc
+                  ON pc.relname = c.table_name
+                JOIN pg_catalog.pg_namespace pn
+                  ON pn.oid = pc.relnamespace AND pn.nspname = c.table_schema
+                LEFT JOIN pg_catalog.pg_description d
+                  ON d.objoid = pc.oid AND d.objsubid = c.ordinal_position
+                WHERE c.table_schema = %s AND c.table_name = %s
+                  AND pc.relkind IN ('r', 'p')
+                ORDER BY c.ordinal_position
                 """,
                 (schema, table),
             )
@@ -123,16 +147,28 @@ def describe(url: str, table: str, schema: str = "public") -> dict:
                 )
 
             columns = []
-            for col_name, data_type, is_nullable, col_default in col_rows:
+            for col_name, data_type, is_nullable, col_default, comment in col_rows:
                 columns.append(
                     {
                         "name": col_name,
                         "type": data_type,
                         "nullable": is_nullable == "YES",
                         "default": col_default,
-                        "comment": "",
+                        "comment": comment or "",
                     }
                 )
+
+            cur.execute(
+                """
+                SELECT obj_description(c.oid, 'pg_class')
+                FROM pg_catalog.pg_class c
+                JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = %s AND c.relname = %s AND c.relkind IN ('r', 'p')
+                """,
+                (schema, table),
+            )
+            comment_rows = cur.fetchall()
+            table_comment = comment_rows[0][0] if comment_rows else ""
 
             cur.execute(
                 """
@@ -180,6 +216,7 @@ def describe(url: str, table: str, schema: str = "public") -> dict:
 
     return {
         "name": table,
+        "comment": table_comment or "",
         "columns": columns,
         "primary_key": primary_key,
         "foreign_keys": foreign_keys,
@@ -195,7 +232,132 @@ def _canonical_database(url: str, schema: str) -> str:
     host = parsed.hostname or "localhost"
     port = f":{parsed.port}" if parsed.port else ""
     database = quote(parsed.path.strip("/"), safe="")
-    return f"postgresql://{host}{port}/{database}/{quote(schema, safe='')}"
+    return f"opengauss://{host}{port}/{database}/{quote(schema, safe='')}"
+
+
+def catalog_dir(root: pathlib.Path, content_hash: str) -> pathlib.Path:
+    return root / ".okf-wiki" / "catalogs" / content_hash
+
+
+def catalog_index_path(root: pathlib.Path, content_hash: str) -> pathlib.Path:
+    return catalog_dir(root, content_hash) / "index.json"
+
+
+def catalog_table_path(
+    root: pathlib.Path, content_hash: str, page_slug: str
+) -> pathlib.Path:
+    return catalog_dir(root, content_hash) / "tables" / f"{page_slug}.json"
+
+
+def _write_json(path: pathlib.Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
+def index_from_payload(payload: dict) -> dict:
+    return {
+        "name": payload["name"],
+        "schema": payload["schema"],
+        "resource": payload["resource"],
+        "tables": [
+            {
+                "name": table["name"],
+                "page_slug": table["page_slug"],
+                "resource": table["resource"],
+                "comment": table.get("comment") or "",
+                "primary_key": table.get("primary_key") or [],
+                "foreign_keys": table.get("foreign_keys") or [],
+            }
+            for table in payload["tables"]
+        ],
+    }
+
+
+def catalog_record(payload: dict, content_hash: str) -> dict:
+    """Slim catalog identity stored in run state and the publication manifest."""
+    return {
+        "name": payload["name"],
+        "schema": payload["schema"],
+        "resource": payload["resource"],
+        "content_hash": content_hash,
+        "tables": [
+            {
+                "name": table["name"],
+                "page_slug": table["page_slug"],
+                "resource": table["resource"],
+            }
+            for table in payload["tables"]
+        ],
+    }
+
+
+def load_catalog(root: pathlib.Path, content_hash: str) -> dict:
+    path = catalog_dir(root, content_hash) / "catalog.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DbError(f"captured catalog {content_hash} is missing or invalid") from exc
+
+
+def load_index(root: pathlib.Path, content_hash: str) -> dict:
+    path = catalog_index_path(root, content_hash)
+    if path.is_file():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass
+    return index_from_payload(load_catalog(root, content_hash))
+
+
+def load_table(root: pathlib.Path, content_hash: str, page_slug: str) -> dict:
+    path = catalog_table_path(root, content_hash, page_slug)
+    if path.is_file():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass
+    payload = load_catalog(root, content_hash)
+    for table in payload.get("tables", []):
+        if table.get("page_slug") == page_slug or table.get("name") == page_slug:
+            return table
+    raise DbError(f"Table '{page_slug}' not found in captured catalog")
+
+
+def show_captured(
+    root: pathlib.Path, catalogs: list[dict], source: str | None = None
+) -> list[dict]:
+    result = []
+    for record in catalogs:
+        if source and record.get("name") != source:
+            continue
+        result.append(load_index(root, record["content_hash"]))
+    return result
+
+
+def describe_captured(
+    root: pathlib.Path,
+    catalogs: list[dict],
+    table: str,
+    source: str | None = None,
+) -> dict:
+    matches = []
+    for record in catalogs:
+        if source and record.get("name") != source:
+            continue
+        for item in record.get("tables", []):
+            if item.get("name") == table or item.get("page_slug") == table:
+                matches.append(
+                    load_table(root, record["content_hash"], item["page_slug"])
+                )
+    if not matches:
+        raise DbError(f"Table '{table}' not found in captured catalog")
+    if len(matches) > 1:
+        raise DbError(f"Table '{table}' is ambiguous; pass --source")
+    return matches[0]
 
 
 def capture_catalog(root: pathlib.Path, source, *, tables=tables, describe=describe) -> dict:
@@ -203,6 +365,7 @@ def capture_catalog(root: pathlib.Path, source, *, tables=tables, describe=descr
     schema = source.schema or "public"
     available = tables(url, schema)
     names = {item["name"] for item in available}
+    comments = {item["name"]: item.get("comment") or "" for item in available}
     selected = list(source.tables) if source.tables else []
     missing = sorted(set(selected) - names)
     if missing:
@@ -210,6 +373,8 @@ def capture_catalog(root: pathlib.Path, source, *, tables=tables, describe=descr
     described = []
     for table in selected:
         item = describe(url, table, schema)
+        if not item.get("comment"):
+            item["comment"] = comments.get(table, "")
         safe = re.sub(r"[^a-z0-9_-]+", "-", table.lower()).strip("-") or "table"
         if safe != table:
             safe += "-" + hashlib.sha256(table.encode()).hexdigest()[:8]
@@ -228,11 +393,10 @@ def capture_catalog(root: pathlib.Path, source, *, tables=tables, describe=descr
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode()
     content_hash = hashlib.sha256(raw).hexdigest()
-    directory = root / ".okf-wiki" / "catalogs" / content_hash
+    directory = catalog_dir(root, content_hash)
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / "catalog.json").write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    return {**payload, "content_hash": content_hash}
+    _write_json(directory / "catalog.json", payload)
+    _write_json(catalog_index_path(root, content_hash), index_from_payload(payload))
+    for item in described:
+        _write_json(catalog_table_path(root, content_hash, item["page_slug"]), item)
+    return catalog_record(payload, content_hash)

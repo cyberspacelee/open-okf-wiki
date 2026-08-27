@@ -143,7 +143,7 @@ def load(root: pathlib.Path) -> Workspace:
             raise WorkspaceError(f"invalid source name: {name!r}")
         if any(existing.casefold() == name.casefold() for existing in sources):
             raise WorkspaceError(f"duplicate source: {name}")
-        if kind not in ("git", "postgres", "files"):
+        if kind not in ("git", "opengauss", "postgres", "files"):
             raise WorkspaceError(f"invalid source '{name}'")
         tables = entry.get("tables", [])
         if not isinstance(tables, list) or any(
@@ -164,11 +164,11 @@ def load(root: pathlib.Path) -> Workspace:
                     f"source '{name}' path must be a named child of the workspace"
                 )
             source_path = pathlib.Path(os.path.abspath(root / pathlib.Path(*pure.parts)))
-        if kind == "postgres" and (
+        if kind in ("opengauss", "postgres") and (
             not isinstance(entry.get("url_env"), str)
             or not isinstance(entry.get("schema"), str)
         ):
-            raise WorkspaceError(f"invalid postgres source '{name}'")
+            raise WorkspaceError(f"invalid opengauss source '{name}'")
         if source_path is not None and not source_path.is_dir():
             raise WorkspaceError(f"source '{name}' target not found: {source_path}")
         survey = entry.get("survey", {})
@@ -363,7 +363,7 @@ def add_files_source(root: pathlib.Path, target: str, name: str) -> Source:
     return load(root).sources[name]
 
 
-def add_postgres_source(
+def add_opengauss_source(
     root: pathlib.Path,
     name: str,
     url_env: str,
@@ -374,14 +374,14 @@ def add_postgres_source(
     _check_add(root, data, name)
     if not url_env or not schema or not tables:
         raise WorkspaceError(
-            "postgres source requires url-env, schema and selected tables"
+            "opengauss source requires url-env, schema and selected tables"
         )
     if len(tables) != len(set(tables)):
-        raise WorkspaceError("postgres table selection contains duplicates")
+        raise WorkspaceError("opengauss table selection contains duplicates")
     data["sources"].append(
         {
             "name": name,
-            "kind": "postgres",
+            "kind": "opengauss",
             "url_env": url_env,
             "schema": schema,
             "tables": tables,

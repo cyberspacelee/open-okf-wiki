@@ -11,7 +11,7 @@ children, Runs and one current Publication. It is not itself a Source.
 _Avoid_: Source, worktree, sidecar
 
 **Source**:
-A registered Git repository, files directory or selected PostgreSQL input
+A registered Git repository, files directory or selected OpenGauss input
 used as Run evidence. Git and files Sources occupy `<workspace>/<name>/`.
 _Avoid_: Workspace, live input
 
@@ -25,7 +25,7 @@ which workers read. The live Source tree may move independently.
 _Avoid_: live worktree, clone
 
 **Catalog**:
-A content-addressed description of explicitly selected PostgreSQL tables
+A content-addressed description of explicitly selected OpenGauss tables
 captured for a Run.
 _Avoid_: Database dump, Git Revision
 

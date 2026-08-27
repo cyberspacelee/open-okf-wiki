@@ -32,9 +32,11 @@ in the packet's `language`; frontmatter field names, locators and ids stay
 as the contract defines them. Fill template sections with evidence or
 declare a partial gap; do not cite drafts or copy cheap source facts.
 
-Database pages read the captured catalog.json: data-model.md routes selected
-tables; a table page has type Table, its canonical table resource and an H1
-Schema table, and claims nothing about unselected tables.
+Database pages read the packet's `catalogs` paths — a per-table JSON for a
+Table page, the catalog index for data-model.md. Do not open `state.json` or
+the full `catalog.json`. data-model.md routes selected tables; a table page
+has type Table, its canonical table resource and an H1 Schema table with a
+Comment column, and claims nothing about unselected tables.
 
 Then run the packet's `complete_command` from its `workdir`. If the gate
 rejects the page, fix it and complete again until it passes.

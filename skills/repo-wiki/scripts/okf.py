@@ -106,7 +106,7 @@ def cmd_source(args) -> int:
     elif args.kind == "files":
         source = _workspace.add_files_source(root, args.target, args.name)
     else:
-        source = _workspace.add_postgres_source(
+        source = _workspace.add_opengauss_source(
             root,
             args.name,
             args.url_env,
@@ -217,6 +217,23 @@ def cmd_db(args) -> int:
     return 0
 
 
+def cmd_catalog(args) -> int:
+    import _db
+    import _state
+
+    root = workspace_root()
+    state = _state.read(root)
+    if state is None:
+        raise _state.StateError("no run")
+    catalogs = state.get("catalogs") or []
+    if args.action == "show":
+        emit(_db.show_captured(root, catalogs, args.source), args.json)
+        return 0
+    result = _db.describe_captured(root, catalogs, args.table, args.source)
+    emit(result, args.json)
+    return 0
+
+
 def cmd_propose(args) -> int:
     import _state
 
@@ -289,19 +306,19 @@ def build_parser() -> argparse.ArgumentParser:
     clone.add_argument("target", help="Git URL to clone")
     clone.add_argument("--name", required=True, help="unique source name")
     clone.add_argument("--ref", help="branch, tag or commit to check out")
-    postgres = leaf(
+    opengauss = leaf(
         source_kinds.add_parser(
-            "postgres", help="register selected PostgreSQL tables as evidence"
+            "opengauss", help="register selected OpenGauss tables as evidence"
         )
     )
-    postgres.add_argument("--name", required=True, help="unique source name")
-    postgres.add_argument(
+    opengauss.add_argument("--name", required=True, help="unique source name")
+    opengauss.add_argument(
         "--url-env",
         default="DATABASE_URL",
         help="environment variable holding the connection URL",
     )
-    postgres.add_argument("--schema", default="public", help="schema to select from")
-    postgres.add_argument(
+    opengauss.add_argument("--schema", default="public", help="schema to select from")
+    opengauss.add_argument(
         "--table", action="append", help="table to include (repeatable)"
     )
     files = leaf(
@@ -435,7 +452,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     db = commands.add_parser(
-        "db", help="explore PostgreSQL before selecting catalog tables"
+        "db", help="explore OpenGauss before selecting catalog tables"
     )
     db_actions = db.add_subparsers(dest="action", required=True)
     tables = leaf(db_actions.add_parser("tables", help="list tables in a schema"))
@@ -449,6 +466,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--url-env", default="DATABASE_URL", help="env var with the connection URL"
     )
     describe.add_argument("--schema", default="public", help="schema of the table")
+
+    catalog = commands.add_parser(
+        "catalog", help="read a captured catalog without connecting to the database"
+    )
+    catalog_actions = catalog.add_subparsers(dest="action", required=True)
+    catalog_show = leaf(
+        catalog_actions.add_parser(
+            "show", help="list selected tables from the current run's captured catalog"
+        )
+    )
+    catalog_show.add_argument("--source", help="restrict to one catalog source")
+    catalog_describe = leaf(
+        catalog_actions.add_parser(
+            "describe", help="describe one captured table, including comments"
+        )
+    )
+    catalog_describe.add_argument("table", help="table name or page slug")
+    catalog_describe.add_argument(
+        "--source", help="catalog source when the name is shared"
+    )
 
     propose = commands.add_parser(
         "propose", help="optional post-publish AGENTS/CONTEXT/ADR proposals"
@@ -474,6 +511,7 @@ def main() -> int:
         "publication": cmd_publication,
         "validate": cmd_validate,
         "db": cmd_db,
+        "catalog": cmd_catalog,
         "propose": cmd_propose,
     }
     try:

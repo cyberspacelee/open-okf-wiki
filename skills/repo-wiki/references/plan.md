@@ -54,7 +54,9 @@ Workspace shard:
 
 Paths are lowercase portable bundle-relative Markdown paths. Write titles,
 descriptions and exclusion reasons in the packet's `language`; paths, tags
-and ids stay ASCII. Include required database pages from contract.md. Do
+and ids stay ASCII. Include required database pages from contract.md; a
+database shard reads the packet's `catalogs` index for selected table names,
+page slugs and comments — not `state.json` or the full `catalog.json`. Do
 not add tag indexes or speculative pages.
 
 Then run the packet's `complete_command` from its `workdir`. If the gate

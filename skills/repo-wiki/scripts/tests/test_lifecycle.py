@@ -7,6 +7,7 @@ import subprocess
 import threading
 import time
 
+import _db
 import _publish
 import _state
 import _validate
@@ -413,6 +414,250 @@ def test_files_source_and_refresh_keep_the_run_alive(tmp_path):
         item["id"].startswith("survey:sourcea") and item["status"] == "pending"
         for item in refreshed["tasks"]
     )
+
+
+def test_opengauss_catalog_is_slim_in_state_and_sharded_for_workers(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    _workspace.init(root)
+    _workspace.add_opengauss_source(
+        root, "appdb", "DB_URL", "public", ["orders"]
+    )
+    monkeypatch.setenv("DB_URL", "postgresql://secret:token@db.example:5432/app")
+
+    def fake_tables(url, schema):
+        return [{"name": "orders", "comment": "customer orders"}]
+
+    def fake_describe(url, table, schema):
+        return {
+            "name": table,
+            "comment": "customer orders",
+            "columns": [
+                {
+                    "name": "id",
+                    "type": "integer",
+                    "nullable": False,
+                    "default": None,
+                    "comment": "primary key",
+                }
+            ],
+            "primary_key": ["id"],
+            "foreign_keys": [],
+        }
+
+    real_capture = _db.capture_catalog
+
+    def capture(root, source, **kwargs):
+        kwargs.setdefault("tables", fake_tables)
+        kwargs.setdefault("describe", fake_describe)
+        return real_capture(root, source, **kwargs)
+
+    monkeypatch.setattr(_db, "capture_catalog", capture)
+
+    _state.start_run(root, "repo-wiki/test", "writer")
+    state = _state.read(root)
+    record = state["catalogs"][0]
+    assert "columns" not in record["tables"][0]
+    assert "comment" not in record["tables"][0]
+    raw_state = (root / ".okf-wiki" / "runs" / state["run_id"] / "state.json").read_text()
+    assert "primary key" not in raw_state
+    assert "customer orders" not in raw_state
+
+    slug = record["tables"][0]["page_slug"]
+    table_path = f"data/appdb/{slug}.md"
+    plan_packet = _state.task_start(root, "plan:appdb")
+    assert plan_packet["catalogs"] == [
+        str(_db.catalog_index_path(root, record["content_hash"]))
+    ]
+    index = json.loads(pathlib.Path(plan_packet["catalogs"][0]).read_text())
+    assert index["tables"][0]["comment"] == "customer orders"
+    assert "columns" not in index["tables"][0]
+
+    run = _state.run_dir(root, state["run_id"])
+    write(
+        run / "drafts/plan/appdb.json",
+        json.dumps(
+            {
+                "source": "appdb",
+                "pages": [
+                    {
+                        "path": table_path,
+                        "type": "Table",
+                        "owner": "appdb",
+                        "title": "orders",
+                        "description": "Open before changing order rows.",
+                        "tags": ["data-model", "table"],
+                    }
+                ],
+                "exclusions": [],
+            }
+        ),
+    )
+    assert _state.task_complete(root, "plan:appdb")["ok"]
+    complete(
+        root,
+        "plan:workspace",
+        run / "drafts/plan/workspace.json",
+        json.dumps(
+            {
+                "source": None,
+                "pages": [
+                    {
+                        "path": "overview.md",
+                        "type": "Overview",
+                        "owner": "workspace",
+                        "title": "Overview",
+                        "description": "Open first.",
+                        "tags": ["overview"],
+                    },
+                    {
+                        "path": "architecture.md",
+                        "type": "Architecture",
+                        "owner": "workspace",
+                        "title": "Architecture",
+                        "description": "Open before structural changes.",
+                        "tags": ["architecture"],
+                    },
+                    {
+                        "path": "data-model.md",
+                        "type": "DataModel",
+                        "owner": "workspace",
+                        "title": "Data model",
+                        "description": "Open to route selected tables.",
+                        "tags": ["data-model"],
+                    },
+                ],
+                "exclusions": [],
+            }
+        ),
+    )
+
+    write_packet = _state.task_start(root, f"write:{table_path}")
+    assert write_packet["catalogs"] == [
+        str(_db.catalog_table_path(root, record["content_hash"], slug))
+    ]
+    shard = json.loads(pathlib.Path(write_packet["catalogs"][0]).read_text())
+    assert shard["comment"] == "customer orders"
+    assert shard["columns"][0]["comment"] == "primary key"
+    assert write_packet["task"]["spec"]["catalog_hash"] == record["content_hash"]
+
+    model_packet = _state.task_start(root, "write:data-model.md")
+    assert model_packet["catalogs"] == [
+        str(_db.catalog_index_path(root, record["content_hash"]))
+    ]
+
+    resource = record["tables"][0]["resource"]
+    write(
+        run / "candidate" / table_path,
+        f"""---
+type: Table
+title: orders
+description: Open before changing order rows.
+coverage: full
+resource: {resource}
+tags: [data-model, table]
+sources: []
+---
+
+customer orders
+
+# Schema
+
+| Column | Type | Nullable | Default | Comment |
+| --- | --- | --- | --- | --- |
+| id | integer | no |  | primary key |
+
+## Keys and relationships
+
+Primary key: id.
+
+## Usage
+
+No application owner recorded.
+""",
+    )
+    assert _state.task_complete(root, f"write:{table_path}")["ok"]
+    write(
+        run / "candidate/data-model.md",
+        f"""---
+type: DataModel
+title: Data model
+description: Open to route selected tables.
+coverage: full
+tags: [data-model]
+sources: []
+---
+
+## Ownership and boundaries
+
+Selected OpenGauss tables.
+
+## Selected tables
+
+[orders](/{table_path})
+
+## Relationships
+
+Primary key id on orders.
+""",
+    )
+    assert _state.task_complete(root, "write:data-model.md")["ok"]
+    complete(
+        root,
+        "write:overview.md",
+        run / "candidate/overview.md",
+        """---
+type: Overview
+title: Overview
+description: Open first.
+coverage: full
+sources: []
+---
+
+## Responsibility
+
+Route through [Architecture](/architecture.md) and [Data model](/data-model.md).
+""",
+    )
+    complete(
+        root,
+        "write:architecture.md",
+        run / "candidate/architecture.md",
+        """---
+type: Architecture
+title: Architecture
+description: Open before structural changes.
+coverage: full
+sources: []
+---
+
+## Responsibility
+
+See [Overview](/overview.md) and [Data model](/data-model.md).
+""",
+    )
+    packet = _state.review_start(root, "repo-wiki/reviewer", "reviewer-2")
+    for batch in packet["batches"]:
+        complete(
+            root,
+            batch["id"],
+            run / "drafts" / "review" / f"{batch['id'].split(':', 1)[1]}.json",
+            json.dumps(
+                {
+                    "batch": batch["owner"],
+                    "candidate_digest": packet["candidate_digest"],
+                    "verdict": "approved",
+                    "issues": [],
+                }
+            ),
+        )
+    published = _publish.publish(root)
+    generation = pathlib.Path(published["path"])
+    assert _validate.validate_publication(root, generation) == []
+    manifest = json.loads((generation / ".okf-manifest.json").read_text())
+    assert "columns" not in manifest["catalogs"][0]["tables"][0]
 
 
 def test_git_revision_evidence_does_not_depend_on_current_worktree(tmp_path):

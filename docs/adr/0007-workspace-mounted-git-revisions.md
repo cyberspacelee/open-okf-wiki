@@ -9,7 +9,7 @@ recorded commit. Live worktree dirt and later commits do not fail the Run.
 This replaces content-addressed source archives. Git already provides the
 immutable object store needed for reproducible evidence, so copying every file
 duplicated storage, complicated Windows path handling and created an artificial
-filesystem for agents that can read the mounted source directly. PostgreSQL is
+filesystem for agents that can read the mounted source directly. OpenGauss is
 different: selected catalogs remain content-addressed captures because there
 is no local Git object to cite.
 

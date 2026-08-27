@@ -8,11 +8,13 @@ tags: [data-model, table]
 sources: []
 ---
 
+{table_comment}
+
 # Schema
 
-| Column | Type | Nullable | Default |
-| --- | --- | --- | --- |
-| {column} | {type} | {yes/no} | {default} |
+| Column | Type | Nullable | Default | Comment |
+| --- | --- | --- | --- | --- |
+| {column} | {type} | {yes/no} | {default} | {comment} |
 
 ## Keys and relationships
 

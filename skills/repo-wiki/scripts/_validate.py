@@ -120,6 +120,56 @@ def _catalog_resource(state: dict, resource: str) -> bool:
     return resource in allowed
 
 
+def _slim_tables(tables) -> list[dict] | None:
+    if not isinstance(tables, list):
+        return None
+    result = []
+    for table in tables:
+        if not isinstance(table, dict) or not isinstance(table.get("resource"), str):
+            return None
+        result.append(
+            {
+                "name": table.get("name"),
+                "page_slug": table.get("page_slug"),
+                "resource": table["resource"],
+            }
+        )
+    return result
+
+
+def _catalog_record_valid(root: pathlib.Path, entry) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    content_hash = entry.get("content_hash")
+    if not isinstance(content_hash, str) or re.fullmatch(
+        r"[0-9a-f]{64}", content_hash
+    ) is None:
+        return False
+    capture = root / ".okf-wiki" / "catalogs" / content_hash / "catalog.json"
+    try:
+        captured = json.loads(capture.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(captured, dict):
+        return False
+    digest = hashlib.sha256(
+        json.dumps(
+            captured, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    if digest != content_hash:
+        return False
+    payload = {key: value for key, value in entry.items() if key != "content_hash"}
+    if payload == captured:
+        return True
+    return (
+        payload.get("name") == captured.get("name")
+        and payload.get("schema") == captured.get("schema")
+        and payload.get("resource") == captured.get("resource")
+        and _slim_tables(payload.get("tables")) == _slim_tables(captured.get("tables"))
+    )
+
+
 def _check_range(
     path: pathlib.Path | bytes, lo: int | None, hi: int | None, label: str
 ) -> list[Issue]:
@@ -1021,39 +1071,7 @@ def validate_publication(root: pathlib.Path, path: pathlib.Path) -> list[Issue]:
 
     catalogs = []
     for entry in manifest["catalogs"]:
-        raw_hash = entry.get("content_hash") if isinstance(entry, dict) else None
-        content_hash = raw_hash if isinstance(raw_hash, str) else ""
-        payload = (
-            {key: value for key, value in entry.items() if key != "content_hash"}
-            if isinstance(entry, dict)
-            else None
-        )
-        valid = (
-            isinstance(payload, dict)
-            and isinstance(payload.get("name"), str)
-            and isinstance(payload.get("resource"), str)
-            and isinstance(payload.get("tables"), list)
-            and all(
-                isinstance(table, dict) and isinstance(table.get("resource"), str)
-                for table in payload["tables"]
-            )
-            and re.fullmatch(r"[0-9a-f]{64}", content_hash) is not None
-            and hashlib.sha256(
-                json.dumps(
-                    payload,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode()
-            ).hexdigest()
-            == content_hash
-        )
-        capture = root / ".okf-wiki" / "catalogs" / content_hash / "catalog.json"
-        try:
-            captured = json.loads(capture.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            captured = None
-        if not valid or captured != payload:
+        if not _catalog_record_valid(root, entry):
             issues.append(
                 issue(
                     "error",

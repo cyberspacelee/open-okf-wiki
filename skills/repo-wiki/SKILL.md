@@ -5,7 +5,7 @@ description: Generate or incrementally refresh a thin, evidence-anchored reposit
 
 # Repo Wiki
 
-Produce an OKF v0.2 Wiki from frozen Git revisions and selected PostgreSQL
+Produce an OKF v0.2 Wiki from frozen Git revisions and selected OpenGauss
 catalogs. `scripts/okf.py` owns all state, validation and publication — never
 edit `.okf-wiki` JSON by hand. Requires Git, Python 3.12+ and `uv` on PATH.
 
@@ -38,14 +38,17 @@ Add each Source explicitly before starting a run:
 
     okf source add link ../API --name API
     okf source add clone https://host/web.git --name web --ref main
-    okf source add postgres --name appdb --url-env DATABASE_URL --schema public --table orders --table customers
+    okf source add opengauss --name appdb --url-env DATABASE_URL --schema public --table orders --table customers
 
 `link` accepts any local Git worktree; targets outside the workspace are
 mounted at `<workspace>/<name>/` (symlink on POSIX, junction on Windows).
 `clone` fetches a URL to the same place. `source add files` registers a
 directory of contracts or docs the same way. The workspace is a hub — do not
-`link .`. Use `okf db tables` / `okf db describe` to choose PostgreSQL
-tables — only selected tables become evidence, and credentials never enter
+`link .`. Use `okf db tables` / `okf db describe` to choose OpenGauss
+tables from the live database before `source add`. After `run start`, workers
+read captured catalogs from the dispatch packet's `catalogs` paths or with
+`okf catalog show` / `okf catalog describe` — never `state.json` or the full
+`catalog.json`. Only selected tables become evidence; credentials never enter
 state or citations.
 
 `run start` records each Git Source's HEAD and materializes a Pin under

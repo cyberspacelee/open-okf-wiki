@@ -73,17 +73,28 @@ The producer never copies a Git source into a private snapshot: linked
 sources are read through their hub mount, workers read a Pin at the recorded
 commit, and citations resolve from Git's object database.
 
-PostgreSQL is optional. Store the URL in the operating-system environment or
+OpenGauss is optional. Store the URL in the operating-system environment or
 in a workspace-root `.env`; the operating-system value wins. Configuration and
-Run state retain only the variable name, never credentials:
+Run state retain only the variable name, never credentials.
+`postgres://` and `postgresql://` URLs still connect; captured resources use
+`opengauss://`.
 
 ```dotenv
-APP_DATABASE_URL=postgresql://user:password@host:5432/database
+APP_DATABASE_URL=opengauss://user:password@host:5432/database
 ```
 
+Inspect the live schema before selecting tables:
+
 ```text
-uv run .agents/skills/repo-wiki/scripts/okf.py source add postgres --name appdb --url-env APP_DATABASE_URL --schema public --table orders --table customers
+uv run .agents/skills/repo-wiki/scripts/okf.py db tables --url-env APP_DATABASE_URL --json
+uv run .agents/skills/repo-wiki/scripts/okf.py db describe orders --url-env APP_DATABASE_URL --json
+uv run .agents/skills/repo-wiki/scripts/okf.py source add opengauss --name appdb --url-env APP_DATABASE_URL --schema public --table orders --table customers
 ```
+
+After `run start`, `catalog show` / `catalog describe` read the captured
+catalog (table and column comments included) without reconnecting. Workers
+use those commands or the dispatch packet's `catalogs` paths — not
+`state.json` or the full `catalog.json`.
 
 Start the Run with a unique producer session, then ask the coding agent to use
 the `repo-wiki` skill and resume from status:
@@ -95,9 +106,10 @@ uv run .agents/skills/repo-wiki/scripts/okf.py run status --json
 
 The host agent remains a coordinator: `run status` gives a compact phase/task
 view, and `task start --json` gives one complete path-only worker dispatch.
-Workers read the mounted source and write artifacts to the declared paths;
-they return only bounded handoffs. Start and complete every Target through the
-CLI. Each State Gate checks that the Pin still matches the recorded revision.
+Workers read the Pin (and, for database pages, the packet's catalog paths)
+and write artifacts to the declared paths; they return only bounded handoffs.
+Start and complete every Target through the CLI. Each State Gate checks that
+the Pin still matches the recorded revision.
 
 After a distinct reviewer approves the candidate:
 
@@ -125,8 +137,9 @@ design behaves consistently on Windows, Linux and macOS without symlinks.
   IDs, exact page plans and freshness dates.
 - Root index.md contains only okf_version 0.2; nested indexes and log.md have
   no frontmatter.
-- PostgreSQL catalog access is read-only and selected-table only; canonical
-  resources contain no credentials.
+- OpenGauss catalog access is read-only and selected-table only; canonical
+  resources contain no credentials. Run state stores catalog identity;
+  column bodies and comments live under `.okf-wiki/catalogs/<hash>/`.
 - Source-facing AGENTS, CONTEXT and ADR changes remain proposals requiring
   human ratification.
 
