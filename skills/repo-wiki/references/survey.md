@@ -1,15 +1,16 @@
 # Survey
 
 Read contract.md, the target scope and its Source root from the dispatch
-packet. Map capability boundaries from entry points, enforced rules,
-lifecycle, failure paths and focused tests. Package layout alone is not a
-domain.
+packet. The scope lists the source's top-level tracked directories — orient
+from build manifests and the README title block first, then map capability
+boundaries from entry points, enforced rules, lifecycle, failure paths and
+focused tests. Package layout alone is not a domain.
 
 Write the artifact as JSON:
 
     {
       "source": "api",
-      "target": "api-core",
+      "target": "api",
       "findings": [{
         "id": "api-request-lifecycle",
         "claim": "decision-relevant finding",
@@ -19,9 +20,10 @@ Write the artifact as JSON:
       "gaps": ["optional explicit gap"]
     }
 
-Evidence uses plain locators (`source/path`, optional `#Lx-Ly`); every range
-must exist at the run's recorded revision. The gate enforces at most 16
-findings, 4 locators per finding, 8 gaps and 24 KiB — prioritize Grep-Test
-knowledge and record omitted scope as a gap rather than padding.
+`target` is the task name from the dispatch packet. Evidence uses plain
+locators (`source/path`, optional `#Lx-Ly`); every range must exist at the
+run's recorded revision. The gate enforces at most 16 findings, 4 locators
+per finding, 8 gaps and 24 KiB — prioritize Grep-Test knowledge and record
+omitted scope as a gap rather than padding.
 
 Handoff: artifact path, finding ids, gap count. Nothing else.

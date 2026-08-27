@@ -70,44 +70,26 @@ def test_full_lifecycle_publish_export_verify_and_incremental_reuse(tmp_path):
     _state.start_run(root, "repo-wiki/test", "writer-1")
     state = _state.read(root)
     run = _state.run_dir(root, state["run_id"])
-    inspection = json.dumps(
+    survey = json.dumps(
         {
             "source": "src",
-            "survey_targets": [
-                {"id": "src-core", "source": "src", "scope": ["app.py"]}
+            "target": "src",
+            "findings": [
+                {
+                    "id": "answer",
+                    "claim": "answer entry point",
+                    "evidence": ["src/app.py#L1-L2"],
+                    "domain": "core",
+                }
             ],
+            "gaps": [],
         }
     )
-    complete(
-        root,
-        "inspect:src",
-        run / "drafts/inspect/src.json",
-        inspection,
-    )
-    write(run / "drafts/inspect/src.json", inspection + "\n")
+    complete(root, "survey:src", run / "drafts/survey/src.json", survey)
+    write(run / "drafts/survey/src.json", survey + "\n")
     with pytest.raises(_state.StateError, match="completed artifact changed"):
-        _state.task_start(root, "survey:src-core")
-    write(run / "drafts/inspect/src.json", inspection)
-    complete(
-        root,
-        "survey:src-core",
-        run / "drafts/survey/src-core.json",
-        json.dumps(
-            {
-                "source": "src",
-                "target": "src-core",
-                "findings": [
-                    {
-                        "id": "answer",
-                        "claim": "answer entry point",
-                        "evidence": ["src/app.py#L1-L2"],
-                        "domain": "core",
-                    }
-                ],
-                "gaps": [],
-            }
-        ),
-    )
+        _state.task_start(root, "plan:wiki")
+    write(run / "drafts/survey/src.json", survey)
     valid_plan = {
         "pages": [
             {
@@ -235,8 +217,11 @@ def test_workspace_init_requires_explicit_git_sources(tmp_path):
         _workspace.add_git_link(root, str(linked), "linkedapi")
     with pytest.raises(_workspace.WorkspaceError, match="reserved on Windows"):
         _workspace.add_git_link(root, str(linked), "CON")
-    with pytest.raises(_workspace.WorkspaceError, match="mounted inside workspace"):
-        _workspace.add_git_link(root, str(outside), "Outside")
+    mounted = _workspace.add_git_link(root, str(outside), "Outside")
+    mount_point = root / ".okf-wiki" / "sources" / "Outside"
+    assert mounted.path == mount_point
+    assert (mount_point / "app.py").is_file()
+    assert _workspace.capture_git_revision(root, mounted)["commit"]
     assert (
         _workspace._safe_origin("https://user:secret@example.test/repo.git")
         == "https://example.test/repo.git"
@@ -289,13 +274,13 @@ def test_status_is_compact_and_source_drift_blocks_task_start(tmp_path):
         "next_actions",
         "run_dir",
     }
-    assert status["tasks"] == [{"id": "inspect:SourceA", "status": "pending"}]
+    assert status["tasks"] == [{"id": "survey:sourcea", "status": "pending"}]
 
     write(source / "app.py", "def answer():\n    return 43\n")
     subprocess.run(["git", "-C", str(source), "add", "app.py"], check=True)
     subprocess.run(["git", "-C", str(source), "commit", "-qm", "change"], check=True)
     with pytest.raises(_workspace.WorkspaceError, match="changed during the run"):
-        _state.task_start(root, "inspect:SourceA")
+        _state.task_start(root, "survey:sourcea")
 
 
 def test_task_start_returns_path_only_worker_dispatch(tmp_path):
@@ -306,7 +291,7 @@ def test_task_start_returns_path_only_worker_dispatch(tmp_path):
     _workspace.add_git_link(root, str(source), "SourceA")
     _state.start_run(root, "repo-wiki/test", "writer")
 
-    packet = _state.task_start(root, "inspect:SourceA")
+    packet = _state.task_start(root, "survey:sourcea")
     assert set(packet) == {
         "run_id",
         "task",
@@ -316,12 +301,12 @@ def test_task_start_returns_path_only_worker_dispatch(tmp_path):
         "inputs",
     }
     assert packet["task"] == {
-        "id": "inspect:SourceA",
-        "phase": "inspect",
-        "spec": {"source": "SourceA"},
+        "id": "survey:sourcea",
+        "phase": "survey",
+        "spec": {"source": "SourceA", "scope": ["app.py"]},
     }
-    assert pathlib.Path(packet["reference"]).name == "inspect.md"
-    assert pathlib.Path(packet["artifact"]).name == "SourceA.json"
+    assert pathlib.Path(packet["reference"]).name == "survey.md"
+    assert pathlib.Path(packet["artifact"]).name == "sourcea.json"
     assert packet["sources"] == {"SourceA": str(source.resolve())}
     assert packet["inputs"] == []
 
@@ -356,7 +341,7 @@ def test_parallel_task_starts_do_not_lose_state(tmp_path, monkeypatch):
     monkeypatch.setattr(_state, "atomic_json", delayed_write)
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         futures = [
-            pool.submit(_state.task_start, root, f"inspect:{name}")
+            pool.submit(_state.task_start, root, f"survey:{name.lower()}")
             for name in ("SourceA", "SourceB")
         ]
         for future in futures:
@@ -365,8 +350,8 @@ def test_parallel_task_starts_do_not_lose_state(tmp_path, monkeypatch):
     state = _state.read(root)
     assert {
         task_id: state["tasks"][task_id]["status"]
-        for task_id in ("inspect:SourceA", "inspect:SourceB")
-    } == {"inspect:SourceA": "in_progress", "inspect:SourceB": "in_progress"}
+        for task_id in ("survey:sourcea", "survey:sourceb")
+    } == {"survey:sourcea": "in_progress", "survey:sourceb": "in_progress"}
 
 
 def test_survey_artifact_byte_budget_is_enforced(tmp_path):
@@ -378,34 +363,21 @@ def test_survey_artifact_byte_budget_is_enforced(tmp_path):
     _state.start_run(root, "repo-wiki/test", "writer")
     state = _state.read(root)
     run = _state.run_dir(root, state["run_id"])
-    complete(
-        root,
-        "inspect:SourceA",
-        run / "drafts/inspect/SourceA.json",
-        json.dumps(
-            {
-                "source": "SourceA",
-                "survey_targets": [
-                    {"id": "source-core", "source": "SourceA", "scope": ["app.py"]}
-                ],
-            }
-        ),
-    )
-    _state.task_start(root, "survey:source-core")
-    artifact = run / "drafts/survey/source-core.json"
+    _state.task_start(root, "survey:sourcea")
+    artifact = run / "drafts/survey/sourcea.json"
     write(
         artifact,
         json.dumps(
             {
                 "source": "SourceA",
-                "target": "source-core",
+                "target": "sourcea",
                 "findings": [],
                 "gaps": [],
             }
         )
         + " " * (24 * 1024),
     )
-    result = _state.task_complete(root, "survey:source-core")
+    result = _state.task_complete(root, "survey:sourcea")
     assert not result["ok"]
     assert {item["code"] for item in result["issues"]} == {"survey-too-large"}
 

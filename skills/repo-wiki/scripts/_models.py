@@ -68,26 +68,6 @@ class ConceptFrontmatter(BaseModel):
         return [value] if isinstance(value, dict) else value
 
 
-class SurveyTarget(BaseModel):
-    id: Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]*$")]
-    source: NonEmpty
-    scope: list[Locator] = Field(min_length=1, max_length=16)
-
-
-class Inspection(BaseModel):
-    source: NonEmpty
-    survey_targets: list[SurveyTarget] = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def unique_targets(self):
-        ids = [target.id for target in self.survey_targets]
-        if len(ids) != len(set(ids)):
-            raise ValueError("survey target ids must be unique")
-        if any(target.source != self.source for target in self.survey_targets):
-            raise ValueError("every survey target must belong to the inspection source")
-        return self
-
-
 class Finding(BaseModel):
     id: ShortText
     claim: ShortText

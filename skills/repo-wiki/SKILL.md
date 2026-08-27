@@ -26,18 +26,25 @@ short form `okf` below always means:
    --freshness-days 90`, register every Source explicitly (next section),
    then `okf run start --producer repo-wiki/<model> --session <unique-id>`.
 
+Drive the run to publication without pausing for permission: the gates are
+the checkpoints, and a rejected completion is a repair task, not a question
+for the user. Stop and ask only when something genuinely needs a human —
+missing credentials, an ambiguous source selection, or a review verdict a
+human must ratify.
+
 ## Sources
 
 Add each Source explicitly before starting a run:
 
-    okf source add link ./API --name API
+    okf source add link ../API --name API
     okf source add clone https://host/web.git --name web --ref main
     okf source add postgres --name appdb --url-env DATABASE_URL --schema public --table orders --table customers
 
-`link` registers a Git worktree already mounted inside the workspace; `clone`
-creates one under `.okf-wiki/sources/`. Use `okf db tables` / `okf db
-describe` to choose PostgreSQL tables — only selected tables become evidence,
-and credentials never enter state or citations.
+`link` accepts any local Git worktree; targets outside the workspace are
+mounted automatically under `.okf-wiki/sources/<name>` (symlink on POSIX,
+junction on Windows). `clone` fetches a URL to the same place. Use `okf db
+tables` / `okf db describe` to choose PostgreSQL tables — only selected
+tables become evidence, and credentials never enter state or citations.
 
 `run start` records each Git Source's clean HEAD. Dirty worktrees, submodules
 and non-portable paths are rejected, and every later gate rejects revision
@@ -45,10 +52,11 @@ drift, so citations always resolve from the recorded commit.
 
 ## The task loop
 
-A run is a fixed phase sequence: inspect → survey → synthesize (multi-Git
-only) → plan → write → derive → review → publish. `run status` lists the
-current phase's tasks; task ids are `<phase>:<name>` (e.g. `survey:api-core`,
-`write:overview.md`). For each task:
+A run is a fixed phase sequence: survey → synthesize (multi-Git only) → plan
+→ write → derive → review → publish. `run start` creates one survey task per
+Git source with a CLI-computed scope — there is no separate inspect step.
+`run status` lists the current phase's tasks; task ids are `<phase>:<name>`
+(e.g. `survey:api`, `write:overview.md`). For each task:
 
     okf task start <phase>:<name> --json    # returns a dispatch packet
     # dispatch ONE worker session with the packet (paths, never pasted content)
@@ -63,8 +71,8 @@ the only authority.
 The coordinator (this session) must stay small enough to steer a long run,
 so it never reads source files, drafts, candidate pages or Wiki bodies. It
 consumes only: `run status --json`, `task start` dispatch packets, worker
-handoffs, and validator issue lists. Every content task — including inspect —
-runs in a worker session. If workers are unavailable, stop the run and say
+handoffs, and validator issue lists. Every content task runs in a worker
+session. If workers are unavailable, stop the run and say
 so; the coordinator taking over content work defeats the design.
 
 What goes where:
@@ -72,7 +80,7 @@ What goes where:
 - **Long-form content** (concept pages, proposals): the worker writes
   Markdown directly to the packet's `artifact` path. It never travels
   through JSON or chat.
-- **Structured decisions** (inspect, survey, synthesize, plan, review): small
+- **Structured decisions** (survey, synthesize, plan, review): small
   JSON artifacts at the `artifact` path, shaped per the phase reference and
   hard-capped by the gate (e.g. 16 findings, 24 KiB per survey) so no single
   file outgrows what a model can produce reliably.

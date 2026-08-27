@@ -10,7 +10,6 @@ from _frontmatter import parse_file, render
 from _markdown import extract
 from _models import (
     ConceptFrontmatter,
-    Inspection,
     PagePlan,
     Survey,
     Synthesis,
@@ -170,20 +169,6 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[dict]:
             )
         ]
     phase = task["phase"]
-    if phase == "inspect":
-        value, issues = _model_issues(
-            path, Inspection, path.read_text(encoding="utf-8")
-        )
-        if value and value.source != task["spec"]["source"]:
-            issues.append(
-                issue(
-                    "error",
-                    "source-mismatch",
-                    str(path),
-                    "inspection source does not match target",
-                )
-            )
-        return issues
     if phase == "survey":
         survey_total = sum(
             item.stat().st_size for item in path.parent.glob("*.json") if item.is_file()

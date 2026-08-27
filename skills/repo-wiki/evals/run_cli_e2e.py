@@ -76,7 +76,7 @@ def page(title: str, refs: list[tuple[str, str]], links: str) -> str:
 def evaluate(base: pathlib.Path) -> dict:
     ws = base / "workspace"
     ws.mkdir()
-    api = source(ws / "API", "api")
+    api = source(base / "API", "api")  # outside the workspace: exercises link mount
     web = source(base / "web", "web")
     source_names = {"api": "API", "webui": "WebUI"}
     run(ws, "workspace", "init", "--lang", "en", "--freshness-days", "30")
@@ -97,26 +97,12 @@ def evaluate(base: pathlib.Path) -> dict:
     for slug, name in source_names.items():
         complete(
             ws,
-            f"inspect:{name}",
-            run_dir / f"drafts/inspect/{name}.json",
+            f"survey:{slug}",
+            run_dir / f"drafts/survey/{slug}.json",
             json.dumps(
                 {
                     "source": name,
-                    "survey_targets": [
-                        {"id": f"{slug}-core", "source": name, "scope": ["app.py"]}
-                    ],
-                }
-            ),
-        )
-    for slug, name in source_names.items():
-        complete(
-            ws,
-            f"survey:{slug}-core",
-            run_dir / f"drafts/survey/{slug}-core.json",
-            json.dumps(
-                {
-                    "source": name,
-                    "target": f"{slug}-core",
+                    "target": slug,
                     "findings": [
                         {
                             "id": f"{slug}-entry",

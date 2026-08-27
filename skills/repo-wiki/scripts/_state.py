@@ -9,11 +9,11 @@ import shutil
 from datetime import datetime, timezone
 
 from _files import atomic_json, directory_digest
-from _models import Inspection, PagePlan, ReviewReport, Survey, Synthesis, model_errors
+from _models import PagePlan, ReviewReport, Survey, Synthesis, model_errors
 from pydantic import ValidationError
 
 VERSION = 4
-PHASES = ["inspect", "survey", "synthesize", "plan", "write", "derive", "review"]
+PHASES = ["survey", "synthesize", "plan", "write", "derive", "review"]
 
 
 class StateError(Exception):
@@ -195,26 +195,36 @@ def start_run(root: pathlib.Path, producer: str, session: str) -> dict:
         path.mkdir(parents=True, exist_ok=True)
     for revision in revisions:
         source = revision["name"]
+        slug = source.lower()
         _add_task(
             state,
             _task(
-                "inspect",
-                source,
-                f"drafts/inspect/{source}.json",
+                "survey",
+                slug,
+                f"drafts/survey/{slug}.json",
                 source=source,
+                scope=_survey_scope(root, workspace.sources[source], revision),
             ),
         )
-        _reuse_task(root, state, state["tasks"][f"inspect:{source}"])
+        _reuse_task(root, state, state["tasks"][f"survey:{slug}"])
     if not state["tasks"]:
         _add_task(state, _task("plan", "wiki", "drafts/plan.json"))
         _reuse_task(root, state, state["tasks"]["plan:wiki"])
         if _phase_complete(state, "plan"):
             _advance(root, state, "plan")
-    elif _phase_complete(state, "inspect"):
-        _advance(root, state, "inspect")
+    elif _phase_complete(state, "survey"):
+        _advance(root, state, "survey")
     _write(root, state)
     atomic_json(_pointer(root), {"version": VERSION, "run_id": run_id})
     return status(root)
+
+
+def _survey_scope(root: pathlib.Path, source, revision: dict) -> list[str]:
+    """Deterministic survey scope: the source's top-level tracked directories."""
+    import _workspace
+
+    listing = _workspace.git_top_level(source, revision["commit"])
+    return listing or ["."]
 
 
 def _phase(state: dict) -> str | None:
@@ -302,9 +312,7 @@ def _dispatch(root: pathlib.Path, state: dict, task: dict) -> dict:
     base = run_dir(root, state["run_id"])
     phase = task["phase"]
     inputs: list[pathlib.Path] = []
-    if phase == "survey":
-        inputs.append(base / "drafts" / "inspect" / f"{task['spec']['source']}.json")
-    elif phase in ("synthesize", "plan", "write"):
+    if phase in ("synthesize", "plan", "write"):
         inputs.extend(sorted((base / "drafts" / "survey").glob("*.json")))
         synthesis = base / "drafts" / "synthesize.json"
         if synthesis.is_file():
@@ -407,25 +415,7 @@ def _advance(root: pathlib.Path, state: dict, phase: str) -> None:
         return
     base = run_dir(root, state["run_id"])
     git_sources = [item["name"] for item in state["revisions"]]
-    if phase == "inspect":
-        for source in git_sources:
-            path = base / "drafts" / "inspect" / f"{source}.json"
-            inspection = Inspection.model_validate_json(
-                path.read_text(encoding="utf-8"), strict=True
-            )
-            for target in inspection.survey_targets:
-                _add_task(
-                    state,
-                    _task(
-                        "survey",
-                        target.id,
-                        f"drafts/survey/{target.id}.json",
-                        source=target.source,
-                        scope=target.scope,
-                    ),
-                )
-                _reuse_task(root, state, state["tasks"][f"survey:{target.id}"])
-    elif phase == "survey":
+    if phase == "survey":
         if len(git_sources) > 1:
             _add_task(state, _task("synthesize", "workspace", "drafts/synthesize.json"))
             _reuse_task(root, state, state["tasks"]["synthesize:workspace"])
@@ -465,7 +455,6 @@ def _advance(root: pathlib.Path, state: dict, phase: str) -> None:
     elif phase == "derive":
         state["status"] = "awaiting_review"
     next_phase = {
-        "inspect": "survey",
         "survey": "synthesize" if len(git_sources) > 1 else "plan",
         "synthesize": "plan",
         "plan": "write",
@@ -537,7 +526,7 @@ def _reuse_task(root: pathlib.Path, state: dict, task: dict) -> None:
     old = previous.get("tasks", {}).get(task["id"])
     if not old or old.get("status") != "complete" or old.get("spec") != task["spec"]:
         return
-    if task["phase"] in ("inspect", "survey"):
+    if task["phase"] == "survey":
         source = task["spec"]["source"]
         if not _source_unchanged(state, previous, source):
             return

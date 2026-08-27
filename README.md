@@ -52,23 +52,24 @@ uv run .agents/skills/repo-wiki/scripts/okf.py workspace init --lang zh --freshn
 uv run .agents/skills/repo-wiki/scripts/okf.py workspace show --json
 ```
 
-Register every clean Git Source explicitly. `link` registers an existing
-worktree already inside the Workspace; `clone` materializes a Git URL under
-`.okf-wiki/sources/`.
+Register every clean Git Source explicitly. `link` registers a local
+worktree — paths outside the Workspace are mounted automatically under
+`.okf-wiki/sources/<name>` (symlink on POSIX, junction on Windows); `clone`
+materializes a Git URL in the same place.
 Source names preserve letter case, while names that differ only by case are
 rejected for Windows portability. Link `.` when the Workspace directory itself
 is the intended repository:
 
 ```text
 uv run .agents/skills/repo-wiki/scripts/okf.py source add link . --name app
-uv run .agents/skills/repo-wiki/scripts/okf.py source add link ./services/API --name API
+uv run .agents/skills/repo-wiki/scripts/okf.py source add link ../services/API --name API
 uv run .agents/skills/repo-wiki/scripts/okf.py source add clone https://github.com/example/web.git --name Web --ref main
 uv run .agents/skills/repo-wiki/scripts/okf.py source list --json
 ```
 
-An existing repository outside the Workspace must be mounted as a worktree
-inside it or added by URL with `clone`. The producer does not copy it into a
-private source snapshot.
+The producer never copies a source into a private snapshot: linked sources
+are read through their mount, and evidence always resolves from the recorded
+Git commit.
 
 PostgreSQL is optional. Store the URL in the operating-system environment or
 in a workspace-root `.env`; the operating-system value wins. Configuration and

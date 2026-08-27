@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -147,13 +148,10 @@ def load(root: pathlib.Path) -> Workspace:
             pure = pathlib.PurePosixPath(stored_path)
             if pure.is_absolute() or ".." in pure.parts:
                 raise WorkspaceError(f"source '{name}' path must be inside workspace")
-            source_path = (root / pathlib.Path(*pure.parts)).resolve()
-            try:
-                source_path.relative_to(root.resolve())
-            except ValueError as exc:
-                raise WorkspaceError(
-                    f"source '{name}' path must be inside workspace"
-                ) from exc
+            # abspath, not resolve(): mounted links must keep their in-workspace path
+            source_path = pathlib.Path(
+                os.path.abspath(root / pathlib.Path(*pure.parts))
+            )
         if kind == "postgres" and (
             not isinstance(entry.get("url_env"), str)
             or not isinstance(entry.get("schema"), str)
@@ -197,6 +195,17 @@ def _active_run(root: pathlib.Path) -> bool:
         return True
 
 
+def _mount_link(target: pathlib.Path, mount: pathlib.Path) -> None:
+    """Mount an external worktree inside the workspace (junction on Windows)."""
+    mount.parent.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(mount))
+    else:
+        mount.symlink_to(target, target_is_directory=True)
+
+
 def add_git_link(root: pathlib.Path, target: str, name: str) -> Source:
     data = _read(root)
     _check_add(root, data, name)
@@ -205,8 +214,17 @@ def add_git_link(root: pathlib.Path, target: str, name: str) -> Source:
         raise WorkspaceError(f"target is not a Git worktree: {resolved}")
     try:
         relative = resolved.relative_to(root.resolve()).as_posix() or "."
-    except ValueError as exc:
-        raise WorkspaceError("link target must be mounted inside workspace") from exc
+    except ValueError:
+        mount = root / ".okf-wiki" / "sources" / name
+        if mount.exists() or mount.is_symlink():
+            raise WorkspaceError(f"mount destination exists: {mount}")
+        try:
+            _mount_link(resolved, mount)
+        except OSError as exc:
+            raise WorkspaceError(
+                f"cannot mount '{resolved}' at {mount}: {exc}"
+            ) from exc
+        relative = mount.relative_to(root).as_posix()
     data["sources"].append(
         {
             "name": name,
@@ -384,6 +402,27 @@ def assert_git_revision(root: pathlib.Path, source: Source, revision: dict) -> N
     current = capture_git_revision(root, source)
     if current["commit"] != revision.get("commit"):
         raise WorkspaceError(f"source '{source.name}' changed during the run")
+
+
+def git_top_level(source: Source, commit: str) -> list[str]:
+    """Sorted top-level tracked directories (fallback: tracked files) at commit."""
+    if source.path is None or not re.fullmatch(r"[0-9a-f]{40,64}", commit):
+        return []
+    result = _git(
+        source.path, "ls-tree", "-z", "--name-only", commit, check=False
+    )
+    if result.returncode:
+        return []
+    entries = [item for item in result.stdout.split("\0") if item]
+    dirs = _git(
+        source.path, "ls-tree", "-z", "--name-only", "-d", commit, check=False
+    )
+    top_dirs = (
+        [item for item in dirs.stdout.split("\0") if item]
+        if not dirs.returncode
+        else []
+    )
+    return sorted(top_dirs) or sorted(entries)
 
 
 def git_blob(source: Source, commit: str, rel: str) -> bytes | None:

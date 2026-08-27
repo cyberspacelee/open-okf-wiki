@@ -243,10 +243,12 @@ def build_parser() -> argparse.ArgumentParser:
     source_kinds = add.add_subparsers(dest="kind", required=True)
     link = leaf(
         source_kinds.add_parser(
-            "link", help="register a Git worktree already inside the workspace"
+            "link",
+            help="register a local Git worktree (external paths are mounted "
+            "under .okf-wiki/sources)",
         )
     )
-    link.add_argument("target", help="path to the mounted Git worktree")
+    link.add_argument("target", help="path to the Git worktree")
     link.add_argument("--name", required=True, help="unique source name")
     clone = leaf(
         source_kinds.add_parser(
