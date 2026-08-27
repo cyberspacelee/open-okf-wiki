@@ -136,9 +136,32 @@ def _page_hashes(bundle: pathlib.Path | None) -> dict[str, str]:
     }
 
 
+_LOG_STRINGS = {
+    "en": {
+        "title": "# Wiki Update Log",
+        "previous": "## Previous log",
+        "Creation": "Creation",
+        "Update": "Update",
+        "Deprecation": "Deprecation",
+    },
+    "zh": {
+        "title": "# Wiki 更新日志",
+        "previous": "## 历史日志",
+        "Creation": "新增",
+        "Update": "更新",
+        "Deprecation": "废弃",
+    },
+}
+_LOG_TITLES = tuple(item["title"] for item in _LOG_STRINGS.values())
+
+
 def generate_log(
-    bundle: pathlib.Path, previous: pathlib.Path | None, run_id: str
+    bundle: pathlib.Path,
+    previous: pathlib.Path | None,
+    run_id: str,
+    language: str = "en",
 ) -> None:
+    text_for = _LOG_STRINGS.get(language, _LOG_STRINGS["en"])
     before = _page_hashes(previous)
     after = _page_hashes(bundle)
     created = sorted(after.keys() - before.keys())
@@ -150,7 +173,9 @@ def generate_log(
         previous / "log.md" if previous and (previous / "log.md").exists() else None
     )
     prior = (
-        old_log.read_text(encoding="utf-8").rstrip() if old_log else "# Wiki Update Log"
+        old_log.read_text(encoding="utf-8").rstrip()
+        if old_log
+        else text_for["title"]
     )
     events = []
     for kind, paths in (
@@ -165,19 +190,23 @@ def generate_log(
                 else pathlib.PurePosixPath(path).stem
             )
             events.append(
-                f"* **{kind}**: [{title}](/{quote(path, safe='/')}) (`{run_id}`)."
+                f"* **{text_for[kind]}**: [{title}](/{quote(path, safe='/')}) (`{run_id}`)."
             )
     if events:
         date = datetime.now(timezone.utc).date().isoformat()
         heading = f"## {date}"
         existing = prior
-        if existing.startswith("# Wiki Update Log"):
-            existing = existing[len("# Wiki Update Log") :].lstrip()
+        matched = next(
+            (title for title in _LOG_TITLES if existing.startswith(title)), None
+        )
+        if matched:
+            existing = existing[len(matched) :].lstrip()
         else:
-            existing = "## Previous log\n\n" + existing
+            existing = text_for["previous"] + "\n\n" + existing
         if existing.startswith(heading + "\n"):
             text = (
-                "# Wiki Update Log\n\n"
+                text_for["title"]
+                + "\n\n"
                 + heading
                 + "\n"
                 + "\n".join(events)
@@ -185,7 +214,7 @@ def generate_log(
                 + existing[len(heading) + 1 :]
             )
         else:
-            text = "# Wiki Update Log\n\n" + heading + "\n" + "\n".join(events)
+            text = text_for["title"] + "\n\n" + heading + "\n" + "\n".join(events)
             if existing:
                 text += "\n\n" + existing
     else:
@@ -354,7 +383,7 @@ def publish(root: pathlib.Path) -> dict:
         old = current(root)
         previous = pathlib.Path(old["path"]) if old else None
         generate_indexes(partial, state["language"])
-        generate_log(partial, previous, state["run_id"])
+        generate_log(partial, previous, state["run_id"], state["language"])
         bundle_issues = _validate.validate_bundle(partial)
         bundle_errors = [item for item in bundle_issues if item["severity"] == "error"]
         if bundle_errors:
@@ -444,7 +473,7 @@ def verify(root: pathlib.Path, actor: str, pages: list[str]) -> dict:
 
         run_id = f"verify-{now.strftime('%Y%m%dT%H%M%SZ')}"
         generate_indexes(partial, workspace.language)
-        generate_log(partial, source, run_id)
+        generate_log(partial, source, run_id, workspace.language)
         issues = _validate.validate_bundle(partial)
         errors = [item for item in issues if item["severity"] == "error"]
         if errors:

@@ -1,13 +1,16 @@
 # Connect
 
 Run only after every survey completes, and only when two or more Git or
-files sources exist. One task per source: record that source's edges to
-others. Connection ids must be globally unique — emit an edge from exactly
-one connect task.
+files sources exist. One task per source: this task declares only the edges
+whose case-insensitive lowest-sorting participant is this source — the gate
+rejects edges declared by any other participant, so every edge has exactly
+one home. For edges owned by another source, verify nothing and declare
+nothing. Connection ids must be globally unique ASCII slugs.
 
 Read survey JSON from the dispatch inputs, then reopen the evidence in the
 Pin roots from the packet. Never add a connection with only one evidenced
-participant.
+participant. Write `contract` and `failure_propagation` in the packet's
+`language`.
 
 Write the artifact yourself to the packet's `artifact` path — never return
 its content in your reply:
@@ -28,7 +31,7 @@ its content in your reply:
     }
 
 `contract_evidence` is optional and may point at a files Source. Empty
-`connections` is valid when this source has no evidenced edges.
+`connections` is valid when this source owns no evidenced edges.
 
 Then run the packet's `complete_command` from its `workdir`. If the gate
 rejects the artifact, fix it and complete again until it passes.

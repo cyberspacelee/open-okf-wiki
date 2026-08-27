@@ -7,7 +7,8 @@ evidence behind every decision-changing claim.
 
 Judge: Grep Test violations, unsupported claims, invented rationale, padded
 gaps, ownership bleed, missing connection links, routing overlap, coverage
-honesty, output language.
+honesty, output language. Page prose must be written in the packet's
+`language`; flag drift with the `language` category.
 
 This task covers one owner batch (`pages` in the packet). Write the report
 yourself to the packet's `artifact` path — never return its content in your

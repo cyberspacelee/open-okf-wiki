@@ -27,8 +27,10 @@ status or stale_after.
 
 Source-owned pages cite only their owner. Root pages may compose sources.
 Each synthesis connection assigned to architecture links both endpoint pages.
-Use root-relative Wiki links. Fill template sections with evidence or declare
-a partial gap; do not cite drafts or copy cheap source facts.
+Use root-relative Wiki links. Write body prose, headings and footnote text
+in the packet's `language`; frontmatter field names, locators and ids stay
+as the contract defines them. Fill template sections with evidence or
+declare a partial gap; do not cite drafts or copy cheap source facts.
 
 Database pages read the captured catalog.json: data-model.md routes selected
 tables; a table page has type Table, its canonical table resource and an H1

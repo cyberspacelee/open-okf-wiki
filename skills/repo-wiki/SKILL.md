@@ -58,8 +58,11 @@ the recorded commit.
 
 A run is a fixed phase sequence: survey → connect (multi Git/files only) →
 plan shards → write → review batches → publish. `run start` creates survey
-tasks per Git/files source, split by top-level directory when there are
-several. Propose is an optional post-publish command, not a phase.
+tasks per Git/files source, recursively split into scope-sized tasks when a
+source is large; a `survey` block on a source entry in workspace.json
+(`"survey": {"split": ["src/core"], "exclude": ["vendor"]}`) forces or
+prunes scopes for the next run. Propose is an optional post-publish
+command, not a phase.
 `run status` lists the current phase's tasks; task ids are `<phase>:<name>`
 (e.g. `survey:api`, `write:overview.md`). For each task:
 

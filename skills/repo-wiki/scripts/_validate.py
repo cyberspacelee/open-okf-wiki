@@ -20,11 +20,20 @@ from _models import (
 from pydantic import ValidationError
 
 _LINE_ANCHOR = re.compile(r"#L([1-9][0-9]*)(?:-L([1-9][0-9]*))?$")
-_CAUSAL = re.compile(r"\b(because|in order to|so that)\b|为了|以便", re.IGNORECASE)
+_CAUSAL = re.compile(
+    r"\b(because|in order to|so that)\b|为了|以便|因为|由于|以致|从而", re.IGNORECASE
+)
 _INLINE_REF = re.compile(r"\[\^[^\]]+\]")
 _LFS_PREFIX = b"version https://git-lfs.github.com/spec/v1"
 SURVEY_MAX_BYTES = 64 * 1024
 SURVEY_TOTAL_MAX_BYTES = 512 * 1024
+
+
+def _survey_budget(state: dict) -> tuple[int, int]:
+    """Per-survey and whole-set byte budgets; wider for zh (UTF-8 ~3 bytes/char)."""
+    per_file = SURVEY_MAX_BYTES * 2 if state.get("language") == "zh" else SURVEY_MAX_BYTES
+    count = sum(1 for task in state["tasks"].values() if task["phase"] == "survey")
+    return per_file, max(SURVEY_TOTAL_MAX_BYTES, count * per_file)
 
 
 def issue(
@@ -165,28 +174,29 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[dict]:
         ]
     phase = task["phase"]
     if phase == "survey":
+        max_bytes, total_max_bytes = _survey_budget(state)
         survey_root = base / "drafts" / "survey"
         survey_total = sum(
             item.stat().st_size
             for item in survey_root.rglob("*.json")
             if item.is_file()
         )
-        if path.stat().st_size > SURVEY_MAX_BYTES:
+        if path.stat().st_size > max_bytes:
             return [
                 issue(
                     "error",
                     "survey-too-large",
                     str(path),
-                    f"survey exceeds {SURVEY_MAX_BYTES} bytes; split or prioritize findings",
+                    f"survey exceeds {max_bytes} bytes; split or prioritize findings",
                 )
             ]
-        if survey_total > SURVEY_TOTAL_MAX_BYTES:
+        if survey_total > total_max_bytes:
             return [
                 issue(
                     "error",
                     "survey-set-too-large",
                     str(path.parent),
-                    f"survey set exceeds {SURVEY_TOTAL_MAX_BYTES} bytes",
+                    f"survey set exceeds {total_max_bytes} bytes",
                 )
             ]
         value, issues = _model_issues(path, Survey, path.read_text(encoding="utf-8"))
@@ -243,6 +253,18 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[dict]:
                             f"{connection.id} must include {value.source}",
                         )
                     )
+                elif not (names - known):
+                    owner = min(names, key=str.casefold)
+                    if value.source != owner:
+                        issues.append(
+                            issue(
+                                "error",
+                                "connection-owner-invalid",
+                                str(path),
+                                f"{connection.id} belongs to connect:{owner.lower()}"
+                                " (lowest participant declares the edge)",
+                            )
+                        )
                 for participant in connection.participants:
                     for locator in participant.evidence:
                         resolved = _draft_locator(root, state, locator)
@@ -382,6 +404,10 @@ def _finding_id_list(base: pathlib.Path) -> list[str]:
 
 
 def _connection_id_list(base: pathlib.Path) -> list[str]:
+    return [item.id for _, item in _connection_entries(base)]
+
+
+def _connection_entries(base: pathlib.Path) -> list[tuple[str, object]]:
     result = []
     connect_dir = base / "drafts" / "connect"
     if not connect_dir.is_dir():
@@ -390,7 +416,7 @@ def _connection_id_list(base: pathlib.Path) -> list[str]:
         connect = Connect.model_validate_json(
             path.read_text(encoding="utf-8"), strict=True
         )
-        result.extend(item.id for item in connect.connections)
+        result.extend((connect.source, item) for item in connect.connections)
     return result
 
 
@@ -547,7 +573,8 @@ def validate_composed_plan(root: pathlib.Path, state: dict) -> list[dict]:
                 "every finding must be assigned once or explicitly excluded",
             )
         )
-    connection_list_all = _connection_id_list(base)
+    connection_entries = _connection_entries(base)
+    connection_list_all = [item.id for _, item in connection_entries]
     connection_ids = set(connection_list_all)
     if len(connection_list_all) != len(connection_ids):
         issues.append(
@@ -558,6 +585,23 @@ def validate_composed_plan(root: pathlib.Path, state: dict) -> list[dict]:
                 "connection ids must be unique across connect tasks",
             )
         )
+    declared_by: dict[frozenset, set[str]] = {}
+    for declaring, item in connection_entries:
+        participants = frozenset(part.source for part in item.participants)
+        declared_by.setdefault(participants, set()).add(declaring)
+    for participants, declarers in sorted(
+        declared_by.items(), key=lambda entry: sorted(entry[0])
+    ):
+        if len(declarers) > 1:
+            issues.append(
+                issue(
+                    "error",
+                    "connection-duplicate-edge",
+                    str(plan_dir),
+                    f"edge between {sorted(participants)} is declared by"
+                    f" {sorted(declarers)}; one connect task owns an edge",
+                )
+            )
     connection_list = [cid for page in pages for cid in page.connection_ids]
     assigned_connections = set(connection_list)
     if connection_ids != assigned_connections or len(connection_list) != len(

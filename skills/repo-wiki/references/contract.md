@@ -51,6 +51,15 @@ Links are bundle-root-relative or page-relative; broken links block the run.
 Cross-source architecture links both source-owned concepts, so links carry
 topology without a custom graph schema.
 
+## Language
+
+The dispatch packet's `language` is the workspace output language. Prose
+travels in it: claims, gaps, contracts, failure propagation, page bodies,
+titles, routing descriptions, exclusion and review text. Machine-facing
+structure never does: frontmatter field names, finding/connection ids,
+tags, page paths and locators stay ASCII as specified here. Review flags
+drift with the `language` issue category.
+
 ## Layout
 
 Every plan includes `overview.md` and `architecture.md` (workspace-owned).

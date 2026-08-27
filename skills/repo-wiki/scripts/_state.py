@@ -253,20 +253,86 @@ def start_run(root: pathlib.Path, producer: str, session: str) -> dict:
     return status(root)
 
 
+_SURVEY_SCOPE_BUDGET = 200
+
+
 def _survey_scopes(root: pathlib.Path, source, revision: dict) -> list[tuple[str, list[str]]]:
     import _workspace
 
     slug = _slug(source.name)
-    if source.kind == "git":
-        listing = _workspace.git_top_level(source, revision["commit"])
-    else:
-        assert source.path is not None
-        listing = sorted(
-            item.name for item in source.path.iterdir() if item.is_dir()
-        ) or ["."]
-    if len(listing) <= 1:
-        return [(slug, listing or ["."])]
-    return [(f"{slug}/{_slug(item)}", [item]) for item in listing]
+    files = _workspace.tracked_files(source, revision.get("commit"))
+    exclude = [item.strip("/") for item in source.survey_exclude if item.strip("/")]
+    if exclude:
+        files = [
+            item
+            for item in files
+            if not any(item == entry or item.startswith(entry + "/") for entry in exclude)
+        ]
+    if not files:
+        return [(slug, ["."])]
+    forced = {item.strip("/") for item in source.survey_split if item.strip("/")}
+    scopes = _split_scope(slug, "", files, forced)
+    seen: dict[str, int] = {}
+    result = []
+    for name, scope in scopes:
+        count = seen.get(name, 0)
+        seen[name] = count + 1
+        result.append((f"{name}-{count + 1}" if count else name, scope))
+    return result
+
+
+def _split_scope(
+    name: str, prefix: str, files: list[str], forced: set[str]
+) -> list[tuple[str, list[str]]]:
+    """Partition a subtree into disjoint scopes within the file-count budget."""
+    forced_below = any(
+        item != prefix and (not prefix or item.startswith(prefix + "/"))
+        for item in forced
+    )
+    if len(files) <= _SURVEY_SCOPE_BUDGET and not forced_below:
+        if prefix:
+            return [(name, [prefix])]
+        return [(name, sorted({item.split("/", 1)[0] for item in files}))]
+    start = len(prefix) + 1 if prefix else 0
+    groups: dict[str, list[str]] = {}
+    loose: list[str] = []
+    for item in files:
+        head, sep, _ = item[start:].partition("/")
+        if sep:
+            groups.setdefault(head, []).append(item)
+        else:
+            loose.append(item)
+    result: list[tuple[str, list[str]]] = []
+    pending: list[tuple[str, list[str], int]] = []
+    for head in sorted(groups):
+        child_prefix = f"{prefix}/{head}" if prefix else head
+        child_forced = child_prefix in forced or any(
+            item.startswith(child_prefix + "/") for item in forced
+        )
+        if len(groups[head]) > _SURVEY_SCOPE_BUDGET or child_forced:
+            result.extend(
+                _split_scope(
+                    f"{name}/{_slug(head)}", child_prefix, groups[head], forced
+                )
+            )
+        else:
+            pending.append((head, [child_prefix], len(groups[head])))
+    for item in sorted(loose):
+        pending.append((item[start:], [item], 1))
+    packed: list[str] = []
+    packed_head: str | None = None
+    packed_count = 0
+    for head, paths, count in pending:
+        if packed and packed_count + count > _SURVEY_SCOPE_BUDGET:
+            result.append((f"{name}/{_slug(packed_head)}", packed))
+            packed, packed_head, packed_count = [], None, 0
+        if packed_head is None:
+            packed_head = head
+        packed.extend(paths)
+        packed_count += count
+    if packed:
+        result.append((f"{name}/{_slug(packed_head)}", packed))
+    return result
 
 
 def _connectable(state: dict) -> list[dict]:
@@ -419,6 +485,7 @@ def _dispatch(root: pathlib.Path, state: dict, task: dict) -> dict:
     packet = {
         "run_id": state["run_id"],
         "task": {"id": task["id"], "phase": phase, "spec": task["spec"]},
+        "language": state["language"],
         "reference": str(
             pathlib.Path(__file__).resolve().parent.parent / "references" / reference
         ),
@@ -865,6 +932,7 @@ def review_start(root: pathlib.Path, actor: str, session: str) -> dict:
         "candidate_digest": digest,
         "actor": actor,
         "session": session,
+        "language": state["language"],
         "created_at": state["review"]["created_at"],
         "reference": str(
             pathlib.Path(__file__).resolve().parent.parent / "references" / "review.md"
@@ -1081,6 +1149,7 @@ def propose_start(root: pathlib.Path) -> dict:
     proposals.mkdir(parents=True, exist_ok=True)
     return {
         "run_id": state["run_id"],
+        "language": state["language"],
         "reference": str(
             pathlib.Path(__file__).resolve().parent.parent / "references" / "propose.md"
         ),

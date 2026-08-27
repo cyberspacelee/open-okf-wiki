@@ -39,6 +39,8 @@ class Source:
     url_env: str | None = None
     schema: str | None = None
     tables: tuple[str, ...] = ()
+    survey_split: tuple[str, ...] = ()
+    survey_exclude: tuple[str, ...] = ()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -70,6 +72,11 @@ def _git(
 
 def _is_git_repo(path: pathlib.Path) -> bool:
     return _git(path, "rev-parse", "--is-inside-work-tree", check=False).returncode == 0
+
+
+def _relative_dir(value: str) -> bool:
+    pure = pathlib.PurePosixPath(value)
+    return bool(value) and not pure.is_absolute() and ".." not in pure.parts
 
 
 def init(
@@ -162,6 +169,17 @@ def load(root: pathlib.Path) -> Workspace:
             raise WorkspaceError(f"invalid postgres source '{name}'")
         if source_path is not None and not source_path.is_dir():
             raise WorkspaceError(f"source '{name}' target not found: {source_path}")
+        survey = entry.get("survey", {})
+        if not isinstance(survey, dict):
+            raise WorkspaceError(f"invalid survey config for source '{name}'")
+        for key in ("split", "exclude"):
+            values = survey.get(key, [])
+            if not isinstance(values, list) or any(
+                not isinstance(item, str) or not _relative_dir(item) for item in values
+            ):
+                raise WorkspaceError(
+                    f"survey.{key} for source '{name}' must list relative directories"
+                )
         sources[name] = Source(
             name=name,
             kind=kind,
@@ -172,6 +190,8 @@ def load(root: pathlib.Path) -> Workspace:
             url_env=entry.get("url_env"),
             schema=entry.get("schema"),
             tables=tuple(tables),
+            survey_split=tuple(survey.get("split", [])),
+            survey_exclude=tuple(survey.get("exclude", [])),
         )
     return Workspace(
         root=root,
@@ -575,6 +595,26 @@ def git_top_level(source: Source, commit: str) -> list[str]:
         else []
     )
     return sorted(top_dirs) or sorted(entries)
+
+
+def tracked_files(source: Source, commit: str | None) -> list[str]:
+    """Sorted repo-relative file paths: tracked at commit (git) or on disk (files)."""
+    if source.path is None:
+        return []
+    if source.kind == "git":
+        if commit is None or not re.fullmatch(r"[0-9a-f]{40,64}", commit):
+            return []
+        result = _git(
+            source.path, "ls-tree", "-r", "-z", "--name-only", commit, check=False
+        )
+        if result.returncode:
+            return []
+        return sorted(item for item in result.stdout.split("\0") if item)
+    return sorted(
+        item.relative_to(source.path).as_posix()
+        for item in source.path.rglob("*")
+        if item.is_file()
+    )
 
 
 def git_blob(source: Source, commit: str, rel: str) -> bytes | None:

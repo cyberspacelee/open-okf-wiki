@@ -300,6 +300,7 @@ def test_task_start_returns_path_only_worker_dispatch(tmp_path):
     assert set(packet) == {
         "run_id",
         "task",
+        "language",
         "reference",
         "artifact",
         "sources",
@@ -307,6 +308,7 @@ def test_task_start_returns_path_only_worker_dispatch(tmp_path):
         "complete_command",
         "workdir",
     }
+    assert packet["language"] == "en"
     assert packet["task"] == {
         "id": "survey:sourcea",
         "phase": "survey",

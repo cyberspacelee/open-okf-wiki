@@ -52,8 +52,10 @@ Workspace shard:
       }]
     }
 
-Paths are lowercase portable bundle-relative Markdown paths. Include required
-database pages from contract.md. Do not add tag indexes or speculative pages.
+Paths are lowercase portable bundle-relative Markdown paths. Write titles,
+descriptions and exclusion reasons in the packet's `language`; paths, tags
+and ids stay ASCII. Include required database pages from contract.md. Do
+not add tag indexes or speculative pages.
 
 Then run the packet's `complete_command` from its `workdir`. If the gate
 rejects the artifact, fix it and complete again until it passes.
