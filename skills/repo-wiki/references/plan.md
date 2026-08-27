@@ -37,4 +37,7 @@ its content in your reply:
 Paths are lowercase portable bundle-relative Markdown paths. Include required
 database pages from contract.md. Do not add tag indexes or speculative pages.
 
-Handoff: artifact path, page count, exclusion count.
+Then run the packet's `complete_command` from its `workdir`. If the gate
+rejects the artifact, fix it and complete again until it passes.
+
+Handoff: artifact path, gate verdict, page count, exclusion count.

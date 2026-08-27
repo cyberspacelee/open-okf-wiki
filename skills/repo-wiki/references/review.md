@@ -28,4 +28,7 @@ Use `"reopen": "plan"` when ownership, routing or page boundaries must
 change. An approved report has verdict `approved` and an empty issues list;
 approval stamps machine-confirmed verification — it is not human review.
 
+Then run the packet's `submit_command` from its `workdir` to submit the
+report.
+
 Handoff: report path, verdict, issue count.

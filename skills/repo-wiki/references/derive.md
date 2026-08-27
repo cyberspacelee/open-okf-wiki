@@ -15,4 +15,7 @@ all pending human ratification. Optional ADR stubs state an evidenced
 Decision; Context and Rationale remain human-owned. No qualifying content
 means no optional file.
 
-Handoff: proposals directory path and file count.
+Then run the packet's `complete_command` from its `workdir`. If the gate
+rejects the proposals, fix them and complete again until it passes.
+
+Handoff: proposals directory path, gate verdict, file count.

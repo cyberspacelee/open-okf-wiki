@@ -299,6 +299,8 @@ def test_task_start_returns_path_only_worker_dispatch(tmp_path):
         "artifact",
         "sources",
         "inputs",
+        "complete_command",
+        "workdir",
     }
     assert packet["task"] == {
         "id": "survey:sourcea",
@@ -309,6 +311,8 @@ def test_task_start_returns_path_only_worker_dispatch(tmp_path):
     assert pathlib.Path(packet["artifact"]).name == "sourcea.json"
     assert packet["sources"] == {"SourceA": str(source.resolve())}
     assert packet["inputs"] == []
+    assert packet["complete_command"].endswith("task complete survey:sourcea --json")
+    assert packet["workdir"] == str(root)
 
 
 def test_parallel_task_starts_do_not_lose_state(tmp_path, monkeypatch):

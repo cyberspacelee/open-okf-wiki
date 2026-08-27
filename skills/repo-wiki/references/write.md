@@ -34,4 +34,7 @@ Database pages read the captured catalog.json: data-model.md routes selected
 tables; a table page has type Table, its canonical table resource and an H1
 Schema table, and claims nothing about unselected tables.
 
-Handoff: artifact path and gap count.
+Then run the packet's `complete_command` from its `workdir`. If the gate
+rejects the page, fix it and complete again until it passes.
+
+Handoff: artifact path, gate verdict, gap count.

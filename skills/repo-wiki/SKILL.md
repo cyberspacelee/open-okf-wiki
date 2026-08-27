@@ -60,13 +60,16 @@ Git source with a CLI-computed scope — there is no separate inspect step.
 
     okf task start <phase>:<name> --json    # returns a dispatch packet
     # dispatch ONE worker session with the packet (paths, never pasted content)
-    okf task complete <phase>:<name>        # validates the artifact; advances on success
 
-If completion is rejected, relay the issue list to the same worker as a
-repair task and complete again. Never mark work done yourself — the gate is
-the only authority. If a worker returns artifact content instead of writing
-the file, treat the task as failed and redispatch; the coordinator never
-writes an artifact on a worker's behalf.
+The worker owns its task end to end: it writes the artifact, runs the
+packet's `complete_command` from the packet's `workdir`, and if the gate
+rejects it, fixes the artifact and completes again — repeating until the
+gate passes or the failure genuinely needs the coordinator (e.g. the page
+plan itself is wrong). The worker's handoff reports the final gate verdict.
+The coordinator never validates artifacts, never edits artifact JSON, and
+never runs `task complete` on a worker's behalf — its job is dispatching
+tasks and reacting to `run status`. If a worker returns artifact content
+instead of writing the file, treat the task as failed and redispatch.
 
 ## Coordinator and workers
 
@@ -87,8 +90,8 @@ What goes where:
   hard-capped by the gate (e.g. 16 findings, 24 KiB per survey) so no single
   file outgrows what a model can produce reliably.
 - **Worker → coordinator handoff**: at most 10 lines / 2 KiB — the artifact
-  path, item ids when the reference asks for them, and a gap count. Never
-  artifact bodies.
+  path, the gate verdict from `complete_command`, item ids when the
+  reference asks for them, and a gap count. Never artifact bodies.
 
 Each phase reference (`references/<phase>.md`, named in the dispatch packet)
 tells the worker what to read, do, write and return. Read it before working.
@@ -104,7 +107,7 @@ Review runs in a fresh session, never the producer's:
 
     okf review start --actor repo-wiki/<reviewer> --session <new-session> --json
     # dispatch the review packet to a fresh worker; it writes report.json
-    okf review submit --report <packet report path>
+    # and runs the packet's submit_command itself
 
 Approval stamps pages `machine-confirmed`. Then:
 

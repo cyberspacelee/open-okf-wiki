@@ -21,4 +21,7 @@ its content in your reply:
       "gaps": []
     }
 
-Handoff: artifact path, connection ids, gap count.
+Then run the packet's `complete_command` from its `workdir`. If the gate
+rejects the artifact, fix it and complete again until it passes.
+
+Handoff: artifact path, gate verdict, connection ids, gap count.

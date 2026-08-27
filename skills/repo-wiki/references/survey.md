@@ -27,4 +27,7 @@ run's recorded revision. The gate enforces at most 16 findings, 4 locators
 per finding, 8 gaps and 24 KiB — prioritize Grep-Test knowledge and record
 omitted scope as a gap rather than padding.
 
-Handoff: artifact path, finding ids, gap count. Nothing else.
+Then run the packet's `complete_command` from its `workdir`. If the gate
+rejects the artifact, fix it and complete again until it passes.
+
+Handoff: artifact path, gate verdict, finding ids, gap count. Nothing else.

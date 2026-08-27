@@ -329,6 +329,7 @@ def _dispatch(root: pathlib.Path, state: dict, task: dict) -> dict:
         for name, source in workspace.sources.items()
         if source.kind == "git" and source.path and (not selected or name == selected)
     }
+    okf = pathlib.Path(__file__).resolve().parent / "okf.py"
     return {
         "run_id": state["run_id"],
         "task": {"id": task["id"], "phase": phase, "spec": task["spec"]},
@@ -338,6 +339,8 @@ def _dispatch(root: pathlib.Path, state: dict, task: dict) -> dict:
         "artifact": str(_artifact(root, state, task)),
         "sources": sources,
         "inputs": [str(path) for path in inputs if path.exists()],
+        "complete_command": f"uv run {okf} task complete {task['id']} --json",
+        "workdir": str(root),
     }
 
 
@@ -699,6 +702,11 @@ def review_start(root: pathlib.Path, actor: str, session: str) -> dict:
             path.relative_to(candidate_dir(root, state)).as_posix()
             for path in candidate_dir(root, state).rglob("*.md")
         ),
+        "submit_command": (
+            f"uv run {pathlib.Path(__file__).resolve().parent / 'okf.py'} "
+            f"review submit --report {report_path} --json"
+        ),
+        "workdir": str(root),
     }
     packet_path = drafts_dir(root, state) / "review" / "packet.json"
     atomic_json(packet_path, packet)
