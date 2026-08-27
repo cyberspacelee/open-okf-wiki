@@ -154,6 +154,8 @@ def cmd_publication(args) -> int:
         result = _publish.current(ROOT) or {"publication": None}
     elif args.action == "rollback":
         result = _publish.rollback(ROOT)
+    elif args.action == "verify":
+        result = _publish.verify(ROOT, args.actor, args.page)
     elif args.action == "export":
         result = _publish.export(ROOT, ROOT / args.to)
     emit(result, args.json)
@@ -197,96 +199,208 @@ def cmd_db(args) -> int:
     return 0
 
 
-def cmd_verify(args) -> int:
-    import _publish
-
-    result = _publish.verify(ROOT, args.actor, args.page)
-    emit(result, args.json)
-    return 0
-
-
 def leaf(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
-    parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--json", action="store_true", help="emit machine-readable JSON"
+    )
     return parser
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="okf")
+    parser = argparse.ArgumentParser(
+        prog="okf",
+        description=(
+            "Deterministic kernel for the repo-wiki skill: owns workspace "
+            "sources, run state, validation gates and publication. Run from "
+            "the workspace root."
+        ),
+    )
     commands = parser.add_subparsers(dest="command", required=True)
 
-    workspace = commands.add_parser("workspace")
+    workspace = commands.add_parser(
+        "workspace", help="create or inspect the workspace"
+    )
     workspace_actions = workspace.add_subparsers(dest="action", required=True)
-    init = leaf(workspace_actions.add_parser("init"))
-    init.add_argument("--lang", choices=("en", "zh"), default="en")
-    init.add_argument("--freshness-days", type=int, default=90)
-    leaf(workspace_actions.add_parser("show"))
+    init = leaf(
+        workspace_actions.add_parser(
+            "init", help="create an empty workspace in the current directory"
+        )
+    )
+    init.add_argument(
+        "--lang", choices=("en", "zh"), default="en", help="wiki output language"
+    )
+    init.add_argument(
+        "--freshness-days",
+        type=int,
+        default=90,
+        help="days before published pages become stale",
+    )
+    leaf(workspace_actions.add_parser("show", help="show workspace configuration"))
 
-    source = commands.add_parser("source")
+    source = commands.add_parser("source", help="register or list run inputs")
     source_actions = source.add_subparsers(dest="action", required=True)
-    add = source_actions.add_parser("add")
+    add = source_actions.add_parser("add", help="register a source")
     source_kinds = add.add_subparsers(dest="kind", required=True)
-    link = leaf(source_kinds.add_parser("link"))
-    link.add_argument("target")
-    link.add_argument("--name", required=True)
-    clone = leaf(source_kinds.add_parser("clone"))
-    clone.add_argument("target")
-    clone.add_argument("--name", required=True)
-    clone.add_argument("--ref")
-    postgres = leaf(source_kinds.add_parser("postgres"))
-    postgres.add_argument("--name", required=True)
-    postgres.add_argument("--url-env", default="DATABASE_URL")
-    postgres.add_argument("--schema", default="public")
-    postgres.add_argument("--table", action="append")
-    leaf(source_actions.add_parser("list"))
+    link = leaf(
+        source_kinds.add_parser(
+            "link", help="register a Git worktree already inside the workspace"
+        )
+    )
+    link.add_argument("target", help="path to the mounted Git worktree")
+    link.add_argument("--name", required=True, help="unique source name")
+    clone = leaf(
+        source_kinds.add_parser(
+            "clone", help="clone a Git URL into .okf-wiki/sources/<name>"
+        )
+    )
+    clone.add_argument("target", help="Git URL to clone")
+    clone.add_argument("--name", required=True, help="unique source name")
+    clone.add_argument("--ref", help="branch, tag or commit to check out")
+    postgres = leaf(
+        source_kinds.add_parser(
+            "postgres", help="register selected PostgreSQL tables as evidence"
+        )
+    )
+    postgres.add_argument("--name", required=True, help="unique source name")
+    postgres.add_argument(
+        "--url-env",
+        default="DATABASE_URL",
+        help="environment variable holding the connection URL",
+    )
+    postgres.add_argument("--schema", default="public", help="schema to select from")
+    postgres.add_argument(
+        "--table", action="append", help="table to include (repeatable)"
+    )
+    leaf(source_actions.add_parser("list", help="list registered sources"))
 
-    run = commands.add_parser("run")
+    run = commands.add_parser("run", help="start, resume or abandon a generation run")
     run_actions = run.add_subparsers(dest="action", required=True)
-    start = leaf(run_actions.add_parser("start"))
-    start.add_argument("--producer", required=True)
-    start.add_argument("--session", required=True)
-    leaf(run_actions.add_parser("status"))
-    leaf(run_actions.add_parser("abandon"))
+    start = leaf(
+        run_actions.add_parser(
+            "start", help="freeze source revisions and create run tasks"
+        )
+    )
+    start.add_argument(
+        "--producer", required=True, help="producer identity as <name>/<version>"
+    )
+    start.add_argument(
+        "--session", required=True, help="unique id for this producer session"
+    )
+    leaf(
+        run_actions.add_parser(
+            "status", help="show current phase, tasks and next actions"
+        )
+    )
+    leaf(run_actions.add_parser("abandon", help="abandon the current run"))
 
-    task = commands.add_parser("task")
+    task = commands.add_parser(
+        "task", help="dispatch and gate run tasks (id format: <phase>:<name>)"
+    )
     task_actions = task.add_subparsers(dest="action", required=True)
-    for action in ("start", "complete"):
-        target = leaf(task_actions.add_parser(action))
-        target.add_argument("target")
-    fail = leaf(task_actions.add_parser("fail"))
-    fail.add_argument("target")
-    fail.add_argument("--reason")
+    start_task = leaf(
+        task_actions.add_parser(
+            "start", help="mark a task in progress and print its dispatch packet"
+        )
+    )
+    start_task.add_argument("target", help="task id, e.g. survey:api-core")
+    complete_task = leaf(
+        task_actions.add_parser(
+            "complete", help="validate the task artifact and advance on success"
+        )
+    )
+    complete_task.add_argument("target", help="task id, e.g. survey:api-core")
+    fail = leaf(
+        task_actions.add_parser("fail", help="record a failed task for retry")
+    )
+    fail.add_argument("target", help="task id, e.g. survey:api-core")
+    fail.add_argument("--reason", help="short failure description")
 
-    review = commands.add_parser("review")
+    review = commands.add_parser(
+        "review", help="independent review of the finished candidate"
+    )
     review_actions = review.add_subparsers(dest="action", required=True)
-    review_start = leaf(review_actions.add_parser("start"))
-    review_start.add_argument("--actor", required=True)
-    review_start.add_argument("--session", required=True)
-    review_submit = leaf(review_actions.add_parser("submit"))
-    review_submit.add_argument("--report", required=True)
+    review_start = leaf(
+        review_actions.add_parser(
+            "start", help="bind a review session and print the review packet"
+        )
+    )
+    review_start.add_argument(
+        "--actor", required=True, help="reviewer identity as <name>/<version>"
+    )
+    review_start.add_argument(
+        "--session", required=True, help="session id distinct from the producer"
+    )
+    review_submit = leaf(
+        review_actions.add_parser("submit", help="submit the reviewer's report")
+    )
+    review_submit.add_argument(
+        "--report", required=True, help="path to the review report JSON"
+    )
 
-    publication = commands.add_parser("publication")
+    publication = commands.add_parser(
+        "publication", help="publish, export, verify or roll back generations"
+    )
     publication_actions = publication.add_subparsers(dest="action", required=True)
-    for action in ("publish", "current", "rollback"):
-        leaf(publication_actions.add_parser(action))
-    export = leaf(publication_actions.add_parser("export"))
-    export.add_argument("--to", default="wiki")
+    leaf(
+        publication_actions.add_parser(
+            "publish", help="install the approved candidate as the current generation"
+        )
+    )
+    leaf(
+        publication_actions.add_parser(
+            "current", help="show the current generation pointer"
+        )
+    )
+    leaf(
+        publication_actions.add_parser(
+            "rollback", help="switch back to the previous generation"
+        )
+    )
+    export = leaf(
+        publication_actions.add_parser(
+            "export", help="copy the current generation to a Git-managed directory"
+        )
+    )
+    export.add_argument("--to", default="wiki", help="export directory (default: wiki)")
+    verify = leaf(
+        publication_actions.add_parser(
+            "verify", help="record human verification of published pages"
+        )
+    )
+    verify.add_argument(
+        "--actor", required=True, help="human identity as human:<identity>"
+    )
+    verify.add_argument(
+        "--page", action="append", required=True, help="page path (repeatable)"
+    )
 
-    validate = leaf(commands.add_parser("validate"))
-    validate.add_argument("--published", action="store_true")
+    validate = leaf(
+        commands.add_parser(
+            "validate",
+            help="validate the candidate (or the publication with --published)",
+        )
+    )
+    validate.add_argument(
+        "--published",
+        action="store_true",
+        help="validate the current publication instead of the run candidate",
+    )
 
-    db = commands.add_parser("db")
+    db = commands.add_parser(
+        "db", help="explore PostgreSQL before selecting catalog tables"
+    )
     db_actions = db.add_subparsers(dest="action", required=True)
-    tables = leaf(db_actions.add_parser("tables"))
-    tables.add_argument("--url-env", default="DATABASE_URL")
-    tables.add_argument("--schema", default="public")
-    describe = leaf(db_actions.add_parser("describe"))
-    describe.add_argument("table")
-    describe.add_argument("--url-env", default="DATABASE_URL")
-    describe.add_argument("--schema", default="public")
-
-    verify = leaf(commands.add_parser("verify"))
-    verify.add_argument("--actor", required=True)
-    verify.add_argument("--page", action="append", required=True)
+    tables = leaf(db_actions.add_parser("tables", help="list tables in a schema"))
+    tables.add_argument(
+        "--url-env", default="DATABASE_URL", help="env var with the connection URL"
+    )
+    tables.add_argument("--schema", default="public", help="schema to list")
+    describe = leaf(db_actions.add_parser("describe", help="describe one table"))
+    describe.add_argument("table", help="table name")
+    describe.add_argument(
+        "--url-env", default="DATABASE_URL", help="env var with the connection URL"
+    )
+    describe.add_argument("--schema", default="public", help="schema of the table")
     return parser
 
 
@@ -301,7 +415,6 @@ def main() -> int:
         "publication": cmd_publication,
         "validate": cmd_validate,
         "db": cmd_db,
-        "verify": cmd_verify,
     }
     try:
         return handlers[args.command](args)
