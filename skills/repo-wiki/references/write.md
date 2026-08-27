@@ -2,7 +2,7 @@
 
 Author exactly the page named by the write target. Read contract.md, its page
 plan entry, assigned findings or connections, the appropriate template, and
-the frozen evidence. Reopen every cited locator.
+the revision-bound evidence. Reopen every cited locator.
 
 Start frontmatter with:
 
@@ -28,6 +28,6 @@ synthesis connection in architecture links both endpoint pages. Use
 root-relative Wiki links. Fill template sections with evidence or declare a
 partial gap. Do not cite drafts or copy cheap source facts.
 
-Database pages read the frozen catalog.json. data-model.md routes selected
+Database pages read the captured catalog.json. data-model.md routes selected
 tables. A table page has type Table, its canonical table resource and an H1
 Schema table; it claims nothing about unselected tables.

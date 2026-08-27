@@ -1,7 +1,7 @@
 # Synthesize
 
 Run only after every survey completes and only for multiple Git sources. Read
-all survey JSON and reopen evidence in frozen snapshots. Confirm each
+all survey JSON and reopen evidence in the Source roots. Confirm each
 connection from both ends.
 
 Write drafts/synthesize.json:

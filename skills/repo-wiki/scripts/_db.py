@@ -203,7 +203,7 @@ def _canonical_database(url: str, schema: str) -> str:
     return f"postgresql://{host}{port}/{database}/{quote(schema, safe='')}"
 
 
-def snapshot_source(root: pathlib.Path, source) -> dict:
+def capture_catalog(root: pathlib.Path, source) -> dict:
     url = resolve_url(root, source.url_env or "DATABASE_URL")
     schema = source.schema or "public"
     available = tables(url, schema)
@@ -225,7 +225,6 @@ def snapshot_source(root: pathlib.Path, source) -> dict:
         item["resource"] = f"{schema_resource}/{quote(item['name'], safe='')}"
     payload = {
         "name": source.name,
-        "kind": "postgres",
         "schema": schema,
         "resource": schema_resource,
         "tables": described,
@@ -234,7 +233,7 @@ def snapshot_source(root: pathlib.Path, source) -> dict:
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode()
     content_hash = hashlib.sha256(raw).hexdigest()
-    directory = root / ".okf-wiki" / "snapshots" / content_hash
+    directory = root / ".okf-wiki" / "catalogs" / content_hash
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "catalog.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",

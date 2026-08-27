@@ -1,15 +1,15 @@
-# Open OKF Wiki v3
+# Open OKF Wiki v4
 
 A skill-driven producer for thin, evidence-anchored repository Wikis. Agents
-follow skills/repo-wiki/SKILL.md; deterministic Python gates freeze sources,
+follow skills/repo-wiki/SKILL.md; deterministic Python gates bind Git revisions,
 validate phase artifacts, bind independent review to a candidate digest and
 publish OKF v0.2 generations.
 
 ## Install
 
 Prerequisites: Git, [uv](https://docs.astral.sh/uv/) and Node.js 22.20+ for the
-cross-agent skills installer. Until v3 reaches the default branch, clone its
-published branch explicitly:
+cross-agent skills installer. Until this release reaches the default branch,
+clone its published branch explicitly:
 
 ```text
 git clone --depth 1 --branch v2/skill-harness https://github.com/cyberspacelee/open-okf-wiki.git open-okf-wiki
@@ -28,8 +28,8 @@ Windows. The Codex command above installs to `.agents/skills/repo-wiki`; replace
 that path in the examples below if your agent uses another project skill
 directory.
 
-Formal Runs reject dirty or untracked Git sources. Commit the installed skill
-and lock file, or keep local agent files out of the source snapshot. A typical
+Formal Runs reject dirty, untracked or revision-drifted Git sources. Commit the
+installed skill and lock file, or keep local agent files out of the source. A typical
 local-only `.gitignore` section is:
 
 ```gitignore
@@ -44,21 +44,31 @@ the exported Wiki belongs in the repository.
 
 ## Quick start
 
-Run from the Git repository that should own the Wiki. Initialization registers
-the current repository as the `self` source:
+Run from the directory that should own the Wiki. Initialization creates an
+empty Workspace; it never assumes that the current directory is a Source:
 
 ```text
 uv run .agents/skills/repo-wiki/scripts/okf.py workspace init --lang zh --freshness-days 90
 uv run .agents/skills/repo-wiki/scripts/okf.py workspace show --json
 ```
 
-Add other clean Git repositories only when the Wiki spans multiple sources:
+Register every clean Git Source explicitly. `link` registers an existing
+worktree already inside the Workspace; `clone` materializes a Git URL under
+`.okf-wiki/sources/`.
+Source names preserve letter case, while names that differ only by case are
+rejected for Windows portability. Link `.` when the Workspace directory itself
+is the intended repository:
 
 ```text
-uv run .agents/skills/repo-wiki/scripts/okf.py source add --kind git --name api ../api
-uv run .agents/skills/repo-wiki/scripts/okf.py source add --kind git --name web https://github.com/example/web.git
+uv run .agents/skills/repo-wiki/scripts/okf.py source add link . --name app
+uv run .agents/skills/repo-wiki/scripts/okf.py source add link ./services/API --name API
+uv run .agents/skills/repo-wiki/scripts/okf.py source add clone https://github.com/example/web.git --name Web --ref main
 uv run .agents/skills/repo-wiki/scripts/okf.py source list --json
 ```
+
+An existing repository outside the Workspace must be mounted as a worktree
+inside it or added by URL with `clone`. The producer does not copy it into a
+private source snapshot.
 
 PostgreSQL is optional. Store the URL in the operating-system environment or
 in a workspace-root `.env`; the operating-system value wins. Configuration and
@@ -69,7 +79,7 @@ APP_DATABASE_URL=postgresql://user:password@host:5432/database
 ```
 
 ```text
-uv run .agents/skills/repo-wiki/scripts/okf.py source add --kind postgres --name appdb --url-env APP_DATABASE_URL --schema public --table orders --table customers
+uv run .agents/skills/repo-wiki/scripts/okf.py source add postgres --name appdb --url-env APP_DATABASE_URL --schema public --table orders --table customers
 ```
 
 Start the Run with a unique producer session, then ask the coding agent to use
@@ -80,10 +90,12 @@ uv run .agents/skills/repo-wiki/scripts/okf.py run start --producer repo-wiki/co
 uv run .agents/skills/repo-wiki/scripts/okf.py run status --json
 ```
 
-The status response names the earliest incomplete phase, target specs and
-artifact paths. Start and complete each target through the CLI. A formal run
-requires clean Git sources and reads immutable snapshots rather than mutable
-worktrees.
+The host agent remains a coordinator: `run status` gives a compact phase/task
+view, and `task start --json` gives one complete path-only worker dispatch.
+Workers read the mounted source and write artifacts to the declared paths;
+they return only bounded handoffs. Start and complete every Target through the
+CLI. Each State Gate rejects a dirty worktree or a commit different from the
+Run's recorded revision.
 
 After a distinct reviewer approves the candidate:
 
@@ -106,8 +118,8 @@ design behaves consistently on Windows, Linux and macOS without symlinks.
   rejected, then validated by Pydantic.
 - generated, verified, status and stale_after make lifecycle and trust
   machine-readable.
-- Unchanged artifacts and pages are reused only from file hashes, exact page
-  plans and freshness dates.
+- Unchanged artifacts and pages are reused only from Git commits, cited blob
+  IDs, exact page plans and freshness dates.
 - Root index.md contains only okf_version 0.2; nested indexes and log.md have
   no frontmatter.
 - PostgreSQL catalog access is read-only and selected-table only; canonical
@@ -132,8 +144,9 @@ the current generation, not a legacy mutable wiki directory.
     skills/repo-wiki/assets/templates/
     skills/repo-wiki/scripts/okf.py
     .okf-wiki/runs/<run-id>/
-    .okf-wiki/snapshots/<content-hash>/
+    .okf-wiki/sources/<name>/
+    .okf-wiki/catalogs/<content-hash>/
     .okf-wiki/publication/generations/<digest>/
     wiki/
 
-No historical v1/v2 state or CLI compatibility is provided.
+No historical v1/v2/v3 state or CLI compatibility is provided.

@@ -16,7 +16,7 @@ sources: []
 
 ## Keys and relationships
 
-Primary key and foreign keys from the frozen catalog snapshot.
+Primary key and foreign keys from the captured catalog.
 
 ## Usage
 

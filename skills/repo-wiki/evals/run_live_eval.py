@@ -30,13 +30,22 @@ def main() -> int:
     ws = pathlib.Path(setup.stdout.strip().splitlines()[-1])
     prompt = (
         f"Workspace: {ws}. Skill: {SKILL}. Read SKILL.md and follow it strictly. "
-        "The two-source run is open at inspect. Work serially, read each phase reference, "
-        "keep at most 10 concept pages, repair every rejected target, use a distinct review "
-        "session, publish the generation and export wiki/. Do not modify the skill."
+        "The two-source run is open at inspect. Stay coordinator-only: delegate every "
+        "content target to a worker using the task-start dispatch packet, consume only its "
+        "path handoff, repair every rejected target, use a distinct review worker, publish "
+        "the generation and export wiki/. Do not modify the skill."
     )
     log = ws / "host-run.log"
     if args.host == "codex":
-        command = ["codex", "exec", "--full-auto", "-C", str(ws), prompt]
+        command = [
+            "codex",
+            "exec",
+            "--approve-for-me",
+            "--skip-git-repo-check",
+            "-C",
+            str(ws),
+            prompt,
+        ]
     else:
         command = [
             "claude",

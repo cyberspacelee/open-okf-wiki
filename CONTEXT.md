@@ -7,15 +7,17 @@ The directory that owns source registration, Runs and one current Publication.
 _Avoid_: Source, worktree
 
 **Source**:
-A registered clean Git repository or selected PostgreSQL catalog used as Run
-evidence.
+A registered Git repository or selected PostgreSQL input used as Run evidence.
 _Avoid_: Workspace, live input
 
-**Snapshot**:
-An immutable content-addressed copy of one Source captured at Run start. Git
-Snapshots bind a commit and per-file hashes; database Snapshots contain only
-selected tables.
-_Avoid_: Clone, cache
+**Revision**:
+The immutable Git commit that identifies one Git Source's evidence for a Run.
+_Avoid_: Snapshot, mutable worktree state
+
+**Catalog**:
+A content-addressed description of explicitly selected PostgreSQL tables
+captured for a Run.
+_Avoid_: Database dump, Git Revision
 
 **Run**:
 One resumable generation attempt under '.okf-wiki/runs/<id>', owned by a
@@ -25,6 +27,11 @@ _Avoid_: Conversation, Publication
 **Target**:
 One validated unit of phase work with a fixed artifact path and retry state.
 _Avoid_: Page (unless it is a write Target)
+
+**Handoff**:
+A bounded worker result that names artifacts written to disk without repeating
+their bodies in coordinator context.
+_Avoid_: Transcript, Artifact body
 
 **State Gate**:
 The CLI-owned transition boundary that validates a Target artifact before
@@ -52,7 +59,7 @@ Test rather than file or directory coverage.
 _Avoid_: Source mirror, API reference
 
 **Locator**:
-A claim anchor to frozen evidence. Concepts use
+A claim anchor to Revision or Catalog evidence. Git concepts use
 'okf-source://source/commit/path#Lx-Ly'.
 _Avoid_: Live path
 

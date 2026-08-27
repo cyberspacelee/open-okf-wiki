@@ -11,6 +11,8 @@ from urllib.parse import quote
 from _files import atomic_json, directory_digest
 from _frontmatter import parse_file
 
+VERSION = 4
+
 
 class PublishError(Exception):
     pass
@@ -189,30 +191,38 @@ def generate_log(
     (bundle / "log.md").write_text(text.rstrip() + "\n", encoding="utf-8", newline="\n")
 
 
-def _page_manifest(candidate: pathlib.Path, state: dict) -> dict:
+def _page_manifest(root: pathlib.Path, candidate: pathlib.Path, state: dict) -> dict:
     import _state
     import _validate
+    import _workspace
 
-    snapshots = {item["name"]: item for item in state["snapshots"]}
+    workspace = _workspace.load(root)
+    revisions = {item["name"]: item for item in state["revisions"]}
     result = {}
     for task in state["tasks"].values():
         if task["phase"] != "write":
             continue
         page = candidate / task["name"]
         parsed = parse_file(page)
-        source_files = {}
+        source_blobs = {}
         for source in parsed.meta.get("sources", []):
             resource = source.get("resource", "")
             item = _validate.parse_resource(resource)
             if item:
                 source_name, _, rel, _, _ = item
-                file_hash = snapshots.get(source_name, {}).get("files", {}).get(rel)
-                if file_hash:
-                    source_files[f"{source_name}/{rel}"] = file_hash
+                revision = revisions.get(source_name)
+                registered = workspace.sources.get(source_name)
+                blob = (
+                    _workspace.git_blob_oid(registered, revision["commit"], rel)
+                    if revision and registered
+                    else None
+                )
+                if blob:
+                    source_blobs[f"{source_name}/{rel}"] = blob
         result[task["name"]] = {
             "plan": task["spec"],
             "input_digest": _state.page_input_digest(candidate.parent, task["spec"]),
-            "source_files": source_files,
+            "source_blobs": source_blobs,
         }
     return result
 
@@ -225,7 +235,7 @@ def current(root: pathlib.Path) -> dict | None:
         data = json.loads(path.read_text(encoding="utf-8"))
         generation_name = data["generation"]
         if (
-            data.get("version") != 3
+            data.get("version") != VERSION
             or not isinstance(generation_name, str)
             or not re.fullmatch(r"[0-9a-f]{64}", generation_name)
         ):
@@ -258,13 +268,13 @@ def _commit_generation(
         atomic_json(
             publication / "previous.json",
             {
-                "version": 3,
+                "version": VERSION,
                 "generation": previous["generation"],
                 "run_id": previous.get("run_id"),
             },
         )
     pointer = {
-        "version": 3,
+        "version": VERSION,
         "generation": content_digest,
         "run_id": manifest["run_id"],
     }
@@ -279,6 +289,7 @@ def publish(root: pathlib.Path) -> dict:
     state = _state.read(root)
     if state is None or state["status"] != "approved":
         raise PublishError("publication requires an approved run")
+    _state.assert_revisions_current(root, state)
     candidate = _state.candidate_dir(root, state)
     if directory_digest(candidate) != state.get("approved_digest"):
         raise PublishError("candidate changed after approval")
@@ -307,16 +318,14 @@ def publish(root: pathlib.Path) -> dict:
         if bundle_errors:
             raise PublishError(f"generated bundle is invalid: {bundle_errors[:3]}")
         manifest = {
-            "version": 3,
+            "version": VERSION,
             "okf_version": "0.2",
             "run_id": state["run_id"],
             "published_at": datetime.now(timezone.utc).isoformat(),
             "producer_run_id": state["run_id"],
-            "sources": [
-                {key: value for key, value in item.items() if key != "files"}
-                for item in state["snapshots"]
-            ],
-            "pages": _page_manifest(candidate, state),
+            "revisions": state["revisions"],
+            "catalogs": state["catalogs"],
+            "pages": _page_manifest(root, candidate, state),
         }
         generation, pointer = _commit_generation(root, partial, manifest, old)
         partial = None
@@ -432,7 +441,7 @@ def _rollback_locked(root: pathlib.Path) -> dict:
         raise PublishError("no previous generation")
     try:
         prior = json.loads(previous.read_text(encoding="utf-8"))
-        if prior.get("version") != 3 or not re.fullmatch(
+        if prior.get("version") != VERSION or not re.fullmatch(
             r"[0-9a-f]{64}", prior.get("generation", "")
         ):
             raise ValueError("pointer fields are invalid")
@@ -460,7 +469,7 @@ def _rollback_locked(root: pathlib.Path) -> dict:
         atomic_json(
             previous,
             {
-                "version": 3,
+                "version": VERSION,
                 "generation": old["generation"],
                 "run_id": old.get("run_id"),
             },
@@ -506,45 +515,3 @@ def export(root: pathlib.Path, target: pathlib.Path) -> dict:
         "generation": selected["generation"],
         "pages": len(_content_pages(target)),
     }
-
-
-def gc(root: pathlib.Path) -> dict:
-    fd = _lock(root)
-    try:
-        return _gc_locked(root)
-    finally:
-        _unlock(root, fd)
-
-
-def _gc_locked(root: pathlib.Path) -> dict:
-    publication = _publication(root)
-    keep = set()
-    for name in ("current.json", "previous.json"):
-        path = publication / name
-        if path.exists():
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                generation = data.get("generation", "")
-                if not re.fullmatch(r"[0-9a-f]{64}", generation):
-                    raise ValueError("pointer fields are invalid")
-            except (
-                AttributeError,
-                TypeError,
-                ValueError,
-                OSError,
-                json.JSONDecodeError,
-            ) as exc:
-                raise PublishError(
-                    f"invalid publication pointer {path}: {exc}"
-                ) from exc
-            keep.add(generation)
-    removed = []
-    for generation in (publication / "generations").glob("*"):
-        if (
-            generation.is_dir()
-            and not generation.name.startswith(".partial-")
-            and generation.name not in keep
-        ):
-            shutil.rmtree(generation)
-            removed.append(generation.name)
-    return {"removed": sorted(removed), "kept": sorted(keep)}

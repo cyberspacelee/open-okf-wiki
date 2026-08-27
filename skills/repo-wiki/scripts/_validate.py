@@ -1,3 +1,4 @@
+import hashlib
 import json
 import pathlib
 import re
@@ -21,6 +22,8 @@ _LINE_ANCHOR = re.compile(r"#L([1-9][0-9]*)(?:-L([1-9][0-9]*))?$")
 _CAUSAL = re.compile(r"\b(because|in order to|so that)\b|为了|以便", re.IGNORECASE)
 _INLINE_REF = re.compile(r"\[\^[^\]]+\]")
 _LFS_PREFIX = b"version https://git-lfs.github.com/spec/v1"
+SURVEY_MAX_BYTES = 24 * 1024
+SURVEY_TOTAL_MAX_BYTES = 128 * 1024
 
 
 def issue(
@@ -35,8 +38,8 @@ def issue(
     }
 
 
-def _snapshot(state: dict, name: str) -> dict | None:
-    return next((item for item in state["snapshots"] if item["name"] == name), None)
+def _revision(state: dict, name: str) -> dict | None:
+    return next((item for item in state["revisions"] if item["name"] == name), None)
 
 
 def parse_resource(resource: str) -> tuple[str, str, str, int, int] | None:
@@ -56,26 +59,26 @@ def parse_resource(resource: str) -> tuple[str, str, str, int, int] | None:
 
 def _resolve_resource(
     root: pathlib.Path, state: dict, resource: str
-) -> tuple[pathlib.Path, int, int] | None:
+) -> tuple[bytes, int, int] | None:
     import _workspace
 
     parsed = parse_resource(resource)
     if parsed is None:
         return None
     source, commit, rel, lo, hi = parsed
-    snapshot = _snapshot(state, source)
-    if snapshot is None or snapshot.get("commit") != commit:
+    revision = _revision(state, source)
+    if revision is None or revision.get("commit") != commit:
         return None
-    path = _workspace.resolve_snapshot_file(root, snapshot, rel)
-    return (path, lo, hi) if path is not None else None
+    registered = _workspace.load(root).sources.get(source)
+    content = _workspace.git_blob(registered, commit, rel) if registered else None
+    return (content, lo, hi) if content is not None else None
 
 
 def _catalog_resource(state: dict, resource: str) -> bool:
     allowed = set()
-    for snapshot in state["snapshots"]:
-        if snapshot["kind"] == "postgres":
-            allowed.add(snapshot["resource"])
-            allowed.update(table["resource"] for table in snapshot["tables"])
+    for catalog in state["catalogs"]:
+        allowed.add(catalog["resource"])
+        allowed.update(table["resource"] for table in catalog["tables"])
     return resource in allowed
 
 
@@ -89,25 +92,26 @@ def _draft_locator(
     source, sep, rel = raw.partition("/")
     if not sep:
         return None
-    snapshot = _snapshot(state, source)
-    if snapshot is None or snapshot["kind"] != "git":
+    revision = _revision(state, source)
+    if revision is None:
         return None
     import _workspace
 
-    path = _workspace.resolve_snapshot_file(root, snapshot, rel)
+    registered = _workspace.load(root).sources.get(source)
+    path = _workspace.resolve_source_file(registered, rel) if registered else None
     if path is None:
         return None
     return path, int(match.group(1)), int(match.group(2) or match.group(1))
 
 
-def _check_range(path: pathlib.Path, lo: int, hi: int, label: str) -> list[dict]:
+def _check_range(path: pathlib.Path | bytes, lo: int, hi: int, label: str) -> list[dict]:
     if lo > hi:
         return [
             issue(
                 "error", "line-range-invalid", label, f"start L{lo} exceeds end L{hi}"
             )
         ]
-    content = path.read_bytes()
+    content = path if isinstance(path, bytes) else path.read_bytes()
     if content.startswith(_LFS_PREFIX):
         return [
             issue(
@@ -177,6 +181,27 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[dict]:
             )
         return issues
     if phase == "survey":
+        survey_total = sum(
+            item.stat().st_size for item in path.parent.glob("*.json") if item.is_file()
+        )
+        if path.stat().st_size > SURVEY_MAX_BYTES:
+            return [
+                issue(
+                    "error",
+                    "survey-too-large",
+                    str(path),
+                    f"survey exceeds {SURVEY_MAX_BYTES} bytes; split or prioritize findings",
+                )
+            ]
+        if survey_total > SURVEY_TOTAL_MAX_BYTES:
+            return [
+                issue(
+                    "error",
+                    "survey-set-too-large",
+                    str(path.parent),
+                    f"survey set exceeds {SURVEY_TOTAL_MAX_BYTES} bytes",
+                )
+            ]
         value, issues = _model_issues(path, Survey, path.read_text(encoding="utf-8"))
         if value:
             if value.source != task["spec"]["source"] or value.target != task["name"]:
@@ -188,14 +213,14 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[dict]:
                         "survey identity does not match target",
                     )
                 )
-            snapshot = _snapshot(state, value.source)
-            if snapshot is None or value.snapshot != snapshot["content_hash"]:
+            revision = _revision(state, value.source)
+            if revision is None or value.revision != revision["commit"]:
                 issues.append(
                     issue(
                         "error",
-                        "snapshot-mismatch",
+                        "revision-mismatch",
                         str(path),
-                        "survey does not name the frozen snapshot",
+                        "survey does not name the run revision",
                     )
                 )
             if value.remaining:
@@ -220,9 +245,7 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[dict]:
     if phase == "synthesize":
         value, issues = _model_issues(path, Synthesis, path.read_text(encoding="utf-8"))
         if value:
-            known = {
-                item["name"] for item in state["snapshots"] if item["kind"] == "git"
-            }
+            known = {item["name"] for item in state["revisions"]}
             for connection in value.connections:
                 if (
                     connection.source_a == connection.source_b
@@ -273,7 +296,11 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[dict]:
             paths = {page.path for page in value.pages}
             page_by_path = {page.path: page for page in value.pages}
             required = {"overview.md", "architecture.md"}
-            known_owners = {"workspace", *(item["name"] for item in state["snapshots"])}
+            known_owners = {
+                "workspace",
+                *(item["name"] for item in state["revisions"]),
+                *(item["name"] for item in state["catalogs"]),
+            }
             unknown_owners = sorted(
                 {page.owner for page in value.pages if page.owner not in known_owners}
             )
@@ -300,15 +327,11 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[dict]:
                             f"{core_path} must be a workspace-owned {core_type}",
                         )
                     )
-            for source in (
-                item["name"] for item in state["snapshots"] if item["kind"] == "git"
-            ):
-                if (
-                    len([item for item in state["snapshots"] if item["kind"] == "git"])
-                    > 1
-                ):
-                    required.add(f"{source}/architecture.md")
-                    entry = page_by_path.get(f"{source}/architecture.md")
+            for source in (item["name"] for item in state["revisions"]):
+                if len(state["revisions"]) > 1:
+                    source_path = source.lower()
+                    required.add(f"{source_path}/architecture.md")
+                    entry = page_by_path.get(f"{source_path}/architecture.md")
                     if entry and (
                         entry.owner != source or entry.type != "Architecture"
                     ):
@@ -317,17 +340,16 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[dict]:
                                 "error",
                                 "source-architecture-invalid",
                                 str(path),
-                                f"{source}/architecture.md must be owned by {source}",
+                                f"{source_path}/architecture.md must be owned by {source}",
                             )
                         )
-            database_sources = [
-                item for item in state["snapshots"] if item["kind"] == "postgres"
-            ]
+            database_sources = state["catalogs"]
             if database_sources:
                 required.add("data-model.md")
-            for snapshot in database_sources:
-                for table in snapshot["tables"]:
-                    required.add(f"data/{snapshot['name']}/{table['page_slug']}.md")
+            for catalog in database_sources:
+                source_path = catalog["name"].lower()
+                for table in catalog["tables"]:
+                    required.add(f"data/{source_path}/{table['page_slug']}.md")
             missing = required - paths
             if missing:
                 issues.append(
@@ -351,19 +373,20 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[dict]:
                             "data-model.md must be a workspace-owned DataModel",
                         )
                     )
-            for snapshot in database_sources:
-                for table in snapshot["tables"]:
-                    table_path = f"data/{snapshot['name']}/{table['page_slug']}.md"
+            for catalog in database_sources:
+                source_path = catalog["name"].lower()
+                for table in catalog["tables"]:
+                    table_path = f"data/{source_path}/{table['page_slug']}.md"
                     entry = page_by_path.get(table_path)
                     if entry and (
-                        entry.type != "Table" or entry.owner != snapshot["name"]
+                        entry.type != "Table" or entry.owner != catalog["name"]
                     ):
                         issues.append(
                             issue(
                                 "error",
                                 "data-page-invalid",
                                 str(path),
-                                f"{table_path} must be a Table owned by {snapshot['name']}",
+                                f"{table_path} must be a Table owned by {catalog['name']}",
                             )
                         )
             finding_list = _finding_id_list(base)
@@ -421,10 +444,9 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[dict]:
             expected = next(
                 (
                     table["resource"]
-                    for snapshot in state["snapshots"]
-                    if snapshot["kind"] == "postgres"
-                    for table in snapshot["tables"]
-                    if f"data/{snapshot['name']}/{table['page_slug']}.md"
+                    for catalog in state["catalogs"]
+                    for table in catalog["tables"]
+                    if f"data/{catalog['name'].lower()}/{table['page_slug']}.md"
                     == task["name"]
                 ),
                 None,
@@ -500,9 +522,9 @@ def stamp_generated_page(
         )
         if parsed_resource:
             source_name, _, rel, _, _ = parsed_resource
-            snapshot = _snapshot(state, source_name)
-            if snapshot:
-                signals = _workspace.git_file_metadata(workspace, snapshot, rel)
+            revision = _revision(state, source_name)
+            if revision:
+                signals = _workspace.git_file_metadata(workspace, revision, rel)
                 source = dict(source)
                 source.update({key: value for key, value in signals.items() if value})
         enriched.append(source)
@@ -805,7 +827,11 @@ def validate_publication(root: pathlib.Path, path: pathlib.Path) -> list[dict]:
     except (OSError, json.JSONDecodeError) as exc:
         issues.append(issue("error", "manifest-invalid", str(manifest_path), str(exc)))
         return issues
-    if not isinstance(manifest, dict) or not isinstance(manifest.get("sources"), list):
+    if (
+        not isinstance(manifest, dict)
+        or not isinstance(manifest.get("revisions"), list)
+        or not isinstance(manifest.get("catalogs"), list)
+    ):
         issues.append(
             issue(
                 "error",
@@ -824,49 +850,71 @@ def validate_publication(root: pathlib.Path, path: pathlib.Path) -> list[dict]:
             )
         )
 
-    snapshots = []
-    for entry in manifest.get("sources", []):
-        if not isinstance(entry, dict):
-            issues.append(
-                issue(
-                    "error",
-                    "snapshot-invalid",
-                    str(manifest_path),
-                    "source must be an object",
-                )
-            )
-            continue
-        content_hash = entry.get("content_hash", "")
-        if not isinstance(content_hash, str) or not re.fullmatch(
-            r"[0-9a-f]{64}", content_hash
+    revisions = []
+    for entry in manifest["revisions"]:
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("name"), str)
+            or not re.fullmatch(r"[0-9a-f]{40,64}", entry.get("commit", ""))
         ):
             issues.append(
                 issue(
                     "error",
-                    "snapshot-invalid",
+                    "revision-invalid",
                     str(manifest_path),
-                    "invalid content hash",
+                    "Git revision fields are invalid",
                 )
             )
             continue
-        filename = "manifest.json" if entry.get("kind") == "git" else "catalog.json"
-        snapshot_path = root / ".okf-wiki" / "snapshots" / content_hash / filename
+        revisions.append(entry)
+
+    catalogs = []
+    for entry in manifest["catalogs"]:
+        raw_hash = entry.get("content_hash") if isinstance(entry, dict) else None
+        content_hash = raw_hash if isinstance(raw_hash, str) else ""
+        payload = (
+            {key: value for key, value in entry.items() if key != "content_hash"}
+            if isinstance(entry, dict)
+            else None
+        )
+        valid = (
+            isinstance(payload, dict)
+            and isinstance(payload.get("name"), str)
+            and isinstance(payload.get("resource"), str)
+            and isinstance(payload.get("tables"), list)
+            and all(
+                isinstance(table, dict) and isinstance(table.get("resource"), str)
+                for table in payload["tables"]
+            )
+            and re.fullmatch(r"[0-9a-f]{64}", content_hash) is not None
+            and hashlib.sha256(
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
+            == content_hash
+        )
+        capture = root / ".okf-wiki" / "catalogs" / content_hash / "catalog.json"
         try:
-            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            captured = json.loads(capture.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
+            captured = None
+        if not valid or captured != payload:
             issues.append(
                 issue(
                     "error",
-                    "snapshot-missing",
-                    str(snapshot_path),
-                    f"publication source {entry.get('name')} is unavailable",
+                    "catalog-invalid",
+                    str(manifest_path),
+                    "catalog capture is missing or does not match its content hash",
                 )
             )
             continue
-        snapshot["content_hash"] = content_hash
-        snapshots.append(snapshot)
+        catalogs.append(entry)
 
-    state = {"snapshots": snapshots}
+    state = {"revisions": revisions, "catalogs": catalogs}
     concepts = sorted(
         page for page in path.rglob("*.md") if page.name not in ("index.md", "log.md")
     )
@@ -884,8 +932,7 @@ def _validate_proposals(
     issues = []
     expected = {
         f"agents-block-{item['name']}.md"
-        for item in state["snapshots"]
-        if item["kind"] == "git"
+        for item in state["revisions"]
     }
     actual = (
         {item.name for item in path.glob("agents-block-*.md")}
@@ -924,35 +971,4 @@ def _validate_proposals(
                     "managed block exceeds 15 non-empty lines",
                 )
             )
-        source_name = proposal.stem.removeprefix("agents-block-")
-        for receipt_id in re.findall(r"receipt:\s*([a-zA-Z0-9_-]+)", inside):
-            receipt_path = (
-                root
-                / ".okf-wiki"
-                / "runs"
-                / state["run_id"]
-                / "receipts"
-                / f"{receipt_id}.json"
-            )
-            try:
-                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                issues.append(
-                    issue(
-                        "error",
-                        "receipt-invalid",
-                        str(proposal),
-                        f"missing receipt {receipt_id}",
-                    )
-                )
-                continue
-            if receipt.get("source") != source_name or receipt.get("exit_code") != 0:
-                issues.append(
-                    issue(
-                        "error",
-                        "receipt-invalid",
-                        str(proposal),
-                        f"receipt {receipt_id} is not a successful run for {source_name}",
-                    )
-                )
     return issues

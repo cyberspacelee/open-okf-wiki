@@ -42,11 +42,12 @@ def main() -> int:
             str(OKF),
             "source",
             "add",
-            "--kind",
-            "git",
+            "clone",
+            (base / name).as_uri(),
             "--name",
             name,
-            str(base / name),
+            "--ref",
+            "HEAD",
         )
     call(
         ws,

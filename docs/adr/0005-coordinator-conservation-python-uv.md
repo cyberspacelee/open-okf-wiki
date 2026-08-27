@@ -1,14 +1,16 @@
 # Coordinator context conservation with disk-first orchestration
 
-The skill's orchestration model: the coordinating session never reads source
-or Wiki bodies — subagents do, returning receipts of at most 10 lines while
-knowledge flows through drafts on disk. Task truth lives in
-`.okf-wiki/runs/<id>/state.json`, so context compaction is survivable by design rather
-than detected: a re-anchor protocol (run status + reread current phase
-reference) rebuilds orientation for a few hundred tokens at any moment, in any
-host. Subagent tasks are self-contained (paths in, paths out, no conversation
-dependency) and completion passes through the State Gate, so a subagent's
-claim of success is arbitrated by the validator, not trusted.
+The coordinating session never reads source, draft, candidate or Wiki bodies.
+Workers do content work and return bounded handoffs that name disk artifacts;
+the coordinator consumes only compact status, task dispatch packets, handoffs
+and validator issues. If the host cannot provide workers, the Run stops instead
+of falling back to serial coordinator work.
+
+Task truth lives in `.okf-wiki/runs/<id>/state.json`. `run status` restores the
+current phase and `task start --json` returns the complete path-only dispatch
+packet, so compaction does not require replaying prior prose. Completion passes
+through the State Gate, which validates artifacts instead of trusting worker
+self-report.
 
 Tooling: Python 3.12+, PEP 723 inline metadata and `uv run`. PyYAML parses
 bounded YAML and rejects aliases/duplicate keys; Pydantic validates external

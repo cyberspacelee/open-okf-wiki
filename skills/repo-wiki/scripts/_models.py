@@ -11,6 +11,13 @@ from pydantic import (
 )
 
 NonEmpty = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+ShortText = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=320)
+]
+Locator = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1024)
+]
+Revision = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{40,64}$")]
 _WINDOWS_RESERVED = {
     "CON",
     "PRN",
@@ -65,7 +72,7 @@ class ConceptFrontmatter(BaseModel):
 class SurveyTarget(BaseModel):
     id: Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]*$")]
     source: NonEmpty
-    scope: list[NonEmpty] = Field(min_length=1)
+    scope: list[Locator] = Field(min_length=1, max_length=16)
 
 
 class Inspection(BaseModel):
@@ -83,19 +90,19 @@ class Inspection(BaseModel):
 
 
 class Finding(BaseModel):
-    id: NonEmpty
-    claim: NonEmpty
-    evidence: list[NonEmpty] = Field(min_length=1)
-    domain: NonEmpty
+    id: ShortText
+    claim: ShortText
+    evidence: list[Locator] = Field(min_length=1, max_length=4)
+    domain: ShortText
 
 
 class Survey(BaseModel):
     source: NonEmpty
     target: NonEmpty
-    snapshot: NonEmpty
-    findings: list[Finding]
-    gaps: list[NonEmpty] = Field(default_factory=list)
-    remaining: list[NonEmpty] = Field(default_factory=list)
+    revision: Revision
+    findings: list[Finding] = Field(max_length=16)
+    gaps: list[ShortText] = Field(default_factory=list, max_length=8)
+    remaining: list[ShortText] = Field(default_factory=list, max_length=0)
 
     @model_validator(mode="after")
     def unique_findings(self):

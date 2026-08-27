@@ -133,7 +133,7 @@ class TestDescribeImportError:
             describe("postgresql://localhost/testdb", "test_table")
 
 
-def test_snapshot_selected_table_has_safe_slug_and_credential_free_resource(
+def test_captured_catalog_has_safe_slug_and_credential_free_resource(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("DB_URL", "postgresql://secret:token@db.example:5432/app")
@@ -148,7 +148,7 @@ def test_snapshot_selected_table_has_safe_slug_and_credential_free_resource(
             "foreign_keys": [],
         },
     )
-    snapshot = _db.snapshot_source(
+    catalog = _db.capture_catalog(
         tmp_path,
         SimpleNamespace(
             name="appdb",
@@ -157,8 +157,15 @@ def test_snapshot_selected_table_has_safe_slug_and_credential_free_resource(
             tables=("Order Items",),
         ),
     )
-    table = snapshot["tables"][0]
-    assert "secret" not in snapshot["resource"] and "token" not in snapshot["resource"]
-    assert snapshot["resource"].endswith("/Public%20Data")
+    table = catalog["tables"][0]
+    assert "secret" not in catalog["resource"] and "token" not in catalog["resource"]
+    assert catalog["resource"].endswith("/Public%20Data")
     assert table["page_slug"].startswith("order-items-")
     assert table["resource"].endswith("/Order%20Items")
+    assert (
+        tmp_path
+        / ".okf-wiki"
+        / "catalogs"
+        / catalog["content_hash"]
+        / "catalog.json"
+    ).is_file()

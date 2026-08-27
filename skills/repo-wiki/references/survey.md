@@ -1,6 +1,6 @@
 # Survey
 
-Read contract.md, the target scope and only its frozen Git snapshot. Map
+Read contract.md, the target scope and its Source root from the dispatch. Map
 capability boundaries from entry points, enforced rules, lifecycle, failure
 paths and focused tests. Package layout alone is not a domain.
 
@@ -9,7 +9,7 @@ Write JSON:
     {
       "source": "api",
       "target": "api-core",
-      "snapshot": "<content_hash from state>",
+      "revision": "<Git commit from the run>",
       "findings": [{
         "id": "api-request-lifecycle",
         "claim": "decision-relevant finding",
@@ -20,6 +20,7 @@ Write JSON:
       "remaining": []
     }
 
-Every finding has at least one valid line locator. remaining must be empty to
-complete. Record connection leads as findings; synthesize verifies both ends.
-Return only artifact path, finding ids and gap count.
+Every finding has at least one valid line locator. Keep at most 16 findings,
+four locators per finding and eight gaps; the artifact must stay under 24 KiB.
+`remaining` is empty. Prioritize Grep-Test knowledge and record omitted scope as
+a gap. Return only artifact path, finding ids and gap count.

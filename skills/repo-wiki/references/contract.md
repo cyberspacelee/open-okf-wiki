@@ -12,16 +12,15 @@ inventories, signatures, directory trees, config lists or restated comments.
 
 Every load-bearing claim has a footnote id; the same id appears once in
 frontmatter sources and once as a footnote definition. Draft locators use
-'source/path#Lx-Ly'. Concept sources use the frozen canonical form
+'source/path#Lx-Ly'. Concept sources use the revision-bound canonical form
 'okf-source://source/commit/path#Lx-Ly'.
 
-Line ranges must resolve inside the run snapshot. Git metadata supplies
+Line ranges must resolve from the recorded Git revision. Git metadata supplies
 author and last_modified; writers do not invent them. Database concepts use
-the credential-free canonical schema or table URI from the snapshot.
+the credential-free canonical schema or table URI from the captured catalog.
 
 Cite files actually opened. Drafts are routing aids, never provenance.
-Unmaterialized LFS pointers, binary files and live-worktree paths are not
-evidence.
+Unmaterialized LFS pointers and binary files are not evidence.
 
 ## Concept metadata
 
@@ -45,15 +44,17 @@ under date H2 headings.
 ## Layout
 
 Every plan includes overview.md and architecture.md. Multi-Git workspaces also
-include source/architecture.md; source-owned pages cite only that source. Root
-pages own composition. PostgreSQL runs add data-model.md and one
-data/source/table.md page per selected table. Table pages use type Table, a
-canonical resource, and an H1 Schema section.
+include source/architecture.md; its path segment is the lowercased Source name,
+while owner and locators preserve the declared name. Source-owned pages cite
+only that source. Root pages own composition. PostgreSQL runs add data-model.md
+and one data/source/table.md page per selected table, using the same lowercase
+path rule. Table pages use type Table, a canonical resource, and an H1 Schema
+section.
 
 ## Proposals
 
 Derive writes under the run proposals directory only. It never edits source
 AGENTS.md, CONTEXT.md or ADRs. Produce one agents-block-source.md per Git
 source with exactly one managed block and at most 15 nonempty inner lines.
-Only claim a Verify command ran when its successful same-source receipt id is
-present as 'receipt: id'. CONTEXT terms and ADR rationale require humans.
+Include a Verify command only when a worker ran it successfully during derive.
+CONTEXT terms and ADR rationale require humans.

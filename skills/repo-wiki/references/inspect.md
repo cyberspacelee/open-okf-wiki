@@ -1,8 +1,7 @@
 # Inspect
 
-Read only the frozen snapshot named in the target spec: top-level shape, build
-manifests and README title block. Do not inspect the live source or deeply
-read implementation.
+Read only the Source root in the dispatch packet: top-level shape, build
+manifests and README title block. Do not deeply read implementation.
 
 Write the target artifact as JSON with this shape:
 

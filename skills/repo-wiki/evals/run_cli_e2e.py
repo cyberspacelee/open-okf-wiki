@@ -68,19 +68,20 @@ def page(title: str, refs: list[tuple[str, str]], links: str) -> str:
         "---\n"
         f"type: Overview\ntitle: {title}\ndescription: Open before changing this boundary.\n"
         f"coverage: full\nsources:\n{sources}\n---\n\n"
-        f"## Boundary\n\nThe frozen entry points define this boundary.{citations} {links}\n\n"
+        f"## Boundary\n\nThe revision-bound entry points define this boundary.{citations} {links}\n\n"
         f"{definitions}\n"
     )
 
 
 def evaluate(base: pathlib.Path) -> dict:
-    api = source(base / "api", "api")
-    web = source(base / "web", "web")
     ws = base / "workspace"
     ws.mkdir()
+    api = source(ws / "API", "api")
+    web = source(base / "web", "web")
+    source_names = {"api": "API", "webui": "WebUI"}
     run(ws, "workspace", "init", "--lang", "en", "--freshness-days", "30")
-    run(ws, "source", "add", "--kind", "git", "--name", "api", str(api))
-    run(ws, "source", "add", "--kind", "git", "--name", "web", str(web))
+    run(ws, "source", "add", "link", str(api), "--name", "API")
+    run(ws, "source", "add", "clone", web.as_uri(), "--name", "WebUI")
     status = run(
         ws,
         "run",
@@ -92,9 +93,10 @@ def evaluate(base: pathlib.Path) -> dict:
         json_output=True,
     )
     run_dir = pathlib.Path(status["run_dir"])
-    snapshots = {item["name"]: item for item in status["snapshots"]}
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    revisions = {item["name"]: item for item in state["revisions"]}
 
-    for name in ("api", "web"):
+    for slug, name in source_names.items():
         complete(
             ws,
             f"inspect:{name}",
@@ -103,24 +105,24 @@ def evaluate(base: pathlib.Path) -> dict:
                 {
                     "source": name,
                     "survey_targets": [
-                        {"id": f"{name}-core", "source": name, "scope": ["app.py"]}
+                        {"id": f"{slug}-core", "source": name, "scope": ["app.py"]}
                     ],
                 }
             ),
         )
-    for name in ("api", "web"):
+    for slug, name in source_names.items():
         complete(
             ws,
-            f"survey:{name}-core",
-            run_dir / f"drafts/survey/{name}-core.json",
+            f"survey:{slug}-core",
+            run_dir / f"drafts/survey/{slug}-core.json",
             json.dumps(
                 {
                     "source": name,
-                    "target": f"{name}-core",
-                    "snapshot": snapshots[name]["content_hash"],
+                    "target": f"{slug}-core",
+                    "revision": revisions[name]["commit"],
                     "findings": [
                         {
-                            "id": f"{name}-entry",
+                            "id": f"{slug}-entry",
                             "claim": f"{name} entry point",
                             "evidence": [f"{name}/app.py#L1-L2"],
                             "domain": "core",
@@ -140,10 +142,10 @@ def evaluate(base: pathlib.Path) -> dict:
                 "connections": [
                     {
                         "id": "web-api",
-                        "source_a": "web",
-                        "source_b": "api",
-                        "evidence_a": ["web/app.py#L1-L2"],
-                        "evidence_b": ["api/app.py#L1-L2"],
+                        "source_a": "WebUI",
+                        "source_b": "API",
+                        "evidence_a": ["WebUI/app.py#L1-L2"],
+                        "evidence_b": ["API/app.py#L1-L2"],
                         "contract": "fixture boundary",
                         "failure_propagation": "web receives API failure",
                     }
@@ -174,20 +176,20 @@ def evaluate(base: pathlib.Path) -> dict:
             {
                 "path": "api/architecture.md",
                 "type": "Architecture",
-                "owner": "api",
+                "owner": "API",
                 "title": "API architecture",
                 "description": "Open before API changes.",
                 "tags": ["architecture"],
                 "finding_ids": ["api-entry"],
             },
             {
-                "path": "web/architecture.md",
+                "path": "webui/architecture.md",
                 "type": "Architecture",
-                "owner": "web",
+                "owner": "WebUI",
                 "title": "Web architecture",
                 "description": "Open before web changes.",
                 "tags": ["architecture"],
-                "finding_ids": ["web-entry"],
+                "finding_ids": ["webui-entry"],
             },
         ],
         "exclusions": [],
@@ -195,8 +197,8 @@ def evaluate(base: pathlib.Path) -> dict:
     complete(ws, "plan:wiki", run_dir / "drafts/plan.json", json.dumps(plan))
 
     resources = {
-        name: f"okf-source://{name}/{snapshots[name]['commit']}/app.py#L1-L2"
-        for name in ("api", "web")
+        slug: f"okf-source://{name}/{revisions[name]['commit']}/app.py#L1-L2"
+        for slug, name in source_names.items()
     }
     pages = {
         "overview.md": page(
@@ -204,23 +206,23 @@ def evaluate(base: pathlib.Path) -> dict:
         ),
         "architecture.md": page(
             "Architecture",
-            [("api", resources["api"]), ("web", resources["web"])],
-            "[API](/api/architecture.md) [Web](/web/architecture.md)",
+            [("api", resources["api"]), ("webui", resources["webui"])],
+            "[API](/api/architecture.md) [Web](/webui/architecture.md)",
         ),
         "api/architecture.md": page(
             "API architecture",
             [("api", resources["api"])],
             "[Workspace](/architecture.md)",
         ),
-        "web/architecture.md": page(
+        "webui/architecture.md": page(
             "Web architecture",
-            [("web", resources["web"])],
+            [("webui", resources["webui"])],
             "[Workspace](/architecture.md)",
         ),
     }
     for relative, content in pages.items():
         complete(ws, f"write:{relative}", run_dir / "candidate" / relative, content)
-    for name in ("api", "web"):
+    for name in source_names.values():
         write(
             run_dir / f"proposals/agents-block-{name}.md",
             "<!-- okf-wiki:begin run=e2e -->\n- Read the Wiki first.\n<!-- okf-wiki:end -->\n",
@@ -238,7 +240,7 @@ def evaluate(base: pathlib.Path) -> dict:
         "reviewer-2",
         json_output=True,
     )
-    report = run_dir / "review.json"
+    report = pathlib.Path(packet["report"])
     write(
         report,
         json.dumps(

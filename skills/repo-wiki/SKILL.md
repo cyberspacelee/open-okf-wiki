@@ -5,22 +5,34 @@ description: Generate or incrementally refresh a thin, evidence-anchored reposit
 
 # Repo Wiki
 
-Produce an OKF v0.2 Wiki from immutable source snapshots. The host agent
-orchestrates; `scripts/okf.py` owns source freezing, state transitions,
+Produce an OKF v0.2 Wiki from Git revisions and selected database catalogs.
+The host is a coordinator; `scripts/okf.py` owns revisions, state transitions,
 validation, review binding, publication and rollback. Never edit state JSON.
 
 Requires Git, Python 3.12+ and `uv` on PATH. Commands below work from Bash,
 PowerShell and cmd when run from the workspace root. `<skill>` is this
 directory.
 
-## Re-anchor first
+## Coordinator contract
+
+Workers read Source, draft and Candidate bodies. The coordinator reads only
+`run status --json`, `task start <id> --json` dispatch packets, worker Handoffs
+of at most 10 lines and 2 KiB, and validator issue lists.
+
+Every content target runs in a worker session, including inspect. Give the
+worker the dispatch packet as paths, never pasted contents. The worker writes
+the exact artifact path and returns its path, finding ids when present, and gap
+count. A host without worker sessions stops and reports that requirement; the
+coordinator never takes over content work.
+
+## Re-anchor
 
 On entry, resume, or uncertainty:
 
 1. Run `uv run <skill>/scripts/okf.py run status --json`.
-2. If a run exists, read `references/<current_phase>.md` and perform only its
-   listed `next_actions`.
-3. If no workspace exists, run `workspace init`; if no run exists, run
+2. If a run exists, perform only its listed `next_actions`.
+3. If no workspace exists, run `workspace init`. If it has no Sources, add
+   them explicitly. If no run exists, run
    `run start --producer repo-wiki/<model> --session <unique-session>`.
 
 Completed targets are immutable unless review reopens them. Disk state wins
@@ -28,47 +40,48 @@ over conversation memory.
 
 ## Sources
 
-`workspace init --lang en|zh --freshness-days 90` adds the current Git repo as
-`self`. Add more sources explicitly:
+`workspace init --lang en|zh --freshness-days 90` creates an empty Workspace.
+Add every Source explicitly. `link` registers a Git worktree already mounted
+inside the Workspace. `clone` creates one worktree under `.okf-wiki/sources`.
+Source names preserve ASCII letter case; case-insensitive duplicates fail:
 
 ```text
-uv run <skill>/scripts/okf.py source add --kind git --name api C:\src\api
-uv run <skill>/scripts/okf.py source add --kind git --name web https://host/web.git
-uv run <skill>/scripts/okf.py source add --kind postgres --name appdb --url-env DATABASE_URL --schema public --table orders --table customers
+uv run <skill>/scripts/okf.py source add link .\API --name API
+uv run <skill>/scripts/okf.py source add clone https://host/web.git --name web --ref main
+uv run <skill>/scripts/okf.py source add postgres --name appdb --url-env DATABASE_URL --schema public --table orders --table customers
 ```
 
-Formal runs reject dirty/untracked Git sources, submodules and paths that
-cannot be represented on Windows. Each run reads a content-addressed snapshot,
-never the live worktree. PostgreSQL sources are read-only and include only
-explicitly selected tables; credentials never enter state or citations.
+Link targets outside the Workspace fail; mount them into the Workspace first.
+Formal runs reject dirty Git sources, submodules and non-portable paths, then
+record HEAD. Workers read the mounted worktree while gates require HEAD and
+cleanliness to remain unchanged. Citations resolve from the recorded Git
+object. PostgreSQL catalogs include only selected tables and credentials never
+enter state or citations.
 
 ## Phases
 
 The fixed order is inspect -> survey -> synthesize (multi-Git only) -> plan ->
 write -> derive -> review -> publish. Read the matching reference before work.
 
-For every target:
+For every target listed by status:
 
 ```text
-uv run <skill>/scripts/okf.py task start <phase>:<name>
-# write exactly the artifact path reported by run status
+uv run <skill>/scripts/okf.py task start <phase>:<name> --json
+# dispatch one worker with the returned packet
 uv run <skill>/scripts/okf.py task complete <phase>:<name>
 ```
 
-Completion validates the artifact and advances only on success. Give workers
-the target spec, frozen snapshot path, reference path and exact output path.
-Workers return short receipts; artifact content stays on disk. Without worker
-sessions, execute targets serially.
+Completion validates the artifact and advances only on success. Relay rejected
+issues to the same worker as a repair task. Artifact content stays on disk.
 
-The plan phase is mandatory. It assigns every finding once, bounds page count,
-and enables page-level reuse. A page is reused only when its plan entry is
-identical, all cited file hashes are unchanged, and `stale_after` has not
-passed. Changed evidence reopens only affected work; no heuristic source read
-tracking is used.
+The plan phase assigns every finding once and enables page reuse. Page count
+follows the Grep Test, not a fixed quota. Reuse requires an identical plan,
+unchanged cited Git blobs and an unexpired `stale_after`.
 
 ## Review and publish
 
-Review must run in a session different from the producer:
+Start review, dispatch its packet to a fresh worker session, then submit the
+worker's report:
 
 ```text
 uv run <skill>/scripts/okf.py review start --actor repo-wiki/<reviewer> --session <new-session>

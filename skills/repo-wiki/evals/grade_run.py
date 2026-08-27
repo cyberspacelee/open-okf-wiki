@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.12"
 # ///
-"""Outcome-based grader for a published v3 repo-wiki run."""
+"""Outcome-based grader for a published v4 repo-wiki run."""
 
 import argparse
 import json
@@ -13,7 +13,7 @@ import subprocess
 
 SKILL = pathlib.Path(__file__).resolve().parent.parent
 CITE = re.compile(
-    r"okf-source://([a-z0-9-]+)/([0-9a-f]{40,64})/([^\s#]+)#L([1-9][0-9]*)(?:-L([1-9][0-9]*))?"
+    r"okf-source://([A-Za-z0-9-]+)/([0-9a-f]{40,64})/([^\s#]+)#L([1-9][0-9]*)(?:-L([1-9][0-9]*))?"
 )
 
 
@@ -54,9 +54,9 @@ def grade(ws: pathlib.Path) -> list[dict]:
         path for path in bundle.rglob("*.md") if path.name not in ("index.md", "log.md")
     )
     check(
-        "thin concept page budget 4..12",
-        4 <= len(pages) <= 12,
-        f"{len(pages)} pages",
+        "required routing concepts exist",
+        (bundle / "overview.md").is_file() and (bundle / "architecture.md").is_file(),
+        f"{len(pages)} concepts",
     )
     validation = subprocess.run(
         [
@@ -78,7 +78,13 @@ def grade(ws: pathlib.Path) -> list[dict]:
         errors = -1
     check("published validation has zero errors", errors == 0, f"errors={errors}")
 
-    snapshots = {item["name"]: item for item in state["snapshots"]}
+    revisions = {item["name"]: item for item in state["revisions"]}
+    workspace = load(ws / ".okf-wiki/workspace.json")
+    source_paths = {
+        item["name"]: ws.joinpath(*pathlib.PurePosixPath(item["path"]).parts)
+        for item in workspace["sources"]
+        if item["kind"] == "git"
+    }
     citations = []
     for page in pages:
         citations.extend(
@@ -88,29 +94,34 @@ def grade(ws: pathlib.Path) -> list[dict]:
     bad = []
     for page, match in citations[:12]:
         source, commit, rel, lo, hi = match.groups()
-        snapshot = snapshots.get(source)
-        path = (
-            ws
-            / ".okf-wiki/snapshots"
-            / (snapshot or {}).get("content_hash", "")
-            / "tree"
-            / rel
-        )
+        revision = revisions.get(source)
+        source_path = source_paths.get(source)
         upper = int(hi or lo)
-        if not snapshot or snapshot.get("commit") != commit or not path.is_file():
+        content = subprocess.run(
+            ["git", "-C", str(source_path), "show", f"{commit}:{rel}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ) if source_path else None
+        if (
+            not revision
+            or revision.get("commit") != commit
+            or content is None
+            or content.returncode
+        ):
             bad.append(f"{page.name}: unresolved {match.group(0)}")
             continue
-        count = len(path.read_text(encoding="utf-8", errors="strict").splitlines())
+        count = len(content.stdout.splitlines())
         if upper > count:
             bad.append(f"{page.name}: L{upper} exceeds {count}")
     check(
-        "sampled frozen citations resolve",
+        "sampled revision citations resolve",
         bool(citations) and not bad,
         "; ".join(bad) or f"{min(12, len(citations))}/{len(citations)} checked",
     )
 
     proposals = sorted((run_dir / "proposals").glob("agents-block-*.md"))
-    git_sources = [item for item in state["snapshots"] if item["kind"] == "git"]
+    git_sources = state["revisions"]
     proposal_ok = all(
         text.count("<!-- okf-wiki:begin") == 1
         and text.count("<!-- okf-wiki:end -->") == 1
@@ -156,7 +167,16 @@ def main() -> int:
     parser.add_argument("workspace", type=pathlib.Path)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
-    results = grade(args.workspace.resolve())
+    try:
+        results = grade(args.workspace.resolve())
+    except (OSError, KeyError, json.JSONDecodeError) as exc:
+        results = [
+            {
+                "text": "run produced a readable publication",
+                "passed": False,
+                "evidence": str(exc),
+            }
+        ]
     passed = all(item["passed"] for item in results)
     if args.json:
         print(

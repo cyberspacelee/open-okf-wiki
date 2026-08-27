@@ -8,7 +8,9 @@ publish, read-only DB access, durable state) moves into deterministic CLI
 scripts. v3 restores review isolation as an explicit distinct-session gate
 without owning the host process. We accept losing hard process control
 (turn/token caps) because the thin-Wiki scope no longer needs it, and gain
-portability across host agents and Windows, Linux and macOS.
+portability across host agents and Windows, Linux and macOS. v4 makes that
+boundary explicit: the host session only coordinates workers and deterministic
+gates; it does not execute content phases itself.
 
 Considered: incrementally slimming the v1 host. Rejected because most of its
 complexity served the detailed-Wiki contract machinery that the thin-Wiki

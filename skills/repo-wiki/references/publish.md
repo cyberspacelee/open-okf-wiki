@@ -16,7 +16,6 @@ To place a Git-managed copy at wiki/, run:
 
 Export refuses to replace an unmanaged directory and restores the old export
 if replacement fails. Directory replacement itself is intentionally not
-claimed atomic on Windows. Run 'publication gc' only after deciding that
-generations beyond current and previous are no longer needed.
+claimed atomic on Windows.
 
 Report generation digest, page count, log events and pending proposal paths.

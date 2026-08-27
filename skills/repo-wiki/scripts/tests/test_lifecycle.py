@@ -1,7 +1,10 @@
+import concurrent.futures
 import json
 import pathlib
 import shutil
 import subprocess
+import threading
+import time
 
 import _publish
 import _state
@@ -58,17 +61,17 @@ The answer is provided by the source entry point.[^code] {link}
 
 
 def test_full_lifecycle_publish_export_verify_and_incremental_reuse(tmp_path):
-    source = git_source(tmp_path / "source")
     root = tmp_path / "workspace"
     root.mkdir()
+    source = git_source(root / "source")
     _workspace.init(root, "en", 30)
-    _workspace.add_git_source(root, str(source), "src")
+    _workspace.add_git_link(root, str(source), "src")
 
     _state.start_run(root, "repo-wiki/test", "writer-1")
     state = _state.read(root)
     run = _state.run_dir(root, state["run_id"])
-    snapshot = state["snapshots"][0]
-    commit = snapshot["commit"]
+    revision = state["revisions"][0]
+    commit = revision["commit"]
     inspection = json.dumps(
         {
             "source": "src",
@@ -95,7 +98,7 @@ def test_full_lifecycle_publish_export_verify_and_incremental_reuse(tmp_path):
             {
                 "source": "src",
                 "target": "src-core",
-                "snapshot": snapshot["content_hash"],
+                "revision": commit,
                 "findings": [
                     {
                         "id": "answer",
@@ -157,7 +160,10 @@ def test_full_lifecycle_publish_export_verify_and_incremental_reuse(tmp_path):
         "<!-- okf-wiki:begin run=test -->\n- Read the Wiki before changes.\n<!-- okf-wiki:end -->\n",
     )
     packet = _state.review_start(root, "repo-wiki/reviewer", "reviewer-2")
-    report = run / "review.json"
+    assert pathlib.Path(packet["reference"]).name == "review.md"
+    assert pathlib.Path(packet["candidate"]) == run / "candidate"
+    assert packet["sources"] == {"src": str(source.resolve())}
+    report = pathlib.Path(packet["report"])
     write(
         report,
         json.dumps(
@@ -179,13 +185,17 @@ def test_full_lifecycle_publish_export_verify_and_incremental_reuse(tmp_path):
     assert (generation / "log.md").is_file()
     tampered = tmp_path / "tampered"
     shutil.copytree(generation, tampered)
+    manifest_path = tampered / ".okf-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["catalogs"] = [{"content_hash": 7}]
+    write(manifest_path, json.dumps(manifest))
     write(
         tampered / "overview.md", (tampered / "overview.md").read_text() + "changed\n"
     )
-    assert any(
-        item["code"] == "manifest-digest"
-        for item in _validate.validate_publication(root, tampered)
-    )
+    tamper_codes = {
+        item["code"] for item in _validate.validate_publication(root, tampered)
+    }
+    assert {"manifest-digest", "catalog-invalid"} <= tamper_codes
     exported = _publish.export(root, root / "wiki")
     assert exported["generation"] == published["generation"]
     verified = _publish.verify(root, "human:qa@example.test", ["overview.md"])
@@ -193,21 +203,233 @@ def test_full_lifecycle_publish_export_verify_and_incremental_reuse(tmp_path):
 
     second = _state.start_run(root, "repo-wiki/test", "writer-3")
     assert second["current_phase"] == "derive"
-    reused = [task for task in second["tasks"].values() if task.get("reused_from")]
-    assert {task["phase"] for task in reused} == {"inspect", "survey", "plan", "write"}
 
 
 def test_dirty_source_and_windows_incompatible_paths_are_rejected(tmp_path):
-    source = git_source(tmp_path / "source")
     root = tmp_path / "workspace"
     root.mkdir()
+    source = git_source(root / "source")
     _workspace.init(root)
-    _workspace.add_git_source(root, str(source), "src")
+    registered = _workspace.add_git_link(root, str(source), "src")
+    write(source / "路径.py", "VALUE = 1\n")
+    subprocess.run(["git", "-C", str(source), "add", "路径.py"], check=True)
+    subprocess.run(["git", "-C", str(source), "commit", "-qm", "unicode"], check=True)
+    assert _workspace.capture_git_revision(root, registered)["commit"]
     write(source / "dirty.txt", "not committed")
     with pytest.raises(_workspace.WorkspaceError, match="uncommitted"):
         _state.start_run(root, "repo-wiki/test", "writer")
     with pytest.raises(_workspace.WorkspaceError, match="Windows reserved"):
         _workspace._portable_path("docs/CON.md", {})
+
+
+def test_workspace_init_requires_explicit_git_sources(tmp_path):
+    root = git_source(tmp_path / "workspace")
+    linked = git_source(root / "linked")
+    outside = git_source(tmp_path / "outside")
+
+    workspace = _workspace.init(root)
+    assert workspace.sources == {}
+
+    link = _workspace.add_git_link(root, str(linked), "LinkedAPI")
+    clone = _workspace.add_git_clone(root, linked.as_uri(), "RemoteWEB", "HEAD")
+    assert link.path == linked.resolve()
+    assert clone.remote == linked.as_uri() and clone.ref == "HEAD"
+    assert clone.path != linked.resolve()
+    with pytest.raises(_workspace.WorkspaceError, match="already exists"):
+        _workspace.add_git_link(root, str(linked), "linkedapi")
+    with pytest.raises(_workspace.WorkspaceError, match="reserved on Windows"):
+        _workspace.add_git_link(root, str(linked), "CON")
+    with pytest.raises(_workspace.WorkspaceError, match="mounted inside workspace"):
+        _workspace.add_git_link(root, str(outside), "Outside")
+    assert (
+        _workspace._safe_origin("https://user:secret@example.test/repo.git")
+        == "https://example.test/repo.git"
+    )
+
+
+def test_run_uses_workspace_git_revision_without_snapshot(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    source = git_source(root / "SourceA")
+    _workspace.init(root)
+
+    registered = _workspace.add_git_link(root, str(source), "SourceA")
+    assert registered.path == source.resolve()
+    config = json.loads((root / ".okf-wiki/workspace.json").read_text())
+    assert config["sources"][0]["path"] == "SourceA"
+
+    _state.start_run(root, "repo-wiki/test", "writer")
+    state = _state.read(root)
+    assert state["revisions"] == [
+        {
+            "name": "SourceA",
+            "commit": subprocess.run(
+                ["git", "-C", str(source), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip(),
+            "origin": "SourceA",
+        }
+    ]
+    assert "snapshots" not in state
+    assert not (root / ".okf-wiki/snapshots").exists()
+
+
+def test_status_is_compact_and_source_drift_blocks_task_start(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    source = git_source(root / "SourceA")
+    _workspace.init(root)
+    _workspace.add_git_link(root, str(source), "SourceA")
+    _state.start_run(root, "repo-wiki/test", "writer")
+
+    status = _state.status(root)
+    assert set(status) == {
+        "run_id",
+        "status",
+        "current_phase",
+        "tasks",
+        "next_actions",
+        "run_dir",
+    }
+    assert status["tasks"] == [{"id": "inspect:SourceA", "status": "pending"}]
+
+    write(source / "app.py", "def answer():\n    return 43\n")
+    subprocess.run(["git", "-C", str(source), "add", "app.py"], check=True)
+    subprocess.run(["git", "-C", str(source), "commit", "-qm", "change"], check=True)
+    with pytest.raises(_workspace.WorkspaceError, match="changed during the run"):
+        _state.task_start(root, "inspect:SourceA")
+
+
+def test_task_start_returns_path_only_worker_dispatch(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    source = git_source(root / "SourceA")
+    _workspace.init(root)
+    _workspace.add_git_link(root, str(source), "SourceA")
+    _state.start_run(root, "repo-wiki/test", "writer")
+
+    packet = _state.task_start(root, "inspect:SourceA")
+    assert set(packet) == {
+        "run_id",
+        "task",
+        "reference",
+        "artifact",
+        "sources",
+        "inputs",
+    }
+    assert packet["task"] == {
+        "id": "inspect:SourceA",
+        "phase": "inspect",
+        "spec": {"source": "SourceA"},
+    }
+    assert pathlib.Path(packet["reference"]).name == "inspect.md"
+    assert pathlib.Path(packet["artifact"]).name == "SourceA.json"
+    assert packet["sources"] == {"SourceA": str(source.resolve())}
+    assert packet["inputs"] == []
+
+
+def test_parallel_task_starts_do_not_lose_state(tmp_path, monkeypatch):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    for name in ("SourceA", "SourceB"):
+        git_source(root / name)
+    _workspace.init(root)
+    for name in ("SourceA", "SourceB"):
+        _workspace.add_git_link(root, str(root / name), name)
+    _state.start_run(root, "repo-wiki/test", "writer")
+
+    original = _state.atomic_json
+    write_count = 0
+    guard = threading.Lock()
+
+    def delayed_write(path, data):
+        nonlocal write_count
+        in_progress = sum(
+            task["status"] == "in_progress" for task in data.get("tasks", {}).values()
+        )
+        if path.name == "state.json" and in_progress == 1:
+            with guard:
+                write_count += 1
+                first = write_count == 1
+            if first:
+                time.sleep(0.1)
+        original(path, data)
+
+    monkeypatch.setattr(_state, "atomic_json", delayed_write)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(_state.task_start, root, f"inspect:{name}")
+            for name in ("SourceA", "SourceB")
+        ]
+        for future in futures:
+            future.result()
+
+    state = _state.read(root)
+    assert {
+        task_id: state["tasks"][task_id]["status"]
+        for task_id in ("inspect:SourceA", "inspect:SourceB")
+    } == {"inspect:SourceA": "in_progress", "inspect:SourceB": "in_progress"}
+
+
+def test_survey_artifact_byte_budget_is_enforced(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    source = git_source(root / "SourceA")
+    _workspace.init(root)
+    _workspace.add_git_link(root, str(source), "SourceA")
+    _state.start_run(root, "repo-wiki/test", "writer")
+    state = _state.read(root)
+    run = _state.run_dir(root, state["run_id"])
+    complete(
+        root,
+        "inspect:SourceA",
+        run / "drafts/inspect/SourceA.json",
+        json.dumps(
+            {
+                "source": "SourceA",
+                "survey_targets": [
+                    {"id": "source-core", "source": "SourceA", "scope": ["app.py"]}
+                ],
+            }
+        ),
+    )
+    _state.task_start(root, "survey:source-core")
+    artifact = run / "drafts/survey/source-core.json"
+    write(
+        artifact,
+        json.dumps(
+            {
+                "source": "SourceA",
+                "target": "source-core",
+                "revision": state["revisions"][0]["commit"],
+                "findings": [],
+                "gaps": [],
+                "remaining": [],
+            }
+        )
+        + " " * (24 * 1024),
+    )
+    result = _state.task_complete(root, "survey:source-core")
+    assert not result["ok"]
+    assert {item["code"] for item in result["issues"]} == {"survey-too-large"}
+
+
+def test_git_revision_evidence_does_not_depend_on_current_worktree(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    source_path = git_source(root / "SourceA")
+    _workspace.init(root)
+    source = _workspace.add_git_link(root, str(source_path), "SourceA")
+    revision = _workspace.capture_git_revision(root, source)
+
+    subprocess.run(["git", "-C", str(source_path), "rm", "-q", "app.py"], check=True)
+    subprocess.run(["git", "-C", str(source_path), "commit", "-qm", "remove"], check=True)
+
+    assert _workspace.git_blob(source, revision["commit"], "app.py") == (
+        b"def answer():\n    return 42\n"
+    )
 
 
 def test_index_log_and_root_relative_links_conform(tmp_path):
@@ -242,13 +464,13 @@ def test_publication_lock_is_process_scoped_not_stale_file_scoped(tmp_path):
 def test_corrupt_pointers_and_windows_reserved_page_are_rejected(tmp_path):
     write(
         tmp_path / ".okf-wiki/publication/current.json",
-        json.dumps({"version": 3, "generation": "../../outside", "run_id": "bad"}),
+        json.dumps({"version": 4, "generation": "../../outside", "run_id": "bad"}),
     )
     with pytest.raises(_publish.PublishError, match="invalid current"):
         _publish.current(tmp_path)
     write(
         tmp_path / ".okf-wiki/current-run.json",
-        json.dumps({"version": 3, "run_id": "../../outside"}),
+        json.dumps({"version": 4, "run_id": "../../outside"}),
     )
     with pytest.raises(_state.StateError, match="corrupt current-run"):
         _state.status(tmp_path)

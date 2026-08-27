@@ -7,16 +7,12 @@
 #   "psycopg[binary]>=3.2,<4",
 # ]
 # ///
-"""Deterministic kernel for the repo-wiki v3 skill."""
+"""Deterministic kernel for the repo-wiki v4 skill."""
 
 import argparse
-import hashlib
 import json
 import pathlib
-import secrets
-import subprocess
 import sys
-from datetime import datetime, timezone
 
 ROOT = pathlib.Path.cwd()
 MAX_ISSUES = 50
@@ -72,7 +68,7 @@ def cmd_workspace(args) -> int:
         workspace = _workspace.load(ROOT)
         emit(
             {
-                "version": 3,
+                "version": 4,
                 "language": workspace.language,
                 "freshness_days": workspace.freshness_days,
                 "sources": {
@@ -94,10 +90,10 @@ def cmd_source(args) -> int:
             args.json,
         )
         return 0
-    if args.kind == "git":
-        if not args.target:
-            raise _workspace.WorkspaceError("Git source requires a path or URL")
-        source = _workspace.add_git_source(ROOT, args.target, args.name)
+    if args.kind == "link":
+        source = _workspace.add_git_link(ROOT, args.target, args.name)
+    elif args.kind == "clone":
+        source = _workspace.add_git_clone(ROOT, args.target, args.name, args.ref)
     else:
         source = _workspace.add_postgres_source(
             ROOT,
@@ -160,8 +156,6 @@ def cmd_publication(args) -> int:
         result = _publish.rollback(ROOT)
     elif args.action == "export":
         result = _publish.export(ROOT, ROOT / args.to)
-    else:
-        result = _publish.gc(ROOT)
     emit(result, args.json)
     return 0
 
@@ -203,52 +197,6 @@ def cmd_db(args) -> int:
     return 0
 
 
-def cmd_receipt(args) -> int:
-    import _state
-    import _workspace
-
-    state = _state.read(ROOT)
-    if state is None or state["status"] != "active":
-        raise _state.StateError("receipt commands require an active run")
-    command = args.command
-    if command and command[0] == "--":
-        command = command[1:]
-    if not command:
-        print("receipt run requires a command after --", file=sys.stderr)
-        return 2
-    workspace = _workspace.load(ROOT)
-    source = workspace.sources.get(args.source)
-    if source is None or source.kind != "git" or source.path is None:
-        raise _workspace.WorkspaceError(f"unknown Git source: {args.source}")
-    started = datetime.now(timezone.utc)
-    result = subprocess.run(
-        command, cwd=source.path, capture_output=True, text=True, check=False
-    )
-    receipt_id = f"cmd-{started.strftime('%Y%m%dT%H%M%S')}-{secrets.token_hex(2)}"
-    receipt = {
-        "id": receipt_id,
-        "source": args.source,
-        "argv": command,
-        "platform": sys.platform,
-        "started_at": started.isoformat(),
-        "finished_at": datetime.now(timezone.utc).isoformat(),
-        "exit_code": result.returncode,
-        "stdout_sha256": hashlib.sha256(result.stdout.encode()).hexdigest(),
-        "stderr_sha256": hashlib.sha256(result.stderr.encode()).hexdigest(),
-    }
-    path = _state.run_dir(ROOT, state["run_id"]) / "receipts" / f"{receipt_id}.json"
-    path.write_text(
-        json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    emit({"receipt": str(path), **receipt}, args.json)
-    if result.returncode:
-        if result.stdout:
-            print(result.stdout, file=sys.stderr, end="")
-        if result.stderr:
-            print(result.stderr, file=sys.stderr, end="")
-    return result.returncode
-
-
 def cmd_verify(args) -> int:
     import _publish
 
@@ -275,13 +223,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     source = commands.add_parser("source")
     source_actions = source.add_subparsers(dest="action", required=True)
-    add = leaf(source_actions.add_parser("add"))
-    add.add_argument("--kind", choices=("git", "postgres"), required=True)
-    add.add_argument("--name", required=True)
-    add.add_argument("target", nargs="?", default="")
-    add.add_argument("--url-env", default="DATABASE_URL")
-    add.add_argument("--schema", default="public")
-    add.add_argument("--table", action="append")
+    add = source_actions.add_parser("add")
+    source_kinds = add.add_subparsers(dest="kind", required=True)
+    link = leaf(source_kinds.add_parser("link"))
+    link.add_argument("target")
+    link.add_argument("--name", required=True)
+    clone = leaf(source_kinds.add_parser("clone"))
+    clone.add_argument("target")
+    clone.add_argument("--name", required=True)
+    clone.add_argument("--ref")
+    postgres = leaf(source_kinds.add_parser("postgres"))
+    postgres.add_argument("--name", required=True)
+    postgres.add_argument("--url-env", default="DATABASE_URL")
+    postgres.add_argument("--schema", default="public")
+    postgres.add_argument("--table", action="append")
     leaf(source_actions.add_parser("list"))
 
     run = commands.add_parser("run")
@@ -311,7 +266,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     publication = commands.add_parser("publication")
     publication_actions = publication.add_subparsers(dest="action", required=True)
-    for action in ("publish", "current", "rollback", "gc"):
+    for action in ("publish", "current", "rollback"):
         leaf(publication_actions.add_parser(action))
     export = leaf(publication_actions.add_parser("export"))
     export.add_argument("--to", default="wiki")
@@ -328,12 +283,6 @@ def build_parser() -> argparse.ArgumentParser:
     describe.add_argument("table")
     describe.add_argument("--url-env", default="DATABASE_URL")
     describe.add_argument("--schema", default="public")
-
-    receipt = commands.add_parser("receipt")
-    receipt_actions = receipt.add_subparsers(dest="action", required=True)
-    receipt_run = leaf(receipt_actions.add_parser("run"))
-    receipt_run.add_argument("--source", required=True)
-    receipt_run.add_argument("command", nargs=argparse.REMAINDER)
 
     verify = leaf(commands.add_parser("verify"))
     verify.add_argument("--actor", required=True)
@@ -352,7 +301,6 @@ def main() -> int:
         "publication": cmd_publication,
         "validate": cmd_validate,
         "db": cmd_db,
-        "receipt": cmd_receipt,
         "verify": cmd_verify,
     }
     try:
