@@ -196,19 +196,19 @@ def test_duplicate_edge_across_tasks_fails_composed_plan(tmp_path):
         json.dumps({"source": None, "pages": [], "exclusions": []}),
     )
     codes = {
-        item["code"] for item in _validate.validate_composed_plan(root, state)
+        item.code for item in _validate.validate_composed_plan(root, state)
     }
     assert "connection-duplicate-edge" in codes
 
 
 def test_zh_survey_budget_is_wider(tmp_path):
-    per_file_en, total_en = _validate._survey_budget({"language": "en", "tasks": {}})
-    per_file_zh, total_zh = _validate._survey_budget({"language": "zh", "tasks": {}})
+    per_file_en, total_en = _validate.survey_budget({"language": "en", "tasks": {}})
+    per_file_zh, total_zh = _validate.survey_budget({"language": "zh", "tasks": {}})
     assert per_file_zh == per_file_en * 2
     many = {
         f"survey:s{index}": {"phase": "survey"} for index in range(20)
     }
-    _, total_many = _validate._survey_budget({"language": "en", "tasks": many})
+    _, total_many = _validate.survey_budget({"language": "en", "tasks": many})
     assert total_many == 20 * per_file_en > total_en
 
 
@@ -220,25 +220,24 @@ def test_zh_log_uses_localized_headings(tmp_path):
         "generated: {by: repo-wiki/test, at: 2026-01-01T00:00:00Z}\n"
         "verified: [{by: repo-wiki/reviewer, at: 2026-01-01T00:00:00Z}]\n---\n正文\n",
     )
-    _publish.generate_indexes(bundle, "zh")
-    _publish.generate_log(bundle, None, "run-1", "zh")
-    log = (bundle / "log.md").read_text(encoding="utf-8")
+    indexes = _publish.render_indexes(bundle, "zh")
+    log = _publish.render_log(bundle, None, "run-1", "zh")["log.md"]
+    assert "# 概念" in indexes["index.md"]
     assert log.startswith("# Wiki 更新日志")
     assert "**新增**" in log
+    write(bundle / "log.md", log)
     second = tmp_path / "second"
     second.mkdir()
     write(second / "one.md", (bundle / "one.md").read_text() + "更新\n")
-    _publish.generate_indexes(second, "zh")
-    _publish.generate_log(second, bundle, "run-2", "zh")
-    updated = (second / "log.md").read_text(encoding="utf-8")
+    updated = _publish.render_log(second, bundle, "run-2", "zh")["log.md"]
     assert updated.startswith("# Wiki 更新日志")
     assert "**更新**" in updated and updated.count("# Wiki 更新日志") == 1
 
 
 def test_causal_regex_covers_chinese_connectives():
     for text in ("因为超时而重试", "由于锁竞争", "以致状态丢失", "从而绕过缓存"):
-        assert _validate._CAUSAL.search(text), text
-    assert not _validate._CAUSAL.search("这是普通描述")
+        assert _validate.CAUSAL.search(text), text
+    assert not _validate.CAUSAL.search("这是普通描述")
 
 
 def test_invalid_survey_config_is_rejected(tmp_path):

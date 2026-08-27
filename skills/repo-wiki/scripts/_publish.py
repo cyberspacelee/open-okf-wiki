@@ -5,6 +5,7 @@ import pathlib
 import re
 import shutil
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
@@ -58,6 +59,15 @@ def _unlock(root: pathlib.Path, fd: int) -> None:
     os.close(fd)
 
 
+@contextmanager
+def publication_lock(root: pathlib.Path):
+    fd = _lock(root)
+    try:
+        yield
+    finally:
+        _unlock(root, fd)
+
+
 def _content_pages(bundle: pathlib.Path) -> list[pathlib.Path]:
     return sorted(
         path for path in bundle.rglob("*.md") if path.name not in ("index.md", "log.md")
@@ -71,19 +81,17 @@ def _description(path: pathlib.Path) -> tuple[str, str]:
     return str(title or path.stem), str(description or "")
 
 
-def generate_indexes(bundle: pathlib.Path, language: str) -> None:
-    for stale in bundle.rglob("index.md"):
-        stale.unlink()
+def render_indexes(bundle: pathlib.Path, language: str) -> dict[str, str]:
     pages = _content_pages(bundle)
     directories = {pathlib.Path(".")}
     for page in pages:
         relative = page.relative_to(bundle)
         directories.update([relative.parent, *relative.parents])
+    indexes = {}
     for directory in sorted(
         directories, key=lambda item: (len(item.parts), item.as_posix())
     ):
         actual = bundle if directory == pathlib.Path(".") else bundle / directory
-        actual.mkdir(parents=True, exist_ok=True)
         child_dirs = sorted(
             {
                 page.relative_to(actual).parts[0]
@@ -120,9 +128,10 @@ def generate_indexes(bundle: pathlib.Path, language: str) -> None:
             lines.append("")
         if not child_dirs and not direct_pages:
             lines.extend(["# Wiki", ""])
-        (actual / "index.md").write_text(
-            "\n".join(lines).rstrip() + "\n", encoding="utf-8", newline="\n"
+        indexes[(directory / "index.md").as_posix()] = (
+            "\n".join(lines).rstrip() + "\n"
         )
+    return indexes
 
 
 def _page_hashes(bundle: pathlib.Path | None) -> dict[str, str]:
@@ -155,12 +164,12 @@ _LOG_STRINGS = {
 _LOG_TITLES = tuple(item["title"] for item in _LOG_STRINGS.values())
 
 
-def generate_log(
+def render_log(
     bundle: pathlib.Path,
     previous: pathlib.Path | None,
     run_id: str,
     language: str = "en",
-) -> None:
+) -> dict[str, str]:
     text_for = _LOG_STRINGS.get(language, _LOG_STRINGS["en"])
     before = _page_hashes(previous)
     after = _page_hashes(bundle)
@@ -219,7 +228,14 @@ def generate_log(
                 text += "\n\n" + existing
     else:
         text = prior
-    (bundle / "log.md").write_text(text.rstrip() + "\n", encoding="utf-8", newline="\n")
+    return {"log.md": text.rstrip() + "\n"}
+
+
+def _write_generated(bundle: pathlib.Path, files: dict[str, str]) -> None:
+    for relative, content in files.items():
+        path = bundle / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8", newline="\n")
 
 
 def _page_manifest(root: pathlib.Path, candidate: pathlib.Path, state: dict) -> dict:
@@ -367,52 +383,60 @@ def publish(root: pathlib.Path) -> dict:
     errors = [
         item
         for item in _validate.validate_candidate(root, state, published=True)
-        if item["severity"] == "error"
+        if item.severity == "error"
     ]
     if errors:
-        raise PublishError(f"candidate validation failed: {errors[:3]}")
+        raise PublishError(
+            f"candidate validation failed: {[item.to_dict() for item in errors[:3]]}"
+        )
 
-    fd = _lock(root)
-    partial = None
-    try:
-        publication = _publication(root)
-        generations = publication / "generations"
-        generations.mkdir(parents=True, exist_ok=True)
-        partial = pathlib.Path(tempfile.mkdtemp(prefix=".partial-", dir=generations))
-        shutil.copytree(candidate, partial, dirs_exist_ok=True)
-        old = current(root)
-        previous = pathlib.Path(old["path"]) if old else None
-        generate_indexes(partial, state["language"])
-        generate_log(partial, previous, state["run_id"], state["language"])
-        bundle_issues = _validate.validate_bundle(partial)
-        bundle_errors = [item for item in bundle_issues if item["severity"] == "error"]
-        if bundle_errors:
-            raise PublishError(f"generated bundle is invalid: {bundle_errors[:3]}")
-        manifest = {
-            "version": VERSION,
-            "okf_version": "0.2",
-            "run_id": state["run_id"],
-            "published_at": datetime.now(timezone.utc).isoformat(),
-            "producer_run_id": state["run_id"],
-            "revisions": state["revisions"],
-            "catalogs": state["catalogs"],
-            "pages": _page_manifest(root, candidate, state),
-        }
-        generation, pointer = _commit_generation(root, partial, manifest, old)
-        prune(root)
+    with publication_lock(root):
         partial = None
-        result = {
-            **pointer,
-            "digest": pointer["generation"],
-            "path": str(generation),
-            "pages": len(_content_pages(generation)),
-        }
-        _state.mark_published(root, result)
-        return result
-    finally:
-        if partial and partial.exists():
-            shutil.rmtree(partial, ignore_errors=True)
-        _unlock(root, fd)
+        try:
+            publication = _publication(root)
+            generations = publication / "generations"
+            generations.mkdir(parents=True, exist_ok=True)
+            partial = pathlib.Path(tempfile.mkdtemp(prefix=".partial-", dir=generations))
+            shutil.copytree(candidate, partial, dirs_exist_ok=True)
+            old = current(root)
+            previous = pathlib.Path(old["path"]) if old else None
+            for stale in partial.rglob("index.md"):
+                stale.unlink()
+            _write_generated(partial, render_indexes(partial, state["language"]))
+            _write_generated(
+                partial,
+                render_log(partial, previous, state["run_id"], state["language"]),
+            )
+            bundle_issues = _validate.validate_bundle(partial)
+            bundle_errors = [item for item in bundle_issues if item.severity == "error"]
+            if bundle_errors:
+                raise PublishError(
+                    f"generated bundle is invalid: {[item.to_dict() for item in bundle_errors[:3]]}"
+                )
+            manifest = {
+                "version": VERSION,
+                "okf_version": "0.2",
+                "run_id": state["run_id"],
+                "published_at": datetime.now(timezone.utc).isoformat(),
+                "producer_run_id": state["run_id"],
+                "revisions": state["revisions"],
+                "catalogs": state["catalogs"],
+                "pages": _page_manifest(root, candidate, state),
+            }
+            generation, pointer = _commit_generation(root, partial, manifest, old)
+            prune(root)
+            partial = None
+            result = {
+                **pointer,
+                "digest": pointer["generation"],
+                "path": str(generation),
+                "pages": len(_content_pages(generation)),
+            }
+            _state.mark_published(root, result)
+            return result
+        finally:
+            if partial and partial.exists():
+                shutil.rmtree(partial, ignore_errors=True)
 
 
 def verify(root: pathlib.Path, actor: str, pages: list[str]) -> dict:
@@ -432,76 +456,83 @@ def verify(root: pathlib.Path, actor: str, pages: list[str]) -> dict:
     if not requested:
         raise PublishError("at least one page is required")
 
-    fd = _lock(root)
-    partial = None
-    try:
-        publication = _publication(root)
-        generations = publication / "generations"
-        partial = pathlib.Path(tempfile.mkdtemp(prefix=".partial-", dir=generations))
-        shutil.copytree(source, partial, dirs_exist_ok=True)
-        now = datetime.now(timezone.utc)
-        for relative in requested:
-            pure = pathlib.PurePosixPath(relative)
-            if (
-                pure.is_absolute()
-                or ".." in pure.parts
-                or pure.name in ("index.md", "log.md")
-            ):
-                raise PublishError(f"invalid concept page: {relative}")
-            path = partial.joinpath(*pure.parts)
-            if not path.is_file() or path.suffix != ".md":
-                raise PublishError(f"concept page not found: {relative}")
-            parsed = parse_file(path)
-            if parsed.errors:
-                raise PublishError(
-                    f"invalid concept page {relative}: {parsed.errors[0]}"
-                )
-            verified = [
-                item
-                for item in parsed.meta.get("verified", [])
-                if item.get("by") != actor
-            ]
-            verified.append({"by": actor, "at": now})
-            parsed.meta["verified"] = verified
-            parsed.meta["status"] = "stable"
-            parsed.meta["stale_after"] = (
-                now + timedelta(days=workspace.freshness_days)
-            ).date()
-            path.write_text(
-                render(parsed.meta, parsed.body), encoding="utf-8", newline="\n"
-            )
-
-        run_id = f"verify-{now.strftime('%Y%m%dT%H%M%SZ')}"
-        generate_indexes(partial, workspace.language)
-        generate_log(partial, source, run_id, workspace.language)
-        issues = _validate.validate_bundle(partial)
-        errors = [item for item in issues if item["severity"] == "error"]
-        if errors:
-            raise PublishError(f"verified bundle is invalid: {errors[:3]}")
-        old_manifest = json.loads(
-            (source / ".okf-manifest.json").read_text(encoding="utf-8")
-        )
-        manifest = {
-            **old_manifest,
-            "run_id": run_id,
-            "published_at": now.isoformat(),
-            "verified_from": selected["generation"],
-        }
-        generation, pointer = _commit_generation(root, partial, manifest, selected)
+    with publication_lock(root):
         partial = None
-        return {**pointer, "path": str(generation), "pages": requested, "actor": actor}
-    finally:
-        if partial and partial.exists():
-            shutil.rmtree(partial, ignore_errors=True)
-        _unlock(root, fd)
+        try:
+            publication = _publication(root)
+            generations = publication / "generations"
+            partial = pathlib.Path(tempfile.mkdtemp(prefix=".partial-", dir=generations))
+            shutil.copytree(source, partial, dirs_exist_ok=True)
+            now = datetime.now(timezone.utc)
+            for relative in requested:
+                pure = pathlib.PurePosixPath(relative)
+                if (
+                    pure.is_absolute()
+                    or ".." in pure.parts
+                    or pure.name in ("index.md", "log.md")
+                ):
+                    raise PublishError(f"invalid concept page: {relative}")
+                path = partial.joinpath(*pure.parts)
+                if not path.is_file() or path.suffix != ".md":
+                    raise PublishError(f"concept page not found: {relative}")
+                parsed = parse_file(path)
+                if parsed.errors:
+                    raise PublishError(
+                        f"invalid concept page {relative}: {parsed.errors[0]}"
+                    )
+                verified = [
+                    item
+                    for item in parsed.meta.get("verified", [])
+                    if item.get("by") != actor
+                ]
+                verified.append({"by": actor, "at": now})
+                parsed.meta["verified"] = verified
+                parsed.meta["status"] = "stable"
+                parsed.meta["stale_after"] = (
+                    now + timedelta(days=workspace.freshness_days)
+                ).date()
+                path.write_text(
+                    render(parsed.meta, parsed.body), encoding="utf-8", newline="\n"
+                )
+
+            run_id = f"verify-{now.strftime('%Y%m%dT%H%M%SZ')}"
+            for stale in partial.rglob("index.md"):
+                stale.unlink()
+            _write_generated(partial, render_indexes(partial, workspace.language))
+            _write_generated(
+                partial, render_log(partial, source, run_id, workspace.language)
+            )
+            issues = _validate.validate_bundle(partial)
+            errors = [item for item in issues if item.severity == "error"]
+            if errors:
+                raise PublishError(
+                    f"verified bundle is invalid: {[item.to_dict() for item in errors[:3]]}"
+                )
+            old_manifest = json.loads(
+                (source / ".okf-manifest.json").read_text(encoding="utf-8")
+            )
+            manifest = {
+                **old_manifest,
+                "run_id": run_id,
+                "published_at": now.isoformat(),
+                "verified_from": selected["generation"],
+            }
+            generation, pointer = _commit_generation(root, partial, manifest, selected)
+            partial = None
+            return {
+                **pointer,
+                "path": str(generation),
+                "pages": requested,
+                "actor": actor,
+            }
+        finally:
+            if partial and partial.exists():
+                shutil.rmtree(partial, ignore_errors=True)
 
 
 def rollback(root: pathlib.Path) -> dict:
-    fd = _lock(root)
-    try:
+    with publication_lock(root):
         return _rollback_locked(root)
-    finally:
-        _unlock(root, fd)
 
 
 def _rollback_locked(root: pathlib.Path) -> dict:
@@ -532,10 +563,12 @@ def _rollback_locked(root: pathlib.Path) -> dict:
     errors = [
         item
         for item in _validate.validate_publication(root, generation)
-        if item["severity"] == "error"
+        if item.severity == "error"
     ]
     if errors:
-        raise PublishError(f"previous generation is invalid: {errors[:3]}")
+        raise PublishError(
+            f"previous generation is invalid: {[item.to_dict() for item in errors[:3]]}"
+        )
     atomic_json(publication / "current.json", prior)
     if old:
         atomic_json(

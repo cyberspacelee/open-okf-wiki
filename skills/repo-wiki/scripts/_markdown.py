@@ -17,7 +17,6 @@ class Structure:
     footnote_refs: list[tuple[str, int]]
     footnote_defs: dict[str, str]
     placeholders: list[tuple[str, int]]
-    mermaid_blocks: list[tuple[int, str]]
 
 
 _HEADING = re.compile(r"^(#{1,3}) (.+)$")
@@ -28,20 +27,6 @@ _PLACEHOLDER = re.compile(r"\{\{[^}]*\}\}")
 _FENCE = re.compile(r"^(`{3,}|~{3,})(.*)")
 
 
-def _in_fence(line: str, fence_char: str | None, fence_len: int) -> tuple[bool, str | None, int]:
-    """Return (is_closing, new_fence_char, new_fence_len)."""
-    m = _FENCE.match(line)
-    if fence_char is None:
-        if m:
-            ch = m.group(1)[0]
-            return False, ch, len(m.group(1))
-        return False, None, 0
-    else:
-        if m and m.group(1)[0] == fence_char and len(m.group(1)) >= fence_len:
-            return True, None, 0
-        return False, fence_char, fence_len
-
-
 def extract(body: str) -> Structure:
     lines = body.splitlines()
 
@@ -50,13 +35,9 @@ def extract(body: str) -> Structure:
     footnote_refs: list[tuple[str, int]] = []
     footnote_defs: dict[str, str] = {}
     placeholders: list[tuple[str, int]] = []
-    mermaid_blocks: list[tuple[int, str]] = []
 
     fence_char: str | None = None
     fence_len: int = 0
-    fence_start: int = 0
-    in_mermaid: bool = False
-    mermaid_lines: list[str] = []
 
     for lineno, raw in enumerate(lines, 1):
         line = raw
@@ -67,22 +48,13 @@ def extract(body: str) -> Structure:
             if m:
                 fence_char = m.group(1)[0]
                 fence_len = len(m.group(1))
-                lang = m.group(2).strip()
-                in_mermaid = lang == "mermaid"
-                fence_start = lineno
-                mermaid_lines = []
                 continue
         else:
             m = _FENCE.match(line)
             if m and m.group(1)[0] == fence_char and len(m.group(1)) >= fence_len:
-                if in_mermaid:
-                    mermaid_blocks.append((fence_start, "\n".join(mermaid_lines)))
                 fence_char = None
                 fence_len = 0
-                in_mermaid = False
                 continue
-            if in_mermaid:
-                mermaid_lines.append(line)
             continue  # inside any fence: skip all other processing
 
         # headings
@@ -130,5 +102,4 @@ def extract(body: str) -> Structure:
         footnote_refs=footnote_refs,
         footnote_defs=footnote_defs,
         placeholders=placeholders,
-        mermaid_blocks=mermaid_blocks,
     )

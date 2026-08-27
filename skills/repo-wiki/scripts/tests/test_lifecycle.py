@@ -176,7 +176,7 @@ def test_full_lifecycle_publish_export_verify_and_incremental_reuse(tmp_path):
         tampered / "overview.md", (tampered / "overview.md").read_text() + "changed\n"
     )
     tamper_codes = {
-        item["code"] for item in _validate.validate_publication(root, tampered)
+        item.code for item in _validate.validate_publication(root, tampered)
     }
     assert {"manifest-digest", "catalog-invalid"} <= tamper_codes
     exported = _publish.export(root, root / "wiki")
@@ -200,8 +200,6 @@ def test_dirty_source_and_windows_incompatible_paths_are_rejected(tmp_path):
     assert _workspace.capture_git_revision(root, registered)["commit"]
     write(source / "dirty.txt", "not committed")
     _state.start_run(root, "repo-wiki/test", "writer")
-    with pytest.raises(_workspace.WorkspaceError, match="Windows reserved"):
-        _workspace._portable_path("docs/CON.md", {})
 
 
 def test_workspace_init_requires_explicit_git_sources(tmp_path):
@@ -215,7 +213,7 @@ def test_workspace_init_requires_explicit_git_sources(tmp_path):
     link = _workspace.add_git_link(root, str(linked), "LinkedAPI")
     clone = _workspace.add_git_clone(root, linked.as_uri(), "RemoteWEB", "HEAD")
     assert link.path == pathlib.Path(os.path.abspath(root / "LinkedAPI"))
-    assert clone.remote == linked.as_uri() and clone.ref == "HEAD"
+    assert clone.origin == linked.as_uri() and clone.ref == "HEAD"
     assert clone.path == pathlib.Path(os.path.abspath(root / "RemoteWEB"))
     with pytest.raises(_workspace.WorkspaceError, match="already exists"):
         _workspace.add_git_link(root, str(linked), "linkedapi")
@@ -441,25 +439,28 @@ def test_index_log_and_root_relative_links_conform(tmp_path):
         "generated: {by: repo-wiki/test, at: 2026-01-01T00:00:00Z}\n"
         "verified: [{by: repo-wiki/reviewer, at: 2026-01-01T00:00:00Z}]\n---\nBody\n",
     )
-    _publish.generate_indexes(bundle, "en")
-    _publish.generate_log(bundle, None, "run-1")
+    indexes = _publish.render_indexes(bundle, "en")
+    log_files = _publish.render_log(bundle, None, "run-1")
+    for relative, content in {**indexes, **log_files}.items():
+        write(bundle / relative, content)
     assert not [
         item
         for item in _validate.validate_bundle(bundle)
-        if item["severity"] == "error"
+        if item.severity == "error"
     ]
-    root = (bundle / "index.md").read_text()
+    root = indexes["index.md"]
     assert "type: Index" not in root and "# Concepts" in root and "##" not in root
 
 
 def test_publication_lock_is_process_scoped_not_stale_file_scoped(tmp_path):
-    first = _publish._lock(tmp_path)
-    with pytest.raises(_publish.PublishError, match="locked"):
-        _publish._lock(tmp_path)
-    _publish._unlock(tmp_path, first)
+    with _publish.publication_lock(tmp_path):
+        with pytest.raises(_publish.PublishError, match="locked"):
+            with _publish.publication_lock(tmp_path):
+                pass
+        assert (tmp_path / ".okf-wiki/publication/publish.lock").is_file()
     assert (tmp_path / ".okf-wiki/publication/publish.lock").is_file()
-    second = _publish._lock(tmp_path)
-    _publish._unlock(tmp_path, second)
+    with _publish.publication_lock(tmp_path):
+        pass
 
 
 def test_corrupt_pointers_and_windows_reserved_page_are_rejected(tmp_path):

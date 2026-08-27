@@ -4,6 +4,7 @@ import json
 import pathlib
 import re
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 from urllib.parse import unquote, urlparse
 
 from _files import directory_digest
@@ -20,7 +21,7 @@ from _models import (
 from pydantic import ValidationError
 
 _LINE_ANCHOR = re.compile(r"#L([1-9][0-9]*)(?:-L([1-9][0-9]*))?$")
-_CAUSAL = re.compile(
+CAUSAL = re.compile(
     r"\b(because|in order to|so that)\b|为了|以便|因为|由于|以致|从而", re.IGNORECASE
 )
 _INLINE_REF = re.compile(r"\[\^[^\]]+\]")
@@ -29,23 +30,39 @@ SURVEY_MAX_BYTES = 64 * 1024
 SURVEY_TOTAL_MAX_BYTES = 512 * 1024
 
 
-def _survey_budget(state: dict) -> tuple[int, int]:
+def survey_budget(state: dict) -> tuple[int, int]:
     """Per-survey and whole-set byte budgets; wider for zh (UTF-8 ~3 bytes/char)."""
     per_file = SURVEY_MAX_BYTES * 2 if state.get("language") == "zh" else SURVEY_MAX_BYTES
     count = sum(1 for task in state["tasks"].values() if task["phase"] == "survey")
     return per_file, max(SURVEY_TOTAL_MAX_BYTES, count * per_file)
 
 
+@dataclasses.dataclass(frozen=True)
+class Issue:
+    severity: Literal["error", "warning"]
+    code: str
+    path: str
+    message: str
+    line: int | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "severity": self.severity,
+            "code": self.code,
+            "path": self.path,
+            "line": self.line,
+            "message": self.message,
+        }
+
+
 def issue(
-    severity: str, code: str, path: str, message: str, line: int | None = None
-) -> dict:
-    return {
-        "severity": severity,
-        "code": code,
-        "path": path,
-        "line": line,
-        "message": message,
-    }
+    severity: Literal["error", "warning"],
+    code: str,
+    path: str,
+    message: str,
+    line: int | None = None,
+) -> Issue:
+    return Issue(severity, code, path, message, line)
 
 
 def _revision(state: dict, name: str) -> dict | None:
@@ -103,15 +120,9 @@ def _catalog_resource(state: dict, resource: str) -> bool:
     return resource in allowed
 
 
-def _draft_locator(
-    root: pathlib.Path, state: dict, locator: str
-) -> tuple[bytes, int | None, int | None] | None:
-    return _resolve_resource(root, state, locator)
-
-
 def _check_range(
     path: pathlib.Path | bytes, lo: int | None, hi: int | None, label: str
-) -> list[dict]:
+) -> list[Issue]:
     if lo is not None and hi is not None and lo > hi:
         return [
             issue(
@@ -153,7 +164,7 @@ def _check_range(
 
 def _model_issues(
     path: pathlib.Path, model, raw: str
-) -> tuple[object | None, list[dict]]:
+) -> tuple[object | None, list[Issue]]:
     try:
         return model.model_validate_json(raw, strict=True), []
     except ValidationError as exc:
@@ -163,7 +174,7 @@ def _model_issues(
         ]
 
 
-def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[dict]:
+def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[Issue]:
     base = root / ".okf-wiki" / "runs" / state["run_id"]
     path = base / task["artifact"]
     if not path.exists():
@@ -174,7 +185,7 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[dict]:
         ]
     phase = task["phase"]
     if phase == "survey":
-        max_bytes, total_max_bytes = _survey_budget(state)
+        max_bytes, total_max_bytes = survey_budget(state)
         survey_root = base / "drafts" / "survey"
         survey_total = sum(
             item.stat().st_size
@@ -212,7 +223,7 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[dict]:
                 )
             for finding in value.findings:
                 for locator in finding.evidence:
-                    resolved = _draft_locator(root, state, locator)
+                    resolved = _resolve_resource(root, state, locator)
                     if resolved is None:
                         issues.append(
                             issue("error", "locator-unresolved", str(path), locator)
@@ -267,7 +278,7 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[dict]:
                         )
                 for participant in connection.participants:
                     for locator in participant.evidence:
-                        resolved = _draft_locator(root, state, locator)
+                        resolved = _resolve_resource(root, state, locator)
                         if resolved is None or not locator.startswith(
                             participant.source + "/"
                         ):
@@ -282,7 +293,7 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[dict]:
                         elif resolved:
                             issues.extend(_check_range(*resolved, locator))
                 for locator in connection.contract_evidence:
-                    resolved = _draft_locator(root, state, locator)
+                    resolved = _resolve_resource(root, state, locator)
                     if resolved is None:
                         issues.append(
                             issue(
@@ -403,10 +414,6 @@ def _finding_id_list(base: pathlib.Path) -> list[str]:
     return result
 
 
-def _connection_id_list(base: pathlib.Path) -> list[str]:
-    return [item.id for _, item in _connection_entries(base)]
-
-
 def _connection_entries(base: pathlib.Path) -> list[tuple[str, object]]:
     result = []
     connect_dir = base / "drafts" / "connect"
@@ -421,10 +428,10 @@ def _connection_entries(base: pathlib.Path) -> list[tuple[str, object]]:
 
 
 def _connection_ids(base: pathlib.Path) -> set[str]:
-    return set(_connection_id_list(base))
+    return {item.id for _, item in _connection_entries(base)}
 
 
-def validate_composed_plan(root: pathlib.Path, state: dict) -> list[dict]:
+def validate_composed_plan(root: pathlib.Path, state: dict) -> list[Issue]:
     base = root / ".okf-wiki" / "runs" / state["run_id"]
     plan_dir = base / "drafts" / "plan"
     pages = []
@@ -627,14 +634,14 @@ def validate_composed_plan(root: pathlib.Path, state: dict) -> list[dict]:
     return issues
 
 
-def stamp_generated_page(
+def render_generated_page(
     root: pathlib.Path, state: dict, task: dict, path: pathlib.Path
-) -> None:
+) -> str | None:
     import _workspace
 
     parsed = parse_file(path)
     if parsed.errors:
-        return
+        return None
     meta = dict(parsed.meta)
     spec = task["spec"]
     meta.update(
@@ -669,12 +676,15 @@ def stamp_generated_page(
                 source.update({key: value for key, value in signals.items() if value})
         enriched.append(source)
     meta["sources"] = enriched
-    path.write_text(render(meta, parsed.body), encoding="utf-8", newline="\n")
+    return render(meta, parsed.body)
 
 
-def stamp_approved_pages(root: pathlib.Path, state: dict, actor: str) -> None:
+def render_approved_pages(
+    root: pathlib.Path, state: dict, actor: str
+) -> list[tuple[pathlib.Path, str]]:
     now = datetime.now(timezone.utc)
     stale = now.date() + timedelta(days=state["freshness_days"])
+    rendered = []
     for path in sorted(
         (root / ".okf-wiki" / "runs" / state["run_id"] / "candidate").rglob("*.md")
     ):
@@ -688,7 +698,8 @@ def stamp_approved_pages(root: pathlib.Path, state: dict, actor: str) -> None:
         meta["verified"] = [*verified, {"by": actor, "at": now}]
         meta["status"] = "stable"
         meta["stale_after"] = stale
-        path.write_text(render(meta, parsed.body), encoding="utf-8", newline="\n")
+        rendered.append((path, render(meta, parsed.body)))
+    return rendered
 
 
 def validate_page(
@@ -698,7 +709,7 @@ def validate_page(
     *,
     owner: str | None = None,
     published: bool = False,
-) -> list[dict]:
+) -> list[Issue]:
     parsed = parse_file(path)
     if parsed.errors:
         return [
@@ -791,7 +802,7 @@ def validate_page(
                 )
             )
     for line, raw in enumerate(parsed.body.splitlines(), 1):
-        if _CAUSAL.search(raw) and not _INLINE_REF.search(raw):
+        if CAUSAL.search(raw) and not _INLINE_REF.search(raw):
             issues.append(
                 issue(
                     "warning",
@@ -806,7 +817,7 @@ def validate_page(
 
 def validate_candidate(
     root: pathlib.Path, state: dict, *, published: bool
-) -> list[dict]:
+) -> list[Issue]:
     candidate = root / ".okf-wiki" / "runs" / state["run_id"] / "candidate"
     pages = sorted(candidate.rglob("*.md")) if candidate.exists() else []
     if not pages:
@@ -846,7 +857,7 @@ def validate_candidate(
 
 def _link_issues(
     base: pathlib.Path, pages: list[pathlib.Path], allowed: set[str]
-) -> list[dict]:
+) -> list[Issue]:
     issues = []
     for path in pages:
         rel = path.relative_to(base).as_posix()
@@ -866,7 +877,7 @@ def _link_issues(
     return issues
 
 
-def validate_bundle(path: pathlib.Path) -> list[dict]:
+def validate_bundle(path: pathlib.Path) -> list[Issue]:
     issues = []
     for page in sorted(path.rglob("*.md")):
         rel = page.relative_to(path).as_posix()
@@ -959,7 +970,7 @@ def validate_bundle(path: pathlib.Path) -> list[dict]:
     return issues
 
 
-def validate_publication(root: pathlib.Path, path: pathlib.Path) -> list[dict]:
+def validate_publication(root: pathlib.Path, path: pathlib.Path) -> list[Issue]:
     issues = validate_bundle(path)
     manifest_path = path / ".okf-manifest.json"
     try:
@@ -1070,9 +1081,7 @@ def validate_proposals(
     root: pathlib.Path,
     state: dict,
     path: pathlib.Path,
-    *,
-    required: bool = False,
-) -> list[dict]:
+) -> list[Issue]:
     issues = []
     expected = {
         f"agents-block-{item['name']}.md"
@@ -1084,16 +1093,7 @@ def validate_proposals(
         if path.exists()
         else set()
     )
-    if required and expected != actual:
-        issues.append(
-            issue(
-                "error",
-                "proposal-set-invalid",
-                str(path),
-                f"expected {sorted(expected)}, got {sorted(actual)}",
-            )
-        )
-    elif actual - expected:
+    if actual - expected:
         issues.append(
             issue(
                 "error",

@@ -100,10 +100,6 @@ def candidate_dir(root: pathlib.Path, state: dict) -> pathlib.Path:
     return run_dir(root, state["run_id"]) / "candidate"
 
 
-def drafts_dir(root: pathlib.Path, state: dict) -> pathlib.Path:
-    return run_dir(root, state["run_id"]) / "drafts"
-
-
 def _read_pointer(root: pathlib.Path) -> str | None:
     path = _pointer(root)
     if not path.exists():
@@ -538,11 +534,14 @@ def task_complete(root: pathlib.Path, task_id: str) -> dict:
     if task["status"] != "in_progress":
         raise StateError("target must be started before completion")
     if task["phase"] == "write":
-        _validate.stamp_generated_page(root, state, task, _artifact(root, state, task))
+        artifact = _artifact(root, state, task)
+        rendered = _validate.render_generated_page(root, state, task, artifact)
+        if rendered is not None:
+            artifact.write_text(rendered, encoding="utf-8", newline="\n")
     issues = _validate.validate_task(root, state, task)
-    errors = [issue for issue in issues if issue["severity"] == "error"]
+    errors = [issue for issue in issues if issue.severity == "error"]
     if errors:
-        return {"ok": False, "issues": errors}
+        return {"ok": False, "issues": [issue.to_dict() for issue in errors]}
     if task["phase"] == "review":
         return _finish_review_batch(root, state, task)
     artifact = _artifact(root, state, task)
@@ -603,9 +602,11 @@ def _compose_plan(root: pathlib.Path, state: dict) -> None:
     import _validate
 
     issues = _validate.validate_composed_plan(root, state)
-    errors = [item for item in issues if item["severity"] == "error"]
+    errors = [item for item in issues if item.severity == "error"]
     if errors:
-        raise StateError(f"composed page plan is invalid: {errors[:3]}")
+        raise StateError(
+            f"composed page plan is invalid: {[item.to_dict() for item in errors[:3]]}"
+        )
     pages = _composed_pages(root, state)
     candidate = candidate_dir(root, state)
     keep = {page.path for page in pages}
@@ -827,9 +828,11 @@ def _reuse_page(root: pathlib.Path, state: dict, task: dict) -> None:
     target_path.write_text(
         render(parsed.meta, parsed.body), encoding="utf-8", newline="\n"
     )
-    _validate.stamp_generated_page(root, state, task, target_path)
+    rendered = _validate.render_generated_page(root, state, task, target_path)
+    if rendered is not None:
+        target_path.write_text(rendered, encoding="utf-8", newline="\n")
     if any(
-        item["severity"] == "error"
+        item.severity == "error"
         for item in _validate.validate_page(
             root,
             state,
@@ -889,8 +892,6 @@ def page_input_digest(base: pathlib.Path, spec: dict) -> str:
 
 @_locked
 def review_start(root: pathlib.Path, actor: str, session: str) -> dict:
-    import _workspace
-
     state = read(root)
     if state is None or state["status"] != "awaiting_review":
         raise StateError("run is not awaiting review")
@@ -926,7 +927,6 @@ def review_start(root: pathlib.Path, actor: str, session: str) -> dict:
     state["status"] = "reviewing"
     _write(root, state)
     okf = pathlib.Path(__file__).resolve().parent / "okf.py"
-    workspace = _workspace.load(root)
     packet = {
         "run_id": state["run_id"],
         "candidate_digest": digest,
@@ -993,11 +993,16 @@ def _finish_review_batch(root: pathlib.Path, state: dict, task: dict) -> dict:
     task["completed_at"] = _now()
     task["artifact_digest"] = _file_digest(report_path)
     if _phase_complete(state, "review"):
-        _validate.stamp_approved_pages(root, state, state["review"]["actor"])
+        for path, text in _validate.render_approved_pages(
+            root, state, state["review"]["actor"]
+        ):
+            path.write_text(text, encoding="utf-8", newline="\n")
         issues = _validate.validate_candidate(root, state, published=False)
-        errors = [issue for issue in issues if issue["severity"] == "error"]
+        errors = [issue for issue in issues if issue.severity == "error"]
         if errors:
-            raise StateError(f"approved candidate failed validation: {errors[:3]}")
+            raise StateError(
+                f"approved candidate failed validation: {[issue.to_dict() for issue in errors[:3]]}"
+            )
         state["approved_digest"] = directory_digest(candidate_dir(root, state))
         state["approved_at"] = _now()
         state["status"] = "approved"
@@ -1068,18 +1073,11 @@ def resume(root: pathlib.Path) -> dict:
     if state is None or state["status"] != "paused":
         raise StateError("run is not paused")
     assert_revisions_current(root, state)
-    if any(
-        task["phase"] == "review" for task in state["tasks"].values()
-    ) and not _phase_complete(
-        {**state, "tasks": {k: v for k, v in state["tasks"].items() if v["phase"] != "review"}},
-        "write",
-    ):
-        state["status"] = "active"
-    elif any(task["phase"] == "review" for task in state["tasks"].values()):
-        state["status"] = "reviewing"
-    elif _phase_complete(state, "write") and not any(
-        task["phase"] == "review" for task in state["tasks"].values()
-    ):
+    has_review = any(t["phase"] == "review" for t in state["tasks"].values())
+    write_done = _phase_complete(state, "write")
+    if has_review:
+        state["status"] = "reviewing" if write_done else "active"
+    elif write_done:
         state["status"] = "awaiting_review"
     else:
         state["status"] = "active"
@@ -1184,10 +1182,10 @@ def propose_complete(root: pathlib.Path) -> dict:
     if state is None or state["status"] != "published":
         raise StateError("propose runs against a published run")
     path = run_dir(root, state["run_id"]) / "proposals"
-    issues = _validate.validate_proposals(root, state, path, required=False)
-    errors = [item for item in issues if item["severity"] == "error"]
+    issues = _validate.validate_proposals(root, state, path)
+    errors = [item for item in issues if item.severity == "error"]
     if errors:
-        return {"ok": False, "issues": errors}
+        return {"ok": False, "issues": [item.to_dict() for item in errors]}
     return {"ok": True, "files": sorted(item.name for item in path.glob("*.md"))}
 
 
@@ -1232,7 +1230,3 @@ def _require_run(root: pathlib.Path, statuses: set[str]) -> dict:
         raise StateError(f"run is {state['status']}, not {'/'.join(sorted(statuses))}")
     _assert_completed_artifacts(root, state)
     return state
-
-
-def _require_active(root: pathlib.Path) -> dict:
-    return _require_run(root, {"active"})

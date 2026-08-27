@@ -198,7 +198,7 @@ def _canonical_database(url: str, schema: str) -> str:
     return f"postgresql://{host}{port}/{database}/{quote(schema, safe='')}"
 
 
-def capture_catalog(root: pathlib.Path, source) -> dict:
+def capture_catalog(root: pathlib.Path, source, *, tables=tables, describe=describe) -> dict:
     url = resolve_url(root, source.url_env or "DATABASE_URL")
     schema = source.schema or "public"
     available = tables(url, schema)

@@ -5,58 +5,24 @@ import pytest
 from _db import DbError, describe, load_env, resolve_url, tables
 
 
-class TestLoadEnv:
-    def test_empty_env_file(self, tmp_path):
-        env_file = tmp_path / ".env"
-        env_file.write_text("")
-        result = load_env(tmp_path)
-        assert result == {}
-
-    def test_simple_key_value(self, tmp_path):
-        env_file = tmp_path / ".env"
-        env_file.write_text("KEY=value\n")
-        result = load_env(tmp_path)
-        assert result == {"KEY": "value"}
-
-    def test_multiple_entries(self, tmp_path):
-        env_file = tmp_path / ".env"
-        env_file.write_text("KEY1=value1\nKEY2=value2\n")
-        result = load_env(tmp_path)
-        assert result == {"KEY1": "value1", "KEY2": "value2"}
-
-    def test_comments_ignored(self, tmp_path):
-        env_file = tmp_path / ".env"
-        env_file.write_text("# Comment\nKEY=value\n# Another comment\n")
-        result = load_env(tmp_path)
-        assert result == {"KEY": "value"}
-
-    def test_empty_lines_ignored(self, tmp_path):
-        env_file = tmp_path / ".env"
-        env_file.write_text("KEY1=value1\n\n\nKEY2=value2\n")
-        result = load_env(tmp_path)
-        assert result == {"KEY1": "value1", "KEY2": "value2"}
-
-    def test_double_quotes(self, tmp_path):
-        env_file = tmp_path / ".env"
-        env_file.write_text('KEY="quoted value"\n')
-        result = load_env(tmp_path)
-        assert result == {"KEY": "quoted value"}
-
-    def test_single_quotes(self, tmp_path):
-        env_file = tmp_path / ".env"
-        env_file.write_text("KEY='quoted value'\n")
-        result = load_env(tmp_path)
-        assert result == {"KEY": "quoted value"}
-
-    def test_whitespace_handling(self, tmp_path):
-        env_file = tmp_path / ".env"
-        env_file.write_text("  KEY  =  value  \n")
-        result = load_env(tmp_path)
-        assert result == {"KEY": "value"}
-
-    def test_no_env_file(self, tmp_path):
-        result = load_env(tmp_path)
-        assert result == {}
+@pytest.mark.parametrize(
+    "content, expected",
+    [
+        ("", {}),
+        ("KEY=value\n", {"KEY": "value"}),
+        ("KEY1=value1\nKEY2=value2\n", {"KEY1": "value1", "KEY2": "value2"}),
+        ("# Comment\nKEY=value\n# Another comment\n", {"KEY": "value"}),
+        ("KEY1=value1\n\n\nKEY2=value2\n", {"KEY1": "value1", "KEY2": "value2"}),
+        ('KEY="quoted value"\n', {"KEY": "quoted value"}),
+        ("KEY='quoted value'\n", {"KEY": "quoted value"}),
+        ("  KEY  =  value  \n", {"KEY": "value"}),
+        (None, {}),
+    ],
+)
+def test_load_env(tmp_path, content, expected):
+    if content is not None:
+        (tmp_path / ".env").write_text(content)
+    assert load_env(tmp_path) == expected
 
 
 class TestResolveUrl:
@@ -109,57 +75,34 @@ class TestResolveUrl:
             resolve_url(tmp_path, "DB_URL")
 
 
-class TestTablesImportError:
-    def test_psycopg_import_error(self, tmp_path, monkeypatch):
-        import builtins
+@pytest.mark.parametrize(
+    "fn, args",
+    [
+        (tables, ("postgresql://localhost/testdb",)),
+        (describe, ("postgresql://localhost/testdb", "test_table")),
+    ],
+)
+def test_psycopg_import_error(monkeypatch, fn, args):
+    import builtins
 
-        real_import = builtins.__import__
+    real_import = builtins.__import__
 
-        def mock_import(name, *args, **kwargs):
-            if name == "psycopg":
-                raise ImportError("psycopg not found")
-            return real_import(name, *args, **kwargs)
+    def mock_import(name, *args, **kwargs):
+        if name == "psycopg":
+            raise ImportError("psycopg not found")
+        return real_import(name, *args, **kwargs)
 
-        monkeypatch.setattr("builtins.__import__", mock_import)
-        with pytest.raises(
-            DbError, match="db commands require psycopg; other commands are unaffected"
-        ):
-            tables("postgresql://localhost/testdb")
-
-
-class TestDescribeImportError:
-    def test_psycopg_import_error(self, tmp_path, monkeypatch):
-        import builtins
-
-        real_import = builtins.__import__
-
-        def mock_import(name, *args, **kwargs):
-            if name == "psycopg":
-                raise ImportError("psycopg not found")
-            return real_import(name, *args, **kwargs)
-
-        monkeypatch.setattr("builtins.__import__", mock_import)
-        with pytest.raises(
-            DbError, match="db commands require psycopg; other commands are unaffected"
-        ):
-            describe("postgresql://localhost/testdb", "test_table")
+    monkeypatch.setattr("builtins.__import__", mock_import)
+    with pytest.raises(
+        DbError, match="db commands require psycopg; other commands are unaffected"
+    ):
+        fn(*args)
 
 
 def test_captured_catalog_has_safe_slug_and_credential_free_resource(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("DB_URL", "postgresql://secret:token@db.example:5432/app")
-    monkeypatch.setattr(_db, "tables", lambda url, schema: [{"name": "Order Items"}])
-    monkeypatch.setattr(
-        _db,
-        "describe",
-        lambda url, table, schema: {
-            "name": table,
-            "columns": [],
-            "primary_key": [],
-            "foreign_keys": [],
-        },
-    )
     catalog = _db.capture_catalog(
         tmp_path,
         SimpleNamespace(
@@ -168,6 +111,13 @@ def test_captured_catalog_has_safe_slug_and_credential_free_resource(
             schema="Public Data",
             tables=("Order Items",),
         ),
+        tables=lambda url, schema: [{"name": "Order Items"}],
+        describe=lambda url, table, schema: {
+            "name": table,
+            "columns": [],
+            "primary_key": [],
+            "foreign_keys": [],
+        },
     )
     table = catalog["tables"][0]
     assert "secret" not in catalog["resource"] and "token" not in catalog["resource"]

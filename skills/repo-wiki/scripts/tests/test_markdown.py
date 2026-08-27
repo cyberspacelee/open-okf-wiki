@@ -47,18 +47,6 @@ PLACEHOLDER_BODY = """\
 Some {{partial}} placeholder.
 """
 
-MERMAID_BODY = """\
-## Diagram
-
-```mermaid
-graph TD
-A --> B
-```
-
-## After
-Text.
-"""
-
 H2_H3_BODY = """\
 ## Top
 Top content.
@@ -139,14 +127,6 @@ def test_placeholders():
     vals = [p for p, _ in s.placeholders]
     assert "{{TODO: fill this in}}" in vals
     assert "{{partial}}" in vals
-
-
-def test_mermaid_blocks():
-    s = extract(MERMAID_BODY)
-    assert len(s.mermaid_blocks) == 1
-    _, content = s.mermaid_blocks[0]
-    assert "graph TD" in content
-    assert "A --> B" in content
 
 
 def test_h2_h3_nesting():

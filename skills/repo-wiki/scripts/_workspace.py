@@ -21,7 +21,6 @@ _WINDOWS_RESERVED = {
     *(f"COM{i}" for i in range(1, 10)),
     *(f"LPT{i}" for i in range(1, 10)),
 }
-_WINDOWS_INVALID = re.compile(r'[<>:"\\|?*\x00-\x1f]')
 
 
 class WorkspaceError(Exception):
@@ -41,6 +40,9 @@ class Source:
     tables: tuple[str, ...] = ()
     survey_split: tuple[str, ...] = ()
     survey_exclude: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict:
+        return dict(self.__dict__)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -236,10 +238,6 @@ def _mount_link(target: pathlib.Path, mount: pathlib.Path) -> None:
         mount.symlink_to(target, target_is_directory=True)
 
 
-def _child_path(root: pathlib.Path, name: str) -> pathlib.Path:
-    return root / name
-
-
 def add_git_link(root: pathlib.Path, target: str, name: str) -> Source:
     data = _read(root)
     _check_add(root, data, name)
@@ -254,21 +252,10 @@ def add_git_link(root: pathlib.Path, target: str, name: str) -> Source:
         relative = resolved.relative_to(root.resolve()).as_posix()
     except ValueError:
         relative = None
-    if relative is not None:
-        if "/" in relative or relative != name:
-            if relative != name:
-                mount = _child_path(root, name)
-                if mount.exists() or mount.is_symlink():
-                    raise WorkspaceError(f"mount destination exists: {mount}")
-                _mount_link(resolved, mount)
-                relative = name
-                origin = str(resolved)
-            else:
-                origin = relative
-        else:
-            origin = relative
+    if relative == name:
+        origin = relative
     else:
-        mount = _child_path(root, name)
+        mount = root / name
         if mount.exists() or mount.is_symlink():
             raise WorkspaceError(f"mount destination exists: {mount}")
         try:
@@ -301,7 +288,7 @@ def add_git_clone(
         raise WorkspaceError("clone requires a Git URL")
     if ref is not None and not ref.strip():
         raise WorkspaceError("clone ref must not be empty")
-    dest = _child_path(root, name)
+    dest = root / name
     if dest.exists() or dest.is_symlink():
         raise WorkspaceError(f"clone destination exists: {dest}")
     result = subprocess.run(
@@ -324,7 +311,6 @@ def add_git_clone(
             "name": name,
             "kind": "git",
             "path": name,
-            "remote": origin,
             "origin": origin,
             **({"ref": ref} if ref else {}),
         }
@@ -353,7 +339,7 @@ def add_files_source(root: pathlib.Path, target: str, name: str) -> Source:
     if relative == name:
         origin = relative
     else:
-        mount = _child_path(root, name)
+        mount = root / name
         if mount.exists() or mount.is_symlink():
             raise WorkspaceError(f"mount destination exists: {mount}")
         try:
@@ -433,21 +419,6 @@ def _check_add(root: pathlib.Path, data: dict, name: str) -> None:
         for entry in data["sources"]
     ):
         raise WorkspaceError(f"source '{name}' already exists")
-
-
-def _portable_path(path: str, seen: dict[str, str]) -> None:
-    folded = path.casefold()
-    if folded in seen and seen[folded] != path:
-        raise WorkspaceError(
-            f"case-insensitive path collision: {seen[folded]!r} and {path!r}"
-        )
-    seen[folded] = path
-    for part in pathlib.PurePosixPath(path).parts:
-        stem = part.rstrip(". ").split(".", 1)[0].upper()
-        if not part or part.endswith((".", " ")) or _WINDOWS_INVALID.search(part):
-            raise WorkspaceError(f"path is not portable to Windows: {path!r}")
-        if stem in _WINDOWS_RESERVED:
-            raise WorkspaceError(f"path uses a Windows reserved name: {path!r}")
 
 
 def capture_git_revision(root: pathlib.Path, source: Source) -> dict:
@@ -547,11 +518,6 @@ def assert_pin_current(root: pathlib.Path, run_id: str, source: Source, record: 
             raise WorkspaceError(f"pin for '{source.name}' drifted from the recorded tree")
 
 
-def live_git_head(source: Source) -> str:
-    assert source.path is not None
-    return _git(source.path, "rev-parse", "HEAD").stdout.strip()
-
-
 def _safe_origin(origin: str) -> str:
     parsed = urlsplit(origin)
     if parsed.scheme not in ("http", "https"):
@@ -574,27 +540,6 @@ def resolve_source_file(source: Source, rel: str) -> pathlib.Path | None:
     except ValueError:
         return None
     return path if path.is_file() else None
-
-
-def git_top_level(source: Source, commit: str) -> list[str]:
-    """Sorted top-level tracked directories (fallback: tracked files) at commit."""
-    if source.path is None or not re.fullmatch(r"[0-9a-f]{40,64}", commit):
-        return []
-    result = _git(
-        source.path, "ls-tree", "-z", "--name-only", commit, check=False
-    )
-    if result.returncode:
-        return []
-    entries = [item for item in result.stdout.split("\0") if item]
-    dirs = _git(
-        source.path, "ls-tree", "-z", "--name-only", "-d", commit, check=False
-    )
-    top_dirs = (
-        [item for item in dirs.stdout.split("\0") if item]
-        if not dirs.returncode
-        else []
-    )
-    return sorted(top_dirs) or sorted(entries)
 
 
 def tracked_files(source: Source, commit: str | None) -> list[str]:

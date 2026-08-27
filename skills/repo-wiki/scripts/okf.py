@@ -75,7 +75,7 @@ def cmd_workspace(args) -> int:
                 "language": workspace.language,
                 "freshness_days": workspace.freshness_days,
                 "sources": {
-                    name: source.__dict__ for name, source in workspace.sources.items()
+                    name: source.to_dict() for name, source in workspace.sources.items()
                 },
             },
             args.json,
@@ -89,7 +89,7 @@ def cmd_source(args) -> int:
     if args.action == "list":
         workspace = _workspace.load(workspace_root())
         emit(
-            {name: source.__dict__ for name, source in workspace.sources.items()},
+            {name: source.to_dict() for name, source in workspace.sources.items()},
             args.json,
         )
         return 0
@@ -113,7 +113,7 @@ def cmd_source(args) -> int:
             args.schema,
             args.table or [],
         )
-    emit(source.__dict__, args.json)
+    emit(source.to_dict(), args.json)
     return 0
 
 
@@ -154,10 +154,7 @@ def cmd_task(args) -> int:
 def cmd_review(args) -> int:
     import _state
 
-    if args.action == "start":
-        result = _state.review_start(workspace_root(), args.actor, args.session)
-    else:
-        raise SystemExit("review submit is now: task complete review:<batch>")
+    result = _state.review_start(workspace_root(), args.actor, args.session)
     emit(result, args.json)
     return 0
 
@@ -200,7 +197,7 @@ def cmd_validate(args) -> int:
         issues = _validate.validate_candidate(
             root, state, published=state["status"] in ("approved", "published")
         )
-    return emit_issues(issues, args.json)
+    return emit_issues([item.to_dict() for item in issues], args.json)
 
 
 def cmd_db(args) -> int:
