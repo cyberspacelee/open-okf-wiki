@@ -1,11 +1,14 @@
 # Triage
 
-Read contract.md and the one `drafts/index/<source>.json` listed in the
-dispatch packet. It is a bounded hierarchy of file, line and byte counts,
-extensions, test proximity, generated markers, representative files and
-entry points. Read at most three deterministic source samples when deciding
-whether a non-generated scope is inventory. Assign every non-excluded file
-of this Source to exactly one scope.
+Read contract.md and the one compact `drafts/index/<source>.json` listed in
+the dispatch packet. It contains file, line and byte counts, extensions, test
+proximity, generated markers, representative files and entry points. Empty
+single-child directory chains are collapsed. If `truncated` is true or a
+branch remains unclear, run `<ls_command> <relative-directory> --json` from
+the packet's `workdir`; continue with `--after <next_after>` when returned.
+Do not recursively list the Source. Read at most three deterministic source
+samples when deciding whether a non-generated scope is inventory. Assign
+every non-excluded file of this Source to exactly one scope.
 
 Write the artifact yourself to the packet's `artifact` path — never return
 its content in your reply:

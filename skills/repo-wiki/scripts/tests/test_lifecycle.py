@@ -331,7 +331,7 @@ def test_task_start_returns_path_only_worker_dispatch(tmp_path):
         "artifact",
         "sources",
         "inputs",
-        "index",
+        "ls_command",
         "complete_command",
         "workdir",
     }
@@ -352,9 +352,7 @@ def test_task_start_returns_path_only_worker_dispatch(tmp_path):
     pin = root / ".okf-wiki" / "pins" / packet["run_id"] / "SourceA"
     assert packet["sources"] == {"SourceA": str(pin)}
     assert packet["inputs"] == []
-    assert packet["index"] == [
-        str(pathlib.Path(packet["artifact"]).parents[1] / "index/sourcea.json")
-    ]
+    assert packet["ls_command"].endswith("task ls survey:sourcea")
     assert packet["complete_command"].endswith("task complete survey:sourcea --json")
     assert packet["workdir"] == str(root)
 

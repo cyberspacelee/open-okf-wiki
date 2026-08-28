@@ -94,9 +94,12 @@ def evaluate(base: pathlib.Path) -> dict:
     )
     run_dir = pathlib.Path(status["run_dir"])
     for slug, name in source_names.items():
-        complete(
-            ws,
-            f"triage:{slug}",
+        target = f"triage:{slug}"
+        packet = run(ws, "task", "start", target, json_output=True)
+        listing = run(ws, "task", "ls", target, ".", json_output=True)
+        if "ls_command" not in packet or not listing["items"]:
+            raise RuntimeError("triage dispatch must provide bounded source browsing")
+        write(
             run_dir / f"drafts/triage/{slug}.json",
             json.dumps(
                 {
@@ -112,11 +115,15 @@ def evaluate(base: pathlib.Path) -> dict:
                 }
             ),
         )
+        run(ws, "task", "complete", target)
 
     for slug, name in source_names.items():
-        complete(
-            ws,
-            f"survey:{slug}",
+        target = f"survey:{slug}"
+        packet = run(ws, "task", "start", target, json_output=True)
+        listing = run(ws, "task", "ls", target, ".", json_output=True)
+        if "index" in packet or "ls_command" not in packet or not listing["items"]:
+            raise RuntimeError("survey dispatch must use task-scoped browsing")
+        write(
             run_dir / f"drafts/survey/{slug}.json",
             json.dumps(
                 {
@@ -134,6 +141,7 @@ def evaluate(base: pathlib.Path) -> dict:
                 }
             ),
         )
+        run(ws, "task", "complete", target)
     complete(
         ws,
         "connect:api",

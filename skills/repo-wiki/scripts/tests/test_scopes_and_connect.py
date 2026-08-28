@@ -74,11 +74,123 @@ def test_start_creates_one_triage_target_and_bounded_index_per_source(tmp_path):
     assert _index.is_protected("openapi.yaml")
 
 
+def test_index_compacts_single_child_chains_and_preserves_forced_splits(tmp_path):
+    empty = _index.build_index("src", tmp_path, [])
+    assert [item["path"] for item in empty["directories"]] == ["."]
+
+    files = [
+        "src/main/java/com/it/example/api/A.java",
+        "src/main/java/com/it/example/service/B.java",
+    ]
+    index = _index.build_index("src", tmp_path, files)
+    assert [item["path"] for item in index["directories"]] == [
+        ".",
+        "src/main/java/com/it/example",
+        "src/main/java/com/it/example/api",
+        "src/main/java/com/it/example/service",
+    ]
+
+    forced = _index.build_index("src", tmp_path, files, ("src/main/java",))
+    assert "src/main/java" in {item["path"] for item in forced["directories"]}
+
+
 def test_forced_splits_cannot_exceed_index_budget(tmp_path):
     splits = tuple(f"area-{index:04d}" for index in range(1000))
     files = [f"{split}/value.py" for split in splits]
     with pytest.raises(ValueError, match="survey.split"):
         _index.build_index("src", tmp_path, files, splits)
+
+
+def test_task_ls_is_bounded_and_reads_only_the_captured_scope(tmp_path, monkeypatch):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    files = {
+        "src/main/java/com/it/example/api/A.java": "class A {}\n",
+        "src/main/java/com/it/example/service/B.java": "class B {}\n",
+        **{f"src/main/java/com/it/example/api/F{index:02d}.java": "class F {}\n" for index in range(20)},
+    }
+    source = git_source(root / "src", files)
+    _workspace.init(root)
+    _workspace.add_git_link(root, str(source), "src")
+    _state.start_run(root, "repo-wiki/test", "writer")
+
+    triage_packet = _state.task_start(root, "triage:src")
+    assert triage_packet["ls_command"].endswith("task ls triage:src")
+    root_page = _state.task_ls(root, "triage:src", ".")
+    assert root_page["items"] == [
+        {"path": "src/main/java/com/it/example", "kind": "directory"}
+    ]
+
+    monkeypatch.setattr(_index, "MAX_LS_BYTES", 700)
+    pages = []
+    after = None
+    while True:
+        page = _state.task_ls(
+            root,
+            "triage:src",
+            "src/main/java/com/it/example/api",
+            after,
+        )
+        assert len(json.dumps(page, ensure_ascii=False, indent=2).encode()) + 1 <= 700
+        pages.extend(item["path"] for item in page["items"])
+        if page["next_after"] is None:
+            break
+        assert page["truncated"]
+        after = page["next_after"]
+    assert pages == sorted(path for path in files if "/api/" in path)
+
+
+def test_survey_task_ls_rejects_paths_outside_scope_and_uses_files_pin(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    source = tmp_path / "contracts"
+    source.mkdir()
+    write(source / "api/openapi.yaml", "openapi: 3.0.0\n")
+    write(source / "internal/notes.md", "private\n")
+    _workspace.init(root)
+    _workspace.add_files_source(root, str(source), "contracts")
+    _state.start_run(root, "repo-wiki/test", "writer")
+    state = _state.read(root)
+    run = _state.run_dir(root, state["run_id"])
+    complete(
+        root,
+        "triage:contracts",
+        run / "drafts/triage/contracts.json",
+        json.dumps(
+            {
+                "source": "contracts",
+                "scopes": [
+                    {"paths": ["api"], "tier": "deep"},
+                    {"paths": ["internal"], "tier": "standard"},
+                ],
+            }
+        ),
+    )
+    api_task = next(
+        task["id"]
+        for task in _state.read(root)["tasks"].values()
+        if task["phase"] == "survey" and task["spec"]["scope"] == ["api"]
+    )
+    packet = _state.task_start(root, api_task)
+    assert "index" not in packet
+    assert packet["ls_command"].endswith(f"task ls {api_task}")
+
+    (source / "api/openapi.yaml").unlink()
+    write(source / "api/live-only.yaml", "changed: true\n")
+    assert _state.task_ls(root, api_task, "api")["items"] == [
+        {"path": "api/openapi.yaml", "kind": "file"}
+    ]
+    with pytest.raises(_state.StateError, match="scope"):
+        _state.task_ls(root, api_task, "internal")
+    with pytest.raises(_state.StateError, match="scope"):
+        _state.task_ls(root, api_task, ".")
+    with pytest.raises(_state.StateError, match="relative"):
+        _state.task_ls(root, api_task, "../api")
+
+    pin = _workspace.pin_dir(root, state["run_id"], "contracts")
+    write(pin / "api/tampered.yaml", "changed: true\n")
+    with pytest.raises(_workspace.WorkspaceError, match="drifted"):
+        _state.task_ls(root, api_task, "api")
 
 
 def test_triage_requires_exact_coverage_and_configured_split(tmp_path):
@@ -130,6 +242,30 @@ def test_triage_requires_exact_coverage_and_configured_split(tmp_path):
     )
     assert _state.task_complete(root, "triage:src")["ok"]
     assert sorted(survey_tasks(root).values()) == [["app.py"], ["core"]]
+
+
+def test_triage_rejects_absolute_scope_paths(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    git_source(root / "src", {"api/app.py": "VALUE = 1\n"})
+    _workspace.init(root)
+    _workspace.add_git_link(root, str(root / "src"), "src")
+    _state.start_run(root, "repo-wiki/test", "writer")
+    state = _state.read(root)
+    run = _state.run_dir(root, state["run_id"])
+    _state.task_start(root, "triage:src")
+    write(
+        run / "drafts/triage/src.json",
+        json.dumps(
+            {
+                "source": "src",
+                "scopes": [{"paths": ["/api"], "tier": "deep"}],
+            }
+        ),
+    )
+    result = _state.task_complete(root, "triage:src")
+    assert not result["ok"]
+    assert "triage-path-invalid" in {item["code"] for item in result["issues"]}
 
 
 def test_files_triage_uses_the_captured_pin(tmp_path):

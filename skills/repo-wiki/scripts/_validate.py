@@ -384,25 +384,6 @@ def validate_task(root: pathlib.Path, state: dict, task: dict) -> list[Issue]:
         return _validate_write(root, state, task, path)
     return [issue("error", "phase-unknown", str(path), f"unknown phase {phase}")]
 
-
-
-def _covered_files(files: list[str], paths: list[str], exclude: list[str]) -> set[str]:
-    remaining = []
-    for item in files:
-        if any(item == entry or item.startswith(entry.rstrip("/") + "/") for entry in exclude):
-            continue
-        remaining.append(item)
-    covered = set()
-    for path in paths:
-        if path in (".", ""):
-            covered.update(remaining)
-            continue
-        for item in remaining:
-            if item == path or item.startswith(path.rstrip("/") + "/"):
-                covered.add(item)
-    return covered
-
-
 def _validate_triage(
     root: pathlib.Path, state: dict, task: dict, path: pathlib.Path
 ) -> list[Issue]:
@@ -428,15 +409,13 @@ def _validate_triage(
         item for item in state["revisions"] if item["name"] == expected_source
     )
     pin = _workspace.pin_dir(root, state["run_id"], expected_source)
-    files = (
-        _workspace.tree_files(pin)
-        if source.kind == "files"
-        else _workspace.tracked_files(source, revision.get("commit"))
-    )
-    expected = _covered_files(files, ["."], list(source.survey_exclude))
+    files = _workspace.captured_files(source, pin, revision)
+    expected = set(_workspace.scoped_files(files, ["."], source.survey_exclude))
     claimed: set[str] = set()
     for scope in value.scopes:
-        covered = _covered_files(files, list(scope.paths), list(source.survey_exclude))
+        covered = set(
+            _workspace.scoped_files(files, scope.paths, source.survey_exclude)
+        )
         if not covered:
             issues.append(
                 issue(

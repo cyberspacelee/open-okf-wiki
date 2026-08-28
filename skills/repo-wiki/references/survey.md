@@ -1,9 +1,12 @@
 # Survey
 
 Read contract.md, the target scope and its Source root from the dispatch
-packet. The packet already carries triage `orientation` / `themes` and the
-matching `drafts/index/<source>.json` file — orient from those, then read
-only the named scope. Package layout alone is not a domain.
+packet. The packet already carries triage `orientation` / `themes`; do not
+read the Source Index. For each directory scope, run
+`<ls_command> <relative-directory> --json` from the packet's `workdir` and
+continue with `--after <next_after>` when returned. Read file scopes directly.
+Use targeted source search and reads inside the named scope after browsing;
+do not recursively list the Source. Package layout alone is not a domain.
 
 Write exactly one survey JSON to the packet's `artifact` path — never return
 its content in your reply:

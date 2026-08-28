@@ -69,6 +69,10 @@ source entry in workspace.json (`"survey": {"split": ["src/core"],
 "exclude": ["vendor"]}`) is the only exclusion policy; split paths must be
 independent scopes and cannot be inside an excluded path. Propose is an
 optional post-publish command, not a phase.
+The Index collapses empty single-child directory chains. Triage reads it once
+and uses the packet's bounded `ls_command` only when the Index is truncated or
+unclear. Survey packets do not carry the Index; workers use `ls_command` to
+browse only their captured task scope, then perform targeted source reads.
 `run status` lists the current phase's tasks; task ids are `<phase>:<name>`
 (e.g. `triage:api`, `survey:api`, `write:overview.md`). For each task:
 

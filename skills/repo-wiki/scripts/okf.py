@@ -141,6 +141,8 @@ def cmd_task(args) -> int:
     root = workspace_root()
     if args.action == "start":
         result = _state.task_start(root, args.target)
+    elif args.action == "ls":
+        result = _state.task_ls(root, args.target, args.path, args.after)
     elif args.action == "complete":
         result = _state.task_complete(root, args.target)
         if not result.get("ok"):
@@ -368,6 +370,14 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
     start_task.add_argument("target", help="task id, e.g. survey:api")
+    list_task = leaf(
+        task_actions.add_parser(
+            "ls", help="list one directory inside an active triage or survey task"
+        )
+    )
+    list_task.add_argument("target", help="active triage or survey task id")
+    list_task.add_argument("path", help="relative directory path, or . for task root")
+    list_task.add_argument("--after", help="continue after this path from the prior page")
     complete_task = leaf(
         task_actions.add_parser(
             "complete", help="validate the task artifact and advance on success"

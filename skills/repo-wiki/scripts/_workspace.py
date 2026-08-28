@@ -574,6 +574,30 @@ def tree_files(path: pathlib.Path) -> list[str]:
     )
 
 
+def captured_files(source: Source, pin: pathlib.Path, revision: dict) -> list[str]:
+    return (
+        tree_files(pin)
+        if source.kind == "files"
+        else tracked_files(source, revision.get("commit"))
+    )
+
+
+def scoped_files(files: list[str], paths, exclude) -> list[str]:
+    excluded = tuple(item.strip("/") for item in exclude if item.strip("/"))
+    selected = tuple(paths)
+    return [
+        item
+        for item in files
+        if not any(item == entry or item.startswith(entry + "/") for entry in excluded)
+        and any(
+            path in ("", ".")
+            or item == path.rstrip("/")
+            or item.startswith(path.rstrip("/") + "/")
+            for path in selected
+        )
+    ]
+
+
 def git_blob(source: Source, commit: str, rel: str) -> bytes | None:
     pure = pathlib.PurePosixPath(rel)
     if (

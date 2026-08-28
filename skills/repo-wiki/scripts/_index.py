@@ -71,6 +71,7 @@ BINARY_EXT = {
 }
 VERSION = 1
 MAX_INDEX_BYTES = 64 * 1024
+MAX_LS_BYTES = 16 * 1024
 WINDOW = 20
 GENERATED_TOKEN = re.compile(r"(^|/)(generated|vendor|dist|build)(/|$)", re.I)
 GENERATED_MARKER = re.compile(rb"generated (by|file)|do not edit", re.I)
@@ -94,18 +95,11 @@ def write_source_index(
     import _workspace
 
     pin = _workspace.pin_dir(root, run_id, source.name)
-    files = (
-        _workspace.tree_files(pin)
-        if source.kind == "files"
-        else _workspace.tracked_files(source, revision.get("commit"))
+    files = _workspace.scoped_files(
+        _workspace.captured_files(source, pin, revision),
+        ["."],
+        source.survey_exclude,
     )
-    exclude = [item.strip("/") for item in source.survey_exclude if item.strip("/")]
-    if exclude:
-        files = [
-            item
-            for item in files
-            if not any(item == entry or item.startswith(entry + "/") for entry in exclude)
-        ]
     payload = build_index(source.name, pin, files, source.survey_split)
     path = index_path(_state.run_dir(root, run_id), source.name)
     atomic_json(path, payload)
@@ -119,11 +113,21 @@ def build_index(
     forced_splits: tuple[str, ...] = (),
 ) -> dict:
     directories: dict[str, dict] = {}
+    _ensure_dir(directories, "")
     for rel in files:
         size, raw = _file_data(pin, rel)
         for parent in _parents(rel):
             _accumulate_file(_ensure_dir(directories, parent), rel, size, raw)
-    records = [_finalize(path, stats) for path, stats in directories.items()]
+    direct_files, child_dirs = _directory_shape(files)
+    required = {"", *(item.strip("/") for item in forced_splits)}
+    visible = required | direct_files | {
+        path for path, children in child_dirs.items() if len(children) > 1
+    }
+    records = [
+        _finalize(path, stats)
+        for path, stats in directories.items()
+        if path in visible
+    ]
     records.sort(key=lambda item: (item["path"] != ".", item["path"]))
     payload = {
         "version": VERSION,
@@ -134,9 +138,9 @@ def build_index(
     }
     if _json_size(payload) <= MAX_INDEX_BYTES:
         return payload
-    required = {".", *(item.strip("/") for item in forced_splits)}
-    kept = [item for item in records if item["path"] in required]
-    candidates = [item for item in records if item["path"] not in required]
+    required_paths = {".", *(item.strip("/") for item in forced_splits)}
+    kept = [item for item in records if item["path"] in required_paths]
+    candidates = [item for item in records if item["path"] not in required_paths]
     candidates.sort(
         key=lambda item: (bool(item["entry_points"]), item["files"]), reverse=True
     )
@@ -166,6 +170,76 @@ def _parents(rel: str) -> list[str]:
         parts.append(part)
         result.append("/".join(parts))
     return result
+
+
+def _directory_shape(files: list[str]) -> tuple[set[str], dict[str, set[str]]]:
+    direct_files: set[str] = set()
+    child_dirs: dict[str, set[str]] = {}
+    for rel in files:
+        parent = pathlib.PurePosixPath(rel).parent
+        parent_path = "" if parent == pathlib.PurePosixPath(".") else parent.as_posix()
+        direct_files.add(parent_path)
+        parts = parent.parts if parent_path else ()
+        for index, part in enumerate(parts):
+            owner = "/".join(parts[:index])
+            child = "/".join((*parts[:index], part))
+            child_dirs.setdefault(owner, set()).add(child)
+    return direct_files, child_dirs
+
+
+def list_directory(
+    source: str,
+    path: str,
+    files: list[str],
+    forced_splits: tuple[str, ...] = (),
+    after: str | None = None,
+) -> dict:
+    direct_files, child_dirs = _directory_shape(files)
+    owner = "" if path == "." else path
+    forced = {item.strip("/") for item in forced_splits}
+    items = [
+        {"path": rel, "kind": "file"}
+        for rel in files
+        if (pathlib.PurePosixPath(rel).parent.as_posix() == owner)
+        or (owner == "" and pathlib.PurePosixPath(rel).parent == pathlib.PurePosixPath("."))
+    ]
+    for child in child_dirs.get(owner, set()):
+        while (
+            child not in forced
+            and child not in direct_files
+            and len(child_dirs.get(child, ())) == 1
+        ):
+            child = next(iter(child_dirs[child]))
+        items.append({"path": child, "kind": "directory"})
+    items.sort(key=lambda item: item["path"])
+    if after is not None:
+        positions = [index for index, item in enumerate(items) if item["path"] == after]
+        if not positions:
+            raise ValueError("after must name an item in this directory")
+        items = items[positions[0] + 1 :]
+
+    page: list[dict] = []
+    for index, item in enumerate(items):
+        candidate = {
+            "source": source,
+            "path": path,
+            "items": [*page, item],
+            "truncated": index < len(items) - 1,
+            "next_after": item["path"] if index < len(items) - 1 else None,
+        }
+        if _json_size(candidate) > MAX_LS_BYTES:
+            break
+        page.append(item)
+    if items and not page:
+        raise ValueError("one directory item exceeds the listing byte budget")
+    truncated = len(page) < len(items)
+    return {
+        "source": source,
+        "path": path,
+        "items": page,
+        "truncated": truncated,
+        "next_after": page[-1]["path"] if truncated else None,
+    }
 
 
 def _ensure_dir(directories: dict[str, dict], path: str) -> dict:

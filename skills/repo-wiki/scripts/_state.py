@@ -416,6 +416,62 @@ def task_start(root: pathlib.Path, task_id: str) -> dict:
     return _dispatch(root, state, task)
 
 
+def task_ls(
+    root: pathlib.Path, task_id: str, path: str, after: str | None = None
+) -> dict:
+    import _index
+    import _workspace
+
+    state = _require_run(root, {"active"})
+    task = state["tasks"].get(task_id)
+    if task is None:
+        raise StateError(f"unknown target: {task_id}")
+    if task["phase"] != _phase(state):
+        raise StateError(f"target does not belong to current phase: {task_id}")
+    if task["phase"] not in ("triage", "survey"):
+        raise StateError("task ls is available only for triage and survey")
+    if task["status"] != "in_progress":
+        raise StateError("task ls requires an in-progress task")
+    if not isinstance(path, str) or not path or "\\" in path:
+        raise StateError("path must be a relative POSIX path")
+    pure = pathlib.PurePosixPath(path)
+    if pure.is_absolute() or ".." in pure.parts or re.match(r"^[A-Za-z]:", path):
+        raise StateError("path must be a relative POSIX path")
+    normalized = pure.as_posix().strip("/")
+    normalized = "." if normalized in ("", ".") else normalized
+
+    selected = task["spec"]["source"]
+    workspace = _workspace.load(root)
+    source = workspace.sources[selected]
+    revision = next(item for item in state["revisions"] if item["name"] == selected)
+    pin = _workspace.pin_dir(root, state["run_id"], selected)
+    _workspace.assert_pin_current(root, state["run_id"], source, revision)
+    if task["phase"] == "survey" and not any(
+        scope in ("", ".")
+        or normalized == scope.rstrip("/")
+        or normalized.startswith(scope.rstrip("/") + "/")
+        for scope in task["spec"]["scope"]
+    ):
+        raise StateError(f"path is outside task scope: {path}")
+    files = _workspace.scoped_files(
+        _workspace.captured_files(source, pin, revision),
+        ["."] if task["phase"] == "triage" else task["spec"]["scope"],
+        source.survey_exclude,
+    )
+    if normalized in files or not _workspace.scoped_files(files, [normalized], ()):
+        raise StateError(f"path is outside task scope or is not a directory: {path}")
+    try:
+        return _index.list_directory(
+            source.name,
+            normalized,
+            files,
+            source.survey_split if task["phase"] == "triage" else (),
+            after,
+        )
+    except ValueError as exc:
+        raise StateError(str(exc)) from exc
+
+
 def _pin_sources(root: pathlib.Path, state: dict, selected: str | None) -> dict[str, str]:
     import _workspace
 
@@ -511,16 +567,8 @@ def _dispatch(root: pathlib.Path, state: dict, task: dict) -> dict:
         "complete_command": f"uv run {okf} task complete {task['id']} --json",
         "workdir": str(root),
     }
-    if phase == "survey":
-        packet["index"] = [
-            str(path)
-            for path in sorted((base / "drafts" / "index").glob("*.json"))
-            if path.exists()
-            and (
-                selected is None
-                or path.stem == selected.lower()
-            )
-        ]
+    if phase in ("triage", "survey"):
+        packet["ls_command"] = f"uv run {okf} task ls {task['id']}"
     catalogs = _catalog_paths(root, state, task)
     if catalogs:
         packet["catalogs"] = catalogs
